@@ -81,6 +81,7 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags["confirm-auto-approval"] === "string"
           ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
           : {}),
+        ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
       });
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
@@ -157,6 +158,7 @@ export async function executeWorkflowCommand(
         kind: "approve",
         requestId: stringFlag(args, "request"),
         digest: stringFlag(args, "digest"),
+        ...(args.flags["exclude-user-changes"] === true ? { userChanges: "exclude" as const } : {}),
       });
     case "answer": {
       const answers = jsonFile("answers-file");
@@ -269,6 +271,8 @@ export async function executeWorkflowCommand(
         next: `baked workflow approve ${runId} --request ${prepared.requestId} --digest ${prepared.digest} --expected-revision ${prepared.revision}`,
       };
     }
+    case "discard-worktree":
+      return service.discardWorktree(runId, identity());
     case "redact":
       await artifacts.redact(runId, stringFlag(args, "file"), stringFlag(args, "reason"));
       return { redacted: true };

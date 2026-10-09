@@ -3,7 +3,7 @@
  * pull request as journaled external effects. The user's checkout, index, HEAD and files are never
  * changed; the commit is built from the run's files in a temporary index. No force push, no merge.
  */
-import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
@@ -17,6 +17,7 @@ import {
   internalPath,
   looksSecret,
   type RemoteFailure,
+  statusPaths,
 } from "./delivery-git.js";
 import {
   githubPullRequests,
@@ -26,7 +27,7 @@ import {
 } from "./delivery-provider.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import { WorkspaceLeases } from "./leases.js";
+import { mutationLeaseFor, WorkspaceLeases } from "./leases.js";
 import {
   type Decision,
   DeliveryConfigSchema,
@@ -34,6 +35,7 @@ import {
   type WorkflowErrorCode,
 } from "./schemas.js";
 import { type EffectRow, newId, type RequestRow, type WorkflowStore } from "./store.js";
+import { removeRunWorktree } from "./worktree.js";
 
 export type DeliveryOperation = "commit" | "push" | "pull_request";
 export interface DeliveryFile {
@@ -69,6 +71,11 @@ export interface DeliveryPlan {
   excluded: DeliveryExclusion[];
   /** Uncommitted changes in the workspace that are not part of the delivery; left untouched. */
   userChanges: string[];
+  /**
+   * The run branch a worktree run's files are delivered from: the content is read in its worktree,
+   * which holds the branch's accepted commit. Absent for a run executed in the working copy.
+   */
+  worktree?: { path: string; branch: string; commit: string };
   diff: { artifactId: string; hash: string; lines: number; truncated: boolean };
   commitMessage: string;
   pullRequest: {
@@ -185,18 +192,6 @@ async function modeAt(
 ): Promise<"100644" | "100755"> {
   const entry = (await git(workspace, ["ls-tree", commit, "--", path])).stdout;
   return entry.startsWith("100755") ? "100755" : "100644";
-}
-
-function statusPaths(output: string): string[] {
-  const entries = output.split("\0").filter(Boolean);
-  const paths: string[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i] ?? "";
-    paths.push(entry.slice(3));
-    // A rename or copy carries its source path as the next entry.
-    if (/^[RC]/.test(entry) || /^.[RC]/.test(entry)) i++;
-  }
-  return paths;
 }
 
 function baselineOf(
@@ -375,6 +370,8 @@ export async function prepareDelivery(
       `The run's verification is ${state.verificationState}; deliver only a currently verified result.`,
     );
   await assertRepository(workspace);
+  const source = await worktreeSource(store, runId);
+  const contentRoot = source ? join(workspace, source.path) : workspace;
   const head = (await git(workspace, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout.trim();
   if (!head)
     throw refuse(
@@ -426,7 +423,7 @@ export async function prepareDelivery(
       excluded.push({ path, reason: "secret" });
       continue;
     }
-    const absolute = workspacePath(workspace, path);
+    const absolute = workspacePath(contentRoot, path);
     let stat: ReturnType<typeof lstatSync> | null = null;
     try {
       stat = lstatSync(absolute);
@@ -568,7 +565,7 @@ export async function prepareDelivery(
   const evidence = evidenceOf(store, runId);
   const title = (state.spec?.title ?? `Deliver ${run.feature_id}`).slice(0, 72);
   const outcome = state.spec?.outcome ?? null;
-  const diff = await reviewableDiff(workspace, head, files);
+  const diff = await reviewableDiff(contentRoot, head, files);
   const core = {
     schemaVersion: 1 as const,
     planId,
@@ -593,6 +590,7 @@ export async function prepareDelivery(
     files,
     excluded,
     userChanges,
+    ...(source ? { worktree: source } : {}),
     evidence,
   };
   return store.transaction(() => {
@@ -665,6 +663,47 @@ export async function prepareDelivery(
       diff: diff.text,
     };
   });
+}
+
+/**
+ * Where a worktree run is delivered from: its worktree, which must still exist and hold the run
+ * branch at the accepted commit. Null for a run executed in the working copy.
+ */
+async function worktreeSource(
+  store: WorkflowStore,
+  runId: string,
+): Promise<DeliveryPlan["worktree"] | null> {
+  const worktree = store.state(runId).worktree;
+  if (!worktree) return null;
+  const root = join(store.workspace, worktree.path);
+  if (!existsSync(root))
+    throw refuse(
+      "NOT_FOUND",
+      "worktree_missing",
+      `The run worktree ${worktree.path} was removed; its branch ${worktree.branch} keeps the accepted commit ${worktree.commit ?? "(none)"}.`,
+    );
+  if (!worktree.commit)
+    throw refuse(
+      "INPUT_CHANGED",
+      "nothing_to_deliver",
+      "The run committed no change on its branch.",
+    );
+  const tip = (
+    await git(store.workspace, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${worktree.branch}`,
+    ])
+  ).stdout.trim();
+  const checkedOut = (await git(root, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout.trim();
+  if (tip !== worktree.commit || checkedOut !== worktree.commit)
+    throw refuse(
+      "INPUT_CHANGED",
+      "branch_moved",
+      `Branch ${worktree.branch} no longer points at the accepted commit ${worktree.commit}.`,
+    );
+  return { path: worktree.path, branch: worktree.branch, commit: worktree.commit };
 }
 
 /** A delivery approval or a recovery of a delivery effect; both are allowed on a completed run. */
@@ -835,7 +874,8 @@ export async function executeDelivery(
 
   store.transaction(() => store.bump(runId, options.expectedRevision));
   const leases = new WorkspaceLeases(store);
-  leases.acquire("mutation", runId);
+  const contentRoot = plan.worktree ? join(workspace, plan.worktree.path) : workspace;
+  leases.acquire(mutationLeaseFor(workspace, contentRoot), runId);
   const { stepId, attemptId } = store.transaction(() =>
     store.beginExternalAttempt(runId, DELIVERY_STAGE),
   );
@@ -849,6 +889,27 @@ export async function executeDelivery(
       provider,
     ).run();
     finished = "completed";
+    const worktree = store.state(runId).worktree;
+    // A delivered worktree run's worktree is no longer needed; its branch stays as the record.
+    if (plan.worktree && worktree && existsSync(contentRoot)) {
+      try {
+        await removeRunWorktree(store, runId, worktree, { deleteBranch: false });
+        store.transaction(() =>
+          store.artifact(
+            runId,
+            "worktree",
+            `worktree/removed-after-${plan.planId}.json`,
+            canonical({
+              ...worktree,
+              deliveredBy: plan.planId,
+              removedAt: new Date().toISOString(),
+            }),
+          ),
+        );
+      } catch {
+        // The delivery is done; a worktree that could not be removed is left for discard-worktree.
+      }
+    }
     return result;
   } finally {
     store.transaction(() => {
@@ -861,6 +922,8 @@ export async function executeDelivery(
 
 class DeliveryExecution {
   private readonly workspace: string;
+  /** Where the delivered files are read: the working copy, or a worktree run's worktree. */
+  private readonly contentRoot: string;
   private readonly runId: string;
   private commit: string | null = null;
   private pullRequest: DeliveryResult["pullRequest"] = null;
@@ -872,6 +935,7 @@ class DeliveryExecution {
     private provider: PullRequestProvider | null,
   ) {
     this.workspace = store.workspace;
+    this.contentRoot = plan.worktree ? join(store.workspace, plan.worktree.path) : store.workspace;
     this.runId = plan.runId;
   }
   private effects(): (EffectRow & { intent: DeliveryIntent })[] {
@@ -1088,7 +1152,7 @@ class DeliveryExecution {
     const contents = new Map<string, Uint8Array>();
     const dirty: string[] = [];
     for (const file of this.plan.files) {
-      const absolute = workspacePath(this.workspace, file.path);
+      const absolute = workspacePath(this.contentRoot, file.path);
       let bytes: Uint8Array | null = null;
       let mode: string | null = null;
       try {

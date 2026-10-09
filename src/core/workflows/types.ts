@@ -7,6 +7,23 @@ import {
   TaskGraphSchema,
 } from "./schemas.js";
 
+export const WorktreeStateSchema = z
+  .object({
+    /** Path relative to the project root, `.baked/worktrees/RUN_ID/main`. */
+    path: z.string().min(1),
+    branch: z.string().min(1),
+    /** The baseline HEAD the branch was created from. */
+    baseHead: z.string().regex(/^[0-9a-f]{40,64}$/),
+    /** The commit of the accepted changes on the branch, recorded at acceptance. */
+    commit: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/)
+      .nullable(),
+    /** Uncommitted user changes inside the approved scope the user chose to leave out. */
+    excludedUserChanges: z.array(z.string()),
+  })
+  .strict();
+export type WorktreeState = z.infer<typeof WorktreeStateSchema>;
 export const RuntimeStateSchema = z
   .object({
     prompt: z.string(),
@@ -79,6 +96,11 @@ export const RuntimeStateSchema = z
       .strict()
       .nullable()
       .default(null),
+    /**
+     * The run's own Git worktree once it exists (worktree execution mode). From then on the run
+     * reads, edits, checks and snapshots there; the project working copy is never written.
+     */
+    worktree: WorktreeStateSchema.nullable().default(null),
     /** Latest result per gate of a schema 2 definition. */
     gateResults: z
       .record(

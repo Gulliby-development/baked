@@ -1,10 +1,34 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { processTreeAlive } from "../platform/index.js";
 import { canonical } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
-import { type LeaseRow, newId, WorkflowStore } from "./store.js";
+import { type LeaseResource, type LeaseRow, newId, WorkflowStore } from "./store.js";
+
+/**
+ * The mutation lease that guards writes under `root`: the project lease for the project root,
+ * otherwise the lease of that worktree, named by its path relative to the project root.
+ */
+export function mutationLeaseFor(workspace: string, root: string): LeaseResource {
+  const path = relative(workspace, root).replaceAll("\\", "/");
+  return path === "" ? "mutation" : `worktree:${path}`;
+}
+/** True when the run executes in its own worktree, so the project working copy stays free. */
+function runInWorktree(store: WorkflowStore, runId: string | null): boolean {
+  if (!runId) return false;
+  try {
+    const policy = JSON.parse(store.run(runId).policy_json) as { executionMode?: string };
+    return policy.executionMode === "worktree";
+  } catch {
+    return false;
+  }
+}
+/** The execution lease when it blocks edits of the project working copy, otherwise null. */
+function blockingExecution(store: WorkflowStore): LeaseRow | null {
+  const execution = store.lease("execution");
+  return execution && !runInWorktree(store, execution.run_id) ? execution : null;
+}
 
 const identity = {
   pid: process.pid,
@@ -56,9 +80,7 @@ export function commandMayBeRunning(store: WorkflowStore, runId: string): boolea
  * store transaction. Returns the released resources.
  */
 export function releaseDeadOwnerLeases(store: WorkflowStore, runId: string): string[] {
-  const stale = (["execution", "mutation"] as const)
-    .map((resource) => store.lease(resource))
-    .filter((lease): lease is LeaseRow => !!lease && lease.run_id === runId);
+  const stale = store.leases().filter((lease) => lease.run_id === runId);
   if (!stale.length || stale.some((lease) => leaseOwnerAlive(lease) !== false)) return [];
   if (commandMayBeRunning(store, runId)) return [];
   store.artifact(
@@ -73,9 +95,9 @@ export function releaseDeadOwnerLeases(store: WorkflowStore, runId: string): str
 /** Only the owning host, after the exact Worker's close event, supplies these owner IDs. */
 export function recordWorkerExit(store: WorkflowStore, ownerId: string): void {
   store.transaction(() => {
-    for (const resource of ["execution", "mutation"] as const) {
-      const lease = store.lease(resource);
-      if (!lease || lease.owner_id !== ownerId) continue;
+    for (const lease of store.leases()) {
+      if (lease.owner_id !== ownerId) continue;
+      const resource = lease.resource;
       const owner = JSON.parse(lease.process_identity_json) as typeof identity & {
         exitedWorkerOwner?: string;
       };
@@ -86,7 +108,7 @@ export function recordWorkerExit(store: WorkflowStore, ownerId: string): void {
         store.artifact(
           lease.run_id,
           "worker-exit",
-          `worker-exits/${ownerId}/${resource}.json`,
+          `worker-exits/${ownerId}/${resource.replace(/[^A-Za-z0-9._-]+/g, "-")}.json`,
           canonical({ lease, observedByPid: process.pid, observedAt: Date.now() }),
         );
       // Preserve the lease and uncertain effects; recovery still checks every command PID.
@@ -185,7 +207,8 @@ export function assertWorkspaceMutationAllowed(workspace: string): void {
   if (!existsSync(join(workspace, ".baked", "workflows.sqlite"))) return;
   const store = new WorkflowStore(workspace, true);
   try {
-    const lease = store.lease("mutation") ?? store.lease("execution");
+    // A run in its own worktree holds that worktree's lease; the project copy stays editable.
+    const lease = store.lease("mutation") ?? blockingExecution(store);
     if (lease && lease.owner_id !== currentOwner.getStore())
       throw new WorkflowFault(
         "WORKSPACE_BUSY",
@@ -207,7 +230,7 @@ export async function withWorkspaceMutation<T>(
   const store = new WorkflowStore(workspace);
   const leases = new WorkspaceLeases(store);
   try {
-    const execution = store.lease("execution");
+    const execution = blockingExecution(store);
     if (execution)
       throw new WorkflowFault("WORKSPACE_BUSY", `Workflow ${execution.run_id} owns the workspace`);
     leases.acquire("mutation", null);

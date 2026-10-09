@@ -26,6 +26,7 @@ import { replayEvents } from "./events.js";
 import {
   commandProcessMayRun,
   leaseOwnerAlive,
+  mutationLeaseFor,
   releaseDeadOwnerLeases,
   WorkspaceLeases,
 } from "./leases.js";
@@ -34,6 +35,7 @@ import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
   type Decision,
+  executionModeOf,
   PolicySchema,
   ResearchSchema,
   type RunPolicy,
@@ -66,6 +68,7 @@ import {
   stageKind,
   stageProfileId,
 } from "./v2/runtime.js";
+import { removeRunWorktree, runRoot, worktreeBase } from "./worktree.js";
 
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
@@ -222,6 +225,22 @@ export class NativeWorkflowService implements WorkflowService {
         }
       }
     }
+    // The CLI flag overrides the definition, which overrides the policy. Inline leaves the field
+    // out, so the policy hash of an inline run is what it was before execution modes existed.
+    const mode =
+      request.executionMode ??
+      (loaded.schemaVersion === 2 ? loaded.definition.execution : undefined) ??
+      executionModeOf(policy);
+    const { executionMode: _previous, ...rest } = policy;
+    policy = PolicySchema.parse(mode === "worktree" ? { ...rest, executionMode: mode } : rest);
+    if (mode === "worktree") {
+      if (loaded.schemaVersion === 2 && loaded.definition.inputs.includes("diff"))
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          "A definition that reviews the working copy's diff runs inline; a worktree would not contain that diff",
+        );
+      await worktreeBase(this.workspace);
+    }
     for (const id of Object.values(policy.reviewProfiles))
       if (id && registry.get(id).output !== "review")
         throw new WorkflowFault(
@@ -306,6 +325,7 @@ export class NativeWorkflowService implements WorkflowService {
       position: v2 ? initialPosition(v2) : null,
       report: null,
       diff: null,
+      worktree: null,
       gateResults: {},
     };
     return this.store.transaction(() => {
@@ -447,12 +467,22 @@ export class NativeWorkflowService implements WorkflowService {
             "STALE_DECISION",
             "Approval digest does not match current inputs",
           );
+        const root = runRoot(this.workspace, state);
         for (const [path, hash] of Object.entries(state.published))
-          if (
-            !existsSync(join(this.workspace, path)) ||
-            hashBytes(readFileSync(join(this.workspace, path))) !== hash
-          )
+          if (!existsSync(join(root, path)) || hashBytes(readFileSync(join(root, path))) !== hash)
             throw new WorkflowFault("INPUT_CHANGED", `Published artifact changed: ${path}`);
+        const scope = (body.worktree as { userChangesInScope?: string[] } | undefined)
+          ?.userChangesInScope;
+        if (scope?.length) {
+          if (decision.userChanges !== "exclude")
+            throw new WorkflowFault(
+              "STALE_DECISION",
+              `Approved tasks write files with uncommitted changes in your working copy: ${scope.join(", ")}. The worktree starts from HEAD without them. Approve with the choice to exclude them (CLI: --exclude-user-changes), or reject, commit them and start a new run.`,
+              { userChangesInScope: scope },
+            );
+          if (state.worktree)
+            state.worktree = { ...state.worktree, excludedUserChanges: [...scope] };
+        }
         state.approvalRoot = decision.digest;
         state.deferredCriteria =
           state.spec?.criteria.filter((c) => c.method === "post-release").map((c) => c.id) ?? [];
@@ -569,15 +599,15 @@ export class NativeWorkflowService implements WorkflowService {
                 entry.kind === "recovery" && entry.status === "pending" && entry.id !== request.id,
             ))
             this.store.decideRequest(runId, pending.id, "accepted", decision);
-          for (const resource of ["execution", "mutation"] as const) {
-            const held = this.store.lease(resource);
-            if (!held || held.run_id !== runId) continue;
+          // The execution lease and the mutation lease of the run's root, project or worktree.
+          for (const held of this.store.leases()) {
+            if (held.run_id !== runId) continue;
             if (leaseOwnerAlive(held) !== false)
               throw new WorkflowFault(
                 "WORKSPACE_BUSY",
                 "Recovery cannot release a live mutation owner",
               );
-            this.store.releaseLease(resource, held.owner_id, held.owner_epoch);
+            this.store.releaseLease(held.resource, held.owner_id, held.owner_epoch);
           }
           this.store.transition(runId, "cancelled", "user_pause");
         } else
@@ -642,9 +672,20 @@ export class NativeWorkflowService implements WorkflowService {
           "INVALID_DEFINITION",
           "Revision requires a complete spec, plan and task package",
         );
-      validatePackage(this.workspace, state.spec, state.plan, state.graph);
+      // The run keeps its worktree; the candidate cannot move it.
+      state.worktree = this.store.state(runId).worktree;
+      const root = runRoot(this.workspace, state);
+      validatePackage(root, state.spec, state.plan, state.graph);
       const policy = PolicySchema.parse(candidate.policy);
-      validateChecks(this.workspace, policy, state.graph);
+      if (
+        executionModeOf(policy) !==
+        executionModeOf(PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json)))
+      )
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          "A revision cannot change the execution mode; fork or start a new run",
+        );
+      validateChecks(root, policy, state.graph);
       for (const request of this.store.requests(runId).filter((r) => r.status === "pending"))
         this.store.decideRequest(runId, request.id, "superseded", { candidateHash });
       if (state.snapshotId) this.store.invalidateEvidence(runId, state.snapshotId, "input_changed");
@@ -797,6 +838,8 @@ export class NativeWorkflowService implements WorkflowService {
       );
       state.gateResults = {};
       state.report = null;
+      // A fork of a worktree run gets its own worktree and branch when it first executes.
+      state.worktree = null;
       state.approvalRoot = null;
       state.snapshotId = null;
       state.workspaceHash = null;
@@ -867,12 +910,61 @@ export class NativeWorkflowService implements WorkflowService {
     if (previous) return previous;
     this.leases.acquire("execution", runId);
     try {
-      this.leases.acquire("mutation", runId);
+      this.leases.acquire(
+        mutationLeaseFor(this.workspace, runRoot(this.workspace, this.store.state(runId))),
+        runId,
+      );
       undoRunEdits(this.store, this.leases, runId, paths);
     } finally {
       this.leases.release();
     }
     return this.store.command(runId, command, body, () => {});
+  }
+  /**
+   * Removes the worktree and deletes the branch of a terminal run executed in a worktree: the
+   * user's explicit decision to discard what the branch carries. A delivered result is already a
+   * commit of its own; delivery removes the worktree itself and keeps the branch.
+   */
+  async discardWorktree(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
+    const body = { runId, ...command, action: "discard-worktree" };
+    const previous = this.store.transaction(() => {
+      const old = this.store.previousCommand(command.commandId, body);
+      if (old) return old;
+      const run = this.store.run(runId);
+      if (!["completed", "failed", "cancelled"].includes(run.status) || this.active.has(runId))
+        throw new WorkflowFault(
+          "STALE_DECISION",
+          `Only a completed, failed or cancelled run's worktree can be discarded; run ${runId} is ${run.status}. Cancel it first.`,
+        );
+      if (run.revision !== command.expectedRevision)
+        throw new WorkflowFault("REVISION_CONFLICT", "Run changed before discard");
+      const worktree = this.store.state(runId).worktree;
+      if (!worktree || !existsSync(join(this.workspace, worktree.path)))
+        throw new WorkflowFault("NOT_FOUND", `Run ${runId} has no worktree to discard`);
+      if (
+        this.store
+          .effects(runId)
+          .some((e) => e.kind === "delivery" && ["prepared", "unknown"].includes(e.status))
+      )
+        throw new WorkflowFault(
+          "RECOVERY_REQUIRED",
+          "A delivery of this run has an unsettled step; finish or recover it first",
+        );
+      return undefined;
+    });
+    if (previous) return previous;
+    const worktree = this.store.state(runId).worktree;
+    if (!worktree) throw new WorkflowFault("NOT_FOUND", `Run ${runId} has no worktree`);
+    await removeRunWorktree(this.store, runId, worktree, { deleteBranch: true });
+    // The state keeps the worktree record: it names the run's root and branch for history.
+    return this.store.command(runId, command, body, () => {
+      this.store.artifact(
+        runId,
+        "worktree",
+        "worktree/discarded.json",
+        canonical({ ...worktree, discardedAt: new Date().toISOString() }),
+      );
+    });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);

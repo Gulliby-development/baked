@@ -1,11 +1,10 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { canonical, hashBytes } from "../specs/hash.js";
-import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { fileHash } from "./effects.js";
+import { effectFile, fileHash, intentRoot, runRootPath } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import type { WorkspaceLeases } from "./leases.js";
+import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { type EffectRow, newId, type WorkflowStore } from "./store.js";
 
 /*
@@ -196,7 +195,12 @@ export function runWrittenHash(
   runId: string,
   path: string,
 ): string | null | undefined {
-  const edits = store.effects(runId).filter((e) => e.kind === "file_patch" && pathOf(e) === path);
+  const root = runRootPath(store, runId);
+  const edits = store
+    .effects(runId)
+    .filter(
+      (e) => e.kind === "file_patch" && pathOf(e) === path && intentRoot(e.intent_json) === root,
+    );
   if (!edits.length) return undefined;
   return hashAfter(edits, edits[0]?.before_hash ?? null);
 }
@@ -217,10 +221,18 @@ export function rollbackEdits(
   reason: string,
 ): RollbackReport | null {
   if (!edits.length) return null;
+  // Edits are grouped by root and path: a restore never crosses into another root.
   const byPath = new Map<string, EffectRow[]>();
-  for (const edit of edits) byPath.set(pathOf(edit), [...(byPath.get(pathOf(edit)) ?? []), edit]);
+  for (const edit of edits) {
+    const key = `${intentRoot(edit.intent_json)}\0${pathOf(edit)}`;
+    byPath.set(key, [...(byPath.get(key) ?? []), edit]);
+  }
   const report: RollbackReport = { reason, effectIds: [], restored: [], kept: [] };
-  for (const [path, pathEdits] of byPath) {
+  for (const pathEdits of byPath.values()) {
+    const first = pathEdits[0];
+    if (!first) continue;
+    const path = pathOf(first);
+    const root = intentRoot(first.intent_json);
     const ids = pathEdits.map((e) => e.id);
     const target = pathEdits[0]?.before_hash ?? null;
     const written = hashAfter(pathEdits, target);
@@ -232,7 +244,18 @@ export function rollbackEdits(
       });
       continue;
     }
-    const absolute = workspacePath(store.workspace, path);
+    let absolute: string;
+    try {
+      absolute = effectFile(store.workspace, first.intent_json);
+    } catch {
+      report.effectIds.push(...ids);
+      report.kept.push({ path, reason: "the root it was written in no longer exists; left as is" });
+      continue;
+    }
+    const lease = mutationLeaseFor(
+      store.workspace,
+      root ? join(store.workspace, root) : store.workspace,
+    );
     const bytes = existsSync(absolute) ? readFileSync(absolute) : null;
     const current = bytes ? hashBytes(bytes) : null;
     if (current === target) {
@@ -259,19 +282,19 @@ export function rollbackEdits(
       continue;
     }
     try {
-      leases.assert("mutation");
+      leases.assert(lease);
       const effectId = store.transaction(() =>
         store.prepareEffect(
           runId,
           attemptId,
           "file_patch",
-          { path, tool: "rollback", reason, reverts: ids },
+          { path, ...(root ? { root } : {}), tool: "rollback", reason, reverts: ids },
           current,
           target,
         ),
       );
       try {
-        leases.assert("mutation");
+        leases.assert(lease);
         if (fileHash(absolute) !== current)
           throw new WorkflowFault("INPUT_CHANGED", `File changed during rollback: ${path}`);
         if (previous === null) unlinkSync(absolute);
@@ -313,6 +336,7 @@ export function createdByRunLineage(
   current: string | null,
 ): boolean {
   if (current === null) return false;
+  const root = runRootPath(store, runId);
   const lineage: string[] = [];
   for (let id: string | null = runId; id && !lineage.includes(id); id = store.run(id).parent_run_id)
     lineage.unshift(id);
@@ -320,7 +344,13 @@ export function createdByRunLineage(
   const edits = lineage.flatMap((id) =>
     store
       .effects(id)
-      .filter((e) => e.kind === "file_patch" && e.status !== "prepared" && pathOf(e) === path),
+      .filter(
+        (e) =>
+          e.kind === "file_patch" &&
+          e.status !== "prepared" &&
+          pathOf(e) === path &&
+          intentRoot(e.intent_json) === root,
+      ),
   );
   if (!edits.length || edits[0]?.before_hash !== null) return false;
   return hashAfter(edits, null) === current;

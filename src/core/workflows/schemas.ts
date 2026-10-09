@@ -166,8 +166,19 @@ export const PolicySchema = z
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
     autoApproval: AutoApprovalSchema.nullable().optional(),
+    /**
+     * Where the run edits files. Absent means `inline`: the project working copy, as before this
+     * field existed, so stored policies keep their hash. `worktree` runs the tasks in the Git
+     * worktree `.baked/worktrees/RUN_ID/main` on the branch `baked/wf/RUN_ID`. Part of the policy,
+     * so the approval digest covers it.
+     */
+    executionMode: z.enum(["inline", "worktree"]).optional(),
   })
   .strict();
+export type ExecutionMode = "inline" | "worktree";
+/** The execution mode of a policy; a policy without the field runs inline. */
+export const executionModeOf = (policy: { executionMode?: ExecutionMode | undefined }) =>
+  policy.executionMode ?? "inline";
 
 export const ProfileSchema = z
   .object({
@@ -773,9 +784,23 @@ export interface StartRequest {
    * this run. A definition with an auto approval stage does not start without it.
    */
   autoApprovalConfirmation?: string;
+  /**
+   * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
+   * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.
+   */
+  executionMode?: ExecutionMode;
 }
 export type Decision =
-  | { requestId: string; kind: "approve"; digest: string }
+  | {
+      requestId: string;
+      kind: "approve";
+      digest: string;
+      /**
+       * The explicit choice a worktree approval needs when approved tasks write files with
+       * uncommitted user changes: `exclude` starts the worktree from the recorded HEAD without them.
+       */
+      userChanges?: "exclude";
+    }
   | { requestId: string; kind: "reject"; explanation: string }
   | { requestId: string; kind: "continue" }
   | { requestId: string; kind: "answer"; answers: Record<string, string> }
@@ -794,7 +819,14 @@ export type Decision =
       evidence: string;
     };
 export const DecisionSchema: z.ZodType<Decision> = z.discriminatedUnion("kind", [
-  z.object({ requestId: SafeId, kind: z.literal("approve"), digest: Hash }).strict(),
+  z
+    .object({
+      requestId: SafeId,
+      kind: z.literal("approve"),
+      digest: Hash,
+      userChanges: z.literal("exclude").optional(),
+    })
+    .strict(),
   z.object({ requestId: SafeId, kind: z.literal("reject"), explanation: Text }).strict(),
   z.object({ requestId: SafeId, kind: z.literal("continue") }).strict(),
   z
