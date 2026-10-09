@@ -1,8 +1,8 @@
 import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
-import { fileHash } from "./effects.js";
+import { fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
-import type { WorkspaceLeases } from "./leases.js";
+import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { capturePreImage, createdByRunLineage } from "./rollback.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
@@ -73,7 +73,9 @@ export class WorkflowToolPolicy {
           effect.attempt_id === this.attemptId &&
           effect.kind === "file_patch" &&
           ["applied", "reconciled"].includes(effect.status) &&
-          JSON.parse(effect.intent_json).path === path,
+          JSON.parse(effect.intent_json).path === path &&
+          intentRoot(effect.intent_json) ===
+            (rootField(this.store.workspace, this.root).root ?? ""),
       )
       .at(-1);
     const baseline = this.store.state(this.runId).expectedFiles;
@@ -97,7 +99,7 @@ export class WorkflowToolPolicy {
       throw new WorkflowFault("INPUT_CHANGED", `Create target already exists: ${path}`);
     if (write.action === "modify" && existing === null)
       throw new WorkflowFault("INPUT_CHANGED", `Modify target is missing: ${path}`);
-    this.leases.assert("mutation");
+    this.leases.assert(mutationLeaseFor(this.store.workspace, this.root));
     return path;
   }
   async execute(
@@ -114,7 +116,7 @@ export class WorkflowToolPolicy {
         this.runId,
         this.attemptId,
         "file_patch",
-        { path, tool: name },
+        { path, tool: name, ...rootField(this.store.workspace, this.root) },
         capturePreImage(this.store, this.runId, absolute),
         null,
       ),
