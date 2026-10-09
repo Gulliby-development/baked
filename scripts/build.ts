@@ -91,21 +91,28 @@ export default libPath;
 };
 
 // ── React Compiler Plugin ────────────────────────────────────────────
+const REACT_COMPILER_FILTER = /src\/.*\.tsx?$/;
+
+async function compileReact(path: string): Promise<string> {
+  const { transformSync } = await import("@babel/core");
+  const source = await Bun.file(path).text();
+  const result = transformSync(source, {
+    filename: path,
+    plugins: [["babel-plugin-react-compiler", { target: "19" }]],
+    parserOpts: {
+      plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
+    },
+  });
+  return result?.code ?? source;
+}
+
 const reactCompilerPlugin: BunPlugin = {
   name: "react-compiler",
   setup(build) {
-    build.onLoad({ filter: /src\/.*\.tsx?$/ }, async ({ path, loader }) => {
-      const { transformSync } = await import("@babel/core");
-      const source = await Bun.file(path).text();
-      const result = transformSync(source, {
-        filename: path,
-        plugins: [["babel-plugin-react-compiler", { target: "19" }]],
-        parserOpts: {
-          plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
-        },
-      });
-      return { contents: result?.code ?? source, loader };
-    });
+    build.onLoad({ filter: REACT_COMPILER_FILTER }, async ({ path, loader }) => ({
+      contents: await compileReact(path),
+      loader,
+    }));
   },
 };
 
@@ -113,6 +120,8 @@ const reactCompilerPlugin: BunPlugin = {
 // Bun's bundler may inline absolute paths (cwd, $HOME) into the bundle as
 // __dirname / __filename strings or comment markers. Replace them so the
 // dev machine's filesystem doesn't ship with the binary.
+// Bun uses only the first onLoad callback that matches a file, so this
+// plugin also runs the React Compiler on src/ instead of shadowing it.
 const stripAbsPathsPlugin: BunPlugin = {
   name: "strip-abs-paths",
   setup(build) {
@@ -121,7 +130,9 @@ const stripAbsPathsPlugin: BunPlugin = {
     // split turned `'./root.js'` into `'.~.js'` when HOME=/root.
     const paths = buildMachinePaths();
     build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async ({ path, loader }) => {
-      const src = await Bun.file(path).text();
+      const src = REACT_COMPILER_FILTER.test(path)
+        ? await compileReact(path)
+        : await Bun.file(path).text();
       return { contents: stripAbsolutePaths(src, paths), loader };
     });
   },
@@ -342,11 +353,7 @@ if (isCompile) {
       "*.wasm",
       "*.scm",
     ],
-    plugins: [
-      stripAbsPathsPlugin,
-      reactCompilerPlugin,
-      devtoolsStubPlugin,
-    ],
+    plugins: [stripAbsPathsPlugin, devtoolsStubPlugin],
     minify,
     sourcemap: "none",
   });
