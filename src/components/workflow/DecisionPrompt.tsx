@@ -45,6 +45,17 @@ interface CheckpointBody {
   calls?: number;
   stageId?: string;
 }
+interface DeliveryBody {
+  operations?: string[];
+  remote?: { name: string; url: string };
+  branch?: string;
+  base?: { commit: string; branch: string };
+  files?: string[];
+  excluded?: { path: string; reason: string }[];
+  userChanges?: string[];
+  commitMessage?: string;
+  pullRequest?: { title: string; base: string; draft: boolean } | null;
+}
 interface RecoveryBody {
   effectId?: string;
   intent?: Record<string, unknown>;
@@ -179,7 +190,7 @@ export function DecisionPrompt({
       }
       return;
     }
-    if (request.kind === "approval" && !rejecting) {
+    if ((request.kind === "approval" || request.kind === "delivery") && !rejecting) {
       if (key === "a") {
         evt.preventDefault();
         onDecision({ kind: "approve", requestId: request.id, digest: request.digest });
@@ -452,6 +463,56 @@ export function DecisionPrompt({
           </text>
         </Section>
         {input("What you observed, then Enter")}
+      </box>
+    );
+  }
+  if (request.kind === "delivery") {
+    const body = parse<DeliveryBody>(request.body_json);
+    const operations = body.operations ?? [];
+    return (
+      <box flexDirection="column">
+        <Section
+          title="Approve the Git delivery"
+          description="Approving lets BAKED commit exactly these files, push the branch and open the pull request below. Nothing is force-pushed or merged."
+        >
+          <text fg={t.textPrimary}>
+            {`${operations.join(", ")} to ${body.remote?.name ?? "?"} (${body.remote?.url ?? "?"})`}
+          </text>
+          <text fg={t.textMuted}>
+            {`Branch ${body.branch ?? "?"} from ${body.base?.branch ?? "?"} at ${(body.base?.commit ?? "").slice(0, 12)}`}
+          </text>
+          <text fg={t.textSecondary} attributes={1}>{`Files (${body.files?.length ?? 0})`}</text>
+          {(body.files ?? []).map((f) => (
+            <text key={f} fg={t.textMuted}>{`  ${f}`}</text>
+          ))}
+          {body.excluded?.length ? (
+            <text fg={t.warning}>
+              {`  Not delivered: ${body.excluded.map((e) => `${e.path} (${e.reason})`).join(", ")}`}
+            </text>
+          ) : null}
+          {body.userChanges?.length ? (
+            <text fg={t.textMuted}>
+              {`  Your other changes stay as they are: ${body.userChanges.join(", ")}`}
+            </text>
+          ) : null}
+          <text fg={t.textSecondary} attributes={1}>
+            Commit message
+          </text>
+          <text fg={t.textMuted}>{body.commitMessage ?? ""}</text>
+          {body.pullRequest ? (
+            <text fg={t.textMuted}>
+              {`Pull request${body.pullRequest.draft ? " (draft)" : ""} into ${body.pullRequest.base}: ${body.pullRequest.title}`}
+            </text>
+          ) : null}
+        </Section>
+        {rejecting ? (
+          input("Reason for rejecting, then Enter")
+        ) : (
+          <Hint>
+            A approves this exact plan; then run `baked workflow deliver RUN_ID --execute`. X
+            rejects it.
+          </Hint>
+        )}
       </box>
     );
   }

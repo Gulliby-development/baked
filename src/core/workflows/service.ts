@@ -303,14 +303,15 @@ export class NativeWorkflowService implements WorkflowService {
   }
   async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
-      const request = this.store
-        .requests(runId)
-        .find((r) => r.id === decision.requestId && r.status === "pending");
+      const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
       // Delivery happens after a run completed; its decisions never change the run's state.
-      if (request && isDeliveryRequest(request)) {
-        decideDelivery(this.store, runId, request, decision);
+      if (named && isDeliveryRequest(named)) {
+        if (named.status !== "pending")
+          throw new WorkflowFault("STALE_DECISION", `Request is ${named.status}, not pending`);
+        decideDelivery(this.store, runId, named, decision);
         return;
       }
+      const request = named?.status === "pending" ? named : undefined;
       assertMutable(this.store.run(runId).status);
       if (!request) throw new WorkflowFault("STALE_DECISION", "Pending request not found");
       const state = this.store.state(runId);
