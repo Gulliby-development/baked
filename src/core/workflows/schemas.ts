@@ -182,6 +182,7 @@ export const ProfileSchema = z
       "implementer",
       "reviewer",
       "spec-auditor",
+      "reporter",
     ]),
     model: z.string().min(1),
     context: z.enum([
@@ -204,6 +205,7 @@ export const ProfileSchema = z
       "review",
       "convergence",
       "refutation",
+      "report",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -360,6 +362,23 @@ export const ResearchSchema = z
     suggestedScope: z.array(Text),
   })
   .strict();
+/** The written result of a Spike: findings and a recommendation, never a code change. */
+export const ReportSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    summary: Text,
+    findings: z
+      .array(z.object({ title: Text, detail: Text, paths: z.array(RelativePath) }).strict())
+      .max(50),
+    recommendation: z
+      .object({
+        kind: z.enum(["proceed", "do-not-proceed", "research-more", "needs-decision"]),
+        text: Text,
+      })
+      .strict(),
+    openQuestions: z.array(Text).max(20),
+  })
+  .strict();
 export const PlanSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -460,6 +479,8 @@ export const EventType = z.enum([
   "effect.reconciled",
   "budget.updated",
   "snapshot.invalidated",
+  "transition.taken",
+  "gate.finished",
 ]);
 const EventBase = {
   schemaVersion: z.literal(1),
@@ -645,6 +666,39 @@ export const EventSchema = z.discriminatedUnion("type", [
         .object({
           snapshotId: SafeId,
           reason: z.enum(["input_changed", "source_changed", "evidence_missing", "redacted"]),
+        })
+        .strict(),
+    })
+    .strict(),
+  // Written only for runs of a schema 2 definition.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("transition.taken"),
+      payload: z
+        .object({
+          transitionId: SafeId,
+          from: SafeId,
+          to: SafeId,
+          outcome: z.enum(["passed", "changes_requested", "failed"]),
+          contractHash: Hash.nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("gate.finished"),
+      payload: z
+        .object({
+          gateId: SafeId,
+          transitionId: SafeId.nullable(),
+          mode: z.enum(["required", "advisory"]),
+          status: z.enum(["passed", "failed", "inconclusive", "skipped"]),
+          attempts: z.number().int().nonnegative(),
+          flaky: z.boolean(),
+          evidenceId: SafeId.nullable(),
         })
         .strict(),
     })

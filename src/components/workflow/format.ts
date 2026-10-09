@@ -61,6 +61,7 @@ const STAGE_LABELS: Record<string, string> = {
   review: "Review",
   converge: "Converge",
   learn: "Learn",
+  report: "Report",
 };
 export const stageLabel = (kind: string): string => STAGE_LABELS[kind] ?? kind;
 export function stageGlyph(
@@ -327,6 +328,14 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return `Effect ${event.payload.status}`;
     case "snapshot.invalidated":
       return `Evidence invalidated: ${event.payload.reason.replace("_", " ")}`;
+    case "transition.taken":
+      return event.payload.outcome === "passed"
+        ? null
+        : `${kindOf(event.payload.from)} ${event.payload.outcome.replace("_", " ")}: back to ${kindOf(event.payload.to)}`;
+    case "gate.finished":
+      return event.payload.status === "passed"
+        ? null
+        : `Gate ${event.payload.gateId} ${event.payload.status}${event.payload.mode === "advisory" ? " (advisory)" : ""}${event.payload.flaky ? " (flaky)" : ""}`;
     case "artifact.committed":
     case "budget.updated":
       return null;

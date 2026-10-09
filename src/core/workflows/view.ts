@@ -12,15 +12,10 @@ import {
   type StageProgress,
   type StartEstimate,
 } from "./estimate.js";
-import type {
-  RunPolicy,
-  RunSnapshot,
-  StageState,
-  WorkflowDefinition,
-  WorkflowEvent,
-} from "./schemas.js";
+import type { RunPolicy, RunSnapshot, StageState, WorkflowEvent } from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
+import { parseRunDefinition, stageKind } from "./v2/runtime.js";
 
 const RECENT_EVENTS = 40;
 const OUTPUT_TAIL_LINES = 40;
@@ -178,8 +173,12 @@ function stampOf(row: RunRow): string {
   return `${row.event_seq}:${row.active_ms}:${row.token_usage}:${row.revision}`;
 }
 function stagesOf(row: RunRow, steps: StepRow[]): StageView[] {
-  const definition = JSON.parse(row.definition_json) as WorkflowDefinition;
-  return definition.stages.map((stage) => {
+  const parsed = parseRunDefinition(row.definition_json);
+  const stages =
+    parsed.schemaVersion === 1
+      ? parsed.definition.stages
+      : parsed.definition.stages.map((s) => ({ id: s.id, kind: stageKind(s) ?? s.type }));
+  return stages.map((stage) => {
     const latest = steps
       .filter((s) => s.stage_id === stage.id && s.parent_step_id === null)
       .reduce<StepRow | null>((a, b) => (!a || b.generation >= a.generation ? b : a), null);
