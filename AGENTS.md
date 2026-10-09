@@ -62,7 +62,8 @@ CI runs these on every pull request to `main`; run them before merging:
 bun run lint
 bun run typecheck
 bun scripts/validate-locales.ts
-bun test tests/<feature>.test.ts
+bun test
+bun run build
 ```
 
-Run the full `bun test` suite for changes that affect shared behavior. Run `bun run build` for startup, bundling, and runtime-dependency changes. Documentation-only changes need link, path, and configuration checks rather than new unit tests. Report what was checked and any failures that remain.
+While iterating, `bun test tests/<feature>.test.ts` runs one feature's tests. The suite is hermetic: tests must not depend on the developer's home directory, global hooks or configuration, or provider environment variables such as `ANTHROPIC_BASE_URL`. Point home-dependent code at a temporary profile instead of skipping the test. Documentation-only changes need link, path, and configuration checks rather than new unit tests. Report what was checked and any failures that remain.
