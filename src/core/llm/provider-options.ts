@@ -118,6 +118,9 @@ function getClaudeGen(model: string): ClaudeGen {
 // For direct providers (anthropic/, openai/), the provider prefix tells us everything.
 // to determine the underlying provider family.
 
+/** GPT models that take reasoning effort: gpt-5 and every later generation (gpt-5.6-luna, gpt-6-astra, gpt-6.1-sol). */
+const GPT_REASONING = /^gpt-([5-9]|\d{2,})/;
+
 export type ModelFamily =
   | "claude"
   | "openai"
@@ -194,7 +197,7 @@ function getModelCapabilities(modelId: string): ModelCapabilities {
       base.startsWith("o1") ||
       base.startsWith("o3") ||
       base.startsWith("o4") ||
-      base.startsWith("gpt-5");
+      GPT_REASONING.test(base);
     return {
       ...BASE,
       provider: "openai",
@@ -410,7 +413,7 @@ export function getSupportedEfforts(modelId: string): string[] | null {
       base.startsWith("o1") ||
       base.startsWith("o3") ||
       base.startsWith("o4") ||
-      base.startsWith("gpt-5");
+      GPT_REASONING.test(base);
     return isReasoning ? ["off", "none", "minimal", "low", "medium", "high"] : null;
   }
   if (family === "xai") return ["off", "low", "medium", "high"];
