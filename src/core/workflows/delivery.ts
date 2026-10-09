@@ -178,6 +178,15 @@ async function contentAt(workspace: string, commit: string, path: string): Promi
   return result.code === 0 ? hashBytes(result.bytes) : null;
 }
 
+async function modeAt(
+  workspace: string,
+  commit: string,
+  path: string,
+): Promise<"100644" | "100755"> {
+  const entry = (await git(workspace, ["ls-tree", commit, "--", path])).stdout;
+  return entry.startsWith("100755") ? "100755" : "100644";
+}
+
 function statusPaths(output: string): string[] {
   const entries = output.split("\0").filter(Boolean);
   const paths: string[] = [];
@@ -467,7 +476,13 @@ export async function prepareDelivery(
       path,
       action: atBase === null ? "add" : current === null ? "delete" : "modify",
       hash: current,
-      mode: stat ? gitMode(stat.mode) : null,
+      // A modified file keeps its committed mode, so a platform without executable bits
+      // (Windows) cannot silently drop one; a new file takes the bit from the working tree.
+      mode: !stat
+        ? null
+        : atBase === null
+          ? gitMode(stat.mode)
+          : await modeAt(workspace, head, path),
     });
   }
   if (dirty.length)
@@ -1085,7 +1100,10 @@ class DeliveryExecution {
       } catch {
         bytes = null;
       }
-      if ((bytes ? hashBytes(bytes) : null) !== file.hash || (bytes && mode !== file.mode))
+      if (
+        (bytes ? hashBytes(bytes) : null) !== file.hash ||
+        (bytes && file.action === "add" && mode !== file.mode)
+      )
         dirty.push(file.path);
       else if (bytes) contents.set(file.path, bytes);
     }
