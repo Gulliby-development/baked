@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "../../src/config/index.js";
 import { builtinProfiles } from "../../src/core/agents/profiles/builtin.js";
@@ -10,6 +10,8 @@ import { WorkflowStore } from "../../src/core/workflows/store.js";
 import type { RunSnapshot, Spec } from "../../src/core/workflows/schemas.js";
 import { WorkerClient } from "../../src/core/workers/rpc.js";
 
+// A developer's provider endpoint or token would bypass the loopback redirect; keep the fixture hermetic.
+for (const name of ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]) delete process.env[name];
 const workspace = process.env.BAKED_WORKFLOW_FIXTURE_ROOT!;
 assert(workspace);
 const compiled = process.env.BAKED_WORKFLOW_TEST_DIST === "1";
@@ -31,6 +33,8 @@ for (const id of ["reviewer", "security-reviewer", "skeptic"])
   writeFileSync(join(workspace, "baked", "agents", `${id}.json`), JSON.stringify({ ...builtinProfiles.find((p) => p.id === id), model: "anthropic/claude-opus-4-6" }));
 writeFileSync(join(workspace, "request.txt"), "Create the ready value, validate it, review and repair failures.");
 const spec: Spec = { schemaVersion: 1, featureId: "transport", revision: 1, title: "Transport fixture", problem: "Missing value", outcome: "Ready value", inScope: ["value.txt"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "Value is ready", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "the task completes", then: "the value is ready", method: "automated" }], dependencies: [] };
+const followUpFeature = "transport-model";
+const followUpPrompt = "Create ready value";
 const markdown = "# Plan\n## Context\nCreate value.\n## Decisions\nDEC-001: Implement FR-001.\n## Components\nvalue.txt\n## Data\nText\n## Verification\nvalue check\n## Risks\nInvalid value";
 const models = new Set<string>();
 let requests = 0;
@@ -40,13 +44,17 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     models.add(body.model); requests++;
     const context = body.messages.flatMap((m) => m.content).find((p) => p.type === "text" && p.text?.includes("Project content below"))?.text;
     assert(context, "Workflow context missing from provider request");
-    const data = JSON.parse(context.split("\n").at(-1)!) as { inputHash: string; snapshotHash: string; extra: { task?: { id: string }; evidence?: { id: string }[] } };
+    const data = JSON.parse(context.split("\n").at(-1)!) as { request: string; inputHash: string; snapshotHash: string; extra: { task?: { id: string }; evidence?: { id: string }[] } };
+    // The model-selection run plans its own feature, so it does not collide with the
+    // spec/plan/tasks files the first run published under specs/transport/.
+    const featureSpec = data.request === followUpPrompt ? { ...spec, featureId: followUpFeature } : spec;
     const shape = body.tools.find((tool) => tool.name === "submit_result")!.input_schema.properties;
     let output: unknown;
     let name = "submit_result";
     if ("facts" in shape) output = { schemaVersion: 1, summary: "Fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
-    else if ("problem" in shape) output = spec;
-    else if ("taskGraph" in shape) output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: "Create value", description: "Write value", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: ["value"], origin: "planned", findingIds: [], rationale: "FR-001" }] } };
+    else if ("problem" in shape) output = featureSpec;
+    // Plans are validated against the workspace: once value.txt exists, a task must modify it.
+    else if ("taskGraph" in shape) output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: featureSpec.featureId, revision: 1, specHash: hashJson(featureSpec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: "Create value", description: "Write value", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: existsSync(join(workspace, "value.txt")) ? "modify" : "create" }], readHints: [], checkIds: ["value"], origin: "planned", findingIds: [], rationale: "FR-001" }] } };
     else if ("inputHash" in shape) output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
     else if ("taskId" in shape) {
       const edited = body.messages.some((m) => m.content.some((p) => p.type === "tool_use" && p.name === "edit_file"));
@@ -99,13 +107,13 @@ try {
   assert(checked.run(initial.runId).repair_rounds > 0);
   assert(checked.effects(initial.runId).filter((e) => e.kind === "file_patch" && e.status === "applied").length >= 2);
   const initialProfiles = checked.run(initial.runId).profiles_json;
-  await assert.rejects(worker.command(["run", "sdd", "--feature", "transport", "--prompt", "Create ready value"]), /Select a model/);
-  const selected = await worker.command(["run", "sdd", "--feature", "transport", "--prompt", "Create ready value", "--model", "anthropic/claude-haiku-4-5"]);
+  await assert.rejects(worker.command(["run", "sdd", "--feature", followUpFeature, "--prompt", followUpPrompt]), /Select a model/);
+  const selected = await worker.command(["run", "sdd", "--feature", followUpFeature, "--prompt", followUpPrompt, "--model", "anthropic/claude-haiku-4-5"]);
   assert.equal(selected.status, "waiting");
   assert.equal(selected.reason, "approval");
   assert.equal(JSON.parse(checked.run(selected.runId).profiles_json).find((profile: { id: string }) => profile.id === "researcher").model, "anthropic/claude-haiku-4-5");
   assert.equal(checked.run(initial.runId).profiles_json, initialProfiles);
-  await assert.rejects(worker.command(["run", "sdd", "--feature", "transport", "--prompt", "Create ready value"]), /Select a model/);
+  await assert.rejects(worker.command(["run", "sdd", "--feature", followUpFeature, "--prompt", followUpPrompt]), /Select a model/);
   checked.close();
   assert(models.has("claude-sonnet-4-6") && models.has("claude-opus-4-6") && models.has("claude-haiku-4-5"));
   console.log(JSON.stringify({ providerTransport: "passed", compiled, requests, models: [...models], repaired: true, cachedWorkerModelSelection: "passed", status: finished.status, liveModelCalls: 0 }));
