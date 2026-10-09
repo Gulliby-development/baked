@@ -1,10 +1,22 @@
-import { describe, test, expect } from "vitest";
+import { afterAll, beforeAll, describe, test, expect } from "vitest";
 import { matchesToolName, toClaudeToolName } from "../src/core/hooks/tool-names.js";
-import { invalidateHooksCache, loadHooks } from "../src/core/hooks/loader.js";
+import { invalidateHooksCache, loadHooks, setHooksHomeDir } from "../src/core/hooks/loader.js";
 import { resetOnceTracking, runHooks } from "../src/core/hooks/runner.js";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+
+// User-level hooks in the real ~/.claude and ~/.baked would merge into every
+// result below, so point the loader at an empty home for this file.
+let isolatedHome = "";
+beforeAll(() => {
+  isolatedHome = mkdtempSync(join(tmpdir(), "baked-hooks-home-"));
+  setHooksHomeDir(isolatedHome);
+});
+afterAll(() => {
+  setHooksHomeDir(undefined);
+  rmSync(isolatedHome, { recursive: true, force: true });
+});
 
 // ── Tool name mapping ────────────────────────────────────────────────
 
@@ -250,6 +262,26 @@ describe("loadHooks", () => {
     expect(hooks.PostToolUse).toHaveLength(1);
     expect(hooks.SessionStart).toHaveLength(1);
     cleanup();
+  });
+
+  test("reads each file once when cwd is the home directory", () => {
+    cleanup();
+    setup({
+      ".claude/settings.json": {
+        hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo claude" }] }] },
+      },
+      ".baked/config.json": {
+        hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo baked" }] }] },
+      },
+    });
+    setHooksHomeDir(testDir);
+    try {
+      const hooks = loadHooks(testDir);
+      expect(hooks.SessionStart).toHaveLength(2);
+    } finally {
+      setHooksHomeDir(isolatedHome);
+      cleanup();
+    }
   });
 });
 

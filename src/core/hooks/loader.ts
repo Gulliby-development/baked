@@ -15,18 +15,40 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HookEventName, HookRule, HooksConfig } from "./types.js";
 
+let homeDirOverride: string | undefined;
+
+/**
+ * Replace the home directory used for user-level hook sources, or restore the
+ * real one with `undefined`. Tests use it to stay independent of the machine's
+ * own `~/.claude` and `~/.baked` hooks: `os.homedir()` ignores runtime changes
+ * to HOME/USERPROFILE, so redirecting the environment is not enough.
+ */
+export function setHooksHomeDir(dir: string | undefined): void {
+  homeDirOverride = dir;
+  invalidateHooksCache();
+}
+
 function getHookPaths(cwd: string): string[] {
-  const home = homedir();
-  return [
+  const home = homeDirOverride ?? homedir();
+  const paths = [
     join(home, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.local.json"),
     join(home, ".baked", "config.json"),
     join(cwd, ".baked", "config.json"),
   ];
+  // When cwd is the home directory, the user-level and project-level paths
+  // name the same file; read it once so its hooks do not run twice.
+  const seen = new Set<string>();
+  return paths.filter((path) => {
+    const key = process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 interface SettingsFile {

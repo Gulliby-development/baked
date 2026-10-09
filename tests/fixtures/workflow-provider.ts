@@ -10,6 +10,11 @@ import { WorkflowStore } from "../../src/core/workflows/store.js";
 import type { RunSnapshot, Spec } from "../../src/core/workflows/schemas.js";
 import { WorkerClient } from "../../src/core/workers/rpc.js";
 
+// Provider SDKs read ambient configuration such as ANTHROPIC_BASE_URL at call
+// time. Drop it so the CLI child (built from this env) and the in-process
+// worker reach only the fixture endpoint, whatever the developer's shell has.
+for (const key of Object.keys(process.env))
+  if (/^(ANTHROPIC|OPENAI|AZURE_OPENAI|CLAUDE|GITHUB_TOKEN|GH_TOKEN|COPILOT)/.test(key)) delete process.env[key];
 const workspace = process.env.BAKED_WORKFLOW_FIXTURE_ROOT!;
 assert(workspace);
 const compiled = process.env.BAKED_WORKFLOW_TEST_DIST === "1";
@@ -29,7 +34,12 @@ mkdirSync(join(workspace, "baked", "agents"), { recursive: true });
 writeFileSync(join(workspace, ".baked", "config.json"), JSON.stringify(config));
 for (const id of ["reviewer", "security-reviewer", "skeptic"])
   writeFileSync(join(workspace, "baked", "agents", `${id}.json`), JSON.stringify({ ...builtinProfiles.find((p) => p.id === id), model: "anthropic/claude-opus-4-6" }));
-writeFileSync(join(workspace, "request.txt"), "Create the ready value, validate it, review and repair failures.");
+// Both runs below plan the same feature in one workspace. Plan validation
+// rejects "create" for a file that exists, and a later run may not overwrite a
+// different tasks.json published by an earlier one, so the plan must be valid
+// before and after the first run: the target exists up front and is modified.
+writeFileSync(join(workspace, "value.txt"), "pending");
+writeFileSync(join(workspace, "request.txt"),"Create the ready value, validate it, review and repair failures.");
 const spec: Spec = { schemaVersion: 1, featureId: "transport", revision: 1, title: "Transport fixture", problem: "Missing value", outcome: "Ready value", inScope: ["value.txt"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "Value is ready", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "the task completes", then: "the value is ready", method: "automated" }], dependencies: [] };
 const markdown = "# Plan\n## Context\nCreate value.\n## Decisions\nDEC-001: Implement FR-001.\n## Components\nvalue.txt\n## Data\nText\n## Verification\nvalue check\n## Risks\nInvalid value";
 const models = new Set<string>();
@@ -46,13 +56,13 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     let name = "submit_result";
     if ("facts" in shape) output = { schemaVersion: 1, summary: "Fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
     else if ("problem" in shape) output = spec;
-    else if ("taskGraph" in shape) output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: "Create value", description: "Write value", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: ["value"], origin: "planned", findingIds: [], rationale: "FR-001" }] } };
+    else if ("taskGraph" in shape) output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: "Create value", description: "Write value", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "modify" }], readHints: [], checkIds: ["value"], origin: "planned", findingIds: [], rationale: "FR-001" }] } };
     else if ("inputHash" in shape) output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
     else if ("taskId" in shape) {
       const edited = body.messages.some((m) => m.content.some((p) => p.type === "tool_use" && p.name === "edit_file"));
       if (!edited) {
         name = "edit_file";
-        output = { path: "value.txt", oldString: data.extra.task?.id === "T001" ? "" : "broken", newString: data.extra.task?.id === "T001" ? "broken" : "ready" };
+        output = { path: "value.txt", oldString: data.extra.task?.id === "T001" ? "pending" : "broken", newString: data.extra.task?.id === "T001" ? "broken" : "ready" };
       } else output = { schemaVersion: 1, taskId: data.extra.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
     } else output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: data.extra.evidence?.map((e) => e.id) ?? [], explanation: "Host command verified the value" }], findings: [] };
     return Response.json({ id: `msg_${requests}`, type: "message", role: "assistant", model: body.model, content: [{ type: "tool_use", id: `tool_${requests}`, name, input: output }], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 50, output_tokens: 50 } });
