@@ -56,6 +56,18 @@ describe("Bun project (bun.lock)", () => {
     });
     const p = await detectProfile(cwd);
     expect(p.format).toBe("bun run format");
+    // A format script usually names directories, so per-file formatting must not append to it.
+    expect(p.formatFile).toBe("bunx biome format --write");
+  });
+
+  it("has no per-file formatter when only a format script exists", async () => {
+    const cwd = makeProject("bun-format-script-only", {
+      "bun.lock": "",
+      "package.json": JSON.stringify({ scripts: { format: "some-tool --write src/" } }),
+    });
+    const p = await detectProfile(cwd);
+    expect(p.format).toBe("bun run format");
+    expect(p.formatFile).toBeNull();
   });
 
   it("detects prettier when no biome", async () => {
@@ -169,6 +181,7 @@ describe("Go project (go.mod)", () => {
     expect(p.test).toBe("go test ./...");
     expect(p.lint).toBe("golangci-lint run");
     expect(p.format).toBe("gofmt -w");
+    expect(p.formatFile).toBe("gofmt -w");
   });
 
   it("falls back to go vet without golangci config", async () => {
