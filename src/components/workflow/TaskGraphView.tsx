@@ -11,6 +11,7 @@ const GLYPH: Record<TaskRow["status"], string> = {
   failed: "✗",
   cancelled: "–",
   invalidated: "↺",
+  interrupted: "‖",
 };
 export function TaskGraphView({ tasks }: { tasks: TaskRow[] }) {
   const t = useTheme();

@@ -48,6 +48,7 @@ import {
   WorkflowConfigSchema,
   type WorkflowDefinition,
   type WorkflowService,
+  writerPolicyProblem,
 } from "./schemas.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
@@ -243,8 +244,19 @@ export class NativeWorkflowService implements WorkflowService {
       request.executionMode ??
       (loaded.schemaVersion === 2 ? loaded.definition.execution : undefined) ??
       executionModeOf(policy);
-    const { executionMode: _previous, ...rest } = policy;
-    policy = PolicySchema.parse(mode === "worktree" ? { ...rest, executionMode: mode } : rest);
+    const { executionMode: _previous, allowOverlappingWrites, ...rest } = policy;
+    // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
+    // hash it had before the field existed; the requested writer count overrides the policy.
+    policy = PolicySchema.parse({
+      ...rest,
+      ...(mode === "worktree" ? { executionMode: mode } : {}),
+      ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
+      ...(request.maxConcurrentWriters !== undefined
+        ? { maxConcurrentWriters: request.maxConcurrentWriters }
+        : {}),
+    });
+    const writers = writerPolicyProblem(policy);
+    if (writers) throw new WorkflowFault("INVALID_DEFINITION", writers);
     if (mode === "worktree") {
       if (loaded.schemaVersion === 2 && loaded.definition.inputs.includes("diff"))
         throw new WorkflowFault(
@@ -720,6 +732,8 @@ export class NativeWorkflowService implements WorkflowService {
           "INVALID_DEFINITION",
           "A revision cannot change the execution mode; fork or start a new run",
         );
+      const writers = writerPolicyProblem(policy);
+      if (writers) throw new WorkflowFault("INVALID_DEFINITION", writers);
       validateChecks(root, policy, state.graph);
       for (const request of this.store.requests(runId).filter((r) => r.status === "pending"))
         this.store.decideRequest(runId, request.id, "superseded", { candidateHash });

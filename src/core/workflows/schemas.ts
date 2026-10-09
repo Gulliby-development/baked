@@ -137,10 +137,17 @@ export const AutoApprovalSchema = z
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
 
+/** Upper bound of `maxConcurrentWriters`. */
+export const MAX_CONCURRENT_WRITERS = 4;
+
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
-    maxConcurrentWriters: z.literal(1),
+    /**
+     * Tasks implemented at the same time, each in its own worktree. More than one needs
+     * `executionMode: "worktree"`; the run start refuses it otherwise. Stored policies carry 1.
+     */
+    maxConcurrentWriters: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS),
     maxAgentSteps: z.number().int().min(1).max(100),
     maxAgentCalls: z.number().int().min(1).max(1000),
     maxTotalTokens: z.number().int().min(1000),
@@ -178,12 +185,33 @@ export const PolicySchema = z
      * so the approval digest covers it.
      */
     executionMode: z.enum(["inline", "worktree"]).optional(),
+    /**
+     * Lets independent tasks of one batch write the same path; their results are integrated
+     * through an integrator task. Absent means false, so stored policies keep their hash.
+     */
+    allowOverlappingWrites: z.boolean().optional(),
   })
   .strict();
 export type ExecutionMode = "inline" | "worktree";
 /** The execution mode of a policy; a policy without the field runs inline. */
 export const executionModeOf = (policy: { executionMode?: ExecutionMode | undefined }) =>
   policy.executionMode ?? "inline";
+/**
+ * Why a policy's writer settings are invalid, or null. Several writers and overlapping writes
+ * need worktree execution: each writer edits its own worktree, never the working copy.
+ */
+export function writerPolicyProblem(policy: {
+  executionMode?: ExecutionMode | undefined;
+  maxConcurrentWriters: number;
+  allowOverlappingWrites?: boolean | undefined;
+}): string | null {
+  if (executionModeOf(policy) === "worktree") return null;
+  if (policy.maxConcurrentWriters > 1)
+    return "maxConcurrentWriters above 1 needs worktree execution (workflow run --worktree)";
+  if (policy.allowOverlappingWrites)
+    return "allowOverlappingWrites needs worktree execution (workflow run --worktree)";
+  return null;
+}
 
 export const ProfileSchema = z
   .object({
@@ -296,6 +324,7 @@ export const TaskStatus = z.enum([
   "failed",
   "cancelled",
   "invalidated",
+  "interrupted",
 ]);
 export const ReasonCode = z.enum([
   "clarification",
@@ -830,6 +859,8 @@ export interface StartRequest {
    * definition; omitted, the definition's `execution`, then the policy's `executionMode` apply.
    */
   executionMode?: ExecutionMode;
+  /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
+  maxConcurrentWriters?: number;
 }
 export type Decision =
   | {

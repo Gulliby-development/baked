@@ -1,5 +1,5 @@
 import { WorkflowFault } from "../core/workflows/errors.js";
-import { RunStatus } from "../core/workflows/schemas.js";
+import { MAX_CONCURRENT_WRITERS, RunStatus } from "../core/workflows/schemas.js";
 
 const commands = [
   "run",
@@ -87,6 +87,7 @@ const flags = new Set([
   "no-pr",
   "execute",
   "worktree",
+  "writers",
   "exclude-user-changes",
 ]);
 const booleanFlags = new Set([
@@ -116,6 +117,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "after",
     "confirm-auto-approval",
     "worktree",
+    "writers",
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
@@ -228,13 +230,24 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         "INVALID_DEFINITION",
         "Specify exactly one of --prompt or --prompt-file",
       );
+    if ("writers" in result.flags) {
+      const writers = String(result.flags.writers);
+      if (!/^\d+$/.test(writers) || Number(writers) < 1 || Number(writers) > MAX_CONCURRENT_WRITERS)
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `--writers requires an integer from 1 to ${MAX_CONCURRENT_WRITERS}`,
+        );
+      if (Number(writers) > 1 && !result.flags.worktree)
+        throw new WorkflowFault("INVALID_DEFINITION", "--writers above 1 requires --worktree");
+    }
   }
   return result;
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events] [--confirm-auto-approval HASH] [--worktree]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]]
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
+  --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
 status RUN_ID [--json]
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}

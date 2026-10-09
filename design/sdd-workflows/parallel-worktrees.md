@@ -10,7 +10,7 @@ Several writing agents of one run execute independent tasks at the same time, ea
 
 | Limit | Where | Consequence |
 | --- | --- | --- |
-| `maxConcurrentWriters` = 1 in the policy schema | [schemas](../../src/core/workflows/schemas.ts) | Validation forbids parallel writers |
+| `maxConcurrentWriters` = 1 in the policy schema (lifted in phase 2: 1..4 with worktree execution) | [schemas](../../src/core/workflows/schemas.ts) | Validation forbids parallel writers |
 | File root = database root (`store.workspace`) | executor, tool-policy, check-runner, scheduler, effects | The agent can edit only the project working copy |
 | `execution` and `mutation` leases cover the whole workspace | [leases](../../src/core/workflows/leases.ts) | One writer and one executing run |
 | `getCwd()` is global within a thread | [cwd](../../src/core/cwd.ts), 53 calls in tools | Each writer must run in its own worker thread |
@@ -36,7 +36,9 @@ Implemented on 2026-10-09; see [worktree execution](runtime-guide.md#worktree-ex
 - Checks and review run in the worktree. Final acceptance compares the worktree snapshot.
 - Result: a branch with the accepted changes. Delivery (section 4) moves them into the user's working copy, not the scheduler.
 
-### Phase 2. Several writers with disjoint `writes`
+### Phase 2. Several writers with disjoint `writes` (done)
+
+Implemented on 2026-10-09; see [several writers](runtime-guide.md#several-writers) and the defaults in the [implementation status](implementation-status.md#workflow-v2-from-2026-10-09). Deviations: no schema migration was needed for the policy, because stored policies already carry `maxConcurrentWriters: 1` (migration 006 adds the `interrupted` task status instead); the tasks of a batch run as concurrent asynchronous workers in the scheduler's thread rather than in separate worker threads, since the workflow tools resolve paths against the task's root; a task worktree starts from a commit of the run worktree's current content, because the run branch receives its commit only at acceptance.
 
 - Policy: `maxConcurrentWriters` 1..4. A schema migration keeps 1 for existing definitions.
 - A task batch: tasks ready by the DAG that are pairwise disjoint by `writes.path` and by the directories they create. An overlap moves a task to the next batch.
@@ -47,7 +49,9 @@ Implemented on 2026-10-09; see [worktree execution](runtime-guide.md#worktree-ex
 - Budget: tokens are reserved for the whole batch before it starts; when they are short, the batch shrinks.
 - Recovery: every worktree has its own lease and fencing epoch; a lost worker moves only its own task to `interrupted`.
 
-### Phase 3. Conflicts and overlapping writes
+### Phase 3. Conflicts and overlapping writes (done)
+
+Implemented on 2026-10-09 together with phase 2. The policy permission is `allowOverlappingWrites` (default off). Every integration conflict goes to the integrator; there is no automatic three-way merge first.
 
 - An integration conflict creates an integrator task with both diffs, the spec and the task definitions; its scope is only the conflicting files.
 - Overlapping `writes` are allowed only when the policy explicitly permits them; such tasks are integrated through the integrator.

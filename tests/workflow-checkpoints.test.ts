@@ -44,7 +44,7 @@ describe("storage migration 002", () => {
       expect(store.requests("r1").find((r) => r.id === id)?.kind).toBe("checkpoint");
     } finally { store.close(); }
     const db = new Database(join(root, ".baked", "workflows.sqlite"));
-    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]); } finally { db.close(); }
+    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]); } finally { db.close(); }
     const again = new WorkflowStore(root);
     again.close();
   });
@@ -71,7 +71,7 @@ describe("storage migration 002", () => {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
     const db = new Database(fixture.service.store.path, { readonly: true });
-    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]); } finally { db.close(); }
+    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]); } finally { db.close(); }
   });
 });
 

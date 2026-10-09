@@ -28,6 +28,8 @@ export function planConsistencyProblems(
   graph: TaskGraph,
   /** True for an existing file that only this run (or the run it was forked from) created. */
   createdByRun: (path: string) => boolean = () => false,
+  /** The run's policy lets independent tasks write the same path (integrated by an integrator). */
+  overlappingWrites = false,
 ): string[] {
   const problems: string[] = [];
   const known = new Set([
@@ -65,17 +67,18 @@ export function planConsistencyProblems(
         problems.push(`${task.id} read hint ${hint} does not exist and no earlier task creates it`);
     }
   }
-  for (const [index, task] of graph.tasks.entries())
-    for (const other of graph.tasks.slice(index + 1)) {
-      const shared = task.writes.find((w) => other.writes.some((o) => o.path === w.path));
-      if (
-        shared &&
-        !ancestors.get(task.id)?.has(other.id) &&
-        !ancestors.get(other.id)?.has(task.id)
-      )
-        problems.push(
-          `${task.id} and ${other.id} both write ${shared.path} without a dependency between them`,
-        );
-    }
+  if (!overlappingWrites)
+    for (const [index, task] of graph.tasks.entries())
+      for (const other of graph.tasks.slice(index + 1)) {
+        const shared = task.writes.find((w) => other.writes.some((o) => o.path === w.path));
+        if (
+          shared &&
+          !ancestors.get(task.id)?.has(other.id) &&
+          !ancestors.get(other.id)?.has(task.id)
+        )
+          problems.push(
+            `${task.id} and ${other.id} both write ${shared.path} without a dependency between them`,
+          );
+      }
   return problems;
 }

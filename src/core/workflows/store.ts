@@ -12,6 +12,7 @@ import { migration002 } from "./migrations/002.js";
 import { migration003 } from "./migrations/003.js";
 import { migration004 } from "./migrations/004.js";
 import { migration005 } from "./migrations/005.js";
+import { migration006 } from "./migrations/006.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -77,7 +78,8 @@ export interface TaskRow {
     | "blocked"
     | "failed"
     | "cancelled"
-    | "invalidated";
+    | "invalidated"
+    | "interrupted";
   generation: number;
   snapshot_id: string | null;
 }
@@ -163,6 +165,7 @@ const MIGRATIONS = [
   { version: 3, sql: migration003 },
   { version: 4, sql: migration004 },
   { version: 5, sql: migration005 },
+  { version: 6, sql: migration006 },
 ] as const;
 
 export class WorkflowStore {

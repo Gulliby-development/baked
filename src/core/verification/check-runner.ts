@@ -1,6 +1,7 @@
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { rootField } from "../workflows/effects.js";
 import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
@@ -94,7 +95,12 @@ export class CheckRunner {
         runId,
         attemptId,
         "command",
-        { checkId: check.id, definitionHash: hashJson(check) },
+        // A check in a worktree names its root, like file effects, so recovery knows where it ran.
+        {
+          checkId: check.id,
+          definitionHash: hashJson(check),
+          ...rootField(this.store.workspace, root),
+        },
         null,
         null,
       ),
