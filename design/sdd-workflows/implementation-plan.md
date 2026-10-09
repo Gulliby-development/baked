@@ -215,6 +215,13 @@ Acceptance:
 
 Release gate: at least one real small BAKED feature through the whole process, the full regression suite on Windows and Linux, the fault-injection matrix below and a measured baseline of tokens/rounds/latency. A macOS smoke test is mandatory for packaging; a platform must not be declared supported from types alone.
 
+## Deferred validation runs
+
+These two runs are recorded so they are not lost; they are not scheduled yet. Each closes a gap that the local real runs in [implementation-status.md](implementation-status.md) left open.
+
+1. Review by another provider. So far every real review used a second model of the same provider: run 3 had an `openai/gpt-6-luna` implementer and `openai/gpt-6.1-sol` reviewers, because only an OpenAI key was configured. Configure a key for a second provider, assign `reviewer`, `security-reviewer` and `skeptic` to that provider's model, and run a small task end to end. Done when the recorded provider/model IDs of the implementer and the reviewers differ by provider, the review evidence is bound to the current snapshot, and a missing or unauthorized second key gives an explicit unavailable-reviewer state instead of a fallback to the implementer's provider.
+2. A TUI run on untouched code. Run 3 changed BAKED sources while the run was using them, which forced about seven revision and re-approval cycles and inflated tokens, calls and latency. Start a small task from the terminal interface on a clean checkout and do not edit the repository until the run is terminal. Done when the token/call/round/latency baseline of that run is recorded next to the run 3 numbers, together with the number of approvals the user had to give, so the cost of a normal run can be compared with the inflated one.
+
 ## Failure matrix
 
 | Scenario | Expected result | Package |
