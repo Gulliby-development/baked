@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 2,
+  "id": "quick-fix-auto",
+  "version": "1.0.0",
+  "description": "Quick fix that approves its own plan inside the limits the user set.",
+  "preset": "quick-fix",
+  "inputs": [
+    "request"
+  ],
+  "entry": "plan",
+  "stages": [
+    {
+      "id": "plan",
+      "type": "agent",
+      "profileId": "planner",
+      "consumes": [],
+      "produces": "plan",
+      "effects": "none"
+    },
+    {
+      "id": "approve",
+      "type": "approval",
+      "consumes": [
+        "plan"
+      ],
+      "produces": "decision",
+      "effects": "none",
+      "decision": "auto",
+      "covers": [
+        "implement"
+      ]
+    },
+    {
+      "id": "implement",
+      "type": "tasks",
+      "consumes": [
+        "plan",
+        "decision"
+      ],
+      "produces": "implementation",
+      "effects": "workspace-write"
+    },
+    {
+      "id": "checks",
+      "type": "check",
+      "consumes": [
+        "implementation"
+      ],
+      "produces": "gates",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "typecheck"
+        },
+        {
+          "gateId": "lint"
+        },
+        {
+          "gateId": "tests"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "plan-approve",
+      "from": "plan",
+      "to": "approve",
+      "on": "passed",
+      "carries": "plan",
+      "gates": []
+    },
+    {
+      "id": "approve-implement",
+      "from": "approve",
+      "to": "implement",
+      "on": "passed",
+      "carries": "decision",
+      "gates": []
+    },
+    {
+      "id": "implement-checks",
+      "from": "implement",
+      "to": "checks",
+      "on": "passed",
+      "carries": "implementation",
+      "gates": [
+        {
+          "gateId": "task-tests"
+        }
+      ]
+    },
+    {
+      "id": "checks-done",
+      "from": "checks",
+      "to": "done",
+      "on": "passed",
+      "carries": "gates",
+      "gates": []
+    },
+    {
+      "id": "checks-repair",
+      "from": "checks",
+      "to": "implement",
+      "on": "failed",
+      "carries": "gates",
+      "gates": [],
+      "loop": {
+        "maxIterations": 2
+      }
+    }
+  ],
+  "limits": {
+    "maxStageVisits": 40
+  },
+  "autoApproval": {
+    "enabled": true,
+    "maxTasks": 3,
+    "maxFiles": 5,
+    "allowedPaths": [
+      "src/**",
+      "tests/**"
+    ],
+    "allowDelete": false,
+    "allowNewDependencies": false,
+    "maxTotalTokens": 200000
+  }
+}

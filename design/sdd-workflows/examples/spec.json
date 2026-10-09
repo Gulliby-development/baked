@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "featureId": "workflow-status-json",
+  "revision": 1,
+  "title": "Workflow status as JSON",
+  "problem": "CLI automation needs a stable shape for run status.",
+  "outcome": "The user gets the state and the waiting reason without parsing TUI text.",
+  "inScope": ["Reading a snapshot by run ID", "Machine-readable status output"],
+  "outOfScope": ["Remote API", "Starting agents from the status command"],
+  "assumptions": ["WorkflowStore is already available"],
+  "openQuestions": [],
+  "requirements": [
+    {"id": "FR-001", "text": "status returns runId, status, reason and revision of an existing run", "priority": "must", "verification": "automated", "sourceRefs": ["user request"]},
+    {"id": "FR-002", "text": "status does not call a model and does not change the run", "priority": "must", "verification": "automated", "sourceRefs": ["user request"]}
+  ],
+  "criteria": [
+    {"id": "AC-001", "requirementIds": ["FR-001"], "given": "A waiting run exists", "when": "The CLI calls status --json", "then": "stdout contains one JSON snapshot with the waiting reason", "method": "automated"},
+    {"id": "AC-002", "requirementIds": ["FR-001"], "given": "The run ID does not exist", "when": "The CLI calls status --json", "then": "NOT_FOUND and exit code 1 are returned", "method": "automated"},
+    {"id": "AC-003", "requirementIds": ["FR-002"], "given": "A stored run exists", "when": "The CLI reads its status", "then": "The revision does not change and AgentExecutor is not called", "method": "automated"}
+  ],
+  "dependencies": []
+}

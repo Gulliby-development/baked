@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 2,
+  "id": "standard-with-acceptance",
+  "version": "1.0.0",
+  "description": "Standard, plus an advisory AI walk-through of the finished feature.",
+  "preset": "custom",
+  "inputs": [
+    "request"
+  ],
+  "entry": "research",
+  "stages": [
+    {
+      "id": "research",
+      "type": "agent",
+      "profileId": "researcher",
+      "consumes": [],
+      "produces": "research",
+      "effects": "none"
+    },
+    {
+      "id": "specify",
+      "type": "agent",
+      "profileId": "spec-author",
+      "consumes": [
+        "research"
+      ],
+      "produces": "spec",
+      "effects": "none"
+    },
+    {
+      "id": "plan",
+      "type": "agent",
+      "profileId": "planner",
+      "consumes": [
+        "spec"
+      ],
+      "produces": "plan",
+      "effects": "none"
+    },
+    {
+      "id": "analyze",
+      "type": "agent",
+      "profileId": "spec-reviewer",
+      "consumes": [
+        "spec",
+        "plan"
+      ],
+      "produces": "analysis",
+      "effects": "none"
+    },
+    {
+      "id": "approve",
+      "type": "approval",
+      "consumes": [
+        "spec",
+        "plan",
+        "analysis"
+      ],
+      "produces": "decision",
+      "effects": "none",
+      "decision": "human",
+      "covers": [
+        "implement"
+      ]
+    },
+    {
+      "id": "implement",
+      "type": "tasks",
+      "consumes": [
+        "spec",
+        "plan",
+        "decision"
+      ],
+      "produces": "implementation",
+      "effects": "workspace-write"
+    },
+    {
+      "id": "checks",
+      "type": "check",
+      "consumes": [
+        "implementation"
+      ],
+      "produces": "gates",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "typecheck"
+        },
+        {
+          "gateId": "lint"
+        },
+        {
+          "gateId": "tests"
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "type": "review",
+      "consumes": [
+        "spec",
+        "implementation",
+        "gates"
+      ],
+      "produces": "review",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "correctness-review"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "research-specify",
+      "from": "research",
+      "to": "specify",
+      "on": "passed",
+      "carries": "research",
+      "gates": []
+    },
+    {
+      "id": "specify-plan",
+      "from": "specify",
+      "to": "plan",
+      "on": "passed",
+      "carries": "spec",
+      "gates": []
+    },
+    {
+      "id": "plan-analyze",
+      "from": "plan",
+      "to": "analyze",
+      "on": "passed",
+      "carries": "plan",
+      "gates": []
+    },
+    {
+      "id": "analyze-approve",
+      "from": "analyze",
+      "to": "approve",
+      "on": "passed",
+      "carries": "analysis",
+      "gates": []
+    },
+    {
+      "id": "approve-implement",
+      "from": "approve",
+      "to": "implement",
+      "on": "passed",
+      "carries": "decision",
+      "gates": []
+    },
+    {
+      "id": "implement-checks",
+      "from": "implement",
+      "to": "checks",
+      "on": "passed",
+      "carries": "implementation",
+      "gates": [
+        {
+          "gateId": "task-tests"
+        }
+      ]
+    },
+    {
+      "id": "checks-review",
+      "from": "checks",
+      "to": "review",
+      "on": "passed",
+      "carries": "gates",
+      "gates": [
+        {
+          "gateId": "cli-walkthrough"
+        }
+      ]
+    },
+    {
+      "id": "checks-repair",
+      "from": "checks",
+      "to": "implement",
+      "on": "failed",
+      "carries": "gates",
+      "gates": [],
+      "loop": {
+        "maxIterations": 2
+      }
+    },
+    {
+      "id": "review-done",
+      "from": "review",
+      "to": "done",
+      "on": "passed",
+      "carries": "review",
+      "gates": [
+        {
+          "gateId": "manual-signoff",
+          "mode": "advisory"
+        }
+      ]
+    },
+    {
+      "id": "review-repair",
+      "from": "review",
+      "to": "implement",
+      "on": "changes_requested",
+      "carries": "review",
+      "gates": [],
+      "loop": {
+        "maxIterations": 2
+      }
+    }
+  ],
+  "limits": {
+    "maxStageVisits": 40
+  },
+  "autoApproval": null
+}
