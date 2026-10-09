@@ -21,6 +21,7 @@ export const ContractId = z.enum([
   "convergence",
   "refutation",
   "report",
+  "initiativePlan",
   "diff",
   "decision",
   "gates",
