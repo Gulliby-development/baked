@@ -1,6 +1,6 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import type { InputManifest, RunPolicy, Spec, TaskGraph } from "./schemas.js";
-import type { RequestRow } from "./store.js";
+import type { ArtifactRow, RequestRow } from "./store.js";
 
 export interface AutoApproval {
   mode: "renewal" | "limits";
@@ -12,13 +12,20 @@ export interface AutoApprovalResult {
   /** Why the package needs a person; empty when auto approval is approved or disabled. */
   reasons: string[];
 }
+/**
+ * A policy the operator set with an explicit workflow command (`extend`, or `revise` of a staged
+ * candidate). Only the command service writes these records; nothing here comes from model output.
+ */
+export interface PolicyDecision {
+  policyHash: string;
+}
 type Write = TaskGraph["tasks"][number]["writes"][number];
 
 /** Paths that always need a person, whatever the limits (design section 5.2). */
 const alwaysHuman =
   /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
 
-/** Budget limits a renewal may keep or lower, never raise. */
+/** Budget limits a renewal may keep or lower, never raise, unless the operator raised them. */
 const budgetKeys = [
   "maxConcurrentReadAgents",
   "maxAgentSteps",
@@ -30,6 +37,16 @@ const budgetKeys = [
   "maxCorrectiveTasks",
 ] as const;
 
+/** Policy fields that grant capabilities or set review strength; only a person may widen them. */
+const capabilityKeys = [
+  "allowedTools",
+  "network",
+  "reviewProfiles",
+  "skepticProfileId",
+  "forceSecurityReview",
+] as const;
+const networkRank = { deny: 0, ask: 1, allow: 2 } as const;
+
 /**
  * Decides on the host whether a package may be approved without a person. Any doubt returns
  * reasons and no approval, so the run falls back to a human request.
@@ -40,6 +57,7 @@ export function evaluateAutoApproval(
   spec: Spec,
   graph: TaskGraph,
   requests: RequestRow[],
+  decisions: PolicyDecision[] = [],
 ): AutoApprovalResult {
   const config = policy.autoApproval;
   if (!config) return { approval: null, reasons: [] };
@@ -52,7 +70,7 @@ export function evaluateAutoApproval(
   const limitsHash = hashJson({ policy: policyBounds(policy) });
   const reasons: string[] = [...common];
   if (config.renewal) {
-    const renewal = renewalProblems(policy, manifest, writes, requests);
+    const renewal = renewalProblems(policy, manifest, graph, requests, decisions);
     if (!common.length && !renewal.length)
       return { approval: { mode: "renewal", limitsHash }, reasons: [] };
     reasons.push(...renewal.map((reason) => `Renewal: ${reason}`));
@@ -81,12 +99,18 @@ export function evaluateAutoApproval(
   return { approval: null, reasons: [...new Set(reasons)] };
 }
 
-/** A renewal stays within the latest human approval: same or fewer files, same checks, no larger budget. */
+/**
+ * A renewal stays within the latest human approval: the same or fewer writes, the same task
+ * profiles and frozen inputs, and no wider capabilities. The remaining policy settings (checks,
+ * budgets, auto approval) must match that approval, or match the policy the operator set later
+ * with an explicit command, because that command is itself a human decision.
+ */
 function renewalProblems(
   policy: RunPolicy,
   manifest: InputManifest,
-  writes: Write[],
+  graph: TaskGraph,
   requests: RequestRow[],
+  decisions: PolicyDecision[],
 ): string[] {
   const previous = requests.filter(
     (request) =>
@@ -98,19 +122,32 @@ function renewalProblems(
     manifest?: InputManifest;
     writes?: Write[];
     policy?: RunPolicy;
+    profiles?: string[];
   };
   if (!body.manifest || !body.writes || !body.policy)
     return ["the earlier approval does not record its scope"];
-  const problems: string[] = [];
   const approved = body.policy;
-  if (canonical(policyBounds(policy, false)) !== canonical(policyBounds(approved, false)))
-    problems.push("checks, tools or other policy settings changed");
-  for (const key of budgetKeys)
-    if (policy[key] > approved[key])
-      problems.push(`${key} grew from ${approved[key]} to ${policy[key]}`);
+  const problems = capabilityProblems(policy, approved);
+  // A run's policy changes only through operator commands, and each records a decision. A policy
+  // in force that a decision names is therefore the operator's latest choice; an approval taken
+  // after that decision was taken under the same policy, so their order does not matter.
+  const current = hashJson(policy);
+  const operatorSet = decisions.some((decision) => decision.policyHash === current);
+  if (!operatorSet) {
+    if (canonical(settings(policy)) !== canonical(settings(approved)))
+      problems.push("checks or other policy settings changed without an operator decision");
+    for (const key of budgetKeys)
+      if (policy[key] > approved[key])
+        problems.push(`${key} grew from ${approved[key]} to ${policy[key]}`);
+  }
   for (const key of ["workflowHash", "profileHashes", "skillHashes"] as const)
     if (canonical(manifest[key]) !== canonical(body.manifest[key])) problems.push(`${key} changed`);
-  for (const write of writes) {
+  if (!body.profiles) problems.push("the earlier approval does not record its task profiles");
+  else
+    for (const profile of new Set(graph.tasks.map((task) => task.profileId)))
+      if (!body.profiles.includes(profile))
+        problems.push(`task profile ${profile} was not approved`);
+  for (const write of graph.tasks.flatMap((task) => task.writes)) {
     const path = write.path.toLowerCase();
     const covered = body.writes.some(
       (w) =>
@@ -122,9 +159,52 @@ function renewalProblems(
   return problems;
 }
 
-/** Policy without its budget numbers, or all of it; this is what a renewal must keep equal. */
+/** Capabilities may stay or shrink after a human approval, whoever changed them. */
+function capabilityProblems(policy: RunPolicy, approved: RunPolicy): string[] {
+  const problems: string[] = [];
+  for (const tool of policy.allowedTools)
+    if (!approved.allowedTools.includes(tool)) problems.push(`tool ${tool} was added`);
+  if (networkRank[policy.network] > networkRank[approved.network])
+    problems.push(`network widened from ${approved.network} to ${policy.network}`);
+  if (
+    canonical(policy.reviewProfiles) !== canonical(approved.reviewProfiles) ||
+    policy.skepticProfileId !== approved.skepticProfileId
+  )
+    problems.push("review profiles changed");
+  if (approved.forceSecurityReview && !policy.forceSecurityReview)
+    problems.push("forced security review was turned off");
+  return problems;
+}
+
+/** Policy settings other than budgets and capabilities. */
+function settings(policy: RunPolicy): Record<string, unknown> {
+  const copy = policyBounds(policy, false);
+  for (const key of capabilityKeys) delete copy[key];
+  return copy;
+}
+
+/** Policy without its budget numbers, or all of it. */
 function policyBounds(policy: RunPolicy, withBudget = true): Record<string, unknown> {
   const copy: Record<string, unknown> = { ...policy };
   if (!withBudget) for (const key of budgetKeys) delete copy[key];
   return copy;
+}
+
+/**
+ * The operator's policy decisions of a run: the `policy-revision` artifacts the
+ * command service writes for `extend` and `revise`. A record that does not name the user as its
+ * approver is ignored.
+ */
+export function policyDecisions(
+  artifacts: ArtifactRow[],
+  read: (artifact: ArtifactRow) => string,
+): PolicyDecision[] {
+  const decisions: PolicyDecision[] = [];
+  for (const artifact of artifacts) {
+    if (artifact.kind !== "policy-revision") continue;
+    const body = JSON.parse(read(artifact)) as { approvedBy?: unknown; policyHash?: unknown };
+    if (body.approvedBy === "user" && typeof body.policyHash === "string")
+      decisions.push({ policyHash: body.policyHash });
+  }
+  return decisions;
 }

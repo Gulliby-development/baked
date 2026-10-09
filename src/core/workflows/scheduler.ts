@@ -10,7 +10,7 @@ import { validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
-import { evaluateAutoApproval } from "./auto-approval.js";
+import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import { deferredBlockingProblems, demoteDeferred, researchBudget } from "./clarification.js";
@@ -336,10 +336,14 @@ export class WorkflowScheduler {
                   state.spec,
                   state.graph,
                   this.store.requests(runId),
+                  policyDecisions(this.store.artifacts(runId), (artifact) =>
+                    this.store.readArtifact(runId, artifact.id),
+                  ),
                 );
                 const body = {
                   manifest: state.manifest,
                   writes: state.graph.tasks.flatMap((t) => t.writes),
+                  profiles: [...new Set(state.graph.tasks.map((t) => t.profileId))].sort(),
                   checks: policy.checks,
                   policy,
                   deferredCriteria: state.spec.criteria

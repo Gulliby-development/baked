@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { canonical } from "../src/core/specs/hash.js";
-import { evaluateAutoApproval } from "../src/core/workflows/auto-approval.js";
+import { afterEach, describe, expect, test } from "bun:test";
+import { canonical, hashJson } from "../src/core/specs/hash.js";
+import { WorkflowArtifacts } from "../src/core/workflows/artifacts.js";
+import { evaluateAutoApproval, policyDecisions } from "../src/core/workflows/auto-approval.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   type InputManifest,
@@ -9,7 +10,8 @@ import {
   type Spec,
   type TaskGraph,
 } from "../src/core/workflows/schemas.js";
-import type { RequestRow } from "../src/core/workflows/store.js";
+import { type ArtifactRow, newId, type RequestRow } from "../src/core/workflows/store.js";
+import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const hash = "a".repeat(64);
 const manifest: InputManifest = {
@@ -98,7 +100,7 @@ function approved(policy: RunPolicy, writes: Write[], actor = "user"): RequestRo
     kind: "approval",
     status: "accepted",
     digest: hash,
-    body_json: canonical({ manifest, writes, checks: policy.checks, policy }),
+    body_json: canonical({ manifest, writes, profiles: ["implementer"], checks: policy.checks, policy }),
     answer_json: null,
     actor,
   };
@@ -159,8 +161,8 @@ describe("auto approval", () => {
     ["a new file", renewing, graph([modify("src/c.ts")]), [approved(renewing, [modify("src/a.ts")])], "modify src/c.ts was not approved"],
     ["a new delete", renewing, graph([{ path: "src/a.ts", action: "delete" }]), [approved(renewing, [modify("src/a.ts")])], "delete src/a.ts was not approved"],
     ["a larger budget", { ...renewing, maxTotalTokens: 900000 }, graph([modify("src/a.ts")]), [approved(renewing, [modify("src/a.ts")])], "maxTotalTokens grew"],
-    ["changed checks", { ...renewing, checks: [{ id: "lint", executable: "bun", args: ["run", "lint"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] }, graph([modify("src/a.ts")]), [approved(renewing, [modify("src/a.ts")])], "checks, tools or other policy settings changed"],
-    ["auto approval enabled after the human approval", renewing, graph([modify("src/a.ts")]), [approved(defaultWorkflowPolicy, [modify("src/a.ts")])], "checks, tools or other policy settings changed"],
+    ["changed checks", { ...renewing, checks: [{ id: "lint", executable: "bun", args: ["run", "lint"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] }, graph([modify("src/a.ts")]), [approved(renewing, [modify("src/a.ts")])], "policy settings changed without an operator decision"],
+    ["auto approval enabled after the human approval", renewing, graph([modify("src/a.ts")]), [approved(defaultWorkflowPolicy, [modify("src/a.ts")])], "policy settings changed without an operator decision"],
     ["an approval without a recorded policy", renewing, graph([modify("src/a.ts")]), [{ ...approved(renewing, [modify("src/a.ts")]), body_json: canonical({ manifest, writes: [modify("src/a.ts")] }) }], "does not record its scope"],
   ];
   for (const [name, policy, tasks, requests, reason] of widened)
@@ -173,5 +175,115 @@ describe("auto approval", () => {
     const previous = approved(renewing, [modify("src/a.ts")]);
     const changed = { ...manifest, profileHashes: { implementer: "b".repeat(64) } };
     expect(evaluateAutoApproval(renewing, changed, spec, graph([modify("src/a.ts")]), [previous]).reasons).toContain("Renewal: profileHashes changed");
+  });
+});
+
+describe("renewal after operator policy decisions", () => {
+  const scope = [modify("src/usage.ts"), { path: "tests/usage.test.ts", action: "create" as const }];
+  const previous = approved(renewing, scope);
+  const decided = (policy: RunPolicy) => [{ policyHash: hashJson(policy) }];
+  const lint = { id: "lint", executable: "bun", args: ["run", "lint"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+  const testCheck = { ...lint, id: "tests", args: ["test"] };
+  test("after a human extend an unchanged scope renews", () => {
+    const extended = { ...renewing, maxTotalTokens: 2_000_000, maxAgentCalls: 200 };
+    expect(evaluateAutoApproval(extended, manifest, spec, graph(scope), [previous]).reasons.join("\n")).toContain("maxTotalTokens grew");
+    expect(evaluateAutoApproval(extended, manifest, spec, graph(scope), [previous], decided(extended)).approval?.mode).toBe("renewal");
+  });
+  test("after a human revise that only changes a check command an unchanged scope renews", () => {
+    const before = { ...renewing, checks: [testCheck] };
+    const revised = { ...renewing, checks: [{ ...testCheck, args: ["test", "tests/usage.test.ts"] }] };
+    const human = approved(before, scope);
+    expect(evaluateAutoApproval(revised, manifest, spec, graph(scope), [human]).reasons.join("\n")).toContain("policy settings changed without an operator decision");
+    expect(evaluateAutoApproval(revised, manifest, spec, graph(scope), [human], decided(revised)).approval?.mode).toBe("renewal");
+  });
+  test("an operator decision does not cover new writes, tools, network or review changes", () => {
+    const wider: [string, RunPolicy, TaskGraph, string][] = [
+      ["a new write path", renewing, graph([...scope, modify("src/other.ts")]), "modify src/other.ts was not approved"],
+      ["a new tool", { ...renewing, allowedTools: [...renewing.allowedTools, "web_fetch"] }, graph(scope), "tool web_fetch was added"],
+      ["network access", { ...renewing, network: "allow" }, graph(scope), "network widened from deny to allow"],
+      ["another skeptic", { ...renewing, skepticProfileId: "other" }, graph(scope), "review profiles changed"],
+    ];
+    for (const [name, policy, tasks, reason] of wider) {
+      const result = evaluateAutoApproval(policy, manifest, spec, tasks, [previous], decided(policy));
+      expect(result.approval, name).toBeNull();
+      expect(result.reasons.join("\n"), name).toContain(reason);
+    }
+    const reviewed = approved({ ...renewing, forceSecurityReview: true }, scope);
+    expect(evaluateAutoApproval(renewing, manifest, spec, graph(scope), [reviewed], decided(renewing)).reasons).toContain("Renewal: forced security review was turned off");
+    const narrower = { ...renewing, allowedTools: renewing.allowedTools.slice(1) };
+    expect(evaluateAutoApproval(narrower, manifest, spec, graph(scope), [previous], decided(narrower)).approval?.mode).toBe("renewal");
+  });
+  test("a change that no operator decision names still needs a person", () => {
+    const changed = { ...renewing, checks: [lint] };
+    // A decision for another policy, or a policy-revision record without a user approver, is not consent.
+    const records: ArtifactRow[] = [
+      { run_id: "run", id: "a", kind: "policy-revision", logical_path: "policy-revisions/a.json", revision: 1, content_hash: hash, byte_length: 0, inline_content: canonical({ approvedBy: "model", policyHash: hashJson(changed) }), blob_path: null },
+      { run_id: "run", id: "b", kind: "revision-candidate", logical_path: "candidates/b.json", revision: 1, content_hash: hash, byte_length: 0, inline_content: canonical({ approvedBy: "user", policyHash: hashJson(changed) }), blob_path: null },
+      { run_id: "run", id: "c", kind: "policy-revision", logical_path: "policy-revisions/c.json", revision: 1, content_hash: hash, byte_length: 0, inline_content: canonical({ approvedBy: "user", policyHash: hashJson(renewing) }), blob_path: null },
+    ];
+    const decisions = policyDecisions(records, (row) => row.inline_content ?? "");
+    expect(decisions).toEqual([{ policyHash: hashJson(renewing) }]);
+    const result = evaluateAutoApproval(changed, manifest, spec, graph(scope), [previous], decisions);
+    expect(result.approval).toBeNull();
+    expect(result.reasons.join("\n")).toContain("policy settings changed without an operator decision");
+  });
+  test("a re-plan that moves a task to another profile needs a person", () => {
+    const tasks = graph(scope);
+    tasks.tasks[0] = { ...tasks.tasks[0]!, profileId: "networked" };
+    expect(evaluateAutoApproval(renewing, manifest, spec, tasks, [previous]).reasons).toContain("Renewal: task profile networked was not approved");
+    const legacy = { ...previous, body_json: canonical({ manifest, writes: scope, policy: renewing }) };
+    expect(evaluateAutoApproval(renewing, manifest, spec, graph(scope), [legacy]).reasons).toContain("Renewal: the earlier approval does not record its task profiles");
+  });
+});
+
+describe("renewal in a run", () => {
+  const cleanups: (() => void)[] = [];
+  afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+  const policy: RunPolicy = { ...fixturePolicy, autoApproval: { renewal: true, limits: null } };
+
+  async function driveToRest(fixture: ReturnType<typeof workflowFixture>, runId: string) {
+    for (let i = 0; i < 12; i++) {
+      const run = await fixture.service.get(runId);
+      if (["waiting", "completed", "blocked", "failed"].includes(run.status)) return run;
+      if (run.status === "paused" || run.status === "created") await fixture.resume(runId);
+      await fixture.service.drive(runId, new AbortController().signal);
+    }
+    return fixture.service.get(runId);
+  }
+  async function reviseAfterHumanApproval(next: RunPolicy) {
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const { service } = fixture;
+    const run = await fixture.start();
+    const first = await driveToRest(fixture, run.runId);
+    expect(first.status).toBe("waiting");
+    const pending = service.store.requests(run.runId).find((r) => r.status === "pending");
+    expect(JSON.parse(pending!.body_json).autoApproval.declined).toContain("Renewal: no earlier human approval in this run");
+    await fixture.approve(run.runId);
+    const candidate = await new WorkflowArtifacts(service).stageRevision(run.runId, {
+      commandId: newId(),
+      expectedInputHash: service.store.snapshot(run.runId).inputHash,
+      policy: next,
+    });
+    await service.revise(run.runId, { commandId: newId(), expectedRevision: (await service.get(run.runId)).revision }, candidate.candidateHash);
+    return { fixture, runId: run.runId, after: await driveToRest(fixture, run.runId) };
+  }
+
+  test("a revise that only changes the check command renews the unchanged scope", async () => {
+    const check = fixturePolicy.checks[0]!;
+    const next = { ...policy, checks: [{ ...check, args: ["-e", "if ((await Bun.file('value.txt').text()).trim() !== 'ready') process.exit(1)"] }] };
+    const { fixture, runId, after } = await reviseAfterHumanApproval(next);
+    expect(after.status).toBe("completed");
+    const approvals = fixture.service.store.requests(runId).filter((r) => r.kind === "approval" && r.status === "accepted");
+    expect(approvals.map((r) => r.actor)).toEqual(["user", "auto-approval"]);
+    const record = fixture.service.store.artifacts(runId).find((a) => a.kind === "policy-revision");
+    expect(JSON.parse(fixture.service.store.readArtifact(runId, record!.id))).toMatchObject({ kind: "revision", approvedBy: "user", policyHash: hashJson(PolicySchema.parse(next)) });
+  });
+
+  test("a revise that adds a tool still waits for a person", async () => {
+    const { fixture, runId, after } = await reviseAfterHumanApproval({ ...policy, allowedTools: [...policy.allowedTools, "web_fetch"] });
+    expect(after.status).toBe("waiting");
+    const pending = fixture.service.store.requests(runId).find((r) => r.status === "pending");
+    expect(JSON.parse(pending!.body_json).autoApproval.declined).toContain("Renewal: tool web_fetch was added");
   });
 });
