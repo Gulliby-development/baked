@@ -172,7 +172,7 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 
 ### Context compaction
 
-Every model step resends the whole conversation, so a stage that reads many files pays for each old file again on every later step. Between steps the workflow executor replaces the oldest bulky results of `read`, `navigate`, `bake_impact` and `request_check` with one-line notes. The newest results stay in full up to 40000 characters, the last four messages are never touched, edits and submissions are never touched, and a result compacted at one step stays compacted at every later step. A note keeps the tool, the path or check ID, the size, the evidence ID and, for a check, its status and the last lines of its output. Evidence is written by the tools into the run store, so nothing is lost; the model reads a file again if it needs the content. Set `workflows.contextCompaction` to `false` to turn it off. The measurement is in the [status report](implementation-status.md).
+Every model step resends the whole conversation, so a stage that reads many files pays for each old file again on every later step. The step budget of an agent attempt (`maxAttemptTokens`, see [step-budget](../../src/core/workflows/step-budget.ts)) replaces older large results of `read`, `navigate`, `bake_find` and `bake_impact` with short stubs that keep every evidence ID; the last three tool results stay verbatim, and edits and check results are never compacted. Evidence is written by the tools into the run store, so nothing is lost; the model reads a file again if it needs the content.
 
 ## Pause, crash and recovery
 
