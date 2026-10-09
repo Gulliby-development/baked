@@ -9,6 +9,7 @@ import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
 import { migration002 } from "./migrations/002.js";
+import { migration003 } from "./migrations/003.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -152,6 +153,7 @@ type EventInput = WorkflowEvent extends infer E
 const MIGRATIONS = [
   { version: 1, sql: migration001 },
   { version: 2, sql: migration002 },
+  { version: 3, sql: migration003 },
 ] as const;
 
 export class WorkflowStore {
@@ -273,6 +275,17 @@ export class WorkflowStore {
   }
   close(): void {
     this.db.close();
+  }
+  /** The connection, for records kept next to runs in the same database (initiatives). */
+  get connection(): Database {
+    return this.db;
+  }
+  /** The schema version this database is at. A reader may be opened on an older one. */
+  schemaVersion(): number {
+    return (
+      this.db.query<{ v: number | null }, []>("SELECT MAX(version) AS v FROM schema_migrations").get()
+        ?.v ?? 0
+    );
   }
   transaction<T>(action: () => T): T {
     return this.db.transaction(action).immediate();
@@ -1162,7 +1175,7 @@ export class WorkflowStore {
     const threshold = Math.min(date, Date.now() - 30 * 24 * 3600 * 1000);
     const rows = this.db
       .query<{ id: string; bytes: number }, [number]>(
-        "SELECT r.id,COALESCE((SELECT SUM(byte_length) FROM artifacts a WHERE a.run_id=r.id),0) AS bytes FROM runs r WHERE r.status IN ('completed','failed','cancelled') AND r.updated_at<? AND NOT EXISTS(SELECT 1 FROM runs child WHERE child.parent_run_id=r.id) AND NOT EXISTS(SELECT 1 FROM workspace_leases l WHERE l.run_id=r.id)",
+        "SELECT r.id,COALESCE((SELECT SUM(byte_length) FROM artifacts a WHERE a.run_id=r.id),0) AS bytes FROM runs r WHERE r.status IN ('completed','failed','cancelled') AND r.updated_at<? AND NOT EXISTS(SELECT 1 FROM runs child WHERE child.parent_run_id=r.id) AND NOT EXISTS(SELECT 1 FROM workspace_leases l WHERE l.run_id=r.id) AND NOT EXISTS(SELECT 1 FROM initiative_runs i WHERE i.run_id=r.id) AND NOT EXISTS(SELECT 1 FROM initiatives n WHERE n.decompose_run_id=r.id)",
       )
       .all(threshold);
     if (!dryRun)

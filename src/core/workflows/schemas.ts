@@ -206,6 +206,7 @@ export const ProfileSchema = z
       "convergence",
       "refutation",
       "report",
+      "initiativePlan",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -747,6 +748,11 @@ export interface StartRequest {
   ownerLabel: string;
   /** Model selected for this run; resolved profile models are frozen at start. */
   model?: string;
+  /**
+   * Upstream contracts an initiative pins for this feature. They replace the spec's dependencies,
+   * so the run's readiness checks use exactly these contract hashes.
+   */
+  dependencies?: { featureId: string; contractHash: string }[];
 }
 export type Decision =
   | { requestId: string; kind: "approve"; digest: string }

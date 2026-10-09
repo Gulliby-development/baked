@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sddWorkflow } from "../builtin/sdd.js";
+import { DECOMPOSE_WORKFLOW_ID, decomposeWorkflow } from "../initiatives/decompose.js";
 import { type RunPolicy, SafeId, type WorkflowDefinition, WorkflowSchema } from "../schemas.js";
 import {
   type GateBinding,
@@ -71,6 +72,9 @@ const definitionPath = (workspace: string, id: string): string =>
  */
 export function loadDefinition(workspace: string, id: string, policy: RunPolicy): LoadedDefinition {
   SafeId.parse(id);
+  // The initiative's decompose step is part of the runtime contract; a project file cannot replace it.
+  if (id === DECOMPOSE_WORKFLOW_ID)
+    return { schemaVersion: 2, id, definition: decomposeWorkflow, path: null };
   const path = definitionPath(workspace, id);
   if (existsSync(path)) {
     const raw = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: unknown };
