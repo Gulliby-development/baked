@@ -46,12 +46,16 @@ export class WorkflowArtifacts implements ArtifactService {
     const instructions = frozenInstructions(store.workspace, this.service.config.instructionFiles);
     // Definitions remain the version frozen in this run; an explicit revision
     // adopts current project instructions and execution configuration.
+    // A definition revision replaces the definition and gate files itself (definitionCandidate).
+    const replaced =
+      request.definition !== undefined ? /\/(?:\.baked|baked)\/(workflows|gates)\//i : null;
     for (const [path, hash] of Object.entries(state.frozenFiles)) {
-      if (/\/(?:\.baked|baked)\/(skills|agents|workflows)\//i.test(path.replaceAll("\\", "/"))) {
-        if (fileHash(path) !== hash)
+      const normal = path.replaceAll("\\", "/");
+      if (/\/(?:\.baked|baked)\/(skills|agents|workflows|gates)\//i.test(normal)) {
+        if (fileHash(path) !== hash && !replaced?.test(normal))
           throw new WorkflowFault(
             "INPUT_CHANGED",
-            "A frozen skill or definition changed; start a run with the revised profile",
+            "A frozen skill, gate or definition changed; revise the definition with candidate --workflow, or start a run with the revised profile",
           );
         instructions.files[path] = hash;
       }
@@ -69,27 +73,45 @@ export class WorkflowArtifacts implements ArtifactService {
     state.spec = request.spec ? SpecSchema.parse(request.spec) : state.spec;
     state.plan = request.plan ?? state.plan;
     state.graph = request.graph ? TaskGraphSchema.parse(request.graph) : state.graph;
-    const policy = PolicySchema.parse(request.policy ?? JSON.parse(store.run(runId).policy_json));
-    if (!state.spec || !state.plan || !state.graph)
+    let policy = PolicySchema.parse(request.policy ?? JSON.parse(store.run(runId).policy_json));
+    const complete = Boolean(state.spec && state.plan && state.graph);
+    // A definition revision may come before the run has a package; a package revision needs all of it.
+    const packageEdited = Boolean(request.spec || request.plan || request.graph);
+    if (!complete && (request.definition === undefined || packageEdited))
       throw new WorkflowFault(
         "INVALID_DEFINITION",
         "Candidate package requires spec, plan and graph",
       );
-    state.graph = {
-      ...state.graph,
-      specHash: hashJson(state.spec),
-      planHash: hashBytes(state.plan),
-    };
-    validatePackage(store.workspace, state.spec, state.plan, state.graph);
-    state.manifest.specHash = hashJson(state.spec);
-    state.manifest.planHash = hashBytes(state.plan);
-    state.manifest.effectiveGraphHash = hashJson(state.graph);
+    if (state.spec && state.plan && state.graph) {
+      state.graph = {
+        ...state.graph,
+        specHash: hashJson(state.spec),
+        planHash: hashBytes(state.plan),
+      };
+      validatePackage(store.workspace, state.spec, state.plan, state.graph);
+      state.manifest.specHash = hashJson(state.spec);
+      state.manifest.planHash = hashBytes(state.plan);
+      state.manifest.effectiveGraphHash = hashJson(state.graph);
+    }
+    let revised: { definition: unknown; gates: unknown } | null = null;
+    if (request.definition !== undefined) {
+      const bound = this.service.definitionCandidate(runId, state, policy, {
+        definition: request.definition,
+        ...(request.definitionPath ? { definitionPath: request.definitionPath } : {}),
+        ...(request.autoApprovalConfirmation
+          ? { autoApprovalConfirmation: request.autoApprovalConfirmation }
+          : {}),
+      });
+      policy = bound.policy;
+      revised = { definition: bound.definition, gates: bound.gates };
+    }
     state.manifest.policyHash = hashJson(policy);
     const content = canonical({
       requestHash,
       expectedInputHash: request.expectedInputHash,
       state,
       policy,
+      ...(revised ?? {}),
     });
     return store.transaction(() => {
       const artifact = store.artifact(runId, "revision-candidate", candidatePath, content);

@@ -514,6 +514,10 @@ export class WorkflowStore {
   setApproval(id: string, digest: string | null): void {
     this.db.run("UPDATE runs SET approval_digest=? WHERE id=?", [digest, id]);
   }
+  /** Replaces a started run's definition; only an applied definition revision (V2-11) does this. */
+  setDefinition(id: string, definition: unknown): void {
+    this.db.run("UPDATE runs SET definition_json=? WHERE id=?", [canonical(definition), id]);
+  }
   setPolicy(id: string, policy: RunPolicy): void {
     this.db.run("UPDATE runs SET policy_json=? WHERE id=?", [canonical(policy), id]);
   }
