@@ -1,8 +1,27 @@
-# Working on BAKED with Codex
+# Working on BAKED
+
+These instructions apply to every coding agent and every model provider that works in this repository, and to human contributors.
 
 ## Project
 
 BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headless CLI. It runs on Bun and uses SQLite for persistent data. Read `README.md` for setup and `CONTRIBUTING.md` for architecture and extension points.
+
+## How BAKED works
+
+- `src/boot.tsx` parses the command line and starts either the terminal UI or the headless CLI.
+- The main agent (`src/core/agents/forge.ts`) assembles the system prompt, context, tools, approval callbacks and execution mode for a session, then runs the model loop through a provider from `src/core/llm/providers/`.
+- Context comes from `src/core/context/` and the repository graph in `src/core/intelligence/` (language servers and tree-sitter), so the agent can reason about code structure rather than only raw files.
+- Tools in `src/core/tools/` (files, shell, Git, code analysis) execute through the registry. Writes and commands pass access checks and user approval before they run.
+- Sessions, memory and workflow state persist in SQLite (`src/core/sessions/`, `src/core/memory/`, `src/core/workflows/`). Durable workflow events are authoritative; the UI only renders them.
+- The terminal UI (`src/components/`, `src/hooks/`, `src/stores/`) and the headless CLI (`src/headless/`) are front ends over the same core.
+
+## Task workflow
+
+- Start every task on its own branch, created from an up-to-date `main`:
+  - new feature: `feature/<name>`;
+  - bug fix: `bugfix/<name>`.
+- Commit intermediate working states on the task branch. Before each intermediate commit, run at least `bun run typecheck` (or `bun run build` for startup and bundling changes) so every commit is a state you can return to.
+- When the task is complete and the checks in [Verification](#verification) pass, merge the task branch into `main` and push `main`.
 
 ## Working conventions
 
@@ -12,7 +31,8 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - Preserve access controls, approval callbacks, secret handling, and coordination when changing tools.
 - Keep comments focused on non-obvious intent. Keep documentation technical: setup, behavior, architecture, troubleshooting, and development.
 - Preserve user changes already present in the working directory.
-- Claude and other provider names in runtime code describe supported integrations. Do not rename them as part of maintaining Codex instructions.
+- Provider names in runtime code (Claude, OpenAI, Codex, GitHub Copilot, GitHub Models) describe supported integrations. Do not rename them when editing these instructions or other contributor documentation.
+- `locales/en.json` is generated from source. When a key is removed from it, remove the same key from every other `locales/<language>.json`, or the `locales` CI check fails.
 
 ## Language
 
@@ -29,17 +49,20 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - `src/core/tools/`: tools and registry.
 - `src/core/intelligence/`: repository graph and analysis backends.
 - `src/core/llm/providers/`: model providers.
+- `src/core/workflows/`, `src/core/specs/`, `src/core/verification/`: durable workflows, artifact validation and acceptance.
 - `src/components/`, `src/hooks/`, `src/stores/`: terminal UI.
 - `src/headless/`: CLI automation.
 - `tests/`: feature tests using `bun:test`.
 
 ## Verification
 
+CI runs these on every pull request to `main`; run them before merging:
+
 ```sh
-bun run typecheck
 bun run lint
+bun run typecheck
+bun scripts/validate-locales.ts
 bun test tests/<feature>.test.ts
 ```
 
 Run the full `bun test` suite for changes that affect shared behavior. Run `bun run build` for startup, bundling, and runtime-dependency changes. Documentation-only changes need link, path, and configuration checks rather than new unit tests. Report what was checked and any failures that remain.
-

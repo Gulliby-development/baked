@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "typecheck",
+  "description": "TypeScript compiles without errors.",
+  "required": true,
+  "scope": "feature",
+  "timeoutMs": 120000,
+  "retries": {
+    "max": 0,
+    "retryOn": []
+  },
+  "evidence": {
+    "kind": "exit",
+    "keepOutputLines": 40,
+    "artifactPaths": []
+  },
+  "type": "command",
+  "command": {
+    "executable": "bun",
+    "args": [
+      "run",
+      "typecheck"
+    ],
+    "cwd": ".",
+    "envNames": [],
+    "writes": []
+  }
+}

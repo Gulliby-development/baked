@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "security-review",
+  "description": "A security reviewer runs when the change touches auth, secrets, network, processes, SQL or file access.",
+  "required": true,
+  "scope": "feature",
+  "timeoutMs": 900000,
+  "retries": {
+    "max": 0,
+    "retryOn": []
+  },
+  "evidence": {
+    "kind": "review",
+    "keepOutputLines": 40,
+    "artifactPaths": []
+  },
+  "type": "ai-review",
+  "review": {
+    "profileId": "security-reviewer",
+    "dimension": "security",
+    "blockingSeverities": [
+      "critical",
+      "high"
+    ],
+    "skepticProfileId": "skeptic",
+    "appliesWhen": "security-sensitive"
+  }
+}

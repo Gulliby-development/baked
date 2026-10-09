@@ -1,0 +1,261 @@
+{
+  "schemaVersion": 2,
+  "id": "sdd",
+  "version": "2.0.0",
+  "description": "Accepted requirements, implementation and coverage verification.",
+  "preset": "full",
+  "inputs": [
+    "request"
+  ],
+  "entry": "research",
+  "stages": [
+    {
+      "id": "research",
+      "type": "agent",
+      "profileId": "researcher",
+      "consumes": [],
+      "produces": "research",
+      "effects": "none"
+    },
+    {
+      "id": "specify",
+      "type": "agent",
+      "profileId": "spec-author",
+      "consumes": [
+        "research"
+      ],
+      "produces": "spec",
+      "effects": "none"
+    },
+    {
+      "id": "plan",
+      "type": "agent",
+      "profileId": "planner",
+      "consumes": [
+        "spec"
+      ],
+      "produces": "plan",
+      "effects": "none"
+    },
+    {
+      "id": "analyze",
+      "type": "agent",
+      "profileId": "spec-reviewer",
+      "consumes": [
+        "spec",
+        "plan"
+      ],
+      "produces": "analysis",
+      "effects": "none"
+    },
+    {
+      "id": "approve",
+      "type": "approval",
+      "consumes": [
+        "spec",
+        "plan",
+        "analysis"
+      ],
+      "produces": "decision",
+      "effects": "none",
+      "decision": "human",
+      "covers": [
+        "implement"
+      ]
+    },
+    {
+      "id": "implement",
+      "type": "tasks",
+      "consumes": [
+        "spec",
+        "plan",
+        "decision"
+      ],
+      "produces": "implementation",
+      "effects": "workspace-write"
+    },
+    {
+      "id": "checks",
+      "type": "check",
+      "consumes": [
+        "implementation"
+      ],
+      "produces": "gates",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "typecheck"
+        },
+        {
+          "gateId": "lint"
+        },
+        {
+          "gateId": "tests"
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "type": "review",
+      "consumes": [
+        "spec",
+        "implementation",
+        "gates"
+      ],
+      "produces": "review",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "correctness-review"
+        },
+        {
+          "gateId": "security-review"
+        }
+      ]
+    },
+    {
+      "id": "converge",
+      "type": "reflection",
+      "profileId": "spec-auditor",
+      "consumes": [
+        "spec",
+        "review",
+        "gates"
+      ],
+      "produces": "convergence",
+      "effects": "none"
+    },
+    {
+      "id": "learn",
+      "type": "learn",
+      "consumes": [
+        "convergence"
+      ],
+      "produces": "report",
+      "effects": "none"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "research-specify",
+      "from": "research",
+      "to": "specify",
+      "on": "passed",
+      "carries": "research",
+      "gates": []
+    },
+    {
+      "id": "specify-plan",
+      "from": "specify",
+      "to": "plan",
+      "on": "passed",
+      "carries": "spec",
+      "gates": []
+    },
+    {
+      "id": "plan-analyze",
+      "from": "plan",
+      "to": "analyze",
+      "on": "passed",
+      "carries": "plan",
+      "gates": []
+    },
+    {
+      "id": "analyze-approve",
+      "from": "analyze",
+      "to": "approve",
+      "on": "passed",
+      "carries": "analysis",
+      "gates": []
+    },
+    {
+      "id": "approve-implement",
+      "from": "approve",
+      "to": "implement",
+      "on": "passed",
+      "carries": "decision",
+      "gates": []
+    },
+    {
+      "id": "implement-checks",
+      "from": "implement",
+      "to": "checks",
+      "on": "passed",
+      "carries": "implementation",
+      "gates": [
+        {
+          "gateId": "task-tests"
+        }
+      ]
+    },
+    {
+      "id": "checks-review",
+      "from": "checks",
+      "to": "review",
+      "on": "passed",
+      "carries": "gates",
+      "gates": []
+    },
+    {
+      "id": "checks-repair",
+      "from": "checks",
+      "to": "implement",
+      "on": "failed",
+      "carries": "gates",
+      "gates": [],
+      "loop": {
+        "maxIterations": 2
+      }
+    },
+    {
+      "id": "review-converge",
+      "from": "review",
+      "to": "converge",
+      "on": "passed",
+      "carries": "review",
+      "gates": []
+    },
+    {
+      "id": "review-repair",
+      "from": "review",
+      "to": "implement",
+      "on": "changes_requested",
+      "carries": "review",
+      "gates": [],
+      "loop": {
+        "maxIterations": 2
+      }
+    },
+    {
+      "id": "converge-learn",
+      "from": "converge",
+      "to": "learn",
+      "on": "passed",
+      "carries": "convergence",
+      "gates": []
+    },
+    {
+      "id": "converge-repair",
+      "from": "converge",
+      "to": "implement",
+      "on": "changes_requested",
+      "carries": "convergence",
+      "gates": [],
+      "loop": {
+        "maxIterations": 2
+      }
+    },
+    {
+      "id": "learn-done",
+      "from": "learn",
+      "to": "done",
+      "on": "passed",
+      "carries": "report",
+      "gates": []
+    }
+  ],
+  "limits": {
+    "maxStageVisits": 40
+  },
+  "autoApproval": null
+}

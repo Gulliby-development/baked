@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 2,
+  "id": "spike",
+  "version": "1.0.0",
+  "description": "Research and a written report. No file is changed.",
+  "preset": "spike",
+  "inputs": [
+    "request"
+  ],
+  "entry": "research",
+  "stages": [
+    {
+      "id": "research",
+      "type": "agent",
+      "profileId": "researcher",
+      "consumes": [],
+      "produces": "research",
+      "effects": "none"
+    },
+    {
+      "id": "report",
+      "type": "agent",
+      "profileId": "reporter",
+      "consumes": [
+        "research"
+      ],
+      "produces": "report",
+      "effects": "none"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "research-report",
+      "from": "research",
+      "to": "report",
+      "on": "passed",
+      "carries": "research",
+      "gates": []
+    },
+    {
+      "id": "report-done",
+      "from": "report",
+      "to": "done",
+      "on": "passed",
+      "carries": "report",
+      "gates": []
+    }
+  ],
+  "limits": {
+    "maxStageVisits": 40
+  },
+  "autoApproval": null
+}
