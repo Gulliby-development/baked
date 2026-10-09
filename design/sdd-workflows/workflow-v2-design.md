@@ -1,6 +1,6 @@
 # Workflow v2: technical design
 
-Design version: 0.1. Status: proposed; nothing in this document is implemented. Date: 2026-10-09. This is the design promised by [section 2 and section 5 of the next implementation plan](next-implementation.md). It starts only after v1 acceptance. The usability work of section 1a (gate window, budget extension, estimates, checkpoints, compaction) already ships on the v1 runtime and is the base this design builds on.
+Design version: 0.1. Status: in implementation since 2026-10-09; the [status report](implementation-status.md) records which parts the runtime has. Date: 2026-10-09. This is the design promised by [section 2 and section 5 of the next implementation plan](next-implementation.md). It starts only after v1 acceptance. The usability work of section 1a (gate window, budget extension, estimates, checkpoints, compaction) already ships on the v1 runtime and is the base this design builds on.
 
 The contracts and examples in this package are machine checked, so the rules below are not only prose: [contracts-v2.ts](contracts-v2.ts) holds the schemas and the definition validator, [examples/v2](examples/v2) holds the gate library and the presets, and [check-design.ts](check-design.ts) validates all of them, rejects 26 unsafe or contradictory edits and proves that the built-in `sdd` is the v1 definition read through the migration function.
 

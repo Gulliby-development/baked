@@ -16,6 +16,7 @@ import {
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
+import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
 
 export function workflowExit(
@@ -229,6 +230,15 @@ export async function executeWorkflowCommand(
     case "redact":
       await artifacts.redact(runId, stringFlag(args, "file"), stringFlag(args, "reason"));
       return { redacted: true };
+    case "definitions":
+    case "validate":
+    case "define":
+    case "gates":
+      return executeDefinitionCommand(
+        args,
+        service.store.workspace,
+        PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy),
+      ).result;
   }
 }
 export async function runWorkflowCli(argv: string[]): Promise<number> {
@@ -259,6 +269,15 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
         `${JSON.stringify(new ProfileRegistry(cwd, { active: config.defaultModel }).list(), null, 2)}\n`,
       );
       return 0;
+    }
+    if ((DEFINITION_COMMANDS as readonly string[]).includes(args.command)) {
+      const { result, exitCode } = executeDefinitionCommand(
+        args,
+        cwd,
+        PolicySchema.parse(config.workflows?.policy ?? defaultWorkflowPolicy),
+      );
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return exitCode;
     }
     service = new NativeWorkflowService(cwd, config, undefined, readonly);
     let lastSeq = 0;
