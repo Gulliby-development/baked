@@ -95,7 +95,7 @@ baked workflow revise RUN_ID --candidate CANDIDATE_HASH --expected-revision N
 baked workflow resume RUN_ID --expected-revision NEW_N
 ```
 
-Candidate fields are optional: missing ones are taken from the current package. The plan must contain Context, Decisions, Components, Data, Verification and Risks; DEC-001 and references to requirements. A candidate explicitly accepts the current instructions and configuration hashes. A changed skill requires a new profile/run. Definitions and profile versions inside an existing run stay frozen. A repeated analyze and approval are mandatory; with `autoApproval.renewal` the host may give that approval (see below).
+Candidate fields are optional: missing ones are taken from the current package. The plan must contain Context, Decisions, Components, Data, Verification and Risks; DEC-001 and references to requirements. A candidate explicitly accepts the current instructions and configuration hashes. A changed skill requires a new profile/run. Profile versions inside an existing run stay frozen; a v2 definition changes only through a definition revision (see [Workflow definitions](#workflow-definitions-v2)). A repeated analyze and approval are mandatory; with `autoApproval.renewal` the host may give that approval (see below).
 
 The terminal states completed/cancelled/failed are immutable; `fork RUN_ID --expected-revision N` creates a new run with the parent's artifacts, a new approval and no passing evidence. It does not start the model before resume. There is no automatic rollback of user changes.
 
@@ -218,6 +218,15 @@ Definitions of schema version 2 describe stages, transitions, contracts and gate
 - `baked workflow gates` lists the gate library: the built-in review gates, the policy checks, the user's `~/.baked/gates/*.json` and the project's `baked/gates/*.json`, in that order of precedence, with what each gate shadows. A file that does not parse is listed as a problem and never used. Reading the library runs nothing.
 - A project gate (`baked/gates/*.json`) runs only after the user confirms it: a run that binds an unconfirmed project gate does not start and names the command `baked workflow gates confirm ID...` (or `--all`). The confirmation stores the gate's hash in `.baked/gate-confirmations.json`, so editing the file asks again; the confirmation message says when the gate replaces a built-in, policy or user gate of the same ID. `baked workflow gates` marks confirmed project gates.
 - Workflow agents cannot edit `baked/workflows/`, `baked/gates/`, `baked/agents/`, `baked/skills/` or `baked/constitution.md`; these paths decide what a run may do.
+- A started run keeps the definition it was frozen with; editing `baked/workflows/ID.json` or a bound gate file stops it with `input_changed` at the next boundary. To move the run to the edited definition, revise it (V2-11):
+
+  ```sh
+  baked workflow candidate RUN_ID --workflow baked/workflows/ID.json [--confirm-auto-approval HASH]
+  baked workflow revise RUN_ID --candidate CANDIDATE_HASH --expected-revision N
+  baked workflow resume RUN_ID --expected-revision NEW_N
+  ```
+
+  The candidate is checked like a run start (schema, validator with the approval invariant, gate library, first-use confirmation of project gates, the profiles frozen in the run) and against the run's history. It is refused with every reason when the workflow ID or its inputs change, the current stage or a completed stage is missing or changes its type or contract, the run's stage visits already exceed the new `maxStageVisits`, or a stage the run can still reach consumes a contract that neither the run holds nor every path to that stage produces. New or changed auto-approval limits need `--confirm-auto-approval`, as at start; unchanged limits were confirmed at start. The execution mode cannot change. `revise` supersedes pending requests, stores the new definition, freezes its gates again, records `definition-revisions/COMMAND_ID.json` (the previous definition and both hashes, `approvedBy: "user"`) and clears the approval. A run that already has a spec, plan and task package restarts at the analysis stage, or the first approval, so the plan is approved again; a run without a package continues at its current stage under the new graph. A run of a schema 1 workflow keeps its definition; fork it or start a new run.
 
 ### Workflow editor
 
