@@ -182,11 +182,12 @@ CREATE TABLE criterion_results (
   FOREIGN KEY(run_id, snapshot_id) REFERENCES workspace_snapshots(run_id, id)
 ) STRICT;
 
--- Shown in its final form: migration 002 rebuilds this table to add the 'checkpoint' kind to the CHECK.
+-- Shown in its final form: migration 002 rebuilds this table to add the 'checkpoint' kind to the CHECK,
+-- migration 003 to add the 'delivery' kind.
 CREATE TABLE requests (
   run_id TEXT NOT NULL REFERENCES runs(id),
   id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('approval','clarification','manual_evidence','recovery','checkpoint')),
+  kind TEXT NOT NULL CHECK(kind IN ('approval','clarification','manual_evidence','recovery','checkpoint','delivery')),
   status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected','superseded')),
   digest TEXT NOT NULL CHECK(length(digest) = 64),
   body_json TEXT NOT NULL CHECK(json_valid(body_json)),
@@ -196,11 +197,12 @@ CREATE TABLE requests (
   PRIMARY KEY(run_id, id)
 ) STRICT;
 
+-- Shown in its final form: migration 003 rebuilds this table to add the 'delivery' kind to the CHECK.
 CREATE TABLE effects (
   run_id TEXT NOT NULL,
   id TEXT NOT NULL,
   attempt_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('file_patch','artifact_write','command')),
+  kind TEXT NOT NULL CHECK(kind IN ('file_patch','artifact_write','command','delivery')),
   status TEXT NOT NULL CHECK(status IN ('prepared','applied','unknown','reconciled','failed')),
   intent_json TEXT NOT NULL CHECK(json_valid(intent_json)),
   before_hash TEXT,
