@@ -114,6 +114,29 @@ export const CheckSchema = z
   })
   .strict();
 
+/**
+ * Opt-in approval without a person (workflow v2 design, section 5.2). Frozen with the policy, so
+ * it is part of the approval digest. `renewal` re-approves a revised package that stays within
+ * the last human approval of the run; `limits` approves a package inside the stated bounds.
+ */
+export const AutoApprovalSchema = z
+  .object({
+    renewal: z.boolean(),
+    limits: z
+      .object({
+        maxTasks: z.number().int().min(1).max(500),
+        maxFiles: z.number().int().min(1).max(500),
+        allowedPaths: z.array(z.string().min(1).max(512)).min(1),
+        allowDelete: z.boolean(),
+        allowNewDependencies: z.literal(false),
+        maxTotalTokens: z.number().int().min(1000),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
+
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -135,6 +158,7 @@ export const PolicySchema = z
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
+    autoApproval: AutoApprovalSchema.nullable().optional(),
   })
   .strict();
 
@@ -574,7 +598,7 @@ export const EventSchema = z.discriminatedUnion("type", [
         .object({
           requestId: SafeId,
           status: z.enum(["accepted", "rejected", "superseded"]),
-          actor: z.enum(["user", "system-invalidation"]),
+          actor: z.enum(["user", "system-invalidation", "auto-approval"]),
         })
         .strict(),
     })
@@ -621,6 +645,7 @@ export const EventSchema = z.discriminatedUnion("type", [
 
 export type Spec = z.infer<typeof SpecSchema>;
 export type TaskGraph = z.infer<typeof TaskGraphSchema>;
+export type InputManifest = z.infer<typeof InputManifestSchema>;
 export type WorkflowDefinition = z.infer<typeof WorkflowSchema>;
 export type RunPolicy = z.infer<typeof PolicySchema>;
 export type AgentProfile = z.infer<typeof ProfileSchema>;

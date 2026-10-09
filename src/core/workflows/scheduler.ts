@@ -10,6 +10,7 @@ import { validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
+import { evaluateAutoApproval } from "./auto-approval.js";
 import { reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
@@ -258,19 +259,45 @@ export class WorkflowScheduler {
                 );
                 state.manifest.baselineSnapshotId = snapshot.id;
                 const digest = approvalDigest(state);
-                this.store.transaction(() =>
-                  this.store.request(runId, "approval", digest, {
-                    manifest: state.manifest,
-                    writes: state.graph?.tasks.flatMap((t) => t.writes),
-                    checks: policy.checks,
-                    deferredCriteria: state.spec?.criteria
-                      .filter((c) => c.method === "post-release")
-                      .map((c) => c.id),
-                    boundedCorrection: true,
-                  }),
+                const auto = evaluateAutoApproval(
+                  policy,
+                  state.manifest,
+                  state.spec,
+                  state.graph,
+                  this.store.requests(runId),
                 );
-                this.store.transaction(() => this.store.transition(runId, "waiting", "approval"));
-                advance = false;
+                const body = {
+                  manifest: state.manifest,
+                  writes: state.graph.tasks.flatMap((t) => t.writes),
+                  checks: policy.checks,
+                  policy,
+                  deferredCriteria: state.spec.criteria
+                    .filter((c) => c.method === "post-release")
+                    .map((c) => c.id),
+                  boundedCorrection: true,
+                  ...(policy.autoApproval
+                    ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
+                    : {}),
+                };
+                this.store.transaction(() => {
+                  const requestId = this.store.request(runId, "approval", digest, body);
+                  if (!auto.approval) {
+                    this.store.transition(runId, "waiting", "approval");
+                    return;
+                  }
+                  // The host signs the same digest a person would; post-release criteria never get here.
+                  this.store.decideRequest(
+                    runId,
+                    requestId,
+                    "accepted",
+                    { digest, autoApproval: auto.approval },
+                    true,
+                  );
+                  this.store.setApproval(runId, digest);
+                  state.approvalRoot = digest;
+                  state.deferredCriteria = [];
+                });
+                if (!auto.approval) advance = false;
               }
               break;
             }
