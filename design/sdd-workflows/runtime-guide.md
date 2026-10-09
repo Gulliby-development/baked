@@ -89,9 +89,30 @@ baked workflow revise RUN_ID --candidate CANDIDATE_HASH --expected-revision N
 baked workflow resume RUN_ID --expected-revision NEW_N
 ```
 
-Candidate fields are optional: missing ones are taken from the current package. The plan must contain Context, Decisions, Components, Data, Verification and Risks; DEC-001 and references to requirements. A candidate explicitly accepts the current instructions and configuration hashes. A changed skill requires a new profile/run. Definitions and profile versions inside an existing run stay frozen. A repeated analyze and approval are mandatory.
+Candidate fields are optional: missing ones are taken from the current package. The plan must contain Context, Decisions, Components, Data, Verification and Risks; DEC-001 and references to requirements. A candidate explicitly accepts the current instructions and configuration hashes. A changed skill requires a new profile/run. Definitions and profile versions inside an existing run stay frozen. A repeated analyze and approval are mandatory; with `autoApproval.renewal` the host may give that approval (see below).
 
 The terminal states completed/cancelled/failed are immutable; `fork RUN_ID --expected-revision N` creates a new run with the parent's artifacts, a new approval and no passing evidence. It does not start the model before resume. There is no automatic rollback of user changes.
+
+### Auto approval
+
+Auto approval is off by default. Enabling it is a human act: set `workflows.policy.autoApproval` in `.baked/config.json`, or pass it in a policy file or a revision candidate. The policy is part of the approval digest, so the setting is frozen with the run.
+
+```json
+"autoApproval": {
+  "renewal": true,
+  "limits": { "maxTasks": 3, "maxFiles": 5, "allowedPaths": ["src/**", "tests/**"],
+              "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 200000 }
+}
+```
+
+At the approval stage the host compares the package with the setting. Either mode is enough to approve:
+
+- `renewal` re-approves a revised package that stays within the latest human approval of the same run. Every write must be a path that approval covered: a delete only where a delete was approved. The checks, tools, network, review profiles and the rest of the policy must be identical. Each budget limit (`maxTotalTokens`, `maxAgentCalls`, `maxAgentSteps`, `maxActiveMs`, `maxConcurrentReadAgents`, `maxRepairRounds`, `maxConvergenceRounds`, `maxCorrectiveTasks`) may stay the same or go down. The workflow, profile and skill hashes must not change. A fork starts without a human approval, so its first approval is always human. Approvals recorded before this feature do not include the policy and cannot be renewed.
+- `limits` approves a package with at most `maxTasks` tasks and `maxFiles` distinct files. Every write must match one of the `allowedPaths` globs, compared without case. Deletes are allowed only with `allowDelete`. The run's `maxTotalTokens` must not exceed `limits.maxTotalTokens`. `allowNewDependencies` can only be `false`. A setting with `renewal: false` and no `limits` is rejected.
+
+Some packages always go to a person, whatever the setting. These are writes under `.git`, `.baked`, `baked/`, `specs/`, `.github`, `.gitlab`, `.circleci` or `.husky`, writes to package manifests and lock files, `tsconfig*`, `biome*`, `.env*`, `AGENTS.md`, `CLAUDE.md`, `constitution.md`, key and certificate files, and any spec with post-release criteria (deferring them needs explicit consent).
+
+An automatic approval is stored on the same approval request with the same digest a person would sign. Its actor is `auto-approval`, and its answer contains the mode and a hash of the limits. The event log shows `Decision accepted (auto approval)`. When auto approval declines, the request stays pending for a person, and `autoApproval.declined` in its body lists why.
 
 ## Gates, budgets and estimates
 
