@@ -17,7 +17,7 @@ async function getFormatCommand(cwd: string): Promise<string | null> {
   if (cachedFormatCmd !== undefined) return cachedFormatCmd;
   const { detectProfile } = await import("./project.js");
   const profile = await detectProfile(cwd);
-  cachedFormatCmd = profile.format;
+  cachedFormatCmd = profile.formatFile;
   return cachedFormatCmd;
 }
 
