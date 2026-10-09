@@ -1260,127 +1260,18 @@ export class WorkflowScheduler {
       }
       const taskFailures: Review["findings"] = [];
       const checkEvidence: string[] = [];
-      for (const check of policy.checks.filter(
-        (c) => c.scope === "task" && task.checkIds.includes(c.id),
-      )) {
-        const attempt = this.store.reserve(runId, child, null, 0, policy);
-        const checked = await this.checks.run(
+      for (const check of taskChecks(policy, task)) {
+        const checked = await this.runTaskCheck(
           runId,
-          attempt,
+          child,
           check,
+          policy,
           signal,
           runRoot(this.store.workspace, state),
         );
-        if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
-        this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
-        if (check.required && checked.status !== "passed") {
-          this.store.transaction(() =>
-            this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
-          );
-          if (checked.status === "inconclusive")
-            throw new WorkflowFault("OUTPUT_INVALID", `Task check ${check.id} is inconclusive`, {
-              reason: "verification_failed",
-            });
-          taskFailures.push({
-            id: newId(),
-            kind: "correctness",
-            severity: "high",
-            requirementIds: task.requirementIds,
-            criterionIds: task.criterionIds,
-            file: null,
-            symbol: null,
-            evidenceIds: [checked.evidenceId],
-            claim: `Task ${task.id} required check ${check.id} failed`,
-            impact: "Dependent tasks cannot run",
-            suggestedFix: `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
-          });
-        }
+        this.applyTaskCheck(runId, state, task, check, checked, taskFailures, checkEvidence);
       }
-      if (taskFailures.length) {
-        const recorded = this.recordFindings(runId, {
-          schemaVersion: 1,
-          snapshotHash: state.workspaceHash ?? "",
-          verdict: "changes_requested",
-          coverage: [],
-          findings: taskFailures,
-        });
-        for (const finding of recorded) state.repairPredecessors[finding.id] = task.id;
-        this.repair(runId, state, policy, recorded, "repair");
-        this.store.transaction(() => this.store.saveState(runId, state));
-      } else {
-        this.store.transaction(() => {
-          const graph = state.graph;
-          const row = this.store.tasks(runId).find((entry) => entry.id === task.id);
-          if (!graph || !row)
-            throw new WorkflowFault("INVALID_REFERENCE", "Checked task graph is missing");
-          state.taskGates[task.id] = {
-            generation: row.generation,
-            snapshotId: row.snapshot_id ?? "",
-            definitionHash: hashJson(task),
-            evidenceIds: checkEvidence,
-          };
-          // Restore the whole repair chain atomically with the successful check gate.
-          const restored = new Set<string>();
-          const completed = [task];
-          for (const correction of completed) {
-            for (const findingId of correction.findingIds) {
-              const predecessor = state.repairPredecessors[findingId];
-              if (predecessor && !restored.has(predecessor)) {
-                const siblings = graph.tasks.filter((candidate) =>
-                  candidate.findingIds.some((id) => state.repairPredecessors[id] === predecessor),
-                );
-                const rows = this.store.tasks(runId);
-                if (
-                  !siblings.every((sibling) =>
-                    rows.some(
-                      (entry) =>
-                        entry.id === sibling.id &&
-                        ["implemented", "verified"].includes(entry.status) &&
-                        hasTaskGate(entry, state.taskGates),
-                    ),
-                  )
-                )
-                  continue;
-                restored.add(predecessor);
-                this.store.taskStatus(runId, predecessor, "implemented", state.snapshotId);
-                const row = this.store.tasks(runId).find((entry) => entry.id === predecessor);
-                if (!row)
-                  throw new WorkflowFault("INVALID_REFERENCE", "Repair predecessor is missing");
-                state.taskGates[predecessor] = {
-                  generation: row.generation,
-                  snapshotId: row.snapshot_id ?? "",
-                  definitionHash: hashJson(JSON.parse(row.definition_json)),
-                  evidenceIds: checkEvidence,
-                };
-                const parent = graph.tasks.find((candidate) => candidate.id === predecessor);
-                if (parent) completed.push(parent);
-              }
-            }
-          }
-          const affected = new Set(restored);
-          for (let changed = true; changed; ) {
-            changed = false;
-            for (const candidate of graph.tasks) {
-              if (
-                !affected.has(candidate.id) &&
-                candidate.dependsOn.some((id) => affected.has(id))
-              ) {
-                affected.add(candidate.id);
-                changed = true;
-              }
-            }
-          }
-          for (const entry of this.store.tasks(runId))
-            if (
-              !restored.has(entry.id) &&
-              affected.has(entry.id) &&
-              ["implemented", "verified"].includes(entry.status)
-            )
-              this.store.taskStatus(runId, entry.id, "invalidated");
-          this.store.finishStep(runId, child, "completed");
-          this.store.saveState(runId, state);
-        });
-      }
+      this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
     }
     if (
       this.store
@@ -1394,6 +1285,152 @@ export class WorkflowScheduler {
       throw new WorkflowFault("OUTPUT_INVALID", "Task dependencies remain blocked", {
         reason: "dependency_failed",
       });
+  }
+  /** Runs one task check in `root` under its own host attempt. */
+  private async runTaskCheck(
+    runId: string,
+    child: string,
+    check: Check,
+    policy: RunPolicy,
+    signal: AbortSignal,
+    root: string,
+  ): Promise<{ status: "passed" | "failed" | "inconclusive"; evidenceId: string }> {
+    const attempt = this.store.reserve(runId, child, null, 0, policy);
+    const checked = await this.checks.run(runId, attempt, check, signal, root);
+    this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    return checked;
+  }
+  /**
+   * Applies one task check result: a pass is gate evidence, a required failure blocks the task
+   * and becomes a finding, and a required inconclusive result stops the run.
+   */
+  private applyTaskCheck(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    check: Check,
+    checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string },
+    taskFailures: Review["findings"],
+    checkEvidence: string[],
+  ): void {
+    if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
+    if (!check.required || checked.status === "passed") return;
+    this.store.transaction(() =>
+      this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
+    );
+    if (checked.status === "inconclusive")
+      throw new WorkflowFault("OUTPUT_INVALID", `Task check ${check.id} is inconclusive`, {
+        reason: "verification_failed",
+      });
+    taskFailures.push({
+      id: newId(),
+      kind: "correctness",
+      severity: "high",
+      requirementIds: task.requirementIds,
+      criterionIds: task.criterionIds,
+      file: null,
+      symbol: null,
+      evidenceIds: [checked.evidenceId],
+      claim: `Task ${task.id} required check ${check.id} failed`,
+      impact: "Dependent tasks cannot run",
+      suggestedFix: `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
+    });
+  }
+  /**
+   * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
+   * check gate and the repair chain it closes is restored.
+   */
+  private settleTask(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    child: string,
+    taskFailures: Review["findings"],
+    checkEvidence: string[],
+  ): void {
+    if (taskFailures.length) {
+      const recorded = this.recordFindings(runId, {
+        schemaVersion: 1,
+        snapshotHash: state.workspaceHash ?? "",
+        verdict: "changes_requested",
+        coverage: [],
+        findings: taskFailures,
+      });
+      for (const finding of recorded) state.repairPredecessors[finding.id] = task.id;
+      this.repair(runId, state, policy, recorded, "repair");
+      this.store.transaction(() => this.store.saveState(runId, state));
+    } else {
+      this.store.transaction(() => {
+        const graph = state.graph;
+        const row = this.store.tasks(runId).find((entry) => entry.id === task.id);
+        if (!graph || !row)
+          throw new WorkflowFault("INVALID_REFERENCE", "Checked task graph is missing");
+        state.taskGates[task.id] = {
+          generation: row.generation,
+          snapshotId: row.snapshot_id ?? "",
+          definitionHash: hashJson(task),
+          evidenceIds: checkEvidence,
+        };
+        // Restore the whole repair chain atomically with the successful check gate.
+        const restored = new Set<string>();
+        const completed = [task];
+        for (const correction of completed) {
+          for (const findingId of correction.findingIds) {
+            const predecessor = state.repairPredecessors[findingId];
+            if (predecessor && !restored.has(predecessor)) {
+              const siblings = graph.tasks.filter((candidate) =>
+                candidate.findingIds.some((id) => state.repairPredecessors[id] === predecessor),
+              );
+              const rows = this.store.tasks(runId);
+              if (
+                !siblings.every((sibling) =>
+                  rows.some(
+                    (entry) =>
+                      entry.id === sibling.id &&
+                      ["implemented", "verified"].includes(entry.status) &&
+                      hasTaskGate(entry, state.taskGates),
+                  ),
+                )
+              )
+                continue;
+              restored.add(predecessor);
+              this.store.taskStatus(runId, predecessor, "implemented", state.snapshotId);
+              const row = this.store.tasks(runId).find((entry) => entry.id === predecessor);
+              if (!row)
+                throw new WorkflowFault("INVALID_REFERENCE", "Repair predecessor is missing");
+              state.taskGates[predecessor] = {
+                generation: row.generation,
+                snapshotId: row.snapshot_id ?? "",
+                definitionHash: hashJson(JSON.parse(row.definition_json)),
+                evidenceIds: checkEvidence,
+              };
+              const parent = graph.tasks.find((candidate) => candidate.id === predecessor);
+              if (parent) completed.push(parent);
+            }
+          }
+        }
+        const affected = new Set(restored);
+        for (let changed = true; changed; ) {
+          changed = false;
+          for (const candidate of graph.tasks) {
+            if (!affected.has(candidate.id) && candidate.dependsOn.some((id) => affected.has(id))) {
+              affected.add(candidate.id);
+              changed = true;
+            }
+          }
+        }
+        for (const entry of this.store.tasks(runId))
+          if (
+            !restored.has(entry.id) &&
+            affected.has(entry.id) &&
+            ["implemented", "verified"].includes(entry.status)
+          )
+            this.store.taskStatus(runId, entry.id, "invalidated");
+        this.store.finishStep(runId, child, "completed");
+        this.store.saveState(runId, state);
+      });
+    }
   }
   private async runChecks(
     runId: string,
@@ -2185,6 +2222,10 @@ export class WorkflowScheduler {
     });
   }
 }
+
+/** The task-scope checks a task names, in policy order. */
+const taskChecks = (policy: RunPolicy, task: Task): Check[] =>
+  policy.checks.filter((c) => c.scope === "task" && task.checkIds.includes(c.id));
 
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
