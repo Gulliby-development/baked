@@ -49,6 +49,8 @@ import {
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
+import { blocksRun, isAcceptanceRequest } from "./v2/acceptance.js";
+import { decideAcceptance } from "./v2/acceptance-gate.js";
 import { type Gate, validateWorkflowV2, type WorkflowV2 } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
 import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
@@ -186,10 +188,18 @@ export class NativeWorkflowService implements WorkflowService {
       }
       // The command gates the definition binds are the run's checks, with their effective modes;
       // auto approval comes from the definition only.
+      const acceptanceWrites = [
+        ...new Set(
+          gates.flatMap((g) =>
+            g.type === "ai-acceptance" ? g.acceptance.capabilities.writePaths : [],
+          ),
+        ),
+      ];
       policy = PolicySchema.parse({
         ...policy,
         checks: checksOf(definition, gates),
         autoApproval,
+        ...(acceptanceWrites.length ? { acceptanceWrites } : {}),
       });
       validateChecks(this.workspace, policy);
       for (const stage of definition.stages) {
@@ -352,8 +362,7 @@ export class NativeWorkflowService implements WorkflowService {
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     this.enabled();
     assertMutable(this.store.run(runId).status);
-    if (this.store.requests(runId).some((r) => r.status === "pending"))
-      return this.store.snapshot(runId);
+    if (this.store.requests(runId).some(blocksRun)) return this.store.snapshot(runId);
     if (this.active.has(runId))
       throw new WorkflowFault("WORKSPACE_BUSY", "Run already executing in this process");
     const controller = new AbortController();
@@ -397,7 +406,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.enabled();
     return this.store.command(runId, command, { runId, ...command, action: "resume" }, () => {
       assertMutable(this.store.run(runId).status);
-      if (this.store.requests(runId).some((r) => r.status === "pending"))
+      if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Resolve pending requests before resuming");
       assertFrozenInputs(this.store.state(runId));
       const lease = this.store.lease("execution");
@@ -424,6 +433,11 @@ export class NativeWorkflowService implements WorkflowService {
   async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
       const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
+      // The decision on an acceptance test is advisory work beside the run, at any status.
+      if (named && isAcceptanceRequest(named)) {
+        decideAcceptance(this.store, runId, named, decision);
+        return;
+      }
       // Delivery happens after a run completed; its decisions never change the run's state.
       if (named && isDeliveryRequest(named)) {
         if (named.status !== "pending")
@@ -592,7 +606,7 @@ export class NativeWorkflowService implements WorkflowService {
           throw new WorkflowFault("STALE_DECISION", "Only a token checkpoint can be continued");
       } else if (decision.kind === "reject") accepted = false;
       this.store.decideRequest(runId, request.id, accepted ? "accepted" : "rejected", decision);
-      const pending = this.store.requests(runId).some((r) => r.status === "pending");
+      const pending = this.store.requests(runId).some(blocksRun);
       if (decision.kind === "manual-evidence" && accepted && !pending) {
         const parsed = parseRunDefinition(this.store.run(runId).definition_json);
         const position = state.position;

@@ -166,6 +166,11 @@ export const PolicySchema = z
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),
     autoApproval: AutoApprovalSchema.nullable().optional(),
+    /**
+     * Directories the applications of the run's AI acceptance gates may write. Like the outputs
+     * of checks they are left out of source snapshots. Absent when no such gate grants writes.
+     */
+    acceptanceWrites: z.array(RelativePath).max(16).optional(),
   })
   .strict();
 
@@ -1034,3 +1039,9 @@ export function validateWorkflow(workflow: WorkflowDefinition): string[] {
   }
   return errors;
 }
+
+/** Paths the run's commands produce; source snapshots leave them out. */
+export const generatedPaths = (policy: RunPolicy): string[] => [
+  ...policy.checks.flatMap((c) => c.writes),
+  ...(policy.acceptanceWrites ?? []),
+];

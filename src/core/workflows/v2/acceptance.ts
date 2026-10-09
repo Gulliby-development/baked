@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import { RelativePath, SafeId } from "../schemas.js";
+import type { RequestRow } from "../store.js";
 import { CommandGate, type CommandGateDefinition, type Gate, validateGate } from "./definition.js";
 
 export type AcceptanceGateDefinition = Extract<Gate, { type: "ai-acceptance" }>;
@@ -233,4 +234,37 @@ export function promotedGate(
 /** Paths that changed outside the granted write directories. */
 export function writesOutside(changed: readonly string[], writePaths: readonly string[]): string[] {
   return changed.filter((path) => !writePaths.some((w) => path === w || path.startsWith(`${w}/`)));
+}
+
+/** Whether a request is the human decision on a verified acceptance test. */
+export function isAcceptanceRequest(request: RequestRow): boolean {
+  if (request.kind !== "approval") return false;
+  const body = JSON.parse(request.body_json) as { acceptance?: unknown };
+  return typeof body.acceptance === "object" && body.acceptance !== null;
+}
+/**
+ * A pending request the run waits for. The decision on an acceptance test is not one: the
+ * walk-through is advisory, so the run goes on and the person decides whenever they like.
+ */
+export const blocksRun = (request: RequestRow): boolean =>
+  request.status === "pending" && !isAcceptanceRequest(request);
+
+/** The AI walk-throughs that are granted any capability, as an approval shows them. */
+export function acceptanceGrants(gates: readonly Gate[]): {
+  gateId: string;
+  driver: AcceptanceGateDefinition["acceptance"]["driver"];
+  command: string[];
+  capabilities: AcceptanceGateDefinition["acceptance"]["capabilities"];
+}[] {
+  return gates
+    .filter((g): g is AcceptanceGateDefinition => g.type === "ai-acceptance")
+    .filter(({ acceptance: { capabilities: c } }) =>
+      c.spawnApp || c.listenPorts.length || c.outboundHosts.length || c.writePaths.length,
+    )
+    .map((g) => ({
+      gateId: g.id,
+      driver: g.acceptance.driver,
+      command: [g.acceptance.start.executable, ...g.acceptance.start.args],
+      capabilities: g.acceptance.capabilities,
+    }));
 }

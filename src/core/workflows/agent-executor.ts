@@ -18,6 +18,7 @@ import type { WorkspaceLeases } from "./leases.js";
 import { ProcessScope } from "./process-scope.js";
 import {
   AnalysisSchema,
+  generatedPaths,
   ImplementationSchema,
   PlanSchema,
   RefutationSchema,
@@ -34,7 +35,7 @@ import {
   stepTokens,
 } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
-import { WorkflowToolPolicy } from "./tool-policy.js";
+import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types.js";
 import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
 
@@ -91,15 +92,18 @@ export class NativeAgentExecutor implements AgentExecutor {
         );
       const writer =
         request.profile.role === "implementer" || request.profile.role === "acceptance-writer";
-      // An attempt with host tools gets those and nothing from the registry.
+      const registryTools = buildTools(root, async () => false, {
+        contextManager: context,
+        repoMap: context.isRepoMapReady() ? context.getRepoMap() : undefined,
+        onApproveOutsideCwd: async () => false,
+        onApproveDestructive: async () => writer && request.task !== undefined,
+      });
+      // An attempt with host tools gets those and, from the registry, only read-only tools.
       const rawTools = request.hostTools
-        ? {}
-        : buildTools(root, async () => false, {
-            contextManager: context,
-            repoMap: context.isRepoMapReady() ? context.getRepoMap() : undefined,
-            onApproveOutsideCwd: async () => false,
-            onApproveDestructive: async () => writer && request.task !== undefined,
-          });
+        ? Object.fromEntries(
+            Object.entries(registryTools).filter(([name]) => pureWorkflowTools.has(name)),
+          )
+        : registryTools;
       const guard = new WorkflowToolPolicy(
         this.store,
         this.leases,
@@ -136,11 +140,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               execute(normalized, options),
             );
             if (!["edit_file", "multi_edit"].includes(name)) {
-              const files = await sourceManifest(
-                root,
-                policy.checks.flatMap((c) => c.writes),
-                request.signal,
-              );
+              const files = await sourceManifest(root, generatedPaths(policy), request.signal);
               const evidenceId = this.store.transaction(() => {
                 const snapshot = this.store.putSnapshot(request.runId, files);
                 const artifact = this.store.artifact(

@@ -250,9 +250,21 @@ export function describeGate(entry: LibraryEntry): string {
         ? "asks a person"
         : gate.type === "ai-review"
           ? `AI review by ${gate.review.profileId}`
-          : "AI walk-through";
+          : acceptanceSummary(gate);
   const shadows = entry.shadows.length
     ? `; replaces the ${entry.shadows.map((s) => s.source).join(", ")} gate of the same ID`
     : "";
   return `${gate.id}: ${body}${shadows}`;
+}
+
+/** What an AI walk-through starts and which capabilities it is granted; everything else is denied. */
+function acceptanceSummary(gate: Extract<Gate, { type: "ai-acceptance" }>): string {
+  const { start, capabilities: c, driver } = gate.acceptance;
+  const grants = [
+    c.spawnApp ? "spawnApp" : null,
+    c.listenPorts.length ? `listenPorts ${c.listenPorts.join(",")}` : null,
+    c.outboundHosts.length ? `outboundHosts ${c.outboundHosts.join(",")}` : null,
+    c.writePaths.length ? `writePaths ${c.writePaths.join(",")}` : null,
+  ].filter(Boolean);
+  return `AI walk-through (${driver}) of ${[start.executable, ...start.args].join(" ")} in ${start.cwd}; grants ${grants.length ? grants.join("; ") : "nothing"}`;
 }
