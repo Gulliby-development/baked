@@ -1,6 +1,6 @@
 /**
  * The AI acceptance gate at run time (workflow v2 design, section 9.3): a model walks the
- * scenario through the terminal driver, a second profile writes a deterministic test, the host
+ * scenario through the terminal or the browser driver, a second profile writes a deterministic test, the host
  * runs that test without a model, and a person decides whether it is promoted to a command gate.
  * The walk-through is advisory: nothing here can close a required gate.
  */
@@ -47,7 +47,14 @@ import {
   walkProblems,
   walkVerdict,
 } from "./acceptance.js";
+import {
+  type BrowserLauncher,
+  type BrowserPage,
+  playwrightLauncher,
+  SNAPSHOT_LIMIT,
+} from "./browser-driver.js";
 import { GateSchema } from "./definition.js";
+import { FilterProxy, type ProxyDecision, type ProxyResolver } from "./filter-proxy.js";
 import { confirmGates, loadGateLibrary } from "./library.js";
 import { listenerViolations, listeningSockets, TerminalApp } from "./terminal-driver.js";
 
@@ -57,6 +64,14 @@ const MAX_STEPS = 60;
 const FRAME_LINES = 40;
 const READ_LIMIT = 8000;
 const PORT_POLL_MS = 200;
+const BROWSER_ACTION_MS = 30000;
+
+/** How the browser driver is provided: Playwright by default, an injected launcher in tests. */
+export interface BrowserDriverOptions {
+  launcher: BrowserLauncher;
+  /** Maps requested hosts to the addresses the proxy connects to; tests map fake names. */
+  resolve?: ProxyResolver;
+}
 
 type AcceptanceEntry = RuntimeState["acceptance"][string];
 type PhaseName = Extract<WorkflowEvent, { type: "acceptance.phase" }>["payload"]["phase"];
@@ -97,10 +112,31 @@ export interface WalkStep {
   action: string;
   observation: string;
   expectationIds: string[];
-  /** The last lines of the terminal when the step was recorded. */
+  /** The last lines of the terminal, or the page snapshot of the browser, when the step was recorded. */
   frame: string;
   exit: { exitCode: number | null; signal: string | null } | null;
+  /** Browser driver: the page address when the step was recorded. */
+  url?: string;
+  /** Browser driver: requests the proxy refused since the previous step. */
+  refused?: ProxyDecision[];
+  /** Browser driver: the last lines of the application's own output. */
+  log?: string;
 }
+
+/** The address relative browser paths resolve against: the readiness URL, a granted port or host. */
+export function browserBaseUrl(gate: AcceptanceGateDefinition): string | null {
+  const { start, capabilities } = gate.acceptance;
+  if (start.readyWhen.url) return start.readyWhen.url;
+  if (capabilities.listenPorts[0]) return `http://127.0.0.1:${capabilities.listenPorts[0]}/`;
+  if (capabilities.outboundHosts[0]) return `https://${capabilities.outboundHosts[0]}/`;
+  return null;
+}
+
+const proxyGrant = (gate: AcceptanceGateDefinition) => ({
+  outboundHosts: gate.acceptance.capabilities.outboundHosts,
+  loopbackPorts: gate.acceptance.capabilities.listenPorts,
+});
+const refusedLabel = (d: ProxyDecision): string => `${d.method} ${d.host}:${d.port}: ${d.reason}`;
 
 /**
  * One attempt of the walk-through model: the application it may start, the tools it gets and the
@@ -112,6 +148,12 @@ export class WalkSession {
   private app: TerminalApp | null = null;
   private monitor: ReturnType<typeof setInterval> | null = null;
   private effects: string[] = [];
+  private proxy: FilterProxy | null = null;
+  private page: BrowserPage | null = null;
+  private launching: Promise<BrowserPage> | null = null;
+  /** Proxy decisions already shown to the model and already stored with a step. */
+  private shown = 0;
+  private stepped = 0;
   constructor(
     private store: WorkflowStore,
     private runId: string,
@@ -119,12 +161,22 @@ export class WalkSession {
     private gate: AcceptanceGateDefinition,
     private workspace: string,
     private signal: AbortSignal,
+    private browser: BrowserDriverOptions = { launcher: playwrightLauncher },
   ) {}
   get stepIds(): Set<string> {
     return new Set(this.recorded);
   }
-  tools(): Record<string, HostTool> {
+  /** What the proxy allowed and refused during this attempt (browser driver). */
+  network(): { allowed: string[]; refused: ProxyDecision[] } | null {
+    if (!this.proxy) return null;
+    const decisions = this.proxy.decisions;
     return {
+      allowed: [...new Set(decisions.filter((d) => d.allowed).map((d) => `${d.host}:${d.port}`))],
+      refused: decisions.filter((d) => !d.allowed),
+    };
+  }
+  tools(): Record<string, HostTool> {
+    const common: Record<string, HostTool> = {
       app_start: {
         description:
           "Start the application with its declared command (no arguments can be added) and wait for its readiness signal.",
@@ -136,6 +188,19 @@ export class WalkSession {
         inputSchema: z.object({}).strict(),
         execute: async () => ({ exit: await this.stopApp() }),
       },
+      record_step: {
+        description:
+          "Record the action you took and what you observed, with the expectations (E1, E2, ...) it concerns. Returns the step ID to cite in the result.",
+        inputSchema: StepInputSchema,
+        execute: async (input) => this.record(StepInputSchema.parse(input)),
+      },
+    };
+    return this.gate.acceptance.driver === "browser"
+      ? { ...common, ...this.browserTools() }
+      : { ...common, ...this.terminalTools() };
+  }
+  private terminalTools(): Record<string, HostTool> {
+    return {
       terminal_send: {
         description:
           "Write text to the application's standard input. enter (default true) appends a newline; eof closes the input afterwards.",
@@ -172,12 +237,136 @@ export class WalkSession {
           return { output: clean(read.output).slice(-READ_LIMIT), exit: read.exit };
         },
       },
-      record_step: {
+    };
+  }
+  private browserTools(): Record<string, HostTool> {
+    const selector = z.string().min(1).max(1000);
+    const act = async (action: (page: BrowserPage, timeoutMs: number) => Promise<unknown>) => {
+      const page = await this.openBrowser();
+      const timeoutMs = Math.min(BROWSER_ACTION_MS, this.gate.timeoutMs);
+      try {
+        await action(page, timeoutMs);
+      } catch (error) {
+        throw new WorkflowFault("OUTPUT_INVALID", `The browser action failed: ${message(error)}`);
+      }
+      return this.view(page);
+    };
+    return {
+      browser_open: {
         description:
-          "Record the action you took and what you observed, with the expectations (E1, E2, ...) it concerns. Returns the step ID to cite in the result.",
-        inputSchema: StepInputSchema,
-        execute: async (input) => this.record(StepInputSchema.parse(input)),
+          "Open a URL in the browser, or a path such as /login relative to the application. Only granted hosts (outboundHosts) and the application's granted ports on loopback are reachable; other requests are refused by the proxy and listed in refused. Returns the page snapshot.",
+        inputSchema: z.object({ url: z.string().min(1).max(2048) }).strict(),
+        execute: async (input) => {
+          const target = this.browserUrl((input as { url: string }).url);
+          let status: number | null = null;
+          const view = await act(async (page, timeoutMs) => {
+            status = (await page.goto(target, timeoutMs)).status;
+          });
+          return { status, ...view };
+        },
       },
+      browser_snapshot: {
+        description:
+          "Read the current page: its address, title and accessibility snapshot (or visible text).",
+        inputSchema: z.object({}).strict(),
+        execute: async () => act(async () => {}),
+      },
+      browser_click: {
+        description:
+          'Click the first element matching a Playwright selector (for example text=Save, role=button[name="Save"], #id). Returns the page snapshot afterwards.',
+        inputSchema: z.object({ selector }).strict(),
+        execute: async (input) =>
+          act((page, timeoutMs) => page.click((input as { selector: string }).selector, timeoutMs)),
+      },
+      browser_type: {
+        description:
+          "Replace the value of the first input matching a Playwright selector with text; submit presses Enter afterwards. Returns the page snapshot afterwards.",
+        inputSchema: z
+          .object({ selector, text: z.string().max(8000), submit: z.boolean().optional() })
+          .strict(),
+        execute: async (input) => {
+          const {
+            selector: target,
+            text,
+            submit,
+          } = input as {
+            selector: string;
+            text: string;
+            submit?: boolean;
+          };
+          return act(async (page, timeoutMs) => {
+            await page.fill(target, text, timeoutMs);
+            if (submit) await page.press("Enter", target, timeoutMs);
+          });
+        },
+      },
+      browser_key: {
+        description:
+          "Press a key (for example Enter, Tab, Escape, ArrowDown), on the element matching selector when one is given. Returns the page snapshot afterwards.",
+        inputSchema: z
+          .object({ key: z.string().min(1).max(50), selector: selector.optional() })
+          .strict(),
+        execute: async (input) => {
+          const { key, selector: target } = input as { key: string; selector?: string };
+          return act((page, timeoutMs) => page.press(key, target, timeoutMs));
+        },
+      },
+    };
+  }
+  /** An absolute http(s) URL, or a path resolved against the application's address. */
+  private browserUrl(text: string): string {
+    const base = browserBaseUrl(this.gate);
+    let url: URL;
+    try {
+      url = base ? new URL(text, base) : new URL(text);
+    } catch {
+      throw new WorkflowFault("OUTPUT_INVALID", `Not a URL: ${text}`);
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:")
+      throw new WorkflowFault("CAPABILITY_DENIED", "Only http and https URLs can be opened");
+    return url.href;
+  }
+  /** Starts the filtering proxy and the browser behind it on first use. */
+  private openBrowser(): Promise<BrowserPage> {
+    if (this.page) return Promise.resolve(this.page);
+    this.launching ??= (async () => {
+      const proxy =
+        this.proxy ?? new FilterProxy({ ...proxyGrant(this.gate), resolve: this.browser.resolve });
+      this.proxy = proxy;
+      await proxy.start();
+      try {
+        this.page = await this.browser.launcher.launch(this.workspace, {
+          proxyServer: proxy.url,
+        });
+      } catch (error) {
+        this.launching = null;
+        throw new WorkflowFault("OUTPUT_INVALID", `The browser did not start: ${message(error)}`);
+      }
+      return this.page;
+    })();
+    return this.launching;
+  }
+  /** What a browser tool returns: the page and the requests refused since the last tool result. */
+  private async view(page: BrowserPage): Promise<{
+    url: string;
+    title: string;
+    snapshot: string;
+    refused: string[];
+  }> {
+    const decisions = this.proxy?.decisions ?? [];
+    const refused = decisions
+      .slice(this.shown)
+      .filter((d) => !d.allowed)
+      .map(refusedLabel);
+    this.shown = decisions.length;
+    return {
+      url: page.url(),
+      title: await page.title().catch(() => ""),
+      snapshot: clean(await page.snapshot().catch((e) => `(no snapshot: ${message(e)})`)).slice(
+        0,
+        SNAPSHOT_LIMIT,
+      ),
+      refused,
     };
   }
   private running(): TerminalApp {
@@ -186,9 +375,7 @@ export class WalkSession {
     return this.app;
   }
   private async start(): Promise<unknown> {
-    const { start, capabilities, driver } = this.gate.acceptance;
-    if (driver !== "terminal")
-      throw new WorkflowFault("CAPABILITY_DENIED", `The ${driver} driver is not available`);
+    const { start, capabilities } = this.gate.acceptance;
     if (!capabilities.spawnApp) {
       this.violations.push("app_start was refused: spawnApp is not granted");
       throw new WorkflowFault("CAPABILITY_DENIED", "spawnApp is not granted to this walk-through");
@@ -276,7 +463,7 @@ export class WalkSession {
     });
     return exit;
   }
-  private record(input: z.infer<typeof StepInputSchema>): { stepId: string } {
+  private async record(input: z.infer<typeof StepInputSchema>): Promise<{ stepId: string }> {
     const known = expectationIds(this.gate);
     const unknown = input.expectationIds.filter((id) => !known.includes(id));
     if (unknown.length)
@@ -290,6 +477,7 @@ export class WalkSession {
         `A walk-through records at most ${MAX_STEPS} steps`,
       );
     const stepId = `S${this.recorded.length + 1}`;
+    const terminal = clean(this.app?.frame(FRAME_LINES) ?? "");
     const step: WalkStep = {
       stepId,
       attemptId: this.attemptId,
@@ -297,9 +485,23 @@ export class WalkSession {
       action: input.action,
       observation: input.observation,
       expectationIds: input.expectationIds,
-      frame: clean(this.app?.frame(FRAME_LINES) ?? ""),
+      frame: terminal,
       exit: this.app?.exited ?? null,
     };
+    if (this.gate.acceptance.driver === "browser") {
+      const page = this.page;
+      const decisions = this.proxy?.decisions ?? [];
+      step.frame = page
+        ? clean(await page.snapshot().catch((e) => `(no snapshot: ${message(e)})`)).slice(
+            0,
+            SNAPSHOT_LIMIT,
+          )
+        : "";
+      step.url = page?.url() ?? "";
+      step.refused = decisions.slice(this.stepped).filter((d) => !d.allowed);
+      step.log = terminal;
+      this.stepped = decisions.length;
+    }
     this.store.transaction(() =>
       this.store.artifact(
         this.runId,
@@ -312,6 +514,11 @@ export class WalkSession {
     return { stepId };
   }
   async close(): Promise<void> {
+    const page = this.page ?? (await this.launching?.catch(() => null));
+    this.page = null;
+    this.launching = null;
+    await page?.close().catch(() => {});
+    await this.proxy?.stop();
     await this.stopApp();
   }
 }
@@ -367,6 +574,8 @@ export interface TestRun {
   failed: string[];
   violations: string[];
   output: string;
+  /** Browser driver: requests the filtering proxy refused during the run. */
+  refused?: string[];
 }
 
 /**
@@ -379,7 +588,28 @@ export async function runTestOnce(
   gate: AcceptanceGateDefinition,
   policy: RunPolicy,
   signal: AbortSignal,
+  resolve?: ProxyResolver,
 ): Promise<TestRun> {
+  // A browser test reaches the network through the same filtering proxy as the walk-through.
+  const proxy =
+    gate.acceptance.driver === "browser" ? new FilterProxy({ ...proxyGrant(gate), resolve }) : null;
+  if (proxy) await proxy.start();
+  try {
+    return await runTest(workspace, gate, policy, signal, proxy);
+  } finally {
+    await proxy?.stop();
+  }
+}
+
+async function runTest(
+  workspace: string,
+  gate: AcceptanceGateDefinition,
+  policy: RunPolicy,
+  signal: AbortSignal,
+  proxy: FilterProxy | null,
+): Promise<TestRun> {
+  const env = appEnv(gate.acceptance.start.envNames);
+  if (proxy) env.BAKED_ACCEPTANCE_PROXY = proxy.url;
   const excluded = [...generatedPaths(policy), ...gate.acceptance.capabilities.writePaths];
   const before = await sourceManifest(workspace, excluded, signal);
   const command = testCommand(gate.acceptance.promote.testPath);
@@ -390,7 +620,7 @@ export async function runTestOnce(
   try {
     result = await scope.execute(resolveExecutable(command.executable), command.args, {
       cwd: workspace,
-      env: appEnv(gate.acceptance.start.envNames),
+      env,
       timeoutMs: gate.timeoutMs,
       signal,
       onSpawn: (pid, marker) => {
@@ -431,6 +661,7 @@ export async function runTestOnce(
     failed: failedAssertions(output),
     violations,
     output: output.trimEnd().split("\n").slice(-FRAME_LINES).join("\n"),
+    ...(proxy ? { refused: proxy.refusals.map(refusedLabel) } : {}),
   };
 }
 
@@ -442,6 +673,8 @@ export interface AcceptanceHost {
   policy: RunPolicy;
   transitionId: string | null;
   signal: AbortSignal;
+  /** The browser driver; Playwright when absent. */
+  browser?: BrowserDriverOptions;
   profile(id: string): AgentProfile | undefined;
   callAgent(
     profile: AgentProfile,
@@ -541,13 +774,23 @@ export async function runAcceptanceGate(
     return { status: statusOf(entry), evidenceId: entry.evidenceId };
   };
 
-  if (gate.acceptance.driver === "browser")
-    return finish({
-      phase: "skipped",
-      reason:
-        "The browser driver is not implemented in this version; only terminal walk-throughs run.",
-    });
-  if (!gate.acceptance.capabilities.spawnApp)
+  const browser: BrowserDriverOptions = host.browser ?? { launcher: playwrightLauncher };
+  const { capabilities } = gate.acceptance;
+  if (gate.acceptance.driver === "browser") {
+    // Checked before any model call: the gate never installs or downloads anything.
+    const missing = await browser.launcher.missing(workspace);
+    if (missing)
+      return finish({
+        phase: "inconclusive",
+        reason: `The browser walk-through did not run: ${missing}.`,
+      });
+    if (!capabilities.spawnApp && !capabilities.outboundHosts.length)
+      return finish({
+        phase: "inconclusive",
+        reason:
+          "Neither spawnApp nor outboundHosts is granted, so the browser has nothing to open; the walk-through did not run.",
+      });
+  } else if (!capabilities.spawnApp)
     return finish({
       phase: "inconclusive",
       reason:
@@ -573,7 +816,15 @@ export async function runAcceptanceGate(
       (value) => walkProblems(gate, value as AcceptanceWalk, current.session?.stepIds ?? new Set()),
       (attemptId) => {
         void current.session?.close();
-        current.session = new WalkSession(store, runId, attemptId, gate, workspace, deadline);
+        current.session = new WalkSession(
+          store,
+          runId,
+          attemptId,
+          gate,
+          workspace,
+          deadline,
+          browser,
+        );
         return current.session.tools();
       },
       deadline,
@@ -615,6 +866,7 @@ export async function runAcceptanceGate(
         problems,
         failure,
         verdict,
+        network: session?.network() ?? null,
       }),
     );
     return state.snapshotId
@@ -689,7 +941,7 @@ export async function runAcceptanceGate(
       phase("verifying", `${gate.acceptance.promote.stableRuns} runs without a model`);
       const runs: TestRun[] = [];
       for (let i = 0; i < gate.acceptance.promote.stableRuns; i++)
-        runs.push(await runTestOnce(workspace, gate, host.policy, host.signal));
+        runs.push(await runTestOnce(workspace, gate, host.policy, host.signal, browser.resolve));
       const mapped = draft.assertions
         .filter((a) => failingIds.includes(a.expectationId))
         .map((a) => a.assertionId);
@@ -730,7 +982,11 @@ export async function runAcceptanceGate(
     assertions: accepted.draft.assertions,
     commandGateId: gate.acceptance.promote.commandGateId,
     stableRuns: gate.acceptance.promote.stableRuns,
-    runs: accepted.runs.map((r) => ({ exitCode: r.exitCode, failed: r.failed })),
+    runs: accepted.runs.map((r) => ({
+      exitCode: r.exitCode,
+      failed: r.failed,
+      ...(r.refused ? { refused: r.refused } : {}),
+    })),
   };
   const requestId = store.transaction(() => {
     const artifact = store.artifact(
@@ -768,6 +1024,22 @@ function walkBrief(gate: AcceptanceGateDefinition): unknown {
     driver,
     application: { command: [start.executable, ...start.args], cwd: start.cwd },
     capabilities,
+    ...(driver === "browser"
+      ? {
+          browser: {
+            baseUrl: browserBaseUrl(gate),
+            tools: [
+              "browser_open",
+              "browser_snapshot",
+              "browser_click",
+              "browser_type",
+              "browser_key",
+            ],
+            network:
+              "Only outboundHosts and the granted ports on loopback are reachable; refused requests are listed in each result and kept as evidence.",
+          },
+        }
+      : {}),
     rules:
       "Every pass or fail must cite steps you recorded in this attempt. The host stops the application when you finish.",
   };
@@ -792,6 +1064,7 @@ function draftBrief(
       observation: s.observation,
       expectationIds: s.expectationIds,
       frame: s.frame,
+      ...(s.url !== undefined ? { url: s.url } : {}),
     })),
     application: { command: [start.executable, ...start.args], cwd: start.cwd },
     testPath: promote.testPath,
@@ -801,6 +1074,17 @@ function draftBrief(
     expectedOutcome: walk.expectations.some((e) => e.verdict === "fail")
       ? "The application is broken: the test must fail on the assertion mapped to each failed expectation, every time."
       : "The application works: the test must pass every time.",
+    ...(gate.acceptance.driver === "browser"
+      ? {
+          browser: {
+            library: "playwright",
+            baseUrl: browserBaseUrl(gate),
+            launch:
+              "chromium.launch({ headless: true, executablePath: process.env.BAKED_BROWSER_EXECUTABLE || undefined, proxy: process.env.BAKED_ACCEPTANCE_PROXY ? { server: process.env.BAKED_ACCEPTANCE_PROXY, bypass: '<-loopback>' } : undefined })",
+            note: "During verification BAKED_ACCEPTANCE_PROXY names the filtering proxy; as a promoted command gate the test runs without it.",
+          },
+        }
+      : {}),
     previousProblems: feedback,
   };
 }
