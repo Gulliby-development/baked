@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 2,
+  "id": "review-only",
+  "version": "1.0.0",
+  "description": "Review an existing diff against criteria. No file is changed.",
+  "preset": "review-only",
+  "inputs": [
+    "diff"
+  ],
+  "entry": "review",
+  "stages": [
+    {
+      "id": "review",
+      "type": "review",
+      "consumes": [
+        "diff"
+      ],
+      "produces": "review",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "correctness-review"
+        },
+        {
+          "gateId": "security-review"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "review-done",
+      "from": "review",
+      "to": "done",
+      "on": "passed",
+      "carries": "review",
+      "gates": []
+    },
+    {
+      "id": "review-findings",
+      "from": "review",
+      "to": "done",
+      "on": "changes_requested",
+      "carries": "review",
+      "gates": []
+    }
+  ],
+  "limits": {
+    "maxStageVisits": 40
+  },
+  "autoApproval": null
+}

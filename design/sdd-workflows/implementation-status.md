@@ -169,6 +169,16 @@ What it still shows, not fixed:
 
 Not verified: the TUI path with a real model (this run used the CLI), Linux and macOS, other providers, and a run that nobody touched. Context windows and reasoning options for the gpt-6 models in BAKED tables are assumed by analogy with gpt-5.
 
+## Workflow v2 (from 2026-10-09)
+
+The user decided on 2026-10-09 that v2 work may start before v1 acceptance; acceptance of both follows later. Delivered so far, in the order of section 8.4 of the [design](workflow-v2-design.md):
+
+| Part | State | Evidence |
+| --- | --- | --- |
+| Definitions: schema 2, validator, `upgradeWorkflowV1`, gate library with sources and shadowing, five shipped presets, CLI `definitions`, `validate`, `define`, `gates` | Implemented in `src/core/workflows/v2/`; read only, no run uses it yet | [Tests](../../tests/workflow-v2-definition.test.ts): V2-01, V2-02 (21 definition and 7 gate rejections), V2-03 (10,000 generated graphs), V2-04 |
+
+Defaults picked without a user decision: the presets run the project's own checks (feature checks in the check stage, task checks after each task) instead of the example gate IDs; a project without feature checks cannot validate a preset with a check stage. `define` never copies auto approval. A transition may not bind an AI review gate (they belong to review stages) and may not make an AI walk-through required.
+
 ## Implementation limits and release checks
 
 - Workflow v1 allows only explicitly classified tools. Arbitrary hooks, shell and unknown MCP effects are not activated by import. Checks run reviewed project commands and are not an OS sandbox.
