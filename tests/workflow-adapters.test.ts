@@ -18,7 +18,7 @@ test("native executor edits and deletes through guarded tools and bounds output 
   expect(await fixture("workflow-native.ts")).toContain('"formatRetries":1');
 }, 35000);
 test("workflow panel renders list, form and run sections at three terminal sizes", async () => {
-  expect(await fixture("workflow-ui.tsx")).toContain('"frames":57');
+  expect(await fixture("workflow-ui.tsx")).toContain('"frames":69');
 }, 35000);
 test("workflow worker preserves command state while SQLite contention leaves the UI thread responsive", async () => {
   expect(await fixture("workflow-worker.ts")).toContain('"worker":"passed"');

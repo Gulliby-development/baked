@@ -12,6 +12,8 @@ export interface TokenRange {
 /** Tokens and calls one past run spent in each stage, with its task count. */
 export interface PastRun {
   runId: string;
+  /** The ID of the definition the run started from, when the store knows it. */
+  workflowId?: string | null;
   status: string;
   tokens: number;
   calls: number;

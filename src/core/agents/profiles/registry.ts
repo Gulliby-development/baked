@@ -56,6 +56,10 @@ export class ProfileRegistry {
       "submit_review",
       "submit_artifact",
     ]);
+    // Host tools of the AI acceptance gate exist only for its own two roles.
+    const walkTools = ["app_start", "app_stop", "terminal_send", "terminal_read", "record_step"];
+    if (resolved.role === "acceptance-walker") for (const name of walkTools) available.add(name);
+    if (resolved.role === "acceptance-writer") available.add("write_test");
     if (resolved.allowedTools.some((t) => !available.has(t)))
       throw new WorkflowFault("CAPABILITY_DENIED", `Unsupported tool in profile ${profile.id}`);
     if (
@@ -70,6 +74,11 @@ export class ProfileRegistry {
         `Read-only profile ${profile.id} declares writing tools`,
       );
     if ((resolved.role === "implementer") !== (resolved.output === "implementation"))
+      throw new WorkflowFault("INVALID_DEFINITION", `Incompatible role/output for ${profile.id}`);
+    if (
+      (resolved.role === "acceptance-walker") !== (resolved.output === "acceptance") ||
+      (resolved.role === "acceptance-writer") !== (resolved.output === "acceptance-draft")
+    )
       throw new WorkflowFault("INVALID_DEFINITION", `Incompatible role/output for ${profile.id}`);
     this.entries.set(profile.id, { profile: resolved, source, hash: hashJson(resolved) });
   }

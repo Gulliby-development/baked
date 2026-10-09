@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import {
   type RunPolicy,
@@ -14,6 +14,7 @@ import {
   loadDefinition,
   validateDefinition,
 } from "../core/workflows/v2/definitions.js";
+import { copyAsCustom, writeDefinitionFile } from "../core/workflows/v2/editor.js";
 import { confirmGates, loadGateLibrary, readConfirmations } from "../core/workflows/v2/library.js";
 import type { WorkflowArgs } from "./workflow-parse.js";
 
@@ -126,21 +127,11 @@ export function executeDefinitionCommand(
         throw new WorkflowFault("INVALID_DEFINITION", `${target} already exists`);
       const source = asV2(loadDefinition(workspace, from, policy), policy);
       // A copy never carries auto approval: turning it on is a separate, confirmed human act.
-      const copy = WorkflowV2Schema.parse({
-        ...source,
-        id,
-        version: "1.0.0",
-        preset: "custom",
-        autoApproval: null,
-        stages: source.stages.map((s) => (s.type === "approval" ? { ...s, decision: "human" } : s)),
-      });
+      const copy = WorkflowV2Schema.parse(copyAsCustom(source, id));
       const problems = validateDefinition(copy, loadGateLibrary(workspace, policy));
       if (problems.length)
         throw new WorkflowFault("INVALID_DEFINITION", problems.join("\n"), { problems });
-      mkdirSync(dirname(target), { recursive: true });
-      const temp = `${target}.${process.pid}.tmp`;
-      writeFileSync(temp, `${JSON.stringify(copy, null, 2)}\n`);
-      renameSync(temp, target);
+      writeDefinitionFile(workspace, copy);
       return { result: { id, path: target, from }, exitCode: 0 };
     }
     default:

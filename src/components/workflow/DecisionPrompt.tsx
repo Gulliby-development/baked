@@ -58,6 +58,26 @@ interface DeliveryBody {
   commitMessage?: string;
   pullRequest?: { title: string; base: string; draft: boolean } | null;
 }
+interface AcceptanceBody {
+  acceptance?: {
+    gateId: string;
+    scenario: string;
+    verdict: "passed" | "failed";
+    expectations: {
+      expectationId: string;
+      verdict: string;
+      stepIds: string[];
+      explanation: string;
+    }[];
+    steps: { stepId: string; action: string; observation: string }[];
+    testPath: string;
+    testHash: string;
+    testContent: string;
+    assertions: { assertionId: string; expectationId: string; description: string }[];
+    commandGateId: string;
+    stableRuns: number;
+  };
+}
 interface RecoveryBody {
   effectId?: string;
   intent?: Record<string, unknown>;
@@ -299,6 +319,66 @@ export function DecisionPrompt({
     </FocusTarget>
   );
 
+  const acceptance =
+    request.kind === "approval" ? parse<AcceptanceBody>(request.body_json).acceptance : undefined;
+  if (acceptance) {
+    const lines = acceptance.testContent.split("\n");
+    return (
+      <box flexDirection="column">
+        <Section
+          title={`Promote the test of the AI walk-through ${acceptance.gateId}?`}
+          description={`Accepting writes ${acceptance.testPath} and the command gate ${acceptance.commandGateId}, which then runs without a model. The walk-through itself stays advisory.`}
+        >
+          <text fg={t.textPrimary} attributes={1}>
+            {`${acceptance.scenario} · walk-through ${acceptance.verdict} · stable in ${acceptance.stableRuns} runs`}
+          </text>
+          <text fg={t.textSecondary} attributes={1}>
+            Expectations and assertions
+          </text>
+          {acceptance.expectations.map((e) => (
+            <text key={e.expectationId} fg={e.verdict === "fail" ? t.error : t.textMuted}>
+              {`  ${e.expectationId} ${e.verdict} (steps ${e.stepIds.join(", ") || "none"}) → ${
+                acceptance.assertions
+                  .filter((a) => a.expectationId === e.expectationId)
+                  .map((a) => a.assertionId)
+                  .join(", ") || "no assertion"
+              }: ${flatten(e.explanation)}`}
+            </text>
+          ))}
+          <text fg={t.textSecondary} attributes={1}>
+            Evidence steps
+          </text>
+          {acceptance.steps.map((step) => (
+            <text key={step.stepId} fg={t.textMuted}>
+              {`  ${step.stepId} ${flatten(step.action)} → ${flatten(step.observation)}`}
+            </text>
+          ))}
+          <text fg={t.textSecondary} attributes={1}>
+            {`${acceptance.testPath} (${lines.length} lines)`}
+          </text>
+          {lines.slice(0, 80).map((line, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: lines of a fixed text
+            <text key={i} fg={t.textFaint}>{`  ${line}`}</text>
+          ))}
+        </Section>
+        {rejecting ? (
+          input("Why is the test rejected? Enter to discard it (Esc keeps the request)")
+        ) : (
+          <text>
+            <span fg={t.success} attributes={1}>
+              {" A "}
+            </span>
+            <span fg={t.textMuted}>accept and promote </span>
+            <span fg={t.error} attributes={1}>
+              {" X "}
+            </span>
+            <span fg={t.textMuted}>discard with a note </span>
+          </text>
+        )}
+        <Hint>{`Test ${acceptance.testHash.slice(0, 12)}… — the promoted gate fails if the file changes.`}</Hint>
+      </box>
+    );
+  }
   if (request.kind === "approval") {
     const body = parse<ApprovalBody>(request.body_json);
     const writes = body.writes ?? [];

@@ -19,6 +19,7 @@ import type { WorkspaceLeases } from "./leases.js";
 import { ProcessScope } from "./process-scope.js";
 import {
   AnalysisSchema,
+  generatedPaths,
   ImplementationSchema,
   PlanSchema,
   RefutationSchema,
@@ -35,8 +36,9 @@ import {
   stepTokens,
 } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
-import { WorkflowToolPolicy } from "./tool-policy.js";
+import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types.js";
+import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
 
 export const outputSchemas: Record<string, z.ZodType> = {
   research: ResearchSchema,
@@ -48,6 +50,8 @@ export const outputSchemas: Record<string, z.ZodType> = {
   convergence: ReviewSchema,
   refutation: RefutationSchema,
   report: ReportSchema,
+  acceptance: AcceptanceWalkSchema,
+  "acceptance-draft": AcceptanceDraftSchema,
   initiativePlan: InitiativePlanSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
@@ -88,13 +92,20 @@ export class NativeAgentExecutor implements AgentExecutor {
           "BUDGET_EXHAUSTED",
           "Workflow context exceeds the selected model window",
         );
-      const rawTools = buildTools(root, async () => false, {
+      const writer =
+        request.profile.role === "implementer" || request.profile.role === "acceptance-writer";
+      const registryTools = buildTools(root, async () => false, {
         contextManager: context,
         repoMap: context.isRepoMapReady() ? context.getRepoMap() : undefined,
         onApproveOutsideCwd: async () => false,
-        onApproveDestructive: async () =>
-          request.profile.role === "implementer" && request.task !== undefined,
+        onApproveDestructive: async () => writer && request.task !== undefined,
       });
+      // An attempt with host tools gets those and, from the registry, only read-only tools.
+      const rawTools = request.hostTools
+        ? Object.fromEntries(
+            Object.entries(registryTools).filter(([name]) => pureWorkflowTools.has(name)),
+          )
+        : registryTools;
       const guard = new WorkflowToolPolicy(
         this.store,
         this.leases,
@@ -131,11 +142,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               execute(normalized, options),
             );
             if (!["edit_file", "multi_edit"].includes(name)) {
-              const files = await sourceManifest(
-                root,
-                policy.checks.flatMap((c) => c.writes),
-                request.signal,
-              );
+              const files = await sourceManifest(root, generatedPaths(policy), request.signal);
               const evidenceId = this.store.transaction(() => {
                 const snapshot = this.store.putSnapshot(request.runId, files);
                 const artifact = this.store.artifact(
@@ -158,7 +165,17 @@ export class NativeAgentExecutor implements AgentExecutor {
           },
         });
       }
+      for (const [name, host] of Object.entries(request.hostTools ?? {})) {
+        // Host tools are bounded by the gate's grants, not by the policy's tool list.
+        if (!request.profile.allowedTools.includes(name)) continue;
+        available[name] = tool({
+          description: host.description,
+          inputSchema: host.inputSchema,
+          execute: async (input: unknown) => host.execute(input),
+        });
+      }
       if (
+        !request.hostTools &&
         request.profile.allowedTools.includes("delete_file") &&
         policy.allowedTools.includes("delete_file")
       ) {
@@ -191,6 +208,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         });
       }
       if (
+        !request.hostTools &&
         request.profile.role === "implementer" &&
         request.profile.allowedTools.includes("request_check") &&
         policy.allowedTools.includes("request_check")

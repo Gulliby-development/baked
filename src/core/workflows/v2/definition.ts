@@ -206,6 +206,15 @@ export function validateGate(gate: Gate): string[] {
       errors.push(`${gate.id}: outbound hosts must be exact`);
     if (gate.acceptance.promote.commandGateId === gate.id)
       errors.push(`${gate.id}: the promoted gate needs its own ID`);
+    // The walk-through and its test never touch run state, Git metadata or definitions.
+    const protectedPath = (p: string) =>
+      p === "." || /^(\.baked|\.git|baked)(\/|$)/i.test(p) || /(^|\/)\.env(\.|$)/i.test(p);
+    if (grants.writePaths.some(protectedPath))
+      errors.push(
+        `${gate.id}: write paths must not include the workspace root or workflow metadata`,
+      );
+    if (protectedPath(gate.acceptance.promote.testPath))
+      errors.push(`${gate.id}: the test path must not be workflow metadata`);
   }
   if (gate.type === "human" && gate.scope === "task")
     errors.push(`${gate.id}: a human gate does not run per task`);

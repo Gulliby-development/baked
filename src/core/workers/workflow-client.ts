@@ -1,5 +1,6 @@
 import { randomUUID as newId } from "node:crypto";
 import type { AppConfig } from "../../types/index.js";
+import type { PastRun } from "../workflows/estimate.js";
 import type { GateRunResult } from "../workflows/gates.js";
 import type { RunFileDiff } from "../workflows/run-diff.js";
 import type { Decision, RunSnapshot } from "../workflows/schemas.js";
@@ -88,6 +89,10 @@ export class WorkflowClient extends WorkerClient {
   }
   info(): Promise<WorkflowInfo> {
     return this.call<WorkflowInfo>("info");
+  }
+  /** What earlier runs of this project spent, per stage; the input of the editor's estimate. */
+  history(): Promise<PastRun[]> {
+    return this.call<PastRun[]>("history");
   }
   start(input: StartRunInput): Promise<RunSnapshot> {
     return this.callWithTimeout<RunSnapshot>(null, "start", newId(), input);

@@ -3,6 +3,7 @@ import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { rootField } from "../workflows/effects.js";
 import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
+import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { Check } from "../workflows/types.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
@@ -31,6 +32,48 @@ export class CheckRunner {
     private store: WorkflowStore,
     private processes: ProcessScope,
   ) {}
+  /**
+   * Records a check as failed without running it, for a precondition the host checked itself
+   * (for example a promoted test whose file no longer has its pinned hash).
+   */
+  async refuse(
+    runId: string,
+    attemptId: string,
+    check: Check,
+    reason: string,
+    message: string,
+    root: string = this.store.workspace,
+  ): Promise<{ status: "failed"; evidenceId: string; snapshotId: string; output: string }> {
+    const generated = generatedPaths(JSON.parse(this.store.run(runId).policy_json) as RunPolicy);
+    const files = await sourceManifest(root, generated);
+    const evidence = this.store.transaction(() => {
+      const snapshot = this.store.putSnapshot(runId, files);
+      const artifact = this.store.artifact(
+        runId,
+        "check",
+        `checks/${check.id}/refused-${attemptId}.json`,
+        canonical({
+          definition: check,
+          definitionHash: hashJson(check),
+          beforeHash: snapshot.hash,
+          afterHash: snapshot.hash,
+          reason,
+          exitCode: null,
+          output: message,
+          durationMs: 0,
+        }),
+      );
+      const id = this.store.addEvidence(runId, "command", snapshot.id, artifact.id, attemptId);
+      this.store.checkResult(runId, check.id, id, "failed", null, reason, 0);
+      return { id, snapshotId: snapshot.id };
+    });
+    return {
+      status: "failed",
+      evidenceId: evidence.id,
+      snapshotId: evidence.snapshotId,
+      output: message,
+    };
+  }
   async run(
     runId: string,
     attemptId: string,
@@ -43,9 +86,7 @@ export class CheckRunner {
     snapshotId: string;
     output: string;
   }> {
-    const generated = JSON.parse(this.store.run(runId).policy_json).checks.flatMap(
-      (c: Check) => c.writes,
-    ) as string[];
+    const generated = generatedPaths(JSON.parse(this.store.run(runId).policy_json) as RunPolicy);
     for (const path of check.writes) workspacePath(root, path);
     const before = await sourceManifest(root, generated, signal);
     const snapshot = this.store.transaction(() => this.store.putSnapshot(runId, before));

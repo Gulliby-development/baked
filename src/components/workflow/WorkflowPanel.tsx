@@ -8,6 +8,7 @@ import {
   reloadWorkflowSession,
   useWorkflow,
   useWorkflowRuns,
+  workflowEditorApi,
   workflowGatesApi,
   workflowSession,
 } from "../../hooks/useWorkflow.js";
@@ -33,6 +34,7 @@ import { Onboarding } from "./Onboarding.js";
 import { orderRuns, RunList } from "./RunList.js";
 import { RunOverview } from "./RunOverview.js";
 import { TaskGraphView } from "./TaskGraphView.js";
+import { WorkflowEditorPopup } from "./WorkflowEditor.js";
 
 const sections = [
   "overview",
@@ -83,6 +85,8 @@ export function WorkflowPanel({
   const screen = useWorkflowStore((s) => s.screen);
   const runId = useWorkflowStore((s) => s.selectedRunId);
   const draftPrompt = useWorkflowStore((s) => s.draftPrompt);
+  const editorId = useWorkflowStore((s) => s.editorId);
+  const editorReturn = useWorkflowStore((s) => s.editorReturn);
   const onRun = screen === "run" && runId !== null;
   const {
     runs,
@@ -101,6 +105,7 @@ export function WorkflowPanel({
   const { width, height } = useTerminalDimensions();
   const ordered = useMemo(() => (runs ? orderRuns(runs) : null), [runs]);
   const gatesApi = useMemo(() => workflowGatesApi(workspace), [workspace]);
+  const editorApi = useMemo(() => workflowEditorApi(workspace), [workspace]);
   const pending =
     service && runId
       ? service.store.requests(runId).find((r) => r.status === "pending")
@@ -160,7 +165,7 @@ export function WorkflowPanel({
   useKeyboard((event) => {
     if (!visible || event.defaultPrevented) return;
     const key = event.name.toLowerCase();
-    if (screen === "new" || screen === "gates") return; // These screens own their keys.
+    if (screen === "new" || screen === "gates" || screen === "editor") return; // These screens own their keys.
     if (!onRun) {
       if (key === "escape") {
         event.preventDefault();
@@ -285,8 +290,25 @@ export function WorkflowPanel({
           width={contentW}
           onStart={start}
           onCancel={() => useWorkflowStore.getState().showHome()}
+          onEdit={(id) => useWorkflowStore.getState().showEditor(id, "new")}
         />
       </PremiumPopup>
+    );
+
+  if (screen === "editor" && editorId)
+    return (
+      <WorkflowEditorPopup
+        workspace={workspace}
+        workflowId={editorId}
+        api={editorApi}
+        width={popupW}
+        height={Math.min(40, height)}
+        onBack={() => {
+          const store = useWorkflowStore.getState();
+          if (editorReturn === "new") store.showNew();
+          else store.showHome();
+        }}
+      />
     );
 
   if (screen === "gates")
