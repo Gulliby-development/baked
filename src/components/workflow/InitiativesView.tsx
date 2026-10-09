@@ -13,6 +13,7 @@ import {
   pendingSplitApproval,
   summarizeInitiative,
 } from "../../core/workflows/initiatives/view-model.js";
+import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, PremiumPopup, Section } from "../ui/index.js";
 import { errorHint, formatDuration, formatTokens } from "./format.js";
 
@@ -238,7 +239,6 @@ export function InitiativesPopup({
   });
 
   const contentW = width - 6;
-  const contentH = height - 8;
   const needsYou = ordered.filter((v) => summarizeInitiative(v).needsYou).length;
   const hints = confirm
     ? initiativeHints("confirm")
@@ -271,8 +271,9 @@ export function InitiativesPopup({
             {errorHint(error) ? <Hint kind="warn">{errorHint(error)}</Hint> : null}
           </>
         ) : null}
-        {confirm ? <text fg={t.warning}>{confirm.confirm}</text> : null}
-        {data === undefined ? (
+        {confirm ? (
+          <text fg={t.warning}>{confirm.confirm}</text>
+        ) : data === undefined ? (
           <text fg={t.textMuted}>Loading initiatives…</text>
         ) : data === null ? (
           <Section
@@ -287,7 +288,6 @@ export function InitiativesPopup({
             featureCursor={Math.min(featureCursor, Math.max(0, features.length - 1))}
             driveError={data.errors[selected.initiativeId] ?? null}
             width={contentW}
-            height={contentH - (confirm ? 2 : 0)}
           />
         ) : selectedId ? (
           <text fg={t.textMuted}>{`Initiative ${selectedId} is not in this project.`}</text>
@@ -357,7 +357,7 @@ export function InitiativeList({
               </box>
               <text bg={bg} fg={s.needsYou ? t.warning : t.textMuted}>
                 {clip(
-                  `    ${progress} · ${budget}${attention ? ` · ${attention}` : ""}`,
+                  `    ${progress}${attention ? ` · ${attention}` : ""} · ${budget}`,
                   width - 2,
                 )}
               </text>
@@ -381,7 +381,7 @@ export function InitiativeList({
               </text>
               <text bg={bg} fg={color}>{` ${status.padEnd(statusW)}`}</text>
               <text bg={bg} fg={s.needsYou ? t.warning : t.textMuted}>
-                {clip(`${progress} · ${budget}${attention ? ` · ${attention}` : ""}`, detailW)}
+                {clip(`${progress}${attention ? ` · ${attention}` : ""} · ${budget}`, detailW)}
               </text>
             </box>
             {isSelected ? (
@@ -401,13 +401,11 @@ export function InitiativeDetail({
   featureCursor,
   driveError,
   width,
-  height,
 }: {
   view: InitiativeView;
   featureCursor: number;
   driveError: string | null;
   width: number;
-  height: number;
 }) {
   const t = useTheme();
   const split = pendingSplitApproval(view);
@@ -420,15 +418,6 @@ export function InitiativeDetail({
         ? `revision ${view.planRevision} (approved)`
         : `revision ${view.planRevision} (approved: ${view.approvedPlanRevision})`;
   const narrow = width < 64;
-  // Header, plan, budget and next take four lines; the selected feature takes up to three more.
-  const fixed = 4 + (split ? 2 : 0) + Math.min(2, blockers.length) + (driveError ? 1 : 0) + 4;
-  const rows = Math.max(2, height - fixed);
-  const start = Math.max(
-    0,
-    Math.min(featureCursor - Math.floor(rows / 2), view.features.length - rows),
-  );
-  const shown = view.features.slice(start, start + rows);
-  const selected = view.features[featureCursor] ?? null;
   const idW = narrow ? Math.max(8, Math.floor(width * 0.4)) : Math.min(20, Math.floor(width * 0.2));
   return (
     <box flexDirection="column">
@@ -471,53 +460,57 @@ export function InitiativeDetail({
             : "No split yet."}
         </text>
       ) : null}
-      {shown.map((f) => {
-        const index = view.features.indexOf(f);
+      {view.features.map((f, index) => {
         const isSelected = index === featureCursor;
         const bg = isSelected ? t.bgPopupHighlight : t.bgPopup;
         const color = FEATURE_COLOR[f.state](t);
-        const run = f.runId ? `${f.runStatus ?? "?"} · run ${f.runId}` : "no run yet";
+        const run = f.runId
+          ? `${f.runStatus && f.runStatus !== f.state ? `${f.runStatus} · ` : ""}run ${f.runId}`
+          : "no run yet";
         const deps = f.dependsOn.length ? ` ← ${f.dependsOn.join(", ")}` : "";
         const rest = narrow
           ? f.state.replace("_", " ")
           : `${f.state.replace("_", " ")} · ${run}${deps}`;
+        // The selected feature shows its details under its row; FocusTarget keeps them in view.
         return (
-          <box key={f.id} flexDirection="row" backgroundColor={bg}>
-            <text bg={bg} fg={isSelected ? t.brand : t.textFaint}>
-              {isSelected ? "▸ " : "  "}
-            </text>
-            <text bg={bg} fg={color}>{`${FEATURE_GLYPH[f.state]} `}</text>
-            <text bg={bg} fg={isSelected ? t.textPrimary : t.textSecondary}>
-              {clip(`${f.id}${f.mandatory ? "" : "?"}`, idW).padEnd(idW)}
-            </text>
-            <text bg={bg} fg={color}>
-              {clip(` ${rest}`, Math.max(4, width - idW - 4))}
-            </text>
-          </box>
+          <FocusTarget key={f.id} active={isSelected}>
+            <box flexDirection="row" backgroundColor={bg}>
+              <text bg={bg} fg={isSelected ? t.brand : t.textFaint}>
+                {isSelected ? "▸ " : "  "}
+              </text>
+              <text bg={bg} fg={color}>{`${FEATURE_GLYPH[f.state]} `}</text>
+              <text bg={bg} fg={isSelected ? t.textPrimary : t.textSecondary}>
+                {clip(`${f.id}${f.mandatory ? "" : "?"}`, idW).padEnd(idW)}
+              </text>
+              <text bg={bg} fg={color}>
+                {clip(` ${rest}`, Math.max(4, width - idW - 4))}
+              </text>
+            </box>
+            {isSelected ? (
+              <box flexDirection="column" paddingLeft={4}>
+                <text fg={t.textMuted}>
+                  {clip(
+                    narrow
+                      ? `${f.title} · ${f.runId ? `run ${f.runId} (${f.runStatus})` : "no run yet"}`
+                      : `${f.title} · contract: ${f.contract}`,
+                    width - 4,
+                  )}
+                </text>
+                {f.pendingRequests.length ? (
+                  <text fg={t.warning}>
+                    {clip(
+                      `⚑ ${f.pendingRequests.map((r) => r.kind.replace("_", " ")).join(", ")} waits in run ${f.runId}; Enter opens it`,
+                      width - 4,
+                    )}
+                  </text>
+                ) : f.blockers.length ? (
+                  <text fg={t.error}>{clip(`✗ ${f.blockers.join("; ")}`, width - 4)}</text>
+                ) : null}
+              </box>
+            ) : null}
+          </FocusTarget>
         );
       })}
-      {selected ? (
-        <box flexDirection="column">
-          <text fg={t.textMuted}>
-            {clip(
-              narrow
-                ? `${selected.title} · ${selected.runId ? `run ${selected.runId} (${selected.runStatus})` : "no run yet"}`
-                : `${selected.title} · contract: ${selected.contract}`,
-              width,
-            )}
-          </text>
-          {selected.pendingRequests.length ? (
-            <text fg={t.warning}>
-              {clip(
-                `⚑ ${selected.pendingRequests.map((r) => r.kind.replace("_", " ")).join(", ")} waits in run ${selected.runId}; Enter opens it`,
-                width,
-              )}
-            </text>
-          ) : selected.blockers.length ? (
-            <text fg={t.error}>{clip(`✗ ${selected.blockers.join("; ")}`, width)}</text>
-          ) : null}
-        </box>
-      ) : null}
     </box>
   );
 }

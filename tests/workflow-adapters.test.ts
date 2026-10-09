@@ -18,7 +18,7 @@ test("native executor edits and deletes through guarded tools and bounds output 
   expect(await fixture("workflow-native.ts")).toContain('"formatRetries":1');
 }, 35000);
 test("workflow panel renders list, form and run sections at three terminal sizes", async () => {
-  expect(await fixture("workflow-ui.tsx")).toContain('"frames":69');
+  expect(await fixture("workflow-ui.tsx")).toContain('"frames":78');
 }, 35000);
 test("workflow worker preserves command state while SQLite contention leaves the UI thread responsive", async () => {
   expect(await fixture("workflow-worker.ts")).toContain('"worker":"passed"');
@@ -26,6 +26,10 @@ test("workflow worker preserves command state while SQLite contention leaves the
 
 test("gate runs, saves and policy updates go through the worker without touching started runs", async () => {
   expect(await fixture("workflow-gates-worker.ts")).toContain('"gatesWorker":"passed"');
+}, 35000);
+
+test("initiative commands and new-run execution options go through the worker to the core", async () => {
+  expect(await fixture("workflow-initiatives-worker.ts")).toContain('"initiativesWorker":"passed"');
 }, 35000);
 
 test("a soft checkpoint stops a read-heavy agent loop between two steps", async () => {

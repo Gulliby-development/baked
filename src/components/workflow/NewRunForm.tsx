@@ -2,7 +2,16 @@ import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import { BUDGET_PRESETS } from "../../core/workflows/budget.js";
-import type { BudgetPresetId, StartRunInput, WorkflowInfo } from "../../core/workflows/view.js";
+import { MAX_CONCURRENT_WRITERS } from "../../core/workflows/schemas.js";
+import {
+  type BudgetPresetId,
+  clampWriters,
+  executionRequest,
+  initialExecution,
+  type StartRunInput,
+  type WorkflowInfo,
+} from "../../core/workflows/view.js";
+import { FocusTarget } from "../ui/FocusTarget.js";
 import { Field, Hint, Section } from "../ui/index.js";
 import {
   errorHint,
@@ -13,7 +22,15 @@ import {
   isFeatureId,
 } from "./format.js";
 
-const FIELDS = ["prompt", "feature", "workflow", "budget", "start"] as const;
+const FIELDS = [
+  "prompt",
+  "feature",
+  "workflow",
+  "budget",
+  "execution",
+  "writers",
+  "start",
+] as const;
 type FieldId = (typeof FIELDS)[number];
 const PRESETS: BudgetPresetId[] = [...BUDGET_PRESETS];
 
@@ -44,6 +61,9 @@ export function NewRunForm({
   const [featureTouched, setFeatureTouched] = useState(false);
   const [workflow, setWorkflow] = useState<string | null>(null);
   const [budget, setBudget] = useState<BudgetPresetId>("standard");
+  // Null follows the chosen workflow's own execution mode; a toggle overrides it.
+  const [worktreeOverride, setWorktreeOverride] = useState<boolean | null>(null);
+  const [writers, setWriters] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workflows = info?.workflows ?? ["sdd"];
@@ -51,14 +71,26 @@ export function NewRunForm({
   const definition = info?.definitions?.[workflowId];
   const modelMissing = !model || model === "none";
   const checks = info?.policy.checks ?? [];
+  const initial = initialExecution(info, workflowId);
+  const execution = {
+    worktree: worktreeOverride ?? initial.worktree,
+    writers: writers ?? initial.writers,
+  };
+  // The core's own refusal text; the start request would be refused with the same words.
+  const worktreeRefusal = execution.worktree ? (definition?.worktreeRefusal ?? null) : null;
   const problems = [
     !prompt.trim() && "Describe the feature",
     !isFeatureId(feature) && "Feature ID: letters, digits, - and _ only",
     modelMissing && "Select a model (Esc, then Ctrl+L)",
+    worktreeRefusal,
   ].filter((p): p is string => typeof p === "string");
+  // The writer count applies only to worktree execution, so navigation skips it otherwise.
+  const fields = FIELDS.filter((f) => f !== "writers" || execution.worktree);
 
   const move = (delta: number): void =>
-    setFocus((f) => FIELDS[(FIELDS.indexOf(f) + delta + FIELDS.length) % FIELDS.length] ?? f);
+    setFocus(
+      (f) => fields[(fields.indexOf(f) + delta + fields.length) % fields.length] ?? fields[0] ?? f,
+    );
   const submit = async (): Promise<void> => {
     if (submitting) return;
     if (problems.length) {
@@ -74,6 +106,7 @@ export function NewRunForm({
         prompt: prompt.trim(),
         model: model ?? "",
         budget,
+        ...executionRequest(execution),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -101,14 +134,21 @@ export function NewRunForm({
       move(evt.name === "up" || (evt.name === "tab" && evt.shift) ? -1 : 1);
       return;
     }
+    const choice = focus === "workflow" || focus === "budget" || focus === "execution";
     if (
-      (focus === "workflow" || focus === "budget") &&
-      (evt.name === "left" || evt.name === "right")
+      (choice || focus === "writers") &&
+      (evt.name === "left" ||
+        evt.name === "right" ||
+        (focus === "execution" && evt.name === "space"))
     ) {
       evt.preventDefault();
       const delta = evt.name === "left" ? -1 : 1;
-      if (focus === "workflow") setWorkflow(cycle(workflows, workflowId, delta));
-      else setBudget(cycle(PRESETS, budget, delta));
+      if (focus === "workflow") {
+        setWorkflow(cycle(workflows, workflowId, delta));
+        setWorktreeOverride(null);
+      } else if (focus === "budget") setBudget(cycle(PRESETS, budget, delta));
+      else if (focus === "execution") setWorktreeOverride(!execution.worktree);
+      else setWriters(clampWriters(execution.writers + delta));
       return;
     }
     if (focus === "workflow" && evt.name === "e" && onEdit) {
@@ -116,7 +156,7 @@ export function NewRunForm({
       onEdit(workflowId);
       return;
     }
-    if (evt.name === "return" && (focus === "workflow" || focus === "budget")) {
+    if (evt.name === "return" && (choice || focus === "writers")) {
       evt.preventDefault();
       move(1);
       return;
@@ -178,13 +218,15 @@ export function NewRunForm({
             backgroundColor={t.bgPopup}
           />
         </box>
-        <Field
-          label="Workflow"
-          labelWidth={10}
-          focused={focus === "workflow"}
-          value={`‹ ${workflowId} ›${workflows.length > 1 ? `  (${workflows.length} available)` : ""}`}
-          keyHint={onEdit ? "←/→ · E edit" : "←/→"}
-        />
+        <FocusTarget active={focus === "workflow"}>
+          <Field
+            label="Workflow"
+            labelWidth={10}
+            focused={focus === "workflow"}
+            value={`‹ ${workflowId} ›${workflows.length > 1 ? `  (${workflows.length} available)` : ""}`}
+            keyHint={onEdit ? "←/→ · E edit" : "←/→"}
+          />
+        </FocusTarget>
         {definition ? (
           <Field
             label="Stages"
@@ -192,13 +234,43 @@ export function NewRunForm({
             value={`${definition.stages.join(" → ")}${definition.writes ? "" : "  · no file will change"}`}
           />
         ) : null}
-        <Field
-          label="Budget"
-          labelWidth={10}
-          focused={focus === "budget"}
-          value={`‹ ${budget} ›  ${preset ? `${preset.checkpointTokens ? `no token cap, pause every ${formatTokens(preset.checkpointTokens)}` : `${formatTokens(preset.maxTotalTokens)} tokens`} · ${preset.maxAgentCalls} calls · ${formatDuration(preset.maxActiveMs)}` : ""}`}
-          keyHint="←/→"
-        />
+        <FocusTarget active={focus === "budget"}>
+          <Field
+            label="Budget"
+            labelWidth={10}
+            focused={focus === "budget"}
+            value={`‹ ${budget} ›  ${preset ? `${preset.checkpointTokens ? `no token cap, pause every ${formatTokens(preset.checkpointTokens)}` : `${formatTokens(preset.maxTotalTokens)} tokens`} · ${preset.maxAgentCalls} calls · ${formatDuration(preset.maxActiveMs)}` : ""}`}
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "execution"}>
+          <Field
+            label="Mode"
+            labelWidth={10}
+            focused={focus === "execution"}
+            value={
+              worktreeRefusal
+                ? `‹ worktree › refused: ${worktreeRefusal}`
+                : execution.worktree
+                  ? "‹ worktree ›  own branch; working copy untouched"
+                  : "‹ inline ›  edits your working copy"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "writers"}>
+          <Field
+            label="Writers"
+            labelWidth={10}
+            focused={focus === "writers"}
+            value={
+              execution.worktree
+                ? `‹ ${execution.writers} › of ${MAX_CONCURRENT_WRITERS}${execution.writers > 1 ? "  tasks at once, own worktrees" : "  one task at a time"}`
+                : "1  (more needs worktree mode)"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
         <Field
           label="Model"
           labelWidth={10}
@@ -210,16 +282,18 @@ export function NewRunForm({
           value={checks.length ? checks.map((c) => c.id).join(", ") : "none configured"}
         />
         <box height={1} />
-        <box flexDirection="row">
-          <text
-            fg={focus === "start" ? t.bgPopup : t.brand}
-            bg={focus === "start" ? t.brand : t.bgPopup}
-            attributes={1}
-          >
-            {submitting ? " Starting… " : " ▶ Start run "}
-          </text>
-          <text fg={t.textFaint}>{"  Ctrl+S from any field"}</text>
-        </box>
+        <FocusTarget active={focus === "start"}>
+          <box flexDirection="row">
+            <text
+              fg={focus === "start" ? t.bgPopup : t.brand}
+              bg={focus === "start" ? t.brand : t.bgPopup}
+              attributes={1}
+            >
+              {submitting ? " Starting… " : " ▶ Start run "}
+            </text>
+            <text fg={t.textFaint}>{"  Ctrl+S from any field"}</text>
+          </box>
+        </FocusTarget>
       </Section>
       {shownError ? <text fg={t.error}>{`✗ ${shownError}`}</text> : null}
       {hint ? <Hint kind="warn">{hint}</Hint> : null}
@@ -238,6 +312,9 @@ export function NewRunForm({
         <Hint kind="warn">
           No checks configured. Approval will be refused for automated criteria until checks exist.
         </Hint>
+      ) : null}
+      {worktreeRefusal ? (
+        <Hint kind="warn">{`Worktree execution is refused: ${worktreeRefusal}`}</Hint>
       ) : null}
       {definition?.problems.length ? (
         <Hint kind="warn">{`This workflow cannot start: ${definition.problems.slice(0, 2).join(" · ")}`}</Hint>

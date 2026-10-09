@@ -19,6 +19,15 @@ const events: WorkflowEvent[] = [
   { schemaVersion: 1, eventId: "e2", runId: "fixture", seq: 20, at: new Date().toISOString(), type: "request.created", payload: { requestId: "approval", kind: "approval", digest: "c".repeat(64) } },
 ];
 const actions: unknown[] = [];
+const initiative = {
+  initiativeId: "values", title: "Value files", status: "awaiting_approval", reason: "", revision: 2, eventSeq: 4, planRevision: 1,
+  approvedPlanRevision: null, approvalDigest: null, planDigest: "e".repeat(64), goals: [], completionCriteria: [], workflowId: "sdd",
+  featureAutoApproval: null, decompose: null,
+  features: ["core", "api", "docs"].map((id, i) => ({ id, title: `Feature ${id}`, mandatory: true, dependsOn: i === 1 ? ["core"] : [], boundary: { scope: id, paths: [] }, contract: `${id} contract`, runFeatureId: `values_${id}`, state: "proposed", runId: null, runStatus: null, runReason: null, pinned: [], contractHash: null, blockers: [], pendingRequests: [], usage: { tokens: 0, calls: 0, activeMs: 0 }, runIds: [] })),
+  pendingDecisions: [{ scope: "initiative", featureId: null, runId: null, requestId: "split", kind: "split_approval", digest: "e".repeat(64) }],
+  budget: { limits: { maxTotalTokens: 1600000, maxAgentCalls: 320, maxActiveMs: 14400000 }, used: { tokens: 0, calls: 0, activeMs: 0 }, reserved: { tokens: 0, calls: 0, activeMs: 0 }, remaining: { tokens: 1600000, calls: 320, activeMs: 14400000 }, unstartedFeatures: 0, nextShare: null, rule: "" },
+  next: { kind: "await_split_approval", featureId: null, runId: null, message: "Approve the split (plan revision 1) or edit it." },
+};
 const approvalRequest = { id: "approval", kind: "approval", digest: "c".repeat(64), body_json: JSON.stringify({ writes: task.writes, checks: [{ id: "tests", executable: "bun", args: ["test"] }] }), status: "pending", answer_json: null };
 const clarificationRequest = { id: "clarify", kind: "clarification", digest: "d".repeat(64), status: "pending", answer_json: null, body_json: JSON.stringify({ findings: [
   { id: "parallel-test-write-conflict", kind: "inconsistency", blocking: true, description: "T002 and T003 run in parallel but both modify tests/workflow-runtime.test.ts without a dependency or a merge protocol.", refs: ["task graph T002.writes: tests/workflow-runtime.test.ts", "task graph T003.writes: tests/workflow-runtime.test.ts", "plan Task graph: T002 and T003 in parallel"] },
@@ -66,6 +75,11 @@ mock.module("../../src/hooks/useWorkflow.js", () => ({
       history: async () => null,
     };
   },
+  // One initiative waits for its split approval; Enter on it shows the detail.
+  workflowInitiativesApi: () => ({
+    load: async () => ({ initiatives: [initiative], driving: [], errors: {} }),
+    act: async () => initiative,
+  }),
   useWorkflowBadge: () => {},
 }));
 const { useWorkflowStore } = await import("../../src/stores/workflow.js");
@@ -125,6 +139,17 @@ for (const [width, height] of [[120, 40], [80, 24], [50, 20]]) {
     }
     await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
     assert((await frame("back-home")).includes("finished-feature"), "Esc returns to the run list");
+    // I opens the initiatives from the run list; Enter shows one, Esc twice returns to the runs.
+    await act(async () => view.mockInput.pressKey("i"));
+    await act(async () => { await Bun.sleep(20); });
+    const list = await frame("initiatives");
+    assert(list.includes("values") && list.includes("approve split"), "I opens the initiative list");
+    await act(async () => view.mockInput.pressEnter());
+    const detail = await frame("initiative");
+    assert((detail.includes("Value files") || width < 80) && detail.includes("core"), "Enter opens the initiative detail");
+    await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
+    await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
+    assert((await frame("initiatives-back")).includes("finished-feature"), "Esc leaves the initiatives for the run list");
     await act(async () => view.mockInput.pressKey("g"));
     const gates = await frame("gates");
     assert(gates.includes("Gates") && gates.includes("bun run test"), "G opens the gate window with the configured gates");
