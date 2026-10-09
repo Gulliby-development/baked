@@ -4,10 +4,12 @@
  * on that branch; only an approved delivery moves them further.
  */
 import {
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -21,8 +23,11 @@ import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState, WorktreeState } from "./types.js";
 
-/** Worktree of a run, relative to the project root. Phase 2 adds `.baked/worktrees/RUN_ID/TASK_ID`. */
+/** Worktree of a run, relative to the project root. */
 export const worktreePath = (runId: string): string => `.baked/worktrees/${runId}/main`;
+/** Worktree of one task of a run with several writers, relative to the project root. */
+export const taskWorktreePath = (runId: string, taskId: string): string =>
+  `.baked/worktrees/${runId}/${taskId}`;
 /** The branch that carries a worktree run's accepted changes. */
 export const runBranch = (runId: string): string => `baked/wf/${runId}`;
 
@@ -145,6 +150,98 @@ export async function ensureRunWorktree(
   return worktree;
 }
 
+/** Author, committer and dates of the commits a run makes: deterministic for the same content. */
+async function commitEnv(store: WorkflowStore, runId: string): Promise<Record<string, string>> {
+  const workspace = store.workspace;
+  const name =
+    (await git(workspace, ["config", "user.name"])).stdout.trim() || FALLBACK_IDENTITY.name;
+  const email =
+    (await git(workspace, ["config", "user.email"])).stdout.trim() || FALLBACK_IDENTITY.email;
+  const date = `${Math.floor(store.run(runId).created_at / 1000)} +0000`;
+  return {
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    GIT_AUTHOR_DATE: date,
+    GIT_COMMITTER_NAME: name,
+    GIT_COMMITTER_EMAIL: email,
+    GIT_COMMITTER_DATE: date,
+  };
+}
+
+/**
+ * A commit of the run worktree's current content, tracked and untracked files that are not
+ * ignored, on top of its HEAD. No ref moves and the worktree's own index is not changed: the
+ * commit is only the base a task worktree is checked out from, and the task worktree's detached
+ * HEAD keeps it reachable while the task runs.
+ */
+export async function runContentCommit(
+  store: WorkflowStore,
+  runId: string,
+  worktree: WorktreeState,
+): Promise<string> {
+  const root = join(store.workspace, worktree.path);
+  const directory = mkdtempSync(join(tmpdir(), "baked-worktree-"));
+  const index = join(directory, "index");
+  const env = { GIT_INDEX_FILE: index };
+  try {
+    // The worktree's own index only speeds up hashing; the content comes from its files.
+    const own = await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+    if (own.code === 0 && existsSync(own.stdout.trim())) copyFileSync(own.stdout.trim(), index);
+    else await required(root, ["read-tree", "HEAD"], { env });
+    await required(root, ["add", "-A", "--", ".", ":(exclude).baked", ":(exclude)node_modules"], {
+      env,
+    });
+    const tree = await required(root, ["write-tree"], { env });
+    const head = await required(root, ["rev-parse", "HEAD"]);
+    if (tree === (await required(root, ["rev-parse", "HEAD^{tree}"]))) return head;
+    return await required(root, ["commit-tree", tree, "-p", head, "--no-gpg-sign", "-F", "-"], {
+      input: `Content of run ${runId} for its task worktrees\n`,
+      env: await commitEnv(store, runId),
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Creates a task's worktree, detached at `base`, with the project's `node_modules` linked. A
+ * worktree left by an interrupted attempt of the task is replaced: its edits were never
+ * integrated, and recovery reconciled their effects before the run continued.
+ */
+export async function createTaskWorktree(
+  store: WorkflowStore,
+  runId: string,
+  taskId: string,
+  base: string,
+): Promise<string> {
+  const workspace = store.workspace;
+  const path = taskWorktreePath(runId, taskId);
+  await removeTaskWorktree(workspace, path);
+  const absolute = join(workspace, path);
+  mkdirSync(dirname(absolute), { recursive: true });
+  const hooks = join(workspace, ".baked", "no-hooks");
+  await required(workspace, [
+    "-c",
+    `core.hooksPath=${hooks}`,
+    "worktree",
+    "add",
+    "--detach",
+    absolute,
+    base,
+  ]);
+  linkDependencies(workspace, absolute);
+  return path;
+}
+
+/** Removes a task worktree, if present; its edits are integrated or abandoned by then. */
+export async function removeTaskWorktree(workspace: string, path: string): Promise<void> {
+  const absolute = join(workspace, path);
+  if (existsSync(join(absolute, ".git")))
+    await git(workspace, ["worktree", "remove", "--force", absolute]);
+  rmSync(absolute, { recursive: true, force: true });
+  await git(workspace, ["worktree", "prune"]);
+}
+
 /**
  * Approved write paths that have uncommitted changes in the user's working copy. Those changes do
  * not enter the worktree, so approving the plan needs an explicit choice to leave them out.
@@ -198,25 +295,10 @@ export async function commitRunBranch(
     }
     const tree = await required(root, ["write-tree"], { env });
     if (tree === (await required(root, ["rev-parse", `${worktree.baseHead}^{tree}`]))) return null;
-    const name =
-      (await git(workspace, ["config", "user.name"])).stdout.trim() || FALLBACK_IDENTITY.name;
-    const email =
-      (await git(workspace, ["config", "user.email"])).stdout.trim() || FALLBACK_IDENTITY.email;
-    const date = `${Math.floor(store.run(runId).created_at / 1000)} +0000`;
     const commit = await required(
       root,
       ["commit-tree", tree, "-p", worktree.baseHead, "--no-gpg-sign", "-F", "-"],
-      {
-        input: message,
-        env: {
-          GIT_AUTHOR_NAME: name,
-          GIT_AUTHOR_EMAIL: email,
-          GIT_AUTHOR_DATE: date,
-          GIT_COMMITTER_NAME: name,
-          GIT_COMMITTER_EMAIL: email,
-          GIT_COMMITTER_DATE: date,
-        },
-      },
+      { input: message, env: await commitEnv(store, runId) },
     );
     const tip = await required(workspace, [
       "rev-parse",
@@ -259,6 +341,12 @@ export async function removeRunWorktree(
 ): Promise<void> {
   const workspace = store.workspace;
   const absolute = join(workspace, worktree.path);
+  // Task worktrees of a run with several writers go first; they never hold accepted content.
+  const runDirectory = dirname(absolute);
+  if (existsSync(runDirectory))
+    for (const entry of readdirSync(runDirectory))
+      if (join(runDirectory, entry) !== absolute)
+        await removeTaskWorktree(workspace, join(dirname(worktree.path), entry));
   if (existsSync(absolute)) await required(workspace, ["worktree", "remove", "--force", absolute]);
   await git(workspace, ["worktree", "prune"]);
   rmSync(join(workspace, ".baked", "worktrees", runId), { recursive: true, force: true });

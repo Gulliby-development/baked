@@ -124,11 +124,26 @@ export class WorkspaceLeases {
   private held = new Map<LeaseRow["resource"], LeaseRow>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private lost = new AbortController();
+  /** Leases whose loss stops only the work under them (a task worktree), not the whole owner. */
+  private isolated = new Map<LeaseRow["resource"], AbortController>();
   get signal(): AbortSignal {
     return this.lost.signal;
   }
+  /** Aborted when this lease is lost: an isolated lease's own signal, otherwise the owner's. */
+  signalOf(resource: LeaseRow["resource"]): AbortSignal {
+    return this.isolated.get(resource)?.signal ?? this.lost.signal;
+  }
   constructor(private store: WorkflowStore) {}
-  acquire(resource: LeaseRow["resource"], runId: string | null): void {
+  /**
+   * Takes a lease. An isolated lease (a task worktree of a run with several writers) is renewed
+   * with the others, but losing it aborts only `signalOf(resource)`, so one lost task does not
+   * stop the tasks beside it.
+   */
+  acquire(
+    resource: LeaseRow["resource"],
+    runId: string | null,
+    options: { isolated?: boolean } = {},
+  ): void {
     this.store.transaction(() => {
       const previous = this.store.lease(resource);
       if (previous?.owner_id === this.owner && previous.run_id !== runId)
@@ -156,6 +171,7 @@ export class WorkspaceLeases {
       };
       this.store.putLease(row);
       this.held.set(resource, row);
+      if (options.isolated) this.isolated.set(resource, new AbortController());
     });
     if (!this.timer) {
       this.timer = setInterval(() => this.heartbeat(), 5000);
@@ -164,6 +180,7 @@ export class WorkspaceLeases {
   }
   assert(resource: LeaseRow["resource"]): void {
     this.lost.signal.throwIfAborted();
+    this.isolated.get(resource)?.signal.throwIfAborted();
     const held = this.held.get(resource);
     const actual = this.store.lease(resource);
     if (
@@ -175,9 +192,27 @@ export class WorkspaceLeases {
       throw new WorkflowFault("WORKSPACE_BUSY", "Workspace lease ownership changed");
   }
   private heartbeat(): void {
+    for (const [resource, controller] of this.isolated) {
+      const held = this.held.get(resource);
+      if (!held || controller.signal.aborted) continue;
+      try {
+        this.store.transaction(() => {
+          this.assert(resource);
+          const renewed = { ...held, expires_at: Date.now() + 15000 };
+          this.store.putLease(renewed);
+          this.held.set(resource, renewed);
+        });
+      } catch (error) {
+        // Another owner holds it now: only the work under this lease stops, and the durable
+        // lease is left to its new owner.
+        this.held.delete(resource);
+        controller.abort(error);
+      }
+    }
     try {
       this.store.transaction(() => {
         for (const [resource, held] of this.held) {
+          if (this.isolated.has(resource)) continue;
           this.assert(resource);
           const renewed = { ...held, expires_at: Date.now() + 15000 };
           this.store.putLease(renewed);
@@ -192,12 +227,20 @@ export class WorkspaceLeases {
       this.lost.abort(error);
     }
   }
+  /** Releases one lease and keeps the others, as a task worktree's lease after its integration. */
+  releaseOne(resource: LeaseRow["resource"]): void {
+    const held = this.held.get(resource);
+    if (held) this.store.releaseLease(resource, this.owner, held.owner_epoch);
+    this.held.delete(resource);
+    this.isolated.delete(resource);
+  }
   release(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     for (const [resource, held] of this.held)
       this.store.releaseLease(resource, this.owner, held.owner_epoch);
     this.held.clear();
+    this.isolated.clear();
     this.lost = new AbortController();
   }
 }
