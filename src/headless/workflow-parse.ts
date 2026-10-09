@@ -235,6 +235,9 @@ approve RUN_ID --request ID --digest SHA256 --expected-revision N
 answer RUN_ID --request ID --answers-file FILE --expected-revision N
 evidence RUN_ID --request ID --file FILE --accept --expected-revision N
 reject RUN_ID --request ID --reason TEXT --expected-revision N
+  An AI walk-through's verified test waits as an approval request with an acceptance body
+  (see status). approve promotes it: the test file and its command gate with provenance are
+  written to the project and confirmed; reject discards it. Neither changes the run's state.
 pause|cancel|fork RUN_ID --expected-revision N
 continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the limits of a run blocked on its budget; resume continues it)

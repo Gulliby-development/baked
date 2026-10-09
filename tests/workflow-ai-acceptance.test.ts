@@ -9,7 +9,8 @@ import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schem
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
-import { type AcceptanceGateDefinition, walkProblems } from "../src/core/workflows/v2/acceptance.js";
+import { type AcceptanceGateDefinition, failedAssertions, forbiddenConstructs, walkProblems } from "../src/core/workflows/v2/acceptance.js";
+import { listenerViolations, parseProcNetTcp } from "../src/core/workflows/v2/terminal-driver.js";
 import { recordedSteps, runTestOnce, WalkSession } from "../src/core/workflows/v2/acceptance-gate.js";
 import { type Gate, GateSchema, validateGate, type WorkflowV2 } from "../src/core/workflows/v2/definition.js";
 import { builtinPresets, instantiatePreset } from "../src/core/workflows/v2/definitions.js";
@@ -417,4 +418,20 @@ describe("AI acceptance gate", () => {
     expect(gateEvents(fixture.service, run.runId).find((g) => g.gateId === "calc-walk")?.status).toBe("skipped");
     expect(fixture.executor.calls).toEqual(["plan", "implementation"]);
   }, 60000);
+
+  test("listeners, assertion markers and forbidden test constructs are read by the host", () => {
+    const table = [
+      "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+      "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 111 1",
+      "   1: 00000000:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 222 1",
+      "   2: 0100007F:1F91 0100007F:9C40 01 00000000:00000000 00:00000000 00000000  1000        0 333 1",
+    ].join("\n");
+    const listeners = parseProcNetTcp(table, false);
+    expect([...listeners.entries()]).toEqual([["111", { port: 8080, loopback: true }], ["222", { port: 3000, loopback: false }]]);
+    expect(listenerViolations([...listeners.values()], [8080, 3000])).toEqual(["the application listens on port 3000 beyond loopback"]);
+    expect(listenerViolations([...listeners.values()], [])).toContain("the application listens on port 8080, which is not granted");
+    expect(failedAssertions("ok\nASSERTION FAILED: A2 wrong sum\nASSERTION FAILED: A2 again\nASSERTION FAILED: nonsense")).toEqual(["A2"]);
+    expect(forbiddenConstructs("await Bun.file('.baked/config.json').text()", "tests/acceptance/x.ts")).toEqual(["it refers to .baked (the run store and configuration)"]);
+    expect(forbiddenConstructs(generatedTest("correct"), "tests/acceptance/calc-walk.ts")).toEqual([]);
+  });
 });
