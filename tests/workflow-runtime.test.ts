@@ -21,6 +21,7 @@ import { gitBaseline, sourceManifest } from "../src/core/verification/snapshot.j
 import { fingerprint } from "../src/core/verification/findings.js";
 import { ReviewSchema, PlanSchema, ImplementationSchema } from "../src/core/workflows/schemas.js";
 import { workspacePath } from "../src/core/specs/validate.js";
+import { planConsistencyProblems } from "../src/core/workflows/plan-consistency.js";
 import { validateEvidence } from "../src/core/verification/evidence.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
 import { applyWorkflowEvent } from "../src/stores/workflow.js";
@@ -727,5 +728,81 @@ describe("full disk during file writes", () => {
     expect(service.store.effects(run.runId)[0]?.status).toBe("failed");
     service.scheduler.journal.publish(run.runId, attempt, "value.txt", "after", hashBytes("before"));
     expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("after");
+  });
+});
+
+describe("runtime-decided tasks and plan consistency", () => {
+  test("a task without writes is closed by its task checks without an agent call", async () => {
+    const { service, executor } = setup();
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request) => {
+      const result = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = PlanSchema.parse(result.output);
+        plan.taskGraph.tasks.push({ ...plan.taskGraph.tasks[0]!, id: "T002", title: "Verify value", dependsOn: ["T001"], writes: [], checkIds: ["check"] });
+        result.output = plan;
+      }
+      return result;
+    };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create and verify value", ownerLabel: "test", policy: { ...policy, checks: policy.checks.map((c) => ({ ...c, scope: "task" as const })) } });
+    await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+    expect(executor.calls.filter((c) => c === "implementation")).toHaveLength(1);
+    expect(service.store.checks(run.runId).filter((c) => c.check_id === "check" && c.status === "passed").length).toBeGreaterThanOrEqual(2);
+  });
+  test("plan validation rejects IDs the plan names but the graph and spec lack", async () => {
+    const { service, executor } = setup();
+    const original = executor.execute.bind(executor);
+    let feedback: string[] = [];
+    executor.execute = async (request) => {
+      const result = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = PlanSchema.parse(result.output);
+        plan.markdown += "\nT005 runs the suite for AC-009.";
+        plan.taskGraph.planHash = hashBytes(plan.markdown);
+        feedback = request.validate?.(plan) ?? [];
+        result.output = plan;
+      }
+      return result;
+    };
+    const { run } = await start(service);
+    await service.drive(run.runId, new AbortController().signal);
+    expect(feedback).toContain("plan names T005, which is not in the task graph");
+    expect(feedback).toContain("plan names AC-009, which is not in the spec");
+    expect(executor.calls).not.toContain("analysis");
+  });
+  test("analysis stops on mechanical defects without a model call", async () => {
+    const { service, executor, root } = setup();
+    const scheduler = service.scheduler as unknown as { publish: (...args: unknown[]) => Promise<void> };
+    const publish = scheduler.publish.bind(service.scheduler);
+    let published = 0;
+    scheduler.publish = async (...args) => {
+      // The second publication opens analysis; the planned create target appears just before it.
+      if (++published === 2) writeFileSync(join(root, "value.txt"), "user file");
+      return publish(...args);
+    };
+    const { run } = await start(service);
+    const waiting = await service.drive(run.runId, new AbortController().signal);
+    expect(waiting.status).toBe("waiting"); expect(waiting.reason).toBe("clarification");
+    expect(executor.calls).not.toContain("analysis");
+    const request = service.store.requests(run.runId).find((r) => r.kind === "clarification");
+    expect(request?.body_json).toContain("T001 creates value.txt, which already exists; use modify");
+  });
+  test("plan consistency requires ordered writers and reachable read hints", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-consistency-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    writeFileSync(join(root, "shared.txt"), "x");
+    const task = { id: "T001", title: "A", description: "A", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "shared.txt", action: "modify" as const }], readHints: [], checkIds: [], origin: "planned" as const, findingIds: [], rationale: "A" };
+    const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(""), tasks: [
+      task,
+      { ...task, id: "T002", readHints: ["new.txt", "later.txt"] },
+      { ...task, id: "T003", dependsOn: ["T002"], writes: [{ path: "later.txt", action: "create" as const }, { path: "new.txt", action: "create" as const }], readHints: ["new.txt"] },
+    ] };
+    expect(planConsistencyProblems(root, spec, "T001 T002 T003 FR-001 AC-001", graph)).toEqual([
+      "T002 read hint new.txt does not exist and no earlier task creates it",
+      "T002 read hint later.txt does not exist and no earlier task creates it",
+      "T001 and T002 both write shared.txt without a dependency between them",
+    ]);
   });
 });

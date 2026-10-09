@@ -17,6 +17,7 @@ import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { type WorkspaceLeases, withinWorkflow } from "./leases.js";
+import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
 import { abortableDelay, retryDelay } from "./retry.js";
@@ -209,6 +210,33 @@ export class WorkflowScheduler {
                   artifactHash,
                 }),
               );
+              const spec = state.spec;
+              const graph = state.graph;
+              if (!spec || !graph || state.plan === null)
+                throw new WorkflowFault(
+                  "ARTIFACT_MISSING",
+                  "Spec and plan required before analysis",
+                );
+              // Mechanical defects go back to the user without a model call.
+              const problems = this.planProblems(
+                spec,
+                { markdown: state.plan, taskGraph: graph },
+                policy,
+                profiles,
+              );
+              if (problems.length) {
+                this.wait(runId, "clarification", state, {
+                  findings: problems.map((description, index) => ({
+                    id: `RUNTIME-${index + 1}`,
+                    kind: "inconsistency",
+                    refs: ["plan.md", "tasks.json"],
+                    description,
+                    blocking: true,
+                  })),
+                });
+                advance = false;
+                break;
+              }
               const analysis = AnalysisSchema.parse(
                 await this.call(
                   runId,
@@ -216,7 +244,7 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  {},
+                  { verifiedByRuntime: PLAN_CONSISTENCY_CHECKS },
                   signal,
                 ),
               );
@@ -524,6 +552,7 @@ export class WorkflowScheduler {
     } catch (error) {
       problems.push(...(error instanceof Error ? error.message : String(error)).split("\n"));
     }
+    problems.push(...planConsistencyProblems(this.store.workspace, spec, plan.markdown, graph));
     for (const task of graph.tasks) {
       if (!profiles.some((p) => p.id === task.profileId && p.output === "implementation"))
         problems.push(`Unknown implementation profile ${task.profileId}`);
@@ -760,7 +789,15 @@ export class WorkflowScheduler {
         if (!checking) this.store.taskStatus(runId, task.id, "running");
         return this.store.beginStep(runId, `task-${task.id}`, stepId);
       });
-      if (!checking) {
+      if (!checking && task.writes.length === 0) {
+        // A task that may not write has nothing for a model to do: its task checks decide it,
+        // and the checks stage covers the rest.
+        await this.snapshot(runId, state, policy, signal);
+        this.store.transaction(() => {
+          this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
+          this.store.saveState(runId, state);
+        });
+      } else if (!checking) {
         const before = await sourceManifest(
           this.store.workspace,
           policy.checks.flatMap((c) => c.writes),
