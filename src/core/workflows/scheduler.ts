@@ -899,8 +899,12 @@ export class WorkflowScheduler {
           )
           .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
         const changed = [...new Set([...changedPaths(before, after), ...journaled])];
-        if (changed.some((path) => !task.writes.some((w) => w.path === path)))
-          throw new WorkflowFault("INPUT_CHANGED", "Task changed files outside its write scope");
+        const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
+        if (outside.length)
+          throw new WorkflowFault(
+            "INPUT_CHANGED",
+            `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
+          );
         if (
           result.taskId !== task.id ||
           ["blocked", "failed"].includes(result.outcome) ||

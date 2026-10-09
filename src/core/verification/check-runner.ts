@@ -68,8 +68,8 @@ export class CheckRunner {
         env,
         timeoutMs: check.timeoutMs,
         signal,
-        onSpawn: (pid) =>
-          this.store.transaction(() => this.store.recordProcess(runId, effectId, pid)),
+        onSpawn: (pid, scope) =>
+          this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
       });
     } catch (error) {
       reason = "spawn_error";

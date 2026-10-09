@@ -1078,12 +1078,17 @@ export class WorkflowStore {
     ]);
     this.effectStatus(runId, id, "applied");
   }
-  recordProcess(runId: string, effectId: string, pid: number): void {
+  recordProcess(runId: string, effectId: string, pid: number, scope?: string): void {
     const effect = this.effects(runId).find((e) => e.id === effectId);
     if (effect?.kind !== "command")
       throw new WorkflowFault("NOT_FOUND", "Command intent missing before spawn");
     this.db.run("UPDATE effects SET intent_json=? WHERE run_id=? AND id=?", [
-      canonical({ ...JSON.parse(effect.intent_json), pid, spawnedAt: Date.now() }),
+      canonical({
+        ...JSON.parse(effect.intent_json),
+        pid,
+        spawnedAt: Date.now(),
+        ...(scope ? { scope } : {}),
+      }),
       runId,
       effectId,
     ]);

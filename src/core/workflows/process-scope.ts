@@ -1,10 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { killTree } from "../platform/index.js";
+import { randomUUID } from "node:crypto";
+import { killTree, PROCESS_SCOPE_ENV } from "../platform/index.js";
 
-function stopTree(child: ChildProcess, force = false): void {
+function stopTree(child: ChildProcess, scope: string, force = false): void {
   if (!child.pid) return;
   if (process.platform !== "win32") {
-    killTree(child.pid, force ? "SIGKILL" : "SIGTERM");
+    killTree(child.pid, force ? "SIGKILL" : "SIGTERM", scope);
     return;
   }
   const killer = spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], {
@@ -29,7 +30,7 @@ export interface ProcessResult {
   durationMs: number;
 }
 export class ProcessScope {
-  private children = new Set<ChildProcess>();
+  private children = new Map<ChildProcess, string>();
   async execute(
     executable: string,
     args: string[],
@@ -38,21 +39,23 @@ export class ProcessScope {
       env: NodeJS.ProcessEnv;
       timeoutMs: number;
       signal: AbortSignal;
-      onSpawn?: (pid: number) => void;
+      /** Receives the PID and the scope marker its descendants inherit. */
+      onSpawn?: (pid: number, scope: string) => void;
     },
   ): Promise<ProcessResult> {
     options.signal.throwIfAborted();
     const started = performance.now();
+    const scope = randomUUID();
     return new Promise((resolve, reject) => {
       const child = spawn(executable, args, {
         cwd: options.cwd,
-        env: options.env,
+        env: { ...options.env, [PROCESS_SCOPE_ENV]: scope },
         shell: false,
         windowsHide: true,
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       });
-      this.children.add(child);
+      this.children.set(child, scope);
       let output = Buffer.alloc(0);
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
@@ -61,9 +64,9 @@ export class ProcessScope {
       let truncated = false;
       let hardKill: ReturnType<typeof setTimeout> | undefined;
       const stop = (): void => {
-        stopTree(child);
+        stopTree(child, scope);
         hardKill ??= setTimeout(() => {
-          stopTree(child, true);
+          stopTree(child, scope, true);
           child.kill("SIGKILL");
         }, 500);
       };
@@ -92,7 +95,7 @@ export class ProcessScope {
       options.signal.addEventListener("abort", abort, { once: true });
       child.once("spawn", () => {
         try {
-          if (child.pid) options.onSpawn?.(child.pid);
+          if (child.pid) options.onSpawn?.(child.pid, scope);
         } catch (error) {
           stop();
           reject(error);
@@ -127,21 +130,21 @@ export class ProcessScope {
   async stop(): Promise<void> {
     await Promise.all(
       [...this.children].map(
-        (child) =>
+        ([child, scope]) =>
           new Promise<void>((resolve) => {
             if (child.exitCode !== null || child.signalCode !== null) {
               resolve();
               return;
             }
             const timer = setTimeout(() => {
-              stopTree(child, true);
+              stopTree(child, scope, true);
               child.kill("SIGKILL");
             }, 500);
             child.once("close", () => {
               clearTimeout(timer);
               resolve();
             });
-            stopTree(child);
+            stopTree(child, scope);
           }),
       ),
     );

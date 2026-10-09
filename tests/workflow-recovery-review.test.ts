@@ -4,8 +4,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
+import { PROCESS_SCOPE_ENV } from "../src/core/platform/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { PlanSchema, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -212,8 +214,10 @@ test("an orphaned descendant of an exited command still blocks recovery and leas
   );
   // The command starts a detached long-lived grandchild and exits at once; the grandchild outlives it.
   const script = `const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore", detached: true }); g.unref(); console.log(g.pid);`;
-  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore" });
-  service.store.transaction(() => service.store.recordProcess(run.runId, effectId, child.pid));
+  // A detached grandchild leaves the command's process group on POSIX; the inherited scope marker still links it.
+  const scope = newId();
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore", env: { ...process.env, [PROCESS_SCOPE_ENV]: scope } });
+  service.store.transaction(() => service.store.recordProcess(run.runId, effectId, child.pid, scope));
   const grandchild = Number((await new Response(child.stdout).text()).trim());
   await child.exited;
   try {
@@ -227,4 +231,37 @@ test("an orphaned descendant of an exited command still blocks recovery and leas
     await Bun.sleep(100);
   }
   expect(commandMayBeRunning(service.store, run.runId)).toBe(false);
+}, 30000);
+
+test.skipIf(process.platform !== "linux")("cancelling a command also stops a descendant that left its process group", async () => {
+  const { scopedProcesses } = await import("../src/core/platform/index.js");
+  const script = `const { spawn } = require("node:child_process"); spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore", detached: true }).unref(); setTimeout(() => {}, 60000);`;
+  const controller = new AbortController();
+  let scope = "";
+  const done = new ProcessScope().execute(process.execPath, ["-e", script], {
+    cwd: tmpdir(),
+    env: process.env,
+    timeoutMs: 20000,
+    signal: controller.signal,
+    onSpawn: (_pid, marker) => { scope = marker; },
+  });
+  let started: number[] = [];
+  for (let i = 0; i < 100 && started.length < 2; i++) {
+    await Bun.sleep(50);
+    started = scope ? (scopedProcesses(scope) ?? []) : [];
+  }
+  controller.abort();
+  const result = await done;
+  try {
+    expect(started.length).toBe(2);
+    expect(result.cancelled).toBe(true);
+    let left = scopedProcesses(scope) ?? [];
+    for (let i = 0; i < 50 && left.length; i++) {
+      await Bun.sleep(100);
+      left = scopedProcesses(scope) ?? [];
+    }
+    expect(left).toEqual([]);
+  } finally {
+    for (const pid of started) try { process.kill(pid, "SIGKILL"); } catch {}
+  }
 }, 30000);
