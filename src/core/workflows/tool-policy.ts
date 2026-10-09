@@ -3,6 +3,7 @@ import { workspacePath } from "../specs/validate.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkspaceLeases } from "./leases.js";
+import { capturePreImage, createdByRunLineage } from "./rollback.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
 import type { Task } from "./types.js";
@@ -85,7 +86,12 @@ export class WorkflowToolPolicy {
       existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null))
     )
       throw new WorkflowFault("INPUT_CHANGED", `File changed outside this attempt: ${path}`);
-    if (write.action === "create" && existing !== null && !ownEffect)
+    if (
+      write.action === "create" &&
+      existing !== null &&
+      !ownEffect &&
+      !createdByRunLineage(this.store, this.runId, path, existing)
+    )
       throw new WorkflowFault("INPUT_CHANGED", `Create target already exists: ${path}`);
     if (write.action === "modify" && existing === null)
       throw new WorkflowFault("INPUT_CHANGED", `Modify target is missing: ${path}`);
@@ -100,13 +106,14 @@ export class WorkflowToolPolicy {
     const path = this.validate(name, args);
     if (!path) return action();
     const absolute = workspacePath(this.root, path);
+    // The pre-image lets `workflow undo` restore the file if this edit is never committed.
     const effectId = this.store.transaction(() =>
       this.store.prepareEffect(
         this.runId,
         this.attemptId,
         "file_patch",
         { path, tool: name },
-        fileHash(absolute),
+        capturePreImage(this.store, this.runId, absolute),
         null,
       ),
     );
