@@ -26,6 +26,7 @@ const commands = [
   "usage",
   "extend",
   "continue",
+  "undo",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 export interface WorkflowArgs {
@@ -109,6 +110,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   usage: [],
   extend: ["tokens", "calls", "time-ms", "expected-revision", "command-id"],
   continue: ["request", "expected-revision", "command-id"],
+  undo: ["path", "expected-revision", "command-id"],
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -189,6 +191,7 @@ continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint;
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the limits of a run blocked on its budget; resume continues it)
 candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE]
 revise RUN_ID --candidate SHA256 --expected-revision N
+undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
 profiles                  artifacts RUN_ID [--file ARTIFACT_ID]
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID

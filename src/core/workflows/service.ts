@@ -28,6 +28,7 @@ import {
   releaseDeadOwnerLeases,
   WorkspaceLeases,
 } from "./leases.js";
+import { undoRunEdits } from "./rollback.js";
 import { WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
@@ -662,6 +663,36 @@ export class NativeWorkflowService implements WorkflowService {
       this.store.saveCommand(command.commandId, body, result);
       return result;
     });
+  }
+  /**
+   * Undoes the run's own task edits that are not part of its baseline: those of a failed or
+   * interrupted attempt, of tasks a revision invalidated or dropped, or of a cancelled run. Only
+   * files that still hold exactly what the run wrote are restored; anything changed since is
+   * left in place and reported. The run's versions are kept as artifacts, every restore is a
+   * journaled file effect, and the outcome is the latest `workspace-rollback` artifact.
+   */
+  async undo(runId: string, command: CommandIdentity, paths: string[] = []): Promise<RunSnapshot> {
+    this.enabled();
+    const body = { runId, ...command, action: "undo", paths: [...paths].sort() };
+    const previous = this.store.transaction(() => {
+      const old = this.store.previousCommand(command.commandId, body);
+      if (old) return old;
+      const run = this.store.run(runId);
+      if (run.status === "running" || this.active.has(runId))
+        throw new WorkflowFault("WORKSPACE_BUSY", "Pause the run before undoing its edits");
+      if (run.revision !== command.expectedRevision)
+        throw new WorkflowFault("REVISION_CONFLICT", "Run changed before undo");
+      return undefined;
+    });
+    if (previous) return previous;
+    this.leases.acquire("execution", runId);
+    try {
+      this.leases.acquire("mutation", runId);
+      undoRunEdits(this.store, this.leases, runId, paths);
+    } finally {
+      this.leases.release();
+    }
+    return this.store.command(runId, command, body, () => {});
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);

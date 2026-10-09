@@ -23,6 +23,7 @@ import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consist
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
 import { abortableDelay, retryDelay } from "./retry.js";
+import { createdByRunLineage, runWrittenHash, uncommittedEdits } from "./rollback.js";
 import {
   type AgentProfile,
   AnalysisSchema,
@@ -204,14 +205,14 @@ export class WorkflowScheduler {
                   (output) => {
                     const parsed = PlanSchema.safeParse(output);
                     return parsed.success
-                      ? this.planProblems(spec, parsed.data, policy, profiles)
+                      ? this.planProblems(runId, spec, parsed.data, policy, profiles)
                       : [parsed.error.message];
                   },
                 ),
               );
               state.plan = plan.markdown;
               state.graph = planGraph(spec, plan);
-              const problems = this.planProblems(spec, plan, policy, profiles);
+              const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
               state.rootGraph = structuredClone(state.graph);
@@ -244,6 +245,7 @@ export class WorkflowScheduler {
                 );
               // Mechanical defects go back to the user without a model call.
               const problems = this.planProblems(
+                runId,
                 spec,
                 { markdown: state.plan, taskGraph: graph },
                 policy,
@@ -624,6 +626,7 @@ export class WorkflowScheduler {
   }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
+    runId: string,
     spec: Spec,
     plan: { markdown: string; taskGraph: TaskGraph },
     policy: RunPolicy,
@@ -636,7 +639,16 @@ export class WorkflowScheduler {
     } catch (error) {
       problems.push(...(error instanceof Error ? error.message : String(error)).split("\n"));
     }
-    problems.push(...planConsistencyProblems(this.store.workspace, spec, plan.markdown, graph));
+    problems.push(
+      ...planConsistencyProblems(this.store.workspace, spec, plan.markdown, graph, (path) =>
+        createdByRunLineage(
+          this.store,
+          runId,
+          path,
+          fileHash(workspacePath(this.store.workspace, path)),
+        ),
+      ),
+    );
     for (const task of graph.tasks) {
       if (!profiles.some((p) => p.id === task.profileId && p.output === "implementation"))
         problems.push(`Unknown implementation profile ${task.profileId}`);
@@ -678,7 +690,21 @@ export class WorkflowScheduler {
       policy.checks.flatMap((c) => c.writes),
       signal,
     );
-    if (hashJson(files) !== hashJson(state.expectedFiles)) {
+    // The run's own journaled edits since the last snapshot are kept (an attempt that was
+    // interrupted or failed, an invalidated task): they are the run's baseline, not an outside change.
+    const expected = state.expectedFiles;
+    const differing = [...new Set([...Object.keys(files), ...Object.keys(expected)])].filter(
+      (path) => files[path] !== expected[path],
+    );
+    if (
+      differing.length &&
+      differing.every((path) => runWrittenHash(this.store, runId, path) === (files[path] ?? null))
+    ) {
+      state.expectedFiles = files;
+      this.store.transaction(() => this.store.saveState(runId, state));
+      return;
+    }
+    if (differing.length) {
       if (state.snapshotId)
         this.store.transaction(() =>
           this.store.invalidateEvidence(runId, state.snapshotId ?? "", "source_changed"),
@@ -909,6 +935,18 @@ export class WorkflowScheduler {
           signal,
         );
         const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
+        // Edits of earlier attempts of this task that are still in place (a revision, a recovery
+        // or a failed attempt keeps them), by path, with the hash the path had before them.
+        const earlier = new Map<string, string | null>();
+        for (const edit of uncommittedEdits(this.store, runId, task.id)) {
+          const path = (JSON.parse(edit.intent_json) as { path: string }).path;
+          if (!earlier.has(path)) earlier.set(path, edit.before_hash);
+        }
+        const stillEdited = (): string[] =>
+          [...earlier].flatMap(([path, original]) =>
+            fileHash(workspacePath(this.store.workspace, path)) === original ? [] : [path],
+          );
+        const inherited = stillEdited();
         const result = ImplementationSchema.parse(
           await this.call(
             runId,
@@ -920,6 +958,14 @@ export class WorkflowScheduler {
               task,
               evidence: this.evidenceContext(runId, state, { reads: false }),
               unresolvedMeans: UNRESOLVED_MEANING,
+              ...(inherited.length
+                ? {
+                    earlierEdits: {
+                      paths: inherited,
+                      note: "These files already contain edits from an earlier attempt of this task in this run. Read their current content before editing; keep what is correct.",
+                    },
+                  }
+                : {}),
             },
             signal,
             task,
@@ -942,7 +988,9 @@ export class WorkflowScheduler {
               e.before_hash !== e.after_hash,
           )
           .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-        const changed = [...new Set([...changedPaths(before, after), ...journaled])];
+        const changed = [
+          ...new Set([...changedPaths(before, after), ...journaled, ...stillEdited()]),
+        ];
         const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
         if (outside.length)
           throw new WorkflowFault(
@@ -971,7 +1019,9 @@ export class WorkflowScheduler {
             `tasks/${task.id}/diff.json`,
             canonical({
               changed,
-              before: Object.fromEntries(changed.map((p) => [p, before[p] ?? null])),
+              before: Object.fromEntries(
+                changed.map((p) => [p, earlier.has(p) ? earlier.get(p) : (before[p] ?? null)]),
+              ),
               after: Object.fromEntries(changed.map((p) => [p, after[p] ?? null])),
             }),
           );

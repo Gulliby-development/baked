@@ -7,6 +7,7 @@ import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import type { BudgetLimits } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
+import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import {
   type Decision,
   PolicySchema,
@@ -112,6 +113,21 @@ export async function executeWorkflowCommand(
     }
     case "revise":
       return service.revise(runId, identity(), stringFlag(args, "candidate"));
+    case "undo": {
+      const snapshot = await service.undo(
+        runId,
+        identity(),
+        typeof args.flags.path === "string" ? [args.flags.path] : [],
+      );
+      const report = service.store
+        .artifacts(runId)
+        .filter((a) => a.kind === ROLLBACK_ARTIFACT_KIND)
+        .at(-1);
+      return {
+        ...snapshot,
+        undo: report ? JSON.parse(service.store.readArtifact(runId, report.id)) : null,
+      };
+    }
     case "candidate":
       return artifacts.stageRevision(runId, {
         commandId: stringFlag(args, "command-id", newId()),
