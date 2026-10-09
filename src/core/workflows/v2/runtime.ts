@@ -1,5 +1,5 @@
-import { canonical } from "../../specs/hash.js";
-import type { Spec, WorkflowDefinition } from "../schemas.js";
+import { canonical, hashJson } from "../../specs/hash.js";
+import type { RunPolicy, Spec, WorkflowDefinition } from "../schemas.js";
 import { WorkflowSchema } from "../schemas.js";
 import type { Check, RuntimeState } from "../types.js";
 import {
@@ -242,6 +242,32 @@ export function carriedValue(state: RuntimeState, stage: Stage): unknown {
     default:
       return null;
   }
+}
+
+/** What a user confirms to turn on a definition's auto approval: the hash of its limits. */
+export const autoApprovalHash = (limits: NonNullable<WorkflowV2["autoApproval"]>): string =>
+  hashJson(limits);
+
+/**
+ * The run policy's auto approval for a v2 definition. Auto approval is a property of the
+ * definition: a definition without an auto approval stage never approves on its own, whatever the
+ * project's policy says.
+ */
+export function autoApprovalOf(definition: WorkflowV2): RunPolicy["autoApproval"] {
+  const auto = definition.autoApproval;
+  if (!auto || !definition.stages.some((s) => s.type === "approval" && s.decision === "auto"))
+    return null;
+  return {
+    renewal: false,
+    limits: {
+      maxTasks: auto.maxTasks,
+      maxFiles: auto.maxFiles,
+      allowedPaths: auto.allowedPaths,
+      allowDelete: auto.allowDelete,
+      allowNewDependencies: false,
+      maxTotalTokens: auto.maxTotalTokens,
+    },
+  };
 }
 
 export const contractText = (value: unknown): string | null =>

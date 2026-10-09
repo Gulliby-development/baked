@@ -768,6 +768,11 @@ export interface StartRequest {
   ownerLabel: string;
   /** Model selected for this run; resolved profile models are frozen at start. */
   model?: string;
+  /**
+   * Hash of the auto approval limits of a v2 definition, typed by the user to turn them on for
+   * this run. A definition with an auto approval stage does not start without it.
+   */
+  autoApprovalConfirmation?: string;
 }
 export type Decision =
   | { requestId: string; kind: "approve"; digest: string }
