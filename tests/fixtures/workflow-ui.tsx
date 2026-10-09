@@ -12,7 +12,7 @@ const snapshot: RunSnapshot = { runId: "fixture", featureId: "a-rather-long-feat
 const budget = { tokens: 1000, heldTokens: 0, inFlightTokens: 0, maxTokens: 400000, calls: 4, maxCalls: 80, activeMs: 10000, maxActiveMs: 3600000, repairRounds: 0, maxRepairRounds: 2 };
 const kinds = ["research", "specify", "plan", "analyze", "approve", "task-graph", "checks", "review", "converge", "learn"];
 const stages = kinds.map((kind, i) => ({ id: kind === "task-graph" ? "implement" : kind, kind, status: i < 4 ? "completed" : i === 4 ? "waiting" : "pending", generation: 0 }));
-const details = { title: "Verifiable specification", prompt: "Add a check", specMarkdown: "# Spec\n\nSpecification text", plan: "## Plan\nText that checks wrapping of long plan lines in narrow terminals.\n".repeat(20), criteria: [{ id: "AC-001", text: "Given initial data; when the task runs; then the result is verified", method: "automated", verdict: null, evidenceIds: [] }], lastError: null };
+const details = { title: "Verifiable specification", prompt: "Add a check", specMarkdown: "# Spec\n\nSpecification text", plan: "## Plan\nText that checks wrapping of long plan lines in narrow terminals.\n".repeat(20), criteria: [{ id: "AC-001", text: "Given initial data; when the task runs; then the result is verified", method: "automated", verdict: null, evidenceIds: [] }], lastError: null, autoApproval: null };
 const events: WorkflowEvent[] = [
   { schemaVersion: 1, eventId: "e1", runId: "fixture", seq: 19, at: new Date().toISOString(), type: "stage.started", payload: { stepId: "s1", stageId: "approve", generation: 0 } },
   { schemaVersion: 1, eventId: "e2", runId: "fixture", seq: 20, at: new Date().toISOString(), type: "request.created", payload: { requestId: "approval", kind: "approval", digest: "c".repeat(64) } },
@@ -48,7 +48,7 @@ const runs: RunSummary[] = [
   { snapshot: { ...snapshot, runId: "done", featureId: "finished-feature", status: "completed", reason: "none", pendingRequestIds: [] }, title: null, stage: { index: 9, total: 10, id: "learn" }, tasks: { done: 2, total: 2 }, pendingKind: null, budget, createdAt: Date.now() - 86400000, updatedAt: Date.now() - 86400000 },
   { snapshot, title: details.title, stage: { index: 4, total: 10, id: "approve" }, tasks: { done: 0, total: 1 }, pendingKind: "approval", budget, createdAt: Date.now() - 60000, updatedAt: Date.now() - 60000 },
 ];
-const info: WorkflowInfo = { estimate: { tokens: { low: 90000, high: 300000 }, basis: "defaults", samples: 0, label: "Estimate: 90k–300k tokens (generic range: this project has no finished runs yet)" }, enabled: true, defaultWorkflow: "sdd", workflows: ["sdd"], policy: defaultWorkflowPolicy, presets: { quick: { maxTotalTokens: 200000, maxAgentCalls: 40, maxActiveMs: 1800000 }, standard: { maxTotalTokens: 400000, maxAgentCalls: 80, maxActiveMs: 3600000 }, extended: { maxTotalTokens: 800000, maxAgentCalls: 160, maxActiveMs: 7200000 }, checkpoints: { maxTotalTokens: 1000000000, maxAgentCalls: 160, maxActiveMs: 7200000, checkpointTokens: 200000 } } };
+const info: WorkflowInfo = { estimate: { tokens: { low: 90000, high: 300000 }, basis: "defaults", samples: 0, label: "Estimate: 90k–300k tokens (generic range: this project has no finished runs yet)" }, enabled: true, defaultWorkflow: "sdd", workflows: ["sdd"], definitions: { sdd: { stages: ["research", "specify", "plan"], writes: true, problems: [] } }, policy: defaultWorkflowPolicy, presets: { quick: { maxTotalTokens: 200000, maxAgentCalls: 40, maxActiveMs: 1800000 }, standard: { maxTotalTokens: 400000, maxAgentCalls: 80, maxActiveMs: 3600000 }, extended: { maxTotalTokens: 800000, maxAgentCalls: 160, maxActiveMs: 7200000 }, checkpoints: { maxTotalTokens: 1000000000, maxAgentCalls: 160, maxActiveMs: 7200000, checkpointTokens: 200000 } } };
 mock.module("../../src/hooks/useWorkflow.js", () => ({
   useWorkflow: (_workspace: string, runId: string | null) => ({ service: runId ? service : null, snapshot: runId ? snapshot : null, error: null, generation: 1, act: async (action: unknown) => { actions.push(action); } }),
   useWorkflowRuns: () => ({ runs, info, enabled: true, error: null, reload: () => {} }),
@@ -83,7 +83,9 @@ for (const [width, height] of [[120, 40], [80, 24], [50, 20]]) {
     assert(home.includes("finished-feature"), "home lists runs");
     assert(/needs your approval/.test(home) || width < 80, "home shows what needs the user");
     await act(async () => view.mockInput.pressKey("n"));
-    assert((await frame("new")).includes("New workflow run"), "new-run form opens from the list");
+    const form = await frame("new");
+    assert(form.includes("New workflow run"), "new-run form opens from the list");
+    assert(height! < 40 || form.includes("research → specify → plan"), "the form shows the workflow's stages");
     await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
     await act(async () => view.mockInput.pressEnter());
     const decision = await frame("decision-auto");
