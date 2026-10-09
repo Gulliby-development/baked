@@ -414,3 +414,58 @@ describe("workflow v2 scheduler", () => {
 
   }, 30000);
 });
+
+describe("workflow v2 auto approval", () => {
+  const limits = { enabled: true as const, maxTasks: 3, maxFiles: 5, allowedPaths: ["value.txt"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: 400000 };
+  const autoFix = (allowedPaths = limits.allowedPaths) => quickFix((d) => ({
+    ...d,
+    stages: d.stages.map((s) => (s.type === "approval" ? { ...s, decision: "auto" as const } : s)),
+    autoApproval: { ...limits, allowedPaths },
+  }));
+  const confirmed = (fixture: ReturnType<typeof setup>, hash: string) =>
+    fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "custom-fix", prompt: "Create ready value", ownerLabel: "test", policy, autoApprovalConfirmation: hash });
+
+  test("V2-12 a definition with auto approval starts only after its limits are confirmed", async () => {
+    const fixture = setup();
+    fixture.define(autoFix());
+    const refused = await fixture.start("custom-fix").catch((error: Error & { details?: { autoApprovalHash?: string } }) => error);
+    expect(refused).toBeInstanceOf(Error);
+    expect((refused as Error).message).toContain("at most 3 tasks");
+    const hash = (refused as { details: { autoApprovalHash: string } }).details.autoApprovalHash;
+    await expect(confirmed(fixture, "0".repeat(64))).rejects.toThrow("Confirm these limits");
+    const run = await confirmed(fixture, hash);
+    expect(JSON.parse(fixture.service.store.run(run.runId).policy_json).autoApproval.limits.allowedPaths).toEqual(["value.txt"]);
+  });
+
+  test("V2-12 inside the limits the host approves with the digest a person would sign", async () => {
+    const fixture = setup();
+    fixture.define(autoFix());
+    const hash = hashJson(autoFix().autoApproval);
+    const run = await confirmed(fixture, hash);
+    const final = await fixture.drive(run.runId);
+    expect(final.status).toBe("completed");
+    const approval = fixture.service.store.requests(run.runId).find((r) => r.kind === "approval");
+    expect(approval?.status).toBe("accepted");
+    expect(approval?.actor).toBe("auto-approval");
+    expect(fixture.service.store.run(run.runId).approval_digest).toBe(approval?.digest ?? "");
+  }, 30000);
+
+  test("V2-12 outside the limits the run waits for a person", async () => {
+    const fixture = setup();
+    fixture.define(autoFix(["src/**"]));
+    const run = await confirmed(fixture, hashJson(autoFix(["src/**"]).autoApproval));
+    expect((await fixture.drive(run.runId)).status).toBe("waiting");
+    const body = JSON.parse(fixture.pending(run.runId, "approval")?.body_json ?? "{}") as { autoApproval: { declined: string[] } };
+    expect(body.autoApproval.declined).toContain("Limits: value.txt is outside the allowed paths");
+  }, 30000);
+
+  test("a human approval stage ignores auto approval in the project policy", async () => {
+    const auto = { ...policy, autoApproval: { renewal: false, limits: { maxTasks: 3, maxFiles: 5, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: 400000 } } };
+    const fixture = setup({}, auto);
+    fixture.define(quickFix());
+    const run = await fixture.start("custom-fix");
+    expect(JSON.parse(fixture.service.store.run(run.runId).policy_json).autoApproval).toBeNull();
+    expect((await fixture.drive(run.runId)).status).toBe("waiting");
+    expect(fixture.pending(run.runId, "approval")).toBeDefined();
+  }, 30000);
+});

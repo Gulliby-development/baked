@@ -87,6 +87,8 @@ export interface RunDetails {
   criteria: CriterionView[];
   /** Latest runtime error message recorded for the run, if any. */
   lastError: string | null;
+  /** The limits a run may be approved automatically within, shown for the life of the run. */
+  autoApproval: string | null;
 }
 
 export interface FileChange {
@@ -228,6 +230,7 @@ function detailsOf(store: WorkflowStore, runId: string): RunDetails {
     specMarkdown: state.spec ? renderSpec(state.spec) : null,
     plan: state.plan,
     lastError: lastErrorOf(store, runId),
+    autoApproval: autoApprovalText(JSON.parse(store.run(runId).policy_json) as RunPolicy),
     criteria:
       state.spec?.criteria.map((c) => {
         const result = state.convergence?.coverage.find((r) => r.criterionId === c.id);
@@ -389,4 +392,17 @@ export function readWorkflowSummaries(service: NativeWorkflowService, limit: num
       };
     }),
   );
+}
+
+function autoApprovalText(policy: RunPolicy): string | null {
+  const limits = policy.autoApproval?.limits;
+  const parts = [
+    ...(policy.autoApproval?.renewal ? ["a renewal of the last human approval"] : []),
+    ...(limits
+      ? [
+          `${limits.maxTasks} tasks, ${limits.maxFiles} files in ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : ", no deletions"}, up to ${limits.maxTotalTokens} tokens`,
+        ]
+      : []),
+  ];
+  return parts.length ? parts.join(" or ") : null;
 }

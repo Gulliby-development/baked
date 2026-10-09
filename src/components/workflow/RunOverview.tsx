@@ -110,6 +110,9 @@ export function RunOverview({
       )}
       <text fg={snapshot.pendingRequestIds.length ? t.warning : t.textPrimary}>{now}</text>
       {next ? <text fg={t.brand}>{`→ ${next}`}</text> : null}
+      {details?.autoApproval ? (
+        <text fg={t.textMuted}>{`Approved automatically within: ${details.autoApproval}`}</text>
+      ) : null}
       {!driveError && details?.lastError && ["blocked", "failed"].includes(snapshot.status) ? (
         <text fg={t.error}>{`✗ Last error: ${details.lastError}`}</text>
       ) : null}

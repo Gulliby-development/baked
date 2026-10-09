@@ -75,6 +75,9 @@ export async function executeWorkflowCommand(
         policy,
         ownerLabel: stringFlag(args, "owner", "CLI"),
         ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
+        ...(typeof args.flags["confirm-auto-approval"] === "string"
+          ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
+          : {}),
       });
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
