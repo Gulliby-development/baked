@@ -26,6 +26,8 @@ export function planConsistencyProblems(
   spec: Spec,
   plan: string,
   graph: TaskGraph,
+  /** True for an existing file that only this run (or the run it was forked from) created. */
+  createdByRun: (path: string) => boolean = () => false,
 ): string[] {
   const problems: string[] = [];
   const known = new Set([
@@ -48,6 +50,7 @@ export function planConsistencyProblems(
       if (
         write.action === "create" &&
         exists(write.path) &&
+        !createdByRun(write.path) &&
         !earlier.some((t) => t.writes.some((w) => w.path === write.path && w.action === "delete"))
       )
         problems.push(`${task.id} creates ${write.path}, which already exists; use modify`);

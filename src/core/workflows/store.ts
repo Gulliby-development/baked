@@ -29,6 +29,7 @@ export const newId = (): string => randomUUID();
 export interface RunRow {
   id: string;
   feature_id: string;
+  parent_run_id: string | null;
   status: RunState;
   reason: Reason;
   revision: number;
@@ -800,6 +801,26 @@ export class WorkflowStore {
       );
       if (modelId) this.db.run("UPDATE runs SET agent_calls=agent_calls+1 WHERE id=?", [runId]);
       this.emit(runId, { type: "attempt.started", payload: { attemptId: id, stepId, modelId } });
+      return id;
+    });
+  }
+  /**
+   * An attempt the host makes without a model, such as undoing the run's own file edits. It
+   * reserves nothing and is not limited by the budget, so a run that stopped on its budget can
+   * still restore the workspace.
+   */
+  beginHostAttempt(runId: string, stepId: string): string {
+    return this.transaction(() => {
+      const id = newId();
+      const ordinal = this.attempts(runId).filter((a) => a.step_id === stepId).length + 1;
+      this.db.run(
+        "INSERT INTO attempts (run_id,id,step_id,ordinal,model_id,status,input_hash,reserved_tokens,started_at) VALUES (?,?,?,?,NULL,'running',?,0,?)",
+        [runId, id, stepId, ordinal, this.run(runId).input_hash, Date.now()],
+      );
+      this.emit(runId, {
+        type: "attempt.started",
+        payload: { attemptId: id, stepId, modelId: null },
+      });
       return id;
     });
   }

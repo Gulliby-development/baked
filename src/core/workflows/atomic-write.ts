@@ -10,7 +10,7 @@ export const fileWriter = { writeFileSync };
  */
 export function writeViaTemp(
   path: string,
-  content: string,
+  content: string | Uint8Array,
   options: { flag: string; flush: boolean; mode?: number },
 ): void {
   const temp = `${path}.${randomUUID()}.tmp`;

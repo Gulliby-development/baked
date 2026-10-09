@@ -759,6 +759,8 @@ export interface WorkflowService {
   decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot>;
   revise(runId: string, command: CommandIdentity, candidateHash: string): Promise<RunSnapshot>;
   fork(runId: string, command: CommandIdentity): Promise<RunSnapshot>;
+  /** Restores the files the run's uncommitted task edits changed, where nobody changed them since. */
+  undo(runId: string, command: CommandIdentity, paths?: string[]): Promise<RunSnapshot>;
   /** Raises the token/call/time limits of a run that stopped on its budget; the run stays paused. */
   extendBudget(
     runId: string,
