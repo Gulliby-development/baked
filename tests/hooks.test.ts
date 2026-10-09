@@ -1,10 +1,28 @@
-import { describe, test, expect } from "vitest";
+import { afterAll, beforeAll, describe, test, expect } from "vitest";
 import { matchesToolName, toClaudeToolName } from "../src/core/hooks/tool-names.js";
 import { invalidateHooksCache, loadHooks } from "../src/core/hooks/loader.js";
 import { resetOnceTracking, runHooks } from "../src/core/hooks/runner.js";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+
+// The loader merges the user's own ~/.claude and ~/.baked hooks; point home at
+// an empty profile so the developer's global hooks never leak into these tests.
+const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+const emptyHome = mkdtempSync(join(tmpdir(), "baked-hooks-home-"));
+beforeAll(() => {
+  process.env.HOME = emptyHome;
+  process.env.USERPROFILE = emptyHome;
+  invalidateHooksCache();
+});
+afterAll(() => {
+  for (const [key, value] of Object.entries(savedHome)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  invalidateHooksCache();
+  rmSync(emptyHome, { recursive: true, force: true });
+});
 
 // ── Tool name mapping ────────────────────────────────────────────────
 

@@ -38,7 +38,7 @@ import { pipeline } from "node:stream/promises";
 
 const IS_WIN = process.platform === "win32";
 if (!IS_WIN) {
-  console.error("This installer targets Windows. POSIX users: see https://github.com/baked/baked#install");
+  console.error("This installer targets Windows. POSIX users: see https://github.com/Gulliby-development/baked#install");
   process.exit(2);
 }
 
@@ -106,7 +106,7 @@ if (arch === "AMD64" || arch === "X64") {
 }
 
 // ── Resolve version ───────────────────────────────────────────────
-const REPO = "baked/baked";
+const REPO = "Gulliby-development/baked";
 async function resolveVersion() {
   if (process.env.baked_VERSION) return process.env.baked_VERSION.replace(/^v/, "");
   const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
@@ -267,7 +267,7 @@ async function main() {
       spawnSync("reg", ["add", key, "/v", "InstallLocation", "/t", "REG_SZ", "/d", INSTALL_DIR, "/f"], { stdio: "ignore" });
       spawnSync("reg", ["add", key, "/v", "DisplayIcon", "/t", "REG_SZ", "/d", join(INSTALL_DIR, "baked.exe"), "/f"], { stdio: "ignore" });
       spawnSync("reg", ["add", key, "/v", "UninstallString", "/t", "REG_SZ", "/d", uninstallCmd, "/f"], { stdio: "ignore" });
-      spawnSync("reg", ["add", key, "/v", "URLInfoAbout", "/t", "REG_SZ", "/d", "https://github.com/baked/baked", "/f"], { stdio: "ignore" });
+      spawnSync("reg", ["add", key, "/v", "URLInfoAbout", "/t", "REG_SZ", "/d", "https://github.com/Gulliby-development/baked", "/f"], { stdio: "ignore" });
       spawnSync("reg", ["add", key, "/v", "NoModify", "/t", "REG_DWORD", "/d", "1", "/f"], { stdio: "ignore" });
       spawnSync("reg", ["add", key, "/v", "NoRepair", "/t", "REG_DWORD", "/d", "1", "/f"], { stdio: "ignore" });
       stopSpinner(true, "registered");
