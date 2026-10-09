@@ -10,9 +10,21 @@ import { scaledPolicy } from "../workflows/budget.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { estimateStart, readHistory } from "../workflows/estimate.js";
 import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
+import { InitiativeId } from "../workflows/initiatives/plan.js";
+import { InitiativeService } from "../workflows/initiatives/service.js";
+import {
+  applyInitiativeAction,
+  type InitiativeListView,
+} from "../workflows/initiatives/view-model.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
-import { CheckSchema, DecisionSchema, type RunPolicy, SafeId } from "../workflows/schemas.js";
+import {
+  CheckSchema,
+  DecisionSchema,
+  MAX_CONCURRENT_WRITERS,
+  type RunPolicy,
+  SafeId,
+} from "../workflows/schemas.js";
 import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
 import { PRESETS } from "../workflows/v2/definition.js";
@@ -26,17 +38,44 @@ import {
 import { createWorkerHandler } from "./rpc.js";
 
 let service: NativeWorkflowService | undefined;
+let initiatives: InitiativeService | undefined;
 installGlobalFetch();
 const controllers = new Map<string, AbortController>();
+/** Initiatives this worker drives, and the last drive error of each. */
+const initiativeDrives = new Set<string>();
+const initiativeErrors = new Map<string, string>();
 function current(): NativeWorkflowService {
   if (!service) throw new Error("Workflow worker is not initialized");
   return service;
+}
+function currentInitiatives(): InitiativeService {
+  initiatives ??= new InitiativeService(current());
+  return initiatives;
 }
 async function close(): Promise<void> {
   for (const controller of controllers.values()) controller.abort(new Error("Workflow shutdown"));
   await service?.shutdown();
   service?.close();
   service = undefined;
+  initiatives = undefined;
+}
+/** Advances an initiative in the background, like `baked workflow initiative drive`. */
+function driveInitiative(id: string): void {
+  if (initiativeDrives.has(id)) return;
+  const key = newId();
+  const controller = new AbortController();
+  controllers.set(key, controller);
+  initiativeDrives.add(id);
+  initiativeErrors.delete(id);
+  void currentInitiatives()
+    .drive(id, controller.signal)
+    .catch((err: unknown) =>
+      initiativeErrors.set(id, err instanceof Error ? err.message : String(err)),
+    )
+    .finally(() => {
+      controllers.delete(key);
+      initiativeDrives.delete(id);
+    });
 }
 
 const StartInput = z
@@ -46,6 +85,8 @@ const StartInput = z
     prompt: z.string().min(1),
     model: z.string().min(1),
     budget: BudgetPreset,
+    executionMode: z.enum(["inline", "worktree"]).optional(),
+    maxConcurrentWriters: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
   })
   .strict();
 const ctx = createWorkerHandler(
@@ -62,6 +103,19 @@ const ctx = createWorkerHandler(
     },
     list: (limit) =>
       readWorkflowSummaries(current(), z.number().int().min(1).max(100).parse(limit)),
+    // Every initiative with its features, budget and decisions, for the initiative screen.
+    initiatives: (): InitiativeListView => ({
+      initiatives: currentInitiatives().list(),
+      driving: [...initiativeDrives],
+      errors: Object.fromEntries(initiativeErrors),
+    }),
+    // One initiative command; approve, resume and continue then drive it in the background.
+    async initiativeAction(initiativeId, action) {
+      const id = InitiativeId.parse(initiativeId);
+      const result = await applyInitiativeAction(currentInitiatives(), id, action);
+      if (result.drive) driveInitiative(id);
+      return result.view;
+    },
     // Past runs with their spend, for the editor's estimate of a definition.
     history: () => readHistory(current().store),
     info: () => {
@@ -113,6 +167,10 @@ const ctx = createWorkerHandler(
         ),
         ownerLabel: "TUI",
         model: request.model,
+        ...(request.executionMode ? { executionMode: request.executionMode } : {}),
+        ...(request.maxConcurrentWriters !== undefined
+          ? { maxConcurrentWriters: request.maxConcurrentWriters }
+          : {}),
       });
       const controller = new AbortController();
       controllers.set(id, controller);
@@ -232,7 +290,13 @@ function definitionSummaries(
     return Object.fromEntries(
       listDefinitions(workspace, policy).map((d) => [
         d.id,
-        { stages: d.stages, writes: d.writes, problems: d.problems },
+        {
+          stages: d.stages,
+          writes: d.writes,
+          problems: d.problems,
+          execution: d.execution,
+          worktreeRefusal: d.worktreeRefusal,
+        },
       ]),
     );
   } catch {

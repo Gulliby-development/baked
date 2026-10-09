@@ -26,7 +26,7 @@ export function applyWorkflowEvent(
   return { snapshot, lastSeq: event.seq };
 }
 
-export type WorkflowScreen = "home" | "run" | "new" | "gates" | "editor";
+export type WorkflowScreen = "home" | "run" | "new" | "gates" | "editor" | "initiatives";
 /** Compact status shown outside the panel while a run is tracked in this tab session. */
 export interface WorkflowBadge {
   runId: string;
@@ -53,6 +53,15 @@ interface WorkflowUIState {
   editorId: string | null;
   editorReturn: "home" | "new";
   showEditor: (id: string, from?: "home" | "new") => void;
+  /** The initiative the initiative screen shows in detail; null shows the list. */
+  initiativeId: string | null;
+  showInitiatives: (id?: string | null) => void;
+  /** Where Esc on a run returns: the run list, or the initiative the run was opened from. */
+  runReturn: "home" | "initiatives";
+  /** Opens a feature run from the initiative screen; Esc on the run returns there. */
+  openInitiativeRun: (runId: string, tabId?: string) => void;
+  /** Leaves the run screen for the screen it was opened from. */
+  leaveRun: () => void;
   load: (snapshot: RunSnapshot) => void;
   event: (event: WorkflowEvent) => void;
   setBadge: (badge: WorkflowBadge | null) => void;
@@ -70,6 +79,7 @@ export const useWorkflowStore = create<WorkflowUIState>((set) => ({
     set((s) => ({
       selectedRunId: runId,
       screen: runId ? "run" : "home",
+      runReturn: "home",
       runsByTab: tabId && runId ? { ...s.runsByTab, [tabId]: runId } : s.runsByTab,
     })),
   showHome: () => set({ screen: "home" }),
@@ -77,6 +87,18 @@ export const useWorkflowStore = create<WorkflowUIState>((set) => ({
   editorId: null,
   editorReturn: "home",
   showEditor: (id, from = "home") => set({ screen: "editor", editorId: id, editorReturn: from }),
+  initiativeId: null,
+  showInitiatives: (id) =>
+    set((s) => ({ screen: "initiatives", initiativeId: id === undefined ? s.initiativeId : id })),
+  runReturn: "home",
+  openInitiativeRun: (runId, tabId) =>
+    set((s) => ({
+      selectedRunId: runId,
+      screen: "run",
+      runReturn: "initiatives",
+      runsByTab: tabId ? { ...s.runsByTab, [tabId]: runId } : s.runsByTab,
+    })),
+  leaveRun: () => set((s) => ({ screen: s.runReturn === "initiatives" ? "initiatives" : "home" })),
   showNew: (prompt) => set((s) => ({ screen: "new", draftPrompt: prompt ?? s.draftPrompt })),
   load: (snapshot) => set({ projection: { snapshot, lastSeq: snapshot.eventSeq } }),
   event: (event) => set((s) => ({ projection: applyWorkflowEvent(s.projection, event) })),

@@ -2,6 +2,8 @@ import { randomUUID as newId } from "node:crypto";
 import type { AppConfig } from "../../types/index.js";
 import type { PastRun } from "../workflows/estimate.js";
 import type { GateRunResult } from "../workflows/gates.js";
+import type { InitiativeView } from "../workflows/initiatives/service.js";
+import type { InitiativeAction, InitiativeListView } from "../workflows/initiatives/view-model.js";
 import type { RunFileDiff } from "../workflows/run-diff.js";
 import type { Decision, RunSnapshot } from "../workflows/schemas.js";
 import type { Check } from "../workflows/types.js";
@@ -86,6 +88,14 @@ export class WorkflowClient extends WorkerClient {
   }
   list(limit = 50): Promise<RunSummary[]> {
     return this.call<RunSummary[]>("list", limit);
+  }
+  /** Every initiative of the project, with what this worker is driving. */
+  initiatives(): Promise<InitiativeListView> {
+    return this.call<InitiativeListView>("initiatives");
+  }
+  /** Runs one initiative command; approve, resume and continue keep driving in the worker. */
+  initiativeAction(initiativeId: string, action: InitiativeAction): Promise<InitiativeView> {
+    return this.callWithTimeout<InitiativeView>(null, "initiativeAction", initiativeId, action);
   }
   info(): Promise<WorkflowInfo> {
     return this.call<WorkflowInfo>("info");

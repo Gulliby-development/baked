@@ -9,6 +9,7 @@ import {
   validateWorkflowV2,
   type WorkflowV2,
   WorkflowV2Schema,
+  worktreeRefusal,
 } from "./definition.js";
 import { type GateLibrary, loadGateLibrary } from "./library.js";
 import full from "./presets/full.json" with { type: "json" };
@@ -60,6 +61,10 @@ export interface DefinitionSummary {
   stages: string[];
   writes: boolean;
   problems: string[];
+  /** The execution mode the definition asks for; null leaves it to the policy. */
+  execution: "inline" | "worktree" | null;
+  /** Why a run of this definition refuses worktree execution, or null. */
+  worktreeRefusal: string | null;
 }
 
 const definitionPath = (workspace: string, id: string): string =>
@@ -119,6 +124,8 @@ export function listDefinitions(workspace: string, policy: RunPolicy): Definitio
       stages: v2.stages.map((s) => s.id),
       writes: v2.stages.some((s) => s.effects === "workspace-write"),
       problems: validateDefinition(v2, library),
+      execution: v2.execution ?? null,
+      worktreeRefusal: loaded.schemaVersion === 2 ? worktreeRefusal(loaded.definition) : null,
     };
   };
   summaries.set("sdd", summarize(loadDefinition(workspace, "sdd", policy), "builtin"));
@@ -141,6 +148,8 @@ export function listDefinitions(workspace: string, policy: RunPolicy): Definitio
           stages: [],
           writes: false,
           problems: [error instanceof Error ? error.message : String(error)],
+          execution: null,
+          worktreeRefusal: null,
         });
       }
     }

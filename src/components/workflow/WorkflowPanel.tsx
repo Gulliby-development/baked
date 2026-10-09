@@ -10,6 +10,7 @@ import {
   useWorkflowRuns,
   workflowEditorApi,
   workflowGatesApi,
+  workflowInitiativesApi,
   workflowSession,
 } from "../../hooks/useWorkflow.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
@@ -29,6 +30,7 @@ import {
   type Tone,
 } from "./format.js";
 import { GATES_HINTS, type GatesMode, GatesView } from "./GatesView.js";
+import { InitiativesPopup } from "./InitiativesView.js";
 import { NewRunForm } from "./NewRunForm.js";
 import { Onboarding } from "./Onboarding.js";
 import { orderRuns, RunList } from "./RunList.js";
@@ -87,6 +89,8 @@ export function WorkflowPanel({
   const draftPrompt = useWorkflowStore((s) => s.draftPrompt);
   const editorId = useWorkflowStore((s) => s.editorId);
   const editorReturn = useWorkflowStore((s) => s.editorReturn);
+  const initiativeId = useWorkflowStore((s) => s.initiativeId);
+  const runReturn = useWorkflowStore((s) => s.runReturn);
   const onRun = screen === "run" && runId !== null;
   const {
     runs,
@@ -106,6 +110,7 @@ export function WorkflowPanel({
   const ordered = useMemo(() => (runs ? orderRuns(runs) : null), [runs]);
   const gatesApi = useMemo(() => workflowGatesApi(workspace), [workspace]);
   const editorApi = useMemo(() => workflowEditorApi(workspace), [workspace]);
+  const initiativesApi = useMemo(() => workflowInitiativesApi(workspace), [workspace]);
   const pending =
     service && runId
       ? service.store.requests(runId).find((r) => r.status === "pending")
@@ -165,7 +170,9 @@ export function WorkflowPanel({
   useKeyboard((event) => {
     if (!visible || event.defaultPrevented) return;
     const key = event.name.toLowerCase();
-    if (screen === "new" || screen === "gates" || screen === "editor") return; // These screens own their keys.
+    // These screens own their keys.
+    if (screen === "new" || screen === "gates" || screen === "editor" || screen === "initiatives")
+      return;
     if (!onRun) {
       if (key === "escape") {
         event.preventDefault();
@@ -185,6 +192,11 @@ export function WorkflowPanel({
         return;
       }
       if (enabled === false) return;
+      if (key === "i") {
+        event.preventDefault();
+        useWorkflowStore.getState().showInitiatives(null);
+        return;
+      }
       if (key === "n") {
         event.preventDefault();
         useWorkflowStore.getState().showNew();
@@ -233,7 +245,7 @@ export function WorkflowPanel({
     if (tab === "decision" && pending) return;
     if (key === "escape") {
       event.preventDefault();
-      useWorkflowStore.getState().showHome();
+      useWorkflowStore.getState().leaveRun();
       return;
     }
     if (!snapshot) return;
@@ -262,6 +274,7 @@ export function WorkflowPanel({
     { key: "↑↓", label: "select" },
     { key: "Enter", label: "open" },
     { key: "N", label: "new run" },
+    { key: "I", label: "initiatives" },
     { key: "G", label: "gates" },
     { key: "Esc", label: "close" },
   ];
@@ -307,6 +320,22 @@ export function WorkflowPanel({
           const store = useWorkflowStore.getState();
           if (editorReturn === "new") store.showNew();
           else store.showHome();
+        }}
+      />
+    );
+
+  if (screen === "initiatives")
+    return (
+      <InitiativesPopup
+        api={initiativesApi}
+        width={popupW}
+        height={Math.min(40, height)}
+        selectedId={initiativeId}
+        onSelect={(id) => useWorkflowStore.getState().showInitiatives(id)}
+        onBack={() => useWorkflowStore.getState().showHome()}
+        onOpenRun={(id) => {
+          useWorkflowStore.getState().openInitiativeRun(id, activeTabId);
+          setTab("overview");
         }}
       />
     );
@@ -445,7 +474,7 @@ export function WorkflowPanel({
           ...actions
             .filter((a) => !(tab === "changes" && a.action === "decide"))
             .map(({ key, label }) => ({ key, label })),
-          { key: "Esc", label: "back to runs" },
+          { key: "Esc", label: runReturn === "initiatives" ? "back" : "back to runs" },
         ];
   return (
     <PremiumPopup
@@ -510,7 +539,7 @@ export function WorkflowPanel({
                   details={details}
                   active={!confirmCancel}
                   width={contentW}
-                  onBack={() => useWorkflowStore.getState().showHome()}
+                  onBack={() => useWorkflowStore.getState().leaveRun()}
                   onDecision={(decision) => {
                     void act(decision);
                   }}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GatesApi } from "../components/workflow/GatesView.js";
+import type { InitiativesApi } from "../components/workflow/InitiativesView.js";
 import type { WorkflowEditorApi } from "../components/workflow/WorkflowEditor.js";
 import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
@@ -221,6 +222,21 @@ export function workflowEditorApi(workspace: string): WorkflowEditorApi {
         return null;
       }
     },
+  };
+}
+
+/**
+ * Reads and commands initiatives through the workflow worker, which owns the SQLite store and
+ * drives an approved or resumed initiative in the background. A disabled project starts no worker.
+ */
+export function workflowInitiativesApi(workspace: string): InitiativesApi {
+  return {
+    load: async () => {
+      const config = mergeConfigs(loadConfig(), loadProjectConfig(workspace));
+      if (config.workflows?.enabled !== true && !existingWorkflowSession(workspace)) return null;
+      return workflowSession(workspace).initiatives();
+    },
+    act: (id, action) => workflowSession(workspace).initiativeAction(id, action),
   };
 }
 
