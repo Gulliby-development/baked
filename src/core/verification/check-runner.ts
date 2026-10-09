@@ -12,6 +12,19 @@ export const executeCheckCommand = (
   ...args: Parameters<ProcessScope["execute"]>
 ): Promise<ProcessResult> => scope.execute(...args);
 
+/** The environment every check and on-demand gate run gets: safe base plus the names it declares. */
+export function buildCheckEnv(check: Check): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = buildSafeEnv();
+  for (const name of check.envNames)
+    if (process.env[name] !== undefined) env[name] = process.env[name];
+  if (process.platform === "win32") {
+    const path = env.PATH ?? env.Path;
+    for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
+    if (path) env.PATH = path;
+  }
+  return env;
+}
+
 export class CheckRunner {
   constructor(
     private store: WorkflowStore,
@@ -48,14 +61,7 @@ export class CheckRunner {
     let result: ProcessResult;
     let reason = "exit";
     try {
-      const env: NodeJS.ProcessEnv = buildSafeEnv();
-      for (const name of check.envNames)
-        if (process.env[name] !== undefined) env[name] = process.env[name];
-      if (process.platform === "win32") {
-        const path = env.PATH ?? env.Path;
-        for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
-        if (path) env.PATH = path;
-      }
+      const env = buildCheckEnv(check);
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       result = await executeCheckCommand(this.processes, executable, check.args, {
         cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
