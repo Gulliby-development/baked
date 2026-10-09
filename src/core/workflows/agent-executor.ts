@@ -26,6 +26,7 @@ import {
   type RunPolicy,
   SpecSchema,
 } from "./schemas.js";
+import { AttemptStepController, DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
 import { WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types.js";
@@ -232,35 +233,59 @@ export class NativeAgentExecutor implements AgentExecutor {
       for (const alias of ["submit_artifact", "submit_review"])
         if (request.profile.allowedTools.includes(alias) && policy.allowedTools.includes(alias))
           available[alias] = available.submit_result;
+      const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
+        (name) => name in available,
+      );
+      const budget = new AttemptStepController({
+        maxSteps: request.maxSteps,
+        maxTokens: policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+        submitTools,
+        fallbackStepTokens:
+          request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
+      });
       const result = await generateText({
         model: resolveModel(request.profile.model),
         system: request.profile.instructions,
         prompt: request.prompt,
         tools: available,
-        stopWhen: [() => submitted !== undefined, stepCountIs(request.maxSteps)],
+        stopWhen: [
+          () => submitted !== undefined,
+          stepCountIs(request.maxSteps),
+          ({ steps: done }) => budget.overBudget(done),
+        ],
         maxRetries: 0,
         maxOutputTokens: request.profile.maxOutputTokens,
         abortSignal: request.signal,
         providerOptions: provider.providerOptions,
         headers: provider.headers,
-        prepareStep: ({ steps, messages }) => {
+        prepareStep: ({ stepNumber, steps: done, messages }) => {
           request.signal.throwIfAborted();
-          const consumed = steps.reduce(
-            (sum, step) =>
-              sum +
-              (step.usage.totalTokens ??
-                request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2)),
-            0,
-          );
           const reserve =
-            consumed +
+            budget.consumed(done) +
             Math.ceil(Buffer.byteLength(JSON.stringify(messages)) / 2) +
             request.profile.maxOutputTokens +
             8192;
           this.store.expandReservation(request.runId, request.attemptId, reserve, policy);
-          return {};
+          return budget.prepare({ stepNumber, steps: done, messages });
         },
       });
+      const usage = budget.record(result.steps, submitted !== undefined, {
+        profileId: request.profile.id,
+        taskId: request.task?.id ?? null,
+      });
+      this.store.transaction(() =>
+        this.store.artifact(
+          request.runId,
+          "usage",
+          `attempts/${request.attemptId}/usage.json`,
+          canonical(usage),
+        ),
+      );
+      if (usage.stopReason === "tokens")
+        throw new WorkflowFault(
+          "BUDGET_EXHAUSTED",
+          `Profile ${request.profile.id} used ${String(usage.totalTokens)} tokens without submitting a result (attempt cap ${String(usage.maxTokens)})`,
+        );
       if (submitted === undefined) {
         try {
           submitted = schema.parse(JSON.parse(result.text));

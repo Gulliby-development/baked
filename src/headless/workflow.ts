@@ -14,6 +14,7 @@ import {
 } from "../core/workflows/schemas.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
+import { runUsage } from "../core/workflows/usage.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
 
 export function workflowExit(
@@ -202,6 +203,9 @@ export async function executeWorkflowCommand(
       );
     case "export-progress":
       return artifacts.exportProgress(runId);
+    case "usage":
+      service.store.run(runId);
+      return runUsage(service.store, runId);
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),
@@ -232,7 +236,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
     const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
-    const readonly = ["status", "list", "artifacts", "export", "export-progress"].includes(
+    const readonly = ["status", "list", "artifacts", "export", "export-progress", "usage"].includes(
       args.command,
     );
     if (args.command === "profiles") {
