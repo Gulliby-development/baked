@@ -935,25 +935,20 @@ export class WorkflowScheduler {
     validate?: (output: unknown) => string[],
     limits?: { maxSteps: number; maxTokens: number | undefined },
     hostTools?: (attemptId: string) => Record<string, HostTool>,
+    placement: { root?: string; attemptId?: string } = {},
   ): Promise<unknown> {
-    const prompt = buildWorkflowContext(state, profile, {
-      ...(extra && typeof extra === "object" ? extra : { input: extra }),
-      executionContract: {
-        checks: policy.checks,
-        profiles: ProfileSchema.array()
-          .parse(JSON.parse(this.store.run(runId).profiles_json))
-          .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
-        policy: { allowedTools: policy.allowedTools, network: policy.network },
-      },
-    });
+    const prompt = this.promptFor(runId, state, policy, profile, extra);
     const inputHash = this.store.run(runId).input_hash;
-    const attempt = this.store.reserve(
-      runId,
-      stepId,
-      profile.model,
-      reserveTokens(prompt, profile, policy),
-      policy,
-    );
+    // A batch of parallel tasks reserves its attempts before any of them starts.
+    const attempt =
+      placement.attemptId ??
+      this.store.reserve(
+        runId,
+        stepId,
+        profile.model,
+        reserveTokens(prompt, profile, policy),
+        policy,
+      );
     try {
       const result = await this.executor.execute({
         runId,
@@ -962,7 +957,7 @@ export class WorkflowScheduler {
         prompt,
         task,
         signal,
-        root: runRoot(this.store.workspace, state),
+        root: placement.root ?? runRoot(this.store.workspace, state),
         maxSteps: limits?.maxSteps ?? Math.min(profile.maxSteps, policy.maxAgentSteps),
         ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
         ...(validate ? { validate } : {}),
@@ -1031,6 +1026,7 @@ export class WorkflowScheduler {
           validate,
           limits,
           hostTools,
+          { ...(placement.root ? { root: placement.root } : {}) },
         );
       }
       if (!(error instanceof WorkflowFault) && !signal.aborted)
@@ -1041,6 +1037,25 @@ export class WorkflowScheduler {
         );
       throw error;
     }
+  }
+  /** The prompt an agent call gets: the run context, the stage input and the execution contract. */
+  private promptFor(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profile: AgentProfile,
+    extra: unknown,
+  ): string {
+    return buildWorkflowContext(state, profile, {
+      ...(extra && typeof extra === "object" ? extra : { input: extra }),
+      executionContract: {
+        checks: policy.checks,
+        profiles: ProfileSchema.array()
+          .parse(JSON.parse(this.store.run(runId).profiles_json))
+          .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
+        policy: { allowedTools: policy.allowedTools, network: policy.network },
+      },
+    });
   }
   private wait(
     runId: string,
@@ -1151,127 +1166,7 @@ export class WorkflowScheduler {
       const task = checking ?? readyTasks(state.graph, rows, state.taskGates)[0];
       if (!task) break;
       signal.throwIfAborted();
-      const child = this.store.transaction(() => {
-        if (!checking) this.store.taskStatus(runId, task.id, "running");
-        return this.store.beginStep(runId, `task-${task.id}`, stepId);
-      });
-      if (!checking && task.writes.length === 0) {
-        // A task that may not write has nothing for a model to do: its task checks decide it,
-        // and the checks stage covers the rest.
-        await this.snapshot(runId, state, policy, signal);
-        this.store.transaction(() => {
-          this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
-          this.store.saveState(runId, state);
-        });
-      } else if (!checking) {
-        const root = runRoot(this.store.workspace, state);
-        const before = await sourceManifest(root, generatedPaths(policy), signal);
-        const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
-        // Edits of earlier attempts of this task that are still in place (a revision, a recovery
-        // or a failed attempt keeps them), by path, with the hash the path had before them.
-        const earlier = new Map<string, string | null>();
-        for (const edit of uncommittedEdits(this.store, runId, task.id)) {
-          const path = (JSON.parse(edit.intent_json) as { path: string }).path;
-          if (!earlier.has(path)) earlier.set(path, edit.before_hash);
-        }
-        const stillEdited = (): string[] =>
-          [...earlier].flatMap(([path, original]) =>
-            fileHash(workspacePath(root, path)) === original ? [] : [path],
-          );
-        const inherited = stillEdited();
-        const result = ImplementationSchema.parse(
-          await this.call(
-            runId,
-            child,
-            state,
-            policy,
-            this.requireProfile(profiles.find((p) => p.id === task.profileId)),
-            {
-              task,
-              evidence: this.evidenceContext(runId, state, { reads: false }),
-              unresolvedMeans: UNRESOLVED_MEANING,
-              ...(inherited.length
-                ? {
-                    earlierEdits: {
-                      paths: inherited,
-                      note: "These files already contain edits from an earlier attempt of this task in this run. Read their current content before editing; keep what is correct.",
-                    },
-                  }
-                : {}),
-            },
-            signal,
-            task,
-          ),
-        );
-        const after = await sourceManifest(root, generatedPaths(policy), signal);
-        // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
-        // effect journal recorded every file this task changed, so it counts as well.
-        const journaled = this.store
-          .effects(runId)
-          .filter(
-            (e) =>
-              !knownEffects.has(e.id) &&
-              e.kind === "file_patch" &&
-              ["applied", "reconciled"].includes(e.status) &&
-              e.before_hash !== e.after_hash,
-          )
-          .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-        const changed = [
-          ...new Set([...changedPaths(before, after), ...journaled, ...stillEdited()]),
-        ];
-        const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
-        if (outside.length)
-          throw new WorkflowFault(
-            "INPUT_CHANGED",
-            `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
-          );
-        if (
-          result.taskId !== task.id ||
-          ["blocked", "failed"].includes(result.outcome) ||
-          result.unresolved.length > 0 ||
-          (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
-        ) {
-          this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
-          throw new WorkflowFault(
-            "OUTPUT_INVALID",
-            `Task ${task.id} did not complete its implementation`,
-          );
-        }
-        if (result.outcome === "already_satisfied")
-          validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
-        await this.snapshot(runId, state, policy, signal);
-        this.store.transaction(() => {
-          const diff = this.store.artifact(
-            runId,
-            "diff",
-            `tasks/${task.id}/diff.json`,
-            canonical({
-              changed,
-              before: Object.fromEntries(
-                changed.map((p) => [p, earlier.has(p) ? earlier.get(p) : (before[p] ?? null)]),
-              ),
-              after: Object.fromEntries(changed.map((p) => [p, after[p] ?? null])),
-            }),
-          );
-          this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.id);
-          this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
-          this.store.saveState(runId, state);
-        });
-      }
-      const taskFailures: Review["findings"] = [];
-      const checkEvidence: string[] = [];
-      for (const check of taskChecks(policy, task)) {
-        const checked = await this.runTaskCheck(
-          runId,
-          child,
-          check,
-          policy,
-          signal,
-          runRoot(this.store.workspace, state),
-        );
-        this.applyTaskCheck(runId, state, task, check, checked, taskFailures, checkEvidence);
-      }
-      this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
+      await this.implementTask(runId, stepId, state, policy, profiles, signal, task, !!checking);
     }
     if (
       this.store
@@ -1285,6 +1180,142 @@ export class WorkflowScheduler {
       throw new WorkflowFault("OUTPUT_INVALID", "Task dependencies remain blocked", {
         reason: "dependency_failed",
       });
+  }
+  /**
+   * Implements one task in the run's own root, or only checks it when `checking` (implemented
+   * before an interruption, without its check gate), then settles it.
+   */
+  private async implementTask(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    signal: AbortSignal,
+    task: Task,
+    checking: boolean,
+  ): Promise<void> {
+    const child = this.store.transaction(() => {
+      if (!checking) this.store.taskStatus(runId, task.id, "running");
+      return this.store.beginStep(runId, `task-${task.id}`, stepId);
+    });
+    if (!checking && task.writes.length === 0) {
+      // A task that may not write has nothing for a model to do: its task checks decide it,
+      // and the checks stage covers the rest.
+      await this.snapshot(runId, state, policy, signal);
+      this.store.transaction(() => {
+        this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
+        this.store.saveState(runId, state);
+      });
+    } else if (!checking) {
+      const root = runRoot(this.store.workspace, state);
+      const before = await sourceManifest(root, generatedPaths(policy), signal);
+      const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
+      // Edits of earlier attempts of this task that are still in place (a revision, a recovery
+      // or a failed attempt keeps them), by path, with the hash the path had before them.
+      const earlier = new Map<string, string | null>();
+      for (const edit of uncommittedEdits(this.store, runId, task.id)) {
+        const path = (JSON.parse(edit.intent_json) as { path: string }).path;
+        if (!earlier.has(path)) earlier.set(path, edit.before_hash);
+      }
+      const stillEdited = (): string[] =>
+        [...earlier].flatMap(([path, original]) =>
+          fileHash(workspacePath(root, path)) === original ? [] : [path],
+        );
+      const inherited = stillEdited();
+      const result = ImplementationSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          this.requireProfile(profiles.find((p) => p.id === task.profileId)),
+          {
+            task,
+            evidence: this.evidenceContext(runId, state, { reads: false }),
+            unresolvedMeans: UNRESOLVED_MEANING,
+            ...(inherited.length
+              ? {
+                  earlierEdits: {
+                    paths: inherited,
+                    note: "These files already contain edits from an earlier attempt of this task in this run. Read their current content before editing; keep what is correct.",
+                  },
+                }
+              : {}),
+          },
+          signal,
+          task,
+        ),
+      );
+      const after = await sourceManifest(root, generatedPaths(policy), signal);
+      // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
+      // effect journal recorded every file this task changed, so it counts as well.
+      const journaled = this.store
+        .effects(runId)
+        .filter(
+          (e) =>
+            !knownEffects.has(e.id) &&
+            e.kind === "file_patch" &&
+            ["applied", "reconciled"].includes(e.status) &&
+            e.before_hash !== e.after_hash,
+        )
+        .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+      const changed = [
+        ...new Set([...changedPaths(before, after), ...journaled, ...stillEdited()]),
+      ];
+      const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
+      if (outside.length)
+        throw new WorkflowFault(
+          "INPUT_CHANGED",
+          `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
+        );
+      if (
+        result.taskId !== task.id ||
+        ["blocked", "failed"].includes(result.outcome) ||
+        result.unresolved.length > 0 ||
+        (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
+      ) {
+        this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          `Task ${task.id} did not complete its implementation`,
+        );
+      }
+      if (result.outcome === "already_satisfied")
+        validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
+      await this.snapshot(runId, state, policy, signal);
+      this.store.transaction(() => {
+        const diff = this.store.artifact(
+          runId,
+          "diff",
+          `tasks/${task.id}/diff.json`,
+          canonical({
+            changed,
+            before: Object.fromEntries(
+              changed.map((p) => [p, earlier.has(p) ? earlier.get(p) : (before[p] ?? null)]),
+            ),
+            after: Object.fromEntries(changed.map((p) => [p, after[p] ?? null])),
+          }),
+        );
+        this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.id);
+        this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
+        this.store.saveState(runId, state);
+      });
+    }
+    const taskFailures: Review["findings"] = [];
+    const checkEvidence: string[] = [];
+    for (const check of taskChecks(policy, task)) {
+      const checked = await this.runTaskCheck(
+        runId,
+        child,
+        check,
+        policy,
+        signal,
+        runRoot(this.store.workspace, state),
+      );
+      this.applyTaskCheck(runId, state, task, check, checked, taskFailures, checkEvidence);
+    }
+    this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
   }
   /** Runs one task check in `root` under its own host attempt. */
   private async runTaskCheck(
