@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
   type AgentProfile,
+  Hash,
   InputManifestSchema,
   ReviewSchema,
+  SafeId,
   SpecSchema,
   TaskGraphSchema,
 } from "./schemas.js";
@@ -90,6 +92,17 @@ export const RuntimeStateSchema = z
       .default(null),
     /** Canonical report of a report stage. */
     report: z.string().nullable().default(null),
+    /** Canonical split proposed by a decompose stage. */
+    initiativePlan: z.string().nullable().default(null),
+    /**
+     * Upstream contracts the host pins for a feature of an initiative. When set, they replace the
+     * dependencies the spec author returns, so readiness is decided by the initiative and not by
+     * model output. Null for a run outside an initiative.
+     */
+    hostDependencies: z
+      .array(z.object({ featureId: SafeId, contractHash: Hash }).strict())
+      .nullable()
+      .default(null),
     /** The frozen diff a review-only run reviews. */
     diff: z
       .object({ artifactId: z.string(), hash: z.string(), files: z.array(z.string()) })

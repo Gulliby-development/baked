@@ -66,6 +66,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "decomposer",
+    version: "1.0.0",
+    description: "Split a large request into features",
+    role: "planner",
+    model: "$active",
+    context: "planning",
+    instructions:
+      "Split the request into features that can each be specified, implemented and accepted by one workflow run. For every feature give a short lower-case ID, a title, a boundary (what it owns in words, and the paths it may write as globs when the code shows them), the contract it provides to the features that depend on it (interfaces, data formats or behavior another feature can verify), the IDs it depends on, and whether it is mandatory for the goals. Dependencies must form an acyclic graph. Use between extra.initiativeBounds.minFeatures and extra.initiativeBounds.maxFeatures features. Do not merge unrelated work to stay under the maximum: when the request needs more features, return all of them, and the host will ask the user to split the request into stages. State the goals and the completion criteria of the whole initiative. Read the code you need to place boundaries; do not change code or run commands. Return InitiativePlanSchema.",
+    skills: [],
+    allowedTools: ["read", "bake_find", "bake_impact", "navigate", "submit_result"],
+    output: "initiativePlan",
+    maxSteps: 16,
+    maxOutputTokens: 8192,
+  },
+  {
+    schemaVersion: 1,
     id: "spec-author",
     version: "1.3.0",
     description: "Write the specification",

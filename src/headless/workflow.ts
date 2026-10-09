@@ -20,6 +20,7 @@ import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
+import { runInitiativeCli } from "./workflow-initiative.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
 
 export function workflowExit(
@@ -288,7 +289,10 @@ export async function executeWorkflowCommand(
   }
 }
 export async function runWorkflowCli(argv: string[]): Promise<number> {
-  if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
+  if (
+    argv.length === 0 ||
+    (argv[0] !== "initiative" && (argv.includes("--help") || argv.includes("-h")))
+  ) {
     process.stdout.write(workflowHelp);
     return 0;
   }
@@ -304,6 +308,15 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   process.on("SIGINT", abort);
   process.on("SIGTERM", abort);
   try {
+    if (argv[0] === "initiative") {
+      const cwd = getCwd();
+      const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+      return await runInitiativeCli(
+        argv.slice(1),
+        (readonly) => new NativeWorkflowService(cwd, config, undefined, readonly),
+        controller.signal,
+      );
+    }
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
     const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
