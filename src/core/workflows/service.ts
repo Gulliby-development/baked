@@ -524,6 +524,23 @@ export class NativeWorkflowService implements WorkflowService {
       state.expectedFiles = null;
       state.verificationState = "stale";
       this.store.setApproval(runId, null);
+      const before = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+      // The operator's revise command is the decision on its policy. Auto-approval renewal may
+      // rely on this record, but never on a policy the model produced.
+      if (hashJson(before) !== hashJson(policy))
+        this.store.artifact(
+          runId,
+          "policy-revision",
+          `policy-revisions/${command.commandId}.json`,
+          canonical({
+            kind: "revision",
+            approvedBy: "user",
+            commandId: command.commandId,
+            candidateHash,
+            previousPolicyHash: hashJson(before),
+            policyHash: hashJson(policy),
+          }),
+        );
       this.store.setPolicy(runId, policy);
       this.store.syncTasks(runId, state.graph, true);
       this.store.saveState(runId, state);
