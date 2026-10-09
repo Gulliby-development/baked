@@ -76,9 +76,10 @@ const flags = new Set([
   "tasks",
   "cwd",
   "from",
+  "all",
   "help",
 ]);
-const booleanFlags = new Set(["json", "events", "accept", "dry-run", "help"]);
+const booleanFlags = new Set(["json", "events", "accept", "dry-run", "help", "all"]);
 const commandFlags: Record<WorkflowCommand, string[]> = {
   run: [
     "feature",
@@ -119,7 +120,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   definitions: [],
   validate: ["file"],
   define: ["from"],
-  gates: [],
+  gates: ["all"],
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -162,9 +163,9 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires an integer`);
     }
   }
-  if (!result.flags.help && result.command !== "run") {
+  if (!result.flags.help && result.command !== "run" && result.command !== "gates") {
     const count =
-      ["list", "profiles", "import", "gc", "definitions", "gates"].includes(result.command) ||
+      ["list", "profiles", "import", "gc", "definitions"].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
         ? 0
         : 1;
@@ -210,6 +211,7 @@ definitions               list workflow definitions: sdd, the presets and baked/
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
 gates                     list the gate library with each gate's source and what it shadows
+gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
 profiles                  artifacts RUN_ID [--file ARTIFACT_ID]
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
