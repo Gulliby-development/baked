@@ -196,7 +196,7 @@ const srcKeys = new Set(Object.keys(src));
 
 /**
  * Dashes are a house-style decision, so enforce them where the product copy is
- * authored: en.json. Translations come from github.com/baked/baked and
+ * authored: en.json. Translations come from github.com/Gulliby-development/baked and
  * are pulled back into this repository; applying this rule to them would reject
  * correct grammar and punish faithful translators. Russian requires the em dash
  * for a zero copula (a noun-dash-noun sentence without a verb), while French uses spaced dashes for

@@ -206,7 +206,7 @@ if (isCompile) {
   const msg = "baked native runtime missing: " + home + "\\n" +
     "  platform: " + triplet + "\\n" +
     "  fix: reinstall baked or rerun the installer from the release tarball.\\n" +
-    "  if the problem persists, file an issue at https://github.com/baked/baked/issues with this output.";
+    "  if the problem persists, file an issue at https://github.com/Gulliby-development/baked/issues with this output.";
   throw new Error(msg);
 })();`,
     );

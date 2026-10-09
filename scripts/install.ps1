@@ -93,7 +93,7 @@ Write-Host "  arch       : $assetArch"
 Write-Host "  install to : $InstallDir"
 
 # -- Resolve version -------------------------------------------------
-$repo = "baked/baked"
+$repo = "Gulliby-development/baked"
 
 if (-not $Version) {
     Write-Host "  version    : (resolving latest)"
