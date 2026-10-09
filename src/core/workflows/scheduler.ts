@@ -18,6 +18,12 @@ import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  InitiativePlanSchema,
+  MAX_FEATURES,
+  MIN_FEATURES,
+  planStructureProblems,
+} from "./initiatives/plan.js";
 import { type WorkspaceLeases, withinWorkflow } from "./leases.js";
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
@@ -236,6 +242,9 @@ export class WorkflowScheduler {
               );
               if (state.spec.featureId !== run.feature_id)
                 throw new WorkflowFault("OUTPUT_INVALID", "Spec feature ID differs from the run");
+              // An initiative decides which contracts a feature depends on, not the spec author.
+              if (state.hostDependencies)
+                state.spec = { ...state.spec, dependencies: state.hostDependencies };
               state.manifest.specHash = hashJson(state.spec);
               this.store.transaction(() =>
                 this.store.artifact(runId, "spec", "spec.json", canonical(state.spec)),
@@ -519,6 +528,41 @@ export class WorkflowScheduler {
               state.report = canonical(report);
               this.store.transaction(() =>
                 this.store.artifact(runId, "report", "report.json", state.report ?? ""),
+              );
+              break;
+            }
+            case "decompose": {
+              const plan = InitiativePlanSchema.parse(
+                await this.call(
+                  runId,
+                  stepId,
+                  state,
+                  policy,
+                  this.requireProfile(profile),
+                  { initiativeBounds: { minFeatures: MIN_FEATURES, maxFeatures: MAX_FEATURES } },
+                  signal,
+                  undefined,
+                  0,
+                  // Graph defects go back to the decomposer; the size bound is the initiative's
+                  // decision, so an oversized split is kept and refused there with a reason.
+                  (output) => {
+                    const parsed = InitiativePlanSchema.safeParse(output);
+                    return parsed.success
+                      ? planStructureProblems(parsed.data)
+                      : [parsed.error.message];
+                  },
+                ),
+              );
+              const problems = planStructureProblems(plan);
+              if (problems.length) throw new WorkflowFault("OUTPUT_INVALID", problems.join("\n"));
+              state.initiativePlan = canonical(plan);
+              this.store.transaction(() =>
+                this.store.artifact(
+                  runId,
+                  "initiative-plan",
+                  "initiative-plan.json",
+                  state.initiativePlan ?? "",
+                ),
               );
               break;
             }

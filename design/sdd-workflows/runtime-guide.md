@@ -344,6 +344,41 @@ Pull requests use the GitHub REST API. The token is read from the environment va
 { "workflows": { "delivery": { "tokenEnv": "GITHUB_TOKEN", "apiUrl": "https://api.github.com" } } }
 ```
 
+## Initiatives
+
+An initiative is a large request split into 3 to 12 features, each with a boundary, a contract it provides to other features and the features it depends on. The split is approved once, as a whole; then the initiative runs one ordinary workflow run per feature, one at a time in dependency order, in the same workspace. It is stored next to the runs in `.baked/workflows.sqlite` (migration 004): the initiative, its immutable plan revisions, the split approval requests, the links from features to run IDs, an append-only event log and idempotent commands.
+
+```sh
+baked workflow initiative start ID (--prompt TEXT | --prompt-file FILE) [--plan FILE] [--workflow sdd]
+baked workflow initiative show ID
+baked workflow initiative rename|remove|merge|split ID ... --expected-revision N
+baked workflow initiative approve ID --request ID --digest SHA256 --expected-revision N
+baked workflow initiative drive ID
+baked workflow initiative pause|resume ID --expected-revision N
+baked workflow initiative replan ID --feature F --expected-revision N
+baked workflow initiative extend ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]
+```
+
+Initiative IDs and feature IDs are lower case slugs. A feature's runs use the workflow feature ID `INITIATIVE_FEATURE`, so its accepted spec is `specs/INITIATIVE_FEATURE/spec.json`.
+
+**Split.** Without `--plan`, `start` runs the built-in `initiative-decompose` workflow: one agent stage with the `decomposer` profile, which reads the code and returns an `initiativePlan` (title, goals, completion criteria, and features with `id`, `title`, `boundary.scope`, `boundary.paths`, `contract`, `dependsOn` and `mandatory`). It changes no file. Duplicate IDs, unknown or repeated dependencies and cycles go back to the decomposer for correction. A split of more than 12 features is not corrected: the initiative becomes `refused` with the message to split the request into stages and start one initiative per stage. With `--plan FILE` the split is given by the user and validated the same way, including the bound.
+
+**Approval of the split** is mandatory. Each plan revision has a digest over the initiative ID, the revision number, the plan, the shared budget and the settings fixed at start (feature workflow, base policy hash, tiered approval, model). The pending `split_approval` request names that digest, and `approve` must repeat it. Before approval, `rename` (title only), `remove` (dependents lose the edge), `merge --features A,B` (one feature with the union of boundaries, contracts and external dependencies) and `split --feature F --parts FILE` (dependents depend on every part) each produce a new revision, a new digest and a new request; the older request is superseded. An edit that leaves fewer than 3 features, an unknown ID or a cycle is refused.
+
+**Execution.** `drive` (also run by `start`, `approve` and `resume`) advances the initiative until a person is needed, it is blocked or paused, or it completes. One feature run is open at a time: the runtime guards each run's source snapshot, so a second open run would block the first. A feature starts when every feature it depends on is accepted: its run completed with current verification and its spec is the newest approved spec of that feature. The new run is started with those upstream contract hashes pinned as its spec dependencies (the spec author's own dependencies are replaced), so its readiness uses the existing `contractHash` check. Decisions inside a feature run use the run commands (`baked workflow approve RUN_ID ...`); `show` lists them under `pendingDecisions` with the run and request IDs.
+
+**Tiered approval** (`--tiered-approval [--max-tasks 5] [--max-files 10]`, off by default) gives each feature run auto approval whose allowed paths are the feature's approved `boundary.paths`, without deletes or new dependencies, using the same auto approval check and the actor `auto-approval` as v2 definitions. A plan that writes outside the boundary, or a feature without boundary paths (or with more than 20), goes to a person. It requires a schema 1 feature workflow such as `sdd`; a v2 definition takes auto approval only from the definition, so the combination is refused at start. A v2 feature workflow with its own auto approval is started with `--confirm-auto-approval HASH`, which is passed to every feature run.
+
+**Contract changes.** When an upstream feature is accepted again with a different contract hash (after `replan` or a split re-plan), each dependent whose run is pinned to the old hash becomes `stale`. The next drive cancels its open run if any, marks that run's evidence `input_changed`, and starts a rebased run that keeps the dependent's spec, pins the new upstream hashes and starts again at the plan stage, so the plan is made, analyzed and approved against the new contract. A rebased run never gets auto approval: a person always re-approves it. A dependent that already finished keeps its result on record and is shown `waiting` while the upstream runs again.
+
+**Progress.** `show` returns the status, the next action and its reason, the plan revision and approval digest, and per feature: its state (`proposed`, `waiting`, `ready`, `in_progress`, `needs_decision`, `paused`, `blocked`, `failed`, `stale`, `accepted`), its blockers in words (for example `waits for core's contract (core is waiting for a decision)`), its pinned upstream hashes, its accepted contract hash, its pending decisions and its usage over all its runs. The initiative completes only when every mandatory feature is accepted; `initiative.completed` records each feature's run and contract hash.
+
+**Shared budget.** Set it with `--budget-tokens N --budget-calls N --budget-time-ms N`; otherwise it is the base policy's per-run limits times the number of features plus one. Each feature run starts with an equal share of what remains, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included), divided by the features of the approved plan without a run. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. When a share would fall below 1000 tokens, 1 call or 1 second, the initiative is blocked with the budget named; `extend` raises the shared limits (only upward). A feature run that exhausts its own share blocks like any run and is extended with `baked workflow extend RUN_ID`.
+
+**Pause, resume and re-planning.** `pause` stops the initiative and pauses a running feature run; `resume` continues it. While paused, the split can be edited again: approving the new revision keeps every feature whose boundary, contract, dependencies and mandatory flag are unchanged (a rename keeps its run), and supersedes and cancels the runs of removed or changed features, which then run again under the new revision. `replan --feature F` supersedes one feature's current run so the next drive starts it again; other features' results stay. Superseded runs and their artifacts remain linked to the initiative and are not collected by `gc`.
+
+Exit codes of `start`, `approve`, `drive` and `resume`: 0 completed or still progressing, 1 refused or error, 3 waiting for a decision, 4 blocked, 5 revision conflict, 130 paused. Initiatives have no TUI view yet.
+
 ## Exit codes
 
 | Code | run/resume |

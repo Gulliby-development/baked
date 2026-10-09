@@ -34,6 +34,7 @@ import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
   type Decision,
+  Hash,
   PolicySchema,
   ResearchSchema,
   type RunPolicy,
@@ -257,7 +258,13 @@ export class NativeWorkflowService implements WorkflowService {
       : instructions.hashes;
     const v2 = loaded.schemaVersion === 2 ? loaded.definition : null;
     // A definition without a spec stage works on the request stated as one requirement.
-    const spec =
+    const hostDependencies = request.dependencies
+      ? request.dependencies.map(({ featureId, contractHash }) => ({
+          featureId: SafeId.parse(featureId),
+          contractHash: Hash.parse(contractHash),
+        }))
+      : null;
+    const generated =
       v2 && !produces(v2, "spec")
         ? hostSpec(
             request.featureId,
@@ -265,6 +272,8 @@ export class NativeWorkflowService implements WorkflowService {
             policy.checks.some((c) => c.required),
           )
         : null;
+    const spec =
+      generated && hostDependencies ? { ...generated, dependencies: hostDependencies } : generated;
     const diff = v2?.inputs.includes("diff") ? await hostDiff(this.workspace) : null;
     for (const entry of registry.list())
       if (entry.source !== "builtin")
@@ -315,6 +324,8 @@ export class NativeWorkflowService implements WorkflowService {
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
       report: null,
+      initiativePlan: null,
+      hostDependencies,
       diff: null,
       gateResults: {},
       acceptance: {},
@@ -658,6 +669,14 @@ export class NativeWorkflowService implements WorkflowService {
           "Revision requires a complete spec, plan and task package",
         );
       validatePackage(this.workspace, state.spec, state.plan, state.graph);
+      // The initiative owns the upstream contracts of its features; a revision cannot repoint them.
+      const pinned = this.store.state(runId).hostDependencies;
+      if (pinned && hashJson(state.spec.dependencies) !== hashJson(pinned))
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          "The dependencies of an initiative feature are pinned by the initiative; keep them in the revision",
+        );
+      state.hostDependencies = pinned;
       const policy = PolicySchema.parse(candidate.policy);
       validateChecks(this.workspace, policy, state.graph);
       for (const request of this.store.requests(runId).filter((r) => r.status === "pending"))
@@ -796,7 +815,38 @@ export class NativeWorkflowService implements WorkflowService {
   }
   async fork(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
     this.enabled();
-    const body = { runId, ...command, action: "fork" };
+    return this.forkRun(runId, command, { runId, ...command, action: "fork" });
+  }
+  /**
+   * A fork of an initiative feature whose upstream contracts changed: the new run keeps its spec,
+   * pins the given contract hashes as its dependencies and starts again at the plan stage, so the
+   * plan is made, analyzed and approved against the new contracts. `policy` replaces the run policy
+   * (an initiative drops auto approval here, so a person reviews the changed contract).
+   */
+  async rebase(
+    runId: string,
+    command: CommandIdentity,
+    rebase: { dependencies: { featureId: string; contractHash: string }[]; policy?: RunPolicy },
+  ): Promise<RunSnapshot> {
+    this.enabled();
+    const dependencies = rebase.dependencies.map(({ featureId, contractHash }) => ({
+      featureId: SafeId.parse(featureId),
+      contractHash: Hash.parse(contractHash),
+    }));
+    const policy = rebase.policy ? PolicySchema.parse(rebase.policy) : undefined;
+    return this.forkRun(
+      runId,
+      command,
+      { runId, ...command, action: "rebase", dependencies, policy: policy ?? null },
+      { dependencies, policy },
+    );
+  }
+  private forkRun(
+    runId: string,
+    command: CommandIdentity,
+    body: Record<string, unknown>,
+    rebase?: { dependencies: { featureId: string; contractHash: string }[]; policy?: RunPolicy },
+  ): RunSnapshot {
     return this.store.transaction(() => {
       const old = this.store.previousCommand(command.commandId, body);
       if (old) return old;
@@ -830,16 +880,39 @@ export class NativeWorkflowService implements WorkflowService {
       state.taskGates = {};
       state.previousFindingSet = null;
       state.noProgressRounds = 0;
+      const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
+      if (rebase) {
+        state.hostDependencies = rebase.dependencies;
+        state.manifest.policyHash = hashJson(policy);
+        state.manifest.dependencyContracts = [];
+        if (state.spec) {
+          // The feature's own spec stays; the plan is made again against the new upstream
+          // contracts and the workspace as it is now, then analyzed and approved again.
+          state.spec = { ...state.spec, dependencies: rebase.dependencies };
+          state.manifest.specHash = hashJson(state.spec);
+          state.plan = null;
+          state.graph = null;
+          state.rootGraph = null;
+          state.manifest.planHash = null;
+          state.manifest.rootGraphHash = null;
+          state.manifest.effectiveGraphHash = null;
+          const restart = planPosition(run.definition_json);
+          state.stageIndex = restart.stageIndex;
+          state.position = restart.position;
+        }
+      }
       const parsed = parseRunDefinition(run.definition_json);
       this.store.create(
         id,
         run.feature_id,
         parsed.definition,
         JSON.parse(run.profiles_json),
-        PolicySchema.parse(JSON.parse(run.policy_json)),
+        policy,
         state,
         runId,
       );
+      // Dependents find a feature's accepted contract through this artifact.
+      if (state.spec) this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
       if (state.graph) this.store.syncTasks(id, state.graph);
       const gates = this.store.artifacts(runId).find((a) => a.logical_path === GATES_ARTIFACT);
       if (gates)
@@ -927,6 +1000,25 @@ function restartPosition(definitionJson: string, keepsPackage: boolean): Runtime
     position.visits = { [stage.id]: 1 };
   }
   return position;
+}
+
+/** Where a rebased run starts: the stage that produces the plan. */
+function planPosition(definitionJson: string): {
+  stageIndex: number;
+  position: RuntimeState["position"];
+} {
+  const parsed = parseRunDefinition(definitionJson);
+  if (parsed.schemaVersion === 1) {
+    const index = parsed.definition.stages.findIndex((s) => s.kind === "plan");
+    if (index < 0) throw new WorkflowFault("INVALID_DEFINITION", "The workflow has no plan stage");
+    return { stageIndex: index, position: null };
+  }
+  const position = initialPosition(parsed.definition);
+  const stage = parsed.definition.stages.find((s) => s.produces === "plan");
+  if (!stage) throw new WorkflowFault("INVALID_DEFINITION", "The workflow has no plan stage");
+  position.stageId = stage.id;
+  position.visits = { [stage.id]: 1 };
+  return { stageIndex: 0, position };
 }
 
 function describeAutoApproval(limits: NonNullable<WorkflowV2["autoApproval"]>): string {

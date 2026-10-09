@@ -14,6 +14,7 @@ import { CheckRunner } from "../verification/check-runner.js";
 import { sourceManifest } from "../verification/snapshot.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { ProcessScope } from "./process-scope.js";
 import {
@@ -51,6 +52,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   report: ReportSchema,
   acceptance: AcceptanceWalkSchema,
   "acceptance-draft": AcceptanceDraftSchema,
+  initiativePlan: InitiativePlanSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 
