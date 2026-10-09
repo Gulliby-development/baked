@@ -121,6 +121,8 @@ export const PolicySchema = z
     maxAgentSteps: z.number().int().min(1).max(100),
     maxAgentCalls: z.number().int().min(1).max(1000),
     maxTotalTokens: z.number().int().min(1000),
+    /** Token cap for one agent attempt (one task or stage call); defaults at runtime. */
+    maxAttemptTokens: z.number().int().min(1000).optional(),
     maxActiveMs: z.number().int().min(1000),
     maxCostUsd: z.number().positive().nullable(),
     maxRepairRounds: z.number().int().min(0).max(5),

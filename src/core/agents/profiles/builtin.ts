@@ -90,13 +90,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "implementer",
-    version: "1.1.0",
+    version: "1.2.0",
     description: "Implement one task",
     role: "implementer",
     model: "$coding",
     context: "implementation",
     instructions:
-      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified.",
+      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. Read every file you need in one call, then apply all edits to a file in one multi_edit call.",
     skills: [],
     allowedTools: [
       "read",
@@ -107,7 +107,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
       "submit_result",
     ],
     output: "implementation",
-    maxSteps: 24,
+    maxSteps: 14,
     maxOutputTokens: 4096,
   },
   {
