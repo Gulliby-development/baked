@@ -25,8 +25,8 @@ export function parseRunDefinition(json: string): RunDefinition {
     : { schemaVersion: 1, definition: WorkflowSchema.parse(raw) };
 }
 
-/** The v1 stage mechanism that executes a v2 stage; `report` is the one v2 adds. */
-export type StageKind = WorkflowDefinition["stages"][number]["kind"] | "report";
+/** The v1 stage mechanism that executes a v2 stage; `report` and `decompose` are the ones v2 adds. */
+export type StageKind = WorkflowDefinition["stages"][number]["kind"] | "report" | "decompose";
 
 const AGENT_KINDS: Partial<Record<Stage["produces"], StageKind>> = {
   research: "research",
@@ -34,6 +34,7 @@ const AGENT_KINDS: Partial<Record<Stage["produces"], StageKind>> = {
   plan: "plan",
   analysis: "analyze",
   report: "report",
+  initiativePlan: "decompose",
 };
 
 /** The mechanism of a v2 stage, or null for an agent stage whose contract no agent may submit. */
@@ -63,6 +64,7 @@ export const KIND_OUTPUT: Partial<Record<StageKind, string>> = {
   plan: "plan",
   analyze: "analysis",
   report: "report",
+  decompose: "initiativePlan",
   converge: "convergence",
 };
 
@@ -229,6 +231,8 @@ export function carriedValue(state: RuntimeState, stage: Stage): unknown {
       return state.convergence;
     case "report":
       return state.report ? JSON.parse(state.report) : null;
+    case "initiativePlan":
+      return state.initiativePlan ? JSON.parse(state.initiativePlan) : null;
     case "decision":
       return { digest: state.approvalRoot };
     case "gates":
@@ -269,6 +273,13 @@ export function autoApprovalOf(definition: WorkflowV2): RunPolicy["autoApproval"
   const auto = definition.autoApproval;
   if (!auto || !definition.stages.some((s) => s.type === "approval" && s.decision === "auto"))
     return null;
+  return autoApprovalPolicy(auto);
+}
+
+/** The run policy form of auto approval limits; renewal is never on for limits set by a host. */
+export function autoApprovalPolicy(
+  auto: NonNullable<WorkflowV2["autoApproval"]>,
+): RunPolicy["autoApproval"] {
   return {
     renewal: false,
     limits: {
