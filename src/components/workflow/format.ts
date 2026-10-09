@@ -225,7 +225,7 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
     case "request.created":
       return `Needs you: ${event.payload.kind.replace("_", " ")}`;
     case "request.decided":
-      return `Decision ${event.payload.status}${event.payload.actor === "system-invalidation" ? " (superseded)" : ""}`;
+      return `Decision ${event.payload.status}${event.payload.actor === "system-invalidation" ? " (superseded)" : event.payload.actor === "auto-approval" ? " (auto approval)" : ""}`;
     case "effect.reconciled":
       return `Effect ${event.payload.status}`;
     case "snapshot.invalidated":

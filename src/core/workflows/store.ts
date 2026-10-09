@@ -81,6 +81,7 @@ export interface RequestRow {
   digest: string;
   body_json: string;
   answer_json: string | null;
+  actor: string | null;
 }
 export interface EffectRow {
   id: string;
@@ -564,8 +565,13 @@ export class WorkflowStore {
     id: string,
     status: "accepted" | "rejected" | "superseded",
     answer: unknown,
+    automatic = false,
   ): void {
-    const actor = status === "superseded" ? "system-invalidation" : "user";
+    const actor = automatic
+      ? "auto-approval"
+      : status === "superseded"
+        ? "system-invalidation"
+        : "user";
     const result = this.db.run(
       "UPDATE requests SET status=?,answer_json=?,actor=?,decided_at=? WHERE run_id=? AND id=? AND status='pending'",
       [status, canonical(answer), actor, Date.now(), runId, id],

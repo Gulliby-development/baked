@@ -9,12 +9,12 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
-import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
+import { RunStatus, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import { assertWorkspaceMutationAllowed, withinWorkflow, withWorkspaceMutation } from "../src/core/workflows/leases.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
-import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
+import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { CheckRunner } from "../src/core/verification/check-runner.js";
 import { gitBaseline, sourceManifest } from "../src/core/verification/snapshot.js";
@@ -437,6 +437,41 @@ describe("durable SDD runtime", () => {
     expect(service.store.checks(run.runId).at(-1)?.status).toBe("passed");
     await expect(service.resume(run.runId, { commandId: newId(), expectedRevision: done.revision })).rejects.toThrow("Terminal");
   });
+  test("auto approval inside the limits records the host decision and completes without a person", async () => {
+    const { service } = setup();
+    const auto: RunPolicy = { ...policy, autoApproval: { renewal: false, limits: { maxTasks: 1, maxFiles: 1, allowedPaths: ["*.txt"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: policy.maxTotalTokens } } };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: auto });
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+    const request = service.store.requests(run.runId).find((r) => r.kind === "approval")!;
+    expect(request.actor).toBe("auto-approval");
+    expect(done.approvalDigest).toBe(request.digest);
+    expect(JSON.parse(request.body_json).autoApproval.mode).toBe("limits");
+    expect(service.store.events(run.runId).some((e) => e.type === "request.decided" && (e.payload as { actor: string }).actor === "auto-approval")).toBe(true);
+  });
+  test("auto approval outside the limits waits for a person with the reasons", async () => {
+    const { service } = setup();
+    const auto: RunPolicy = { ...policy, autoApproval: { renewal: false, limits: { maxTasks: 1, maxFiles: 1, allowedPaths: ["src/**"], allowDelete: false, allowNewDependencies: false, maxTotalTokens: policy.maxTotalTokens } } };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: auto });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    const request = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending")!;
+    expect(JSON.parse(request.body_json).autoApproval.declined).toContain("Limits: value.txt is outside the allowed paths");
+  });
+  test("a revision within the human approval is renewed automatically", async () => {
+    const { service, root } = setup();
+    const auto: RunPolicy = { ...policy, autoApproval: { renewal: true, limits: null } };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: auto });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    expect(JSON.parse(service.store.requests(run.runId)[0]!.body_json).autoApproval.declined).toContain("Renewal: no earlier human approval in this run");
+    await approve(service, run.runId);
+    writeFileSync(join(root, "AGENTS.md"), "Use fixture conventions.\r\n");
+    const candidate = await new WorkflowArtifacts(service).stageRevision(run.runId, { commandId: newId(), expectedInputHash: (await service.get(run.runId)).inputHash });
+    await service.revise(run.runId, { commandId: newId(), expectedRevision: (await service.get(run.runId)).revision }, candidate.candidateHash);
+    expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
+    const approvals = service.store.requests(run.runId).filter((r) => r.kind === "approval");
+    expect(approvals.map((r) => r.actor)).toEqual(["user", "auto-approval"]);
+    expect(JSON.parse(approvals[1]!.body_json).autoApproval.mode).toBe("renewal");
+  });
   test("failed command creates bounded correction and preserves approval root", async () => {
     const { service } = setup(true); const { run } = await start(service);
     await service.drive(run.runId, new AbortController().signal);
@@ -508,6 +543,17 @@ describe("durable SDD runtime", () => {
     );
     expect(result.items.every((run) => run.status === "completed")).toBe(true);
     expect(Object.keys(result)).toEqual(["items"]);
+  });
+  test("workflow help documents the list status option and its values (AC-005)", () => {
+    const list = workflowHelp.split("\n").find((line) => line.startsWith("list "));
+    expect(list).toContain("[--status STATUS]");
+    for (const status of RunStatus.options) expect(workflowHelp).toContain(status);
+  });
+  test("runtime guide documents the list status filter and its values (AC-006)", () => {
+    const guide = readFileSync(join(import.meta.dir, "../design/sdd-workflows/runtime-guide.md"), "utf8");
+    const paragraph = guide.split(/\n\s*\n/).find((part) => part.includes("baked workflow list") && part.includes("--status STATUS"));
+    expect(paragraph).toBeDefined();
+    for (const status of RunStatus.options) expect(paragraph).toContain(`\`${status}\``);
   });
   test("workflow list rejects an unsupported status and names every valid status", () => {
     expect(() => parseWorkflowArgs(["list", "--status", "unknown"])).toThrow(
