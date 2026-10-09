@@ -23,6 +23,13 @@ import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+import {
+  executeInitiativeCommand,
+  initiativeExit,
+  initiativeHelp,
+  parseInitiativeArgs,
+} from "../src/headless/workflow-initiative.js";
+import { workflowHelp } from "../src/headless/workflow-parse.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -393,6 +400,14 @@ describe("initiative runtime", () => {
     expect(view.status).toBe("completed");
   });
 
+  test("tiered approval is refused for a v2 feature workflow, whose auto approval is its own", async () => {
+    const t = setup();
+    await expect(
+      t.start({ plan: threeFeatures, workflowId: "standard", featureAutoApproval: { maxTasks: 5, maxFiles: 5 } }),
+    ).rejects.toThrow("Tiered approval needs a schema 1 feature workflow");
+    expect(t.initiatives.list()).toEqual([]);
+  });
+
   test("auto approval is off by default", async () => {
     const t = setup();
     await t.start({ plan: threeFeatures });
@@ -424,5 +439,46 @@ describe("initiative runtime", () => {
     expect(t.featureOf(view, "core").runId).toBe(coreRun);
     expect(t.featureOf(view, "core").state).toBe("accepted");
     expect(t.featureOf(view, "api").state).toBe("needs_decision");
+  });
+});
+
+describe("initiative CLI", () => {
+  test("parses subcommands with the workflow CLI conventions", () => {
+    const args = parseInitiativeArgs(["start", "values", "--prompt", "Add values", "--tiered-approval", "--max-tasks", "3"]);
+    expect(args).toEqual({ command: "start", positional: ["values"], flags: { prompt: "Add values", "tiered-approval": true, "max-tasks": "3" } });
+    expect(() => parseInitiativeArgs(["start", "values"])).toThrow("exactly one of --prompt");
+    expect(() => parseInitiativeArgs(["start", "values", "--prompt", "x", "--max-files", "2"])).toThrow("--tiered-approval");
+    expect(() => parseInitiativeArgs(["start", "values", "--prompt", "x", "--budget-tokens", "9"])).toThrow("all of --budget-tokens");
+    expect(() => parseInitiativeArgs(["pause", "values", "--expected-revision", "x"])).toThrow("integer");
+    expect(() => parseInitiativeArgs(["pause", "values", "--digest", "x"])).toThrow("invalid option --digest");
+    expect(() => parseInitiativeArgs(["approve"])).toThrow("expects 1 positional");
+    expect(() => parseInitiativeArgs(["launch", "values"])).toThrow("Unknown initiative command");
+    expect(workflowHelp).toContain("initiative <command>");
+    for (const command of ["start", "merge", "split", "remove", "rename", "approve", "drive", "pause", "resume", "replan", "extend"])
+      expect(initiativeHelp).toContain(command);
+  });
+
+  test("starts from a plan file, edits and approves the split, and reports exit codes", async () => {
+    const t = setup();
+    writeFileSync(join(t.root, "split.json"), JSON.stringify(threeFeatures));
+    const signal = new AbortController().signal;
+    const run = (argv: string[]) => executeInitiativeCommand(t.initiatives, parseInitiativeArgs(argv), signal);
+    let view = (await run(["start", "values", "--prompt", "Add values", "--plan", "split.json"])) as InitiativeView;
+    expect(view.status).toBe("awaiting_approval");
+    expect(initiativeExit(view)).toBe(3);
+    const first = view.planDigest;
+    view = (await run(["rename", "values", "--feature", "docs", "--title", "Docs", "--expected-revision", String(view.revision)])) as InitiativeView;
+    expect(view.planDigest).not.toBe(first);
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative");
+    view = (await run(["approve", "values", "--request", request?.requestId ?? "", "--digest", request?.digest ?? "", "--expected-revision", String(view.revision)])) as InitiativeView;
+    expect(view.status).toBe("active");
+    expect(view.next.kind).toBe("decide");
+    expect(initiativeExit(view)).toBe(3);
+    view = (await run(["pause", "values", "--expected-revision", String(view.revision)])) as InitiativeView;
+    expect(initiativeExit(view)).toBe(130);
+    const listed = (await run(["list"])) as { initiativeId: string; status: string }[];
+    expect(listed.map((i) => [i.initiativeId, i.status])).toEqual([["values", "paused"]]);
+    const events = (await run(["events", "values"])) as { type: string }[];
+    expect(events.map((e) => e.type)).toContain("plan.revised");
   });
 });

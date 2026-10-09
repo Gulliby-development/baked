@@ -259,6 +259,9 @@ deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
 deliver RUN_ID --execute --expected-revision N [--request ID]
   Perform the approved plan. Retries check what already exists; nothing is force-pushed or merged.
   The pull request token is read from workflows.delivery.tokenEnv (default GITHUB_TOKEN).
+initiative <command> ...   split a large request into 3..12 features run in dependency order
+  start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
+  replan, extend; see baked workflow initiative --help
 
 Management mutations accept --command-id UUID for idempotent retries.
 All commands accept --help. Workflows require an explicit workflows.enabled opt-in.
