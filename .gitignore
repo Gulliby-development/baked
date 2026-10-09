@@ -1,8 +1,8 @@
 # dependencies (bun install)
 node_modules
 
-# Baked binary
-baked
+# Baked binary and workspace-local data (baked/agents profiles, baked/workflows runtime state)
+/baked
 
 # output
 out
