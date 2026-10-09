@@ -20,13 +20,11 @@ export function Onboarding({ checks, model }: { checks: Check[]; model: string |
         </text>
         {checks.length ? (
           <text fg={t.textMuted}>
-            {`  · checks from package.json: ${checks.map((c) => `${c.executable} ${c.args.join(" ")}`).join(", ")}`}
+            {`  · checks found in this project: ${checks.map((c) => `${c.executable} ${c.args.join(" ")}`).join(", ")}`}
           </text>
         ) : (
           <text fg={t.warning}>
-            {
-              "  · no typecheck/lint/test scripts found — add checks to the policy before approving a run"
-            }
+            {"  · no test or lint commands found — press G to add checks before approving a run"}
           </text>
         )}
       </Section>
@@ -35,7 +33,9 @@ export function Onboarding({ checks, model }: { checks: Check[]; model: string |
       ) : (
         <Hint>{`Runs started here use this tab's model: ${model}`}</Hint>
       )}
-      <Hint>Other settings in .baked/config.json are kept. You can edit the policy later.</Hint>
+      <Hint>
+        Other settings in .baked/config.json are kept. Press G to edit the checks (gates) later.
+      </Hint>
     </box>
   );
 }

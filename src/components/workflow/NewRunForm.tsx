@@ -1,13 +1,21 @@
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import { BUDGET_PRESETS } from "../../core/workflows/budget.js";
 import type { BudgetPresetId, StartRunInput, WorkflowInfo } from "../../core/workflows/view.js";
 import { Field, Hint, Section } from "../ui/index.js";
-import { errorHint, featureSlug, formatDuration, formatTokens, isFeatureId } from "./format.js";
+import {
+  errorHint,
+  estimateFit,
+  featureSlug,
+  formatDuration,
+  formatTokens,
+  isFeatureId,
+} from "./format.js";
 
 const FIELDS = ["prompt", "feature", "workflow", "budget", "start"] as const;
 type FieldId = (typeof FIELDS)[number];
-const PRESETS: BudgetPresetId[] = ["quick", "standard", "extended"];
+const PRESETS: BudgetPresetId[] = [...BUDGET_PRESETS];
 
 export function NewRunForm({
   active,
@@ -111,6 +119,7 @@ export function NewRunForm({
   });
 
   const preset = info?.presets[budget];
+  const fit = info?.estimate ? estimateFit(info.estimate, preset) : null;
   const inputW = Math.max(20, width - 8);
   const box = (focused: boolean) => ({
     borderStyle: "rounded" as const,
@@ -171,7 +180,7 @@ export function NewRunForm({
           label="Budget"
           labelWidth={10}
           focused={focus === "budget"}
-          value={`‹ ${budget} ›  ${preset ? `${formatTokens(preset.maxTotalTokens)} tokens · ${preset.maxAgentCalls} calls · ${formatDuration(preset.maxActiveMs)}` : ""}`}
+          value={`‹ ${budget} ›  ${preset ? `${preset.checkpointTokens ? `no token cap, pause every ${formatTokens(preset.checkpointTokens)}` : `${formatTokens(preset.maxTotalTokens)} tokens`} · ${preset.maxAgentCalls} calls · ${formatDuration(preset.maxActiveMs)}` : ""}`}
           keyHint="←/→"
         />
         <Field
@@ -205,6 +214,9 @@ export function NewRunForm({
         <Hint kind="warn">
           No model selected in this tab. Press Esc twice, then Ctrl+L to choose one.
         </Hint>
+      ) : null}
+      {info?.estimate ? (
+        <Hint kind={fit?.warn ? "warn" : "tip"}>{fit?.text ?? info.estimate.label}</Hint>
       ) : null}
       {!checks.length ? (
         <Hint kind="warn">

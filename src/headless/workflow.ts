@@ -4,6 +4,7 @@ import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js"
 import { ProfileRegistry } from "../core/agents/profiles/registry.js";
 import { getCwd } from "../core/cwd.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
+import type { BudgetLimits } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import {
@@ -95,6 +96,20 @@ export async function executeWorkflowCommand(
       return service.cancel(runId, identity());
     case "fork":
       return service.fork(runId, identity());
+    case "continue":
+      return service.decide(runId, identity(), {
+        kind: "continue",
+        requestId: stringFlag(args, "request"),
+      });
+    case "extend": {
+      const number = (flag: string): number | undefined =>
+        typeof args.flags[flag] === "string" ? Number(args.flags[flag]) : undefined;
+      return service.extendBudget(runId, identity(), {
+        ...(number("tokens") !== undefined ? { maxTotalTokens: number("tokens") } : {}),
+        ...(number("calls") !== undefined ? { maxAgentCalls: number("calls") } : {}),
+        ...(number("time-ms") !== undefined ? { maxActiveMs: number("time-ms") } : {}),
+      } as Partial<BudgetLimits>);
+    }
     case "revise":
       return service.revise(runId, identity(), stringFlag(args, "candidate"));
     case "candidate":

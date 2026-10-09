@@ -1,12 +1,14 @@
 import { randomUUID as newId } from "node:crypto";
 import type { AppConfig } from "../../types/index.js";
+import type { GateRunResult } from "../workflows/gates.js";
 import type { RunFileDiff } from "../workflows/run-diff.js";
 import type { Decision, RunSnapshot } from "../workflows/schemas.js";
+import type { Check } from "../workflows/types.js";
 import type { RunSummary, StartRunInput, WorkflowInfo, WorkflowView } from "../workflows/view.js";
 import { workerPath } from "./path.js";
 import { WorkerClient } from "./rpc.js";
 
-export type WorkflowAction = "resume" | "pause" | "cancel" | "fork" | Decision;
+export type WorkflowAction = "resume" | "pause" | "cancel" | "fork" | "extend" | Decision;
 
 export class WorkflowClient extends WorkerClient {
   private views = new Map<string, WorkflowView>();
@@ -90,11 +92,28 @@ export class WorkflowClient extends WorkerClient {
   start(input: StartRunInput): Promise<RunSnapshot> {
     return this.callWithTimeout<RunSnapshot>(null, "start", newId(), input);
   }
+  /** Runs a gate in the worker. Aborting the signal stops the gate's process tree. */
+  async runGate(check: Check, signal: AbortSignal): Promise<GateRunResult> {
+    signal.throwIfAborted();
+    const id = newId();
+    const abort = (): void => this.fire("abort", id);
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      return await this.callWithTimeout<GateRunResult>(null, "gateRun", id, check);
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  }
+  /** Gives new runs the saved gate list without restarting the worker. */
+  updateGates(checks: Check[]): Promise<void> {
+    return this.call<void>("gatesUpdate", checks);
+  }
   readonly store = {
     snapshot: (id: string) => this.views.get(id)?.snapshot ?? null,
     details: (id: string) => this.views.get(id)?.details ?? null,
     stages: (id: string) => this.views.get(id)?.stages ?? [],
     budget: (id: string) => this.views.get(id)?.budget ?? null,
+    estimate: (id: string) => this.views.get(id)?.estimate ?? null,
     events: (id: string) => this.views.get(id)?.events ?? [],
     tasks: (id: string) => this.views.get(id)?.tasks ?? [],
     checks: (id: string) => this.views.get(id)?.checks ?? [],
@@ -128,7 +147,7 @@ export class WorkflowClient extends WorkerClient {
     }
   }
   async action(runId: string, action: WorkflowAction): Promise<RunSnapshot> {
-    const drives = action === "resume" || typeof action !== "string";
+    const drives = action === "resume" || action === "extend" || typeof action !== "string";
     if (drives) this.driving.add(runId);
     try {
       return await this.callWithTimeout<RunSnapshot>(null, "action", runId, action);

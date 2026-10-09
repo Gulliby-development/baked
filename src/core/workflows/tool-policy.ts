@@ -74,7 +74,16 @@ export class WorkflowToolPolicy {
       )
       .at(-1);
     const baseline = this.store.state(this.runId).expectedFiles;
-    if (baseline && existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null)))
+    // The baseline lists the files the snapshot can see. A file that exists but is not listed is
+    // git-ignored and untracked (for example a docs directory in .gitignore): the snapshot has no
+    // reference hash for it, so there is nothing to compare, and refusing it would make an approved
+    // scope file impossible to write. A missing file is still expected to be missing.
+    const unseen = baseline !== null && !(path in baseline) && !ownEffect && existing !== null;
+    if (
+      baseline &&
+      !unseen &&
+      existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null))
+    )
       throw new WorkflowFault("INPUT_CHANGED", `File changed outside this attempt: ${path}`);
     if (write.action === "create" && existing !== null && !ownEffect)
       throw new WorkflowFault("INPUT_CHANGED", `Create target already exists: ${path}`);

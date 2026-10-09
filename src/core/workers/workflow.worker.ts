@@ -6,10 +6,13 @@ import { parseWorkflowArgs } from "../../headless/workflow-parse.js";
 import type { AppConfig } from "../../types/index.js";
 import { setCwd } from "../cwd.js";
 import { installGlobalFetch } from "../llm/http-agent.js";
+import { scaledPolicy } from "../workflows/budget.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
-import { recordWorkerExit } from "../workflows/leases.js";
+import { estimateStart, readHistory } from "../workflows/estimate.js";
+import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
+import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
-import { DecisionSchema, PolicySchema, type RunPolicy, SafeId } from "../workflows/schemas.js";
+import { CheckSchema, DecisionSchema, SafeId } from "../workflows/schemas.js";
 import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
 import {
@@ -42,16 +45,6 @@ const StartInput = z
     budget: BudgetPreset,
   })
   .strict();
-function scaledPolicy(base: RunPolicy, preset: z.infer<typeof BudgetPreset>): RunPolicy {
-  if (preset === "standard") return base;
-  const factor = preset === "quick" ? 0.5 : 2;
-  return PolicySchema.parse({
-    ...base,
-    maxTotalTokens: Math.max(1000, Math.round(base.maxTotalTokens * factor)),
-    maxAgentCalls: Math.min(1000, Math.max(1, Math.round(base.maxAgentCalls * factor))),
-    maxActiveMs: Math.max(1000, Math.round(base.maxActiveMs * factor)),
-  });
-}
 const ctx = createWorkerHandler(
   {
     view: (runId, stamp) =>
@@ -77,6 +70,7 @@ const ctx = createWorkerHandler(
         : [];
       const policy = runtime.config.workflows?.policy ?? defaultWorkflowPolicy;
       return {
+        estimate: estimateStart(readHistory(runtime.store)),
         enabled: runtime.config.workflows?.enabled === true,
         defaultWorkflow: runtime.config.workflows?.defaultWorkflow ?? "sdd",
         workflows: ["sdd", ...custom],
@@ -90,6 +84,7 @@ const ctx = createWorkerHandler(
                 maxTotalTokens: scaled.maxTotalTokens,
                 maxAgentCalls: scaled.maxAgentCalls,
                 maxActiveMs: scaled.maxActiveMs,
+                checkpointTokens: scaled.checkpointTokens,
               },
             ];
           }),
@@ -155,7 +150,12 @@ const ctx = createWorkerHandler(
       if (input === "pause") return runtime.pause(id, command);
       if (input === "cancel") return runtime.cancel(id, command);
       if (input === "fork") return runtime.fork(id, command);
-      if (input === "resume") await runtime.resume(id, command);
+      if (input === "extend") {
+        // One user decision: raise the limits, then continue from the stopped stage.
+        await runtime.extendBudget(id, command);
+        const paused = await runtime.get(id);
+        await runtime.resume(id, { commandId: newId(), expectedRevision: paused.revision });
+      } else if (input === "resume") await runtime.resume(id, command);
       else await runtime.decide(id, command, DecisionSchema.parse(input));
       const state = await runtime.get(id);
       if (
@@ -165,6 +165,31 @@ const ctx = createWorkerHandler(
       )
         return runtime.drive(id, new AbortController().signal);
       return state;
+    },
+    // Runs one gate outside any run. The worker keeps the UI thread free while it executes.
+    async gateRun(requestId, check) {
+      const id = SafeId.parse(requestId);
+      const runtime = current();
+      const parsed = CheckSchema.parse(check);
+      assertWorkspaceFreeForGate(
+        (["execution", "mutation"] as const).some((resource) => {
+          const lease = runtime.store.lease(resource);
+          return lease !== null && leaseOwnerAlive(lease) !== false;
+        }),
+      );
+      const controller = new AbortController();
+      controllers.set(id, controller);
+      try {
+        return await executeGate(runtime.workspace, parsed, controller.signal);
+      } finally {
+        controllers.delete(id);
+      }
+    },
+    // New runs read the gate list from this in-memory policy; started runs froze their own copy.
+    gatesUpdate(checks) {
+      const parsed = CheckSchema.array().parse(checks);
+      const workflows = current().config.workflows;
+      if (workflows) workflows.policy = { ...workflows.policy, checks: parsed };
     },
     abort: (requestId) => {
       controllers.get(SafeId.parse(requestId))?.abort(new Error("Command aborted"));

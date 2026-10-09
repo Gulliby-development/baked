@@ -34,6 +34,7 @@ const service = {
     details: () => details,
     stages: () => stages,
     budget: () => budget,
+    estimate: () => ({ saved: null, comparison: null, projection: { total: { low: 90000, high: 300000 }, remaining: { low: 80000, high: 290000 }, basis: "defaults", samples: 0, tokensPerMinute: 4000, minutesLeft: 90, exhaustsAt: { typical: null, high: "implement" }, label: "Estimate: about 90k–300k tokens in total, 80k–290k still to spend (generic range: this project has no finished runs yet)" } }),
     events: () => events,
     tasks: () => [{ id: "T001", status: "pending", generation: 0, definition_json: JSON.stringify(task) }],
     findings: () => [],
@@ -47,12 +48,13 @@ const runs: RunSummary[] = [
   { snapshot: { ...snapshot, runId: "done", featureId: "finished-feature", status: "completed", reason: "none", pendingRequestIds: [] }, title: null, stage: { index: 9, total: 10, id: "learn" }, tasks: { done: 2, total: 2 }, pendingKind: null, budget, createdAt: Date.now() - 86400000, updatedAt: Date.now() - 86400000 },
   { snapshot, title: details.title, stage: { index: 4, total: 10, id: "approve" }, tasks: { done: 0, total: 1 }, pendingKind: "approval", budget, createdAt: Date.now() - 60000, updatedAt: Date.now() - 60000 },
 ];
-const info: WorkflowInfo = { enabled: true, defaultWorkflow: "sdd", workflows: ["sdd"], policy: defaultWorkflowPolicy, presets: { quick: { maxTotalTokens: 200000, maxAgentCalls: 40, maxActiveMs: 1800000 }, standard: { maxTotalTokens: 400000, maxAgentCalls: 80, maxActiveMs: 3600000 }, extended: { maxTotalTokens: 800000, maxAgentCalls: 160, maxActiveMs: 7200000 } } };
+const info: WorkflowInfo = { estimate: { tokens: { low: 90000, high: 300000 }, basis: "defaults", samples: 0, label: "Estimate: 90k–300k tokens (generic range: this project has no finished runs yet)" }, enabled: true, defaultWorkflow: "sdd", workflows: ["sdd"], policy: defaultWorkflowPolicy, presets: { quick: { maxTotalTokens: 200000, maxAgentCalls: 40, maxActiveMs: 1800000 }, standard: { maxTotalTokens: 400000, maxAgentCalls: 80, maxActiveMs: 3600000 }, extended: { maxTotalTokens: 800000, maxAgentCalls: 160, maxActiveMs: 7200000 }, checkpoints: { maxTotalTokens: 1000000000, maxAgentCalls: 160, maxActiveMs: 7200000, checkpointTokens: 200000 } } };
 mock.module("../../src/hooks/useWorkflow.js", () => ({
   useWorkflow: (_workspace: string, runId: string | null) => ({ service: runId ? service : null, snapshot: runId ? snapshot : null, error: null, generation: 1, act: async (action: unknown) => { actions.push(action); } }),
   useWorkflowRuns: () => ({ runs, info, enabled: true, error: null, reload: () => {} }),
   workflowSession: () => ({ start: async () => snapshot }),
   reloadWorkflowSession: async () => true,
+  workflowGatesApi: () => ({ load: () => defaultWorkflowPolicy.checks.length ? defaultWorkflowPolicy.checks : [{ id: "tests", executable: "bun", args: ["run", "test"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] }], save: async () => {}, suggest: () => [], run: async () => ({ status: "passed", exitCode: 0, durationMs: 10, outputTail: "", truncated: false }) }),
   useWorkflowBadge: () => {},
 }));
 const { useWorkflowStore } = await import("../../src/stores/workflow.js");
@@ -106,9 +108,15 @@ for (const [width, height] of [[120, 40], [80, 24], [50, 20]]) {
       }
       if (tab === "checks") assert(text.includes("lint: not run yet"), "checks list configured checks that have not run");
       if (tab === "overview") assert(text.includes("Waiting at Approve") || width < 80, "overview explains the state");
+      if (tab === "overview" && width >= 80) assert(text.includes("Estimate: about"), "overview labels the spend estimate as an estimate");
     }
     await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
     assert((await frame("back-home")).includes("finished-feature"), "Esc returns to the run list");
+    await act(async () => view.mockInput.pressKey("g"));
+    const gates = await frame("gates");
+    assert(gates.includes("Gates") && gates.includes("bun run test"), "G opens the gate window with the configured gates");
+    await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
+    assert((await frame("gates-back")).includes("finished-feature"), "Esc leaves the gate window for the run list");
     // Several analysis findings arrive as one clarification request.
     pendingRequests = [clarificationRequest];
     await act(async () => view.mockInput.pressEnter());

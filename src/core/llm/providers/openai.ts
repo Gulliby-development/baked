@@ -8,7 +8,13 @@ interface OpenAIModel {
   context_window?: number;
 }
 
-const OPENAI_PREFIXES = ["gpt-4", "gpt-5", "gpt-3.5", "o1", "o3", "o4", "chatgpt"];
+/**
+ * Chat-capable model IDs: gpt-<digit> of any generation (gpt-4o, gpt-5.6-luna, gpt-6-astra, gpt-6.1-sol),
+ * chatgpt-*, and the o-series. Audio, realtime, image, transcribe, embedding and moderation models
+ * start with other words (gpt-realtime, gpt-image, text-embedding) and stay out. A fixed prefix list
+ * used to hide every new generation until someone added its number.
+ */
+export const OPENAI_CHAT_MODEL = /^(gpt-\d|chatgpt|o\d)/;
 
 export const openai: ProviderDefinition = {
   id: "openai",
@@ -38,7 +44,7 @@ export const openai: ProviderDefinition = {
     const data = (await res.json()) as { data: OpenAIModel[] };
     const result: ProviderModelInfo[] = [];
     for (const m of data.data) {
-      if (OPENAI_PREFIXES.some((p) => m.id.startsWith(p))) {
+      if (OPENAI_CHAT_MODEL.test(m.id)) {
         result.push({ id: m.id, name: m.id });
       }
     }

@@ -255,3 +255,28 @@ test("CLI run reads prompt-file content and positional workflow ID", async () =>
     close();
   }
 });
+
+test("a modify target the snapshot cannot see is writable, a tracked one that changed is not", async () => {
+  const { root, service, close } = fixture();
+  try {
+    writeFileSync(join(root, "ignored.md"), "docs");
+    writeFileSync(join(root, "tracked.txt"), "one");
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Edit", ownerLabel: "test", policy: defaultWorkflowPolicy });
+    const profile = builtinProfiles.find((item) => item.id === "implementer");
+    if (!profile) throw new Error("Missing implementer profile");
+    service.store.transition(run.runId, "running");
+    service.leases.acquire("mutation", run.runId);
+    // The snapshot lists tracked.txt only, as it does when ignored.md is git-ignored.
+    const state = service.store.state(run.runId);
+    state.expectedFiles = { "tracked.txt": hashBytes("one") };
+    service.store.saveState(run.runId, state);
+    const modify = { ...task, writes: [{ path: "ignored.md", action: "modify" as const }, { path: "tracked.txt", action: "modify" as const }] };
+    const guard = new WorkflowToolPolicy(service.store, service.leases, run.runId, "attempt", profile, defaultWorkflowPolicy, modify);
+    expect(guard.validate("edit_file", { path: "ignored.md", oldString: "docs", newString: "docs 2" })).toBe("ignored.md");
+    expect(guard.validate("edit_file", { path: "tracked.txt", oldString: "one", newString: "two" })).toBe("tracked.txt");
+    writeFileSync(join(root, "tracked.txt"), "changed by someone else");
+    expect(() => guard.validate("edit_file", { path: "tracked.txt", oldString: "one", newString: "two" })).toThrow("File changed outside this attempt");
+  } finally {
+    close();
+  }
+});

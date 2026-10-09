@@ -7,6 +7,7 @@ import type { Check } from "../../core/workflows/types.js";
 import type { RunDetails } from "../../core/workflows/view.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, Section } from "../ui/index.js";
+import { formatTokens } from "./format.js";
 
 interface ApprovalBody {
   writes?: { path: string; action: string }[];
@@ -34,6 +35,15 @@ export interface ClarificationItem {
 interface EvidenceBody {
   criterionId?: string;
   question?: string;
+}
+interface CheckpointBody {
+  boundary?: number;
+  interval?: number;
+  projectedTokens?: number;
+  usedTokens?: number;
+  heldTokens?: number;
+  calls?: number;
+  stageId?: string;
 }
 interface RecoveryBody {
   effectId?: string;
@@ -153,6 +163,20 @@ export function DecisionPrompt({
         setRejecting(false);
         setText("");
       } else onBack();
+      return;
+    }
+    if (request.kind === "checkpoint") {
+      if (key === "c" || key === "return") {
+        evt.preventDefault();
+        onDecision({ kind: "continue", requestId: request.id });
+      } else if (key === "x") {
+        evt.preventDefault();
+        onDecision({
+          kind: "reject",
+          requestId: request.id,
+          explanation: "Stopped at the token checkpoint",
+        });
+      }
       return;
     }
     if (request.kind === "approval" && !rejecting) {
@@ -428,6 +452,28 @@ export function DecisionPrompt({
           </text>
         </Section>
         {input("What you observed, then Enter")}
+      </box>
+    );
+  }
+  if (request.kind === "checkpoint") {
+    const body = parse<CheckpointBody>(request.body_json);
+    const next = Math.max(body.boundary ?? 0, body.projectedTokens ?? 0) + (body.interval ?? 0);
+    return (
+      <box flexDirection="column">
+        <Section
+          title="Token checkpoint"
+          description="The run paused before its next step because that step could pass the checkpoint. Nothing more is spent until you decide."
+        >
+          <text fg={t.textPrimary}>
+            {`Used so far: ${formatTokens(body.usedTokens ?? 0)} tokens${body.heldTokens ? ` (+${formatTokens(body.heldTokens)} held by interrupted calls)` : ""} · ${body.calls ?? 0} agent calls`}
+          </text>
+          <text fg={t.textMuted}>
+            {`Checkpoint: ${formatTokens(body.boundary ?? 0)} · next one: ${formatTokens(next)}`}
+          </text>
+        </Section>
+        <Hint>
+          C continues up to the next checkpoint. X stops the run here; it can be resumed later.
+        </Hint>
       </box>
     );
   }

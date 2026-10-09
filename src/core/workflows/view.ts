@@ -1,7 +1,17 @@
 import { z } from "zod";
 import { renderSpec } from "../specs/render.js";
 import { workspacePath } from "../specs/validate.js";
+import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
 import { fileHash } from "./effects.js";
+import {
+  compareWithActual,
+  type Projection,
+  project,
+  readHistory,
+  type SavedEstimate,
+  type StageProgress,
+  type StartEstimate,
+} from "./estimate.js";
 import type {
   RunPolicy,
   RunSnapshot,
@@ -16,8 +26,8 @@ const RECENT_EVENTS = 40;
 const OUTPUT_TAIL_LINES = 40;
 const MAX_CHANGED_FILES = 300;
 
-export const BudgetPreset = z.enum(["quick", "standard", "extended"]);
-export type BudgetPresetId = z.infer<typeof BudgetPreset>;
+export const BudgetPreset = z.enum(BUDGET_PRESETS);
+export type { BudgetPresetId };
 export interface StartRunInput {
   workflowId: string;
   featureId: string;
@@ -26,13 +36,21 @@ export interface StartRunInput {
   budget: BudgetPresetId;
 }
 export interface WorkflowInfo {
+  /** Range shown on the new-run form, from this project's finished runs or generic ranges. */
+  estimate: StartEstimate;
   enabled: boolean;
   defaultWorkflow: string;
   workflows: string[];
   policy: RunPolicy;
   presets: Record<
     BudgetPresetId,
-    { maxTotalTokens: number; maxAgentCalls: number; maxActiveMs: number }
+    {
+      maxTotalTokens: number;
+      maxAgentCalls: number;
+      maxActiveMs: number;
+      /** Set for the checkpoint preset: no token cap, a pause every this many tokens. */
+      checkpointTokens?: number | null;
+    }
   >;
 }
 
@@ -55,6 +73,9 @@ export interface BudgetView {
   maxActiveMs: number;
   repairRounds: number;
   maxRepairRounds: number;
+  /** Soft checkpoint interval and the token count of the next pause, when the run uses them. */
+  checkpointTokens?: number | null;
+  nextCheckpoint?: number | null;
 }
 export interface CriterionView {
   id: string;
@@ -95,6 +116,63 @@ export interface CheckDetail {
   outputTail: string | null;
 }
 
+export interface EstimateView {
+  /** What was expected when the run was created; absent for runs created before estimates existed. */
+  saved: SavedEstimate | null;
+  /** Re-estimate for a run that is not finished. */
+  projection: Projection | null;
+  /** Saved estimate against actual usage, for a completed run. */
+  comparison: { verdict: "below" | "within" | "above"; text: string } | null;
+}
+export function savedEstimate(store: WorkflowStore, runId: string): SavedEstimate | null {
+  const artifact = store.latestArtifact(runId, "estimates/start.json");
+  if (!artifact) return null;
+  try {
+    return JSON.parse(store.readArtifact(runId, artifact.id)) as SavedEstimate;
+  } catch {
+    return null;
+  }
+}
+function estimateOf(store: WorkflowStore, row: RunRow, stages: StageView[]): EstimateView {
+  const saved = savedEstimate(store, row.id);
+  const usage = budgetUsage(store, row);
+  const terminal = ["completed", "failed", "cancelled"].includes(row.status);
+  const comparison =
+    saved && row.status === "completed" ? compareWithActual(saved, row.token_usage) : null;
+  if (terminal) return { saved, projection: null, comparison };
+  const tasks = store.tasks(row.id).filter((t) => t.status !== "invalidated");
+  const progress: StageProgress[] = stages.map((stage) => ({
+    id: stage.id,
+    status:
+      stage.status === "completed" || stage.status === "skipped"
+        ? "done"
+        : stage.id === row.stage_id && row.status !== "created"
+          ? "running"
+          : "pending",
+  }));
+  const policy = JSON.parse(row.policy_json) as RunPolicy;
+  return {
+    saved,
+    comparison,
+    projection: project({
+      history: readHistory(store).filter((r) => r.runId !== row.id),
+      stages: progress,
+      spentTokens: usage.tokens + usage.heldTokens,
+      activeMs: row.active_ms,
+      maxTokens: policy.maxTotalTokens,
+      tasks: tasks.length
+        ? {
+            total: tasks.length,
+            done: tasks.filter((t) => ["implemented", "verified"].includes(t.status)).length,
+          }
+        : null,
+      runningStageSpent: row.stage_id
+        ? (store.history(row.id)[0]?.stageTokens[row.stage_id] ?? 0)
+        : 0,
+    }),
+  };
+}
+
 // Changes whenever anything the panel renders can change, including active time which has no event.
 function stampOf(row: RunRow): string {
   return `${row.event_seq}:${row.active_ms}:${row.token_usage}:${row.revision}`;
@@ -115,19 +193,20 @@ function stagesOf(row: RunRow, steps: StepRow[]): StageView[] {
 }
 function budgetOf(store: WorkflowStore, row: RunRow): BudgetView {
   const policy = JSON.parse(row.policy_json) as RunPolicy;
-  const open = store.attempts(row.id).filter((a) => !a.usage_complete);
-  const sum = (list: typeof open): number => list.reduce((n, a) => n + a.reserved_tokens, 0);
+  const usage = budgetUsage(store, row);
   return {
-    tokens: row.token_usage,
-    heldTokens: sum(open.filter((a) => a.status !== "running")),
-    inFlightTokens: sum(open.filter((a) => a.status === "running")),
+    tokens: usage.tokens,
+    heldTokens: usage.heldTokens,
+    inFlightTokens: usage.inFlightTokens,
     maxTokens: policy.maxTotalTokens,
-    calls: row.agent_calls,
+    calls: usage.calls,
     maxCalls: policy.maxAgentCalls,
-    activeMs: row.active_ms,
+    activeMs: usage.activeMs,
     maxActiveMs: policy.maxActiveMs,
     repairRounds: row.repair_rounds,
     maxRepairRounds: policy.maxRepairRounds,
+    checkpointTokens: policy.checkpointTokens ?? null,
+    nextCheckpoint: store.checkpointBoundary(row.id, policy),
   };
 }
 function lastErrorOf(store: WorkflowStore, runId: string): string | null {
@@ -234,11 +313,13 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
   const store = service.store;
   return store.readTransaction(() => {
     const row = store.run(runId);
+    const stages = stagesOf(row, store.steps(runId));
     return {
       stamp: stampOf(row),
+      estimate: estimateOf(store, row, stages),
       snapshot: store.snapshot(runId),
       details: detailsOf(store, runId),
-      stages: stagesOf(row, store.steps(runId)),
+      stages,
       budget: budgetOf(store, row),
       tasks: store.tasks(runId),
       checks: store.checks(runId),

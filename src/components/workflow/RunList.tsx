@@ -19,6 +19,7 @@ export function orderRuns(runs: RunSummary[]): RunSummary[] {
 
 function progressText(run: RunSummary): string {
   const { snapshot, stage, tasks } = run;
+  if (run.pendingKind === "checkpoint") return "paused at a token checkpoint";
   if (run.pendingKind) return `needs your ${run.pendingKind.replace("_", " ")}`;
   if (snapshot.status === "completed") return `${tasks.total} tasks done`;
   if (snapshot.status === "blocked" || snapshot.status === "failed")

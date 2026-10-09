@@ -26,7 +26,7 @@ export function applyWorkflowEvent(
   return { snapshot, lastSeq: event.seq };
 }
 
-export type WorkflowScreen = "home" | "run" | "new";
+export type WorkflowScreen = "home" | "run" | "new" | "gates";
 /** Compact status shown outside the panel while a run is tracked in this tab session. */
 export interface WorkflowBadge {
   runId: string;
@@ -48,6 +48,7 @@ interface WorkflowUIState {
   select: (runId: string | null, tabId?: string) => void;
   showHome: () => void;
   showNew: (prompt?: string) => void;
+  showGates: () => void;
   load: (snapshot: RunSnapshot) => void;
   event: (event: WorkflowEvent) => void;
   setBadge: (badge: WorkflowBadge | null) => void;
@@ -68,6 +69,7 @@ export const useWorkflowStore = create<WorkflowUIState>((set) => ({
       runsByTab: tabId && runId ? { ...s.runsByTab, [tabId]: runId } : s.runsByTab,
     })),
   showHome: () => set({ screen: "home" }),
+  showGates: () => set({ screen: "gates" }),
   showNew: (prompt) => set((s) => ({ screen: "new", draftPrompt: prompt ?? s.draftPrompt })),
   load: (snapshot) => set({ projection: { snapshot, lastSeq: snapshot.eventSeq } }),
   event: (event) => set((s) => ({ projection: applyWorkflowEvent(s.projection, event) })),

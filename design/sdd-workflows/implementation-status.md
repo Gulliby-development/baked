@@ -46,9 +46,9 @@ Date: 2026-10-09. These items use the existing stages, checks and policy and do 
 | Gate window (`/workflow gates`, G) | List, create, edit, remove with confirmation, run now with exit code, duration and output tail through the worker; saves only `workflows.policy.checks` and keeps other project settings; started runs keep their frozen policy; run now is refused while a run holds the workspace | [gates](../../src/core/workflows/gates.ts), [window](../../src/components/workflow/GatesView.tsx), [unit](../../tests/workflow-gates.test.ts), [window tests](../../tests/workflow-gates-ui.test.tsx), [worker fixture](../../tests/fixtures/workflow-gates-worker.ts) |
 | Gate detection | package scripts for bun, npm, pnpm and yarn, pytest, ruff, go test, cargo test and clippy; a fixture per ecosystem; nothing is added before confirmation. Existing CI scripts are not read | [tests](../../tests/workflow-gates.test.ts) |
 | Budget extension | `B` on a run blocked with `budget_exhausted`, `baked workflow extend`; limits only go up; stored as a `policy-revisions` artifact; the run continues from the stopped stage with its approval digest and evidence untouched. This is a narrower path than `candidate` and `revise`, which restart from analyze; see the note below | [tests](../../tests/workflow-budget.test.ts) |
-| Soft checkpoints | Preset `checkpoints`, policy field `checkpointTokens`, request kind `checkpoint`, migration 002, `baked workflow continue`. A step that could pass the next multiple of the interval does not start, also inside one agent loop | [tests](../../tests/workflow-checkpoints.test.ts), [loop stop in the executor fixture](../../tests/fixtures/workflow-compaction.ts) |
+| Soft checkpoints | Preset `checkpoints`, policy field `checkpointTokens`, request kind `checkpoint`, migration 002, `baked workflow continue`. A step that could pass the next multiple of the interval does not start, also inside one agent loop | [tests](../../tests/workflow-checkpoints.test.ts), [loop stop in the executor fixture](../../tests/fixtures/workflow-checkpoint-loop.ts) |
 | Estimates | Range before the start from this project's runs or generic ranges, re-estimate after the plan, burn rate, stage where the budget ends, the starting estimate kept per run and compared with the actual usage on completion | [tests](../../tests/workflow-estimate.test.ts) |
-| Context compaction | Old bulky results of read, navigate, bake_impact and request_check become notes between steps | measurement below |
+| Context compaction | Removed before merge. The step budget from `maxAttemptTokens` ([step-budget](../../src/core/workflows/step-budget.ts)) already compacts old observation results, and two compaction passes in one loop would conflict. The measurement below describes the removed implementation | measurement below |
 
 Verification of this work (Windows, isolated LOCALAPPDATA, timeout 15000 ms, `ANTHROPIC_BASE_URL` unset):
 
@@ -62,6 +62,8 @@ Verification of this work (Windows, isolated LOCALAPPDATA, timeout 15000 ms, `AN
 The previous full result was 2799 passed; 69 tests were added.
 
 ### Context compaction measurement
+
+This measurement belongs to the separate compaction that was removed before merge; the executor now uses the step budget's compaction only. The raw output is kept for reference.
 
 The fixture is a scripted researcher that reads 16 files of 20000 characters, one per step, with the real executor, the real `read` tool and the AI SDK. The scripted model reports the size of the request it received as its input tokens, so the numbers measure what each step resends. It is a fixture, not a real model.
 
@@ -129,7 +131,7 @@ What this shows, and what it does not:
 - Compaction appears to have hurt: the agent recorded the compacted reads as blocking unknowns instead of reading them again, and the later attempts read more (43 reads, 521 KB) than the first (36 reads, 272 KB). There is no run without compaction to compare with, so this is a strong indication and not a measurement.
 - The reservation of a failed call with unknown usage keeps counting, so two failed attempts consumed the whole raised limit on paper. Their real spend was not reported.
 - The budget stop, the clarification forwarding, `answer`, `extend` and `resume` worked on a real model. Approvals, the single writer, protection of user changes, review by another model, recovery and the final acceptance were not exercised. The real-model release gate stays open.
-- Proposed next steps, none done: a run with `workflows.contextCompaction` set to `false` for a measured comparison; telling the agent in the compaction note and in the context that a note is not an unknown and must be re-read; a lower step count for research (batched reads); and treating a research result whose blocking unknowns only ask for more reading as non-blocking.
+- Proposed next steps, none done: a measured comparison with and without compaction (the `workflows.contextCompaction` switch was removed together with the separate compaction); telling the agent in the compaction note and in the context that a note is not an unknown and must be re-read; a lower step count for research (batched reads); and treating a research result whose blocking unknowns only ask for more reading as non-blocking.
 
 ## Complete run with a real model (2026-10-09): run 3 completed
 

@@ -161,8 +161,6 @@ export const RefutationSchema = z.object({
 export const WorkflowConfigSchema = z.object({
   enabled: z.boolean().default(false), importsEnabled: z.boolean().default(false),
   defaultWorkflow: SafeId.default("sdd"),
-  /** Shrink old bulky tool results between agent steps; on unless set to false. */
-  contextCompaction: z.boolean().optional(),
   policy: PolicySchema,
 }).strict();
 export const InputManifestSchema = z.object({
