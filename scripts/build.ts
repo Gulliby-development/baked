@@ -19,6 +19,7 @@ import { type BunPlugin, spawnSync } from "bun";
 import { chmodSync, copyFileSync, cpSync, renameSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import pkgJson from "../package.json";
+import { buildMachinePaths, stripAbsolutePaths } from "./strip-paths";
 
 // Inlined into every native-lookup plugin so the runtime resolution honours
 // %LOCALAPPDATA% on Windows and ~/.baked on POSIX. Single source of truth
@@ -115,14 +116,13 @@ const reactCompilerPlugin: BunPlugin = {
 const stripAbsPathsPlugin: BunPlugin = {
   name: "strip-abs-paths",
   setup(build) {
-    const cwd = process.cwd();
     // POSIX uses $HOME; Windows uses $USERPROFILE. Strip whichever is set.
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+    // Replacement is boundary-aware (see strip-paths.ts): a naive substring
+    // split turned `'./root.js'` into `'.~.js'` when HOME=/root.
+    const paths = buildMachinePaths();
     build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async ({ path, loader }) => {
-      let src = await Bun.file(path).text();
-      if (cwd && src.includes(cwd)) src = src.split(cwd).join("");
-      if (home && src.includes(home)) src = src.split(home).join("~");
-      return { contents: src, loader };
+      const src = await Bun.file(path).text();
+      return { contents: stripAbsolutePaths(src, paths), loader };
     });
   },
 };
@@ -502,12 +502,7 @@ if (isCompile) {
     // Post-build path scrub. The onLoad strip-paths plugin only sees our
     // source; pre-bundled CJS deps inline absolute __dirname/__filename paths
     // that survive into dist/index.js. Replace them.
-    const cwd = process.cwd();
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-    let raw = bundle;
-    for (const needle of [cwd, home].filter(Boolean)) {
-      if (raw.includes(needle)) raw = raw.split(needle).join("");
-    }
+    const raw = stripAbsolutePaths(bundle, buildMachinePaths());
     if (raw !== bundle) {
       await Bun.write("dist/index.js", raw);
     }
