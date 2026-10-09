@@ -11,6 +11,7 @@ import { setFormatCache } from "../src/core/tools/auto-format.js";
 import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { getCwd, setCwd } from "../src/core/cwd.js";
 
 const TMP = join(tmpdir(), `edit-stack-test-${Date.now()}`);
 
@@ -20,13 +21,19 @@ async function writeTestFile(name: string, content: string): Promise<string> {
 	return path;
 }
 
+// Edit tools check the workspace lease of the active cwd. Point it at the fixture directory so
+// a workflow run that owns the repository (for example, one running this suite) does not block them.
+const ORIG_CWD = getCwd();
+
 beforeEach(async () => {
 	clearEditStacks();
 	setFormatCache(null);
 	await mkdir(TMP, { recursive: true });
+	setCwd(TMP, { changeProcess: false });
 });
 
 afterAll(async () => {
+	setCwd(ORIG_CWD, { changeProcess: false });
 	await rm(TMP, { recursive: true, force: true }).catch(() => {});
 });
 

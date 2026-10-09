@@ -1,19 +1,18 @@
 import { expect, test } from "bun:test";
-import { resolve } from "node:path";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { withTempDir } from "./helpers/temp-dir.js";
 
 async function fixture(name: string): Promise<string> {
-  const root = mkdtempSync(join(tmpdir(), "baked-workflow-adapter-"));
-  const profile = join(root, ".baked", "test-profile");
-  mkdirSync(profile, { recursive: true });
-  const child = Bun.spawn([process.execPath, resolve("tests/fixtures", name)], { stdout: "pipe", stderr: "pipe", timeout: 30000, env: { ...process.env, HOME: profile, USERPROFILE: profile, LOCALAPPDATA: profile, BAKED_WORKFLOW_FIXTURE_ROOT: root } });
-  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  rmSync(root, { recursive: true, force: true });
-  if (code !== 0) throw new Error(`${name}: ${err}\n${out}`);
-  expect(code).toBe(0);
-  return out;
+  return withTempDir("baked-workflow-adapter-", async (root) => {
+    const profile = join(root, ".baked", "test-profile");
+    mkdirSync(profile, { recursive: true });
+    const child = Bun.spawn([process.execPath, resolve("tests/fixtures", name)], { stdout: "pipe", stderr: "pipe", timeout: 30000, env: { ...process.env, HOME: profile, USERPROFILE: profile, LOCALAPPDATA: profile, BAKED_WORKFLOW_FIXTURE_ROOT: root } });
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    if (code !== 0) throw new Error(`${name}: ${err}\n${out}`);
+    expect(code).toBe(0);
+    return out;
+  });
 }
 test("native executor edits and deletes through guarded tools and bounds output correction", async () => {
   expect(await fixture("workflow-native.ts")).toContain('"formatRetries":1');
