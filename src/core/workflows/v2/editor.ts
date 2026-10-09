@@ -293,7 +293,11 @@ export function validateEditor(state: EditorState): ProblemGroup[] {
             ? `transition ${definition.transitions[index]?.id ?? index}`
             : null;
       const field = issue.path.slice(2).join(".");
-      messages.push({ owner, message: `${field ? `${field}: ` : ""}${issue.message}` });
+      const message =
+        issue.code === "too_small" && issue.path.at(-1) === "gates"
+          ? "needs at least one gate"
+          : `${field ? `${field}: ` : ""}${issue.message}`;
+      messages.push({ owner, message });
     }
   for (const message of validateWorkflowV2(definition, gates))
     messages.push({ owner: ownerOf(definition, message), message });

@@ -70,10 +70,10 @@ export const EDITOR_HINTS: Record<EditorMode, { key: string; label: string }[]> 
     { key: "↑↓", label: "select" },
     { key: "A", label: "add gate" },
     { key: "D", label: "remove" },
-    { key: "M", label: "required/advisory" },
-    { key: "J/K", label: "reorder" },
+    { key: "M", label: "mode" },
+    { key: "J/K", label: "move" },
     { key: "N", label: "transition" },
-    { key: "E", label: "stage options" },
+    { key: "E", label: "options" },
     { key: "C", label: "duplicate" },
     { key: "Ctrl+S", label: "save" },
     { key: "Esc", label: "back" },
@@ -102,7 +102,7 @@ export const EDITOR_HINTS: Record<EditorMode, { key: string; label: string }[]> 
   problems: [{ key: "Esc", label: "back" }],
   discard: [
     { key: "Y", label: "discard" },
-    { key: "N", label: "keep editing" },
+    { key: "N/Esc", label: "keep editing" },
   ],
   missing: [{ key: "Esc", label: "back" }],
 };
@@ -229,10 +229,13 @@ export function WorkflowEditor({
       return;
     }
     try {
-      const path = api.save(state.definition);
+      api.save(state.definition);
       setState(markSaved(state, review.text));
       setMode("browse");
-      notify("ok", `Saved ${path}. New runs use it; started runs keep their copy.`);
+      notify(
+        "ok",
+        `Saved baked/workflows/${state.id}.json. New runs use it; started runs keep their copy.`,
+      );
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
     }
@@ -418,8 +421,10 @@ export function WorkflowEditor({
   const narrow = width < 90;
   const listRows = Math.max(3, height - (narrow ? 20 : 18));
   const count = problemCount(problems);
-  const banner =
-    "A saved definition applies to runs created afterwards; started runs keep their frozen copy.";
+  const compact = narrow || height < 30;
+  const banner = compact
+    ? "Started runs keep their frozen copy."
+    : "A saved definition applies to runs created afterwards; started runs keep their frozen copy.";
   const header = (
     <>
       <text fg={t.textPrimary} attributes={1}>
@@ -428,8 +433,19 @@ export function WorkflowEditor({
           width,
         )}
       </text>
-      <text fg={t.textMuted}>{banner}</text>
-      {state.readOnly ? <Hint kind="warn">{state.readOnly}</Hint> : null}
+      <text fg={t.textMuted}>{clip(banner, width)}</text>
+      {mode === "discard" ? (
+        <text fg={t.warning} attributes={1}>
+          {clip("Discard unsaved changes? Y discards; N keeps editing.", width)}
+        </text>
+      ) : null}
+      {state.readOnly && compact ? (
+        <text fg={t.warning}>
+          {clip("Read only. C duplicates it as a custom workflow.", width)}
+        </text>
+      ) : state.readOnly ? (
+        <Hint kind="warn">{state.readOnly}</Hint>
+      ) : null}
     </>
   );
 
@@ -469,10 +485,9 @@ export function WorkflowEditor({
                 {clip(`${option.disabled ? "✗" : "+"} ${option.gate.id}  ${option.summary}`, width)}
               </text>
               <text fg={option.disabled ? t.warning : t.textFaint}>
-                {clip(
-                  `    ${option.disabled ? `cannot bind: ${option.disabled}` : option.gate.description}`,
-                  width,
-                )}
+                {option.disabled
+                  ? `    cannot bind: ${option.disabled}`
+                  : clip(`    ${option.gate.description}`, width)}
               </text>
             </box>
           );
@@ -573,8 +588,29 @@ export function WorkflowEditor({
       <box flexDirection="column">
         {header}
         <text fg={t.textPrimary} attributes={1}>
-          {clip(`Save ${review.path}?`, width)}
+          {clip(`Save baked/workflows/${state.id}.json?`, width)}
         </text>
+        {review.autoApproval ? (
+          <box flexDirection="column">
+            <text fg={t.warning} attributes={1}>
+              Auto approval: plans inside these limits are approved without you.
+            </text>
+            <text fg={t.textPrimary}>{review.autoApproval.limits}</text>
+            <text fg={t.textMuted}>
+              {`To turn it on, type ${review.autoApproval.prefix} (the start of the limits hash ${review.autoApproval.hash}), then Enter:`}
+            </text>
+            <box width={Math.max(14, Math.min(width - 2, 40))} backgroundColor={t.bgPopupHighlight}>
+              <input
+                value={typed}
+                onInput={setTyped}
+                focused={active}
+                placeholder={`${CONFIRM_PREFIX} characters`}
+                backgroundColor={t.bgPopupHighlight}
+              />
+            </box>
+          </box>
+        ) : null}
+        {saveError ? <text fg={t.error}>{`✗ ${saveError}`}</text> : null}
         <text fg={t.textMuted}>
           {state.savedText === null ? "A new file:" : "Changes against the saved file:"}
         </text>
@@ -599,27 +635,6 @@ export function WorkflowEditor({
             {clip(`  ${line}`, width)}
           </text>
         ))}
-        {review.autoApproval ? (
-          <box flexDirection="column" marginTop={1}>
-            <text fg={t.warning} attributes={1}>
-              Auto approval: plans inside these limits are approved without you.
-            </text>
-            <text fg={t.textPrimary}>{review.autoApproval.limits}</text>
-            <text fg={t.textMuted}>
-              {`To turn it on, type ${review.autoApproval.prefix} (the start of the limits hash ${review.autoApproval.hash}):`}
-            </text>
-            <box width={Math.max(14, Math.min(width - 2, 40))} backgroundColor={t.bgPopupHighlight}>
-              <input
-                value={typed}
-                onInput={setTyped}
-                focused={active}
-                placeholder={`${CONFIRM_PREFIX} characters`}
-                backgroundColor={t.bgPopupHighlight}
-              />
-            </box>
-          </box>
-        ) : null}
-        {saveError ? <text fg={t.error}>{`✗ ${saveError}`}</text> : null}
       </box>
     );
   }
@@ -706,6 +721,7 @@ export function WorkflowEditor({
                 {`${i ? " · " : ""}${p === state.pane ? `[${PANE_TITLE[p]}]` : PANE_TITLE[p]}`}
               </span>
             ))}
+            <span fg={count ? t.warning : t.success}>{`  ${count ? "⚠" : "✓"} ${count}`}</span>
           </text>
           {pane(state.pane, width)}
         </>
@@ -748,7 +764,7 @@ function ValidationStrip({
         <span fg={count ? t.warning : t.success}>
           {`Validation: ${count} problem${count === 1 ? "" : "s"}`}
         </span>
-        {estimate ? <span fg={t.textMuted}>{`   ${estimate}`}</span> : null}
+        {estimate && width >= 80 ? <span fg={t.textMuted}>{`   ${estimate}`}</span> : null}
       </text>
       {lines.slice(0, rows).map((line) => (
         <text key={line} fg={t.warning}>
@@ -756,8 +772,11 @@ function ValidationStrip({
         </text>
       ))}
       {lines.length > rows ? (
-        <text fg={t.textFaint}>{`  … ${lines.length - rows} more; Ctrl+S lists them all`}</text>
+        <text fg={t.textFaint}>
+          {clip(`  … ${lines.length - rows} more; Ctrl+S lists them all`, width)}
+        </text>
       ) : null}
+      {estimate && width < 80 ? <text fg={t.textMuted}>{clip(estimate, width)}</text> : null}
     </box>
   );
 }

@@ -127,7 +127,7 @@ describe("workflow editor", () => {
     const groups = validateEditor(state);
     const owners = groups.map((g) => g.owner);
     expect(owners).toContain("stage checks");
-    expect(groups.find((g) => g.owner === "stage checks")?.messages.join(" ")).toContain("gates: Too small");
+    expect(groups.find((g) => g.owner === "stage checks")?.messages).toContain("needs at least one gate");
     expect(groups.find((g) => g.owner === "stage plan")?.messages).toContain("plan: two unconditional passed transitions");
     expect(groups.find((g) => g.owner === "stage review")?.messages).toContain("review: no passed transition");
   });
