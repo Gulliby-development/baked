@@ -17,6 +17,7 @@ import {
 } from "./budget.js";
 import { sddWorkflow } from "./builtin/sdd.js";
 import { validateChecks } from "./check-policy.js";
+import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs, frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
@@ -32,6 +33,7 @@ import {
   type CommandIdentity,
   type Decision,
   PolicySchema,
+  ResearchSchema,
   type RunPolicy,
   type RunSnapshot,
   type RunState,
@@ -332,9 +334,21 @@ export class NativeWorkflowService implements WorkflowService {
       } else if (decision.kind === "answer") {
         if (request.kind !== "clarification" || Object.keys(decision.answers).length === 0)
           throw new WorkflowFault("STALE_DECISION", "Clarification answers required");
-        state.prompt += `\nUser clarification:\n${canonical(decision.answers)}`;
+        const stages = WorkflowSchema.parse(
+          JSON.parse(this.store.run(runId).definition_json),
+        ).stages;
+        const asking = stages[state.stageIndex];
+        state.prompt += `\nUser clarification${asking ? ` (answers the questions of the ${asking.id} stage; they are resolved)` : ""}:\n${canonical(decision.answers)}`;
+        // Answered research questions no longer block; the report itself stays valid.
+        if (asking?.kind === "research" && state.research) {
+          const research = ResearchSchema.parse(JSON.parse(state.research));
+          state.research = canonical({
+            ...research,
+            unknowns: research.unknowns.map((q) => ({ ...q, blocking: false })),
+          });
+        }
         state.analysisPassed = false;
-        state.stageIndex = state.spec ? 1 : 0;
+        state.stageIndex = clarificationResumeIndex(stages, state.stageIndex, body);
       } else if (decision.kind === "manual-evidence") {
         if (
           request.kind !== "manual_evidence" ||
