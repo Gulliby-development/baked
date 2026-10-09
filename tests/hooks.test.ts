@@ -269,6 +269,29 @@ describe("loadHooks", () => {
     expect(hooks.SessionStart).toHaveLength(1);
     cleanup();
   });
+
+  test("reads each file once when cwd is the home directory", () => {
+    cleanup();
+    setup({
+      ".claude/settings.json": {
+        hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo claude" }] }] },
+      },
+      ".baked/config.json": {
+        hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo baked" }] }] },
+      },
+    });
+    const home = process.env.HOME;
+    const profile = process.env.USERPROFILE;
+    process.env.HOME = testDir;
+    process.env.USERPROFILE = testDir;
+    try {
+      expect(loadHooks(testDir).SessionStart).toHaveLength(2);
+    } finally {
+      process.env.HOME = home;
+      process.env.USERPROFILE = profile;
+      cleanup();
+    }
+  });
 });
 
 // ── Runner ───────────────────────────────────────────────────────────

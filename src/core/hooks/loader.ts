@@ -14,19 +14,28 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { userHome } from "../platform/index.js";
 import type { HookEventName, HookRule, HooksConfig } from "./types.js";
 
 function getHookPaths(cwd: string): string[] {
   const home = userHome();
-  return [
+  const paths = [
     join(home, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.local.json"),
     join(home, ".baked", "config.json"),
     join(cwd, ".baked", "config.json"),
   ];
+  // In the home directory the user and project paths name the same file; read it once so
+  // its hooks do not run twice.
+  const seen = new Set<string>();
+  return paths.filter((path) => {
+    const key = process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 interface SettingsFile {
