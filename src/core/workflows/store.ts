@@ -10,7 +10,7 @@ import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
 import { migration002 } from "./migrations/002.js";
 import { migration003 } from "./migrations/003.js";
-import { migration004 } from "./migrations/004.js";
+import { migration005 } from "./migrations/005.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -160,7 +160,7 @@ const MIGRATIONS = [
   { version: 1, sql: migration001 },
   { version: 2, sql: migration002 },
   { version: 3, sql: migration003 },
-  { version: 4, sql: migration004 },
+  { version: 5, sql: migration005 },
 ] as const;
 
 export class WorkflowStore {
