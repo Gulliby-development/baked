@@ -130,6 +130,8 @@ describe("estimates in a real run", () => {
     // The second run is estimated from the first (cache window skipped by a new store read).
     const { readHistory } = await import("../src/core/workflows/estimate.js");
     expect(readHistory(service.store, 0).filter((r) => r.status === "completed")).toHaveLength(1);
+    // Each past run names the definition it started from, so the editor can price one workflow.
+    expect(readHistory(service.store, 0)[0]?.workflowId).toBe("sdd");
     const second = await complete();
     const saved = readWorkflowView(service, second).estimate.saved!;
     expect(saved.basis).toBe("history");
