@@ -4,6 +4,7 @@ import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import ignore from "ignore";
 import { hashBytes, hashJson } from "../specs/hash.js";
+import { WorkflowFault } from "../workflows/errors.js";
 
 export async function gitBaseline(
   workspace: string,
@@ -30,6 +31,49 @@ export async function gitBaseline(
       .split("\0")
       .filter(Boolean),
   };
+}
+
+/** Largest diff a review-only run freezes. */
+export const MAX_REVIEW_DIFF_BYTES = 1024 * 1024;
+
+/**
+ * The diff a review-only run reviews: the uncommitted changes of tracked files against HEAD, or
+ * the last commit when the tree is clean. Untracked files are not part of it.
+ */
+export async function hostDiff(workspace: string): Promise<{ text: string; files: string[] }> {
+  if (!existsSync(join(workspace, ".git")))
+    throw new WorkflowFault("INVALID_DEFINITION", "Review only needs a Git repository");
+  async function git(args: string[]): Promise<string> {
+    const proc = Bun.spawn(["git", "--no-optional-locks", "-C", workspace, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 10000,
+    });
+    const [output, error, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) throw new WorkflowFault("INVALID_DEFINITION", `Cannot read the diff: ${error}`);
+    return output;
+  }
+  let text = await git(["diff", "--no-color", "--no-ext-diff", "HEAD"]);
+  let files = (await git(["diff", "--name-only", "-z", "HEAD"])).split("\0").filter(Boolean);
+  if (!text.trim()) {
+    text = await git(["show", "--no-color", "--no-ext-diff", "--format=", "--patch", "HEAD"]);
+    files = (await git(["show", "--format=", "--name-only", "-z", "HEAD"]))
+      .split("\0")
+      .map((f) => f.trim())
+      .filter(Boolean);
+  }
+  if (!text.trim())
+    throw new WorkflowFault("INVALID_DEFINITION", "Review only found no change to review");
+  if (Buffer.byteLength(text) > MAX_REVIEW_DIFF_BYTES)
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      "The diff is larger than 1 MiB; review a smaller change",
+    );
+  return { text, files };
 }
 
 export async function sourceManifest(

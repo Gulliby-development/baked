@@ -5,6 +5,7 @@ import { ProfileRegistry } from "../agents/profiles/registry.js";
 import type { ContextManager } from "../context/manager.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
+import { hostDiff } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
 import {
@@ -15,7 +16,6 @@ import {
   MAX_EXTENDED_TOKENS,
   proposeExtension,
 } from "./budget.js";
-import { sddWorkflow } from "./builtin/sdd.js";
 import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs, frozenInstructions } from "./context.js";
@@ -28,7 +28,7 @@ import {
   releaseDeadOwnerLeases,
   WorkspaceLeases,
 } from "./leases.js";
-import { WorkflowScheduler } from "./scheduler.js";
+import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
   type Decision,
@@ -41,12 +41,27 @@ import {
   type StartRequest,
   validateWorkflow,
   WorkflowConfigSchema,
-  WorkflowSchema,
+  type WorkflowDefinition,
   type WorkflowService,
 } from "./schemas.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
+import { type Gate, validateWorkflowV2, type WorkflowV2 } from "./v2/definition.js";
+import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
+import { loadGateLibrary } from "./v2/library.js";
+import {
+  checksOf,
+  frozenGates,
+  hostSpec,
+  initialPosition,
+  KIND_OUTPUT,
+  parseRunDefinition,
+  produces,
+  reviewersOf,
+  stageKind,
+  stageProfileId,
+} from "./v2/runtime.js";
 
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
@@ -90,7 +105,7 @@ export class NativeWorkflowService implements WorkflowService {
     const model = request.model ?? this.config.defaultModel;
     if (!model?.trim() || model.trim() === "none")
       throw new WorkflowFault("INVALID_DEFINITION", "Select a model before starting a workflow");
-    const policy = PolicySchema.parse(request.policy);
+    let policy = PolicySchema.parse(request.policy);
     validateChecks(this.workspace, policy);
     if (policy.maxCostUsd !== null)
       throw new WorkflowFault(
@@ -102,14 +117,17 @@ export class NativeWorkflowService implements WorkflowService {
       coding: this.config.taskRouter?.ember ?? this.config.taskRouter?.coding ?? undefined,
       review: this.config.taskRouter?.verify ?? undefined,
     });
-    let workflow = sddWorkflow;
-    const definitionPath = join(this.workspace, "baked", "workflows", `${request.workflowId}.json`);
-    if (existsSync(definitionPath))
-      workflow = WorkflowSchema.parse(JSON.parse(readFileSync(definitionPath, "utf8")));
-    else if (request.workflowId !== "sdd")
-      throw new WorkflowFault("NOT_FOUND", `Unknown workflow ${request.workflowId}`);
-    const validation = validateWorkflow(workflow);
-    if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
+    let loaded: LoadedDefinition;
+    try {
+      loaded = loadDefinition(this.workspace, request.workflowId, policy);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Unknown workflow"))
+        throw new WorkflowFault("NOT_FOUND", error.message);
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     const profiles = registry.list().map((p) => p.profile);
     const outputs: Record<string, string> = {
       research: "research",
@@ -119,12 +137,61 @@ export class NativeWorkflowService implements WorkflowService {
       review: "review",
       converge: "convergence",
     };
-    for (const stage of workflow.stages)
-      if (stage.profileId && registry.get(stage.profileId).output !== outputs[stage.kind])
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          `Profile output does not match stage ${stage.id}`,
-        );
+    const workflow: WorkflowDefinition | WorkflowV2 = loaded.definition;
+    let gates: Gate[] = [];
+    const gateFiles: Record<string, string> = {};
+    if (loaded.schemaVersion === 1) {
+      const validation = validateWorkflow(loaded.definition);
+      if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
+      for (const stage of loaded.definition.stages)
+        if (stage.profileId && registry.get(stage.profileId).output !== outputs[stage.kind])
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            `Profile output does not match stage ${stage.id}`,
+          );
+    } else {
+      const definition = loaded.definition;
+      const library = loadGateLibrary(this.workspace, policy);
+      const validation = validateWorkflowV2(definition, library.gates);
+      if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
+      gates = frozenGates(definition, library.gates);
+      for (const gate of gates) {
+        const entry = library.entries.get(gate.id);
+        if (entry?.path) gateFiles[entry.path] = hashBytes(readFileSync(entry.path));
+      }
+      // The command gates the definition binds are the run's checks, with their effective modes.
+      policy = PolicySchema.parse({ ...policy, checks: checksOf(definition, gates) });
+      validateChecks(this.workspace, policy);
+      for (const stage of definition.stages) {
+        const kind = stageKind(stage);
+        if (!kind)
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            `Stage ${stage.id} produces ${stage.produces}, which no agent stage can submit`,
+          );
+        const profileId = stageProfileId(stage);
+        if (profileId && registry.get(profileId).output !== KIND_OUTPUT[kind])
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            `Profile output does not match stage ${stage.id}`,
+          );
+        for (const reviewer of reviewersOf(stage, gates)) {
+          if (registry.get(reviewer.profileId).output !== "review")
+            throw new WorkflowFault(
+              "INVALID_DEFINITION",
+              `Review gate ${reviewer.key} needs a profile that returns ReviewSchema`,
+            );
+          if (
+            reviewer.skepticProfileId &&
+            registry.get(reviewer.skepticProfileId).output !== "refutation"
+          )
+            throw new WorkflowFault(
+              "INVALID_DEFINITION",
+              `Skeptic of ${reviewer.key} must return RefutationSchema`,
+            );
+        }
+      }
+    }
     for (const id of Object.values(policy.reviewProfiles))
       if (id && registry.get(id).output !== "review")
         throw new WorkflowFault(
@@ -143,8 +210,22 @@ export class NativeWorkflowService implements WorkflowService {
         skillHashes[skill.id] = skill.hash;
         instructions.files[path] = skill.hash;
       }
-    if (existsSync(definitionPath))
-      instructions.files[definitionPath] = hashBytes(readFileSync(definitionPath));
+    if (loaded.path) instructions.files[loaded.path] = hashBytes(readFileSync(loaded.path));
+    Object.assign(instructions.files, gateFiles);
+    const instructionHashes = gates.length
+      ? [...instructions.hashes, { source: GATES_ARTIFACT, hash: hashJson(gates) }]
+      : instructions.hashes;
+    const v2 = loaded.schemaVersion === 2 ? loaded.definition : null;
+    // A definition without a spec stage works on the request stated as one requirement.
+    const spec =
+      v2 && !produces(v2, "spec")
+        ? hostSpec(
+            request.featureId,
+            request.prompt,
+            policy.checks.some((c) => c.required),
+          )
+        : null;
+    const diff = v2?.inputs.includes("diff") ? await hostDiff(this.workspace) : null;
     for (const entry of registry.list())
       if (entry.source !== "builtin")
         instructions.files[entry.source] = hashBytes(readFileSync(entry.source));
@@ -159,9 +240,9 @@ export class NativeWorkflowService implements WorkflowService {
         policyHash: hashJson(policy),
         profileHashes: Object.fromEntries(profiles.map((p) => [p.id, hashJson(p)])),
         skillHashes,
-        instructionHashes: instructions.hashes,
+        instructionHashes,
         constitutionHash: instructions.files[join(this.workspace, "baked/constitution.md")] ?? null,
-        specHash: null,
+        specHash: spec ? hashJson(spec) : null,
         planHash: null,
         rootGraphHash: null,
         effectiveGraphHash: null,
@@ -169,7 +250,7 @@ export class NativeWorkflowService implements WorkflowService {
         baselineSnapshotId: null,
         dependencyContracts: [],
       },
-      spec: null,
+      spec,
       plan: null,
       graph: null,
       rootGraph: null,
@@ -192,12 +273,22 @@ export class NativeWorkflowService implements WorkflowService {
       frozenFiles: instructions.files,
       repairPredecessors: {},
       taskGates: {},
+      position: v2 ? initialPosition(v2) : null,
+      report: null,
+      diff: null,
+      gateResults: {},
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
       if (duplicate) return duplicate;
       const id = newId();
       this.store.create(id, request.featureId, workflow, profiles, policy, state);
+      if (gates.length) this.store.artifact(id, "gates", GATES_ARTIFACT, canonical(gates));
+      if (diff) {
+        const artifact = this.store.artifact(id, "diff", "diff/input.patch", diff.text);
+        state.diff = { artifactId: artifact.id, hash: artifact.content_hash, files: diff.files };
+        this.store.saveState(id, state);
+      }
       this.saveEstimate(id, policy);
       const snapshot = this.store.snapshot(id);
       this.store.saveCommand(request.commandId, request, snapshot);
@@ -330,14 +421,21 @@ export class NativeWorkflowService implements WorkflowService {
         state.deferredCriteria =
           state.spec?.criteria.filter((c) => c.method === "post-release").map((c) => c.id) ?? [];
         this.store.setApproval(runId, decision.digest);
-        state.stageIndex++;
+        if (state.position) state.position.outcome = "passed";
+        else state.stageIndex++;
       } else if (decision.kind === "answer") {
         if (request.kind !== "clarification" || Object.keys(decision.answers).length === 0)
           throw new WorkflowFault("STALE_DECISION", "Clarification answers required");
-        const stages = WorkflowSchema.parse(
-          JSON.parse(this.store.run(runId).definition_json),
-        ).stages;
-        const asking = stages[state.stageIndex];
+        const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+        const position = state.position;
+        const stages =
+          parsed.schemaVersion === 1
+            ? parsed.definition.stages
+            : parsed.definition.stages.map((s) => ({ id: s.id, kind: stageKind(s) ?? s.type }));
+        const askingIndex = position
+          ? stages.findIndex((s) => s.id === position.stageId)
+          : state.stageIndex;
+        const asking = stages[askingIndex];
         state.prompt += `\nUser clarification${asking ? ` (answers the questions of the ${asking.id} stage; they are resolved)` : ""}:\n${canonical(decision.answers)}`;
         // Answered research questions no longer block; the report itself stays valid.
         if (asking?.kind === "research" && state.research) {
@@ -348,7 +446,15 @@ export class NativeWorkflowService implements WorkflowService {
           });
         }
         state.analysisPassed = false;
-        state.stageIndex = clarificationResumeIndex(stages, state.stageIndex, body);
+        const resume = clarificationResumeIndex(stages, askingIndex, body);
+        if (!position) state.stageIndex = resume;
+        else if (asking?.kind === "research") position.outcome = "passed";
+        else if (resume !== askingIndex && stages[resume]) {
+          // The user's answer sends the run back to the stage the questions were about.
+          position.stageId = stages[resume].id;
+          position.total++;
+          position.visits[position.stageId] = (position.visits[position.stageId] ?? 0) + 1;
+        }
       } else if (decision.kind === "manual-evidence") {
         if (
           request.kind !== "manual_evidence" ||
@@ -450,15 +556,16 @@ export class NativeWorkflowService implements WorkflowService {
       } else if (decision.kind === "reject") accepted = false;
       this.store.decideRequest(runId, request.id, accepted ? "accepted" : "rejected", decision);
       const pending = this.store.requests(runId).some((r) => r.status === "pending");
-      if (
-        decision.kind === "manual-evidence" &&
-        accepted &&
-        !pending &&
-        WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages[
-          state.stageIndex
-        ]?.kind === "converge"
-      )
-        state.stageIndex++;
+      if (decision.kind === "manual-evidence" && accepted && !pending) {
+        const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+        const position = state.position;
+        if (parsed.schemaVersion === 1) {
+          if (parsed.definition.stages[state.stageIndex]?.kind === "converge") state.stageIndex++;
+        } else if (position && !position.outcome) {
+          const stage = parsed.definition.stages.find((s) => s.id === position.stageId);
+          if (stage?.type === "reflection") position.outcome = "passed";
+        }
+      }
       this.store.saveState(runId, state);
       if (this.store.run(runId).status !== "cancelled")
         this.store.transition(
@@ -506,6 +613,7 @@ export class NativeWorkflowService implements WorkflowService {
         this.store.decideRequest(runId, request.id, "superseded", { candidateHash });
       if (state.snapshotId) this.store.invalidateEvidence(runId, state.snapshotId, "input_changed");
       state.stageIndex = 3;
+      state.position = restartPosition(this.store.run(runId).definition_json, true);
       state.analysisPassed = false;
       state.approvalRoot = null;
       state.reviews = {};
@@ -630,6 +738,12 @@ export class NativeWorkflowService implements WorkflowService {
       const state = this.store.state(runId);
       const id = newId();
       state.stageIndex = state.spec && state.graph && state.plan ? 3 : 0;
+      state.position = restartPosition(
+        run.definition_json,
+        Boolean(state.spec && state.graph && state.plan),
+      );
+      state.gateResults = {};
+      state.report = null;
       state.approvalRoot = null;
       state.snapshotId = null;
       state.workspaceHash = null;
@@ -648,16 +762,30 @@ export class NativeWorkflowService implements WorkflowService {
       state.taskGates = {};
       state.previousFindingSet = null;
       state.noProgressRounds = 0;
+      const parsed = parseRunDefinition(run.definition_json);
       this.store.create(
         id,
         run.feature_id,
-        WorkflowSchema.parse(JSON.parse(run.definition_json)),
+        parsed.definition,
         JSON.parse(run.profiles_json),
         PolicySchema.parse(JSON.parse(run.policy_json)),
         state,
         runId,
       );
       if (state.graph) this.store.syncTasks(id, state.graph);
+      const gates = this.store.artifacts(runId).find((a) => a.logical_path === GATES_ARTIFACT);
+      if (gates)
+        this.store.artifact(id, "gates", GATES_ARTIFACT, this.store.readArtifact(runId, gates.id));
+      if (state.diff) {
+        const diff = this.store.artifact(
+          id,
+          "diff",
+          "diff/input.patch",
+          this.store.readArtifact(runId, state.diff.artifactId),
+        );
+        state.diff = { ...state.diff, artifactId: diff.id };
+        this.store.saveState(id, state);
+      }
       const result = this.store.snapshot(id);
       this.store.saveCommand(command.commandId, body, result);
       return result;
@@ -681,4 +809,24 @@ export class NativeWorkflowService implements WorkflowService {
     this.scheduler.dispose();
     this.store.close();
   }
+}
+
+/**
+ * Where a revised or forked run of a v2 definition starts: the analysis stage when the package is
+ * kept (the v1 runtime restarts at analyze), otherwise the first approval, or the entry.
+ */
+function restartPosition(definitionJson: string, keepsPackage: boolean): RuntimeState["position"] {
+  const parsed = parseRunDefinition(definitionJson);
+  if (parsed.schemaVersion === 1) return null;
+  const definition = parsed.definition;
+  const position = initialPosition(definition);
+  if (!keepsPackage) return position;
+  const stage =
+    definition.stages.find((s) => s.produces === "analysis") ??
+    definition.stages.find((s) => s.type === "approval");
+  if (stage) {
+    position.stageId = stage.id;
+    position.visits = { [stage.id]: 1 };
+  }
+  return position;
 }

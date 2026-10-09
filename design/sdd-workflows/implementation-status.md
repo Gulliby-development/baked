@@ -175,9 +175,21 @@ The user decided on 2026-10-09 that v2 work may start before v1 acceptance; acce
 
 | Part | State | Evidence |
 | --- | --- | --- |
-| Definitions: schema 2, validator, `upgradeWorkflowV1`, gate library with sources and shadowing, five shipped presets, CLI `definitions`, `validate`, `define`, `gates` | Implemented in `src/core/workflows/v2/`; read only, no run uses it yet | [Tests](../../tests/workflow-v2-definition.test.ts): V2-01, V2-02 (21 definition and 7 gate rejections), V2-03 (10,000 generated graphs), V2-04 |
+| Definitions: schema 2, validator, `upgradeWorkflowV1`, gate library with sources and shadowing, five shipped presets, CLI `definitions`, `validate`, `define`, `gates` | Implemented in `src/core/workflows/v2/` | [Tests](../../tests/workflow-v2-definition.test.ts): V2-01, V2-02 (21 definition and 7 gate rejections), V2-03 (10,000 generated graphs), V2-04 |
+| Scheduler: position, transitions with `when`, contracts, loop and visit bounds, stage and transition gates (command with retries and flaky flag, human, advisory modes), host spec, Spike report, Review only diff, v2 acceptance | Implemented; `workflow run --workflow ID` and the new-run form start presets and v2 files | [Tests](../../tests/workflow-v2-runtime.test.ts): V2-05 (fixture golden run with a failed check and repair), V2-06 (state parse), V2-07 (`when` branch, bounded reflection loop), V2-08, V2-09, V2-10, Quick fix, Spike, Review only. No real-model run yet (V2-23) |
 
-Defaults picked without a user decision: the presets run the project's own checks (feature checks in the check stage, task checks after each task) instead of the example gate IDs; a project without feature checks cannot validate a preset with a check stage. `define` never copies auto approval. A transition may not bind an AI review gate (they belong to review stages) and may not make an AI walk-through required.
+Defaults picked without a user decision for the scheduler:
+
+- Stored v1 runs keep the v1 stage-index loop; only runs started from a schema 2 definition walk the graph. V2-05 compares the built-in `sdd` with the same definition run through `upgradeWorkflowV1` as a schema 2 file: status sequence, stage order, check results, task states, repair rounds and model calls are equal. Additive differences: `transition.taken` and `gate.finished` events, more state saves, the frozen gate artifact, and corrective tasks written when the repair transition is taken instead of inside the stage step.
+- A run freezes the gates it binds in the artifact `definition/gates.json`, with its hash in the input manifest; the command gates become `policy.checks` with their effective modes, so a mode change changes the approval digest (V2-10). Project gate files are frozen like the definition file.
+- The built-in review gates block on every severity, as the v1 review stage repairs every finding the skeptic does not refute. A user gate's `blockingSeverities` and advisory mode are honored: such findings stay in the review artifact and are not repaired.
+- A definition without a spec stage gets a host spec: the request as FR-001 and AC-001, automated when a required command gate exists, otherwise manual.
+- Task-scope gates on the transition leaving a tasks stage run after each task, as in v1. Other transition gates run in order when the transition is taken, required ones first; a required command gate that does not pass blocks with `verification_failed`. A human gate asks for manual evidence (`gate-ID`); an AI acceptance gate is recorded as skipped until section 9 exists.
+- Loop and visit bounds stop the run with `no_progress`. A loop back to an agent or approval stage clears the approval and hands the open findings to that stage in the request.
+- Review only reviews `git diff HEAD`, or the last commit when the tree is clean (untracked files are not included, at most 1 MiB). Its findings are the result: both outcomes end the run.
+- Revision of a started run's definition (V2-11) is not implemented: a started run keeps its definition; fork starts a new run on the same frozen definition.
+
+Defaults picked without a user decision for the definitions: the presets run the project's own checks (feature checks in the check stage, task checks after each task) instead of the example gate IDs; a project without feature checks cannot validate a preset with a check stage. `define` never copies auto approval. A transition may not bind an AI review gate (they belong to review stages) and may not make an AI walk-through required.
 
 ## Implementation limits and release checks
 

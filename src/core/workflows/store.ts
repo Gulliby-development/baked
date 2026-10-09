@@ -24,6 +24,7 @@ import {
   type WorkflowEvent,
 } from "./schemas.js";
 import { type RuntimeState, RuntimeStateSchema, type Snapshot } from "./types.js";
+import type { WorkflowV2 } from "./v2/definition.js";
 
 export const newId = (): string => randomUUID();
 export interface RunRow {
@@ -412,7 +413,7 @@ export class WorkflowStore {
   create(
     id: string,
     featureId: string,
-    definition: WorkflowDefinition,
+    definition: WorkflowDefinition | WorkflowV2,
     profiles: AgentProfile[],
     policy: RunPolicy,
     state: RuntimeState,

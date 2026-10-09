@@ -1,7 +1,7 @@
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
-import { assertAcceptance } from "../verification/acceptance.js";
+import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
 import { CheckRunner } from "../verification/check-runner.js";
 import { appendCorrections } from "../verification/convergence.js";
 import { validateEvidence } from "../verification/evidence.js";
@@ -32,6 +32,7 @@ import {
   ProfileSchema,
   ReasonCode,
   RefutationSchema,
+  ReportSchema,
   ResearchSchema,
   type Review,
   ReviewSchema,
@@ -43,7 +44,32 @@ import {
 } from "./schemas.js";
 import { newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
-import type { AgentExecutor, RuntimeState, Task } from "./types.js";
+import type { AgentExecutor, Check, RuntimeState, Task } from "./types.js";
+import {
+  effectiveMode,
+  type Gate,
+  GateSchema,
+  type Outcome,
+  type Stage,
+  selectTransition,
+  type WorkflowV2,
+} from "./v2/definition.js";
+import { gateToCheck } from "./v2/library.js";
+import {
+  carriedValue,
+  contractText,
+  parseRunDefinition,
+  produces,
+  type Reviewer,
+  reviewersOf,
+  type StageKind,
+  stageKind,
+  stageProfileId,
+} from "./v2/runtime.js";
+
+/** Severity of a review finding. */
+type Severity = Review["findings"][number]["severity"];
+const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph }): TaskGraph {
@@ -103,13 +129,40 @@ export class WorkflowScheduler {
           this.leases.assert("mutation");
           const run = this.store.run(runId);
           const state = this.store.state(runId);
-          const definition = WorkflowSchema.parse(JSON.parse(run.definition_json));
+          const parsed = parseRunDefinition(run.definition_json);
           assertFrozenInputs(state);
           if (state.approvalRoot) await this.assertWorkspace(runId, state, policy, signal);
-          const stage = definition.stages[state.stageIndex];
-          if (!stage) {
-            await this.accept(runId, state, policy, signal);
-            return;
+          let stage: { id: string; kind: StageKind; profileId?: string | undefined };
+          let v2: { definition: WorkflowV2; stage: Stage; gates: Gate[] } | null = null;
+          if (parsed.schemaVersion === 1) {
+            const current = parsed.definition.stages[state.stageIndex];
+            if (!current) {
+              await this.accept(runId, state, policy, signal);
+              return;
+            }
+            stage = current;
+          } else {
+            const position = state.position;
+            if (!position)
+              throw new WorkflowFault(
+                "INVALID_DEFINITION",
+                "Run of a v2 definition has no position",
+              );
+            const gates = this.frozenGates(runId);
+            if (position.stageId === "done") {
+              await this.acceptV2(runId, state, policy, parsed.definition, gates, signal);
+              return;
+            }
+            const current = parsed.definition.stages.find((s) => s.id === position.stageId);
+            const kind = current ? stageKind(current) : null;
+            if (!current || !kind)
+              throw new WorkflowFault("INVALID_REFERENCE", `Unknown stage ${position.stageId}`);
+            v2 = { definition: parsed.definition, stage: current, gates };
+            if (position.outcome) {
+              await this.takeTransition(runId, state, policy, v2, signal);
+              continue;
+            }
+            stage = { id: current.id, kind, profileId: stageProfileId(current) };
           }
           stepId = this.store.transaction(() => {
             this.store.bump(runId, run.revision);
@@ -118,6 +171,10 @@ export class WorkflowScheduler {
           const profiles = ProfileSchema.array().parse(JSON.parse(run.profiles_json));
           const profile = profiles.find((p) => p.id === stage.profileId);
           let advance = true;
+          let repairFindings: {
+            findings: Review["findings"];
+            kind: "repair" | "convergence";
+          } | null = null;
           switch (stage.kind) {
             case "research": {
               const researcher = this.requireProfile(profile);
@@ -301,7 +358,9 @@ export class WorkflowScheduler {
               break;
             }
             case "approve": {
-              if (!state.analysisPassed || !state.spec || !state.graph || !state.plan)
+              const analyzed =
+                state.analysisPassed || (v2 !== null && !produces(v2.definition, "analysis"));
+              if (!analyzed || !state.spec || !state.graph || !state.plan)
                 throw new WorkflowFault(
                   "OUTPUT_INVALID",
                   "Consistency analysis and artifacts required before approval",
@@ -393,19 +452,56 @@ export class WorkflowScheduler {
               break;
             }
             case "checks": {
-              const failed = await this.runChecks(runId, stepId, state, policy, signal);
+              const failed = v2
+                ? await this.runCheckStage(runId, stepId, state, policy, v2, signal)
+                : await this.runChecks(runId, stepId, state, policy, signal);
               if (failed.length) {
-                this.repair(runId, state, policy, failed, "repair");
+                repairFindings = { findings: failed, kind: "repair" };
                 advance = false;
               }
               break;
             }
             case "review": {
-              const failures = await this.review(runId, stepId, state, policy, profiles, signal);
+              if (v2 && !state.snapshotId) {
+                // A review-only run reviews the frozen diff on the snapshot it starts from.
+                await this.snapshot(runId, state, policy, signal);
+                const diff = state.diff;
+                if (diff)
+                  this.store.transaction(() =>
+                    this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.artifactId),
+                  );
+              }
+              const failures = await this.review(
+                runId,
+                stepId,
+                state,
+                policy,
+                profiles,
+                signal,
+                v2 ? this.v2Reviewers(runId, state, v2) : this.v1Reviewers(state, policy),
+              );
               if (failures.length) {
-                this.repair(runId, state, policy, failures, "repair");
+                repairFindings = { findings: failures, kind: "repair" };
                 advance = false;
               }
+              break;
+            }
+            case "report": {
+              const report = ReportSchema.parse(
+                await this.call(
+                  runId,
+                  stepId,
+                  state,
+                  policy,
+                  this.requireProfile(profile),
+                  {},
+                  signal,
+                ),
+              );
+              state.report = canonical(report);
+              this.store.transaction(() =>
+                this.store.artifact(runId, "report", "report.json", state.report ?? ""),
+              );
               break;
             }
             case "converge": {
@@ -477,7 +573,7 @@ export class WorkflowScheduler {
               });
               const findings = this.recordFindings(runId, review);
               if (findings.length) {
-                this.repair(runId, state, policy, findings, "convergence");
+                repairFindings = { findings, kind: "convergence" };
                 advance = false;
               } else if (
                 review.coverage.some(
@@ -543,9 +639,16 @@ export class WorkflowScheduler {
               break;
             }
           }
+          if (repairFindings && !v2)
+            this.repair(runId, state, policy, repairFindings.findings, repairFindings.kind);
           signal.throwIfAborted();
           await this.assertWorkspace(runId, state, policy, signal);
-          if (advance) state.stageIndex++;
+          if (v2 && state.position && this.store.run(runId).status === "running") {
+            // The visit is decided; the next pass takes the transition that answers it.
+            state.position.outcome = this.outcomeOf(v2.stage, repairFindings !== null);
+            state.position.findings = repairFindings?.findings.map((f) => f.id) ?? [];
+            state.position.repairKind = repairFindings?.kind ?? null;
+          } else if (advance && !v2) state.stageIndex++;
           this.store.transaction(() => {
             this.store.saveState(runId, state);
             this.store.finishStep(
@@ -1181,7 +1284,12 @@ export class WorkflowScheduler {
       });
     return failures;
   }
-  private recordFindings(runId: string, review: Review): Review["findings"] {
+  /** Stores a review and registers the findings that block; the others stay in the artifact. */
+  private recordFindings(
+    runId: string,
+    review: Review,
+    register: Review["findings"] = review.findings,
+  ): Review["findings"] {
     return this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,
@@ -1189,10 +1297,58 @@ export class WorkflowScheduler {
         `reviews/${newId()}.json`,
         canonical(review),
       );
-      return review.findings.map((finding) => ({
+      return register.map((finding) => ({
         ...finding,
         id: this.store.addFinding(runId, finding, fingerprint(finding), artifact.id),
       }));
+    });
+  }
+  /** The v1 review stage: correctness, security when triggered and language, each blocking. */
+  private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
+    const dimensions = [
+      "correctness",
+      ...(requiresSecurityReview(
+        state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? [],
+        policy.forceSecurityReview,
+      )
+        ? ["security"]
+        : []),
+      ...(policy.reviewProfiles.language ? ["language"] : []),
+    ] as (keyof RunPolicy["reviewProfiles"])[];
+    return dimensions.map((dimension) => ({
+      key: dimension,
+      dimension,
+      profileId: policy.reviewProfiles[dimension] ?? "",
+      skepticProfileId: policy.skepticProfileId,
+      blocking: ALL_SEVERITIES,
+      required: true,
+      appliesWhen: "always",
+    }));
+  }
+  /** The AI review gates of a v2 review stage whose condition holds; the others are skipped. */
+  private v2Reviewers(
+    runId: string,
+    state: RuntimeState,
+    v2: { stage: Stage; gates: Gate[] },
+  ): Reviewer[] {
+    const paths = state.graph
+      ? state.graph.tasks.flatMap((t) => t.writes.map((w) => w.path))
+      : (state.diff?.files ?? []);
+    const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+    return reviewersOf(v2.stage, v2.gates).filter((reviewer) => {
+      if (
+        reviewer.appliesWhen === "always" ||
+        requiresSecurityReview(paths, policy.forceSecurityReview)
+      )
+        return true;
+      this.recordGate(runId, state, reviewer.key, null, {
+        status: "skipped",
+        mode: reviewer.required ? "required" : "advisory",
+        evidenceId: null,
+        attempts: 0,
+        flaky: false,
+      });
+      return false;
     });
   }
   private async review(
@@ -1202,30 +1358,20 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     profiles: AgentProfile[],
     signal: AbortSignal,
+    reviewers: Reviewer[],
   ): Promise<Review["findings"]> {
-    if (!state.spec || !state.graph || !state.snapshotId || !state.workspaceHash)
+    if (!state.spec || !state.snapshotId || !state.workspaceHash)
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
-    const dimensions = [
-      "correctness",
-      ...(requiresSecurityReview(
-        state.graph.tasks.flatMap((t) => t.writes.map((w) => w.path)),
-        policy.forceSecurityReview,
-      )
-        ? ["security"]
-        : []),
-      ...(policy.reviewProfiles.language ? ["language"] : []),
-    ] as (keyof RunPolicy["reviewProfiles"])[];
     const findings: Review["findings"] = [];
+    const owners = new Map<string, Reviewer>();
     const reviewSpec = state.spec;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
-    const runDimension = async (dimension: keyof RunPolicy["reviewProfiles"]) => {
+    const runReviewer = async (reviewer: Reviewer) => {
       const child = this.store.transaction(() =>
-        this.store.beginStep(runId, `dimension-${dimension}`, stepId),
+        this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
-      const profile = this.requireProfile(
-        profiles.find((p) => p.id === policy.reviewProfiles[dimension]),
-      );
+      const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
       const result = ReviewSchema.parse(
         await this.call(
           runId,
@@ -1233,7 +1379,7 @@ export class WorkflowScheduler {
           state,
           policy,
           profile,
-          { dimension, evidence: this.evidenceContext(runId, state) },
+          { dimension: reviewer.dimension, evidence: this.evidenceContext(runId, state) },
           signal,
         ),
       );
@@ -1244,24 +1390,34 @@ export class WorkflowScheduler {
         reviewSnapshotHash,
         reviewSpec,
         result,
-        dimension === "correctness" && result.verdict === "pass",
+        reviewer.dimension === "correctness" && result.verdict === "pass",
       );
-      if (result.verdict === "inconclusive")
-        throw new WorkflowFault("OUTPUT_INVALID", `${dimension} review inconclusive`);
+      if (result.verdict === "inconclusive" && reviewer.required)
+        throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
       this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
-      return { dimension, result };
+      return { reviewer, result };
     };
-    for (let offset = 0; offset < dimensions.length; offset += policy.maxConcurrentReadAgents) {
+    for (let offset = 0; offset < reviewers.length; offset += policy.maxConcurrentReadAgents) {
       const batch = await Promise.allSettled(
-        dimensions.slice(offset, offset + policy.maxConcurrentReadAgents).map(runDimension),
+        reviewers.slice(offset, offset + policy.maxConcurrentReadAgents).map(runReviewer),
       );
       for (const outcome of batch) {
         if (outcome.status === "rejected") throw outcome.reason;
-        state.reviews[outcome.value.dimension] = outcome.value.result;
-        findings.push(...this.recordFindings(runId, outcome.value.result));
+        const { reviewer, result } = outcome.value;
+        state.reviews[reviewer.key] = result;
+        // Advisory reviewers and findings below the blocking severities are recorded, not repaired.
+        const blocking = reviewer.required
+          ? result.findings.filter((f) => reviewer.blocking.includes(f.severity))
+          : [];
+        for (const finding of this.recordFindings(runId, result, blocking)) {
+          findings.push(finding);
+          owners.set(finding.id, reviewer);
+        }
       }
     }
     for (const finding of findings.filter((f) => ["critical", "high"].includes(f.severity))) {
+      const skeptic = owners.get(finding.id)?.skepticProfileId;
+      if (!skeptic) continue;
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `skeptic-${fingerprint(finding).slice(0, 24)}`, stepId),
       );
@@ -1271,7 +1427,7 @@ export class WorkflowScheduler {
           child,
           state,
           policy,
-          this.requireProfile(profiles.find((p) => p.id === policy.skepticProfileId)),
+          this.requireProfile(profiles.find((p) => p.id === skeptic)),
           { finding, evidence: this.evidenceContext(runId, state) },
           signal,
         ),
@@ -1298,9 +1454,407 @@ export class WorkflowScheduler {
         if (old.repair_task_id && !live.has(old.id))
           this.store.findingStatus(runId, old.id, "resolved");
     });
-    return findings.filter(
+    const open = findings.filter(
       (f) => this.store.findings(runId).find((entry) => entry.id === f.id)?.status !== "refuted",
     );
+    if (state.position)
+      for (const reviewer of reviewers) {
+        const result = state.reviews[reviewer.key];
+        this.recordGate(runId, state, reviewer.key, null, {
+          status:
+            result?.verdict === "inconclusive"
+              ? "inconclusive"
+              : open.some((f) => owners.get(f.id) === reviewer)
+                ? "failed"
+                : "passed",
+          mode: reviewer.required ? "required" : "advisory",
+          evidenceId: null,
+          attempts: 1,
+          flaky: false,
+        });
+      }
+    return open;
+  }
+  /** The gates frozen when the run started. */
+  private frozenGates(runId: string): Gate[] {
+    const artifact = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path === GATES_ARTIFACT)
+      .at(-1);
+    return artifact
+      ? GateSchema.array().parse(JSON.parse(this.store.readArtifact(runId, artifact.id)))
+      : [];
+  }
+  private outcomeOf(stage: Stage, repair: boolean): Outcome {
+    if (!repair) return "passed";
+    return stage.type === "check" ? "failed" : "changes_requested";
+  }
+  /** Keeps the latest result of a gate in the state and writes `gate.finished`. */
+  private recordGate(
+    runId: string,
+    state: RuntimeState,
+    gateId: string,
+    transitionId: string | null,
+    result: Omit<RuntimeState["gateResults"][string], "snapshotId">,
+  ): void {
+    state.gateResults[gateId] = { ...result, snapshotId: state.snapshotId };
+    this.store.transaction(() =>
+      this.store.emit(runId, {
+        type: "gate.finished",
+        payload: {
+          gateId,
+          transitionId,
+          mode: result.mode,
+          status: result.status,
+          attempts: result.attempts,
+          flaky: result.flaky,
+          evidenceId: result.evidenceId,
+        },
+      }),
+    );
+  }
+  /**
+   * Runs one command gate with its retries. Every attempt is recorded as a check result; a pass
+   * after a failed or inconclusive attempt is flagged flaky. Only `failed` may be retried as
+   * failed; a timeout is an inconclusive attempt.
+   */
+  private async runCommandGate(
+    runId: string,
+    stepId: string,
+    check: Check,
+    gate: Gate,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<{
+    status: "passed" | "failed" | "inconclusive";
+    evidenceId: string;
+    attempts: number;
+    flaky: boolean;
+  }> {
+    let attempts = 0;
+    let unstable = false;
+    for (;;) {
+      attempts++;
+      const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+      const result = await this.checks.run(runId, attempt, check, signal);
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      if (result.status === "passed")
+        return { status: "passed", evidenceId: result.evidenceId, attempts, flaky: unstable };
+      unstable = true;
+      const retryable = gate.retries.retryOn.some((on) =>
+        result.status === "failed" ? on === "failed" : on === "inconclusive" || on === "timeout",
+      );
+      if (!retryable || attempts > gate.retries.max)
+        return { status: result.status, evidenceId: result.evidenceId, attempts, flaky: false };
+    }
+  }
+  /**
+   * A v2 check stage: its command gates in the listed order, required ones first. A required
+   * failure becomes a finding for the failed outcome, an inconclusive required gate blocks, and an
+   * advisory gate is recorded and never blocks.
+   */
+  private async runCheckStage(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    v2: { stage: Stage; gates: Gate[] },
+    signal: AbortSignal,
+  ): Promise<Review["findings"]> {
+    if (v2.stage.type !== "check") return [];
+    await this.snapshot(runId, state, policy, signal);
+    const bound = v2.stage.gates.map((binding) => {
+      const gate = v2.gates.find((g) => g.id === binding.gateId);
+      if (gate?.type !== "command")
+        throw new WorkflowFault("INVALID_REFERENCE", `Check gate ${binding.gateId} is missing`);
+      return { gate, check: gateToCheck(gate, binding) };
+    });
+    const ordered = [
+      ...bound.filter((b) => b.check.required),
+      ...bound.filter((b) => !b.check.required),
+    ];
+    const failures: Review["findings"] = [];
+    for (const { gate, check } of ordered) {
+      const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      this.recordGate(runId, state, gate.id, null, {
+        status: result.status,
+        mode: check.required ? "required" : "advisory",
+        evidenceId: result.evidenceId,
+        attempts: result.attempts,
+        flaky: result.flaky,
+      });
+      if (!check.required || result.status === "passed") continue;
+      if (result.status === "inconclusive")
+        throw new WorkflowFault("OUTPUT_INVALID", `Required check ${check.id} is inconclusive`, {
+          reason: "verification_failed",
+        });
+      const task =
+        state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
+      failures.push({
+        id: newId(),
+        kind: "correctness",
+        severity: "high",
+        requirementIds: task?.requirementIds ?? state.spec?.requirements.map((r) => r.id) ?? [],
+        criterionIds: task?.criterionIds ?? [],
+        file: null,
+        symbol: null,
+        evidenceIds: [result.evidenceId],
+        claim: `Required check ${check.id} failed`,
+        impact: "Implementation cannot be accepted",
+        suggestedFix: `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+      });
+    }
+    if (!failures.length) {
+      // Without a review stage nothing else closes the findings of an earlier failed run of
+      // these gates; the passing gates close them.
+      const closed = new Set(ordered.map(({ check }) => `Required check ${check.id} failed`));
+      this.store.transaction(() => {
+        for (const finding of this.store.findings(runId))
+          if (
+            ["open", "confirmed"].includes(finding.status) &&
+            closed.has(JSON.parse(finding.body_json).claim)
+          )
+            this.store.findingStatus(runId, finding.id, "resolved");
+      });
+      return [];
+    }
+    return this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings: failures,
+    });
+  }
+  /**
+   * Takes the transition that answers the decided outcome of the current stage: its gates in
+   * order, then corrective tasks when the target writes, the loop and visit bounds, and the new
+   * position. A gate that waits for a person keeps the outcome, so the run resumes here.
+   */
+  private async takeTransition(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    v2: { definition: WorkflowV2; stage: Stage; gates: Gate[] },
+    signal: AbortSignal,
+  ): Promise<void> {
+    const position = state.position;
+    if (!position?.outcome) return;
+    const carried = carriedValue(state, v2.stage);
+    const transition = selectTransition(v2.definition, v2.stage.id, position.outcome, carried);
+    if (!transition)
+      throw new WorkflowFault(
+        "OUTPUT_INVALID",
+        `Stage ${v2.stage.id} reported ${position.outcome} and no transition answers it`,
+        { reason: "verification_failed" },
+      );
+    // Task scope gates ran after each task inside the tasks stage.
+    const bindings = transition.gates
+      .map((binding) => ({ binding, gate: v2.gates.find((g) => g.id === binding.gateId) }))
+      .filter((b) => b.gate && b.gate.scope !== "task");
+    const required = (b: (typeof bindings)[number]): boolean =>
+      b.gate !== undefined && gateToRequired(b.binding, b.gate);
+    const ordered = [...bindings.filter(required), ...bindings.filter((b) => !required(b))];
+    let stepId: string | null = null;
+    for (const { binding, gate } of ordered) {
+      if (!gate) continue;
+      signal.throwIfAborted();
+      const mode = gateToRequired(binding, gate) ? "required" : "advisory";
+      if (gate.type === "command") {
+        stepId ??= this.store.transaction(() =>
+          this.store.beginStep(runId, `transition-${transition.id}`),
+        );
+        await this.snapshot(runId, state, policy, signal);
+        const result = await this.runCommandGate(
+          runId,
+          stepId,
+          gateToCheck(gate, binding),
+          gate,
+          policy,
+          signal,
+        );
+        this.recordGate(runId, state, gate.id, transition.id, { ...result, mode });
+        if (mode === "required" && result.status !== "passed") {
+          this.store.transaction(() => {
+            this.store.finishStep(runId, stepId ?? "", "failed");
+            this.store.saveState(runId, state);
+          });
+          throw new WorkflowFault(
+            "OUTPUT_INVALID",
+            `Gate ${gate.id} on ${transition.id} ${result.status}`,
+            { reason: "verification_failed" },
+          );
+        }
+      } else if (gate.type === "human") {
+        if (!state.snapshotId) await this.snapshot(runId, state, policy, signal);
+        const criterionId = `gate-${gate.id}`;
+        const answered = state.manualCriteria[criterionId];
+        if (answered?.snapshotId === state.snapshotId) {
+          this.recordGate(runId, state, gate.id, transition.id, {
+            status: "passed",
+            mode,
+            evidenceId: answered.evidenceId,
+            attempts: 1,
+            flaky: false,
+          });
+          continue;
+        }
+        if (mode === "advisory") {
+          this.recordGate(runId, state, gate.id, transition.id, {
+            status: "skipped",
+            mode,
+            evidenceId: null,
+            attempts: 0,
+            flaky: false,
+          });
+          continue;
+        }
+        if (stepId)
+          this.store.transaction(() => this.store.finishStep(runId, stepId ?? "", "completed"));
+        this.wait(runId, "manual_evidence", state, {
+          criterionId,
+          snapshotId: state.snapshotId,
+          gateId: gate.id,
+          transitionId: transition.id,
+          question: gate.human.prompt,
+          answer: gate.human.answer,
+        });
+        this.store.transaction(() => this.store.saveState(runId, state));
+        return;
+      } else {
+        // An AI acceptance gate closes nothing until its walk-through is promoted to a command
+        // test; it is recorded as skipped here.
+        this.recordGate(runId, state, gate.id, transition.id, {
+          status: "skipped",
+          mode,
+          evidenceId: null,
+          attempts: 0,
+          flaky: false,
+        });
+      }
+    }
+    const target = v2.definition.stages.find((s) => s.id === transition.to);
+    this.store.transaction(() => {
+      if (stepId) this.store.finishStep(runId, stepId, "completed");
+      const ids = new Set(position.findings);
+      const findings = this.store
+        .findings(runId)
+        .filter((f) => ids.has(f.id) && !["refuted", "resolved"].includes(f.status))
+        .map((f) => ({ ...JSON.parse(f.body_json), id: f.id }) as Review["findings"][number]);
+      if (findings.length && target?.type === "tasks")
+        appendCorrections(
+          this.store,
+          runId,
+          state,
+          policy,
+          findings,
+          position.repairKind ?? "repair",
+        );
+      else if (findings.length) {
+        // A loop to a stage that does not write hands the findings to that stage as input; a
+        // later review raises them again if they still hold.
+        state.prompt += `\nFindings of the ${v2.stage.id} stage to address:\n${canonical(
+          findings.map((f) => ({ claim: f.claim, impact: f.impact, fix: f.suggestedFix })),
+        )}`;
+        for (const finding of findings) this.store.findingStatus(runId, finding.id, "resolved");
+      }
+      if (transition.loop) {
+        const count = (position.loops[transition.id] ?? 0) + 1;
+        if (count > transition.loop.maxIterations)
+          throw new WorkflowFault(
+            "RECOVERY_REQUIRED",
+            `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
+            { reason: "no_progress" },
+          );
+        position.loops[transition.id] = count;
+        // Returning before the approval needs a new one: the plan it covered will change.
+        if (target && (target.type === "agent" || target.type === "approval")) {
+          state.approvalRoot = null;
+          state.analysisPassed = false;
+          this.store.setApproval(runId, null);
+        }
+      }
+      if (target) {
+        if (position.total + 1 > v2.definition.limits.maxStageVisits)
+          throw new WorkflowFault(
+            "RECOVERY_REQUIRED",
+            `no_progress: the run reached ${v2.definition.limits.maxStageVisits} stage visits`,
+            { reason: "no_progress" },
+          );
+        position.total++;
+        position.visits[target.id] = (position.visits[target.id] ?? 0) + 1;
+      }
+      const contract = contractText(carried);
+      this.store.emit(runId, {
+        type: "transition.taken",
+        payload: {
+          transitionId: transition.id,
+          from: v2.stage.id,
+          to: transition.to,
+          outcome: position.outcome ?? "passed",
+          contractHash: contract === null ? null : hashBytes(contract),
+        },
+      });
+      position.stageId = transition.to;
+      position.outcome = null;
+      position.findings = [];
+      position.repairKind = null;
+      this.store.saveState(runId, state);
+    });
+  }
+  /** Completion of a run of a v2 definition. */
+  private async acceptV2(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    definition: WorkflowV2,
+    gates: Gate[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    assertFrozenInputs(state);
+    dependencyContracts(this.store, state);
+    await this.assertWorkspace(runId, state, policy, signal);
+    this.store.transaction(() => {
+      const writes = definition.stages.some((s) => s.type === "tasks");
+      if (writes) assertAcceptanceV2(this.store, runId, state, policy, definition, gates);
+      else if (this.store.requests(runId).some((request) => request.status === "pending"))
+        throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
+      if (this.store.effects(runId).some((e) => ["prepared", "unknown"].includes(e.status)))
+        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain");
+      for (const task of this.store
+        .tasks(runId)
+        .filter((t) => state.graph?.tasks.some((task) => task.id === t.id)))
+        this.store.taskStatus(runId, task.id, "verified", state.snapshotId);
+      state.verificationState = writes ? "current" : state.verificationState;
+      this.store.artifact(
+        runId,
+        "completion",
+        "completion.json",
+        canonical({
+          runId,
+          workflowId: definition.id,
+          featureId: state.spec?.featureId ?? this.store.run(runId).feature_id,
+          approvalRoot: state.approvalRoot,
+          correctionHashes: state.correctionHashes,
+          snapshotId: state.snapshotId,
+          workspaceHash: state.workspaceHash,
+          coverage: state.convergence?.coverage ?? null,
+          gates: state.gateResults,
+          reviews: Object.fromEntries(
+            Object.entries(state.reviews).map(([key, review]) => [
+              key,
+              { verdict: review.verdict, findings: review.findings.length },
+            ]),
+          ),
+          report: state.report ? JSON.parse(state.report) : null,
+          checks: this.store.checks(runId).filter((c) => c.snapshot_id === state.snapshotId),
+          verifiedTaskIds: state.graph?.tasks.map((t) => t.id) ?? [],
+        }),
+      );
+      this.store.saveState(runId, state);
+      this.store.bump(runId, this.store.run(runId).revision);
+      this.store.transition(runId, "completed");
+    });
   }
   private repair(
     runId: string,
@@ -1356,6 +1910,12 @@ export class WorkflowScheduler {
     });
   }
 }
+
+/** Logical path of the gates a v2 run froze when it started. */
+export const GATES_ARTIFACT = "definition/gates.json";
+
+const gateToRequired = (binding: { gateId: string; mode?: "required" | "advisory" }, gate: Gate) =>
+  effectiveMode(binding, gate) === "required";
 
 /** Told to the implementer with every task: unresolved blocks the task, so it must not carry other tasks' work. */
 const UNRESOLVED_MEANING =

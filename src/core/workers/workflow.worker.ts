@@ -15,6 +15,7 @@ import { readRunFileDiff } from "../workflows/run-diff.js";
 import { CheckSchema, DecisionSchema, SafeId } from "../workflows/schemas.js";
 import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
+import { PRESETS } from "../workflows/v2/definition.js";
 import {
   BudgetPreset,
   readWorkflowSummaries,
@@ -73,7 +74,7 @@ const ctx = createWorkerHandler(
         estimate: estimateStart(readHistory(runtime.store)),
         enabled: runtime.config.workflows?.enabled === true,
         defaultWorkflow: runtime.config.workflows?.defaultWorkflow ?? "sdd",
-        workflows: ["sdd", ...custom],
+        workflows: [...new Set(["sdd", ...PRESETS, ...custom])],
         policy,
         presets: Object.fromEntries(
           BudgetPreset.options.map((p) => {

@@ -1,0 +1,248 @@
+import { canonical } from "../../specs/hash.js";
+import type { Spec, WorkflowDefinition } from "../schemas.js";
+import { WorkflowSchema } from "../schemas.js";
+import type { Check, RuntimeState } from "../types.js";
+import {
+  effectiveMode,
+  type Gate,
+  type GateBinding,
+  GateSchema,
+  type Stage,
+  type WorkflowV2,
+  WorkflowV2Schema,
+} from "./definition.js";
+import { gateToCheck } from "./library.js";
+
+/** The definition a run was started from, as stored in `definition_json`. */
+export type RunDefinition =
+  | { schemaVersion: 1; definition: WorkflowDefinition }
+  | { schemaVersion: 2; definition: WorkflowV2 };
+
+export function parseRunDefinition(json: string): RunDefinition {
+  const raw = JSON.parse(json) as { schemaVersion?: unknown };
+  return raw.schemaVersion === 2
+    ? { schemaVersion: 2, definition: WorkflowV2Schema.parse(raw) }
+    : { schemaVersion: 1, definition: WorkflowSchema.parse(raw) };
+}
+
+/** The v1 stage mechanism that executes a v2 stage; `report` is the one v2 adds. */
+export type StageKind = WorkflowDefinition["stages"][number]["kind"] | "report";
+
+const AGENT_KINDS: Partial<Record<Stage["produces"], StageKind>> = {
+  research: "research",
+  spec: "specify",
+  plan: "plan",
+  analysis: "analyze",
+  report: "report",
+};
+
+/** The mechanism of a v2 stage, or null for an agent stage whose contract no agent may submit. */
+export function stageKind(stage: Stage): StageKind | null {
+  switch (stage.type) {
+    case "agent":
+      return AGENT_KINDS[stage.produces] ?? null;
+    case "approval":
+      return "approve";
+    case "tasks":
+      return "task-graph";
+    case "check":
+      return "checks";
+    case "review":
+      return "review";
+    case "reflection":
+      return "converge";
+    case "learn":
+      return "learn";
+  }
+}
+
+/** The profile output each agent mechanism requires. */
+export const KIND_OUTPUT: Partial<Record<StageKind, string>> = {
+  research: "research",
+  specify: "spec",
+  plan: "plan",
+  analyze: "analysis",
+  report: "report",
+  converge: "convergence",
+};
+
+export function stageProfileId(stage: Stage): string | undefined {
+  return stage.type === "agent" || stage.type === "reflection" ? stage.profileId : undefined;
+}
+
+export const produces = (definition: WorkflowV2, contract: Stage["produces"]): boolean =>
+  definition.stages.some((s) => s.produces === contract);
+
+/**
+ * The specification of a definition without a spec stage. Quick fix, Spike and Review only have
+ * no specification, but the plan validation, the reviewers and acceptance work on requirement and
+ * criterion IDs. The host states the request as the single requirement: automated when a required
+ * command gate can check it, otherwise manual, so a person confirms it.
+ */
+export function hostSpec(featureId: string, prompt: string, automated: boolean): Spec {
+  const text = prompt.trim().slice(0, 4000);
+  const title = text.split("\n")[0]?.slice(0, 120) || featureId;
+  return {
+    schemaVersion: 1,
+    featureId,
+    revision: 1,
+    title,
+    problem: text,
+    outcome: "The request is done as stated.",
+    inScope: [text],
+    outOfScope: [],
+    assumptions: ["The request is the whole specification; this definition has no spec stage."],
+    openQuestions: [],
+    requirements: [
+      {
+        id: "FR-001",
+        text,
+        priority: "must",
+        verification: automated ? "automated" : "manual",
+        sourceRefs: [],
+      },
+    ],
+    criteria: [
+      {
+        id: "AC-001",
+        requirementIds: ["FR-001"],
+        given: "the workspace before the run",
+        when: "the run completes",
+        // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+        then: "the request is done as stated",
+        method: automated ? "automated" : "manual",
+      },
+    ],
+    dependencies: [],
+  };
+}
+
+export function initialPosition(definition: WorkflowV2): NonNullable<RuntimeState["position"]> {
+  return {
+    stageId: definition.entry,
+    visits: { [definition.entry]: 1 },
+    loops: {},
+    total: 1,
+    outcome: null,
+    findings: [],
+    repairKind: null,
+  };
+}
+
+/** Every gate binding of a definition, with where it is bound. */
+export function bindingsOf(
+  definition: WorkflowV2,
+): { binding: GateBinding; stageId: string | null; transitionId: string | null }[] {
+  return [
+    ...definition.stages.flatMap((s) =>
+      s.type === "check" || s.type === "review"
+        ? s.gates.map((binding) => ({ binding, stageId: s.id, transitionId: null }))
+        : [],
+    ),
+    ...definition.transitions.flatMap((t) =>
+      t.gates.map((binding) => ({ binding, stageId: null, transitionId: t.id })),
+    ),
+  ];
+}
+
+/**
+ * The gates a run of the definition uses, resolved from the library when the run starts. They are
+ * frozen with the run, so a later edit of a gate file does not change a started run.
+ */
+export function frozenGates(definition: WorkflowV2, library: ReadonlyMap<string, Gate>): Gate[] {
+  const ids = [...new Set(bindingsOf(definition).map((b) => b.binding.gateId))].sort();
+  return ids.map((id) => {
+    const gate = library.get(id);
+    if (!gate) throw new Error(`Unknown gate ${id}`);
+    return GateSchema.parse(gate);
+  });
+}
+
+/**
+ * The command gates of a run as v1 checks: the check runner, the planner's task checks and the
+ * acceptance predicate keep working on `policy.checks`. A gate bound as required anywhere is
+ * required.
+ */
+export function checksOf(definition: WorkflowV2, gates: readonly Gate[]): Check[] {
+  const byId = new Map(gates.map((g) => [g.id, g]));
+  const checks = new Map<string, Check>();
+  for (const { binding } of bindingsOf(definition)) {
+    const gate = byId.get(binding.gateId);
+    if (gate?.type !== "command") continue;
+    const check = gateToCheck(gate, binding);
+    const previous = checks.get(gate.id);
+    checks.set(gate.id, previous?.required ? previous : check);
+  }
+  return [...checks.values()];
+}
+
+/** One AI reviewer of a review stage, from its gate binding. */
+export interface Reviewer {
+  /** Key of the review in the run state: the gate ID for v2, the dimension for v1. */
+  key: string;
+  dimension: string;
+  profileId: string;
+  skepticProfileId: string | null;
+  blocking: readonly string[];
+  required: boolean;
+  appliesWhen: Extract<Gate, { type: "ai-review" }>["review"]["appliesWhen"];
+}
+
+export function reviewersOf(stage: Stage, gates: readonly Gate[]): Reviewer[] {
+  if (stage.type !== "review") return [];
+  return stage.gates.map((binding) => {
+    const gate = gates.find((g) => g.id === binding.gateId);
+    if (gate?.type !== "ai-review")
+      throw new Error(`Review stage ${stage.id} binds ${binding.gateId}, not an AI review gate`);
+    return {
+      key: gate.id,
+      dimension: gate.review.dimension,
+      profileId: gate.review.profileId,
+      skepticProfileId: gate.review.skepticProfileId,
+      blocking: gate.review.blockingSeverities,
+      required: effectiveMode(binding, gate) === "required",
+      appliesWhen: gate.review.appliesWhen,
+    };
+  });
+}
+
+/** The value a transition's `when` reads: the contract the stage produced, as the host holds it. */
+export function carriedValue(state: RuntimeState, stage: Stage): unknown {
+  switch (stage.produces) {
+    case "research":
+      return state.research ? JSON.parse(state.research) : null;
+    case "spec":
+      return state.spec;
+    case "plan":
+      return state.graph ? { markdown: state.plan, taskGraph: state.graph } : null;
+    case "analysis":
+      return { verdict: state.analysisPassed ? "pass" : "needs_revision" };
+    case "review": {
+      const reviews = Object.values(state.reviews);
+      return {
+        verdict: reviews.some((r) => r.verdict === "changes_requested")
+          ? "changes_requested"
+          : "pass",
+      };
+    }
+    case "convergence":
+      return state.convergence;
+    case "report":
+      return state.report ? JSON.parse(state.report) : null;
+    case "decision":
+      return { digest: state.approvalRoot };
+    case "gates":
+      return {
+        verdict: Object.values(state.gateResults).some(
+          (r) => r.mode === "required" && r.status !== "passed" && r.status !== "skipped",
+        )
+          ? "fail"
+          : "pass",
+      };
+    default:
+      return null;
+  }
+}
+
+export const contractText = (value: unknown): string | null =>
+  value === null || value === undefined ? null : canonical(value);

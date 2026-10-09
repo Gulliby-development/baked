@@ -188,11 +188,14 @@ Every model step resends the whole conversation, so a stage that reads many file
 
 ## Workflow definitions (v2)
 
-Definitions of schema version 2 describe stages, transitions, contracts and gates as data ([design](workflow-v2-design.md)). The core reads and validates them; a run of a v2 definition is described in the status report once the scheduler drives it.
+Definitions of schema version 2 describe stages, transitions, contracts and gates as data ([design](workflow-v2-design.md)). `baked workflow run --workflow ID` starts a run from `sdd`, a preset or `baked/workflows/ID.json`; the new-run form lists the same IDs. A run validates the definition against the gate library when it starts and freezes the definition and the gates it binds.
 
 - `baked workflow definitions` lists `sdd`, the five presets (`quick-fix`, `standard`, `full`, `spike`, `review-only`) and every `baked/workflows/*.json`, with the stages, whether the workflow changes files and its validation problems.
 - `baked workflow validate ID` or `--file FILE` checks a definition against the gate library and exits 1 with the problems. A v1 file is checked by the v1 rules and through the migration to v2.
 - `baked workflow define ID --from PRESET` copies a preset or another definition to `baked/workflows/ID.json` as a custom workflow. The copy never carries auto approval; the presets use the project's own checks in their check stages and after each task.
+- A run of a v2 definition walks its graph: each stage reports an outcome (`passed`, `failed` for a check stage whose required gate failed, `changes_requested` for review and reflection), and the transition that answers it is taken after its gates pass. `transition.taken` and `gate.finished` events record the walk. A loop edge runs at most `maxIterations` times and the run at most `limits.maxStageVisits` stage visits; either bound stops the run as `no_progress`.
+- Quick fix plans from the request alone (the host states it as one requirement), asks for approval and runs the tasks and checks. Spike researches and writes a report (`report.json`, also in `completion.json`); it changes no file and asks for no approval. Review only freezes `git diff HEAD` (or the last commit when the tree is clean) when the run starts and runs the correctness and, for security-sensitive paths, the security reviewer on it; its findings are the result and are not repaired.
+- An advisory gate is recorded and never blocks. A command gate with `retries` records every attempt; a pass after a failure is flagged flaky. A human gate on a transition waits for evidence: answer it with `baked workflow evidence RUN_ID --request ID --file FILE --accept --expected-revision N`.
 - `baked workflow gates` lists the gate library: the built-in review gates, the policy checks, the user's `~/.baked/gates/*.json` and the project's `baked/gates/*.json`, in that order of precedence, with what each gate shadows. A file that does not parse is listed as a problem and never used. Reading the library runs nothing.
 
 ## Pause, crash and recovery
@@ -223,7 +226,7 @@ Workspace and evidence files are written to a unique temp file and renamed into 
 
 If workflows are off in the project, the panel shows what will be written, and E enables them: a `workflows` block with the default policy and checks found in the `package.json` scripts (`typecheck`, `lint`, `test`) for the project's runner is added to `.baked/config.json`. An existing block only gets `enabled: true`. While the project is off, the panel starts no worker and creates no database.
 
-The new-run form contains the description, the feature ID (derived from the description; Cyrillic text is transliterated), the workflow (`sdd` and `baked/workflows/*.json`), the budget `quick`/`standard`/`extended`/`checkpoints` (×0.5/×1/×2 of the configured policy's token, call and time limits; `checkpoints` has no token cap and asks every N tokens), an estimate of the spend labeled as an estimate, the current chat tab's model and the configured checks. Ctrl+S starts from any field. The run executes in the worker in the background; the panel switches to it immediately.
+The new-run form contains the description, the feature ID (derived from the description; Cyrillic text is transliterated), the workflow (`sdd`, the five presets and `baked/workflows/*.json`), the budget `quick`/`standard`/`extended`/`checkpoints` (×0.5/×1/×2 of the configured policy's token, call and time limits; `checkpoints` has no token cap and asks every N tokens), an estimate of the spend labeled as an estimate, the current chat tab's model and the configured checks. Ctrl+S starts from any field. The run executes in the worker in the background; the panel switches to it immediately.
 
 The worker reports new events of its runs to the panel immediately; the panel reads changes from other processes and active time by polling every 150 ms, and a poll without changes does not re-read the view.
 

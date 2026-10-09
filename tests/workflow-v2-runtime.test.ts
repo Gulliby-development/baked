@@ -1,0 +1,416 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_CONFIG } from "../src/config/index.js";
+import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
+import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
+import { NativeWorkflowService } from "../src/core/workflows/service.js";
+import { newId } from "../src/core/workflows/store.js";
+import { type AgentExecutor, type ExecutionRequest, RuntimeStateSchema } from "../src/core/workflows/types.js";
+import type { Gate, WorkflowV2 } from "../src/core/workflows/v2/definition.js";
+import { builtinPresets, instantiatePreset } from "../src/core/workflows/v2/definitions.js";
+import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
+
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
+
+const spec: Spec = {
+  schemaVersion: 1, featureId: "fixture", revision: 1, title: "Fixture", problem: "Missing value", outcome: "Value exists",
+  inScope: ["Create value"], outOfScope: [], assumptions: [], openQuestions: [],
+  requirements: [{ id: "FR-001", text: "Value is ready", priority: "must", verification: "automated", sourceRefs: [] }],
+  criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "the task completes", then: "value is ready", method: "automated" }],
+  dependencies: [],
+};
+const valueCheck = {
+  id: "check", executable: "bun", args: ["-e", "if ((await Bun.file('value.txt').text()).trim() !== 'ready') process.exit(1)"],
+  cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [],
+};
+const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [valueCheck] };
+
+interface Behavior {
+  /** Implementations that write a broken value before the fixture writes the right one. */
+  broken?: number;
+  /** Convergence rounds that report a new gap each before passing. */
+  gaps?: number;
+  reviewVerdict?: "pass" | "changes_requested";
+}
+
+class V2Executor implements AgentExecutor {
+  calls: string[] = [];
+  implementations = 0;
+  convergences = 0;
+  constructor(private root: string, private behavior: Behavior = {}) {}
+  async execute(request: ExecutionRequest) {
+    this.calls.push(request.profile.output);
+    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+      inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] };
+    };
+    const evidence = data.extra.evidence?.map((e) => e.id) ?? [];
+    let output: unknown;
+    switch (request.profile.output) {
+      case "research":
+        output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
+        break;
+      case "spec":
+        output = spec;
+        break;
+      case "plan": {
+        const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\nvalue.txt\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture";
+        output = {
+          schemaVersion: 1, markdown,
+          taskGraph: {
+            schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
+            tasks: [{ id: "T001", title: "Create value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+          },
+        };
+        break;
+      }
+      case "analysis":
+        output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
+        break;
+      case "implementation":
+        this.implementations++;
+        writeFileSync(join(this.root, "value.txt"), this.implementations <= (this.behavior.broken ?? 0) ? "broken" : `ready${"\n".repeat(this.implementations)}`);
+        output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
+        break;
+      case "review":
+        output = this.behavior.reviewVerdict === "changes_requested"
+          ? {
+              schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [],
+              findings: [{ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case" }],
+            }
+          : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Evidence checked" }], findings: [] };
+        break;
+      case "convergence": {
+        const round = ++this.convergences;
+        output = round <= (this.behavior.gaps ?? 0)
+          ? {
+              schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
+              coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }],
+              findings: [{ id: `G${round}`, kind: "missing", severity: "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+            }
+          : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Command checked the value" }], findings: [] };
+        break;
+      }
+      case "report":
+        output = { schemaVersion: 1, summary: "The value can be added", findings: [{ title: "No value yet", detail: "value.txt is missing", paths: [] }], recommendation: { kind: "proceed", text: "Add value.txt" }, openQuestions: [] };
+        break;
+      default:
+        throw new Error(`Unexpected profile ${request.profile.output}`);
+    }
+    return { output, inputTokens: 20, outputTokens: 30 };
+  }
+}
+
+function setup(behavior: Behavior = {}, runPolicy: RunPolicy = policy) {
+  const root = mkdtempSync(join(tmpdir(), "baked-workflow-v2-"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const executor = new V2Executor(root, behavior);
+  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: runPolicy } };
+  const service = new NativeWorkflowService(root, config, executor);
+  cleanups.push(() => service.close());
+  const define = (definition: WorkflowV2) => {
+    mkdirSync(join(root, "baked", "workflows"), { recursive: true });
+    writeFileSync(join(root, "baked", "workflows", `${definition.id}.json`), JSON.stringify(definition));
+  };
+  const gate = (definition: Gate) => {
+    mkdirSync(join(root, "baked", "gates"), { recursive: true });
+    writeFileSync(join(root, "baked", "gates", `${definition.id}.json`), JSON.stringify(definition));
+  };
+  const start = (workflowId: string, prompt = "Create ready value") =>
+    service.start({ commandId: newId(), featureId: "fixture", workflowId, prompt, ownerLabel: "test", policy: runPolicy });
+  const drive = (runId: string) => service.drive(runId, new AbortController().signal);
+  const pending = (runId: string, kind: string) =>
+    service.store.requests(runId).find((r) => r.kind === kind && r.status === "pending");
+  const approve = async (runId: string) => {
+    const request = pending(runId, "approval");
+    if (!request) throw new Error("No pending approval");
+    const run = await service.get(runId);
+    return service.decide(runId, { commandId: newId(), expectedRevision: run.revision }, { kind: "approve", requestId: request.id, digest: request.digest });
+  };
+  /** Drives to the end, approving every approval request on the way. */
+  const complete = async (runId: string) => {
+    for (let round = 0; round < 6; round++) {
+      const snapshot = await drive(runId);
+      if (snapshot.status !== "waiting" || !pending(runId, "approval")) return snapshot;
+      await approve(runId);
+    }
+    return service.get(runId);
+  };
+  return { root, executor, service, define, gate, start, drive, approve, complete, pending };
+}
+
+const events = (service: NativeWorkflowService, runId: string): WorkflowEvent[] => service.store.events(runId, 0, 10000);
+const ofType = <T extends WorkflowEvent["type"]>(list: WorkflowEvent[], type: T) =>
+  list.filter((e): e is Extract<WorkflowEvent, { type: T }> => e.type === type);
+const lastError = (service: NativeWorkflowService, runId: string) => {
+  const artifact = service.store.artifacts(runId).filter((a) => a.logical_path.startsWith("errors/")).at(-1);
+  return artifact ? service.store.readArtifact(runId, artifact.id) : "";
+};
+
+/** Quick fix with the policy's check, as the shipped preset instantiates it. */
+const quickFix = (patch: (definition: WorkflowV2) => WorkflowV2 = (d) => d): WorkflowV2 => {
+  const preset = builtinPresets.get("quick-fix");
+  if (!preset) throw new Error("quick-fix preset missing");
+  return patch({ ...instantiatePreset(preset, policy), id: "custom-fix", preset: "custom" });
+};
+const commandGate = (id: string, args: string[], extra: Partial<Gate> = {}): Gate => ({
+  schemaVersion: 1, id, description: `Gate ${id}`, required: true, scope: "feature", timeoutMs: 10000,
+  retries: { max: 0, retryOn: [] }, evidence: { kind: "exit", keepOutputLines: 40, artifactPaths: [] },
+  type: "command", command: { executable: "bun", args, cwd: ".", envNames: [], writes: [] },
+  ...extra,
+} as Gate);
+
+describe("workflow v2 scheduler", () => {
+  test("V2-05 the built-in sdd walked as a v2 definition matches the v1 scheduler", async () => {
+    const trace = async (workflowId: string, prepare?: (fixture: ReturnType<typeof setup>) => void) => {
+      const fixture = setup({ broken: 1 });
+      prepare?.(fixture);
+      const run = await fixture.start(workflowId);
+      const final = await fixture.complete(run.runId);
+      const definitionStages = new Set(sddWorkflow.stages.map((s) => s.id));
+      const list = events(fixture.service, run.runId);
+      return {
+        status: final.status,
+        states: ofType(list, "run.state_changed").map((e) => `${e.payload.from}>${e.payload.to}:${e.payload.reason}`),
+        stages: ofType(list, "stage.started").map((e) => e.payload.stageId).filter((id) => definitionStages.has(id)),
+        checks: fixture.service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`),
+        tasks: fixture.service.store.tasks(run.runId).map((t) => `${t.id}:${t.status}`),
+        rounds: fixture.service.store.run(run.runId).repair_rounds,
+        calls: fixture.executor.calls,
+        // Corrections are appended when the repair transition is taken, after the stage step ends,
+        // so artifact commits are compared by kind rather than by position.
+        types: list.map((e) => e.type).filter((type) => !["transition.taken", "gate.finished", "artifact.committed"].includes(type)),
+        artifacts: fixture.service.store.artifacts(run.runId).filter((a) => a.logical_path !== "definition/gates.json" && a.kind !== "state").map((a) => a.kind).sort(),
+        transitions: ofType(list, "transition.taken").map((e) => e.payload.transitionId),
+      };
+    };
+    const v1 = await trace("sdd");
+    const v2 = await trace("sdd-v2", ({ define }) => define({ ...upgradeWorkflowV1(sddWorkflow, policy), id: "sdd-v2" }));
+    expect(v1.status).toBe("completed");
+    expect(v2.status).toBe("completed");
+    expect(v2.states).toEqual(v1.states);
+    expect(v2.stages).toEqual(v1.stages);
+    expect(v2.checks).toEqual(v1.checks);
+    expect(v2.tasks).toEqual(v1.tasks);
+    expect(v2.rounds).toBe(v1.rounds);
+    expect(v2.calls).toEqual(v1.calls);
+    expect(v2.types).toEqual(v1.types);
+    expect(v2.artifacts).toEqual(v1.artifacts);
+    expect(v1.transitions).toEqual([]);
+    expect(v2.transitions).toContain("checks-repair");
+  }, 60000);
+
+  test("V2-06 a state stored before v2 still parses and keeps the v1 stage index", () => {
+    const { position: _p, report: _r, diff: _d, gateResults: _g, ...old } = RuntimeStateSchema.parse({
+      prompt: "x", ownerLabel: "t", stageIndex: 4,
+      manifest: { schemaVersion: 1, featureId: "fixture", workflowHash: "a".repeat(64), policyHash: "b".repeat(64), profileHashes: {}, skillHashes: {}, instructionHashes: [], constitutionHash: null, specHash: null, planHash: null, rootGraphHash: null, effectiveGraphHash: null, correctionHashes: [], baselineSnapshotId: null, dependencyContracts: [] },
+      spec: null, plan: null, graph: null, rootGraph: null, research: null, analysisPassed: false, snapshotId: null, workspaceHash: null, expectedFiles: null, reviews: {}, convergence: null, approvalRoot: null, correctionHashes: [], published: {}, manualCriteria: {}, deferredCriteria: [], previousFindingSet: null, noProgressRounds: 0, verificationState: "not_verified", instructionText: "", frozenFiles: {},
+    });
+    const parsed = RuntimeStateSchema.parse(old);
+    expect(parsed.position).toBeNull();
+    expect(parsed.stageIndex).toBe(4);
+    expect(parsed.gateResults).toEqual({});
+  });
+
+  test("quick fix completes without research, specification or review", async () => {
+    const { start, complete, executor, service, define } = setup();
+    define(quickFix());
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(final.status).toBe("completed");
+    expect(executor.calls).toEqual(["plan", "implementation"]);
+    const state = service.store.state(run.runId);
+    expect(state.spec?.requirements[0]?.text).toBe("Create ready value");
+    expect(state.spec?.criteria[0]?.method).toBe("automated");
+    expect(state.position?.stageId).toBe("done");
+    expect(state.gateResults.check?.status).toBe("passed");
+    const completion = service.store.artifacts(run.runId).find((a) => a.logical_path === "completion.json");
+    expect(completion).toBeDefined();
+  }, 30000);
+
+  test("the shipped quick-fix preset runs with the project's checks", async () => {
+    const { start, complete, service } = setup();
+    const run = await start("quick-fix");
+    expect((await complete(run.runId)).status).toBe("completed");
+    expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check"]);
+  }, 30000);
+
+  test("a failed check takes the bounded repair loop back to the tasks stage", async () => {
+    const { start, complete, service, define } = setup({ broken: 1 });
+    define(quickFix());
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    const taken = ofType(events(service, run.runId), "transition.taken").map((e) => `${e.payload.transitionId}:${e.payload.outcome}`);
+    expect(taken).toEqual(["plan-approve:passed", "approve-implement:passed", "implement-checks:passed", "checks-repair:failed", "implement-checks:passed", "checks-done:passed"]);
+    expect(service.store.state(run.runId).position?.loops).toEqual({ "checks-repair": 1 });
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
+  }, 30000);
+
+  test("V2-08 the visit cap stops a run that would loop on", async () => {
+    const { start, complete, service, define } = setup({ broken: 5 });
+    define(quickFix((d) => ({ ...d, limits: { maxStageVisits: 4 } })));
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(final.status).toBe("blocked");
+    expect(service.store.run(run.runId).reason).toBe("no_progress");
+    expect(lastError(service, run.runId)).toContain("4 stage visits");
+    // The rejected transition left no corrective task behind.
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
+  }, 30000);
+
+  test("V2-08 a loop stops at its maxIterations", async () => {
+    const loose = { ...policy, maxConvergenceRounds: 3 };
+    const { start, complete, service, define } = setup({ gaps: 2 }, loose);
+    const upgraded = upgradeWorkflowV1(sddWorkflow, loose);
+    define({
+      ...upgraded, id: "tight",
+      transitions: upgraded.transitions.map((t) => (t.id === "converge-repair" ? { ...t, loop: { maxIterations: 1 } } : t)),
+    });
+    const run = await start("tight");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toContain("loop converge-repair reached its bound of 1");
+    expect(final.status).toBe("blocked");
+    expect(service.store.run(run.runId).reason).toBe("no_progress");
+    expect(lastError(service, run.runId)).toContain("loop converge-repair reached its bound of 1");
+  }, 60000);
+
+  test("V2-07 a branch by when picks the transition that matches the carried contract", async () => {
+    const { start, complete, service, define } = setup();
+    const upgraded = upgradeWorkflowV1(sddWorkflow, policy);
+    // After learning, a passing convergence goes straight to done; anything else would loop back.
+    define({
+      ...upgraded, id: "branchy",
+      transitions: [
+        ...upgraded.transitions.filter((t) => t.id !== "converge-learn"),
+        { id: "converge-skip-learn", from: "converge", to: "done", on: "passed", carries: "convergence", gates: [], when: { field: "$.verdict", equals: "pass" } },
+        { id: "converge-learn", from: "converge", to: "learn", on: "passed", carries: "convergence", gates: [] },
+      ],
+    });
+    const run = await start("branchy");
+    expect((await complete(run.runId)).status).toBe("completed");
+    const taken = ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId);
+    expect(taken.at(-1)).toBe("converge-skip-learn");
+    expect(taken).not.toContain("learn-done");
+  }, 60000);
+
+  test("V2-09 advisory gates never block, retries are recorded and a late pass is flaky", async () => {
+    const { start, complete, service, define, gate, root } = setup();
+    const counter = join(root, "..", `${root.split("/").at(-1)}-counter`);
+    cleanups.push(() => rmSync(counter, { force: true }));
+    gate(commandGate("always-fails", ["-e", "process.exit(3)"], { required: false }));
+    gate(commandGate("second-time", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));process.exit(n>1?0:1)`], { retries: { max: 2, retryOn: ["failed"] } }));
+    define(quickFix((d) => ({
+      ...d,
+      stages: d.stages.map((s) => (s.type === "check" ? { ...s, gates: [{ gateId: "always-fails" }, { gateId: "check" }, { gateId: "second-time" }] } : s)),
+    })));
+    const run = await start("custom-fix");
+    expect((await complete(run.runId)).status).toBe("completed");
+    const finished = ofType(events(service, run.runId), "gate.finished").map((e) => e.payload);
+    // Required gates run first, in order; the advisory gate runs last and is only recorded.
+    expect(finished.map((g) => `${g.gateId}:${g.status}:${g.mode}`)).toEqual(["check:passed:required", "second-time:passed:required", "always-fails:failed:advisory"]);
+    expect(finished.find((g) => g.gateId === "second-time")).toMatchObject({ attempts: 2, flaky: true });
+    expect(service.store.checks(run.runId).filter((c) => c.check_id === "second-time").map((c) => c.status)).toEqual(["failed", "passed"]);
+  }, 30000);
+
+  test("V2-09 transition gates stop at the first required failure and block", async () => {
+    const { start, complete, service, define, gate } = setup();
+    gate(commandGate("gate-fails", ["-e", "process.exit(1)"]));
+    gate(commandGate("never-runs", ["-e", "process.exit(0)"]));
+    define(quickFix((d) => ({
+      ...d,
+      transitions: d.transitions.map((t) => (t.id === "checks-done" ? { ...t, gates: [{ gateId: "gate-fails" }, { gateId: "never-runs" }] } : t)),
+    })));
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(final.status).toBe("blocked");
+    expect(service.store.run(run.runId).reason).toBe("verification_failed");
+    expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check", "gate-fails"]);
+  }, 30000);
+
+  test("V2-09 a human gate on a transition waits for evidence and then lets the run finish", async () => {
+    const { start, complete, service, define, gate, pending } = setup();
+    gate({
+      schemaVersion: 1, id: "signoff", description: "A person confirms the change", required: true, scope: "transition", timeoutMs: 3600000,
+      retries: { max: 0, retryOn: [] }, evidence: { kind: "decision", keepOutputLines: 40, artifactPaths: [] },
+      type: "human", human: { prompt: "Confirm the value looks right", answer: "evidence", bindsDigest: true },
+    } as Gate);
+    define(quickFix((d) => ({
+      ...d,
+      transitions: d.transitions.map((t) => (t.id === "checks-done" ? { ...t, gates: [{ gateId: "signoff" }] } : t)),
+    })));
+    const run = await start("custom-fix");
+    const waiting = await complete(run.runId);
+    expect(waiting.status).toBe("waiting");
+    const request = pending(run.runId, "manual_evidence");
+    const body = JSON.parse(request?.body_json ?? "{}") as { criterionId: string; question: string };
+    expect(body.criterionId).toBe("gate-signoff");
+    expect(body.question).toBe("Confirm the value looks right");
+    const snapshot = await service.get(run.runId);
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: snapshot.revision }, { kind: "manual-evidence", requestId: request?.id ?? "", criterionId: "gate-signoff", accepted: true, evidence: "Checked by hand" });
+    expect((await complete(run.runId)).status).toBe("completed");
+    expect(service.store.state(run.runId).gateResults.signoff?.status).toBe("passed");
+  }, 30000);
+
+  test("V2-10 the effective mode of a gate is part of the approval digest", async () => {
+    const digests: string[] = [];
+    for (const mode of ["required", "advisory"] as const) {
+      const { start, drive, define, pending, service } = setup();
+      define(quickFix((d) => ({
+        ...d,
+        stages: d.stages.map((s) => (s.type === "check" ? { ...s, gates: [{ gateId: "check", mode }] } : s)),
+      })));
+      const run = await start("custom-fix");
+      await drive(run.runId);
+      digests.push(pending(run.runId, "approval")?.digest ?? "");
+      expect(JSON.parse(service.store.run(run.runId).policy_json).checks[0].required).toBe(mode === "required");
+    }
+    expect(digests[0]).toHaveLength(64);
+    expect(digests[1]).not.toBe(digests[0]);
+  }, 30000);
+
+  test("a spike researches and reports without an approval or a file change", async () => {
+    const { start, complete, executor, service, root } = setup();
+    const run = await start("spike");
+    expect((await complete(run.runId)).status).toBe("completed");
+    expect(executor.calls).toEqual(["research", "report"]);
+    expect(service.store.requests(run.runId)).toEqual([]);
+    const completion = service.store.artifacts(run.runId).find((a) => a.logical_path === "completion.json");
+    const body = JSON.parse(service.store.readArtifact(run.runId, completion?.id ?? "")) as { report: { recommendation: { kind: string } } };
+    expect(body.report.recommendation.kind).toBe("proceed");
+    expect(() => readFileSync(join(root, "value.txt"))).toThrow();
+  }, 30000);
+
+  test("review only reviews the working tree diff and reports findings without repairing", async () => {
+    const { start, complete, executor, service, root } = setup({ reviewVerdict: "changes_requested" });
+    const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" });
+    git("init", "-q");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    writeFileSync(join(root, "value.txt"), "old");
+    git("add", ".");
+    git("commit", "-qm", "base");
+    writeFileSync(join(root, "value.txt"), "ready");
+    const run = await start("review-only", "Review the value change");
+    const final = await complete(run.runId);
+    expect(final.status).toBe("completed");
+    expect(executor.calls).toEqual(["review"]);
+    const state = service.store.state(run.runId);
+    expect(state.diff?.files).toEqual(["value.txt"]);
+    expect(service.store.readArtifact(run.runId, state.diff?.artifactId ?? "")).toContain("+ready");
+    expect(state.gateResults["security-review"]?.status).toBe("skipped");
+    expect(state.gateResults["correctness-review"]?.status).toBe("failed");
+    const taken = ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId);
+    expect(taken).toEqual(["review-findings"]);
+    expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
+
+  }, 30000);
+});
