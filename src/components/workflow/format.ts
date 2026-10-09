@@ -1,8 +1,15 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { type BudgetLimits, proposeExtension } from "../../core/workflows/budget.js";
+import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js";
+import { detectGates } from "../../core/workflows/gates.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { Check } from "../../core/workflows/types.js";
-import type { BudgetView, StageView } from "../../core/workflows/view.js";
+import type {
+  BudgetPresetId,
+  BudgetView,
+  EstimateView,
+  StageView,
+  WorkflowInfo,
+} from "../../core/workflows/view.js";
 
 export type Tone = "online" | "offline" | "warning" | "error" | "info" | "idle";
 
@@ -79,6 +86,7 @@ const REASONS: Record<string, string> = {
   input_changed: "instructions or configuration changed since approval",
   workspace_busy: "another run or edit holds the workspace",
   budget_exhausted: "the token, call or time budget is used up",
+  checkpoint: "the run reached a token checkpoint and waits for you to continue",
   no_progress: "repairs stopped making progress",
   verification_failed: "checks or reviews did not pass",
   provider_unavailable: "the model provider is unavailable",
@@ -120,7 +128,7 @@ export function headline(
       if (snapshot.reason === "budget_exhausted")
         return {
           now: `Blocked at ${at}: ${budget ? budgetLimitText(budget) : reasonText(snapshot.reason)}.`,
-          next: `F forks a new run with the same limits and fresh counters${stage && ["research", "specify", "plan", "analyze"].includes(stage.kind) ? " (it starts again from Research)" : ""}. For broad requests, narrow the description or start a new run with the extended budget. C cancels.`,
+          next: `${budget && extensionFor(budget) ? `Press B to raise the limits (${extensionText(budget)}) and continue from this stage. ` : ""}F forks a new run with the same limits and fresh counters${stage && ["research", "specify", "plan", "analyze"].includes(stage.kind) ? " (it starts again from Research)" : ""}. For broad requests, narrow the description first. C cancels.`,
         };
       return {
         now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.`,
@@ -149,9 +157,33 @@ export function budgetLimitText(budget: BudgetView): string {
 export interface RunAction {
   key: string;
   label: string;
-  action: "resume" | "pause" | "cancel" | "fork" | "decide";
+  action: "resume" | "pause" | "cancel" | "fork" | "decide" | "extend";
 }
-export function runActions(snapshot: RunSnapshot): RunAction[] {
+/** The limits one "raise" decision would set, from the numbers the run screen already has. */
+export function extensionFor(budget: BudgetView): BudgetLimits | null {
+  return proposeExtension(
+    {
+      maxTotalTokens: budget.maxTokens,
+      maxAgentCalls: budget.maxCalls,
+      maxActiveMs: budget.maxActiveMs,
+    },
+    budget,
+  );
+}
+export function extensionText(budget: BudgetView): string {
+  const next = extensionFor(budget);
+  if (!next) return "no limit can be raised further";
+  return [
+    next.maxTotalTokens > budget.maxTokens &&
+      `tokens ${formatTokens(budget.maxTokens)} → ${formatTokens(next.maxTotalTokens)}`,
+    next.maxAgentCalls > budget.maxCalls && `calls ${budget.maxCalls} → ${next.maxAgentCalls}`,
+    next.maxActiveMs > budget.maxActiveMs &&
+      `time ${formatDuration(budget.maxActiveMs)} → ${formatDuration(next.maxActiveMs)}`,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+export function runActions(snapshot: RunSnapshot, budget: BudgetView | null = null): RunAction[] {
   const actions: RunAction[] = [];
   const s = snapshot.status;
   if (snapshot.pendingRequestIds.length)
@@ -167,9 +199,74 @@ export function runActions(snapshot: RunSnapshot): RunAction[] {
       action: "resume",
     });
   if (s === "running") actions.push({ key: "P", label: "pause", action: "pause" });
+  if (
+    s === "blocked" &&
+    snapshot.reason === "budget_exhausted" &&
+    (!budget || extensionFor(budget))
+  )
+    actions.push({ key: "B", label: "raise limits", action: "extend" });
   if (s === "blocked" || isTerminal(s)) actions.push({ key: "F", label: "fork", action: "fork" });
   if (!isTerminal(s)) actions.push({ key: "C", label: "cancel", action: "cancel" });
   return actions;
+}
+
+/** How the start estimate compares with a budget preset, for the new-run form. */
+export function estimateFit(
+  estimate: StartEstimate,
+  preset: WorkflowInfo["presets"][BudgetPresetId] | undefined,
+): { text: string; warn: boolean } {
+  const base = estimate.label;
+  if (!preset) return { text: base, warn: false };
+  if (preset.checkpointTokens)
+    return {
+      text: `${base}. This preset has no token cap; you decide at every ${formatTokens(preset.checkpointTokens)}.`,
+      warn: false,
+    };
+  if (estimate.tokens.low > preset.maxTotalTokens)
+    return {
+      text: `${base}. Even the low end is above this budget (${formatTokens(preset.maxTotalTokens)}): pick a larger one.`,
+      warn: true,
+    };
+  if (estimate.tokens.high > preset.maxTotalTokens)
+    return {
+      text: `${base}. The high end is above this budget (${formatTokens(preset.maxTotalTokens)}); the run may stop for more.`,
+      warn: true,
+    };
+  return { text: `${base}. It fits this budget.`, warn: false };
+}
+
+/** Lines for the run overview: expectation, burn rate, where the budget ends, and the final check. */
+export function estimateLines(
+  estimate: EstimateView | null,
+  stages: StageView[],
+): { text: string; tone: "muted" | "warn" }[] {
+  if (!estimate) return [];
+  const out: { text: string; tone: "muted" | "warn" }[] = [];
+  const name = (id: string): string =>
+    stageLabel(stages.find((stage) => stage.id === id)?.kind ?? id);
+  const p = estimate.projection;
+  if (p) {
+    out.push({ text: p.label, tone: "muted" });
+    if (p.tokensPerMinute)
+      out.push({
+        text: `Burn rate ${formatTokens(p.tokensPerMinute)} tokens per active minute${p.minutesLeft !== null ? `; the remaining budget lasts about ${formatDuration(p.minutesLeft * 60000)} at that rate` : ""} (estimate)`,
+        tone: "muted",
+      });
+    if (p.exhaustsAt.typical || p.exhaustsAt.high)
+      out.push({
+        text: p.exhaustsAt.typical
+          ? `Forecast: at the typical cost the budget runs out during ${name(p.exhaustsAt.typical)}`
+          : `Forecast: the budget should last at the typical cost; at the high end it runs out during ${name(p.exhaustsAt.high ?? "")}`,
+        tone: "warn",
+      });
+  }
+  if (estimate.comparison) out.push({ text: estimate.comparison.text, tone: "muted" });
+  else if (!p && estimate.saved)
+    out.push({
+      text: `Estimated ${rangeText(estimate.saved.tokens)} at the start (estimate)`,
+      tone: "muted",
+    });
+  return out;
 }
 
 export function formatTokens(n: number): string {
@@ -254,7 +351,7 @@ const HINTS: [RegExp, string][] = [
   ],
   [
     /budget exhausted|exceeds remaining token budget/i,
-    "Fork the run (F) to continue with a fresh budget.",
+    "Raise the limits (B) to continue from where it stopped, or fork the run (F) with a fresh budget.",
   ],
   [/Unknown run/i, "The run no longer exists. Pick another one from the list."],
   [
@@ -293,42 +390,9 @@ export function featureSlug(text: string): string {
 }
 export const isFeatureId = (id: string): boolean => /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(id);
 
-/** Checks proposed when enabling workflows, taken from the project's own package scripts. */
+/** Checks proposed when enabling workflows: the preselected detections for every ecosystem found. */
 export function detectChecks(workspace: string): Check[] {
-  const file = join(workspace, "package.json");
-  if (!existsSync(file)) return [];
-  let scripts: Record<string, unknown> = {};
-  try {
-    scripts =
-      (JSON.parse(readFileSync(file, "utf8")) as { scripts?: Record<string, unknown> }).scripts ??
-      {};
-  } catch {
-    return [];
-  }
-  const runner =
-    existsSync(join(workspace, "bun.lock")) || existsSync(join(workspace, "bun.lockb"))
-      ? "bun"
-      : existsSync(join(workspace, "pnpm-lock.yaml"))
-        ? "pnpm"
-        : existsSync(join(workspace, "yarn.lock"))
-          ? "yarn"
-          : "npm";
-  const wanted: [string, string, number][] = [
-    ["typecheck", "typecheck", 120000],
-    ["lint", "lint", 120000],
-    ["tests", "test", 600000],
-  ];
-  return wanted
-    .filter(([, script]) => typeof scripts[script] === "string")
-    .map(([id, script, timeoutMs]) => ({
-      id,
-      executable: runner,
-      args: ["run", script],
-      cwd: ".",
-      timeoutMs,
-      required: true,
-      scope: "feature" as const,
-      envNames: [],
-      writes: [],
-    }));
+  return detectGates(workspace)
+    .filter((suggestion) => suggestion.preselected)
+    .map((suggestion) => suggestion.check);
 }

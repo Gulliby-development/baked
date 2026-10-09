@@ -1,11 +1,12 @@
 import { useTheme } from "../../core/theme/index.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { FindingRow, TaskRow } from "../../core/workflows/store.js";
-import type { BudgetView, RunDetails, StageView } from "../../core/workflows/view.js";
+import type { BudgetView, EstimateView, RunDetails, StageView } from "../../core/workflows/view.js";
 import { Hint, ProgressBar } from "../ui/index.js";
 import {
   clockTime,
   errorHint,
+  estimateLines,
   eventText,
   formatDuration,
   formatTokens,
@@ -59,6 +60,7 @@ export function RunOverview({
   details,
   stages,
   budget,
+  estimate,
   events,
   tasks,
   findings,
@@ -71,6 +73,7 @@ export function RunOverview({
   details: RunDetails | null;
   stages: StageView[];
   budget: BudgetView | null;
+  estimate: EstimateView | null;
   events: WorkflowEvent[];
   tasks: TaskRow[];
   findings: FindingRow[];
@@ -125,8 +128,11 @@ export function RunOverview({
             label="Tokens"
             labelWidth={12}
             width={barW}
-            pct={pct(budget.tokens + budget.heldTokens + budget.inFlightTokens, budget.maxTokens)}
-            value={`${formatTokens(budget.tokens)} used${budget.heldTokens ? ` + ${formatTokens(budget.heldTokens)} held` : ""}${budget.inFlightTokens ? ` + ${formatTokens(budget.inFlightTokens)} in flight` : ""} / ${formatTokens(budget.maxTokens)}`}
+            pct={pct(
+              budget.tokens + budget.heldTokens + budget.inFlightTokens,
+              budget.nextCheckpoint ?? budget.maxTokens,
+            )}
+            value={`${formatTokens(budget.tokens)} used${budget.heldTokens ? ` + ${formatTokens(budget.heldTokens)} held` : ""}${budget.inFlightTokens ? ` + ${formatTokens(budget.inFlightTokens)} in flight` : ""} / ${budget.nextCheckpoint ? `next checkpoint ${formatTokens(budget.nextCheckpoint)}` : formatTokens(budget.maxTokens)}`}
           />
           {budget.heldTokens ? (
             <Hint>
@@ -150,6 +156,11 @@ export function RunOverview({
           />
         </>
       ) : null}
+      {estimateLines(estimate, stages).map((line) => (
+        <text key={line.text} fg={line.tone === "warn" ? t.warning : t.textMuted}>
+          {line.text}
+        </text>
+      ))}
       <text fg={t.textMuted}>
         {[
           `Tasks ${done}/${liveTasks.length}`,

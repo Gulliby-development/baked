@@ -7,10 +7,19 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
+import {
+  type BudgetLimits,
+  budgetUsage,
+  limitsOf,
+  MAX_EXTENDED_MS,
+  MAX_EXTENDED_TOKENS,
+  proposeExtension,
+} from "./budget.js";
 import { sddWorkflow } from "./builtin/sdd.js";
 import { validateChecks } from "./check-policy.js";
 import { assertFrozenInputs, frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
+import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
 import {
   commandProcessMayRun,
@@ -23,6 +32,7 @@ import {
   type CommandIdentity,
   type Decision,
   PolicySchema,
+  type RunPolicy,
   type RunSnapshot,
   type RunState,
   SafeId,
@@ -186,10 +196,28 @@ export class NativeWorkflowService implements WorkflowService {
       if (duplicate) return duplicate;
       const id = newId();
       this.store.create(id, request.featureId, workflow, profiles, policy, state);
+      this.saveEstimate(id, policy);
       const snapshot = this.store.snapshot(id);
       this.store.saveCommand(request.commandId, request, snapshot);
       return snapshot;
     });
+  }
+  /** Keeps the expectation made at creation, so a finished run can be compared with it. */
+  private saveEstimate(runId: string, policy: RunPolicy): void {
+    try {
+      const estimate = estimateStart(readHistory(this.store));
+      const saved: SavedEstimate = {
+        schemaVersion: 1,
+        at: Date.now(),
+        tokens: estimate.tokens,
+        basis: estimate.basis,
+        samples: estimate.samples,
+        maxTokens: policy.maxTotalTokens,
+      };
+      this.store.artifact(runId, "estimate", "estimates/start.json", canonical(saved));
+    } catch {
+      // An estimate is advice; a failure to compute it never blocks a run.
+    }
   }
   async get(runId: string): Promise<RunSnapshot> {
     return this.store.snapshot(runId);
@@ -402,6 +430,9 @@ export class NativeWorkflowService implements WorkflowService {
             decision.effectId,
             decision.resolution === "record-applied" ? "reconciled" : "failed",
           );
+      } else if (decision.kind === "continue") {
+        if (request.kind !== "checkpoint")
+          throw new WorkflowFault("STALE_DECISION", "Only a token checkpoint can be continued");
       } else if (decision.kind === "reject") accepted = false;
       this.store.decideRequest(runId, request.id, accepted ? "accepted" : "rejected", decision);
       const pending = this.store.requests(runId).some((r) => r.status === "pending");
@@ -483,6 +514,77 @@ export class NativeWorkflowService implements WorkflowService {
       this.store.saveState(runId, state);
       this.store.transition(runId, "paused");
     });
+  }
+  /**
+   * Raises the token, call and time limits of a run that stopped on its budget, from where it
+   * stopped. Scope, tools and checks cannot change here, so the approved plan stays valid and the
+   * stage, evidence and approval digest are untouched. The user's command is the approval; it is
+   * recorded with both policies as an immutable policy-revision artifact.
+   */
+  async extendBudget(
+    runId: string,
+    command: CommandIdentity,
+    requested: Partial<BudgetLimits> = {},
+  ): Promise<RunSnapshot> {
+    this.enabled();
+    return this.store.command(
+      runId,
+      command,
+      { runId, ...command, action: "extend-budget", requested },
+      () => {
+        const row = this.store.run(runId);
+        if (row.status !== "blocked" || row.reason !== "budget_exhausted")
+          throw new WorkflowFault(
+            "STALE_DECISION",
+            "Only a run that stopped on its budget can be extended",
+          );
+        const before = PolicySchema.parse(JSON.parse(row.policy_json));
+        const proposal = proposeExtension(limitsOf(before), budgetUsage(this.store, row));
+        const limits: BudgetLimits = {
+          maxTotalTokens:
+            requested.maxTotalTokens ?? proposal?.maxTotalTokens ?? before.maxTotalTokens,
+          maxAgentCalls: requested.maxAgentCalls ?? proposal?.maxAgentCalls ?? before.maxAgentCalls,
+          maxActiveMs: requested.maxActiveMs ?? proposal?.maxActiveMs ?? before.maxActiveMs,
+        };
+        const current = limitsOf(before);
+        for (const key of Object.keys(current) as (keyof BudgetLimits)[])
+          if (limits[key] < current[key])
+            throw new WorkflowFault("INVALID_DEFINITION", "Limits can only be raised");
+        if (
+          Object.keys(current).every(
+            (key) => limits[key as keyof BudgetLimits] === current[key as keyof BudgetLimits],
+          )
+        )
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            "No limit can be raised further. Fork the run or narrow the request.",
+          );
+        const after = PolicySchema.parse({ ...before, ...limits });
+        if (limits.maxActiveMs > MAX_EXTENDED_MS || limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            "Requested limits are above the allowed ceiling",
+          );
+        this.store.artifact(
+          runId,
+          "policy-revision",
+          `policy-revisions/${command.commandId}.json`,
+          canonical({
+            kind: "budget-extension",
+            approvedBy: "user",
+            commandId: command.commandId,
+            stageId: row.stage_id,
+            previous: current,
+            next: limitsOf(after),
+            previousPolicyHash: hashJson(before),
+            policyHash: hashJson(after),
+            usage: budgetUsage(this.store, row),
+          }),
+        );
+        this.store.setPolicy(runId, after);
+        this.store.transition(runId, "paused", "none");
+      },
+    );
   }
   async fork(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
     this.enabled();

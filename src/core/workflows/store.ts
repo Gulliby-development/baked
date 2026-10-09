@@ -6,7 +6,9 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
 import { WorkflowFault } from "./errors.js";
+import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
+import { migration002 } from "./migrations/002.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -76,7 +78,7 @@ export interface TaskRow {
 }
 export interface RequestRow {
   id: string;
-  kind: "approval" | "clarification" | "manual_evidence" | "recovery";
+  kind: "approval" | "clarification" | "manual_evidence" | "recovery" | "checkpoint";
   status: string;
   digest: string;
   body_json: string;
@@ -145,6 +147,11 @@ type EventInput = WorkflowEvent extends infer E
     : never
   : never;
 
+const MIGRATIONS = [
+  { version: 1, sql: migration001 },
+  { version: 2, sql: migration002 },
+] as const;
+
 export class WorkflowStore {
   private readonly db: Database;
   readonly path: string;
@@ -168,30 +175,98 @@ export class WorkflowStore {
       if (!table) {
         if (readonly)
           throw new WorkflowFault("VERSION_UNSUPPORTED", "Missing workflow migration metadata");
-        this.transaction(() => {
-          this.db.exec(migration001);
-          this.db.run("INSERT INTO schema_migrations VALUES (1,?,?)", [
-            hashBytes(migration001),
-            Date.now(),
-          ]);
-        });
+        this.transaction(() => this.applyMigrations(0));
       }
-      const version = this.db
+      const applied = this.db
         .query<{ version: number; checksum: string }, []>(
-          "SELECT version,checksum FROM schema_migrations ORDER BY version DESC LIMIT 1",
+          "SELECT version,checksum FROM schema_migrations ORDER BY version",
         )
-        .get();
-      if (version?.version !== 1 || version.checksum !== hashBytes(migration001))
+        .all();
+      // Every applied migration must be one this build knows, unchanged and in order.
+      if (
+        applied.length === 0 ||
+        applied.length > MIGRATIONS.length ||
+        applied.some(
+          (row, i) => row.version !== i + 1 || row.checksum !== hashBytes(MIGRATIONS[i]?.sql ?? ""),
+        )
+      )
         throw new WorkflowFault(
           "VERSION_UNSUPPORTED",
           "Workflow schema version or checksum mismatch. Preserve the database and use a compatible reader.",
         );
+      // A reader opened for status or export tolerates an older schema; only a writer upgrades it.
+      if (applied.length < MIGRATIONS.length && !readonly)
+        this.transaction(() => this.applyMigrations(applied.length));
       const integrity = this.db.query<{ quick_check: string }, []>("PRAGMA quick_check").get();
       if (integrity?.quick_check !== "ok")
         throw new WorkflowFault("STORAGE_CORRUPT", "Workflow database integrity check failed");
     } catch (error) {
       this.db.close();
       throw error;
+    }
+  }
+  /**
+   * What runs spent, per stage and per task; the input of the spend estimator. With an ID, only
+   * that run (the one being shown reads its own spend fresh).
+   */
+  history(only?: string): PastRun[] {
+    const runs = this.db
+      .query<
+        { id: string; status: string; token_usage: number; agent_calls: number; active_ms: number },
+        []
+      >(
+        "SELECT id,status,token_usage,agent_calls,active_ms FROM runs WHERE status<>'created' ORDER BY created_at DESC LIMIT 200",
+      )
+      .all()
+      .filter((r) => only === undefined || r.id === only);
+    const byRun = new Map<string, PastRun>(
+      runs.map((r) => [
+        r.id,
+        {
+          runId: r.id,
+          status: r.status,
+          tokens: r.token_usage,
+          calls: r.agent_calls,
+          activeMs: r.active_ms,
+          taskCount: 0,
+          stageTokens: {},
+          taskTokens: 0,
+        },
+      ]),
+    );
+    // Child steps (tasks, review dimensions, skeptics) belong to the stage of their parent step.
+    for (const row of this.db
+      .query<{ run_id: string; stage: string; leaf: string; tokens: number }, []>(
+        `SELECT a.run_id AS run_id, COALESCE(p.stage_id, s.stage_id) AS stage, s.stage_id AS leaf,
+           SUM(CASE WHEN a.usage_complete=1 THEN COALESCE(a.used_tokens,0) ELSE 0 END) AS tokens
+         FROM attempts a JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id
+         LEFT JOIN steps p ON p.run_id=s.run_id AND p.id=s.parent_step_id
+         WHERE a.model_id IS NOT NULL GROUP BY a.run_id, stage, leaf`,
+      )
+      .all()) {
+      const past = byRun.get(row.run_id);
+      if (!past) continue;
+      past.stageTokens[row.stage] = (past.stageTokens[row.stage] ?? 0) + row.tokens;
+      if (row.leaf.startsWith("task-")) past.taskTokens += row.tokens;
+    }
+    for (const row of this.db
+      .query<{ run_id: string; n: number }, []>(
+        "SELECT run_id, COUNT(*) AS n FROM tasks WHERE status<>'invalidated' GROUP BY run_id",
+      )
+      .all()) {
+      const past = byRun.get(row.run_id);
+      if (past) past.taskCount = row.n;
+    }
+    return [...byRun.values()];
+  }
+  private applyMigrations(from: number): void {
+    for (const migration of MIGRATIONS.slice(from)) {
+      this.db.exec(migration.sql);
+      this.db.run("INSERT INTO schema_migrations VALUES (?,?,?)", [
+        migration.version,
+        hashBytes(migration.sql),
+        Date.now(),
+      ]);
     }
   }
   close(): void {
@@ -670,6 +745,34 @@ export class WorkflowStore {
   attempts(runId: string): AttemptRow[] {
     return this.db.query<AttemptRow, [string]>("SELECT * FROM attempts WHERE run_id=?").all(runId);
   }
+  /**
+   * The token count the run may not pass without a decision, or null without soft checkpoints.
+   * Each accepted checkpoint moves the next one a full interval beyond what had been used.
+   */
+  checkpointBoundary(runId: string, policy: RunPolicy): number | null {
+    const interval = policy.checkpointTokens;
+    if (!interval) return null;
+    let boundary = interval;
+    for (const request of this.requests(runId))
+      if (request.kind === "checkpoint" && request.status === "accepted") {
+        const body = JSON.parse(request.body_json) as {
+          usedTokens?: number;
+          projectedTokens?: number;
+        };
+        // Past the step that triggered it, so a step larger than the interval still fits next time.
+        boundary = Math.max(boundary, body.projectedTokens ?? body.usedTokens ?? 0) + interval;
+      }
+    return boundary;
+  }
+  private assertBelowCheckpoint(runId: string, policy: RunPolicy, projected: number): void {
+    const boundary = this.checkpointBoundary(runId, policy);
+    if (boundary !== null && projected > boundary)
+      throw new WorkflowFault(
+        "CHECKPOINT_REACHED",
+        `The next step would pass the token checkpoint at ${boundary}`,
+        { reason: "checkpoint", boundary, projected, interval: policy.checkpointTokens },
+      );
+  }
   reserve(
     runId: string,
     stepId: string,
@@ -688,6 +791,7 @@ export class WorkflowStore {
         row.active_ms >= policy.maxActiveMs
       )
         throw new WorkflowFault("BUDGET_EXHAUSTED", "Run agent/token/time budget exhausted");
+      this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
       const id = newId();
       const ordinal = this.attempts(runId).filter((a) => a.step_id === stepId).length + 1;
       this.db.run(
@@ -730,6 +834,7 @@ export class WorkflowStore {
           "BUDGET_EXHAUSTED",
           "Next model step exceeds remaining token budget",
         );
+      this.assertBelowCheckpoint(runId, policy, run.token_usage + reserved + tokens);
       this.db.run(
         "UPDATE attempts SET reserved_tokens=MAX(reserved_tokens,?) WHERE run_id=? AND id=? AND status='running'",
         [tokens, runId, attemptId],

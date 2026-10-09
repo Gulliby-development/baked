@@ -24,6 +24,8 @@ const commands = [
   "recover",
   "candidate",
   "usage",
+  "extend",
+  "continue",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 export interface WorkflowArgs {
@@ -61,6 +63,9 @@ const flags = new Set([
   "after",
   "effect",
   "resolution",
+  "tokens",
+  "calls",
+  "time-ms",
   "spec",
   "plan",
   "tasks",
@@ -102,6 +107,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: [],
+  extend: ["tokens", "calls", "time-ms", "expected-revision", "command-id"],
+  continue: ["request", "expected-revision", "command-id"],
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -134,11 +141,11 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         "INVALID_DEFINITION",
         `Invalid --status value ${JSON.stringify(result.flags[name])}. Valid statuses: ${RunStatus.options.join(", ")}`,
       );
-    if (["expected-revision", "limit", "after"].includes(name)) {
+    if (["expected-revision", "limit", "after", "tokens", "calls", "time-ms"].includes(name)) {
       const value = Number(result.flags[name]);
       if (
         !Number.isSafeInteger(value) ||
-        value < (name === "limit" ? 1 : 0) ||
+        value < (name === "limit" || ["tokens", "calls", "time-ms"].includes(name) ? 1 : 0) ||
         !/^\d+$/.test(String(result.flags[name]))
       )
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires an integer`);
@@ -178,6 +185,8 @@ answer RUN_ID --request ID --answers-file FILE --expected-revision N
 evidence RUN_ID --request ID --file FILE --accept --expected-revision N
 reject RUN_ID --request ID --reason TEXT --expected-revision N
 pause|cancel|fork RUN_ID --expected-revision N
+continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
+extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the limits of a run blocked on its budget; resume continues it)
 candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE]
 revise RUN_ID --candidate SHA256 --expected-revision N
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N

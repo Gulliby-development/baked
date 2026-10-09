@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import type { GatesApi } from "../components/workflow/GatesView.js";
 import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
+import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
 import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
 import { useWorkflowStore } from "../stores/workflow.js";
 
@@ -172,6 +174,24 @@ export function useWorkflowRuns(workspace: string, visible: boolean) {
     };
   }, [workspace, visible, epoch]);
   return { runs, info, enabled, error, reload };
+}
+
+/**
+ * Reads and edits the project's gates. Reading, saving and detection touch only files; a run on
+ * demand goes through the workflow worker so the interface never waits for the command.
+ */
+export function workflowGatesApi(workspace: string): GatesApi {
+  const inherited = () => mergeConfigs(loadConfig(), loadProjectConfig(workspace)).workflows;
+  return {
+    load: () => readGates(workspace, inherited()),
+    save: async (checks) => {
+      writeGates(workspace, checks, inherited());
+      // Only a live worker holds a copy of the policy; a new one reads the file.
+      await existingWorkflowSession(workspace)?.updateGates(checks);
+    },
+    suggest: (configured) => detectGates(workspace, configured),
+    run: (check, signal) => workflowSession(workspace).runGate(check, signal),
+  };
 }
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);

@@ -163,7 +163,7 @@ describe("durable SDD runtime", () => {
   test("newer storage schemas are preserved and rejected", async () => {
     const { root, service } = setup(); await start(service);
     const db = new Database(join(root, ".baked", "workflows.sqlite"));
-    try { db.run("UPDATE schema_migrations SET version=2"); expect(() => new WorkflowStore(root)).toThrow("version"); expect(db.query("SELECT version FROM schema_migrations").get()).toEqual({ version: 2 }); }
+    try { db.run("UPDATE schema_migrations SET version=version+10"); expect(() => new WorkflowStore(root)).toThrow("version"); expect(db.query("SELECT MIN(version) AS version FROM schema_migrations").get()).toEqual({ version: 11 }); }
     finally { db.close(); }
   });
   test("artifact rollback leaves no evidence pointing to an orphan blob", async () => {

@@ -70,6 +70,13 @@ try {
   const exhausted = await executor.execute({ runId: run.runId, attemptId: bounded, profile: researcher, prompt: "Research fixture", signal: new AbortController().signal, maxSteps: 8, validate: () => ["never valid"] });
   assert.equal((exhausted.output as { summary: string }).summary, "bad-3", "after two corrections the scheduler receives the result and rejects it");
   assert.equal(queue.length, 0);
+  // An agent that ends without any result is an error, not material for a made-up reformatting.
+  const silent = service.store.reserve(run.runId, step, researcher.model, 20000, defaultWorkflowPolicy);
+  const silentFrom = model.doGenerateCalls.length;
+  queue.push(response(null, ""));
+  await assert.rejects(executor.execute({ runId: run.runId, attemptId: silent, profile: researcher, prompt: "Research fixture", signal: new AbortController().signal, maxSteps: 1 }), /without submitting a result/);
+  assert.equal(model.doGenerateCalls.length - silentFrom, 1, "no correction call is made for an empty result");
+  assert.equal(queue.length, 0);
   console.log(JSON.stringify({ nativeTools: 2, formatRetries: 1, semanticCorrections: 3, modelCalls: model.doGenerateCalls.length }));
 } finally {
   executor.dispose(); service.close(); setCwd(previousCwd);

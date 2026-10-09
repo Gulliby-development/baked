@@ -148,6 +148,11 @@ export const PolicySchema = z
     maxAttemptTokens: z.number().int().min(1000).optional(),
     maxActiveMs: z.number().int().min(1000),
     maxCostUsd: z.number().positive().nullable(),
+    /**
+     * Soft checkpoints: when set, the run pauses for a decision each time it would spend past the
+     * next multiple of this many tokens. Used with an uncapped token limit (see UNCAPPED_TOKENS).
+     */
+    checkpointTokens: z.number().int().min(10000).nullable().default(null),
     maxRepairRounds: z.number().int().min(0).max(5),
     maxConvergenceRounds: z.number().int().min(0).max(5),
     maxCorrectiveTasks: z.number().int().min(0).max(100),
@@ -278,6 +283,7 @@ export const ReasonCode = z.enum([
   "input_changed",
   "workspace_busy",
   "budget_exhausted",
+  "checkpoint",
   "no_progress",
   "verification_failed",
   "provider_unavailable",
@@ -586,7 +592,7 @@ export const EventSchema = z.discriminatedUnion("type", [
       payload: z
         .object({
           requestId: SafeId,
-          kind: z.enum(["approval", "clarification", "manual_evidence", "recovery"]),
+          kind: z.enum(["approval", "clarification", "manual_evidence", "recovery", "checkpoint"]),
           digest: Hash,
         })
         .strict(),
@@ -691,6 +697,7 @@ export interface StartRequest {
 export type Decision =
   | { requestId: string; kind: "approve"; digest: string }
   | { requestId: string; kind: "reject"; explanation: string }
+  | { requestId: string; kind: "continue" }
   | { requestId: string; kind: "answer"; answers: Record<string, string> }
   | {
       requestId: string;
@@ -709,6 +716,7 @@ export type Decision =
 export const DecisionSchema: z.ZodType<Decision> = z.discriminatedUnion("kind", [
   z.object({ requestId: SafeId, kind: z.literal("approve"), digest: Hash }).strict(),
   z.object({ requestId: SafeId, kind: z.literal("reject"), explanation: Text }).strict(),
+  z.object({ requestId: SafeId, kind: z.literal("continue") }).strict(),
   z
     .object({
       requestId: SafeId,
@@ -751,6 +759,12 @@ export interface WorkflowService {
   decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot>;
   revise(runId: string, command: CommandIdentity, candidateHash: string): Promise<RunSnapshot>;
   fork(runId: string, command: CommandIdentity): Promise<RunSnapshot>;
+  /** Raises the token/call/time limits of a run that stopped on its budget; the run stays paused. */
+  extendBudget(
+    runId: string,
+    command: CommandIdentity,
+    limits?: Partial<import("./budget.js").BudgetLimits>,
+  ): Promise<RunSnapshot>;
   events(runId: string, afterSeq: number, signal: AbortSignal): AsyncIterable<WorkflowEvent>;
 }
 
@@ -767,6 +781,7 @@ export type WorkflowErrorCode =
   | "CAPABILITY_DENIED"
   | "OUTPUT_INVALID"
   | "BUDGET_EXHAUSTED"
+  | "CHECKPOINT_REACHED"
   | "STORAGE_CORRUPT"
   | "ARTIFACT_MISSING"
   | "RECOVERY_REQUIRED"

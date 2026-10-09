@@ -73,6 +73,7 @@ describe("workflow panel formatting", () => {
       "cancel",
     ]);
     expect(keys(snapshot({ status: "blocked", reason: "budget_exhausted" }))).toEqual([
+      "extend",
       "fork",
       "cancel",
     ]);
@@ -171,7 +172,9 @@ describe("workflow view model", () => {
     expect(view.stages.every((s) => s.status === "pending")).toBe(true);
     expect(view.budget).toMatchObject({ tokens: 0, maxTokens: policy.maxTotalTokens, maxCalls: policy.maxAgentCalls });
     expect(view.details.prompt).toContain("Show it");
-    expect(view.events.at(-1)?.type).toBe("run.created");
+    // Creation records the run, then the estimate made at that moment.
+    expect(view.events.map((e) => e.type)).toEqual(["run.created", "artifact.committed"]);
+    expect(view.estimate.saved).toMatchObject({ basis: "defaults" });
     expect("state" in view).toBe(false);
     expect(readWorkflowViewIfChanged(service, run.runId, view.stamp)).toBeNull();
     const step = service.store.beginStep(run.runId, "research");

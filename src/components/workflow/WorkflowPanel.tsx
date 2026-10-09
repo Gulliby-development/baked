@@ -8,6 +8,7 @@ import {
   reloadWorkflowSession,
   useWorkflow,
   useWorkflowRuns,
+  workflowGatesApi,
   workflowSession,
 } from "../../hooks/useWorkflow.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
@@ -20,11 +21,13 @@ import { FindingsView } from "./FindingsView.js";
 import {
   detectChecks,
   errorHint,
+  extensionText,
   isTerminal,
   runActions,
   statusTone,
   type Tone,
 } from "./format.js";
+import { GATES_HINTS, type GatesMode, GatesView } from "./GatesView.js";
 import { NewRunForm } from "./NewRunForm.js";
 import { Onboarding } from "./Onboarding.js";
 import { orderRuns, RunList } from "./RunList.js";
@@ -92,9 +95,12 @@ export function WorkflowPanel({
   const [tab, setTab] = useState<Section>("overview");
   const [cursor, setCursor] = useState(0);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmExtend, setConfirmExtend] = useState(false);
+  const [gatesMode, setGatesMode] = useState<GatesMode>("list");
   const [flash, setFlash] = useState<{ kind: "ok" | "err" | "info"; message: string } | null>(null);
   const { width, height } = useTerminalDimensions();
   const ordered = useMemo(() => (runs ? orderRuns(runs) : null), [runs]);
+  const gatesApi = useMemo(() => workflowGatesApi(workspace), [workspace]);
   const pending =
     service && runId
       ? service.store.requests(runId).find((r) => r.status === "pending")
@@ -154,7 +160,7 @@ export function WorkflowPanel({
   useKeyboard((event) => {
     if (!visible || event.defaultPrevented) return;
     const key = event.name.toLowerCase();
-    if (screen === "new") return; // NewRunForm owns its keys.
+    if (screen === "new" || screen === "gates") return; // These screens own their keys.
     if (!onRun) {
       if (key === "escape") {
         event.preventDefault();
@@ -166,6 +172,11 @@ export function WorkflowPanel({
         void enable().catch((err: unknown) =>
           setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
         );
+        return;
+      }
+      if (key === "g") {
+        event.preventDefault();
+        useWorkflowStore.getState().showGates();
         return;
       }
       if (enabled === false) return;
@@ -197,6 +208,14 @@ export function WorkflowPanel({
       );
       return;
     }
+    if (confirmExtend) {
+      event.preventDefault();
+      if (key === "y") {
+        setConfirmExtend(false);
+        void act("extend");
+      } else if (key === "escape" || key === "n") setConfirmExtend(false);
+      return;
+    }
     if (confirmCancel) {
       event.preventDefault();
       if (key === "y") {
@@ -220,10 +239,13 @@ export function WorkflowPanel({
       setTab("decision");
       return;
     }
-    const action = runActions(snapshot).find((a) => a.key.toLowerCase() === key);
+    const action = runActions(snapshot, service?.store.budget(snapshot.runId) ?? null).find(
+      (a) => a.key.toLowerCase() === key,
+    );
     if (!action || action.action === "decide") return;
     event.preventDefault();
-    if (action.action === "cancel") setConfirmCancel(true);
+    if (action.action === "extend") setConfirmExtend(true);
+    else if (action.action === "cancel") setConfirmCancel(true);
     else void act(action.action);
   });
 
@@ -235,6 +257,7 @@ export function WorkflowPanel({
     { key: "↑↓", label: "select" },
     { key: "Enter", label: "open" },
     { key: "N", label: "new run" },
+    { key: "G", label: "gates" },
     { key: "Esc", label: "close" },
   ];
   if (screen === "new")
@@ -266,6 +289,32 @@ export function WorkflowPanel({
       </PremiumPopup>
     );
 
+  if (screen === "gates")
+    return (
+      <PremiumPopup
+        visible
+        title="Workflow"
+        blurb="Gates: checks every new run must pass"
+        width={popupW}
+        height={Math.min(40, height)}
+        footerHints={GATES_HINTS[gatesMode]}
+        flash={flash}
+      >
+        <box flexDirection="column" paddingX={1}>
+          <GatesView
+            active
+            workspace={workspace}
+            api={gatesApi}
+            canRun={enabled !== false}
+            width={contentW}
+            onBack={() => useWorkflowStore.getState().showHome()}
+            onMode={setGatesMode}
+            notify={(kind, message) => setFlash({ kind, message })}
+          />
+        </box>
+      </PremiumPopup>
+    );
+
   if (!onRun) {
     const needsYou = ordered?.filter((r) => r.pendingKind).length ?? 0;
     return (
@@ -285,6 +334,7 @@ export function WorkflowPanel({
           enabled === false
             ? [
                 { key: "E", label: "enable" },
+                { key: "G", label: "gates" },
                 { key: "Esc", label: "close" },
               ]
             : listHints
@@ -337,7 +387,8 @@ export function WorkflowPanel({
       ...(id === "findings" && openFindings ? { status: "warning" as const } : {}),
     };
   });
-  const actions = snapshot ? runActions(snapshot) : [];
+  const budgetView = service ? service.store.budget(runId) : null;
+  const actions = snapshot ? runActions(snapshot, budgetView) : [];
   const hints =
     tab === "decision" && pending
       ? [
@@ -347,13 +398,18 @@ export function WorkflowPanel({
                 { key: "A", label: "approve" },
                 { key: "X", label: "reject" },
               ]
-            : pending.kind === "clarification"
+            : pending.kind === "checkpoint"
               ? [
-                  { key: "↑↓", label: "question" },
-                  { key: "Enter", label: "next" },
-                  { key: "Ctrl+S", label: "send" },
+                  { key: "C", label: "continue" },
+                  { key: "X", label: "stop here" },
                 ]
-              : [{ key: "Enter", label: "submit" }]),
+              : pending.kind === "clarification"
+                ? [
+                    { key: "↑↓", label: "question" },
+                    { key: "Enter", label: "next" },
+                    { key: "Ctrl+S", label: "send" },
+                  ]
+                : [{ key: "Enter", label: "submit" }]),
           { key: "Esc", label: "back" },
         ]
       : [
@@ -388,6 +444,11 @@ export function WorkflowPanel({
       flash={flash}
     >
       <box flexDirection="column" paddingX={1}>
+        {confirmExtend && budgetView ? (
+          <text fg={t.warning}>
+            {`Raise the limits (${extensionText(budgetView)}) and continue from this stage? The approved plan, scope and checks stay as they are. Y confirms; N keeps the run blocked.`}
+          </text>
+        ) : null}
         {confirmCancel ? (
           <text fg={t.warning}>
             Cancel this run? It cannot be resumed afterwards. Y confirms; N keeps it.
@@ -409,6 +470,7 @@ export function WorkflowPanel({
                 details={details}
                 stages={stages}
                 budget={service.store.budget(runId)}
+                estimate={service.store.estimate(runId)}
                 events={service.store.events(runId)}
                 tasks={tasks}
                 findings={findings}

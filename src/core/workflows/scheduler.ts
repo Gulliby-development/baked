@@ -11,7 +11,7 @@ import { changedPaths, gitBaseline, sourceManifest } from "../verification/snaps
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
 import { evaluateAutoApproval } from "./auto-approval.js";
-import { reserveTokens } from "./budget.js";
+import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { dependencyContracts } from "./dependencies.js";
@@ -524,6 +524,22 @@ export class WorkflowScheduler {
         if (stepId) this.store.finishStep(runId, stepId, signal.aborted ? "interrupted" : "failed");
         const status = this.store.run(runId).status;
         if (["paused", "cancelled", "waiting"].includes(status)) return;
+        if (fault instanceof WorkflowFault && fault.code === "CHECKPOINT_REACHED") {
+          // A soft checkpoint is a durable question, not a failure: the run waits for the user.
+          const usage = budgetUsage(this.store, this.store.run(runId));
+          const body = {
+            stageId: this.store.run(runId).stage_id,
+            boundary: fault.details.boundary,
+            interval: fault.details.interval,
+            projectedTokens: fault.details.projected,
+            usedTokens: usage.tokens,
+            heldTokens: usage.heldTokens,
+            calls: usage.calls,
+          };
+          this.store.request(runId, "checkpoint", hashJson(body), body);
+          this.store.transition(runId, "waiting", "checkpoint");
+          return;
+        }
         const code = fault instanceof WorkflowFault ? fault.code : "OUTPUT_INVALID";
         const explicitReason =
           fault instanceof WorkflowFault ? ReasonCode.safeParse(fault.details.reason) : null;
@@ -779,10 +795,20 @@ export class WorkflowScheduler {
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
     await this.snapshot(runId, state, policy, signal);
   }
-  private evidenceContext(runId: string, state: RuntimeState): unknown[] {
+  /**
+   * Current evidence handed to an agent with its content. An implementer does not need the
+   * research-phase file reads (up to 16 KB each, resent on every step); it reads what it edits
+   * itself and cites its own evidence. Reviewers and auditors get everything.
+   */
+  private evidenceContext(
+    runId: string,
+    state: RuntimeState,
+    options: { reads: boolean } = { reads: true },
+  ): unknown[] {
     return this.store
       .evidence(runId)
       .filter((e) => e.snapshot_id === state.snapshotId && e.validity === "current")
+      .filter((e) => options.reads || e.kind !== "read")
       .map((e) => ({
         id: e.id,
         kind: e.kind,
@@ -830,6 +856,7 @@ export class WorkflowScheduler {
           policy.checks.flatMap((c) => c.writes),
           signal,
         );
+        const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
         const result = ImplementationSchema.parse(
           await this.call(
             runId,
@@ -837,7 +864,11 @@ export class WorkflowScheduler {
             state,
             policy,
             this.requireProfile(profiles.find((p) => p.id === task.profileId)),
-            { task, evidence: this.evidenceContext(runId, state) },
+            {
+              task,
+              evidence: this.evidenceContext(runId, state, { reads: false }),
+              unresolvedMeans: UNRESOLVED_MEANING,
+            },
             signal,
             task,
           ),
@@ -847,14 +878,26 @@ export class WorkflowScheduler {
           policy.checks.flatMap((c) => c.writes),
           signal,
         );
-        const changed = changedPaths(before, after);
+        // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
+        // effect journal recorded every file this task changed, so it counts as well.
+        const journaled = this.store
+          .effects(runId)
+          .filter(
+            (e) =>
+              !knownEffects.has(e.id) &&
+              e.kind === "file_patch" &&
+              ["applied", "reconciled"].includes(e.status) &&
+              e.before_hash !== e.after_hash,
+          )
+          .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+        const changed = [...new Set([...changedPaths(before, after), ...journaled])];
         if (changed.some((path) => !task.writes.some((w) => w.path === path)))
           throw new WorkflowFault("INPUT_CHANGED", "Task changed files outside its write scope");
         if (
           result.taskId !== task.id ||
           ["blocked", "failed"].includes(result.outcome) ||
           result.unresolved.length > 0 ||
-          (result.outcome === "implemented" && changed.length === 0)
+          (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
         ) {
           this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
           throw new WorkflowFault(
@@ -1234,3 +1277,7 @@ export class WorkflowScheduler {
     });
   }
 }
+
+/** Told to the implementer with every task: unresolved blocks the task, so it must not carry other tasks' work. */
+const UNRESOLVED_MEANING =
+  "unresolved lists only parts of THIS task that you could not finish. Work that belongs to other tasks of the plan, to checks run later, or to documentation tasks is not unresolved: leave it out. Any entry blocks this task.";

@@ -38,6 +38,7 @@ export function formatWorkflowResult(result: unknown): string {
 const SHORT_HELP = `
 /workflow            Open the workflow panel (runs, approvals, progress)
 /workflow new [text] Open the new-run form, optionally prefilled
+/workflow gates      Add, edit, remove and try the checks every run uses
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
 
 export function register(map: Map<string, CommandHandler>): void {
@@ -46,6 +47,11 @@ export function register(map: Map<string, CommandHandler>): void {
     const ui = useWorkflowStore.getState();
     if (!tokens.length || tokens[0] === "list") {
       ui.showHome();
+      useUIStore.getState().openModal("workflow");
+      return;
+    }
+    if (tokens[0] === "gates") {
+      ui.showGates();
       useUIStore.getState().openModal("workflow");
       return;
     }

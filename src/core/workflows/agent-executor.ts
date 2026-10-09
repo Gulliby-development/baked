@@ -42,6 +42,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   refutation: RefutationSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+
 export class NativeAgentExecutor implements AgentExecutor {
   private ownedContext: Promise<ContextManager> | undefined;
   constructor(
@@ -287,6 +288,12 @@ export class NativeAgentExecutor implements AgentExecutor {
           `Profile ${request.profile.id} used ${String(usage.totalTokens)} tokens without submitting a result (attempt cap ${String(usage.maxTokens)})`,
         );
       if (submitted === undefined) {
+        // Nothing to reformat: a correction pass over empty text would invent a result.
+        if (!result.text.trim())
+          throw new WorkflowFault(
+            "OUTPUT_INVALID",
+            `Profile ${request.profile.id} ended after ${result.steps.length} steps without submitting a result`,
+          );
         try {
           submitted = schema.parse(JSON.parse(result.text));
         } catch {
