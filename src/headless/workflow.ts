@@ -6,6 +6,8 @@ import { getCwd } from "../core/cwd.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import type { BudgetLimits } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
+import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
+import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import {
@@ -42,6 +44,7 @@ export async function executeWorkflowCommand(
   args: WorkflowArgs,
   signal: AbortSignal,
   onDrive?: (runId: string) => void,
+  options: { pullRequests?: PullRequestProvider | null } = {},
 ): Promise<unknown> {
   const runId = args.positional[0] ?? "";
   const artifacts = new WorkflowArtifacts(service);
@@ -243,6 +246,26 @@ export async function executeWorkflowCommand(
         before: stringFlag(args, "before"),
         dryRun: args.flags["dry-run"] === true,
       });
+    case "deliver": {
+      const provider = options.pullRequests === undefined ? {} : { provider: options.pullRequests };
+      if (args.flags.execute)
+        return executeDelivery(service.store, service.config, runId, {
+          expectedRevision: identity().expectedRevision,
+          ...(typeof args.flags.request === "string" ? { requestId: args.flags.request } : {}),
+          ...provider,
+        });
+      const prepared = await prepareDelivery(service.store, service.config, runId, {
+        ...(typeof args.flags.remote === "string" ? { remote: args.flags.remote } : {}),
+        ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
+        draft: args.flags.draft === true,
+        pullRequest: args.flags["no-pr"] !== true,
+        ...provider,
+      });
+      return {
+        ...prepared,
+        next: `baked workflow approve ${runId} --request ${prepared.requestId} --digest ${prepared.digest} --expected-revision ${prepared.revision}`,
+      };
+    }
     case "redact":
       await artifacts.redact(runId, stringFlag(args, "file"), stringFlag(args, "reason"));
       return { redacted: true };

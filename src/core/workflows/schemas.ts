@@ -413,12 +413,26 @@ export const RefutationSchema = z
     (r) => r.decision === "inconclusive" || r.evidenceIds.length > 0,
     "A conclusion requires evidence",
   );
+/** Git delivery settings: where pull requests are created and which variable holds the token. */
+export const DeliveryConfigSchema = z
+  .object({
+    tokenEnv: z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/)
+      .default("GITHUB_TOKEN"),
+    apiUrl: z
+      .string()
+      .regex(/^https:\/\/[^\s/]+(\/[^\s]*)?$/)
+      .default("https://api.github.com"),
+  })
+  .strict();
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     importsEnabled: z.boolean().default(false),
     defaultWorkflow: SafeId.default("sdd"),
     policy: PolicySchema,
+    delivery: DeliveryConfigSchema.optional(),
   })
   .strict();
 export const InputManifestSchema = z
@@ -592,7 +606,14 @@ export const EventSchema = z.discriminatedUnion("type", [
       payload: z
         .object({
           requestId: SafeId,
-          kind: z.enum(["approval", "clarification", "manual_evidence", "recovery", "checkpoint"]),
+          kind: z.enum([
+            "approval",
+            "clarification",
+            "manual_evidence",
+            "recovery",
+            "checkpoint",
+            "delivery",
+          ]),
           digest: Hash,
         })
         .strict(),

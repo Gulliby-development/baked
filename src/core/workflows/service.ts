@@ -19,6 +19,7 @@ import { sddWorkflow } from "./builtin/sdd.js";
 import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs, frozenInstructions } from "./context.js";
+import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -302,10 +303,15 @@ export class NativeWorkflowService implements WorkflowService {
   }
   async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
-      assertMutable(this.store.run(runId).status);
       const request = this.store
         .requests(runId)
         .find((r) => r.id === decision.requestId && r.status === "pending");
+      // Delivery happens after a run completed; its decisions never change the run's state.
+      if (request && isDeliveryRequest(request)) {
+        decideDelivery(this.store, runId, request, decision);
+        return;
+      }
+      assertMutable(this.store.run(runId).status);
       if (!request) throw new WorkflowFault("STALE_DECISION", "Pending request not found");
       const state = this.store.state(runId);
       const body = JSON.parse(request.body_json) as Record<string, unknown>;
