@@ -1,6 +1,7 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import type { InputManifest, RunPolicy, Spec, TaskGraph } from "./schemas.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
+import { isAcceptanceRequest } from "./v2/acceptance.js";
 
 export interface AutoApproval {
   mode: "renewal" | "limits";
@@ -114,7 +115,10 @@ function renewalProblems(
 ): string[] {
   const previous = requests.filter(
     (request) =>
-      request.kind === "approval" && request.status === "accepted" && request.actor === "user",
+      request.kind === "approval" &&
+      request.status === "accepted" &&
+      request.actor === "user" &&
+      !isAcceptanceRequest(request),
   );
   const last = previous.at(-1);
   if (!last) return ["no earlier human approval in this run"];

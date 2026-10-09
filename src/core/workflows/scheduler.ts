@@ -35,6 +35,7 @@ import {
   type AgentProfile,
   AnalysisSchema,
   executionModeOf,
+  generatedPaths,
   ImplementationSchema,
   PlanSchema,
   PolicySchema,
@@ -53,7 +54,9 @@ import {
 } from "./schemas.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
-import type { AgentExecutor, Check, RuntimeState, Task } from "./types.js";
+import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
+import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
+import { runAcceptanceGate } from "./v2/acceptance-gate.js";
 import {
   effectiveMode,
   type Gate,
@@ -466,6 +469,11 @@ export class WorkflowScheduler {
                     .filter((c) => c.method === "post-release")
                     .map((c) => c.id),
                   boundedCorrection: true,
+                  // Granted walk-through capabilities are shown to the person; the frozen gates
+                  // that hold them are part of the manifest the digest covers.
+                  ...(v2 && acceptanceGrants(v2.gates).length
+                    ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
+                    : {}),
                   ...(policy.autoApproval
                     ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
                     : {}),
@@ -868,7 +876,7 @@ export class WorkflowScheduler {
   ) {
     const files = await sourceManifest(
       runRoot(this.store.workspace, state),
-      policy.checks.flatMap((c) => c.writes),
+      generatedPaths(policy),
       signal,
     );
     const snapshot = this.store.transaction(() => this.store.putSnapshot(runId, files));
@@ -886,7 +894,7 @@ export class WorkflowScheduler {
     if (!state.expectedFiles) return;
     const files = await sourceManifest(
       runRoot(this.store.workspace, state),
-      policy.checks.flatMap((c) => c.writes),
+      generatedPaths(policy),
       signal,
     );
     // The run's own journaled edits since the last snapshot are kept (an attempt that was
@@ -926,6 +934,7 @@ export class WorkflowScheduler {
     retry = 0,
     validate?: (output: unknown) => string[],
     limits?: { maxSteps: number; maxTokens: number | undefined },
+    hostTools?: (attemptId: string) => Record<string, HostTool>,
   ): Promise<unknown> {
     const prompt = buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
@@ -957,6 +966,7 @@ export class WorkflowScheduler {
         maxSteps: limits?.maxSteps ?? Math.min(profile.maxSteps, policy.maxAgentSteps),
         ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
         ...(validate ? { validate } : {}),
+        ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
       });
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
       if (!parsed?.success)
@@ -1020,6 +1030,7 @@ export class WorkflowScheduler {
           retry + 1,
           validate,
           limits,
+          hostTools,
         );
       }
       if (!(error instanceof WorkflowFault) && !signal.aborted)
@@ -1154,11 +1165,7 @@ export class WorkflowScheduler {
         });
       } else if (!checking) {
         const root = runRoot(this.store.workspace, state);
-        const before = await sourceManifest(
-          root,
-          policy.checks.flatMap((c) => c.writes),
-          signal,
-        );
+        const before = await sourceManifest(root, generatedPaths(policy), signal);
         const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
         // Edits of earlier attempts of this task that are still in place (a revision, a recovery
         // or a failed attempt keeps them), by path, with the hash the path had before them.
@@ -1196,11 +1203,7 @@ export class WorkflowScheduler {
             task,
           ),
         );
-        const after = await sourceManifest(
-          root,
-          policy.checks.flatMap((c) => c.writes),
-          signal,
-        );
+        const after = await sourceManifest(root, generatedPaths(policy), signal);
         // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
         // effect journal recorded every file this task changed, so it counts as well.
         const journaled = this.store
@@ -1691,9 +1694,34 @@ export class WorkflowScheduler {
     evidenceId: string;
     attempts: number;
     flaky: boolean;
+    /** Set when the host failed the gate without running it. */
+    reason?: string;
   }> {
     let attempts = 0;
     let unstable = false;
+    // A test promoted from an AI walk-through runs only as the person approved it.
+    const pinned = gate.type === "command" ? gate.provenance : undefined;
+    if (pinned) {
+      const current = fileHash(workspacePath(this.store.workspace, pinned.testPath));
+      if (current !== pinned.testHash) {
+        const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+        const result = await this.checks.refuse(
+          runId,
+          attempt,
+          check,
+          "test_modified",
+          `test modified since approval: ${pinned.testPath} has ${current ?? "no file"}, approved ${pinned.testHash}`,
+        );
+        this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+        return {
+          status: "failed",
+          evidenceId: result.evidenceId,
+          attempts: 1,
+          flaky: false,
+          reason: "test modified since approval",
+        };
+      }
+    }
     for (;;) {
       attempts++;
       const attempt = this.store.reserve(runId, stepId, null, 0, policy);
@@ -1762,7 +1790,9 @@ export class WorkflowScheduler {
         evidenceIds: [result.evidenceId],
         claim: `Required check ${check.id} failed`,
         impact: "Implementation cannot be accepted",
-        suggestedFix: `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+        suggestedFix: result.reason
+          ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
+          : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
       });
     }
     if (!failures.length) {
@@ -1834,7 +1864,8 @@ export class WorkflowScheduler {
           policy,
           signal,
         );
-        this.recordGate(runId, state, gate.id, transition.id, { ...result, mode });
+        const { reason, ...recorded } = result;
+        this.recordGate(runId, state, gate.id, transition.id, { ...recorded, mode });
         if (mode === "required" && result.status !== "passed") {
           this.store.transaction(() => {
             this.store.finishStep(runId, stepId ?? "", "failed");
@@ -1842,7 +1873,7 @@ export class WorkflowScheduler {
           });
           throw new WorkflowFault(
             "OUTPUT_INVALID",
-            `Gate ${gate.id} on ${transition.id} ${result.status}`,
+            `Gate ${gate.id} on ${transition.id} ${result.status}${reason ? `: ${reason}` : ""}`,
             { reason: "verification_failed" },
           );
         }
@@ -1882,16 +1913,52 @@ export class WorkflowScheduler {
         });
         this.store.transaction(() => this.store.saveState(runId, state));
         return;
-      } else {
-        // An AI acceptance gate closes nothing until its walk-through is promoted to a command
-        // test; it is recorded as skipped here.
+      } else if (gate.type === "ai-acceptance") {
+        // Advisory by construction: the walk-through's verdict is recorded and shown, and only a
+        // promoted command gate can ever block a transition.
+        stepId ??= this.store.transaction(() =>
+          this.store.beginStep(runId, `transition-${transition.id}`),
+        );
+        if (!state.snapshotId) await this.snapshot(runId, state, policy, signal);
+        const step = stepId;
+        const profiles = ProfileSchema.array().parse(
+          JSON.parse(this.store.run(runId).profiles_json),
+        );
+        const result = await runAcceptanceGate(
+          {
+            store: this.store,
+            runId,
+            state,
+            policy,
+            transitionId: transition.id,
+            signal,
+            profile: (id) => profiles.find((p) => p.id === id),
+            callAgent: (profile, extra, validate, tools, attemptSignal) =>
+              this.call(
+                runId,
+                step,
+                state,
+                policy,
+                profile,
+                extra,
+                attemptSignal,
+                undefined,
+                0,
+                validate,
+                undefined,
+                tools,
+              ),
+          },
+          gate,
+        );
         this.recordGate(runId, state, gate.id, transition.id, {
-          status: "skipped",
-          mode,
-          evidenceId: null,
-          attempts: 0,
+          status: result.status,
+          mode: "advisory",
+          evidenceId: result.evidenceId,
+          attempts: result.status === "skipped" ? 0 : 1,
           flaky: false,
         });
+        this.store.transaction(() => this.store.saveState(runId, state));
       }
     }
     const target = v2.definition.stages.find((s) => s.id === transition.to);
@@ -1978,7 +2045,7 @@ export class WorkflowScheduler {
     const writes = definition.stages.some((s) => s.type === "tasks");
     const acceptable = (): void => {
       if (writes) assertAcceptanceV2(this.store, runId, state, policy, definition, gates);
-      else if (this.store.requests(runId).some((request) => request.status === "pending"))
+      else if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
       if (this.store.effects(runId).some((e) => ["prepared", "unknown"].includes(e.status)))
         throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain");
