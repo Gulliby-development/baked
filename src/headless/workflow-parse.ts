@@ -31,6 +31,7 @@ const commands = [
   "validate",
   "define",
   "gates",
+  "deliver",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 export interface WorkflowArgs {
@@ -76,10 +77,26 @@ const flags = new Set([
   "tasks",
   "cwd",
   "from",
+  "all",
   "confirm-auto-approval",
   "help",
+  "remote",
+  "branch",
+  "draft",
+  "no-pr",
+  "execute",
 ]);
-const booleanFlags = new Set(["json", "events", "accept", "dry-run", "help"]);
+const booleanFlags = new Set([
+  "all",
+  "json",
+  "events",
+  "accept",
+  "dry-run",
+  "help",
+  "draft",
+  "no-pr",
+  "execute",
+]);
 const commandFlags: Record<WorkflowCommand, string[]> = {
   run: [
     "feature",
@@ -121,7 +138,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   definitions: [],
   validate: ["file"],
   define: ["from"],
-  gates: [],
+  gates: ["all"],
+  deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -164,9 +182,9 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires an integer`);
     }
   }
-  if (!result.flags.help && result.command !== "run") {
+  if (!result.flags.help && result.command !== "run" && result.command !== "gates") {
     const count =
-      ["list", "profiles", "import", "gc", "definitions", "gates"].includes(result.command) ||
+      ["list", "profiles", "import", "gc", "definitions"].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
         ? 0
         : 1;
@@ -174,6 +192,22 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
       throw new WorkflowFault(
         "INVALID_DEFINITION",
         `${result.command} expects ${count} positional argument(s)`,
+      );
+  }
+  if (!result.flags.help && result.command === "deliver") {
+    const planning = ["remote", "branch", "draft", "no-pr"].filter((name) => name in result.flags);
+    if (result.flags.execute) {
+      if (planning.length)
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `--${planning[0]} belongs to the plan; --execute performs the approved plan as it is`,
+        );
+      if (!("expected-revision" in result.flags))
+        throw new WorkflowFault("INVALID_DEFINITION", "--execute requires --expected-revision");
+    } else if ("request" in result.flags || "expected-revision" in result.flags)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--request and --expected-revision apply only with --execute",
       );
   }
   if (!result.flags.help && result.command === "run") {
@@ -212,11 +246,19 @@ definitions               list workflow definitions: sdd, the presets and baked/
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
 gates                     list the gate library with each gate's source and what it shadows
+gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
 profiles                  artifacts RUN_ID [--file ARTIFACT_ID]
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
 usage RUN_ID              per-stage and per-attempt token and step usage
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
+deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
+  Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
+  branch, push, and a pull request. Stores the plan and a delivery request; nothing runs yet.
+  Approve the exact plan with: approve RUN_ID --request ID --digest SHA256 --expected-revision N
+deliver RUN_ID --execute --expected-revision N [--request ID]
+  Perform the approved plan. Retries check what already exists; nothing is force-pushed or merged.
+  The pull request token is read from workflows.delivery.tokenEnv (default GITHUB_TOKEN).
 
 Management mutations accept --command-id UUID for idempotent retries.
 All commands accept --help. Workflows require an explicit workflows.enabled opt-in.

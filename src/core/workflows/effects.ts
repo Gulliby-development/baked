@@ -54,6 +54,8 @@ export class EffectJournal {
   reconcile(runId: string): string[] {
     const unknown: string[] = [];
     for (const effect of this.store.effects(runId)) {
+      // Delivery effects live outside the workspace; delivery probes and reconciles them itself.
+      if (effect.kind === "delivery") continue;
       if (effect.status !== "prepared" && effect.status !== "unknown") continue;
       if (effect.kind === "command") {
         unknown.push(effect.id);

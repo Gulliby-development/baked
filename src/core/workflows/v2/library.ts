@@ -1,5 +1,12 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { configDir } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import type { RunPolicy } from "../schemas.js";
@@ -175,4 +182,77 @@ export function loadGateLibrary(
     gates: new Map([...entries].map(([id, entry]) => [id, entry.gate])),
     problems,
   };
+}
+
+/** Where a workspace keeps the hashes of the project gates its user confirmed; local, never shared. */
+export const confirmationPath = (workspace: string): string =>
+  join(workspace, ".baked", "gate-confirmations.json");
+
+export function readConfirmations(workspace: string): Record<string, string> {
+  const path = confirmationPath(workspace);
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { gates?: Record<string, string> };
+    return parsed.gates && typeof parsed.gates === "object" ? parsed.gates : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Project gates that need the user's confirmation before a run uses them: every gate from
+ * `baked/gates` whose current definition the user has not confirmed in this workspace. A cloned
+ * project's commands therefore run only after someone here reviewed them, and a project gate that
+ * shadows a built-in, policy or user gate of the same ID is never used silently.
+ */
+export function unconfirmedGates(
+  workspace: string,
+  library: GateLibrary,
+  ids: readonly string[],
+): LibraryEntry[] {
+  const confirmed = readConfirmations(workspace);
+  return ids
+    .map((id) => library.entries.get(id))
+    .filter((entry): entry is LibraryEntry => entry !== undefined)
+    .filter((entry) => entry.source === "project" && confirmed[entry.gate.id] !== entry.hash);
+}
+
+/** Records the user's confirmation of the current definitions of the given project gates. */
+export function confirmGates(
+  workspace: string,
+  library: GateLibrary,
+  ids: readonly string[],
+): { id: string; hash: string }[] {
+  const confirmed = readConfirmations(workspace);
+  const done: { id: string; hash: string }[] = [];
+  for (const id of ids) {
+    const entry = library.entries.get(id);
+    if (!entry) throw new Error(`Unknown gate ${id}`);
+    if (entry.source !== "project") continue;
+    confirmed[id] = entry.hash;
+    done.push({ id, hash: entry.hash });
+  }
+  const path = confirmationPath(workspace);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify({ schemaVersion: 1, gates: confirmed }, null, 2)}\n`);
+  renameSync(temp, path);
+  return done;
+}
+
+/** One line per gate for a confirmation prompt: what it runs and what it replaces. */
+export function describeGate(entry: LibraryEntry): string {
+  const gate = entry.gate;
+  const body =
+    gate.type === "command"
+      ? `runs ${[gate.command.executable, ...gate.command.args].join(" ")} in ${gate.command.cwd}`
+      : gate.type === "human"
+        ? "asks a person"
+        : gate.type === "ai-review"
+          ? `AI review by ${gate.review.profileId}`
+          : "AI walk-through";
+  const shadows = entry.shadows.length
+    ? `; replaces the ${entry.shadows.map((s) => s.source).join(", ")} gate of the same ID`
+    : "";
+  return `${gate.id}: ${body}${shadows}`;
 }

@@ -19,6 +19,7 @@ import {
 import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs, frozenInstructions } from "./context.js";
+import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -50,7 +51,7 @@ import { newId, WorkflowStore } from "./store.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
 import { type Gate, validateWorkflowV2, type WorkflowV2 } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
-import { loadGateLibrary } from "./v2/library.js";
+import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
 import {
   autoApprovalHash,
   autoApprovalOf,
@@ -158,6 +159,17 @@ export class NativeWorkflowService implements WorkflowService {
       const validation = validateWorkflowV2(definition, library.gates);
       if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
       gates = frozenGates(definition, library.gates);
+      const unconfirmed = unconfirmedGates(
+        this.workspace,
+        library,
+        gates.map((g) => g.id),
+      );
+      if (unconfirmed.length)
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Review the project gates this workflow uses before they run:\n${unconfirmed.map(describeGate).join("\n")}\nConfirm them with: baked workflow gates confirm ${unconfirmed.map((e) => e.gate.id).join(" ")}`,
+          { unconfirmedGates: unconfirmed.map((e) => e.gate.id) },
+        );
       for (const gate of gates) {
         const entry = library.entries.get(gate.id);
         if (entry?.path) gateFiles[entry.path] = hashBytes(readFileSync(entry.path));
@@ -411,10 +423,16 @@ export class NativeWorkflowService implements WorkflowService {
   }
   async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
+      const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
+      // Delivery happens after a run completed; its decisions never change the run's state.
+      if (named && isDeliveryRequest(named)) {
+        if (named.status !== "pending")
+          throw new WorkflowFault("STALE_DECISION", `Request is ${named.status}, not pending`);
+        decideDelivery(this.store, runId, named, decision);
+        return;
+      }
+      const request = named?.status === "pending" ? named : undefined;
       assertMutable(this.store.run(runId).status);
-      const request = this.store
-        .requests(runId)
-        .find((r) => r.id === decision.requestId && r.status === "pending");
       if (!request) throw new WorkflowFault("STALE_DECISION", "Pending request not found");
       const state = this.store.state(runId);
       const body = JSON.parse(request.body_json) as Record<string, unknown>;

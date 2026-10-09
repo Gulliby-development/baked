@@ -13,7 +13,12 @@ import { newId } from "../src/core/workflows/store.js";
 import { type AgentExecutor, type ExecutionRequest, RuntimeStateSchema } from "../src/core/workflows/types.js";
 import type { Gate, WorkflowV2 } from "../src/core/workflows/v2/definition.js";
 import { builtinPresets, instantiatePreset } from "../src/core/workflows/v2/definitions.js";
+import { confirmGates, loadGateLibrary } from "../src/core/workflows/v2/library.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
+import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
+import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
+import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
+import { executeDefinitionCommand } from "../src/headless/workflow-definitions.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -119,9 +124,11 @@ function setup(behavior: Behavior = {}, runPolicy: RunPolicy = policy) {
     mkdirSync(join(root, "baked", "workflows"), { recursive: true });
     writeFileSync(join(root, "baked", "workflows", `${definition.id}.json`), JSON.stringify(definition));
   };
-  const gate = (definition: Gate) => {
+  /** Writes a project gate; `confirm` records the user's review of it, as the CLI does. */
+  const gate = (definition: Gate, confirm = true) => {
     mkdirSync(join(root, "baked", "gates"), { recursive: true });
     writeFileSync(join(root, "baked", "gates", `${definition.id}.json`), JSON.stringify(definition));
+    if (confirm) confirmGates(root, loadGateLibrary(root, runPolicy), [definition.id]);
   };
   const start = (workflowId: string, prompt = "Create ready value") =>
     service.start({ commandId: newId(), featureId: "fixture", workflowId, prompt, ownerLabel: "test", policy: runPolicy });
@@ -413,6 +420,47 @@ describe("workflow v2 scheduler", () => {
     expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
 
   }, 30000);
+});
+
+describe("project gates and protected definitions", () => {
+  test("a project gate runs only after the user confirmed its current definition", async () => {
+    const fixture = setup();
+    const extra = commandGate("extra", ["-e", "process.exit(0)"]);
+    fixture.gate(extra, false);
+    fixture.define(quickFix((d) => ({
+      ...d,
+      stages: d.stages.map((s) => (s.type === "check" ? { ...s, gates: [{ gateId: "check" }, { gateId: "extra" }] } : s)),
+    })));
+    await expect(fixture.start("custom-fix")).rejects.toThrow(/extra: runs bun -e process.exit\(0\)[\s\S]*gates confirm extra/);
+    const listed = executeDefinitionCommand(parseWorkflowArgs(["gates"]), fixture.root, policy).result as { gates: { id: string; confirmed?: boolean }[] };
+    expect(listed.gates.find((g) => g.id === "extra")?.confirmed).toBe(false);
+    executeDefinitionCommand(parseWorkflowArgs(["gates", "confirm", "extra"]), fixture.root, policy);
+    const run = await fixture.start("custom-fix");
+    expect(run.status).toBe("created");
+    // A changed definition is a different gate and needs a new confirmation.
+    fixture.gate({ ...extra, timeoutMs: 20000 } as Gate, false);
+    await expect(fixture.start("custom-fix")).rejects.toThrow("gates confirm extra");
+    executeDefinitionCommand(parseWorkflowArgs(["gates", "confirm", "--all"]), fixture.root, policy);
+    expect((await fixture.start("custom-fix")).status).toBe("created");
+  });
+
+  test("a project gate that shadows a policy check is named as a replacement", async () => {
+    const fixture = setup();
+    fixture.gate(commandGate("check", ["-e", "process.exit(0)"]), false);
+    fixture.define(quickFix());
+    await expect(fixture.start("custom-fix")).rejects.toThrow("replaces the policy gate of the same ID");
+  });
+
+  test("V2-13 no profile may write workflow definitions, gates, profiles or skills", async () => {
+    const fixture = setup();
+    const run = await fixture.start("spike");
+    const profile = builtinProfiles.find((p) => p.id === "implementer");
+    if (!profile) throw new Error("implementer profile missing");
+    const guard = new WorkflowToolPolicy(fixture.service.store, fixture.service.leases, run.runId, "attempt", profile, policy);
+    for (const path of ["baked/workflows/quick.json", "baked/gates/tests.json", "baked/agents/x.json", "baked/skills/s/SKILL.md", "baked/constitution.md"])
+      expect(() => guard.path(path)).toThrow("Protected workflow path");
+    expect(guard.path("src/baked/workflows.ts")).toBe("src/baked/workflows.ts");
+  });
 });
 
 describe("workflow v2 auto approval", () => {
