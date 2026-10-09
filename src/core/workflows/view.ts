@@ -36,6 +36,8 @@ export interface WorkflowInfo {
   enabled: boolean;
   defaultWorkflow: string;
   workflows: string[];
+  /** Stages, whether files change and validation problems, by workflow ID. */
+  definitions?: Record<string, { stages: string[]; writes: boolean; problems: string[] }>;
   policy: RunPolicy;
   presets: Record<
     BudgetPresetId,

@@ -12,10 +12,12 @@ import { estimateStart, readHistory } from "../workflows/estimate.js";
 import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
-import { CheckSchema, DecisionSchema, SafeId } from "../workflows/schemas.js";
+import { CheckSchema, DecisionSchema, type RunPolicy, SafeId } from "../workflows/schemas.js";
 import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
 import { PRESETS } from "../workflows/v2/definition.js";
+import { listDefinitions } from "../workflows/v2/definitions.js";
+import type { WorkflowInfo } from "../workflows/view.js";
 import {
   BudgetPreset,
   readWorkflowSummaries,
@@ -75,6 +77,7 @@ const ctx = createWorkerHandler(
         enabled: runtime.config.workflows?.enabled === true,
         defaultWorkflow: runtime.config.workflows?.defaultWorkflow ?? "sdd",
         workflows: [...new Set(["sdd", ...PRESETS, ...custom])],
+        definitions: definitionSummaries(runtime.workspace, policy),
         policy,
         presets: Object.fromEntries(
           BudgetPreset.options.map((p) => {
@@ -217,3 +220,20 @@ const ctx = createWorkerHandler(
   },
   close,
 );
+
+/** What the new-run form shows for each workflow; a listing that fails shows nothing. */
+function definitionSummaries(
+  workspace: string,
+  policy: RunPolicy,
+): NonNullable<WorkflowInfo["definitions"]> {
+  try {
+    return Object.fromEntries(
+      listDefinitions(workspace, policy).map((d) => [
+        d.id,
+        { stages: d.stages, writes: d.writes, problems: d.problems },
+      ]),
+    );
+  } catch {
+    return {};
+  }
+}
