@@ -90,3 +90,16 @@ export function internalPath(path: string): boolean {
 export function gitMode(mode: number): "100755" | "100644" {
   return mode & 0o111 ? "100755" : "100644";
 }
+
+/** Paths of `git status --porcelain=v1 -z` output; a rename or copy lists its target path. */
+export function statusPaths(output: string): string[] {
+  const entries = output.split("\0").filter(Boolean);
+  const paths: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i] ?? "";
+    paths.push(entry.slice(3));
+    // A rename or copy carries its source path as the next entry.
+    if (/^[RC]/.test(entry) || /^.[RC]/.test(entry)) i++;
+  }
+  return paths;
+}

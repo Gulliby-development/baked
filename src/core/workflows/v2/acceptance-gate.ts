@@ -27,6 +27,7 @@ import {
 } from "../schemas.js";
 import type { RequestRow, WorkflowStore } from "../store.js";
 import type { HostTool, RuntimeState } from "../types.js";
+import { runRoot } from "../worktree.js";
 import {
   type AcceptanceDraft,
   AcceptanceDraftSchema,
@@ -493,7 +494,8 @@ export async function runAcceptanceGate(
   gate: AcceptanceGateDefinition,
 ): Promise<AcceptanceGateResult> {
   const { store, runId, state } = host;
-  const workspace = store.workspace;
+  // A worktree run walks and tests the application in its own worktree.
+  const workspace = runRoot(store.workspace, state);
   const previous = state.acceptance[gate.id];
   if (previous && previous.snapshotId === state.snapshotId)
     return { status: statusOf(previous), evidenceId: previous.evidenceId };

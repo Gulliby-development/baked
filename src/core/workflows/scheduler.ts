@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -16,7 +17,7 @@ import { validateChecks } from "./check-policy.js";
 import { deferredBlockingProblems, demoteDeferred, researchBudget } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { dependencyContracts } from "./dependencies.js";
-import { EffectJournal, fileHash } from "./effects.js";
+import { EffectJournal, fileHash, intentRoot } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import {
   InitiativePlanSchema,
@@ -24,7 +25,7 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "./initiatives/plan.js";
-import { type WorkspaceLeases, withinWorkflow } from "./leases.js";
+import { mutationLeaseFor, type WorkspaceLeases, withinWorkflow } from "./leases.js";
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
@@ -33,6 +34,7 @@ import { createdByRunLineage, runWrittenHash, uncommittedEdits } from "./rollbac
 import {
   type AgentProfile,
   AnalysisSchema,
+  executionModeOf,
   generatedPaths,
   ImplementationSchema,
   PlanSchema,
@@ -50,7 +52,7 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
-import { newId, type WorkflowStore } from "./store.js";
+import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
@@ -76,6 +78,13 @@ import {
   stageKind,
   stageProfileId,
 } from "./v2/runtime.js";
+import {
+  commitRunBranch,
+  ensureRunWorktree,
+  runRoot,
+  userChangesInScope,
+  worktreePath,
+} from "./worktree.js";
 
 /** Severity of a review finding. */
 type Severity = Review["findings"][number]["severity"];
@@ -93,6 +102,8 @@ export class WorkflowScheduler {
   readonly processes = new ProcessScope();
   readonly journal: EffectJournal;
   readonly checks: CheckRunner;
+  /** The mutation lease of the root the driven run writes: the project or its worktree. */
+  private mutation: LeaseResource = "mutation";
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -102,9 +113,15 @@ export class WorkflowScheduler {
     this.checks = new CheckRunner(store, this.processes);
   }
   async drive(runId: string, outerSignal: AbortSignal): Promise<void> {
+    const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+    // A worktree run holds the lease of its worktree; the project working copy stays free.
+    this.mutation =
+      executionModeOf(policy) === "worktree"
+        ? mutationLeaseFor(this.store.workspace, join(this.store.workspace, worktreePath(runId)))
+        : "mutation";
     this.leases.acquire("execution", runId);
     try {
-      this.leases.acquire("mutation", runId);
+      this.leases.acquire(this.mutation, runId);
     } catch (error) {
       this.leases.release();
       throw error;
@@ -118,7 +135,6 @@ export class WorkflowScheduler {
     if (outerSignal.aborted) abort();
     const signal = controller.signal;
     const started = performance.now();
-    const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
     const timeout = setTimeout(
       () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
       Math.max(1, policy.maxActiveMs - this.store.run(runId).active_ms),
@@ -131,12 +147,13 @@ export class WorkflowScheduler {
     let stepId: string | null = null;
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
+      if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
       this.store.transaction(() => this.store.transition(runId, "running"));
       await withinWorkflow(this.leases.owner, async () => {
         while (this.store.run(runId).status === "running") {
           signal.throwIfAborted();
           this.leases.assert("execution");
-          this.leases.assert("mutation");
+          this.leases.assert(this.mutation);
           const run = this.store.run(runId);
           const state = this.store.state(runId);
           const parsed = parseRunDefinition(run.definition_json);
@@ -379,7 +396,7 @@ export class WorkflowScheduler {
                   "OUTPUT_INVALID",
                   "Consistency analysis and artifacts required before approval",
                 );
-              validateChecks(this.store.workspace, policy, state.graph);
+              validateChecks(runRoot(this.store.workspace, state), policy, state.graph);
               if (
                 policy.checks.every((c) => !c.required) &&
                 state.spec.criteria.some((c) => c.method === "automated")
@@ -390,7 +407,16 @@ export class WorkflowScheduler {
                 );
               if (!state.approvalRoot) {
                 const snapshot = await this.snapshot(runId, state, policy, signal);
-                const repository = await gitBaseline(this.store.workspace);
+                const repository = await gitBaseline(runRoot(this.store.workspace, state));
+                const writes = state.graph.tasks.flatMap((t) => t.writes);
+                // Uncommitted user changes never enter the worktree; approving tasks that write
+                // such files needs the user's explicit choice to leave them out.
+                const userChanges = state.worktree
+                  ? await userChangesInScope(
+                      this.store.workspace,
+                      writes.map((w) => w.path),
+                    )
+                  : [];
                 this.store.transaction(() =>
                   this.store.artifact(
                     runId,
@@ -405,19 +431,37 @@ export class WorkflowScheduler {
                 const human = v2?.stage.type === "approval" && v2.stage.decision === "human";
                 const auto = human
                   ? { approval: null, reasons: [] }
-                  : evaluateAutoApproval(
-                      policy,
-                      state.manifest,
-                      state.spec,
-                      state.graph,
-                      this.store.requests(runId),
-                      policyDecisions(this.store.artifacts(runId), (artifact) =>
-                        this.store.readArtifact(runId, artifact.id),
-                      ),
-                    );
+                  : userChanges.length
+                    ? {
+                        approval: null,
+                        reasons: [
+                          `Approved tasks write files with uncommitted user changes: ${userChanges.join(", ")}`,
+                        ],
+                      }
+                    : evaluateAutoApproval(
+                        policy,
+                        state.manifest,
+                        state.spec,
+                        state.graph,
+                        this.store.requests(runId),
+                        policyDecisions(this.store.artifacts(runId), (artifact) =>
+                          this.store.readArtifact(runId, artifact.id),
+                        ),
+                      );
                 const body = {
                   manifest: state.manifest,
-                  writes: state.graph.tasks.flatMap((t) => t.writes),
+                  writes,
+                  executionMode: executionModeOf(policy),
+                  ...(state.worktree
+                    ? {
+                        worktree: {
+                          path: state.worktree.path,
+                          branch: state.worktree.branch,
+                          baseHead: state.worktree.baseHead,
+                          userChangesInScope: userChanges,
+                        },
+                      }
+                    : {}),
                   profiles: [...new Set(state.graph.tasks.map((t) => t.profileId))].sort(),
                   checks: policy.checks,
                   policy,
@@ -797,19 +841,15 @@ export class WorkflowScheduler {
   ): string[] {
     const graph = planGraph(spec, plan);
     const problems: string[] = [];
+    const root = this.rootOf(runId);
     try {
-      validatePackage(this.store.workspace, spec, plan.markdown, graph);
+      validatePackage(root, spec, plan.markdown, graph);
     } catch (error) {
       problems.push(...(error instanceof Error ? error.message : String(error)).split("\n"));
     }
     problems.push(
-      ...planConsistencyProblems(this.store.workspace, spec, plan.markdown, graph, (path) =>
-        createdByRunLineage(
-          this.store,
-          runId,
-          path,
-          fileHash(workspacePath(this.store.workspace, path)),
-        ),
+      ...planConsistencyProblems(root, spec, plan.markdown, graph, (path) =>
+        createdByRunLineage(this.store, runId, path, fileHash(workspacePath(root, path))),
       ),
     );
     for (const task of graph.tasks) {
@@ -819,6 +859,10 @@ export class WorkflowScheduler {
         problems.push(`Unknown checks for ${task.id}`);
     }
     return problems;
+  }
+  /** The directory the run reads, edits, checks and snapshots: its worktree or the project. */
+  private rootOf(runId: string): string {
+    return runRoot(this.store.workspace, this.store.state(runId));
   }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
@@ -830,7 +874,11 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     signal: AbortSignal,
   ) {
-    const files = await sourceManifest(this.store.workspace, generatedPaths(policy), signal);
+    const files = await sourceManifest(
+      runRoot(this.store.workspace, state),
+      generatedPaths(policy),
+      signal,
+    );
     const snapshot = this.store.transaction(() => this.store.putSnapshot(runId, files));
     state.snapshotId = snapshot.id;
     state.workspaceHash = snapshot.hash;
@@ -844,7 +892,11 @@ export class WorkflowScheduler {
     signal: AbortSignal,
   ): Promise<void> {
     if (!state.expectedFiles) return;
-    const files = await sourceManifest(this.store.workspace, generatedPaths(policy), signal);
+    const files = await sourceManifest(
+      runRoot(this.store.workspace, state),
+      generatedPaths(policy),
+      signal,
+    );
     // The run's own journaled edits since the last snapshot are kept (an attempt that was
     // interrupted or failed, an invalidated task): they are the run's baseline, not an outside change.
     const expected = state.expectedFiles;
@@ -910,6 +962,7 @@ export class WorkflowScheduler {
         prompt,
         task,
         signal,
+        root: runRoot(this.store.workspace, state),
         maxSteps: limits?.maxSteps ?? Math.min(profile.maxSteps, policy.maxAgentSteps),
         ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
         ...(validate ? { validate } : {}),
@@ -1010,6 +1063,7 @@ export class WorkflowScheduler {
     signal.throwIfAborted();
     if (!state.spec || !state.graph || !state.plan) return;
     const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+    const root = runRoot(this.store.workspace, state);
     const files = {
       "spec.json": canonical(state.spec),
       "spec.md": renderSpec(state.spec),
@@ -1019,7 +1073,7 @@ export class WorkflowScheduler {
     };
     for (const [name, content] of Object.entries(files)) {
       const relative = `specs/${state.spec.featureId}/${name}`;
-      const path = workspacePath(this.store.workspace, relative);
+      const path = workspacePath(root, relative);
       const current = fileHash(path);
       const expected =
         state.published[relative] ?? this.inheritedPublication(runId, relative, current);
@@ -1027,7 +1081,7 @@ export class WorkflowScheduler {
         state.published[relative] = hashBytes(content);
         continue;
       }
-      this.journal.publish(runId, attempt, relative, content, expected);
+      this.journal.publish(runId, attempt, relative, content, expected, "artifact_write", root);
       state.published[relative] = hashBytes(content);
     }
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
@@ -1110,7 +1164,8 @@ export class WorkflowScheduler {
           this.store.saveState(runId, state);
         });
       } else if (!checking) {
-        const before = await sourceManifest(this.store.workspace, generatedPaths(policy), signal);
+        const root = runRoot(this.store.workspace, state);
+        const before = await sourceManifest(root, generatedPaths(policy), signal);
         const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
         // Edits of earlier attempts of this task that are still in place (a revision, a recovery
         // or a failed attempt keeps them), by path, with the hash the path had before them.
@@ -1121,7 +1176,7 @@ export class WorkflowScheduler {
         }
         const stillEdited = (): string[] =>
           [...earlier].flatMap(([path, original]) =>
-            fileHash(workspacePath(this.store.workspace, path)) === original ? [] : [path],
+            fileHash(workspacePath(root, path)) === original ? [] : [path],
           );
         const inherited = stillEdited();
         const result = ImplementationSchema.parse(
@@ -1148,7 +1203,7 @@ export class WorkflowScheduler {
             task,
           ),
         );
-        const after = await sourceManifest(this.store.workspace, generatedPaths(policy), signal);
+        const after = await sourceManifest(root, generatedPaths(policy), signal);
         // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
         // effect journal recorded every file this task changed, so it counts as well.
         const journaled = this.store
@@ -1209,7 +1264,13 @@ export class WorkflowScheduler {
         (c) => c.scope === "task" && task.checkIds.includes(c.id),
       )) {
         const attempt = this.store.reserve(runId, child, null, 0, policy);
-        const checked = await this.checks.run(runId, attempt, check, signal);
+        const checked = await this.checks.run(
+          runId,
+          attempt,
+          check,
+          signal,
+          runRoot(this.store.workspace, state),
+        );
         if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
         this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
         if (check.required && checked.status !== "passed") {
@@ -1345,7 +1406,13 @@ export class WorkflowScheduler {
     const failures: Review["findings"] = [];
     for (const check of policy.checks) {
       const attempt = this.store.reserve(runId, stepId, null, 0, policy);
-      const result = await this.checks.run(runId, attempt, check, signal);
+      const result = await this.checks.run(
+        runId,
+        attempt,
+        check,
+        signal,
+        runRoot(this.store.workspace, state),
+      );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
       if (result.status === "inconclusive" && check.required)
         throw new WorkflowFault("OUTPUT_INVALID", `Required check ${check.id} is inconclusive`, {
@@ -1658,7 +1725,7 @@ export class WorkflowScheduler {
     for (;;) {
       attempts++;
       const attempt = this.store.reserve(runId, stepId, null, 0, policy);
-      const result = await this.checks.run(runId, attempt, check, signal);
+      const result = await this.checks.run(runId, attempt, check, signal, this.rootOf(runId));
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
       if (result.status === "passed")
         return { status: "passed", evidenceId: result.evidenceId, attempts, flaky: unstable };
@@ -1975,13 +2042,17 @@ export class WorkflowScheduler {
     assertFrozenInputs(state);
     dependencyContracts(this.store, state);
     await this.assertWorkspace(runId, state, policy, signal);
-    this.store.transaction(() => {
-      const writes = definition.stages.some((s) => s.type === "tasks");
+    const writes = definition.stages.some((s) => s.type === "tasks");
+    const acceptable = (): void => {
       if (writes) assertAcceptanceV2(this.store, runId, state, policy, definition, gates);
       else if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
       if (this.store.effects(runId).some((e) => ["prepared", "unknown"].includes(e.status)))
         throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain");
+    };
+    await this.commitAccepted(runId, state, acceptable);
+    this.store.transaction(() => {
+      acceptable();
       for (const task of this.store
         .tasks(runId)
         .filter((t) => state.graph?.tasks.some((task) => task.id === t.id)))
@@ -2010,12 +2081,50 @@ export class WorkflowScheduler {
           report: state.report ? JSON.parse(state.report) : null,
           checks: this.store.checks(runId).filter((c) => c.snapshot_id === state.snapshotId),
           verifiedTaskIds: state.graph?.tasks.map((t) => t.id) ?? [],
+          ...(state.worktree ? { worktree: state.worktree } : {}),
         }),
       );
       this.store.saveState(runId, state);
       this.store.bump(runId, this.store.run(runId).revision);
       this.store.transition(runId, "completed");
     });
+  }
+  /**
+   * Commits the accepted result of a worktree run on its branch, once acceptance holds: the files
+   * the run journaled in its worktree and the declared task writes that differ from the approval
+   * baseline. The commit is recorded in the state the completion saves; a crash before that save
+   * rebuilds the same commit on the next drive.
+   */
+  private async commitAccepted(
+    runId: string,
+    state: RuntimeState,
+    acceptable: () => void,
+  ): Promise<void> {
+    const worktree = state.worktree;
+    if (!worktree || !state.snapshotId) return;
+    this.store.transaction(acceptable);
+    const final = this.store.snapshotFiles(runId, state.snapshotId) ?? state.expectedFiles ?? {};
+    const baselineId = state.manifest.baselineSnapshotId;
+    const baseline = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    const declared = new Set(state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? []);
+    const journaled = this.store
+      .effects(runId)
+      .filter(
+        (e) =>
+          (e.kind === "file_patch" || e.kind === "artifact_write") &&
+          ["applied", "reconciled"].includes(e.status) &&
+          intentRoot(e.intent_json) === worktree.path,
+      )
+      .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+    const title = state.spec?.title ?? this.store.run(runId).feature_id;
+    const commit = await commitRunBranch(
+      this.store,
+      runId,
+      worktree,
+      [...journaled, ...changedPaths(baseline, final).filter((path) => declared.has(path))],
+      `${title.slice(0, 72)}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
+    );
+    state.worktree = { ...worktree, commit };
   }
   private repair(
     runId: string,
@@ -2040,10 +2149,14 @@ export class WorkflowScheduler {
     assertFrozenInputs(state);
     dependencyContracts(this.store, state);
     await this.assertWorkspace(runId, state, policy, signal);
-    this.store.transaction(() => {
+    const acceptable = (): void => {
       assertAcceptance(this.store, runId, state, policy);
       if (this.store.effects(runId).some((e) => ["prepared", "unknown"].includes(e.status)))
         throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain");
+    };
+    await this.commitAccepted(runId, state, acceptable);
+    this.store.transaction(() => {
+      acceptable();
       for (const task of this.store
         .tasks(runId)
         .filter((t) => state.graph?.tasks.some((task) => task.id === t.id)))
@@ -2063,6 +2176,7 @@ export class WorkflowScheduler {
           coverage: state.convergence?.coverage,
           checks: this.store.checks(runId).filter((c) => c.snapshot_id === state.snapshotId),
           verifiedTaskIds: state.graph?.tasks.map((t) => t.id),
+          ...(state.worktree ? { worktree: state.worktree } : {}),
         }),
       );
       this.store.saveState(runId, state);

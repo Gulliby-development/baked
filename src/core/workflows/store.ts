@@ -11,6 +11,7 @@ import { migration001 } from "./migrations/001.js";
 import { migration002 } from "./migrations/002.js";
 import { migration003 } from "./migrations/003.js";
 import { migration004 } from "./migrations/004.js";
+import { migration005 } from "./migrations/005.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -98,8 +99,13 @@ export interface EffectRow {
   before_hash: string | null;
   after_hash: string | null;
 }
+/**
+ * A lease resource: the run that executes, the project's mutation lease, or the mutation lease of
+ * one Git worktree (`worktree:` and its path relative to the project root).
+ */
+export type LeaseResource = "execution" | "mutation" | `worktree:${string}`;
 export interface LeaseRow {
-  resource: "execution" | "mutation";
+  resource: LeaseResource;
   owner_id: string;
   owner_epoch: number;
   run_id: string | null;
@@ -156,6 +162,7 @@ const MIGRATIONS = [
   { version: 2, sql: migration002 },
   { version: 3, sql: migration003 },
   { version: 4, sql: migration004 },
+  { version: 5, sql: migration005 },
 ] as const;
 
 export class WorkflowStore {
@@ -1126,6 +1133,7 @@ export class WorkflowStore {
              FROM effects e JOIN runs r ON r.id = e.run_id
             WHERE e.kind = 'artifact_write' AND e.status IN ('applied','reconciled')
               AND e.after_hash IS NOT NULL AND json_extract(e.intent_json, '$.path') = ?
+              AND json_extract(e.intent_json, '$.root') IS NULL
             ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`,
         )
         .get(path) ?? null
@@ -1188,6 +1196,10 @@ export class WorkflowStore {
     return this.db
       .query<LeaseRow, [string]>("SELECT * FROM workspace_leases WHERE resource=?")
       .get(resource);
+  }
+  /** Every lease row, in resource order. */
+  leases(): LeaseRow[] {
+    return this.db.query<LeaseRow, []>("SELECT * FROM workspace_leases ORDER BY resource").all();
   }
   putLease(lease: LeaseRow): void {
     this.db.run("INSERT OR REPLACE INTO workspace_leases VALUES (?,?,?,?,?,?)", [
