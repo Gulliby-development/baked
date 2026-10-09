@@ -38,6 +38,7 @@ import {
   executionModeOf,
   Hash,
   PolicySchema,
+  ProfileSchema,
   ResearchSchema,
   type RunPolicy,
   type RunSnapshot,
@@ -56,13 +57,17 @@ import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./typ
 import { blocksRun, isAcceptanceRequest } from "./v2/acceptance.js";
 import { decideAcceptance } from "./v2/acceptance-gate.js";
 import {
+  type ContractId,
   type Gate,
+  GateSchema,
   validateWorkflowV2,
   type WorkflowV2,
+  WorkflowV2Schema,
   worktreeRefusal,
 } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
 import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
+import { definitionRevisionProblems } from "./v2/revision.js";
 import {
   autoApprovalHash,
   autoApprovalOf,
@@ -167,81 +172,16 @@ export class NativeWorkflowService implements WorkflowService {
             `Profile output does not match stage ${stage.id}`,
           );
     } else {
-      const definition = loaded.definition;
-      const library = loadGateLibrary(this.workspace, policy);
-      const validation = validateWorkflowV2(definition, library.gates);
-      if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
-      gates = frozenGates(definition, library.gates);
-      const unconfirmed = unconfirmedGates(
+      const bound = bindDefinition(
         this.workspace,
-        library,
-        gates.map((g) => g.id),
+        loaded.definition,
+        policy,
+        (id) => registry.get(id).output,
+        request.autoApprovalConfirmation,
       );
-      if (unconfirmed.length)
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          `Review the project gates this workflow uses before they run:\n${unconfirmed.map(describeGate).join("\n")}\nConfirm them with: baked workflow gates confirm ${unconfirmed.map((e) => e.gate.id).join(" ")}`,
-          { unconfirmedGates: unconfirmed.map((e) => e.gate.id) },
-        );
-      for (const gate of gates) {
-        const entry = library.entries.get(gate.id);
-        if (entry?.path) gateFiles[entry.path] = hashBytes(readFileSync(entry.path));
-      }
-      const autoApproval = autoApprovalOf(definition);
-      if (definition.autoApproval && autoApproval) {
-        const expected = autoApprovalHash(definition.autoApproval);
-        if (request.autoApprovalConfirmation !== expected)
-          throw new WorkflowFault(
-            "INVALID_DEFINITION",
-            `Workflow ${definition.id} approves plans automatically within: ${describeAutoApproval(definition.autoApproval)}. Confirm these limits to start it (CLI: --confirm-auto-approval ${expected}).`,
-            { autoApprovalHash: expected },
-          );
-      }
-      // The command gates the definition binds are the run's checks, with their effective modes;
-      // auto approval comes from the definition only.
-      const acceptanceWrites = [
-        ...new Set(
-          gates.flatMap((g) =>
-            g.type === "ai-acceptance" ? g.acceptance.capabilities.writePaths : [],
-          ),
-        ),
-      ];
-      policy = PolicySchema.parse({
-        ...policy,
-        checks: checksOf(definition, gates),
-        autoApproval,
-        ...(acceptanceWrites.length ? { acceptanceWrites } : {}),
-      });
-      validateChecks(this.workspace, policy);
-      for (const stage of definition.stages) {
-        const kind = stageKind(stage);
-        if (!kind)
-          throw new WorkflowFault(
-            "INVALID_DEFINITION",
-            `Stage ${stage.id} produces ${stage.produces}, which no agent stage can submit`,
-          );
-        const profileId = stageProfileId(stage);
-        if (profileId && registry.get(profileId).output !== KIND_OUTPUT[kind])
-          throw new WorkflowFault(
-            "INVALID_DEFINITION",
-            `Profile output does not match stage ${stage.id}`,
-          );
-        for (const reviewer of reviewersOf(stage, gates)) {
-          if (registry.get(reviewer.profileId).output !== "review")
-            throw new WorkflowFault(
-              "INVALID_DEFINITION",
-              `Review gate ${reviewer.key} needs a profile that returns ReviewSchema`,
-            );
-          if (
-            reviewer.skepticProfileId &&
-            registry.get(reviewer.skepticProfileId).output !== "refutation"
-          )
-            throw new WorkflowFault(
-              "INVALID_DEFINITION",
-              `Skeptic of ${reviewer.key} must return RefutationSchema`,
-            );
-        }
-      }
+      gates = bound.gates;
+      Object.assign(gateFiles, bound.gateFiles);
+      policy = bound.policy;
     }
     // The CLI flag overrides the definition, which overrides the policy. Inline leaves the field
     // out, so the policy hash of an inline run is what it was before execution modes existed.
@@ -682,6 +622,104 @@ export class NativeWorkflowService implements WorkflowService {
         );
     });
   }
+  /**
+   * Checks a revised v2 definition for a started run (V2-11) and binds it like a start would: the
+   * gate library, the profiles frozen in the run, first-use gate confirmation and auto-approval
+   * limits. `state` is the candidate state with its package applied; its manifest and frozen files
+   * are updated here. Rejected with every reason when the run's history does not fit the new graph.
+   */
+  definitionCandidate(
+    runId: string,
+    state: RuntimeState,
+    basePolicy: RunPolicy,
+    request: { definition: unknown; definitionPath?: string; autoApprovalConfirmation?: string },
+  ): { definition: WorkflowV2; gates: Gate[]; policy: RunPolicy } {
+    const row = this.store.run(runId);
+    const parsed = parseRunDefinition(row.definition_json);
+    if (parsed.schemaVersion !== 2)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "A run started from a schema 1 workflow keeps its definition; fork it or start a new run",
+      );
+    const current = parsed.definition;
+    const next = WorkflowV2Schema.safeParse(request.definition);
+    if (!next.success)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `The revised definition is not a schema 2 workflow: ${next.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+      );
+    const definition = next.data;
+    const mode = executionModeOf(PolicySchema.parse(JSON.parse(row.policy_json)));
+    if (definition.execution !== undefined && definition.execution !== mode)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "A revision cannot change the execution mode; fork or start a new run",
+      );
+    const profiles = ProfileSchema.array().parse(JSON.parse(row.profiles_json));
+    const outputOf = (id: string): string => {
+      const profile = profiles.find((p) => p.id === id);
+      if (!profile)
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Profile ${id} is not frozen in this run; start a new run to use it`,
+        );
+      return profile.output;
+    };
+    // Unchanged auto-approval limits were confirmed when the run started.
+    const sameLimits =
+      current.autoApproval !== null &&
+      definition.autoApproval !== null &&
+      autoApprovalHash(current.autoApproval) === autoApprovalHash(definition.autoApproval);
+    const bound = bindDefinition(
+      this.workspace,
+      definition,
+      basePolicy,
+      outputOf,
+      request.autoApprovalConfirmation ??
+        (sameLimits && current.autoApproval ? autoApprovalHash(current.autoApproval) : undefined),
+    );
+    const position = state.position;
+    if (!position)
+      throw new WorkflowFault("INVALID_DEFINITION", "The run has no position in its definition");
+    const keepsPackage = Boolean(state.spec && state.plan && state.graph);
+    const resumeAt = keepsPackage
+      ? (restartPosition(canonical(definition), true)?.stageId ?? definition.entry)
+      : position.stageId;
+    const held: ContractId[] = [];
+    if (state.spec) held.push("spec");
+    if (state.plan) held.push("plan");
+    if (state.research) held.push("research");
+    if (state.report) held.push("report");
+    if (state.initiativePlan) held.push("initiativePlan");
+    const problems = definitionRevisionProblems(current, definition, position, held, resumeAt);
+    if (problems.length)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `The revised definition does not fit this run:\n${problems.join("\n")}`,
+        { problems },
+      );
+    // The run now follows the candidate content; the files it came from are frozen again.
+    const definitionFile = new RegExp(`/(?:\\.baked|baked)/workflows/${current.id}\\.json$`, "i");
+    for (const path of Object.keys(state.frozenFiles)) {
+      const normal = path.replaceAll("\\", "/");
+      if (definitionFile.test(normal) || /\/(?:\.baked|baked)\/gates\//i.test(normal))
+        delete state.frozenFiles[path];
+    }
+    Object.assign(state.frozenFiles, bound.gateFiles);
+    if (
+      request.definitionPath &&
+      /\/(?:\.baked|baked)\/workflows\/[^/]+\.json$/i.test(
+        request.definitionPath.replaceAll("\\", "/"),
+      )
+    )
+      state.frozenFiles[request.definitionPath] = hashBytes(readFileSync(request.definitionPath));
+    state.manifest.workflowHash = hashJson(definition);
+    state.manifest.instructionHashes = [
+      ...state.manifest.instructionHashes.filter((h) => h.source !== GATES_ARTIFACT),
+      ...(bound.gates.length ? [{ source: GATES_ARTIFACT, hash: hashJson(bound.gates) }] : []),
+    ];
+    return { definition, gates: bound.gates, policy: bound.policy };
+  }
   async revise(
     runId: string,
     command: CommandIdentity,
@@ -704,11 +742,16 @@ export class NativeWorkflowService implements WorkflowService {
         expectedInputHash: string;
         state: RuntimeState;
         policy: unknown;
+        definition?: unknown;
+        gates?: unknown;
       };
       if (candidate.expectedInputHash !== this.store.run(runId).input_hash)
         throw new WorkflowFault("INPUT_CHANGED", "Revision candidate was built from stale inputs");
       const state = RuntimeStateSchema.parse(candidate.state);
-      if (!state.spec || !state.plan || !state.graph)
+      const definition =
+        candidate.definition !== undefined ? WorkflowV2Schema.parse(candidate.definition) : null;
+      const keepsPackage = Boolean(state.spec && state.plan && state.graph);
+      if (!keepsPackage && !definition)
         throw new WorkflowFault(
           "INVALID_DEFINITION",
           "Revision requires a complete spec, plan and task package",
@@ -716,14 +759,16 @@ export class NativeWorkflowService implements WorkflowService {
       // The run keeps its worktree; the candidate cannot move it.
       state.worktree = this.store.state(runId).worktree;
       const root = runRoot(this.workspace, state);
-      validatePackage(root, state.spec, state.plan, state.graph);
       // The initiative owns the upstream contracts of its features; a revision cannot repoint them.
       const pinned = this.store.state(runId).hostDependencies;
-      if (pinned && hashJson(state.spec.dependencies) !== hashJson(pinned))
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          "The dependencies of an initiative feature are pinned by the initiative; keep them in the revision",
-        );
+      if (state.spec && state.plan && state.graph) {
+        validatePackage(root, state.spec, state.plan, state.graph);
+        if (pinned && hashJson(state.spec.dependencies) !== hashJson(pinned))
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            "The dependencies of an initiative feature are pinned by the initiative; keep them in the revision",
+          );
+      }
       state.hostDependencies = pinned;
       const policy = PolicySchema.parse(candidate.policy);
       if (
@@ -736,29 +781,60 @@ export class NativeWorkflowService implements WorkflowService {
         );
       const writers = writerPolicyProblem(policy);
       if (writers) throw new WorkflowFault("INVALID_DEFINITION", writers);
-      validateChecks(root, policy, state.graph);
+      validateChecks(root, policy, state.graph ?? undefined);
       for (const request of this.store.requests(runId).filter((r) => r.status === "pending"))
         this.store.decideRequest(runId, request.id, "superseded", { candidateHash });
-      if (state.snapshotId) this.store.invalidateEvidence(runId, state.snapshotId, "input_changed");
-      state.stageIndex = 3;
-      state.position = restartPosition(this.store.run(runId).definition_json, true);
-      state.analysisPassed = false;
+      if (definition) {
+        // The operator's revise command is the decision on the new definition (V2-11); the run's
+        // gates are frozen again and the previous definition stays in the record.
+        const previous = JSON.parse(this.store.run(runId).definition_json) as unknown;
+        const gates = GateSchema.array().parse(candidate.gates ?? []);
+        this.store.setDefinition(runId, definition);
+        this.store.artifact(runId, "gates", GATES_ARTIFACT, canonical(gates));
+        this.store.artifact(
+          runId,
+          "definition-revision",
+          `definition-revisions/${command.commandId}.json`,
+          canonical({
+            approvedBy: "user",
+            commandId: command.commandId,
+            candidateHash,
+            previousDefinitionHash: hashJson(previous),
+            definitionHash: hashJson(definition),
+            previous,
+          }),
+        );
+      }
       state.approvalRoot = null;
-      state.reviews = {};
-      state.convergence = null;
-      state.manualCriteria = {};
-      state.correctionHashes = [];
-      state.repairPredecessors = {};
-      state.taskGates = {};
-      state.previousFindingSet = null;
-      state.noProgressRounds = 0;
-      state.manifest.correctionHashes = [];
-      state.rootGraph = structuredClone(state.graph);
-      state.manifest.rootGraphHash = hashJson(state.graph);
-      state.manifest.effectiveGraphHash = hashJson(state.graph);
-      state.expectedFiles = null;
-      state.verificationState = "stale";
       this.store.setApproval(runId, null);
+      if (state.graph && keepsPackage) {
+        if (state.snapshotId)
+          this.store.invalidateEvidence(runId, state.snapshotId, "input_changed");
+        state.stageIndex = 3;
+        state.position = restartPosition(this.store.run(runId).definition_json, true);
+        state.analysisPassed = false;
+        state.reviews = {};
+        state.convergence = null;
+        state.manualCriteria = {};
+        state.correctionHashes = [];
+        state.repairPredecessors = {};
+        state.taskGates = {};
+        state.previousFindingSet = null;
+        state.noProgressRounds = 0;
+        state.manifest.correctionHashes = [];
+        state.rootGraph = structuredClone(state.graph);
+        state.manifest.rootGraphHash = hashJson(state.graph);
+        state.manifest.effectiveGraphHash = hashJson(state.graph);
+        state.expectedFiles = null;
+        state.verificationState = "stale";
+      } else if (definition && state.position) {
+        // Before a package exists the run continues at its current stage under the new graph;
+        // loop counters of transitions the revision removed are dropped.
+        const kept = new Set(definition.transitions.map((t) => t.id));
+        state.position.loops = Object.fromEntries(
+          Object.entries(state.position.loops).filter(([id]) => kept.has(id)),
+        );
+      }
       const before = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
       // The operator's revise command is the decision on its policy. Auto-approval renewal may
       // rely on this record, but never on a policy the model produced.
@@ -777,7 +853,7 @@ export class NativeWorkflowService implements WorkflowService {
           }),
         );
       this.store.setPolicy(runId, policy);
-      this.store.syncTasks(runId, state.graph, true);
+      if (state.graph && keepsPackage) this.store.syncTasks(runId, state.graph, true);
       this.store.saveState(runId, state);
       this.store.transition(runId, "paused");
     });
@@ -1128,4 +1204,93 @@ function planPosition(definitionJson: string): {
   position.stageId = stage.id;
   position.visits = { [stage.id]: 1 };
   return { stageIndex: 0, position };
+}
+
+/**
+ * Validates a v2 definition against the gate library and the profiles a run can use, and derives
+ * the run policy from it: the command gates it binds become the checks, with their effective
+ * modes, and auto approval comes from the definition only. Shared by run start and by a revision
+ * of a started run's definition.
+ */
+export function bindDefinition(
+  workspace: string,
+  definition: WorkflowV2,
+  basePolicy: RunPolicy,
+  outputOf: (profileId: string) => string,
+  autoApprovalConfirmation: string | undefined,
+): { gates: Gate[]; gateFiles: Record<string, string>; policy: RunPolicy } {
+  let policy = basePolicy;
+  const gateFiles: Record<string, string> = {};
+  const library = loadGateLibrary(workspace, policy);
+  const validation = validateWorkflowV2(definition, library.gates);
+  if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
+  const gates = frozenGates(definition, library.gates);
+  const unconfirmed = unconfirmedGates(
+    workspace,
+    library,
+    gates.map((g) => g.id),
+  );
+  if (unconfirmed.length)
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      `Review the project gates this workflow uses before they run:\n${unconfirmed.map(describeGate).join("\n")}\nConfirm them with: baked workflow gates confirm ${unconfirmed.map((e) => e.gate.id).join(" ")}`,
+      { unconfirmedGates: unconfirmed.map((e) => e.gate.id) },
+    );
+  for (const gate of gates) {
+    const entry = library.entries.get(gate.id);
+    if (entry?.path) gateFiles[entry.path] = hashBytes(readFileSync(entry.path));
+  }
+  const autoApproval = autoApprovalOf(definition);
+  if (definition.autoApproval && autoApproval) {
+    const expected = autoApprovalHash(definition.autoApproval);
+    if (autoApprovalConfirmation !== expected)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Workflow ${definition.id} approves plans automatically within: ${describeAutoApproval(definition.autoApproval)}. Confirm these limits to start it (CLI: --confirm-auto-approval ${expected}).`,
+        { autoApprovalHash: expected },
+      );
+  }
+  // The command gates the definition binds are the run's checks, with their effective modes;
+  // auto approval comes from the definition only.
+  const acceptanceWrites = [
+    ...new Set(
+      gates.flatMap((g) =>
+        g.type === "ai-acceptance" ? g.acceptance.capabilities.writePaths : [],
+      ),
+    ),
+  ];
+  policy = PolicySchema.parse({
+    ...policy,
+    checks: checksOf(definition, gates),
+    autoApproval,
+    ...(acceptanceWrites.length ? { acceptanceWrites } : {}),
+  });
+  validateChecks(workspace, policy);
+  for (const stage of definition.stages) {
+    const kind = stageKind(stage);
+    if (!kind)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Stage ${stage.id} produces ${stage.produces}, which no agent stage can submit`,
+      );
+    const profileId = stageProfileId(stage);
+    if (profileId && outputOf(profileId) !== KIND_OUTPUT[kind])
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Profile output does not match stage ${stage.id}`,
+      );
+    for (const reviewer of reviewersOf(stage, gates)) {
+      if (outputOf(reviewer.profileId) !== "review")
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Review gate ${reviewer.key} needs a profile that returns ReviewSchema`,
+        );
+      if (reviewer.skepticProfileId && outputOf(reviewer.skepticProfileId) !== "refutation")
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Skeptic of ${reviewer.key} must return RefutationSchema`,
+        );
+    }
+  }
+  return { gates, gateFiles, policy };
 }

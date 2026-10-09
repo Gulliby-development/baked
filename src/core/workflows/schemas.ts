@@ -997,6 +997,11 @@ export interface ArtifactService {
       plan?: string;
       graph?: TaskGraph;
       policy?: RunPolicy;
+      /** A revised schema 2 definition for the run (V2-11), and the file it was read from. */
+      definition?: unknown;
+      definitionPath?: string;
+      /** The hash of new auto-approval limits, as a run start asks for it. */
+      autoApprovalConfirmation?: string;
     },
   ): Promise<{ candidateHash: string; reportArtifactId: string }>;
   exportRun(runId: string, destination: string): Promise<{ manifestHash: string; path: string }>;
