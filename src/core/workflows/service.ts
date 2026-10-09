@@ -36,7 +36,6 @@ import {
   type CommandIdentity,
   type Decision,
   executionModeOf,
-  writerPolicyProblem,
   Hash,
   PolicySchema,
   ResearchSchema,
@@ -49,6 +48,7 @@ import {
   WorkflowConfigSchema,
   type WorkflowDefinition,
   type WorkflowService,
+  writerPolicyProblem,
 } from "./schemas.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
