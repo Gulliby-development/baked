@@ -79,6 +79,12 @@ baked workflow pause RUN_ID --expected-revision N
 baked workflow cancel RUN_ID --expected-revision N
 ```
 
+An answer does not restart the run. It is appended to the request, and `resume` continues from the stage the answer affects: research questions continue with specify and keep the research report, spec questions repeat specify, and analysis findings repeat specify when a blocking finding refers to the spec and plan when it refers only to `plan.md` or `tasks.json`.
+
+Research, spec and analysis run before any code changes, so they cannot know check outcomes. A blocking research unknown or analysis finding that only says checks were not run (lint, typecheck, tests) is returned to the agent at submission to be made non-blocking; if the agent keeps it, the runtime records it as a non-blocking note. The planner and spec author take verification commands from the policy checks, and the spec reviewer treats a policy check that runs a superset of a named command (the whole test suite for one test file) as satisfying it and ignores project-instruction checks for files no task writes.
+
+Research is scoped to the request. When the request names files, the researcher gets `4 + 2 × files` steps (at most its profile limit of 12) and 14,000 tokens per step (at most the policy `maxAttemptTokens`); it is told to read the named files together, follow their direct dependencies with `bake_find`/`bake_impact` and submit once they are covered. A request that names no file keeps the profile step limit and the policy token cap.
+
 Answers is a JSON object of string answers. Manual evidence describes the user's actual observation. It is bound to a snapshot; a new source change makes it stale. Post-release criteria require explicit consent in the scope approval and keep the deferred status.
 
 Editing the Markdown by hand does not change the accepted spec. Prepare an approved JSON revision, then:

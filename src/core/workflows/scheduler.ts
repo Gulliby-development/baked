@@ -13,6 +13,7 @@ import { approvalDigest } from "./approval.js";
 import { evaluateAutoApproval } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
+import { deferredBlockingProblems, demoteDeferred, researchBudget } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash } from "./effects.js";
@@ -119,17 +120,40 @@ export class WorkflowScheduler {
           let advance = true;
           switch (stage.kind) {
             case "research": {
-              const research = ResearchSchema.parse(
+              const researcher = this.requireProfile(profile);
+              const budget = researchBudget(state.prompt, researcher, policy);
+              const submitted = ResearchSchema.parse(
                 await this.call(
                   runId,
                   stepId,
                   state,
                   policy,
-                  this.requireProfile(profile),
-                  {},
+                  researcher,
+                  {
+                    researchScope: {
+                      namedPaths: budget.namedPaths,
+                      maxSteps: budget.maxSteps,
+                    },
+                  },
                   signal,
+                  undefined,
+                  0,
+                  (output) => {
+                    const parsed = ResearchSchema.safeParse(output);
+                    return parsed.success
+                      ? deferredBlockingProblems(
+                          parsed.data.unknowns,
+                          (_, index) => parsed.data.unknowns[index]?.question ?? "",
+                        )
+                      : [];
+                  },
+                  { maxSteps: budget.maxSteps, maxTokens: budget.maxTokens },
                 ),
               );
+              const research = {
+                ...submitted,
+                unknowns: demoteDeferred(submitted.unknowns, (q) => q.question),
+              };
               state.research = canonical(research);
               if (research.unknowns.some((q) => q.blocking)) {
                 this.wait(runId, "clarification", state, { questions: research.unknowns });
@@ -247,14 +271,31 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   { verifiedByRuntime: PLAN_CONSISTENCY_CHECKS },
                   signal,
+                  undefined,
+                  0,
+                  (output) => {
+                    const parsed = AnalysisSchema.safeParse(output);
+                    return parsed.success
+                      ? deferredBlockingProblems(
+                          parsed.data.findings,
+                          (_, index) => parsed.data.findings[index]?.description ?? "",
+                        )
+                      : [];
+                  },
                 ),
               );
               if (analysis.inputHash !== hashJson(state.manifest))
                 throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // Findings about check outcomes stay in the record as notes; checks run later.
+              const findings = demoteDeferred(analysis.findings, (f) => f.description);
+              const blocking = findings.some((f) => f.blocking);
+              const onlyDeferred = !blocking && analysis.findings.some((f) => f.blocking);
               state.analysisPassed =
-                analysis.verdict === "pass" && !analysis.findings.some((f) => f.blocking);
+                !blocking &&
+                (analysis.verdict === "pass" ||
+                  (analysis.verdict === "needs_revision" && onlyDeferred));
               if (!state.analysisPassed) {
-                this.wait(runId, "clarification", state, { findings: analysis.findings });
+                this.wait(runId, "clarification", state, { findings });
                 advance = false;
               }
               break;
@@ -659,6 +700,7 @@ export class WorkflowScheduler {
     task?: Task,
     retry = 0,
     validate?: (output: unknown) => string[],
+    limits?: { maxSteps: number; maxTokens: number | undefined },
   ): Promise<unknown> {
     const prompt = buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
@@ -686,7 +728,8 @@ export class WorkflowScheduler {
         prompt,
         task,
         signal,
-        maxSteps: Math.min(profile.maxSteps, policy.maxAgentSteps),
+        maxSteps: limits?.maxSteps ?? Math.min(profile.maxSteps, policy.maxAgentSteps),
+        ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
         ...(validate ? { validate } : {}),
       });
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
@@ -742,6 +785,7 @@ export class WorkflowScheduler {
           task,
           retry + 1,
           validate,
+          limits,
         );
       }
       if (!(error instanceof WorkflowFault) && !signal.aborted)

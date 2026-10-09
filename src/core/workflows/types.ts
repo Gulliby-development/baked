@@ -62,6 +62,8 @@ export interface ExecutionRequest {
   task?: Task;
   signal: AbortSignal;
   maxSteps: number;
+  /** Token cap for this attempt when the stage sets one below the policy cap. */
+  maxTokens?: number;
   /**
    * Semantic checks on a submitted result. Errors are returned to the agent so it can resubmit
    * a corrected result in the same conversation, a bounded number of times.

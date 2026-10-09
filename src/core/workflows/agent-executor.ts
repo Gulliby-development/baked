@@ -239,7 +239,10 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
-        maxTokens: policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+        maxTokens: Math.min(
+          request.maxTokens ?? Number.POSITIVE_INFINITY,
+          policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+        ),
         submitTools,
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
