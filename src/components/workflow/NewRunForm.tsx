@@ -25,6 +25,7 @@ export function NewRunForm({
   width,
   onStart,
   onCancel,
+  onEdit,
 }: {
   active: boolean;
   info: WorkflowInfo | null;
@@ -33,6 +34,8 @@ export function NewRunForm({
   width: number;
   onStart: (input: StartRunInput) => Promise<void>;
   onCancel: () => void;
+  /** Opens the workflow editor on the chosen definition. */
+  onEdit?: (workflowId: string) => void;
 }) {
   const t = useTheme();
   const [focus, setFocus] = useState<FieldId>(initialPrompt ? "feature" : "prompt");
@@ -108,6 +111,11 @@ export function NewRunForm({
       else setBudget(cycle(PRESETS, budget, delta));
       return;
     }
+    if (focus === "workflow" && evt.name === "e" && onEdit) {
+      evt.preventDefault();
+      onEdit(workflowId);
+      return;
+    }
     if (evt.name === "return" && (focus === "workflow" || focus === "budget")) {
       evt.preventDefault();
       move(1);
@@ -175,7 +183,7 @@ export function NewRunForm({
           labelWidth={10}
           focused={focus === "workflow"}
           value={`‹ ${workflowId} ›${workflows.length > 1 ? `  (${workflows.length} available)` : ""}`}
-          keyHint="←/→"
+          keyHint={onEdit ? "←/→ · E edit" : "←/→"}
         />
         {definition ? (
           <Field
