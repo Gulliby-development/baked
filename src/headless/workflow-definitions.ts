@@ -14,7 +14,7 @@ import {
   loadDefinition,
   validateDefinition,
 } from "../core/workflows/v2/definitions.js";
-import { loadGateLibrary } from "../core/workflows/v2/library.js";
+import { confirmGates, loadGateLibrary, readConfirmations } from "../core/workflows/v2/library.js";
 import type { WorkflowArgs } from "./workflow-parse.js";
 
 export const DEFINITION_COMMANDS = ["definitions", "validate", "define", "gates"] as const;
@@ -63,6 +63,19 @@ export function executeDefinitionCommand(
       return { result: listDefinitions(workspace, policy), exitCode: 0 };
     case "gates": {
       const library = loadGateLibrary(workspace, policy);
+      if (args.positional[0] === "confirm") {
+        const ids = args.flags.all
+          ? [...library.entries.values()]
+              .filter((e) => e.source === "project")
+              .map((e) => e.gate.id)
+          : args.positional.slice(1);
+        if (!ids.length)
+          throw new WorkflowFault("INVALID_DEFINITION", "Name the gates to confirm, or --all");
+        return { result: { confirmed: confirmGates(workspace, library, ids) }, exitCode: 0 };
+      }
+      if (args.positional.length)
+        throw new WorkflowFault("INVALID_DEFINITION", "gates takes no argument except confirm");
+      const confirmed = readConfirmations(workspace);
       return {
         result: {
           gates: [...library.entries.values()].map((entry) => ({
@@ -74,6 +87,9 @@ export function executeDefinitionCommand(
             path: entry.path,
             hash: entry.hash,
             shadows: entry.shadows,
+            ...(entry.source === "project"
+              ? { confirmed: confirmed[entry.gate.id] === entry.hash }
+              : {}),
           })),
           problems: library.problems,
         },
