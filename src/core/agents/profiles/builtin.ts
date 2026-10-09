@@ -73,7 +73,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
     model: "$active",
     context: "planning",
     instructions:
-      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval.",
+      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks.",
     skills: [],
     allowedTools: [
       "read",
