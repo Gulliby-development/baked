@@ -17,6 +17,12 @@ export interface AttemptUsageRow {
 export interface RunUsageReport {
   runId: string;
   totalTokens: number;
+  totals: {
+    tokens: number | null;
+    steps: number | null;
+    cacheReadTokens: number | null;
+    compactedBytes: number | null;
+  };
   stages: Array<{ stage: string; attempts: number; tokens: number; steps: number | null }>;
   attempts: AttemptUsageRow[];
 }
@@ -62,9 +68,26 @@ export function runUsage(store: WorkflowStore, runId: string): RunUsageReport {
     if (attempt.steps !== null) entry.steps = (entry.steps ?? 0) + attempt.steps;
     byStage.set(attempt.stage, entry);
   }
+  const sumReported = (pick: (attempt: AttemptUsageRow) => number | null): number | null => {
+    let total = 0;
+    let reported = false;
+    for (const attempt of attempts) {
+      const value = pick(attempt);
+      if (value === null) continue;
+      total += value;
+      reported = true;
+    }
+    return reported ? total : null;
+  };
   return {
     runId,
     totalTokens: attempts.reduce((total, attempt) => total + (attempt.usedTokens ?? 0), 0),
+    totals: {
+      tokens: sumReported((attempt) => attempt.usedTokens),
+      steps: sumReported((attempt) => attempt.steps),
+      cacheReadTokens: sumReported((attempt) => attempt.cacheReadTokens),
+      compactedBytes: sumReported((attempt) => attempt.compactedBytes),
+    },
     stages: [...byStage.values()],
     attempts,
   };

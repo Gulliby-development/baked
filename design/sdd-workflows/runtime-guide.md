@@ -204,6 +204,15 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 
 Every model step resends the whole conversation, so a stage that reads many files pays for each old file again on every later step. The step budget of an agent attempt (`maxAttemptTokens`, see [step-budget](../../src/core/workflows/step-budget.ts)) replaces older large results of `read`, `navigate`, `bake_find` and `bake_impact` with short stubs that keep every evidence ID; the last three tool results stay verbatim, and edits and check results are never compacted. Evidence is written by the tools into the run store, so nothing is lost; the model reads a file again if it needs the content.
 
+## Workflow definitions (v2)
+
+Definitions of schema version 2 describe stages, transitions, contracts and gates as data ([design](workflow-v2-design.md)). The core reads and validates them; a run of a v2 definition is described in the status report once the scheduler drives it.
+
+- `baked workflow definitions` lists `sdd`, the five presets (`quick-fix`, `standard`, `full`, `spike`, `review-only`) and every `baked/workflows/*.json`, with the stages, whether the workflow changes files and its validation problems.
+- `baked workflow validate ID` or `--file FILE` checks a definition against the gate library and exits 1 with the problems. A v1 file is checked by the v1 rules and through the migration to v2.
+- `baked workflow define ID --from PRESET` copies a preset or another definition to `baked/workflows/ID.json` as a custom workflow. The copy never carries auto approval; the presets use the project's own checks in their check stages and after each task.
+- `baked workflow gates` lists the gate library: the built-in review gates, the policy checks, the user's `~/.baked/gates/*.json` and the project's `baked/gates/*.json`, in that order of precedence, with what each gate shadows. A file that does not parse is listed as a problem and never used. Reading the library runs nothing.
+
 ## Pause, crash and recovery
 
 A workspace has one scheduler and one writer. Ordinary BAKED mutations use the same mutex; read-only tools stay available. An external editor is not governed by the lease, so content hashes are compared before and after checks and before acceptance. The Git baseline records HEAD, tracked files and the initial user changes; filesystem-only workspaces are supported too.

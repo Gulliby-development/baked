@@ -1065,6 +1065,20 @@ export class WorkflowStore {
       payload: { criterionId: result.criterionId, snapshotId, verdict: result.verdict },
     });
   }
+  /** The most recent applied publication of a workspace file by any run, with that run's status. */
+  lastPublication(path: string): { runId: string; status: string; afterHash: string } | null {
+    return (
+      this.db
+        .query<{ runId: string; status: string; afterHash: string }, [string]>(
+          `SELECT e.run_id AS runId, r.status AS status, e.after_hash AS afterHash
+             FROM effects e JOIN runs r ON r.id = e.run_id
+            WHERE e.kind = 'artifact_write' AND e.status IN ('applied','reconciled')
+              AND e.after_hash IS NOT NULL AND json_extract(e.intent_json, '$.path') = ?
+            ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`,
+        )
+        .get(path) ?? null
+    );
+  }
   prepareEffect(
     runId: string,
     attemptId: string,

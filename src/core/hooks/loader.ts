@@ -14,19 +14,28 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { userHome } from "../platform/index.js";
 import type { HookEventName, HookRule, HooksConfig } from "./types.js";
 
 function getHookPaths(cwd: string): string[] {
-  const home = homedir();
-  return [
+  const home = userHome();
+  const paths = [
     join(home, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.local.json"),
     join(home, ".baked", "config.json"),
     join(cwd, ".baked", "config.json"),
   ];
+  // In the home directory the user and project paths name the same file; read it once so
+  // its hooks do not run twice.
+  const seen = new Set<string>();
+  return paths.filter((path) => {
+    const key = process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 interface SettingsFile {
@@ -92,11 +101,12 @@ const _cache = new Map<string, CacheEntry>();
 /** Get hooks config (cached per-cwd with 5s TTL). Multi-tab safe. */
 export function getHooks(cwd?: string): HooksConfig {
   const effectiveCwd = cwd ?? process.cwd();
-  const entry = _cache.get(effectiveCwd);
+  const key = `${userHome()}\0${effectiveCwd}`;
+  const entry = _cache.get(key);
   if (entry && Date.now() < entry.expiresAt) return entry.hooks;
 
   const hooks = loadHooks(effectiveCwd);
-  _cache.set(effectiveCwd, { hooks, expiresAt: Date.now() + CACHE_TTL_MS });
+  _cache.set(key, { hooks, expiresAt: Date.now() + CACHE_TTL_MS });
   return hooks;
 }
 

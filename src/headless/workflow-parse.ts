@@ -27,6 +27,10 @@ const commands = [
   "extend",
   "continue",
   "undo",
+  "definitions",
+  "validate",
+  "define",
+  "gates",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 export interface WorkflowArgs {
@@ -71,6 +75,7 @@ const flags = new Set([
   "plan",
   "tasks",
   "cwd",
+  "from",
   "help",
 ]);
 const booleanFlags = new Set(["json", "events", "accept", "dry-run", "help"]);
@@ -111,6 +116,10 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   extend: ["tokens", "calls", "time-ms", "expected-revision", "command-id"],
   continue: ["request", "expected-revision", "command-id"],
   undo: ["path", "expected-revision", "command-id"],
+  definitions: [],
+  validate: ["file"],
+  define: ["from"],
+  gates: [],
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -154,7 +163,11 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
     }
   }
   if (!result.flags.help && result.command !== "run") {
-    const count = ["list", "profiles", "import", "gc"].includes(result.command) ? 0 : 1;
+    const count =
+      ["list", "profiles", "import", "gc", "definitions", "gates"].includes(result.command) ||
+      (result.command === "validate" && result.flags.file)
+        ? 0
+        : 1;
     if (result.positional.length !== count)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -193,6 +206,10 @@ candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE]
 revise RUN_ID --candidate SHA256 --expected-revision N
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
+definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
+validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
+define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
+gates                     list the gate library with each gate's source and what it shadows
 profiles                  artifacts RUN_ID [--file ARTIFACT_ID]
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID

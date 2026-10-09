@@ -1,42 +1,50 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { structuralEditTool } from "../src/core/tools/structural-edit.js";
-import { setCwd } from "../src/core/cwd.js";
+import { getCwd, setCwd } from "../src/core/cwd.js";
+import { resolveAstGrep, structuralEditTool } from "../src/core/tools/structural-edit.js";
 
 const origCwd = process.cwd();
 let dir: string;
 
-const IS_WIN = process.platform === "win32";
-
-// Mirror production resolveAstGrep: POSIX bare shim, Windows .cmd/.exe shims,
-// the native per-platform package binary, then PATH (split on the OS delimiter).
+// Resolve exactly as production does, so a foreign `sg` on PATH (shadow-utils'
+// switch-group on Linux) never makes these tests run against the wrong binary.
 function hasAstGrep(): boolean {
-  const binDir = join(process.cwd(), "node_modules", ".bin");
-  const localNames = IS_WIN
-    ? ["ast-grep.cmd", "ast-grep.exe", "ast-grep", "sg.cmd", "sg.exe", "sg"]
-    : ["ast-grep", "sg"];
-  if (localNames.some((n) => existsSync(join(binDir, n)))) return true;
-
-  const nativeDir = join(process.cwd(), "node_modules", "@ast-grep", "cli");
-  const exe = IS_WIN ? ".exe" : "";
-  if (existsSync(join(nativeDir, `ast-grep${exe}`))) return true;
-
-  const path = process.env.PATH ?? "";
-  const exts = IS_WIN ? ["", ".exe", ".cmd"] : [""];
-  return path
-    .split(IS_WIN ? ";" : ":")
-    .some((d) => exts.some((e) => existsSync(join(d, `ast-grep${e}`)) || existsSync(join(d, `sg${e}`))));
+  return resolveAstGrep(getCwd()) !== null;
 }
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "struct-edit-"));
+  // Link the repository's dependencies into the workspace so the dev lookup
+  // finds the @ast-grep/cli devDependency, the same binary on every machine.
+  // A junction needs no symlink privilege on Windows.
+  const deps = join(origCwd, "node_modules");
+  if (existsSync(deps)) symlinkSync(deps, join(dir, "node_modules"), "junction");
   setCwd(dir);
 });
 
 afterAll(() => {
   setCwd(origCwd);
+  // Remove the link itself first so the recursive delete can never walk into
+  // the repository's node_modules.
+  const link = join(dir, "node_modules");
+  try {
+    unlinkSync(link);
+  } catch {
+    try {
+      rmdirSync(link);
+    } catch {}
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 

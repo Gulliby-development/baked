@@ -862,8 +862,10 @@ export class WorkflowScheduler {
     for (const [name, content] of Object.entries(files)) {
       const relative = `specs/${state.spec.featureId}/${name}`;
       const path = workspacePath(this.store.workspace, relative);
-      const expected = state.published[relative] ?? null;
-      if (fileHash(path) === hashBytes(content)) {
+      const current = fileHash(path);
+      const expected =
+        state.published[relative] ?? this.inheritedPublication(runId, relative, current);
+      if (current === hashBytes(content)) {
         state.published[relative] = hashBytes(content);
         continue;
       }
@@ -872,6 +874,27 @@ export class WorkflowScheduler {
     }
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
     await this.snapshot(runId, state, policy, signal);
+  }
+  /**
+   * The hash a fresh run may overwrite at a path it has not published itself. A spec file that is
+   * byte-for-byte what a finished earlier run published was not edited by the user, so a rerun
+   * replaces it. A file still owned by an open run, or changed since publication, keeps the
+   * INPUT_CHANGED guard.
+   */
+  private inheritedPublication(
+    runId: string,
+    relative: string,
+    current: string | null,
+  ): string | null {
+    if (current === null) return null;
+    const last = this.store.lastPublication(relative);
+    if (!last || last.runId === runId || last.afterHash !== current) return null;
+    if (!["completed", "failed", "cancelled"].includes(last.status))
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        `${relative} belongs to open run ${last.runId} (${last.status}); continue or cancel that run before publishing a new plan for this feature`,
+      );
+    return current;
   }
   /**
    * Current evidence handed to an agent with its content. An implementer does not need the

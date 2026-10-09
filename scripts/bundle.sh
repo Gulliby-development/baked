@@ -421,7 +421,7 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   fi
   echo "" >&2
   echo "  fix: re-download the matching release tarball from" >&2
-  echo "       https://github.com/baked/baked/releases" >&2
+  echo "       https://github.com/Gulliby-development/baked/releases" >&2
   echo "       or run: brew reinstall baked" >&2
   echo "" >&2
   exit 1

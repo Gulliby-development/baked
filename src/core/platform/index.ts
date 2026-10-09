@@ -27,6 +27,14 @@ export function tmpDir(): string {
   return tmpdir();
 }
 
+/**
+ * The user's home directory, read from the environment on each call like os.homedir()
+ * would at startup, so an embedding process or a test can point it at another profile.
+ */
+export function userHome(): string {
+  return (IS_WIN ? process.env.USERPROFILE : process.env.HOME) || homedir();
+}
+
 export function configDir(): string {
   const local = localAppData();
   if (local) return join(local, "baked");
