@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -11,13 +12,15 @@ import { validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
+import { writeViaTemp } from "./atomic-write.js";
 import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import { deferredBlockingProblems, demoteDeferred, researchBudget } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
+import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
-import { EffectJournal, fileHash, intentRoot } from "./effects.js";
+import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import {
   InitiativePlanSchema,
@@ -26,11 +29,17 @@ import {
   planStructureProblems,
 } from "./initiatives/plan.js";
 import { mutationLeaseFor, type WorkspaceLeases, withinWorkflow } from "./leases.js";
+import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
 import { abortableDelay, retryDelay } from "./retry.js";
-import { createdByRunLineage, runWrittenHash, uncommittedEdits } from "./rollback.js";
+import {
+  capturePreImage,
+  createdByRunLineage,
+  runWrittenHash,
+  uncommittedEdits,
+} from "./rollback.js";
 import {
   type AgentProfile,
   AnalysisSchema,
@@ -80,7 +89,10 @@ import {
 } from "./v2/runtime.js";
 import {
   commitRunBranch,
+  createTaskWorktree,
   ensureRunWorktree,
+  removeTaskWorktree,
+  runContentCommit,
   runRoot,
   userChangesInScope,
   worktreePath,
@@ -519,7 +531,9 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
-              await this.implement(runId, stepId, state, policy, profiles, signal);
+              if (policy.maxConcurrentWriters > 1 && state.worktree)
+                await this.implementParallel(runId, stepId, state, policy, profiles, signal);
+              else await this.implement(runId, stepId, state, policy, profiles, signal);
               break;
             }
             case "checks": {
@@ -848,8 +862,13 @@ export class WorkflowScheduler {
       problems.push(...(error instanceof Error ? error.message : String(error)).split("\n"));
     }
     problems.push(
-      ...planConsistencyProblems(root, spec, plan.markdown, graph, (path) =>
-        createdByRunLineage(this.store, runId, path, fileHash(workspacePath(root, path))),
+      ...planConsistencyProblems(
+        root,
+        spec,
+        plan.markdown,
+        graph,
+        (path) => createdByRunLineage(this.store, runId, path, fileHash(workspacePath(root, path))),
+        policy.allowOverlappingWrites === true,
       ),
     );
     for (const task of graph.tasks) {
@@ -1316,6 +1335,572 @@ export class WorkflowScheduler {
       this.applyTaskCheck(runId, state, task, check, checked, taskFailures, checkEvidence);
     }
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
+  }
+  /**
+   * Implementation with several writers (a worktree run whose policy allows more than one). Ready
+   * tasks run in batches, each task in its own worktree checked out from the run worktree's
+   * current content; the results are integrated into the run worktree one at a time in graph
+   * order. A task without writes, and a task implemented before an interruption whose checks did
+   * not finish, are handled one at a time in the run worktree as with one writer.
+   */
+  private async implementParallel(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const graph = state.graph;
+    const worktree = state.worktree;
+    if (!graph || !state.approvalRoot || !worktree)
+      throw new WorkflowFault("STALE_DECISION", "Approved tasks in a run worktree required");
+    const mainRoot = join(this.store.workspace, worktree.path);
+    const checks = new Semaphore(MAX_CONCURRENT_TASK_CHECKS);
+    // Tasks whose worker was lost in this drive; the run stops once nothing else can progress.
+    const lost = new Map<string, string>();
+    for (;;) {
+      const rows = this.store.tasks(runId);
+      const current = state.graph ?? graph;
+      const checking = current.tasks.find((candidate) =>
+        rows.some(
+          (row) =>
+            row.id === candidate.id &&
+            row.status === "implemented" &&
+            !hasTaskGate(row, state.taskGates),
+        ),
+      );
+      const ready = readyTasks(current, rows, state.taskGates).filter((t) => !lost.has(t.id));
+      const single = checking ?? ready.find((t) => t.writes.length === 0);
+      signal.throwIfAborted();
+      if (single) {
+        await this.implementTask(
+          runId,
+          stepId,
+          state,
+          policy,
+          profiles,
+          signal,
+          single,
+          single === checking,
+        );
+        continue;
+      }
+      if (!ready.length) break;
+      const plan = planBatch(
+        ready,
+        policy.maxConcurrentWriters,
+        policy.allowOverlappingWrites === true,
+        (path) => existsSync(workspacePath(mainRoot, path)),
+      );
+      const batch = this.reserveBatch(runId, stepId, state, policy, profiles, plan.batch);
+      const base = await runContentCommit(this.store, runId, worktree);
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "batch",
+          `tasks/batches/${newId()}.json`,
+          canonical({
+            base,
+            tasks: batch.map((entry) => entry.task.id),
+            deferredByOverlap: plan.overlapping,
+            deferredByBudget: plan.batch.slice(batch.length).map((t) => t.id),
+          }),
+        ),
+      );
+      let failure: unknown = null;
+      try {
+        // Worktrees and their leases are set up one at a time: Git locks its worktree list.
+        for (const entry of batch) {
+          entry.path = await createTaskWorktree(this.store, runId, entry.task.id, base);
+          this.leases.acquire(entry.lease(), runId, { isolated: true });
+        }
+        const outcomes = await Promise.all(
+          batch.map((entry) => this.runTaskWorker(runId, state, policy, entry, checks, signal)),
+        );
+        for (const outcome of outcomes) {
+          const { entry } = outcome;
+          if (outcome.kind === "fatal") failure ??= outcome.error;
+          else if (outcome.kind === "done" && failure === null)
+            await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+          else if (outcome.kind === "interrupted") {
+            lost.set(entry.task.id, outcome.reason);
+            this.store.transaction(() => {
+              this.store.taskStatus(runId, entry.task.id, "interrupted");
+              this.store.finishStep(runId, entry.child, "interrupted");
+            });
+          } else if (outcome.kind === "rejected") {
+            failure ??= outcome.error;
+            this.store.transaction(() => {
+              this.store.taskStatus(runId, entry.task.id, "blocked");
+              this.store.finishStep(runId, entry.child, "failed");
+            });
+          }
+          await this.releaseTaskWorktree(runId, entry);
+        }
+      } finally {
+        for (const entry of batch) await this.releaseTaskWorktree(runId, entry);
+      }
+      if (failure) throw failure;
+    }
+    if (lost.size)
+      throw new WorkflowFault(
+        "RECOVERY_REQUIRED",
+        `Lost the worker of ${[...lost.keys()].join(", ")}: ${[...lost.values()][0]}. Resume the run to implement them again.`,
+        { reason: "owner_lost" },
+      );
+    if (
+      this.store
+        .tasks(runId)
+        .some(
+          (t) =>
+            state.graph?.tasks.some((task) => task.id === t.id) &&
+            !["implemented", "verified"].includes(t.status),
+        )
+    )
+      throw new WorkflowFault("OUTPUT_INVALID", "Task dependencies remain blocked", {
+        reason: "dependency_failed",
+      });
+  }
+  /**
+   * Reserves the agent attempts of a whole batch before any task starts. The batch shrinks to the
+   * tasks the remaining tokens, calls and checkpoint boundary cover; its first task is always
+   * tried, so a run without budget for even one stops on its budget as with one writer.
+   */
+  private reserveBatch(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    tasks: Task[],
+  ): BatchEntry[] {
+    const run = this.store.run(runId);
+    const held = this.store
+      .attempts(runId)
+      .filter((a) => !a.usage_complete)
+      .reduce((sum, a) => sum + a.reserved_tokens, 0);
+    const boundary = this.store.checkpointBoundary(runId, policy);
+    const planned: { task: Task; profile: AgentProfile; extra: unknown; tokens: number }[] = [];
+    let tokens = 0;
+    for (const task of tasks) {
+      const profile = this.requireProfile(profiles.find((p) => p.id === task.profileId));
+      const extra = {
+        task,
+        evidence: this.evidenceContext(runId, state, { reads: false }),
+        unresolvedMeans: UNRESOLVED_MEANING,
+      };
+      const needed = reserveTokens(
+        this.promptFor(runId, state, policy, profile, extra),
+        profile,
+        policy,
+      );
+      const projected = run.token_usage + held + tokens + needed;
+      if (
+        planned.length &&
+        (projected > policy.maxTotalTokens ||
+          run.agent_calls + planned.length + 1 > policy.maxAgentCalls ||
+          (boundary !== null && projected > boundary))
+      )
+        break;
+      tokens += needed;
+      planned.push({ task, profile, extra, tokens: needed });
+    }
+    return planned.map(({ task, profile, extra, tokens: reserved }) => {
+      const child = this.store.transaction(() => {
+        this.store.taskStatus(runId, task.id, "running");
+        return this.store.beginStep(runId, `task-${task.id}`, stepId);
+      });
+      const attemptId = this.store.reserve(runId, child, profile.model, reserved, policy);
+      const entry: BatchEntry = {
+        task,
+        profile,
+        extra,
+        child,
+        attemptId,
+        path: "",
+        released: false,
+        lease: () => mutationLeaseFor(this.store.workspace, join(this.store.workspace, entry.path)),
+      };
+      return entry;
+    });
+  }
+  /**
+   * One task of a batch in its own worktree: the agent call, the scope check against the task's
+   * writes and its task checks, all there. It never throws: the outcome says what happened, and
+   * the scheduler integrates or records it afterwards in graph order.
+   */
+  private async runTaskWorker(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    entry: BatchEntry,
+    checks: Semaphore,
+    runSignal: AbortSignal,
+  ): Promise<WorkerOutcome> {
+    const { task } = entry;
+    const root = join(this.store.workspace, entry.path);
+    const controller = new AbortController();
+    const leaseSignal = this.leases.signalOf(entry.lease());
+    const stop = (reason: unknown): void => controller.abort(reason);
+    const onRun = (): void => stop(runSignal.reason);
+    const onLease = (): void => stop(leaseSignal.reason);
+    runSignal.addEventListener("abort", onRun, { once: true });
+    leaseSignal.addEventListener("abort", onLease, { once: true });
+    const signal = controller.signal;
+    if (runSignal.aborted) onRun();
+    if (leaseSignal.aborted) onLease();
+    try {
+      const known = new Set(this.store.effects(runId).map((e) => e.id));
+      const before = await sourceManifest(root, generatedPaths(policy), signal);
+      const result = ImplementationSchema.parse(
+        await this.call(
+          runId,
+          entry.child,
+          state,
+          policy,
+          entry.profile,
+          entry.extra,
+          signal,
+          task,
+          0,
+          undefined,
+          undefined,
+          undefined,
+          { root, attemptId: entry.attemptId },
+        ),
+      );
+      const after = await sourceManifest(root, generatedPaths(policy), signal);
+      const journaled = this.store
+        .effects(runId)
+        .filter(
+          (e) =>
+            !known.has(e.id) &&
+            e.kind === "file_patch" &&
+            intentRoot(e.intent_json) === entry.path &&
+            ["applied", "reconciled"].includes(e.status) &&
+            e.before_hash !== e.after_hash,
+        )
+        .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+      const changed = [...new Set([...changedPaths(before, after), ...journaled])].sort();
+      const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
+      if (outside.length)
+        return {
+          kind: "rejected",
+          entry,
+          error: new WorkflowFault(
+            "INPUT_CHANGED",
+            `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
+          ),
+        };
+      if (
+        result.taskId !== task.id ||
+        ["blocked", "failed"].includes(result.outcome) ||
+        result.unresolved.length > 0 ||
+        (result.outcome === "implemented" && changed.length === 0)
+      )
+        return {
+          kind: "rejected",
+          entry,
+          error: new WorkflowFault(
+            "OUTPUT_INVALID",
+            `Task ${task.id} did not complete its implementation`,
+          ),
+        };
+      if (result.outcome === "already_satisfied")
+        validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
+      const results: WorkerCheck[] = [];
+      for (const check of taskChecks(policy, task)) {
+        const checked = await checks.run(() =>
+          this.runTaskCheck(runId, entry.child, check, policy, signal, root),
+        );
+        results.push({ check, checked });
+        if (check.required && checked.status === "inconclusive") break;
+      }
+      return { kind: "done", entry, before, after, changed, checks: results };
+    } catch (error) {
+      if (runSignal.aborted) return { kind: "fatal", entry, error: runSignal.reason ?? error };
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        return { kind: "fatal", entry, error };
+      // The task's worker or its worktree lease is gone; the other tasks continue.
+      const lostWorker =
+        leaseSignal.aborted ||
+        !(error instanceof WorkflowFault) ||
+        error.code === "WORKSPACE_BUSY" ||
+        error.details.reason === "provider_unavailable";
+      if (lostWorker)
+        return {
+          kind: "interrupted",
+          entry,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      return { kind: "rejected", entry, error };
+    } finally {
+      runSignal.removeEventListener("abort", onRun);
+      leaseSignal.removeEventListener("abort", onLease);
+    }
+  }
+  /**
+   * Integrates a finished task into the run worktree: each changed file is written there as a
+   * journaled effect while the run worktree still holds the content the task started from. A file
+   * the run worktree changed meanwhile is a conflict, resolved by an integrator task. The task is
+   * then implemented on a new snapshot and settled with its checks.
+   */
+  private async integrateTask(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    outcome: Extract<WorkerOutcome, { kind: "done" }>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const { entry } = outcome;
+    const task = entry.task;
+    const mainRoot = runRoot(this.store.workspace, state);
+    const taskRoot = join(this.store.workspace, entry.path);
+    const lease = mutationLeaseFor(this.store.workspace, mainRoot);
+    const attempt = this.store.beginHostAttempt(runId, entry.child);
+    const conflicts: string[] = [];
+    const baseline: Record<string, string | null> = {};
+    try {
+      for (const path of outcome.changed) {
+        signal.throwIfAborted();
+        const source = workspacePath(taskRoot, path);
+        const target = workspacePath(mainRoot, path);
+        const theirs = fileHash(source);
+        const ours = fileHash(target);
+        const base = outcome.before[path] ?? null;
+        baseline[path] = ours;
+        if (ours === theirs) continue;
+        if (ours !== base) {
+          conflicts.push(path);
+          continue;
+        }
+        const effectId = this.store.transaction(() =>
+          this.store.prepareEffect(
+            runId,
+            attempt,
+            "file_patch",
+            {
+              path,
+              tool: "integrate",
+              taskId: task.id,
+              ...rootField(this.store.workspace, mainRoot),
+            },
+            capturePreImage(this.store, runId, target),
+            theirs,
+          ),
+        );
+        try {
+          this.leases.assert(lease);
+          if (fileHash(target) !== ours)
+            throw new WorkflowFault("INPUT_CHANGED", `File changed during integration: ${path}`);
+          if (theirs === null) unlinkSync(target);
+          else {
+            mkdirSync(dirname(target), { recursive: true });
+            writeViaTemp(target, readFileSync(source), {
+              flag: "wx",
+              flush: true,
+              mode: statSync(source).mode,
+            });
+          }
+          this.store.transaction(() => this.store.effectStatus(runId, effectId, "applied"));
+        } catch (error) {
+          this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+          throw error;
+        }
+      }
+    } finally {
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    }
+    if (conflicts.length)
+      await this.resolveConflicts(runId, state, policy, profiles, outcome, conflicts, signal);
+    await this.snapshot(runId, state, policy, signal);
+    this.store.transaction(() => {
+      const diff = this.store.artifact(
+        runId,
+        "diff",
+        `tasks/${task.id}/diff.json`,
+        canonical({
+          changed: outcome.changed,
+          before: Object.fromEntries(outcome.changed.map((p) => [p, outcome.before[p] ?? null])),
+          after: Object.fromEntries(outcome.changed.map((p) => [p, outcome.after[p] ?? null])),
+          worktree: entry.path,
+          integrated: Object.fromEntries(
+            outcome.changed.map((p) => [p, state.expectedFiles?.[p] ?? null]),
+          ),
+          conflicts,
+        }),
+      );
+      this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.id);
+      this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
+      this.store.saveState(runId, state);
+    });
+    // A resolved conflict changed what the task's checks saw: they run again on the result.
+    const results = conflicts.length
+      ? await this.recheck(runId, entry, policy, signal, mainRoot)
+      : outcome.checks;
+    const failures: Review["findings"] = [];
+    const evidence: string[] = [];
+    for (const { check, checked } of results)
+      this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
+    this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
+  }
+  private async recheck(
+    runId: string,
+    entry: BatchEntry,
+    policy: RunPolicy,
+    signal: AbortSignal,
+    root: string,
+  ): Promise<WorkerCheck[]> {
+    const results: WorkerCheck[] = [];
+    for (const check of taskChecks(policy, entry.task)) {
+      const checked = await this.runTaskCheck(runId, entry.child, check, policy, signal, root);
+      results.push({ check, checked });
+      if (check.required && checked.status === "inconclusive") break;
+    }
+    return results;
+  }
+  /**
+   * The integrator task of phase 3: an implementer call in the run worktree whose write scope is
+   * only the conflicting files. It gets both diffs against the content the task started from, the
+   * three versions of each file, the spec and the definitions of the tasks that write those files.
+   */
+  private async resolveConflicts(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    outcome: Extract<WorkerOutcome, { kind: "done" }>,
+    conflicts: string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const { entry } = outcome;
+    const task = entry.task;
+    const mainRoot = runRoot(this.store.workspace, state);
+    const taskRoot = join(this.store.workspace, entry.path);
+    // The tool policy compares edits with the latest snapshot: the files integrated so far are in it.
+    await this.snapshot(runId, state, policy, signal);
+    const read = (root: string, path: string): Uint8Array | null => {
+      const absolute = workspacePath(root, path);
+      return existsSync(absolute) ? readFileSync(absolute) : null;
+    };
+    const files = [];
+    for (const path of conflicts) {
+      const shown = await git(taskRoot, ["show", `HEAD:${path}`]);
+      const base = shown.code === 0 ? shown.bytes : null;
+      const ours = read(mainRoot, path);
+      const theirs = read(taskRoot, path);
+      const text = (bytes: Uint8Array | null): string | null =>
+        bytes === null ? null : Buffer.from(bytes).toString("utf8").slice(0, 16000);
+      files.push({
+        path,
+        base: text(base),
+        integrated: text(ours),
+        task: text(theirs),
+        integratedDiff: await unifiedDiff(path, base, ours),
+        taskDiff: await unifiedDiff(path, base, theirs),
+      });
+    }
+    const scoped: Task = {
+      ...task,
+      writes: conflicts.map((path) => ({
+        path,
+        action: existsSync(workspacePath(mainRoot, path)) ? "modify" : "create",
+      })),
+    };
+    const writers = (state.graph?.tasks ?? []).filter((candidate) =>
+      candidate.writes.some((w) => conflicts.includes(w.path)),
+    );
+    const profile = this.requireProfile(profiles.find((p) => p.id === task.profileId));
+    const before = await sourceManifest(mainRoot, generatedPaths(policy), signal);
+    const known = new Set(this.store.effects(runId).map((e) => e.id));
+    const result = ImplementationSchema.parse(
+      await this.call(
+        runId,
+        entry.child,
+        state,
+        policy,
+        profile,
+        {
+          task: scoped,
+          integration: {
+            role: "integrator",
+            instruction: `Integrate task ${task.id} into the run worktree. Each listed file was changed both by tasks integrated before it (integrated) and by ${task.id} (task), starting from the same base. Edit only these files so that the result keeps the intent of every listed task; submit the result for ${task.id}.`,
+            taskId: task.id,
+            files,
+            spec: state.spec,
+            tasks: writers,
+          },
+          unresolvedMeans: UNRESOLVED_MEANING,
+        },
+        signal,
+        scoped,
+      ),
+    );
+    const after = await sourceManifest(mainRoot, generatedPaths(policy), signal);
+    const journaled = this.store
+      .effects(runId)
+      .filter(
+        (e) =>
+          !known.has(e.id) &&
+          e.kind === "file_patch" &&
+          intentRoot(e.intent_json) === (rootField(this.store.workspace, mainRoot).root ?? "") &&
+          ["applied", "reconciled"].includes(e.status),
+      )
+      .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+    const changed = [...new Set([...changedPaths(before, after), ...journaled])];
+    const outside = changed.filter((path) => !conflicts.includes(path));
+    if (outside.length)
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        `The integrator of ${task.id} changed files outside the conflict: ${outside.slice(0, 5).join(", ")}`,
+      );
+    if (
+      result.taskId !== task.id ||
+      ["blocked", "failed"].includes(result.outcome) ||
+      result.unresolved.length > 0
+    ) {
+      this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+      throw new WorkflowFault(
+        "OUTPUT_INVALID",
+        `The integrator of ${task.id} did not resolve the conflict`,
+      );
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "integration",
+        `tasks/${task.id}/integration.json`,
+        canonical({
+          taskId: task.id,
+          conflicts,
+          tasks: writers.map((t) => t.id),
+          resolved: Object.fromEntries(
+            conflicts.map((path) => [path, fileHash(workspacePath(mainRoot, path))]),
+          ),
+          summary: result.summary,
+        }),
+      ),
+    );
+  }
+  /** Removes a settled task's worktree and releases its lease; a worktree with unsettled effects stays for recovery. */
+  private async releaseTaskWorktree(runId: string, entry: BatchEntry): Promise<void> {
+    if (!entry.path || entry.released) return;
+    entry.released = true;
+    // A lease another owner took over leaves that owner's worktree alone.
+    const owned = this.store.lease(entry.lease())?.owner_id === this.leases.owner;
+    const unsettled = this.store
+      .effects(runId)
+      .some(
+        (e) =>
+          ["prepared", "unknown"].includes(e.status) && intentRoot(e.intent_json) === entry.path,
+      );
+    if (owned && !unsettled) await removeTaskWorktree(this.store.workspace, entry.path);
+    this.leases.releaseOne(entry.lease());
   }
   /** Runs one task check in `root` under its own host attempt. */
   private async runTaskCheck(
@@ -2267,3 +2852,36 @@ const gateToRequired = (binding: { gateId: string; mode?: "required" | "advisory
 /** Told to the implementer with every task: unresolved blocks the task, so it must not carry other tasks' work. */
 const UNRESOLVED_MEANING =
   "unresolved lists only parts of THIS task that you could not finish. Work that belongs to other tasks of the plan, to checks run later, or to documentation tasks is not unresolved: leave it out. Any entry blocks this task.";
+
+/** One task of a batch: its reserved attempt and, once created, its worktree. */
+interface BatchEntry {
+  task: Task;
+  profile: AgentProfile;
+  extra: unknown;
+  child: string;
+  attemptId: string;
+  /** The task worktree relative to the project root; empty until it is created. */
+  path: string;
+  released: boolean;
+  lease: () => LeaseResource;
+}
+interface WorkerCheck {
+  check: Check;
+  checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string };
+}
+/** How a task worker ended; only `done` is integrated. */
+type WorkerOutcome =
+  | {
+      kind: "done";
+      entry: BatchEntry;
+      before: Record<string, string>;
+      after: Record<string, string>;
+      changed: string[];
+      checks: WorkerCheck[];
+    }
+  /** The task's result is refused: a change outside its writes, or no complete implementation. */
+  | { kind: "rejected"; entry: BatchEntry; error: unknown }
+  /** The task's worker or worktree lease was lost; only this task stops. */
+  | { kind: "interrupted"; entry: BatchEntry; reason: string }
+  /** The whole run stops: it was aborted or its budget is used up. */
+  | { kind: "fatal"; entry: BatchEntry; error: unknown };
