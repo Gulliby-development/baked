@@ -230,6 +230,10 @@ rejects(withGate((g) => { g.retries = { max: 2, retryOn: ["failed"] }; }), "only
 check(library.get("acceptance-status-json")?.type === "command", "the promoted example gate is not a command gate");
 
 let localLinks = 0;
+let skippedAuditLinks = 0;
+// .audit/ holds local run evidence and is gitignored; its links resolve only on the machine that produced it.
+const auditDir = resolve(root, "../../.audit");
+const hasAuditDir = existsSync(auditDir);
 check(readFileSync(join(root, "../../CONTRIBUTING.md"), "utf8").includes("(design/sdd-workflows/README.md)"), "missing architecture entry point");
 for (const name of ["README.md", "solution-design.md", "implementation-plan.md", "examples/README.md", "runtime-guide.md", "implementation-status.md", "next-implementation.md", "workflow-v2-design.md"]) {
   const path = join(root, name);
@@ -239,8 +243,12 @@ for (const name of ["README.md", "solution-design.md", "implementation-plan.md",
     const target = match[1];
     if (!target || /^(https?:|#)/.test(target)) continue;
     const local = target.split("#")[0];
+    if (local && !hasAuditDir && resolve(dirname(path), local).startsWith(auditDir)) {
+      skippedAuditLinks++;
+      continue;
+    }
     check(local && existsSync(resolve(dirname(path), local)), `missing local link: ${name} -> ${target}`);
     localLinks++;
   }
 }
-console.log(JSON.stringify({ status: "passed", checks, localLinks, profiles: profiles.length, tasks: graph.tasks.length, scope: "design schemas, examples, SQL constraints and links; no product runtime or LLM execution" }, null, 2));
+console.log(JSON.stringify({ status: "passed", checks, localLinks, skippedAuditLinks, profiles: profiles.length, tasks: graph.tasks.length, scope: "design schemas, examples, SQL constraints and links; no product runtime or LLM execution" }, null, 2));
