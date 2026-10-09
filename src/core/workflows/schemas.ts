@@ -183,6 +183,8 @@ export const ProfileSchema = z
       "reviewer",
       "spec-auditor",
       "reporter",
+      "acceptance-walker",
+      "acceptance-writer",
     ]),
     model: z.string().min(1),
     context: z.enum([
@@ -206,6 +208,8 @@ export const ProfileSchema = z
       "convergence",
       "refutation",
       "report",
+      "acceptance",
+      "acceptance-draft",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -481,6 +485,7 @@ export const EventType = z.enum([
   "snapshot.invalidated",
   "transition.taken",
   "gate.finished",
+  "acceptance.phase",
 ]);
 const EventBase = {
   schemaVersion: z.literal(1),
@@ -699,6 +704,31 @@ export const EventSchema = z.discriminatedUnion("type", [
           attempts: z.number().int().nonnegative(),
           flaky: z.boolean(),
           evidenceId: SafeId.nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A phase of an AI acceptance gate (walk, draft, verify, approval, promotion).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("acceptance.phase"),
+      payload: z
+        .object({
+          gateId: SafeId,
+          phase: z.enum([
+            "walking",
+            "walked",
+            "drafting",
+            "verifying",
+            "awaiting_approval",
+            "promoted",
+            "discarded",
+            "inconclusive",
+            "unstable",
+            "skipped",
+          ]),
+          detail: z.string().max(2000).nullable(),
         })
         .strict(),
     })

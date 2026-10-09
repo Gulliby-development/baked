@@ -93,11 +93,52 @@ export const RuntimeStateSchema = z
         }),
       )
       .default({}),
+    /** Lifecycle of each AI acceptance gate of a schema 2 definition, by gate ID. */
+    acceptance: z
+      .record(
+        z.string(),
+        z
+          .object({
+            phase: z.enum([
+              "awaiting_approval",
+              "promoted",
+              "discarded",
+              "inconclusive",
+              "unstable",
+              "skipped",
+            ]),
+            /** The snapshot the walk-through ran on; a new snapshot walks again. */
+            snapshotId: z.string().nullable(),
+            /** The attempt of the walk-through model; its steps are under acceptance/GATE/ATTEMPT/. */
+            attemptId: z.string().nullable(),
+            verdict: z.enum(["passed", "failed", "inconclusive"]).nullable(),
+            reason: z.string().nullable(),
+            evidenceId: z.string().nullable(),
+            requestId: z.string().nullable(),
+            /** The verified test, kept as an artifact until a person decides. */
+            testArtifactId: z.string().nullable(),
+            testHash: z.string().nullable(),
+            /** The hash at the test path in the workspace when the walk-through started. */
+            baseTestHash: z.string().nullable(),
+            rewrites: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .default({}),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
 export type Task = z.infer<typeof import("./schemas.js").TaskSchema>;
 export type Check = z.infer<typeof import("./schemas.js").CheckSchema>;
+/**
+ * A tool the host offers for one attempt, instead of the tool registry. The AI acceptance gate
+ * gives its walk-through model only such tools.
+ */
+export interface HostTool {
+  description: string;
+  inputSchema: z.ZodType;
+  execute(input: unknown): Promise<unknown>;
+}
 export interface ExecutionRequest {
   runId: string;
   attemptId: string;
@@ -115,6 +156,11 @@ export interface ExecutionRequest {
   validate?: (output: unknown) => string[];
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
   root?: string;
+  /**
+   * When set, the attempt gets exactly these tools (filtered by the profile) and the result tool,
+   * and no tool of the registry.
+   */
+  hostTools?: Record<string, HostTool>;
 }
 export interface ExecutionResponse {
   output: unknown;

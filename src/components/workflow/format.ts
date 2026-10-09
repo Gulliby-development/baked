@@ -336,6 +336,8 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.status === "passed"
         ? null
         : `Gate ${event.payload.gateId} ${event.payload.status}${event.payload.mode === "advisory" ? " (advisory)" : ""}${event.payload.flaky ? " (flaky)" : ""}`;
+    case "acceptance.phase":
+      return `AI walk-through ${event.payload.gateId}: ${event.payload.phase.replace("_", " ")}${event.payload.detail ? ` (${event.payload.detail.slice(0, 120)})` : ""}`;
     case "artifact.committed":
     case "budget.updated":
       return null;
