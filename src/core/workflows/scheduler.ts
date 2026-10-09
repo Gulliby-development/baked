@@ -703,7 +703,7 @@ export class WorkflowScheduler {
           attempt,
           "completed",
           result.inputTokens === null || result.outputTokens === null
-            ? null
+            ? this.store.recordedUsage(runId, attempt)
             : result.inputTokens + result.outputTokens,
         );
         this.store.artifact(
@@ -720,9 +720,17 @@ export class WorkflowScheduler {
         throw new WorkflowFault("INPUT_CHANGED", "Late result from an invalidated attempt");
       return output;
     } catch (error) {
+      // The executor records the spend of every finished model step, so a failed or cancelled
+      // attempt is charged what it used. Without such a record the usage is unknown and the
+      // reservation stays held.
       if (this.store.attempts(runId).find((a) => a.id === attempt)?.status === "running")
         this.store.transaction(() =>
-          this.store.finishAttempt(runId, attempt, signal.aborted ? "cancelled" : "failed", null),
+          this.store.finishAttempt(
+            runId,
+            attempt,
+            signal.aborted ? "cancelled" : "failed",
+            this.store.recordedUsage(runId, attempt),
+          ),
         );
       const delay = retryDelay(error, retry);
       if (

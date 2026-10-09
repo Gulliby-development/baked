@@ -11,6 +11,10 @@ const PREVIEW_CHARS = 240;
 // Observation tools whose output can be fetched again. Edit and check results carry
 // state the agent cannot reproduce cheaply, so they are never compacted.
 const COMPACTABLE_TOOLS = new Set(["read", "navigate", "bake_find", "bake_impact"]);
+/** Input allowance for the system prompt and tool definitions before any usage is reported. */
+const FIRST_STEP_ALLOWANCE = 8192;
+/** Smallest output reserved for a step. */
+const MIN_OUTPUT_ESTIMATE = 4096;
 
 export interface StepUsageLike {
   inputTokens?: number | undefined;
@@ -150,7 +154,8 @@ export interface AttemptUsageRecord {
   taskId: string | null;
   maxSteps: number;
   maxTokens: number;
-  stopReason: "submitted" | "steps" | "tokens" | "no_submission";
+  /** `error` and `aborted`: the loop threw or was cancelled; the steps before it are recorded. */
+  stopReason: "submitted" | "steps" | "tokens" | "no_submission" | "error" | "aborted";
   finalizedBy: FinalizeReason | null;
   totalTokens: number;
   steps: AttemptStepUsage[];
@@ -169,6 +174,8 @@ export class AttemptStepController {
   private finalizedBy: FinalizeReason | null = null;
   private noticeAt = -1;
   private readonly compactedBytes: number[] = [];
+  /** Serialized size of the messages sent with each step, to estimate the next one. */
+  private readonly sentBytes: number[] = [];
   constructor(
     private readonly options: {
       maxSteps: number;
@@ -177,8 +184,35 @@ export class AttemptStepController {
       submitTools: string[];
       /** Charged for a step whose provider reported no usage. */
       fallbackStepTokens: number;
+      /** Output cap of one step; bounds the output estimate of the next step. */
+      maxOutputTokens?: number;
     },
   ) {}
+  get maxTokens(): number {
+    return this.options.maxTokens;
+  }
+  /**
+   * Tokens the attempt holds once the next step runs: its spend so far plus an estimate of that
+   * step. The input estimate starts from the input tokens the provider reported for the last
+   * step and adds the bytes appended since (or subtracts the bytes compaction removed) at three
+   * bytes per token. The output estimate is twice the largest output seen, at least 4096 tokens
+   * and at most the step cap. Before any usage is known, the messages are counted at three bytes
+   * per token plus a fixed allowance for the system prompt and tool definitions.
+   */
+  reservation(steps: ReadonlyArray<{ usage: StepUsageLike }>, messages: ModelMessage[]): number {
+    const bytes = Buffer.byteLength(JSON.stringify(messages));
+    const maxOutput = this.options.maxOutputTokens ?? Number.POSITIVE_INFINITY;
+    const last = steps[steps.length - 1];
+    const lastSent = this.sentBytes[steps.length - 1];
+    const lastInput = last?.usage.inputTokens;
+    const input =
+      lastInput !== undefined && lastSent !== undefined
+        ? Math.max(0, lastInput + Math.ceil((bytes - lastSent) / 3))
+        : Math.ceil(bytes / 3) + FIRST_STEP_ALLOWANCE;
+    const largestOutput = Math.max(0, ...steps.map((step) => step.usage.outputTokens ?? 0));
+    const output = Math.min(maxOutput, Math.max(MIN_OUTPUT_ESTIMATE, 2 * largestOutput));
+    return this.consumed(steps) + input + output;
+  }
   consumed(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
     return steps.reduce(
       (sum, step) => sum + stepTokens(step.usage, this.options.fallbackStepTokens),
@@ -203,8 +237,10 @@ export class AttemptStepController {
     });
     const compacted = compactToolHistory(input.messages);
     this.compactedBytes[input.stepNumber] = compacted.savedBytes;
-    if (!this.finalizedBy || this.options.submitTools.length === 0)
+    if (!this.finalizedBy || this.options.submitTools.length === 0) {
+      this.sentBytes[input.stepNumber] = Buffer.byteLength(JSON.stringify(compacted.messages));
       return compacted.messages === input.messages ? {} : { messages: compacted.messages };
+    }
     // Keep the notice where it first appeared so the replayed prefix stays identical across
     // the remaining finalize steps.
     if (this.noticeAt < 0) this.noticeAt = compacted.messages.length;
@@ -213,12 +249,14 @@ export class AttemptStepController {
       role: "user",
       content: finalizeNotice(this.finalizedBy),
     });
+    this.sentBytes[input.stepNumber] = Buffer.byteLength(JSON.stringify(messages));
     return { messages, activeTools: this.options.submitTools, toolChoice: "required" };
   }
   record(
     steps: readonly StepLike[],
     submitted: boolean,
     meta: { profileId: string; taskId: string | null },
+    failure?: "error" | "aborted",
   ): AttemptUsageRecord {
     const totalTokens = this.consumed(steps);
     return {
@@ -227,13 +265,15 @@ export class AttemptStepController {
       taskId: meta.taskId,
       maxSteps: this.options.maxSteps,
       maxTokens: this.options.maxTokens,
-      stopReason: submitted
-        ? "submitted"
-        : totalTokens >= this.options.maxTokens
-          ? "tokens"
-          : steps.length >= this.options.maxSteps
-            ? "steps"
-            : "no_submission",
+      stopReason: failure
+        ? failure
+        : submitted
+          ? "submitted"
+          : totalTokens >= this.options.maxTokens
+            ? "tokens"
+            : steps.length >= this.options.maxSteps
+              ? "steps"
+              : "no_submission",
       finalizedBy: this.finalizedBy,
       totalTokens,
       steps: steps.map((step, index) => ({
