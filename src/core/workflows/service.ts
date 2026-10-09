@@ -61,6 +61,7 @@ import {
   autoApprovalHash,
   autoApprovalOf,
   checksOf,
+  describeAutoApproval,
   frozenGates,
   hostSpec,
   initialPosition,
@@ -1111,15 +1112,4 @@ function planPosition(definitionJson: string): {
   position.stageId = stage.id;
   position.visits = { [stage.id]: 1 };
   return { stageIndex: 0, position };
-}
-
-function describeAutoApproval(limits: NonNullable<WorkflowV2["autoApproval"]>): string {
-  return [
-    `at most ${limits.maxTasks} tasks`,
-    `${limits.maxFiles} files`,
-    `paths ${limits.allowedPaths.join(", ")}`,
-    limits.allowDelete ? "deletions allowed" : "no deletions",
-    "no new dependencies",
-    `a token budget up to ${limits.maxTotalTokens}`,
-  ].join("; ");
 }

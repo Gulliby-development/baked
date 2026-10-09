@@ -62,6 +62,8 @@ const ctx = createWorkerHandler(
     },
     list: (limit) =>
       readWorkflowSummaries(current(), z.number().int().min(1).max(100).parse(limit)),
+    // Past runs with their spend, for the editor's estimate of a definition.
+    history: () => readHistory(current().store),
     info: () => {
       const runtime = current();
       const dir = join(runtime.workspace, "baked", "workflows");

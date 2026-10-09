@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GatesApi } from "../components/workflow/GatesView.js";
+import type { WorkflowEditorApi } from "../components/workflow/WorkflowEditor.js";
 import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
+import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
+import { PolicySchema } from "../core/workflows/schemas.js";
+import { readEditorSource, writeDefinitionFile } from "../core/workflows/v2/editor.js";
 import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
 import { useWorkflowStore } from "../stores/workflow.js";
 
@@ -191,6 +195,32 @@ export function workflowGatesApi(workspace: string): GatesApi {
     },
     suggest: (configured) => detectGates(workspace, configured),
     run: (check, signal) => workflowSession(workspace).runGate(check, signal),
+  };
+}
+
+/**
+ * Opens and saves workflow definitions for the editor window. Opening and saving touch only files;
+ * the past runs for the estimate come from the worker, and only when workflows are on, so a
+ * disabled project starts no worker.
+ */
+export function workflowEditorApi(workspace: string): WorkflowEditorApi {
+  const config = () => mergeConfigs(loadConfig(), loadProjectConfig(workspace));
+  return {
+    open: (id) =>
+      readEditorSource(
+        workspace,
+        id,
+        PolicySchema.parse(config().workflows?.policy ?? defaultWorkflowPolicy),
+      ),
+    save: (definition) => writeDefinitionFile(workspace, definition),
+    history: async () => {
+      if (config().workflows?.enabled !== true && !existingWorkflowSession(workspace)) return null;
+      try {
+        return await workflowSession(workspace).history();
+      } catch {
+        return null;
+      }
+    },
   };
 }
 

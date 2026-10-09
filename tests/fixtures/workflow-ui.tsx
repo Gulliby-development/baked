@@ -7,6 +7,7 @@ import { testRender } from "@opentui/react/test-utils";
 import type { RunSnapshot, WorkflowEvent } from "../../src/core/workflows/schemas.js";
 import type { RunSummary, WorkflowInfo } from "../../src/core/workflows/view.js";
 import { defaultWorkflowPolicy } from "../../src/core/workflows/defaults.js";
+import { readEditorSource, writeDefinitionFile } from "../../src/core/workflows/v2/editor.js";
 const task = { id: "T001", title: "Verify a long task description and its dependencies", description: "Task", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "src/example.ts", action: "modify" }], readHints: [], checkIds: ["tests"], origin: "planned", findingIds: [], rationale: "Requirement" };
 const snapshot: RunSnapshot = { runId: "fixture", featureId: "a-rather-long-feature-name", status: "waiting", reason: "approval", revision: 7, eventSeq: 20, stageId: "approve", approvalDigest: null, inputHash: "a".repeat(64), workspaceHash: "b".repeat(64), tokenUsage: 1000, activeMs: 10000, estimatedCostUsd: null, verificationState: "not_verified", pendingRequestIds: ["approval"] };
 const budget = { tokens: 1000, heldTokens: 0, inFlightTokens: 0, maxTokens: 400000, calls: 4, maxCalls: 80, activeMs: 10000, maxActiveMs: 3600000, repairRounds: 0, maxRepairRounds: 2 };
@@ -55,6 +56,16 @@ mock.module("../../src/hooks/useWorkflow.js", () => ({
   workflowSession: () => ({ start: async () => snapshot }),
   reloadWorkflowSession: async () => true,
   workflowGatesApi: () => ({ load: () => defaultWorkflowPolicy.checks.length ? defaultWorkflowPolicy.checks : [{ id: "tests", executable: "bun", args: ["run", "test"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] }], save: async () => {}, suggest: () => [], run: async () => ({ status: "passed", exitCode: 0, durationMs: 10, outputTail: "", truncated: false }) }),
+  // The editor reads and writes a temp workspace; user gate and profile folders are temp folders too.
+  workflowEditorApi: () => {
+    const root = process.env.BAKED_WORKFLOW_FIXTURE_ROOT ?? process.cwd();
+    const workspace = join(root, "editor-workspace");
+    return {
+      open: (id: string) => readEditorSource(workspace, id, defaultWorkflowPolicy, { gateDirectories: { user: join(root, "user-gates"), project: join(workspace, "baked", "gates") }, profileDirectory: join(root, "user-agents") }),
+      save: (definition: Parameters<typeof writeDefinitionFile>[1]) => writeDefinitionFile(workspace, definition),
+      history: async () => null,
+    };
+  },
   useWorkflowBadge: () => {},
 }));
 const { useWorkflowStore } = await import("../../src/stores/workflow.js");
@@ -119,6 +130,22 @@ for (const [width, height] of [[120, 40], [80, 24], [50, 20]]) {
     assert(gates.includes("Gates") && gates.includes("bun run test"), "G opens the gate window with the configured gates");
     await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
     assert((await frame("gates-back")).includes("finished-feature"), "Esc leaves the gate window for the run list");
+    // E on the workflow field of the new-run form opens the editor; Esc returns to the form.
+    await act(async () => view.mockInput.pressKey("n"));
+    await act(async () => view.mockInput.pressTab());
+    await act(async () => view.mockInput.pressTab());
+    await act(async () => view.mockInput.pressKey("e"));
+    const editor = await frame("editor");
+    assert(editor.includes("Workflow editor: sdd") && editor.includes("read only"), "E opens the editor on the chosen workflow, read only for a built-in");
+    assert(editor.includes("frozen copy"), "the editor says started runs keep their frozen copy");
+    await act(async () => view.mockInput.pressKey("c"));
+    const copy = await frame("editor-copy");
+    assert(copy.includes("sdd-custom"), "C duplicates a built-in as a custom workflow");
+    await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
+    assert((await frame("editor-discard")).includes("Discard unsaved changes?"), "Esc with changes asks first");
+    await act(async () => view.mockInput.pressKey("y"));
+    assert((await frame("editor-back")).includes("New workflow run"), "leaving the editor returns to the new-run form");
+    await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
     // Several analysis findings arrive as one clarification request.
     pendingRequests = [clarificationRequest];
     await act(async () => view.mockInput.pressEnter());
