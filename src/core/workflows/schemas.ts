@@ -167,6 +167,11 @@ export const PolicySchema = z
     checks: z.array(CheckSchema),
     autoApproval: AutoApprovalSchema.nullable().optional(),
     /**
+     * Directories the applications of the run's AI acceptance gates may write. Like the outputs
+     * of checks they are left out of source snapshots. Absent when no such gate grants writes.
+     */
+    acceptanceWrites: z.array(RelativePath).max(16).optional(),
+    /**
      * Where the run edits files. Absent means `inline`: the project working copy, as before this
      * field existed, so stored policies keep their hash. `worktree` runs the tasks in the Git
      * worktree `.baked/worktrees/RUN_ID/main` on the branch `baked/wf/RUN_ID`. Part of the policy,
@@ -194,6 +199,8 @@ export const ProfileSchema = z
       "reviewer",
       "spec-auditor",
       "reporter",
+      "acceptance-walker",
+      "acceptance-writer",
     ]),
     model: z.string().min(1),
     context: z.enum([
@@ -217,6 +224,8 @@ export const ProfileSchema = z
       "convergence",
       "refutation",
       "report",
+      "acceptance",
+      "acceptance-draft",
       "initiativePlan",
     ]),
     maxSteps: z.number().int().min(1).max(100),
@@ -507,6 +516,7 @@ export const EventType = z.enum([
   "snapshot.invalidated",
   "transition.taken",
   "gate.finished",
+  "acceptance.phase",
 ]);
 const EventBase = {
   schemaVersion: z.literal(1),
@@ -732,6 +742,31 @@ export const EventSchema = z.discriminatedUnion("type", [
           attempts: z.number().int().nonnegative(),
           flaky: z.boolean(),
           evidenceId: SafeId.nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A phase of an AI acceptance gate (walk, draft, verify, approval, promotion).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("acceptance.phase"),
+      payload: z
+        .object({
+          gateId: SafeId,
+          phase: z.enum([
+            "walking",
+            "walked",
+            "drafting",
+            "verifying",
+            "awaiting_approval",
+            "promoted",
+            "discarded",
+            "inconclusive",
+            "unstable",
+            "skipped",
+          ]),
+          detail: z.string().max(2000).nullable(),
         })
         .strict(),
     })
@@ -1042,3 +1077,9 @@ export function validateWorkflow(workflow: WorkflowDefinition): string[] {
   }
   return errors;
 }
+
+/** Paths the run's commands produce; source snapshots leave them out. */
+export const generatedPaths = (policy: RunPolicy): string[] => [
+  ...policy.checks.flatMap((c) => c.writes),
+  ...(policy.acceptanceWrites ?? []),
+];

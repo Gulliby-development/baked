@@ -4,6 +4,7 @@ import { CorrectionSchema, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import { hasTaskGate } from "../workflows/task-graph.js";
 import type { RuntimeState } from "../workflows/types.js";
+import { blocksRun } from "../workflows/v2/acceptance.js";
 import {
   effectiveMode,
   type Gate,
@@ -143,7 +144,7 @@ function acceptance(
   for (const key of required.reviews)
     if (!state.reviews[key] || state.reviews[key]?.verdict === "inconclusive")
       throw new WorkflowFault("OUTPUT_INVALID", `Required ${key} review did not pass`);
-  if (store.requests(runId).some((request) => request.status === "pending"))
+  if (store.requests(runId).some(blocksRun))
     throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
   if (store.findings(runId).some((f) => !["refuted", "resolved"].includes(f.status)))
     throw new WorkflowFault("OUTPUT_INVALID", "Unresolved findings remain");
