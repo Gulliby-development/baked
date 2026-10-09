@@ -235,17 +235,17 @@ describe("workflow parallel writers", () => {
 
   test("a task that changes a file outside its writes is rejected and not integrated", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
-    fx.executor.hooks = { T002: (request) => writeFileSync(join(request.root ?? "", "stray.txt"), "stray") };
+    // The first task in graph order strays; the task after it is still integrated.
+    fx.executor.hooks = { T001: (request) => writeFileSync(join(request.root ?? "", "stray.txt"), "stray") };
     const run = await fx.start(2);
     const blocked = await fx.complete(run.runId);
     expect(blocked.status).toBe("blocked");
     expect(blocked.reason).toBe("input_changed");
     expect(fx.lastError(run.runId)).toContain("outside its write scope: stray.txt");
-    expect(fx.status("T002", run.runId)).toBe("blocked");
-    // The other task of the batch is integrated; nothing of the rejected one is.
-    expect(fx.status("T001", run.runId)).toBe("implemented");
-    expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
-    expect(existsSync(join(fx.tree(run.runId), "b.txt"))).toBe(false);
+    expect(fx.status("T001", run.runId)).toBe("blocked");
+    expect(fx.status("T002", run.runId)).toBe("implemented");
+    expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
+    expect(existsSync(join(fx.tree(run.runId), "a.txt"))).toBe(false);
     expect(existsSync(join(fx.tree(run.runId), "stray.txt"))).toBe(false);
     expect(existsSync(join(fx.root, "stray.txt"))).toBe(false);
   });

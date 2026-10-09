@@ -1418,12 +1418,16 @@ export class WorkflowScheduler {
         const outcomes = await Promise.all(
           batch.map((entry) => this.runTaskWorker(runId, state, policy, entry, checks, signal)),
         );
+        // A stopped run integrates nothing: its unintegrated tasks are invalidated on recovery.
+        // A rejected task does not keep the others of its batch out of the run worktree.
+        const fatal = outcomes.find((outcome) => outcome.kind === "fatal");
+        if (fatal) failure = fatal.error;
         for (const outcome of outcomes) {
           const { entry } = outcome;
-          if (outcome.kind === "fatal") failure ??= outcome.error;
-          else if (outcome.kind === "done" && failure === null)
-            await this.integrateTask(runId, state, policy, profiles, outcome, signal);
-          else if (outcome.kind === "interrupted") {
+          if (outcome.kind === "fatal") continue;
+          if (outcome.kind === "done") {
+            if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+          } else if (outcome.kind === "interrupted") {
             lost.set(entry.task.id, outcome.reason);
             this.store.transaction(() => {
               this.store.taskStatus(runId, entry.task.id, "interrupted");
