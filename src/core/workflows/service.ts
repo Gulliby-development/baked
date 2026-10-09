@@ -573,7 +573,25 @@ export class NativeWorkflowService implements WorkflowService {
             "INVALID_DEFINITION",
             "No limit can be raised further. Fork the run or narrow the request.",
           );
-        const after = PolicySchema.parse({ ...before, ...limits });
+        // The user's extension approves the new token budget, so an auto-approval token bound that
+        // covered the old budget follows it; otherwise the next scope approval would need a person
+        // only because the budget the same user just raised is larger than the old bound.
+        const auto = before.autoApproval;
+        const autoApproval =
+          auto?.limits && auto.limits.maxTotalTokens >= before.maxTotalTokens
+            ? {
+                ...auto,
+                limits: {
+                  ...auto.limits,
+                  maxTotalTokens: Math.max(auto.limits.maxTotalTokens, limits.maxTotalTokens),
+                },
+              }
+            : auto;
+        const after = PolicySchema.parse({
+          ...before,
+          ...limits,
+          ...(autoApproval === undefined ? {} : { autoApproval }),
+        });
         if (limits.maxActiveMs > MAX_EXTENDED_MS || limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
           throw new WorkflowFault(
             "INVALID_DEFINITION",

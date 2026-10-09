@@ -41,7 +41,7 @@ Select a configured BAKED model. `defaultModel: "none"` does not allow starting 
 
 Check definitions contain an executable and argv. They run reviewed project code; this is not an OS sandbox. `envNames` allows specific additional variables on top of `buildSafeEnv`; values are not stored in definitions. `writes` marks only generated outputs. Task sources, the execution configuration and the internal database must not be excluded from a check. `network: deny` forbids network agent tools, but it does not replace network isolation of the executed project script and does not forbid calls to the selected LLM provider.
 
-A monetary cap is currently rejected: the current BAKED provider metadata has no verified shared source of exact prices. Use token/time/call limits; unknown usage keeps its reservation. Arbitrary command hooks and unknown MCP/compound effects are forbidden inside a workflow. Approved commands run as checks. The ECC import does not enable hooks.
+A monetary cap is currently rejected: the current BAKED provider metadata has no verified shared source of exact prices. Use token/time/call limits; usage left unknown by a crash keeps its reservation. Arbitrary command hooks and unknown MCP/compound effects are forbidden inside a workflow. Approved commands run as checks. The ECC import does not enable hooks.
 
 ## First run
 
@@ -143,6 +143,12 @@ Detection offers gates; nothing is added until the user confirms. It reads the p
 
 The same detection fills the checks written when E enables workflows on the runs screen; the build gate is not part of that set. Gates that are already configured (same ID or same command) are not offered again. Existing CI scripts are not read. On Windows, give the command name (`npm`, `pnpm`, `yarn`), not the shim file: Bun launches `npm` without a shell, but a name ending in `.cmd` fails with `EINVAL`. Only `npm` was tried on this host (npm 11.16); `pnpm` and `yarn` were not installed here.
 
+### Token accounting and reservations
+
+An agent attempt records its spend as each model step finishes, not only when it returns. An attempt that fails, is cancelled or stops on a cap is charged the tokens of its finished steps, writes `attempts/ID/usage.json` with stop reason `error` or `aborted` where it threw, and releases its reservation; `baked workflow usage` therefore includes failed attempts. Only an attempt interrupted by a crashed process, whose executor left no record, keeps its reservation as unknown usage.
+
+Before each step the attempt reserves its spend so far plus an estimate of that step: the input tokens the provider reported for the previous step, adjusted by the bytes added or compacted since at three bytes per token, and an output of twice the largest output seen (at least 4096 tokens, at most the profile's output cap). Before any usage is known it counts the messages at three bytes per token plus 8192 tokens for the system prompt and tool definitions. A step is refused (`Next model step exceeds remaining token budget`, with the used, held and requested tokens) only when the spend plus this estimate would pass the run limit. The attempt cap is `maxAttemptTokens` or, when less, what the run limit still leaves after the other attempts, so an attempt that starts near the limit switches to its submit-only final step in time instead of failing mid-loop.
+
 ### Raising a budget limit
 
 A run blocked with `budget_exhausted` shows B (raise limits) next to fork and cancel. The confirmation names the new values: every limit that is used up, or at least 80% used, doubles, and the tokens double when nothing else explains the stop; calls stop at 1000, active time at 24 hours and tokens at 50 million. Y applies it and the run continues from the stage that stopped.
@@ -152,7 +158,7 @@ baked workflow extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--t
 baked workflow resume RUN_ID --expected-revision NEW_N
 ```
 
-Limits can only go up. The change is stored as the immutable artifact `policy-revisions/COMMAND_ID.json` (previous and new limits, both policy hashes, usage, the stage) and the run moves to `paused`. Scope, tools, checks, the stage, the evidence and the approval digest are untouched, so no new approval of the plan is needed and nothing is re-run. The user's command is the approval of the new limits.
+Limits can only go up. The change is stored as the immutable artifact `policy-revisions/COMMAND_ID.json` (previous and new limits, both policy hashes, usage, the stage) and the run moves to `paused`. Scope, tools, checks, the stage, the evidence and the approval digest are untouched, so no new approval of the plan is needed and nothing is re-run. The user's command is the approval of the new limits. When `autoApproval.limits.maxTotalTokens` covered the old token limit, it is raised with it, so a later scope approval is not sent to a person only because of the larger budget; a bound set below the old limit is kept.
 
 ### Soft token checkpoints
 
@@ -165,7 +171,7 @@ baked workflow continue RUN_ID --request REQUEST_ID --expected-revision N
 baked workflow resume RUN_ID --expected-revision NEW_N
 ```
 
-Set `workflows.policy.checkpointTokens` (at least 10000, or `null`) to choose the interval of the preset. An interrupted call whose usage is unknown keeps its reservation and counts toward the next checkpoint.
+Set `workflows.policy.checkpointTokens` (at least 10000, or `null`) to choose the interval of the preset. A call interrupted by a crash, whose usage is unknown, keeps its reservation and counts toward the next checkpoint.
 
 ### Estimates
 
