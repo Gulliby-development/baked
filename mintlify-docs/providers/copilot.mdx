@@ -1,0 +1,41 @@
+---
+title: "GitHub Copilot"
+description: "Use your Copilot subscription with baked."
+icon: "github"
+---
+
+If you pay for [GitHub Copilot](https://github.com/features/copilot), baked can use it. Claude Opus/Sonnet, GPT-4o, GPT-5.4, o-series, Gemini 2.5 Pro — all included in your Copilot subscription, no extra cost.
+
+<Warning>
+Unofficial integration using the same internal API as VS Code. Not endorsed by GitHub. Use at your own risk.
+</Warning>
+
+## Setup
+
+<Steps>
+  <Step title="Sign in to Copilot in VS Code or JetBrains">
+    Install the Copilot extension in your IDE and sign in. This writes your OAuth token to disk.
+  </Step>
+
+  <Step title="Copy your token">
+    ```bash
+    jq -r '."github.com".oauth_token' ~/.config/github-copilot/apps.json
+    ```
+    On Windows the path is `~\AppData\Local\github-copilot\apps.json`.
+  </Step>
+
+  <Step title="Save to baked">
+    ```bash
+    baked --set-key copilot <token>
+    ```
+    Or use `/keys` inside the TUI.
+  </Step>
+
+  <Step title="Use it">
+    Press `Ctrl+L`, pick `copilot`, choose a model.
+    ```bash
+    baked --headless --model copilot/claude-sonnet-4 "explain this file"
+    ```
+  </Step>
+</Steps>
+

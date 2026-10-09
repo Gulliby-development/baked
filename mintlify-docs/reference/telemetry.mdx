@@ -1,0 +1,89 @@
+---
+title: "Telemetry"
+description: "What anonymous usage data baked collects, and how to turn it off."
+icon: "shield-check"
+---
+
+baked sends a single, anonymous "I'm running" ping when a session starts so
+we can count active installs and see which versions and platforms are in use.
+That's the entire purpose — no profiling, no tracking, no content.
+
+The fields below describe the telemetry request. Model-provider requests and other network operations are documented separately in [file access and data flow](/reference/data-flow).
+
+## What we send
+
+One fire-and-forget HTTPS ping per session start, with only these fields:
+
+| Field | Example | Why |
+|-------|---------|-----|
+| `event` | `session_start` | Distinguishes the ping type |
+| `surface` | `tui` · `headless` | Which entry point launched |
+| `version` | `2.20.1` | Which release is in use |
+| `os` | `darwin` · `linux` · `win32` | Platform breakdown |
+| `arch` | `arm64` · `x64` | Architecture breakdown |
+| `install` | `brew` · `npm` · `binary` … | How it was installed |
+| `family` | `claude` · `openai` · `google` … | Model **family** |
+| `model` | `claude-sonnet-4-5` · `gpt-5` · `gemini-2.5-pro` | Public base model name — sent **only** when it matches a known public-model pattern under a built-in provider. Any free-form or custom model string (even under a real provider prefix) collapses to `other`, so it can never carry secrets, org, or project names |
+| `id` | random UUID | Counts *distinct installs*, not people (see below) |
+
+The receiving edge also records a coarse `country` (from the network edge, never
+your IP) for a rough geographic breakdown.
+
+### The anonymous id
+
+`id` is a random UUID stored at `~/.baked/anon-id.json`. It exists so we can
+tell "1 install pinged 50 times" apart from "50 installs" — i.e. count active
+users, not raw requests. It is:
+
+- **Random** — not derived from your machine, account, or anything identifiable.
+  It identifies an *install*, not a person.
+- **Stable** — the same id persists across runs, so distinct-id counts give
+  exact daily/monthly active users, unique installs, and retention.
+- **Local** — never linked to any other data. Delete the file (or reinstall)
+  and you get a fresh id.
+
+## What we never send
+
+Prompts · code · file contents · file paths · working directory · hostname ·
+username · API keys or tokens · custom model identifiers · custom provider URLs · your IP
+address.
+
+## How to opt out
+
+Any **one** of these disables telemetry completely:
+
+<CodeGroup>
+```json config.json
+{
+  "telemetry": false
+}
+```
+
+```bash Environment variable
+# baked-specific
+export baked_TELEMETRY=0
+
+# Or the cross-tool industry standard (respected by many CLIs)
+export DO_NOT_TRACK=1
+```
+</CodeGroup>
+
+When disabled, no network request is made and no id is created or read.
+
+## Design notes
+
+- **Fail-safe.** The ping is fire-and-forget with a 1.5s timeout. It never
+  blocks startup, never retries, and never surfaces an error — if you're offline
+  or the endpoint is down, baked behaves identically.
+- **First-run notice.** The first time telemetry runs, a one-line notice is
+  printed to stderr telling you it's on and how to turn it off.
+- **Self-hostable.** Point the beacon at your own endpoint with
+  `baked_TELEMETRY_URL`.
+- **No secrets shipped.** The client carries only a public, unauthenticated
+  beacon URL — no API key, account id, or token. Reading the data requires a
+  separate Cloudflare credential that never touches the client or the repo.
+- **Abuse-resistant.** The endpoint is write-only into an analytics store (no
+  database to read back or corrupt), with strict field allow-lists, per-IP rate
+  limiting, and query-time dedup on the anonymous id.
+- **Open.** The client lives in `src/core/telemetry.ts` and the receiving
+  Cloudflare Worker is in `telemetry-worker/` — both in the public repo.

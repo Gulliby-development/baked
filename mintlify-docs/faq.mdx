@@ -1,0 +1,90 @@
+---
+title: "FAQ"
+description: "Common questions, short answers."
+icon: "circle-question"
+---
+
+## Does it run on Windows?
+
+Yes. The source checkout targets Windows, macOS, and Linux. See [installation](/installation) for running it with Bun.
+
+## Do I need an API key?
+
+You need either one cloud key or a local LLM.
+
+
+
+```bash
+baked --set-key anthropic sk-ant-...
+```
+
+## How much does it cost to run?
+
+Cloud costs depend on your model. baked shows the live USD number as you work, broken down per model and per subagent. Cache-aware pricing for all major providers.
+
+Rough ballpark on a mid-size repo: a one-file refactor under \$0.05 on Sonnet with caching, a cross-file rename often under \$0.05 because the compound tool runs in three steps, an all-day session with a mix of Haiku exploration and Sonnet coding typically stays under \$5.
+
+Local models are free. Use the [task router](/recipes/task-router) to push exploration to a cheap model and reserve the strong model for code.
+
+## Which model should I pick?
+
+- **Claude Sonnet 4.5** for balanced code quality.
+- **Claude Haiku 4.5** for fast exploration and cleanup.
+- **Google Gemini 2.5 Flash** for compaction (cheapest, fastest).
+- **Local Llama/Qwen/DeepSeek** if you want $0 and privacy.
+
+Mix them via `/router`. See the [task router recipe](/recipes/task-router).
+
+## Does it work without internet?
+
+
+## How does baked edit code?
+
+Four tools, picked by the one that fits:
+
+1. **AST editing** for TypeScript and JavaScript. Addresses functions, classes, methods by name — not text. A return-type change costs a handful of tokens.
+2. **Multi-edit** for batched text edits on the same file, applied atomically with line-offset tracking.
+3. **Edit** for single text edits with line-anchored matching on any file (JSON, YAML, Markdown, Python, Rust, Go, etc).
+4. **LSP rename and refactor** for workspace-wide symbol renames, move symbol, extract function, organize imports. Compiler-verified, every file updated.
+
+The agent picks automatically.
+
+## Is my code uploaded anywhere?
+
+Model requests include the context sent to your selected provider. Search, page fetching, remote adapters, and session telemetry also use the network. See [file access and data flow](/reference/data-flow) and [telemetry](/reference/telemetry).
+
+
+## What languages does code intelligence cover?
+
+Tree-sitter detection covers: TypeScript, JavaScript, Python, Go, Rust, Java, Kotlin, Scala, C#, Swift, Dart, Elixir, OCaml, Lua, C, C++, Ruby, PHP, Zig, Bash, CSS, HTML, JSON, TOML, YAML, XML, Markdown, MDX, SQL, GraphQL, Protobuf, Dockerfile, Makefile, Nix, HCL/Terraform, Bazel/Starlark, Jsonnet, Vue, ReScript, Solidity, TLA+, Emacs Lisp, Objective-C.
+
+LSP coverage depends on what's installed via Mason — typical set: TypeScript, JavaScript, Python, Go, Rust, Java, Kotlin, Scala, C#, Swift, Dart, Elixir, OCaml, Lua, C, C++, Ruby, PHP, Zig, Bash, CSS, HTML, JSON, TOML, YAML, Dockerfile, Vue.
+
+AST editing (ts-morph) is TypeScript and JavaScript only. Everything else uses LSP and tree-sitter.
+
+## Can I install LSP servers from baked?
+
+Yes. `/lsp install` opens a browser over Mason's registry (576+ packages). baked installs into `~/.baked/lsp-servers/` via npm, pip, cargo, go, or GitHub releases depending on the package.
+
+## How do sessions work?
+
+Every conversation is auto-saved as JSONL under `~/.baked/sessions/`. Resume with `baked --headless --session <prefix>` or press `Ctrl+P` in the TUI. Each session carries its checkpoint git tags — undo all the way back to any earlier turn.
+
+## Can I run this over SSH?
+
+Yes. The TUI is pure terminal output (OpenTUI with Kitty graphics for inline images). SSH, tmux, and remote shells all work.
+
+## What about multi-tab work?
+
+Up to 5 tabs per project. Each has its own session, model, mode, and checkpoint history. Tabs are aware of each other: when one claims a file, the others see the claim and skip it. Git operations hard-block during cross-tab dispatch so you never commit partial changes. See [tabs](/agents/cross-tab).
+
+## How do themes work?
+
+36 built-in themes (Catppuccin, Dracula, Gruvbox, Tokyo Night, Rose Pine, Kanagawa, Nightfox, Cyberdream, Oxocarbon, Ember, Vesper, and more). `/theme` opens a live-preview picker. Custom themes go in `~/.baked/themes/<name>.json` and hot-reload on save. See [themes](/tools/themes).
+
+## How do I get help?
+
+- [Troubleshooting](/troubleshooting) — common issues.
+- `/diagnose` inside baked — LSP, tree-sitter, semantic indexing health check.
+- `/status` — full system dashboard.
+- [GitHub issues](https://github.com/baked/baked/issues).

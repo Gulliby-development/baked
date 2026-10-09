@@ -1,0 +1,45 @@
+---
+title: "Modes & the prompt"
+description: "Switch personas with Ctrl+D. Load project instructions automatically."
+icon: "message"
+---
+
+## Modes
+
+Press `Ctrl+D` to cycle, or `/mode <name>`:
+
+| Mode | What it does |
+|------|--------------|
+| `default` | Full agent — investigates then implements |
+| `architect` | Design only — outlines and tradeoffs, no file edits |
+| `plan` | Research, plan, confirm, execute (see [plan mode](/recipes/plan-mode)) |
+| `auto` | Autonomous — minimal interruptions |
+
+## Project instructions
+
+baked auto-loads `baked.md` from your project root as context. You can also pick up instructions from other tools:
+
+```json
+{
+  "instructionFiles": ["baked", "claude", "cursorrules"]
+}
+```
+
+| File | From |
+|------|------|
+| `baked.md` | baked (on by default) |
+| `CLAUDE.md` | Claude Code |
+| `.cursorrules` | Cursor |
+| `.github/copilot-instructions.md` | GitHub Copilot |
+| `.clinerules` | Cline |
+| `.windsurfrules` | Windsurf |
+| `AGENTS.md` | OpenAI Codex |
+| `.opencode/instructions.md` | OpenCode |
+| `AMPLIFY.md` | Amp |
+
+Toggle in the TUI: `/instructions`.
+
+## Per-family tuning
+
+
+This is automatic; there's nothing to configure.

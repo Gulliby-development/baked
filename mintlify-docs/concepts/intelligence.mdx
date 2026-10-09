@@ -1,0 +1,58 @@
+---
+title: "Code intelligence"
+description: "LSP, AST, and fallbacks — the agent sees your code like an IDE."
+icon: "brain"
+---
+
+baked gives the agent the same code intelligence your IDE has: go-to-definition, references, rename, diagnostics, type info. It tries LSP first, falls back to AST tools, then tree-sitter, then regex.
+
+This replaces grep-and-read. The agent navigates the code graph by symbol, not by pattern matching across files. Cheaper, faster, correct.
+
+You don't configure this. It picks the best available backend for every operation.
+
+## What it can do
+
+| Operation | Examples |
+|-----------|----------|
+| **Go to definition** | "where is `parseConfig` defined?" |
+| **Find references** | "who calls `parseConfig`?" |
+| **Rename** | "rename `useChat` to `useConversation` everywhere" |
+| **Type info** | "what's the return type of `fetchUser`?" |
+| **Diagnostics** | "any errors in this file?" |
+| **Call hierarchy** | "what does `buildTools` call?" |
+
+All of these come through the `navigate` and `analyze` tools.
+
+## How it picks a backend
+
+```
+LSP → ts-morph (TS/JS) → tree-sitter (33+ langs) → regex
+```
+
+If LSP isn't attached for your language, the agent still works — the lower tiers cover most queries.
+
+## LSP always-on
+
+The agent uses standalone LSP servers.
+
+Check what's attached:
+
+```
+/lsp status
+```
+
+Install more servers through the Mason registry:
+
+```
+/lsp install
+```
+
+## After every edit
+
+baked snapshots diagnostics before the edit, compares after, and tells the agent:
+
+- New errors it just introduced
+- Errors it just fixed
+- Errors in other files caused by the edit
+
+The agent sees this instantly — no need to run a full typecheck.

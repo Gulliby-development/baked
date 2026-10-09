@@ -1,0 +1,224 @@
+import { useCallback, useEffect, useState } from "react";
+import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
+import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
+import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
+import { useWorkflowStore } from "../stores/workflow.js";
+
+const sessions = new Map<string, WorkflowClient>();
+const exitedOwners = new Map<string, Set<string>>();
+export function workflowIsRunning(runId: string): boolean {
+  return [...sessions.values()].some((service) => service.isRunning(runId));
+}
+export async function stopWorkflowSessions(): Promise<void> {
+  const clients = [...sessions.values()];
+  const results = await Promise.allSettled(
+    clients.map(async (client) => {
+      try {
+        await client.shutdown();
+      } finally {
+        client.close();
+      }
+    }),
+  );
+  sessions.clear();
+  const errors = results.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (errors.length)
+    throw new AggregateError(
+      errors.map((result) => result.reason),
+      "Workflow shutdown failed",
+    );
+}
+export function workflowSession(workspace: string): WorkflowClient {
+  let service = sessions.get(workspace);
+  if (service?.closed) {
+    const owner = service.exitedOwner;
+    if (owner) {
+      const owners = exitedOwners.get(workspace) ?? new Set<string>();
+      owners.add(owner);
+      exitedOwners.set(workspace, owners);
+    }
+    service.close();
+    service = undefined;
+  }
+  if (!service) {
+    service = new WorkflowClient(
+      workspace,
+      mergeConfigs(loadConfig(), loadProjectConfig(workspace)),
+      [...(exitedOwners.get(workspace) ?? [])],
+    );
+    sessions.set(workspace, service);
+  }
+  return service;
+}
+/** Returns the live session without starting a worker; used by passive indicators. */
+export function existingWorkflowSession(workspace: string): WorkflowClient | null {
+  const service = sessions.get(workspace);
+  return service && !service.closed ? service : null;
+}
+/**
+ * Replaces an idle session so the worker picks up changed configuration.
+ * Returns false and keeps the session while this process executes any run.
+ */
+export async function reloadWorkflowSession(workspace: string, runIds: string[]): Promise<boolean> {
+  const service = sessions.get(workspace);
+  if (!service) return true;
+  if (runIds.some((id) => service.isDriving(id))) return false;
+  try {
+    await service.shutdown();
+  } finally {
+    service.close();
+    sessions.delete(workspace);
+  }
+  return true;
+}
+
+export function useWorkflow(workspace: string, runId: string | null, visible: boolean) {
+  const [error, setError] = useState<string | null>(null);
+  const [generation, setGeneration] = useState(0);
+  const snapshot = useWorkflowStore((s) => s.projection.snapshot);
+  useEffect(() => {
+    if (!visible || !runId) return;
+    let disposed = false;
+    let inFlight = false;
+    let lastStamp = "";
+    const refresh = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const view = await workflowSession(workspace).refresh(runId);
+        if (!disposed && view.stamp !== lastStamp) {
+          lastStamp = view.stamp;
+          useWorkflowStore.getState().load(view.snapshot);
+          setGeneration((g) => g + 1);
+          setError(null);
+        }
+      } catch (err) {
+        if (!disposed) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    // Worker pushes changes from runs it executes; polling covers other processes and active time.
+    const unsubscribe = workflowSession(workspace).onChange((changed) => {
+      if (changed === runId) void refresh();
+    });
+    const timer = setInterval(() => {
+      void refresh();
+    }, 150);
+    return () => {
+      disposed = true;
+      unsubscribe();
+      clearInterval(timer);
+    };
+  }, [workspace, runId, visible]);
+  const service = visible && runId ? workflowSession(workspace) : null;
+  const act = async (action: WorkflowAction): Promise<void> => {
+    if (!service || !runId) return;
+    try {
+      setError(null);
+      const result = await service.action(runId, action);
+      if (action === "fork" && result.runId !== runId)
+        useWorkflowStore.getState().select(result.runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  return { service, snapshot: snapshot?.runId === runId ? snapshot : null, error, generation, act };
+}
+
+export function useWorkflowRuns(workspace: string, visible: boolean) {
+  const [runs, setRuns] = useState<RunSummary[] | null>(null);
+  const [info, setInfo] = useState<WorkflowInfo | null>(null);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+  const reload = useCallback(() => setEpoch((e) => e + 1), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: epoch forces an immediate reload after configuration changes
+  useEffect(() => {
+    if (!visible) return;
+    let disposed = false;
+    let inFlight = false;
+    const refresh = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        // Read configuration locally so a disabled project never starts a worker or creates a DB.
+        const config = mergeConfigs(loadConfig(), loadProjectConfig(workspace));
+        const on = config.workflows?.enabled === true;
+        setEnabled(on);
+        if (!on && !existingWorkflowSession(workspace)) return;
+        const service = workflowSession(workspace);
+        const [nextInfo, nextRuns] = await Promise.all([service.info(), service.list(50)]);
+        if (disposed) return;
+        setInfo(nextInfo);
+        setRuns(nextRuns);
+        setError(null);
+      } catch (err) {
+        if (!disposed) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => {
+      void refresh();
+    }, 1000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [workspace, visible, epoch]);
+  return { runs, info, enabled, error, reload };
+}
+
+const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+/** Keeps the status-bar badge current without starting a worker or polling when idle. */
+export function useWorkflowBadge(workspace: string, panelOpen: boolean): void {
+  const runId = useWorkflowStore((s) => s.selectedRunId);
+  useEffect(() => {
+    if (!runId) {
+      useWorkflowStore.getState().setBadge(null);
+      return;
+    }
+    let disposed = false;
+    const refresh = async (): Promise<void> => {
+      const service = existingWorkflowSession(workspace);
+      if (!service) return;
+      try {
+        const view = await service.refresh(runId);
+        if (disposed) return;
+        const { snapshot } = view;
+        const store = useWorkflowStore.getState();
+        if (panelOpen) store.acknowledge(runId, snapshot.status);
+        const hidden =
+          TERMINAL.has(snapshot.status) &&
+          useWorkflowStore.getState().acknowledged[runId] === snapshot.status;
+        store.setBadge(
+          hidden
+            ? null
+            : {
+                runId,
+                featureId: snapshot.featureId,
+                status: snapshot.status,
+                stageId: snapshot.stageId,
+                needsUser: snapshot.pendingRequestIds.length > 0,
+                tokens: snapshot.tokenUsage,
+              },
+        );
+      } catch {
+        // The panel reports errors; the badge only reflects known state.
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => {
+      void refresh();
+    }, 1500);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [workspace, runId, panelOpen]);
+}

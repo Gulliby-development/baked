@@ -1,0 +1,20 @@
+preload = ["./plugins/react-compiler.ts"]
+
+[install]
+# Defend against fresh-published supply-chain attacks (shai-hulud class):
+# refuse to install package versions less than 3 days old. Excludes are
+# packages we ship or pin tightly enough that the lag would block releases.
+minimumReleaseAge = 259200
+minimumReleaseAgeExcludes = [
+  "@opentui/core",
+  "@opentui/core-darwin-arm64",
+  "@opentui/core-darwin-x64",
+  "@opentui/core-linux-arm64",
+  "@opentui/core-linux-x64",
+  "@opentui/core-win32-arm64",
+  "@opentui/core-win32-x64",
+  "@opentui/react",
+]
+
+[test]
+coverageSkipTestFiles = true

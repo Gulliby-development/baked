@@ -1,0 +1,140 @@
+---
+title: "AST editing"
+description: "Edit TypeScript and JavaScript through syntax trees."
+icon: "scalpel"
+---
+
+`ast_edit` addresses TypeScript and JavaScript symbols by kind and name, applies structural mutations, and writes the result back.
+
+You don't invoke `ast_edit` directly. The agent picks it automatically for TypeScript and JavaScript files. This page is a reference for what it can do.
+
+## Examples
+
+Change a function's return type:
+
+```ts
+ast_edit({
+  path: "src/api.ts",
+  action: "set_return_type",
+  target: "function",
+  name: "fetchUser",
+  value: "Promise<User>",
+})
+```
+
+Make a function async and add a parameter — one atomic batch:
+
+```ts
+ast_edit({
+  path: "src/api.ts",
+  operations: [
+    { action: "set_async", target: "function", name: "fetchUser", value: "true" },
+    { action: "add_parameter", target: "function", name: "fetchUser", value: "cache: boolean" },
+    { action: "add_named_import", value: "./types", newCode: "User" },
+  ],
+})
+```
+
+Rename a class method:
+
+```ts
+ast_edit({
+  path: "src/store.ts",
+  action: "rename",
+  target: "method",
+  name: "UserStore.fetch",
+  value: "load",
+})
+```
+
+Replace a whole function body:
+
+```ts
+ast_edit({
+  path: "src/util.ts",
+  action: "set_body",
+  target: "function",
+  name: "parseInput",
+  newCode: "return JSON.parse(raw);",
+})
+```
+
+Batch edits are all-or-nothing — if any fails, none are applied.
+
+## Targets
+
+| Target | Addressed by |
+|--------|-------------|
+| `function`, `class`, `interface`, `type`, `enum`, `variable`, `constant` | `name` |
+| `method`, `property` | `"ClassName.member"` or `"member"` |
+| `arrow_function` | `name` (targets `const fn = () => {}`) |
+| `constructor` | `ClassName` |
+
+## Action reference
+
+<AccordionGroup>
+<Accordion title="Tier 1 — Micro-edits (1-10 tokens)">
+| Action | Effect |
+|--------|--------|
+| `set_type` | Variable/property/parameter type annotation |
+| `set_return_type` | Function return type |
+| `set_initializer` / `remove_initializer` | Variable initializer |
+| `set_value` | Enum member value |
+| `set_async` / `set_generator` | Toggle `async` / `function*` |
+| `set_export` / `set_default_export` | Toggle export modifiers |
+| `set_abstract` / `set_static` / `set_readonly` / `set_scope` / `set_optional` / `set_overrides` / `set_ambient` | Class-member modifiers |
+| `set_const_enum` / `set_declaration_kind` | Misc modifiers |
+| `rename` | Declaration-only rename |
+| `remove` | Delete the declaration |
+| `add_parameter` / `remove_parameter` | Function/method parameters |
+</Accordion>
+
+<Accordion title="Tier 2 — Body surgery (10-100 tokens)">
+| Action | Effect |
+|--------|--------|
+| `set_body` | Replace function/method body |
+| `add_statement` / `insert_statement` / `remove_statement` | Statement-level |
+| `add_property` / `remove_property` | Interface/class properties |
+| `add_method` / `remove_method` / `add_constructor` / `add_getter` / `add_setter` | Class members |
+| `add_member` / `remove_member` | Enum / type-literal members |
+| `add_decorator` / `remove_decorator` | Decorators |
+| `add_overload` | Function overload signatures |
+| `set_extends` / `add_extends` / `remove_extends` / `add_implements` / `remove_implements` | Inheritance |
+| `add_type_parameter` | Generic type parameters |
+| `add_jsdoc` / `remove_jsdoc` | JSDoc blocks |
+| `unwrap`, `set_structure`, `extract_interface` | Structural rewrites |
+</Accordion>
+
+<Accordion title="Tier 3 — Full replacement">
+| Action | Effect |
+|--------|--------|
+| `replace` | Replace a whole symbol |
+| `replace_in_body` | AST-anchored substring replace (unique match only) |
+</Accordion>
+
+<Accordion title="File-level">
+| Action | Effect |
+|--------|--------|
+| `create_file` | New file (pass `newCode` as content) |
+| `add_import` / `remove_import` / `add_named_import` / `remove_named_import` | Imports |
+| `set_module_specifier` | Change import path |
+| `add_export_declaration` / `add_named_reexport` | Re-exports |
+| `add_namespace` | Namespace declarations |
+| `organize_imports` / `fix_missing_imports` / `fix_unused` | Cleanup |
+| `add_function` / `add_class` / `add_interface` / `add_type_alias` / `add_enum` / `add_variable` | Append top-level declarations |
+| `insert_text` | Insert at an anchor (`"after-imports"`, `"before-exports"`, index) |
+</Accordion>
+</AccordionGroup>
+
+## Supported files
+
+`.ts`, `.tsx`, `.js`, `.jsx`, `.mts`, `.cts`, `.mjs`, `.cjs`. For other files the agent falls back to `edit_file` / `multi_edit`.
+
+## Safety
+
+- File snapshotted before the edit — rejects if changed on disk mid-flight.
+- Atomic batches: all or none.
+- `undo_edit` reverses `ast_edit` the same as `edit_file`.
+- Pre/post diagnostics — new type errors flow back to the agent immediately.
+
+

@@ -1,0 +1,141 @@
+---
+title: "Troubleshooting"
+description: "Fixes for common issues."
+icon: "wrench"
+---
+
+
+## No models in the picker
+
+Your API key isn't set. Pick one:
+
+```bash
+baked --set-key anthropic sk-ant-...
+# or export it and restart your terminal:
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Check what's configured:
+
+```bash
+baked --list-providers
+```
+
+## Getting rate-limited (429)
+
+Bump retry settings in `~/.baked/config.json`:
+
+```json
+{
+  "retry": {
+    "maxAttempts": 5,
+    "baseDelayMs": 3000
+  }
+}
+```
+
+Delays double each attempt. `maxAttempts: 5` with `baseDelayMs: 3000` gives ~3s, 6s, 12s, 24s, 48s between retries.
+
+## Icons show as boxes or `??`
+
+
+
+## LSP isn't working
+
+Open `/lsp status`. If your language server isn't attached:
+
+```
+/lsp install
+```
+
+Picks from the Mason registry and installs into `~/.baked/lsp-servers/`. Restart baked after installing.
+
+## Context is full / "too many tokens"
+
+```
+/compact
+```
+
+Runs compaction immediately. Or switch to a larger model (`Ctrl+L`).
+
+To compact automatically at a lower threshold, edit config:
+
+```json
+{
+  "compaction": {
+    "triggerThreshold": 0.6
+  }
+}
+```
+
+## Copilot: 401 / token expired
+
+Your Copilot token was rotated. Copy it again from your IDE:
+
+```bash
+baked --set-key copilot $(jq -r '."github.com".oauth_token' \
+  ~/.config/github-copilot/apps.json)
+```
+
+See [Copilot setup](/providers/copilot) for details.
+
+## Agent is slow
+
+
+## Forgot a session
+
+```bash
+baked --headless --chat            # browse by timestamp
+```
+
+Or open `/session history` inside baked. Sessions live in `~/.baked/sessions/`.
+
+## Windows: pasting an image does nothing
+
+`Ctrl+V` with a screenshot on the clipboard may silently do nothing. Two separate causes on Windows:
+
+1. **Windows Terminal eats the paste.** Its bracketed-paste mode emits an *empty* sequence for image clipboards, so the image bytes never reach baked.
+2. **PowerShell can't be reached.** The clipboard read shells out to PowerShell; if neither `powershell` nor `pwsh` is on `PATH`, the read fails.
+
+Try, in order:
+
+- Press **`Alt+V`** instead of `Ctrl+V` — it bypasses the bracketed-paste interception.
+- Make sure Windows PowerShell 5.1 is on `PATH`: `C:\Windows\System32\WindowsPowerShell\v1.0`.
+- Check `/errors` inside baked — a failed clipboard read leaves a `clipboard` breadcrumb there.
+
+If neither works (the Windows Terminal bug is upstream), **save the screenshot to a file and reference the path** — the agent reads it with `bake_vision`:
+
+```
+look at C:\Users\me\Desktop\bug.png and tell me what's wrong
+```
+
+Drop this helper in your PowerShell profile to capture the clipboard image to a file in one command:
+
+```powershell
+function Save-ClipboardImage {
+    param([string]$Path = "$env:TEMP\sf-paste.png")
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    $img = [System.Windows.Forms.Clipboard]::GetImage()
+    if ($img) {
+        $img.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+        Write-Host "Saved: $Path — paste this path into baked."
+    } else { Write-Host "No image on clipboard." }
+}
+Set-Alias cpimg Save-ClipboardImage -Force
+```
+
+Run `cpimg`, then reference the printed path in your prompt.
+
+## Windows: command not found after install
+
+PATH updates don't apply to the shell that ran the installer. Open a brand-new PowerShell or Windows Terminal window.
+
+If you used the portable ZIP, make sure the extract folder is on your `PATH` or call `baked.exe` by full path. The `deps/` folder must stay next to `baked.exe`.
+
+See the Windows section of [installation](/installation#windows-notes) for the full feature matrix.
+
+## Still stuck?
+
+- [GitHub Issues](https://github.com/baked/baked/issues)
+- Run `/diagnose` inside baked for a health check — LSP, tree-sitter, semantic indexing, provider status.
+- `/status` shows the full system dashboard.

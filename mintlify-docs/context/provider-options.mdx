@@ -1,0 +1,57 @@
+---
+title: "Thinking & retries"
+description: "Configure thinking modes, budgets, and retry behavior."
+icon: "sliders"
+---
+
+Open `/provider-settings` to tune thinking mode and budget per model. Or edit config directly:
+
+```json
+{
+  "thinking": {
+    "mode": "adaptive"
+  }
+}
+```
+
+## Thinking modes
+
+| Mode | What it does |
+|------|--------------|
+| `off` | No thinking blocks |
+| `adaptive` (or `auto`) | Model decides when to think (Claude 4+) |
+| `enabled` | Fixed budget thinking — specify tokens |
+
+Budgets when mode is `enabled`: 1024, 2048, 5000, 10000, 20000.
+
+## Context management (Anthropic)
+
+Advanced Anthropic features. Apply automatically on supported models:
+
+- **Clear Thinking** — auto-clears old thinking blocks, keeps last 5 turns.
+- **Clear Tool Uses** — drops old tool content when input exceeds 100k.
+- **Compact** — API-side compaction at 75% of context.
+
+## Graceful degradation
+
+If a provider rejects an option (unsupported thinking mode, unknown parameter), baked retries with reduced options automatically. You don't see the error.
+
+## Retries on rate limits
+
+Getting 429s? Bump retry config:
+
+```json
+{
+  "retry": {
+    "maxAttempts": 5,
+    "baseDelayMs": 3000
+  }
+}
+```
+
+Delays double each attempt: 3s, 6s, 12s, 24s, 48s.
+
+| Field | Default | Range |
+|-------|---------|-------|
+| `maxAttempts` | `3` | 1–10 |
+| `baseDelayMs` | `1000` (chat) / `2000` (agents) | 250–60000 |

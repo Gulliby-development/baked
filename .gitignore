@@ -1,0 +1,104 @@
+# dependencies (bun install)
+node_modules
+
+# Baked binary
+baked
+
+# output
+out
+dist
+bin
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+roadmap_local
+app
+dist-app
+components.json
+
+
+skills-lock.json 
+scripts/test-local.sh
+scripts/test-release.sh
+
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# Baked runtime data
+.baked/
+
+# Improvement plans
+improvements
+
+# Legacy docs (docs site is in mintlify-docs/)
+docs/
+
+# Benchmark artifacts
+bench/results-*.json
+benchmarks/results-*.json
+
+# Local agent settings
+.claude/
+.codex/
+
+# OpenCode local settings
+.opencode/
+
+# Local git worktrees
+.worktrees/
+
+# Installed agent skills (user-specific)
+.agents/
+
+# Audit logs
+audit_issue.json
+coverage/
+test_tmp/
+
+# Hook test output
+__hooks_test__/
+.baked
+
+
+# Local tooling and binaries
+.tools/
+*.exe
+
+# Local databases
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+
+# Temp and editor/OS files
+*.tmp
+Thumbs.db
+.vscode/
+
+# Internal audit logs, workflow specs, design notes
+.audit/
+specs/
+design/

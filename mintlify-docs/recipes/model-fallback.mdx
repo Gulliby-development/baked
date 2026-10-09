@@ -1,0 +1,81 @@
+---
+title: "Model fallback chains"
+description: "Survive provider outages with per-model fallback chains. When the primary fails on transient errors, swap to the next model automatically."
+icon: "shuffle"
+---
+
+When a provider is overloaded, rate-limited, or returning 5xx, baked can switch to a backup model and keep streaming. The fallback chain is **per-model** — each model in use can have its own ordered list of alternates.
+
+## Open the picker
+
+```
+/router
+```
+
+Scroll to the **Model Fallback** section. Every model in use (your default plus every Task Router slot) gets its own row. Press <kbd>Enter</kbd> to add a fallback, <kbd>d</kbd> to clear the chain.
+
+## Or edit the config
+
+```json
+{
+  "defaultModel": "anthropic/claude-sonnet-4-5",
+  "modelFallback": {
+    "anthropic/claude-sonnet-4-5": [
+      "openai/gpt-5"
+    ],
+    "anthropic/claude-haiku-4-5": [
+      "openai/gpt-4.1-mini"
+    ]
+  }
+}
+```
+
+Key = model id, value = ordered list tried in order on transient failure.
+
+## How it cycles
+
+```
+primary → retry N times → fallback[0] → retry N → fallback[1] → … → primary (cycle 1) → … → throw after MAX_CYCLES
+```
+
+1. **Transient error retries first.** `maxTransientRetries` (default 3) attempts on the active model with exponential backoff + jitter.
+2. **Swap.** Budget exhausted → next model in the chain. A `Switched to fallback model: X` system message lands in chat. The header and active-model header sync to the new model.
+3. **Cycle.** When the chain is exhausted, the loop returns to the primary and starts over. Capped at 3 cycles, then the original error is rethrown with `cause`.
+4. **User abort wins.** Ctrl+X always exits the loop immediately, regardless of where you are in the chain.
+
+## What counts as transient
+
+Matched against the error message:
+
+`overloaded`, `429`, `529`, `503`, `502`, `rate limit`, `too many requests`, `timeout`, `fetch failed`, `econnreset`, `econnrefused`, `enotfound`, `socket hang up`, `premature close`, `stream error/closed`, `connection error/reset/refused/closed`, `aborted.*connection`.
+
+**403** is **only** treated as transient when the response body also contains `overloaded` or `rate` — a genuine auth-rejection 403 will not burn the retry budget.
+
+## Tune the budgets
+
+```json
+{
+  "retry": {
+    "maxTransientRetries": 3,
+    "maxStallRetries": 3,
+    "baseDelayMs": 1000
+  }
+}
+```
+
+- `maxTransientRetries` — retries per model before swapping to the next fallback.
+- `maxStallRetries` — retries when the stream stalls (watchdog only; opt-in).
+- `baseDelayMs` — first retry delay; doubles each attempt with jitter. Clamped to 250–60000ms.
+
+Legacy `maxAttempts` is still accepted as a default for both.
+
+## When fallback shines
+
+- **One key rate-limited.** First-party Anthropic + LLM Gateway with separate quotas.
+- **Provider-specific outage.** Mix providers (`anthropic/…` + `openai/…` + `google/…`) so a single-vendor incident doesn't end your session.
+
+## What it won't do
+
+- **Cost-based switching.** Fallback is failure-driven, not budget-driven. Use Task Router slots for that.
+- **Stall detection.** Stalls (no chunks, no abort) hit the watchdog path, which retries on the same model. Fallback only triggers on thrown transient errors.
+- **Permanent errors.** 401, malformed request, model not found, real 403 — these surface immediately. The chain is for *transient* failures only.

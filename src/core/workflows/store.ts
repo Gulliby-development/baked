@@ -1,0 +1,1043 @@
+import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { canonical, hashBytes, hashJson } from "../specs/hash.js";
+import { workspacePath } from "../specs/validate.js";
+import { writeViaTemp } from "./atomic-write.js";
+import { WorkflowFault } from "./errors.js";
+import { migration001 } from "./migrations/001.js";
+import {
+  type AgentProfile,
+  type CommandIdentity,
+  EventSchema,
+  type Reason,
+  type RunPolicy,
+  type RunSnapshot,
+  type RunState,
+  SafeId,
+  type StageState,
+  type TaskGraph,
+  type WorkflowDefinition,
+  type WorkflowEvent,
+} from "./schemas.js";
+import { type RuntimeState, RuntimeStateSchema, type Snapshot } from "./types.js";
+
+export const newId = (): string => randomUUID();
+export interface RunRow {
+  id: string;
+  feature_id: string;
+  status: RunState;
+  reason: Reason;
+  revision: number;
+  event_seq: number;
+  stage_id: string | null;
+  input_hash: string;
+  approval_digest: string | null;
+  definition_json: string;
+  profiles_json: string;
+  policy_json: string;
+  input_manifest_json: string;
+  repair_rounds: number;
+  convergence_rounds: number;
+  corrective_tasks: number;
+  agent_calls: number;
+  token_usage: number;
+  active_ms: number;
+  estimated_cost_microusd: number | null;
+  created_at: number;
+  updated_at: number;
+}
+export interface ArtifactRow {
+  run_id: string;
+  id: string;
+  kind: string;
+  logical_path: string;
+  revision: number;
+  content_hash: string;
+  byte_length: number;
+  inline_content: string | null;
+  blob_path: string | null;
+}
+export interface TaskRow {
+  id: string;
+  definition_json: string;
+  status:
+    | "pending"
+    | "running"
+    | "implemented"
+    | "verified"
+    | "blocked"
+    | "failed"
+    | "cancelled"
+    | "invalidated";
+  generation: number;
+  snapshot_id: string | null;
+}
+export interface RequestRow {
+  id: string;
+  kind: "approval" | "clarification" | "manual_evidence" | "recovery";
+  status: string;
+  digest: string;
+  body_json: string;
+  answer_json: string | null;
+}
+export interface EffectRow {
+  id: string;
+  attempt_id: string;
+  kind: "file_patch" | "artifact_write" | "command";
+  status: "prepared" | "applied" | "unknown" | "reconciled" | "failed";
+  intent_json: string;
+  before_hash: string | null;
+  after_hash: string | null;
+}
+export interface LeaseRow {
+  resource: "execution" | "mutation";
+  owner_id: string;
+  owner_epoch: number;
+  run_id: string | null;
+  expires_at: number;
+  process_identity_json: string;
+}
+export interface EvidenceRow {
+  id: string;
+  kind: string;
+  snapshot_id: string;
+  artifact_id: string;
+  validity: string;
+}
+export interface FindingRow {
+  id: string;
+  fingerprint: string;
+  body_json: string;
+  status: "open" | "confirmed" | "refuted" | "resolved" | "inconclusive";
+  repair_task_id: string | null;
+}
+export interface CheckDetailRow {
+  check_id: string;
+  status: string;
+  exit_code: number | null;
+  reason: string;
+  duration_ms: number;
+  validity: string;
+  artifact_id: string;
+}
+export interface StepRow {
+  id: string;
+  stage_id: string;
+  parent_step_id: string | null;
+  generation: number;
+  status: StageState;
+}
+export interface AttemptRow {
+  id: string;
+  step_id: string;
+  status: string;
+  reserved_tokens: number;
+  used_tokens: number | null;
+  usage_complete: number;
+  input_hash: string;
+}
+type EventInput = WorkflowEvent extends infer E
+  ? E extends WorkflowEvent
+    ? { type: E["type"]; payload: E["payload"] }
+    : never
+  : never;
+
+export class WorkflowStore {
+  private readonly db: Database;
+  readonly path: string;
+  /** Observes appended events; invoked before the surrounding transaction commits. */
+  onEvent: ((event: WorkflowEvent) => void) | null = null;
+  constructor(
+    readonly workspace: string,
+    readonly readonly = false,
+  ) {
+    this.path = workspacePath(workspace, ".baked/workflows.sqlite");
+    if (readonly && !existsSync(this.path))
+      throw new WorkflowFault("NOT_FOUND", "No workflow database in this workspace");
+    if (!readonly) mkdirSync(dirname(this.path), { recursive: true });
+    this.db = new Database(this.path, { readonly, create: !readonly, strict: true });
+    try {
+      this.db.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+      if (!readonly) this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
+      const table = this.db
+        .query("SELECT name FROM sqlite_master WHERE name='schema_migrations'")
+        .get();
+      if (!table) {
+        if (readonly)
+          throw new WorkflowFault("VERSION_UNSUPPORTED", "Missing workflow migration metadata");
+        this.transaction(() => {
+          this.db.exec(migration001);
+          this.db.run("INSERT INTO schema_migrations VALUES (1,?,?)", [
+            hashBytes(migration001),
+            Date.now(),
+          ]);
+        });
+      }
+      const version = this.db
+        .query<{ version: number; checksum: string }, []>(
+          "SELECT version,checksum FROM schema_migrations ORDER BY version DESC LIMIT 1",
+        )
+        .get();
+      if (version?.version !== 1 || version.checksum !== hashBytes(migration001))
+        throw new WorkflowFault(
+          "VERSION_UNSUPPORTED",
+          "Workflow schema version or checksum mismatch. Preserve the database and use a compatible reader.",
+        );
+      const integrity = this.db.query<{ quick_check: string }, []>("PRAGMA quick_check").get();
+      if (integrity?.quick_check !== "ok")
+        throw new WorkflowFault("STORAGE_CORRUPT", "Workflow database integrity check failed");
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
+  }
+  close(): void {
+    this.db.close();
+  }
+  transaction<T>(action: () => T): T {
+    return this.db.transaction(action).immediate();
+  }
+  readTransaction<T>(action: () => T): T {
+    return this.db.transaction(action).deferred();
+  }
+  run(id: string): RunRow {
+    SafeId.parse(id);
+    const row = this.db.query<RunRow, [string]>("SELECT * FROM runs WHERE id=?").get(id);
+    if (!row) throw new WorkflowFault("NOT_FOUND", `Unknown run ${id}`);
+    return row;
+  }
+  state(id: string): RuntimeState {
+    const artifact = this.latestArtifact(id, "internal/state.json");
+    if (!artifact) throw new WorkflowFault("ARTIFACT_MISSING", "Run state artifact missing");
+    return RuntimeStateSchema.parse(JSON.parse(this.readArtifact(id, artifact.id)));
+  }
+  snapshot(id: string): RunSnapshot {
+    return this.db.transaction(() => this.readSnapshot(id)).deferred();
+  }
+  private readSnapshot(id: string): RunSnapshot {
+    const row = this.run(id);
+    const projection = this.latestArtifact(id, "internal/projection.json");
+    const state = projection?.inline_content
+      ? (JSON.parse(projection.inline_content) as Pick<
+          RuntimeState,
+          "workspaceHash" | "verificationState"
+        >)
+      : this.state(id);
+    return {
+      runId: id,
+      featureId: row.feature_id,
+      status: row.status,
+      reason: row.reason,
+      revision: row.revision,
+      eventSeq: row.event_seq,
+      stageId: row.stage_id,
+      approvalDigest: row.approval_digest,
+      inputHash: row.input_hash,
+      workspaceHash: state.workspaceHash,
+      tokenUsage: row.token_usage,
+      activeMs: row.active_ms,
+      estimatedCostUsd:
+        row.estimated_cost_microusd === null ? null : row.estimated_cost_microusd / 1e6,
+      verificationState: state.verificationState,
+      pendingRequestIds: this.requests(id)
+        .filter((r) => r.status === "pending")
+        .map((r) => r.id),
+    };
+  }
+  list(
+    limit: number,
+    featureId?: string,
+    cursor?: string,
+  ): { items: RunSnapshot[]; cursor?: string } {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+      throw new WorkflowFault("INVALID_DEFINITION", "limit must be 1..100");
+    const after = cursor ? this.run(cursor) : null;
+    const rows = this.db
+      .query<
+        RunRow,
+        [string | null, string | null, number | null, number | null, string | null, number]
+      >(
+        "SELECT * FROM runs WHERE (? IS NULL OR feature_id=?) AND (? IS NULL OR (created_at,id)<(?,?)) ORDER BY created_at DESC,id DESC LIMIT ?",
+      )
+      .all(
+        featureId ?? null,
+        featureId ?? null,
+        after?.created_at ?? null,
+        after?.created_at ?? null,
+        cursor ?? null,
+        limit + 1,
+      );
+    const page = rows.slice(0, limit);
+    return {
+      items: page.map((r) => this.snapshot(r.id)),
+      ...(rows.length > limit ? { cursor: page.at(-1)?.id } : {}),
+    };
+  }
+  previousCommand(commandId: string, body: unknown): RunSnapshot | undefined {
+    SafeId.parse(commandId);
+    const row = this.db
+      .query<{ request_hash: string; result_json: string }, [string]>(
+        "SELECT request_hash,result_json FROM commands WHERE id=?",
+      )
+      .get(commandId);
+    if (!row) return undefined;
+    if (row.request_hash !== hashJson(body))
+      throw new WorkflowFault(
+        "COMMAND_CONFLICT",
+        "Command ID was already used for different input",
+      );
+    return JSON.parse(row.result_json) as RunSnapshot;
+  }
+  saveCommand(commandId: string, body: unknown, result: RunSnapshot): void {
+    this.db.run("INSERT INTO commands VALUES (?,?,?,?,?)", [
+      commandId,
+      result.runId,
+      hashJson(body),
+      canonical(result),
+      Date.now(),
+    ]);
+  }
+  command(runId: string, command: CommandIdentity, body: unknown, action: () => void): RunSnapshot {
+    return this.transaction(() => {
+      const previous = this.previousCommand(command.commandId, body);
+      if (previous) return previous;
+      this.bump(runId, command.expectedRevision);
+      action();
+      const snapshot = this.snapshot(runId);
+      this.saveCommand(command.commandId, body, snapshot);
+      return snapshot;
+    });
+  }
+  bump(runId: string, expected: number): void {
+    const update = this.db.run(
+      "UPDATE runs SET revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+      [Date.now(), runId, expected],
+    );
+    if (update.changes !== 1)
+      throw new WorkflowFault("REVISION_CONFLICT", "Run revision changed", {
+        expected,
+        actual: this.run(runId).revision,
+      });
+  }
+  create(
+    id: string,
+    featureId: string,
+    definition: WorkflowDefinition,
+    profiles: AgentProfile[],
+    policy: RunPolicy,
+    state: RuntimeState,
+    parent: string | null = null,
+  ): void {
+    SafeId.parse(id);
+    SafeId.parse(featureId);
+    this.db.run("INSERT OR IGNORE INTO features VALUES (?,?,?)", [
+      featureId,
+      `specs/${featureId}`,
+      Date.now(),
+    ]);
+    this.db.run(
+      "INSERT INTO runs (id,feature_id,parent_run_id,status,definition_json,profiles_json,policy_json,input_manifest_json,input_hash,created_at,updated_at) VALUES (?,?,?,'created',?,?,?,?,?,?,?)",
+      [
+        id,
+        featureId,
+        parent,
+        canonical(definition),
+        canonical(profiles),
+        canonical(policy),
+        canonical(state.manifest),
+        hashJson(state.manifest),
+        Date.now(),
+        Date.now(),
+      ],
+    );
+    this.saveState(id, state);
+    this.emit(id, {
+      type: "run.created",
+      payload: { featureId, inputHash: hashJson(state.manifest) },
+    });
+  }
+  saveState(id: string, state: RuntimeState): void {
+    RuntimeStateSchema.parse(state);
+    this.artifact(id, "state", "internal/state.json", canonical(state));
+    this.artifact(
+      id,
+      "state",
+      "internal/projection.json",
+      canonical({ workspaceHash: state.workspaceHash, verificationState: state.verificationState }),
+    );
+    this.db.run("UPDATE runs SET input_manifest_json=?,input_hash=? WHERE id=?", [
+      canonical(state.manifest),
+      hashJson(state.manifest),
+      id,
+    ]);
+  }
+  transition(id: string, status: RunState, reason: Reason = "none"): void {
+    const row = this.run(id);
+    this.bump(id, row.revision);
+    this.db.run("UPDATE runs SET status=?,reason=?,updated_at=? WHERE id=?", [
+      status,
+      reason,
+      Date.now(),
+      id,
+    ]);
+    this.emit(id, {
+      type: "run.state_changed",
+      payload: { from: row.status, to: status, reason, revision: row.revision + 1 },
+    });
+  }
+  setApproval(id: string, digest: string | null): void {
+    this.db.run("UPDATE runs SET approval_digest=? WHERE id=?", [digest, id]);
+  }
+  setPolicy(id: string, policy: RunPolicy): void {
+    this.db.run("UPDATE runs SET policy_json=? WHERE id=?", [canonical(policy), id]);
+  }
+  emit(runId: string, event: EventInput): WorkflowEvent {
+    const seq = this.run(runId).event_seq + 1;
+    const value = EventSchema.parse({
+      schemaVersion: 1,
+      eventId: newId(),
+      runId,
+      seq,
+      at: new Date().toISOString(),
+      ...event,
+    });
+    this.db.run("INSERT INTO events VALUES (?,?,?,?,?,?)", [
+      runId,
+      seq,
+      value.eventId,
+      value.type,
+      Date.parse(value.at),
+      canonical(value.payload),
+    ]);
+    this.db.run("UPDATE runs SET event_seq=? WHERE id=?", [seq, runId]);
+    this.onEvent?.(value);
+    return value;
+  }
+  events(id: string, after = 0, limit = 200): WorkflowEvent[] {
+    return this.db
+      .query<
+        { id: string; seq: number; at: number; type: string; payload_json: string },
+        [string, number, number]
+      >("SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?")
+      .all(id, after, limit)
+      .map((r) =>
+        EventSchema.parse({
+          schemaVersion: 1,
+          eventId: r.id,
+          runId: id,
+          seq: r.seq,
+          at: new Date(r.at).toISOString(),
+          type: r.type,
+          payload: JSON.parse(r.payload_json),
+        }),
+      );
+  }
+  artifacts(id: string): ArtifactRow[] {
+    return this.db
+      .query<ArtifactRow, [string]>("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,id")
+      .all(id);
+  }
+  latestArtifact(id: string, path: string): ArtifactRow | null {
+    return this.db
+      .query<ArtifactRow, [string, string]>(
+        "SELECT * FROM artifacts WHERE run_id=? AND logical_path=? ORDER BY revision DESC LIMIT 1",
+      )
+      .get(id, path);
+  }
+  artifact(id: string, kind: string, path: string, content: string): ArtifactRow {
+    const bytes = Buffer.byteLength(content);
+    if (bytes > 10 * 1024 * 1024)
+      throw new WorkflowFault("BUDGET_EXHAUSTED", "Artifact exceeds 10 MiB cap");
+    const total =
+      this.db
+        .query<{ bytes: number }, [string]>(
+          "SELECT COALESCE(SUM(byte_length),0) AS bytes FROM artifacts WHERE run_id=?",
+        )
+        .get(id)?.bytes ?? 0;
+    if (total + bytes > 100 * 1024 * 1024)
+      throw new WorkflowFault("BUDGET_EXHAUSTED", "Run evidence exceeds 100 MiB cap");
+    const hash = hashBytes(content);
+    let blob: string | null = null;
+    if (bytes > 256 * 1024) {
+      blob = join(".baked", "workflow-runs", id, "blobs", hash);
+      const target = workspacePath(this.workspace, blob.replaceAll("\\", "/"));
+      mkdirSync(dirname(target), { recursive: true });
+      if (!existsSync(target)) {
+        writeViaTemp(target, content, { flag: "wx", flush: true, mode: 0o600 });
+      }
+    }
+    const row: ArtifactRow = {
+      run_id: id,
+      id: newId(),
+      kind,
+      logical_path: path,
+      revision: (this.latestArtifact(id, path)?.revision ?? 0) + 1,
+      content_hash: hash,
+      byte_length: bytes,
+      inline_content: blob ? null : content,
+      blob_path: blob,
+    };
+    this.db.run("INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?,?,?)", [
+      id,
+      row.id,
+      kind,
+      path,
+      row.revision,
+      hash,
+      bytes,
+      row.inline_content,
+      blob,
+      Date.now(),
+    ]);
+    if (kind !== "state")
+      this.emit(id, { type: "artifact.committed", payload: { artifactId: row.id, kind, hash } });
+    return row;
+  }
+  readArtifact(runId: string, id: string): string {
+    const row = this.db
+      .query<ArtifactRow, [string, string]>("SELECT * FROM artifacts WHERE run_id=? AND id=?")
+      .get(runId, id);
+    if (!row) throw new WorkflowFault("ARTIFACT_MISSING", `Missing artifact ${id}`);
+    let content: string;
+    try {
+      content =
+        row.inline_content ??
+        readFileSync(
+          workspacePath(this.workspace, (row.blob_path ?? "").replaceAll("\\", "/")),
+          "utf8",
+        );
+    } catch {
+      throw new WorkflowFault("ARTIFACT_MISSING", `Missing blob for ${id}`);
+    }
+    if (hashBytes(content) !== row.content_hash)
+      throw new WorkflowFault("ARTIFACT_MISSING", `Artifact hash mismatch ${id}`);
+    return content;
+  }
+  putSnapshot(runId: string, files: Record<string, string>): Snapshot {
+    const hash = hashJson(files);
+    const existing = this.db
+      .query<{ id: string }, [string, string]>(
+        "SELECT id FROM workspace_snapshots WHERE run_id=? AND manifest_hash=?",
+      )
+      .get(runId, hash);
+    const id = existing?.id ?? newId();
+    if (!existing)
+      this.db.run("INSERT INTO workspace_snapshots VALUES (?,?,?,?,NULL,?)", [
+        runId,
+        id,
+        hash,
+        canonical(files),
+        Date.now(),
+      ]);
+    return { id, hash, files };
+  }
+  request(runId: string, kind: RequestRow["kind"], digest: string, body: unknown): string {
+    const id = newId();
+    this.db.run(
+      "INSERT INTO requests (run_id,id,kind,status,digest,body_json) VALUES (?,?,?,'pending',?,?)",
+      [runId, id, kind, digest, canonical(body)],
+    );
+    this.emit(runId, { type: "request.created", payload: { requestId: id, kind, digest } });
+    return id;
+  }
+  requests(id: string): RequestRow[] {
+    return this.db
+      .query<RequestRow, [string]>("SELECT * FROM requests WHERE run_id=? ORDER BY rowid")
+      .all(id);
+  }
+  decideRequest(
+    runId: string,
+    id: string,
+    status: "accepted" | "rejected" | "superseded",
+    answer: unknown,
+  ): void {
+    const actor = status === "superseded" ? "system-invalidation" : "user";
+    const result = this.db.run(
+      "UPDATE requests SET status=?,answer_json=?,actor=?,decided_at=? WHERE run_id=? AND id=? AND status='pending'",
+      [status, canonical(answer), actor, Date.now(), runId, id],
+    );
+    if (result.changes !== 1)
+      throw new WorkflowFault("STALE_DECISION", "Request is no longer pending");
+    this.emit(runId, { type: "request.decided", payload: { requestId: id, status, actor } });
+  }
+  tasks(runId: string): TaskRow[] {
+    return this.db
+      .query<TaskRow, [string]>("SELECT * FROM tasks WHERE run_id=? ORDER BY rowid")
+      .all(runId);
+  }
+  syncTasks(runId: string, graph: TaskGraph, invalidate = false): void {
+    if (invalidate) {
+      const previous = this.findings(runId);
+      if (previous.length)
+        this.artifact(
+          runId,
+          "revision-history",
+          `revisions/${newId()}/findings.json`,
+          canonical(previous),
+        );
+      this.db.run("DELETE FROM findings WHERE run_id=?", [runId]);
+      for (const task of this.tasks(runId))
+        if (!graph.tasks.some((t) => t.id === task.id))
+          this.taskStatus(runId, task.id, "cancelled");
+    }
+    for (const task of graph.tasks) {
+      this.db.run(
+        "INSERT INTO tasks (run_id,id,definition_json,definition_hash,status,updated_at) VALUES (?,?,?,?,'pending',?) ON CONFLICT(run_id,id) DO UPDATE SET definition_json=excluded.definition_json,definition_hash=excluded.definition_hash",
+        [runId, task.id, canonical(task), hashJson(task), Date.now()],
+      );
+      if (invalidate) this.taskStatus(runId, task.id, "invalidated");
+    }
+    this.db.run("DELETE FROM task_dependencies WHERE run_id=?", [runId]);
+    for (const task of graph.tasks)
+      for (const dep of task.dependsOn)
+        this.db.run("INSERT INTO task_dependencies VALUES (?,?,?)", [runId, task.id, dep]);
+  }
+  taskStatus(
+    runId: string,
+    id: string,
+    status: TaskRow["status"],
+    snapshotId: string | null = null,
+  ): void {
+    const row = this.tasks(runId).find((t) => t.id === id);
+    if (!row) throw new WorkflowFault("NOT_FOUND", `Task ${id} missing`);
+    const generation = row.generation + (status === "invalidated" ? 1 : 0);
+    this.db.run(
+      "UPDATE tasks SET status=?,generation=?,snapshot_id=?,updated_at=? WHERE run_id=? AND id=?",
+      [status, generation, snapshotId, Date.now(), runId, id],
+    );
+    this.emit(runId, {
+      type: "task.state_changed",
+      payload: { taskId: id, from: row.status, to: status, generation },
+    });
+  }
+  beginStep(runId: string, stageId: string, parent: string | null = null): string {
+    const generation =
+      (this.db
+        .query<{ n: number | null }, [string, string]>(
+          "SELECT MAX(generation) AS n FROM steps WHERE run_id=? AND stage_id=?",
+        )
+        .get(runId, stageId)?.n ?? -1) + 1;
+    const id = newId();
+    this.db.run(
+      "INSERT INTO steps (run_id,id,stage_id,parent_step_id,generation,status,input_hash) VALUES (?,?,?,?,?,'running',?)",
+      [runId, id, stageId, parent, generation, this.run(runId).input_hash],
+    );
+    if (!parent) this.db.run("UPDATE runs SET stage_id=? WHERE id=?", [stageId, runId]);
+    this.emit(runId, { type: "stage.started", payload: { stepId: id, stageId, generation } });
+    return id;
+  }
+  finishStep(
+    runId: string,
+    id: string,
+    status: StageState,
+    artifactId: string | null = null,
+  ): void {
+    this.db.run("UPDATE steps SET status=?,output_artifact_id=? WHERE run_id=? AND id=?", [
+      status,
+      artifactId,
+      runId,
+      id,
+    ]);
+    this.emit(runId, { type: "stage.finished", payload: { stepId: id, status, artifactId } });
+  }
+  steps(runId: string): StepRow[] {
+    return this.db
+      .query<StepRow, [string]>(
+        "SELECT id,stage_id,parent_step_id,generation,status FROM steps WHERE run_id=? ORDER BY rowid",
+      )
+      .all(runId);
+  }
+  attempts(runId: string): AttemptRow[] {
+    return this.db.query<AttemptRow, [string]>("SELECT * FROM attempts WHERE run_id=?").all(runId);
+  }
+  reserve(
+    runId: string,
+    stepId: string,
+    modelId: string | null,
+    tokens: number,
+    policy: RunPolicy,
+  ): string {
+    return this.transaction(() => {
+      const row = this.run(runId);
+      const reserved = this.attempts(runId)
+        .filter((a) => !a.usage_complete)
+        .reduce((n, a) => n + a.reserved_tokens, 0);
+      if (
+        row.agent_calls >= policy.maxAgentCalls ||
+        row.token_usage + reserved + tokens > policy.maxTotalTokens ||
+        row.active_ms >= policy.maxActiveMs
+      )
+        throw new WorkflowFault("BUDGET_EXHAUSTED", "Run agent/token/time budget exhausted");
+      const id = newId();
+      const ordinal = this.attempts(runId).filter((a) => a.step_id === stepId).length + 1;
+      this.db.run(
+        "INSERT INTO attempts (run_id,id,step_id,ordinal,model_id,status,input_hash,reserved_tokens,started_at) VALUES (?,?,?,?,?,'running',?,?,?)",
+        [runId, id, stepId, ordinal, modelId, row.input_hash, tokens, Date.now()],
+      );
+      if (modelId) this.db.run("UPDATE runs SET agent_calls=agent_calls+1 WHERE id=?", [runId]);
+      this.emit(runId, { type: "attempt.started", payload: { attemptId: id, stepId, modelId } });
+      return id;
+    });
+  }
+  finishAttempt(
+    runId: string,
+    id: string,
+    status: "completed" | "failed" | "cancelled" | "interrupted",
+    usedTokens: number | null,
+  ): void {
+    const update = this.db.run(
+      "UPDATE attempts SET status=?,used_tokens=?,usage_complete=?,ended_at=? WHERE run_id=? AND id=? AND status='running'",
+      [status, usedTokens, usedTokens === null ? 0 : 1, Date.now(), runId, id],
+    );
+    if (update.changes !== 1)
+      throw new WorkflowFault("REVISION_CONFLICT", "Attempt no longer running");
+    this.db.run("UPDATE runs SET token_usage=token_usage+? WHERE id=?", [usedTokens ?? 0, runId]);
+    this.emit(runId, {
+      type: "attempt.finished",
+      payload: { attemptId: id, status, usageComplete: usedTokens !== null, usedTokens },
+    });
+  }
+  expandReservation(runId: string, attemptId: string, tokens: number, policy: RunPolicy): void {
+    this.transaction(() => {
+      const run = this.run(runId);
+      const reserved = this.attempts(runId)
+        .filter((a) => !a.usage_complete && a.id !== attemptId)
+        .reduce((sum, a) => sum + a.reserved_tokens, 0);
+      if (run.status !== "running")
+        throw new WorkflowFault("CAPABILITY_DENIED", "Run is no longer executing");
+      if (run.token_usage + reserved + tokens > policy.maxTotalTokens)
+        throw new WorkflowFault(
+          "BUDGET_EXHAUSTED",
+          "Next model step exceeds remaining token budget",
+        );
+      this.db.run(
+        "UPDATE attempts SET reserved_tokens=MAX(reserved_tokens,?) WHERE run_id=? AND id=? AND status='running'",
+        [tokens, runId, attemptId],
+      );
+      this.emit(runId, {
+        type: "budget.updated",
+        payload: {
+          usedTokens: run.token_usage,
+          reservedTokens: reserved + tokens,
+          activeMs: run.active_ms,
+          estimatedCostUsd: null,
+        },
+      });
+    });
+  }
+  addActiveTime(runId: string, ms: number): void {
+    this.db.run("UPDATE runs SET active_ms=active_ms+? WHERE id=?", [
+      Math.max(0, Math.ceil(ms)),
+      runId,
+    ]);
+  }
+  addRound(runId: string, kind: "repair" | "convergence", count: number): void {
+    const column = kind === "repair" ? "repair_rounds" : "convergence_rounds";
+    this.db.run(
+      `UPDATE runs SET ${column}=${column}+1,corrective_tasks=corrective_tasks+? WHERE id=?`,
+      [count, runId],
+    );
+  }
+  evidence(runId: string): EvidenceRow[] {
+    return this.db.query<EvidenceRow, [string]>("SELECT * FROM evidence WHERE run_id=?").all(runId);
+  }
+  addEvidence(
+    runId: string,
+    kind: "command" | "read" | "diff" | "review" | "manual",
+    snapshotId: string,
+    artifactId: string,
+    attemptId: string | null = null,
+  ): string {
+    const id = newId();
+    this.db.run("INSERT INTO evidence VALUES (?,?,?,?,?,?,'current',?)", [
+      runId,
+      id,
+      kind,
+      snapshotId,
+      artifactId,
+      attemptId,
+      Date.now(),
+    ]);
+    return id;
+  }
+  checkResult(
+    runId: string,
+    checkId: string,
+    evidenceId: string,
+    status: "passed" | "failed" | "inconclusive",
+    exit: number | null,
+    reason: string,
+    duration: number,
+  ): void {
+    this.db.run("INSERT INTO check_results VALUES (?,?,?,?,?,?,?,?)", [
+      runId,
+      newId(),
+      checkId,
+      evidenceId,
+      status,
+      exit,
+      reason,
+      duration,
+    ]);
+    this.emit(runId, { type: "check.finished", payload: { checkId, evidenceId, status } });
+  }
+  checks(runId: string): {
+    check_id: string;
+    evidence_id: string;
+    status: string;
+    snapshot_id: string;
+    validity: string;
+  }[] {
+    return this.db
+      .query<
+        {
+          check_id: string;
+          evidence_id: string;
+          status: string;
+          snapshot_id: string;
+          validity: string;
+        },
+        [string]
+      >(
+        "SELECT c.check_id,c.evidence_id,c.status,e.snapshot_id,e.validity FROM check_results c JOIN evidence e ON c.run_id=e.run_id AND c.evidence_id=e.id WHERE c.run_id=? ORDER BY c.rowid",
+      )
+      .all(runId);
+  }
+  /** Check results with their evidence artifact, oldest first. */
+  checkDetails(runId: string): CheckDetailRow[] {
+    return this.db
+      .query<CheckDetailRow, [string]>(
+        "SELECT c.check_id,c.status,c.exit_code,c.reason,c.duration_ms,e.validity,e.artifact_id FROM check_results c JOIN evidence e ON c.run_id=e.run_id AND c.evidence_id=e.id WHERE c.run_id=? ORDER BY c.rowid",
+      )
+      .all(runId);
+  }
+  invalidateEvidence(
+    runId: string,
+    snapshotId: string,
+    reason: "input_changed" | "source_changed" | "evidence_missing" | "redacted",
+  ): void {
+    this.db.run("UPDATE evidence SET validity=? WHERE run_id=? AND snapshot_id=?", [
+      reason === "redacted" || reason === "evidence_missing" ? "invalid" : "stale",
+      runId,
+      snapshotId,
+    ]);
+    this.emit(runId, { type: "snapshot.invalidated", payload: { snapshotId, reason } });
+  }
+  findings(runId: string): FindingRow[] {
+    return this.db
+      .query<FindingRow, [string]>("SELECT * FROM findings WHERE run_id=? ORDER BY rowid")
+      .all(runId);
+  }
+  addFinding(
+    runId: string,
+    finding: { id: string },
+    fingerprint: string,
+    artifactId: string,
+  ): string {
+    const existing = this.findings(runId).find((f) => f.fingerprint === fingerprint);
+    if (existing) {
+      this.db.run(
+        "UPDATE findings SET status='open',body_json=?,repair_task_id=NULL WHERE run_id=? AND id=?",
+        [canonical({ ...finding, id: existing.id }), runId, existing.id],
+      );
+      this.emit(runId, {
+        type: "finding.recorded",
+        payload: { findingId: existing.id, artifactId },
+      });
+      return existing.id;
+    }
+    this.db.run(
+      "INSERT INTO findings (run_id,id,fingerprint,body_json,status,created_at) VALUES (?,?,?,?,'open',?)",
+      [runId, finding.id, fingerprint, canonical(finding), Date.now()],
+    );
+    this.emit(runId, { type: "finding.recorded", payload: { findingId: finding.id, artifactId } });
+    return finding.id;
+  }
+  findingStatus(
+    runId: string,
+    id: string,
+    status: FindingRow["status"],
+    taskId: string | null = null,
+  ): void {
+    this.db.run(
+      "UPDATE findings SET status=?,repair_task_id=COALESCE(?,repair_task_id) WHERE run_id=? AND id=?",
+      [status, taskId, runId, id],
+    );
+  }
+  criterion(
+    runId: string,
+    snapshotId: string,
+    result: {
+      criterionId: string;
+      verdict: "pass" | "fail" | "inconclusive" | "deferred";
+      evidenceIds: string[];
+      explanation: string;
+    },
+  ): void {
+    this.db.run("INSERT OR REPLACE INTO criterion_results VALUES (?,?,?,?,?,?)", [
+      runId,
+      result.criterionId,
+      snapshotId,
+      result.verdict,
+      canonical(result.evidenceIds),
+      result.explanation,
+    ]);
+    this.emit(runId, {
+      type: "criterion.assessed",
+      payload: { criterionId: result.criterionId, snapshotId, verdict: result.verdict },
+    });
+  }
+  prepareEffect(
+    runId: string,
+    attemptId: string,
+    kind: EffectRow["kind"],
+    intent: unknown,
+    before: string | null,
+    after: string | null,
+  ): string {
+    const id = newId();
+    this.db.run("INSERT INTO effects VALUES (?,?,?,?,'prepared',?,?,?,?)", [
+      runId,
+      id,
+      attemptId,
+      kind,
+      canonical(intent),
+      before,
+      after,
+      Date.now(),
+    ]);
+    return id;
+  }
+  effects(runId: string): EffectRow[] {
+    return this.db
+      .query<EffectRow, [string]>("SELECT * FROM effects WHERE run_id=? ORDER BY rowid")
+      .all(runId);
+  }
+  finishFileEffect(runId: string, id: string, afterHash: string | null): void {
+    this.db.run("UPDATE effects SET after_hash=? WHERE run_id=? AND id=? AND kind='file_patch'", [
+      afterHash,
+      runId,
+      id,
+    ]);
+    this.effectStatus(runId, id, "applied");
+  }
+  recordProcess(runId: string, effectId: string, pid: number): void {
+    const effect = this.effects(runId).find((e) => e.id === effectId);
+    if (effect?.kind !== "command")
+      throw new WorkflowFault("NOT_FOUND", "Command intent missing before spawn");
+    this.db.run("UPDATE effects SET intent_json=? WHERE run_id=? AND id=?", [
+      canonical({ ...JSON.parse(effect.intent_json), pid, spawnedAt: Date.now() }),
+      runId,
+      effectId,
+    ]);
+  }
+  effectStatus(runId: string, id: string, status: Exclude<EffectRow["status"], "prepared">): void {
+    this.db.run("UPDATE effects SET status=? WHERE run_id=? AND id=?", [status, runId, id]);
+    this.emit(runId, { type: "effect.reconciled", payload: { effectId: id, status } });
+  }
+  lease(resource: LeaseRow["resource"]): LeaseRow | null {
+    return this.db
+      .query<LeaseRow, [string]>("SELECT * FROM workspace_leases WHERE resource=?")
+      .get(resource);
+  }
+  putLease(lease: LeaseRow): void {
+    this.db.run("INSERT OR REPLACE INTO workspace_leases VALUES (?,?,?,?,?,?)", [
+      lease.resource,
+      lease.owner_id,
+      lease.owner_epoch,
+      lease.run_id,
+      lease.expires_at,
+      lease.process_identity_json,
+    ]);
+  }
+  releaseLease(resource: LeaseRow["resource"], owner: string, epoch: number): void {
+    this.db.run("DELETE FROM workspace_leases WHERE resource=? AND owner_id=? AND owner_epoch=?", [
+      resource,
+      owner,
+      epoch,
+    ]);
+  }
+  collectGarbage(before: string, dryRun: boolean): { runIds: string[]; bytes: number } {
+    const date = Date.parse(before);
+    if (!Number.isFinite(date))
+      throw new WorkflowFault("INVALID_DEFINITION", "Expected an ISO date for retention");
+    const threshold = Math.min(date, Date.now() - 30 * 24 * 3600 * 1000);
+    const rows = this.db
+      .query<{ id: string; bytes: number }, [number]>(
+        "SELECT r.id,COALESCE((SELECT SUM(byte_length) FROM artifacts a WHERE a.run_id=r.id),0) AS bytes FROM runs r WHERE r.status IN ('completed','failed','cancelled') AND r.updated_at<? AND NOT EXISTS(SELECT 1 FROM runs child WHERE child.parent_run_id=r.id) AND NOT EXISTS(SELECT 1 FROM workspace_leases l WHERE l.run_id=r.id)",
+      )
+      .all(threshold);
+    if (!dryRun)
+      for (const row of rows) {
+        const directory = workspacePath(
+          this.workspace,
+          `.baked/workflow-runs/${SafeId.parse(row.id)}`,
+        );
+        this.transaction(() => {
+          for (const table of [
+            "criterion_results",
+            "check_results",
+            "findings",
+            "evidence",
+            "effects",
+            "attempts",
+            "steps",
+            "task_dependencies",
+            "tasks",
+            "requests",
+            "events",
+            "commands",
+            "artifacts",
+            "workspace_snapshots",
+          ])
+            this.db.run(`DELETE FROM ${table} WHERE run_id=?`, [row.id]);
+          this.db.run("DELETE FROM runs WHERE id=?", [row.id]);
+        });
+        SafeId.parse(row.id);
+        rmSync(directory, {
+          recursive: true,
+          force: true,
+        });
+      }
+    return { runIds: rows.map((r) => r.id), bytes: rows.reduce((sum, r) => sum + r.bytes, 0) };
+  }
+  redact(runId: string, artifactId: string, reason: string): void {
+    if (!reason.trim())
+      throw new WorkflowFault("INVALID_DEFINITION", "Redaction reason is required");
+    const target = this.artifacts(runId).find((a) => a.id === artifactId);
+    if (!target || target.kind === "state")
+      throw new WorkflowFault("INVALID_DEFINITION", "Select a content artifact for redaction");
+    this.transaction(() => {
+      const state = this.state(runId);
+      this.artifact(
+        runId,
+        "redaction",
+        `redactions/${artifactId}.json`,
+        canonical({ artifactId, hash: target.content_hash, reason }),
+      );
+      for (const e of this.evidence(runId).filter((e) => e.artifact_id === artifactId))
+        this.invalidateEvidence(runId, e.snapshot_id, "redacted");
+      // Explicit redaction is the sole content-mutation exception. The original hash and
+      // metadata remain, so ordinary reads fail integrity validation after redaction.
+      if (target.inline_content !== null) {
+        this.db.exec("DROP TRIGGER artifacts_no_update");
+        this.db.run("UPDATE artifacts SET inline_content='[redacted]' WHERE run_id=? AND id=?", [
+          runId,
+          artifactId,
+        ]);
+        this.db.exec(
+          "CREATE TRIGGER artifacts_no_update BEFORE UPDATE ON artifacts BEGIN SELECT RAISE(ABORT, 'artifacts are immutable'); END;",
+        );
+      }
+      state.verificationState = "invalid";
+      this.saveState(runId, state);
+      this.bump(runId, this.run(runId).revision);
+    });
+    if (target.blob_path) {
+      const path = workspacePath(this.workspace, target.blob_path.replaceAll("\\", "/"));
+      if (existsSync(path)) unlinkSync(path);
+    }
+  }
+}

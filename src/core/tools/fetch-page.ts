@@ -1,0 +1,310 @@
+import { Readability } from "@mozilla/readability";
+import { parseHTML } from "linkedom";
+import type { ToolResult } from "../../types/index.js";
+import { getSecret } from "../secrets.js";
+
+// Generous limit — models are 200K+ context, so 120KB (~30K tokens) is fine.
+// Compaction prunes old fetch_page results anyway.
+const MAX_CONTENT_LENGTH = 120_000;
+
+function parseIpFromInt(n: number): string | null {
+  if (n < 0 || n > 0xffffffff) return null;
+  return `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
+}
+
+function extractMappedIPv4FromHexPairs(addr: string): string | null {
+  const match = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(addr);
+  if (!match?.[1] || !match[2]) return null;
+  const hi = Number.parseInt(match[1] as string, 16);
+  const lo = Number.parseInt(match[2] as string, 16);
+  return `${(hi >>> 8) & 0xff}.${hi & 0xff}.${(lo >>> 8) & 0xff}.${lo & 0xff}`;
+}
+
+export function isPrivateHostname(hostname: string): boolean {
+  if (
+    hostname === "localhost" ||
+    hostname === "0.0.0.0" ||
+    hostname === "::1" ||
+    hostname.startsWith("127.") ||
+    hostname.startsWith("10.") ||
+    hostname.startsWith("192.168.") ||
+    hostname.startsWith("169.254.") ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".local") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+  )
+    return true;
+
+  const lower = hostname.toLowerCase();
+
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+  if (
+    lower.startsWith("fe8") ||
+    lower.startsWith("fe9") ||
+    lower.startsWith("fea") ||
+    lower.startsWith("feb")
+  )
+    return true;
+
+  if (lower.startsWith("::ffff:")) {
+    const mapped = lower.slice(7);
+    if (isPrivateHostname(mapped)) return true;
+    const extracted = extractMappedIPv4FromHexPairs(lower);
+    if (extracted && isPrivateHostname(extracted)) return true;
+  }
+
+  if (/^\d{8,10}$/.test(hostname)) return true;
+
+  if (/^0\d+\./.test(hostname)) return true;
+
+  if (/^0x[0-9a-f]+$/i.test(hostname)) {
+    const n = Number.parseInt(hostname, 16);
+    const ip = parseIpFromInt(n);
+    if (ip && isPrivateHostname(ip)) return true;
+  }
+
+  return false;
+}
+
+export function validateUrl(raw: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return "Invalid URL";
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return `Blocked protocol: ${parsed.protocol}`;
+  const hostname = parsed.hostname.replace(/^\[|]$/g, "");
+  if (isPrivateHostname(hostname)) return `Blocked private/reserved address: ${hostname}`;
+  return null;
+}
+
+const pageCache = new Map<string, { content: string; ts: number; backend: string }>();
+const CACHE_TTL = 5 * 60_000;
+const MAX_CACHE_SIZE = 100;
+
+let lastSweep = 0;
+function getCached(url: string): { content: string; backend: string } | null {
+  const now = Date.now();
+  if (now - lastSweep > CACHE_TTL) {
+    lastSweep = now;
+    for (const [k, v] of pageCache) {
+      if (now - v.ts > CACHE_TTL) pageCache.delete(k);
+    }
+  }
+  const entry = pageCache.get(url);
+  if (!entry) return null;
+  if (now - entry.ts > CACHE_TTL) {
+    pageCache.delete(url);
+    return null;
+  }
+  return { content: entry.content, backend: entry.backend };
+}
+
+let lastJinaWarning: string | null = null;
+
+async function jinaRead(url: string): Promise<{ content: string; backend: string } | null> {
+  const apiKey = getSecret("jina-api-key");
+  const keyed = !!apiKey;
+
+  const tryFetch = async (
+    useKey: boolean,
+  ): Promise<{ content: string; backend: string } | null> => {
+    try {
+      const headers: Record<string, string> = { Accept: "text/markdown" };
+      if (useKey && apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+      const res = await fetch(`https://r.jina.ai/${url}`, {
+        headers,
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        if (useKey && (res.status === 401 || res.status === 403)) {
+          lastJinaWarning = `Jina API key invalid (HTTP ${String(res.status)}) — falling back to free tier`;
+          return null;
+        }
+        return null;
+      }
+      const text = await res.text();
+      if (text && text.length > 100) {
+        return { content: text, backend: useKey ? "jina-api" : "jina" };
+      }
+    } catch {}
+    return null;
+  };
+
+  const result = await tryFetch(keyed);
+  if (result) {
+    lastJinaWarning = null;
+    return result;
+  }
+
+  if (keyed) {
+    const fallback = await tryFetch(false);
+    if (fallback) return fallback;
+  }
+
+  return null;
+}
+
+function extractWithReadability(html: string): string {
+  try {
+    const { document } = parseHTML(html);
+    const reader = new Readability(document as unknown as Document, { charThreshold: 50 });
+    const article = reader.parse();
+    if (article?.textContent) {
+      const clean = article.textContent
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (clean.length > 200) {
+        const header = article.title ? `# ${article.title}\n\n` : "";
+        return `${header}${clean}`;
+      }
+    }
+  } catch {}
+  return fallbackExtract(html);
+}
+
+function fallbackExtract(html: string): string {
+  let text = html;
+  text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
+  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
+  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, "");
+  text = text.replace(/<header[\s\S]*?<\/header>/gi, "");
+  text = text.replace(/<[^>]+>/g, " ");
+  text = text.replace(/&nbsp;/g, " ");
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&#x27;/g, "'");
+  text = text.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+  text = text.replace(/[ \t]+/g, " ");
+  text = text.replace(/\n{3,}/g, "\n\n");
+  return text.trim();
+}
+
+function extractSiteLinks(content: string, baseUrl: string, isMarkdown: boolean): string[] {
+  let base: URL;
+  try {
+    base = new URL(baseUrl);
+  } catch {
+    return [];
+  }
+
+  const links: string[] = [];
+  const seen = new Set<string>();
+  const pattern = isMarkdown ? /\[([^\]]*)\]\(([^)]+)\)/g : /<a[^>]+href=["']([^"'#]+)["'][^>]*>/gi;
+
+  for (;;) {
+    const m = pattern.exec(content);
+    if (!m) break;
+    const raw = isMarkdown ? m[2] : m[1];
+    if (!raw || raw.startsWith("javascript:") || raw.startsWith("mailto:")) continue;
+    try {
+      const resolved = new URL(raw, baseUrl);
+      if (resolved.hostname !== base.hostname) continue;
+      const clean = resolved.origin + resolved.pathname.replace(/\/$/, "");
+      if (clean !== base.origin + base.pathname.replace(/\/$/, "") && !seen.has(clean)) {
+        seen.add(clean);
+        links.push(clean);
+      }
+    } catch {}
+    if (links.length >= 30) break;
+  }
+
+  return links;
+}
+
+function truncate(text: string, siteLinks: string[]): string {
+  const linksSection =
+    siteLinks.length > 0
+      ? `\n\n## Available pages (use these URLs with fetch_page instead of guessing)\n${siteLinks.map((l) => `- ${l}`).join("\n")}`
+      : "";
+  const budget = MAX_CONTENT_LENGTH - linksSection.length;
+  if (text.length <= budget) return text + linksSection;
+
+  // Head+tail truncation: keep beginning (context/intro) and end (examples/API details)
+  const tailBudget = Math.min(Math.floor(budget * 0.25), 20_000);
+  const headBudget = budget - tailBudget;
+  const head = text.slice(0, headBudget);
+  const tail = text.slice(-tailBudget);
+  const omitted = text.length - headBudget - tailBudget;
+  const body = `${head}\n\n[... ${String(Math.round(omitted / 1024))}KB omitted — ${String(Math.round(text.length / 1024))}KB total. Showing first ${String(Math.round(headBudget / 1024))}KB + last ${String(Math.round(tailBudget / 1024))}KB. For specific sections, try a sub-page URL from the links below.]\n\n${tail}`;
+  return body + linksSection;
+}
+
+export const fetchPageTool = {
+  name: "fetch_page",
+  description: "Fetch a web page and extract its text content.",
+  execute: async (args: { url: string }): Promise<ToolResult> => {
+    const urlError = validateUrl(args.url);
+    if (urlError) return { success: false, output: urlError, error: urlError };
+
+    const cached = getCached(args.url);
+    if (cached) {
+      const isMarkdown = cached.backend === "jina" || cached.backend === "jina-api";
+      const links = extractSiteLinks(cached.content, args.url, isMarkdown);
+      return { success: true, output: truncate(cached.content, links), backend: cached.backend };
+    }
+
+    try {
+      const jina = await jinaRead(args.url);
+      if (jina) {
+        if (pageCache.size >= MAX_CACHE_SIZE) {
+          const oldest = pageCache.keys().next().value;
+          if (oldest) pageCache.delete(oldest);
+        }
+        pageCache.set(args.url, { content: jina.content, ts: Date.now(), backend: jina.backend });
+        const warning = lastJinaWarning;
+        const links = extractSiteLinks(jina.content, args.url, true);
+        const content = truncate(jina.content, links);
+        return {
+          success: true,
+          output: warning ? `⚠ ${warning}\n\n${content}` : content,
+          backend: jina.backend,
+        };
+      }
+
+      const res = await fetch(args.url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; baked/1.0; +https://github.com/baked)",
+          Accept: "text/html,application/xhtml+xml,application/json,text/plain",
+        },
+        signal: AbortSignal.timeout(15_000),
+        redirect: "follow",
+      });
+
+      if (!res.ok) {
+        const msg = `HTTP ${String(res.status)} fetching ${args.url}`;
+        return { success: false, output: msg, error: msg };
+      }
+
+      const contentType = res.headers.get("content-type") ?? "";
+      const body = await res.text();
+      let content: string;
+      let links: string[] = [];
+
+      if (contentType.includes("application/json")) {
+        content = body;
+      } else {
+        links = extractSiteLinks(body, args.url, false);
+        content = extractWithReadability(body);
+      }
+
+      const fallbackBackend = contentType.includes("application/json") ? "fetch" : "readability";
+      if (pageCache.size >= MAX_CACHE_SIZE) {
+        const oldest = pageCache.keys().next().value;
+        if (oldest) pageCache.delete(oldest);
+      }
+      pageCache.set(args.url, { content, ts: Date.now(), backend: fallbackBackend });
+      return { success: true, output: truncate(content, links), backend: fallbackBackend };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, output: `Fetch error: ${msg}`, error: msg };
+    }
+  },
+};

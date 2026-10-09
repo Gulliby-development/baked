@@ -1,0 +1,129 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "baked",
+  "appearance": {
+    "default": "dark"
+  },
+  "colors": {
+    "primary": "#9B30FF",
+    "light": "#B366FF",
+    "dark": "#9B30FF"
+  },
+  "rounded": "sharp",
+  "font": {
+    "headings": {
+      "family": "JetBrains Mono",
+      "weight": 700
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart",
+              "faq"
+            ]
+          },
+          {
+            "group": "Recipes",
+            "pages": [
+              "recipes/rename-refactor",
+              "recipes/test-and-commit",
+              "recipes/task-router",
+              "recipes/model-fallback",
+              "recipes/plan-mode",
+              "recipes/headless"
+            ]
+          },
+          {
+            "group": "Providers",
+            "pages": [
+              "providers/overview",
+              "providers/copilot"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "tools/memory",
+              "tools/lsp",
+              "tools/project",
+              "tools/mcp",
+              "tools/ast-edit",
+              "tools/skills",
+              "tools/sessions",
+              "tools/hooks",
+              "tools/checkpoints",
+              "tools/themes"
+            ]
+          },
+          {
+            "group": "How it works",
+            "pages": [
+              "concepts/architecture",
+              "concepts/repo-map",
+              "concepts/intelligence",
+              "concepts/compound-tools",
+              "concepts/cost-tracking",
+              "concepts/model-events",
+              "agents/dispatch",
+              "agents/steering",
+              "agents/cross-tab",
+              "context/compaction",
+              "context/provider-options",
+              "context/prompt-system"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/commands",
+              "reference/configuration",
+              "reference/presets",
+              "reference/telemetry",
+              "troubleshooting",
+              "reference/data-flow"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/baked/baked"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Install",
+      "href": "/installation"
+    }
+  },
+  "contextual": {
+    "options": [
+      "copy",
+      "view",
+      "mcp"
+    ]
+  },
+  "redirects": [
+    {
+      "source": "/tools/headless",
+      "destination": "/recipes/headless"
+    },
+    {
+      "source": "/docs/copilot-provider",
+      "destination": "/providers/copilot"
+    }
+  ]
+}

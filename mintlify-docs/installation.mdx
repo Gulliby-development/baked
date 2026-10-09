@@ -1,0 +1,40 @@
+---
+title: "Installation"
+description: "Run and build BAKED from this repository."
+icon: "download"
+---
+
+## Requirements
+
+- Bun >= 1.3.13.
+- Windows, macOS, or Linux.
+- A configured model provider. Local providers are supported.
+
+## Run from source
+
+From the repository root:
+
+```sh
+bun install
+bun run dev
+```
+
+Use `/keys` to configure a provider and `Ctrl+L` to select a model. See [providers](/providers/overview) for authentication details.
+
+## CLI
+
+```sh
+bun run src/boot.tsx --help
+bun run src/boot.tsx --list-providers
+bun run src/boot.tsx --headless "Explain this project's architecture"
+```
+
+To target another project, pass `--cwd` with its path. Guides that use the `baked` command assume a built installation; from source, substitute `bun run src/boot.tsx` using the entry point's absolute path when outside this checkout.
+
+## Build
+
+```sh
+bun run build
+```
+
+Platform bundle and installer commands are listed in `package.json`. Windows packaging uses the PowerShell scripts in `scripts/` and the NSIS definition in `packaging/windows/`.

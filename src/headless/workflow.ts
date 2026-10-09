@@ -1,0 +1,286 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
+import { ProfileRegistry } from "../core/agents/profiles/registry.js";
+import { getCwd } from "../core/cwd.js";
+import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
+import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
+import { WorkflowFault } from "../core/workflows/errors.js";
+import { type Decision, PolicySchema, type RunSnapshot } from "../core/workflows/schemas.js";
+import { NativeWorkflowService } from "../core/workflows/service.js";
+import { newId } from "../core/workflows/store.js";
+import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
+
+export function workflowExit(
+  snapshot: RunSnapshot,
+  maxActiveMs = Number.POSITIVE_INFINITY,
+): number {
+  if (snapshot.status === "completed") return 0;
+  if (snapshot.reason === "budget_exhausted" && snapshot.activeMs >= maxActiveMs) return 2;
+  if (["input_changed", "workspace_busy"].includes(snapshot.reason)) return 5;
+  return { created: 0, running: 0, waiting: 3, paused: 130, blocked: 4, failed: 1, cancelled: 130 }[
+    snapshot.status
+  ];
+}
+const stringFlag = (args: WorkflowArgs, name: string, fallback?: string): string => {
+  const value = args.flags[name] ?? fallback;
+  if (typeof value !== "string")
+    throw new WorkflowFault("INVALID_DEFINITION", `--${name} is required`);
+  return value;
+};
+export async function executeWorkflowCommand(
+  service: NativeWorkflowService,
+  args: WorkflowArgs,
+  signal: AbortSignal,
+  onDrive?: (runId: string) => void,
+): Promise<unknown> {
+  const runId = args.positional[0] ?? "";
+  const artifacts = new WorkflowArtifacts(service);
+  const identity = () => {
+    const revision = Number(stringFlag(args, "expected-revision"));
+    if (!Number.isSafeInteger(revision) || revision < 0)
+      throw new WorkflowFault("INVALID_DEFINITION", "Expected a nonnegative integer revision");
+    return { commandId: stringFlag(args, "command-id", newId()), expectedRevision: revision };
+  };
+  const readFlagFile = (flag: string): string =>
+    readFileSync(resolve(service.store.workspace, stringFlag(args, flag)), "utf8");
+  const jsonFile = (flag: string): unknown => JSON.parse(readFlagFile(flag));
+  switch (args.command) {
+    case "run": {
+      const policy = PolicySchema.parse(
+        args.flags.policy
+          ? jsonFile("policy")
+          : (service.config.workflows?.policy ?? defaultWorkflowPolicy),
+      );
+      const run = await service.start({
+        commandId: stringFlag(args, "command-id", newId()),
+        workflowId: stringFlag(
+          args,
+          "workflow",
+          args.positional[0] ?? service.config.workflows?.defaultWorkflow ?? "sdd",
+        ),
+        featureId: stringFlag(args, "feature"),
+        prompt: args.flags["prompt-file"]
+          ? readFlagFile("prompt-file")
+          : stringFlag(args, "prompt"),
+        policy,
+        ownerLabel: stringFlag(args, "owner", "CLI"),
+        ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
+      });
+      onDrive?.(run.runId);
+      return service.drive(run.runId, signal);
+    }
+    case "status":
+      return { ...(await service.get(runId)), requests: service.store.requests(runId) };
+    case "list":
+      return service.list({
+        featureId: typeof args.flags.feature === "string" ? args.flags.feature : undefined,
+        limit: Number(stringFlag(args, "limit", "20")),
+        cursor: typeof args.flags.cursor === "string" ? args.flags.cursor : undefined,
+      });
+    case "resume":
+      await service.resume(runId, identity());
+      onDrive?.(runId);
+      return service.drive(runId, signal);
+    case "pause":
+      return service.pause(runId, identity());
+    case "cancel":
+      return service.cancel(runId, identity());
+    case "fork":
+      return service.fork(runId, identity());
+    case "revise":
+      return service.revise(runId, identity(), stringFlag(args, "candidate"));
+    case "candidate":
+      return artifacts.stageRevision(runId, {
+        commandId: stringFlag(args, "command-id", newId()),
+        expectedInputHash: (await service.get(runId)).inputHash,
+        ...(args.flags.spec
+          ? { spec: jsonFile("spec") as Parameters<WorkflowArtifacts["stageRevision"]>[1]["spec"] }
+          : {}),
+        ...(args.flags.tasks
+          ? {
+              graph: jsonFile("tasks") as Parameters<
+                WorkflowArtifacts["stageRevision"]
+              >[1]["graph"],
+            }
+          : {}),
+        ...(args.flags.plan ? { plan: readFlagFile("plan") } : {}),
+        ...(args.flags.policy ? { policy: PolicySchema.parse(jsonFile("policy")) } : {}),
+      });
+    case "approve":
+      return service.decide(runId, identity(), {
+        kind: "approve",
+        requestId: stringFlag(args, "request"),
+        digest: stringFlag(args, "digest"),
+      });
+    case "answer": {
+      const answers = jsonFile("answers-file");
+      if (
+        !answers ||
+        typeof answers !== "object" ||
+        Array.isArray(answers) ||
+        Object.values(answers).some((v) => typeof v !== "string")
+      )
+        throw new WorkflowFault("INVALID_DEFINITION", "Answers must be a JSON object of strings");
+      return service.decide(runId, identity(), {
+        kind: "answer",
+        requestId: stringFlag(args, "request"),
+        answers: answers as Record<string, string>,
+      });
+    }
+    case "reject":
+      return service.decide(runId, identity(), {
+        kind: "reject",
+        requestId: stringFlag(args, "request"),
+        explanation: stringFlag(args, "reason"),
+      });
+    case "evidence": {
+      const requestId = stringFlag(args, "request");
+      const request = service.store.requests(runId).find((r) => r.id === requestId);
+      if (!request) throw new WorkflowFault("NOT_FOUND", "Manual request not found");
+      const body = JSON.parse(request.body_json) as { criterionId: string };
+      return service.decide(runId, identity(), {
+        kind: "manual-evidence",
+        requestId,
+        criterionId: body.criterionId,
+        evidence: readFlagFile("file"),
+        accepted: args.flags.accept === true,
+      });
+    }
+    case "recover": {
+      const resolution = stringFlag(args, "resolution");
+      if (!["record-applied", "record-not-applied", "retry", "cancel"].includes(resolution))
+        throw new WorkflowFault("INVALID_DEFINITION", "Invalid recovery resolution");
+      return service.decide(runId, identity(), {
+        kind: "recovery",
+        requestId: stringFlag(args, "request"),
+        effectId: stringFlag(args, "effect"),
+        resolution,
+        evidence: readFlagFile("file"),
+      } as Decision);
+    }
+    case "profiles":
+      return new ProfileRegistry(service.workspace, { active: service.config.defaultModel }).list();
+    case "artifacts":
+      return args.flags.file
+        ? {
+            content: new TextDecoder().decode(
+              (await artifacts.read(runId, stringFlag(args, "file"))).content,
+            ),
+          }
+        : service.store
+            .artifacts(runId)
+            .map(({ id, kind, logical_path, revision, content_hash, byte_length }) => ({
+              id,
+              kind,
+              path: logical_path,
+              revision,
+              hash: content_hash,
+              bytes: byte_length,
+            }));
+    case "import": {
+      const source = stringFlag(args, "source");
+      if (!["spec-kit", "ecc", "markdown-edit"].includes(source))
+        throw new WorkflowFault("INVALID_DEFINITION", "Unknown importer");
+      return artifacts.importCandidate({
+        commandId: stringFlag(args, "command-id", newId()),
+        source: source as "spec-kit" | "ecc" | "markdown-edit",
+        sourcePath: resolve(service.store.workspace, stringFlag(args, "path")),
+        featureId: stringFlag(args, "feature"),
+      });
+    }
+    case "export":
+      return artifacts.exportRun(
+        runId,
+        resolve(service.store.workspace, stringFlag(args, "destination")),
+      );
+    case "export-progress":
+      return artifacts.exportProgress(runId);
+    case "gc":
+      return artifacts.gc({
+        before: stringFlag(args, "before"),
+        dryRun: args.flags["dry-run"] === true,
+      });
+    case "redact":
+      await artifacts.redact(runId, stringFlag(args, "file"), stringFlag(args, "reason"));
+      return { redacted: true };
+  }
+}
+export async function runWorkflowCli(argv: string[]): Promise<number> {
+  if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(workflowHelp);
+    return 0;
+  }
+  let service: NativeWorkflowService | undefined;
+  const controller = new AbortController();
+  const eventController = new AbortController();
+  const streams: Promise<void>[] = [];
+  let interrupts = 0;
+  const abort = (): void => {
+    if (++interrupts > 1) process.exit(130);
+    controller.abort();
+  };
+  process.on("SIGINT", abort);
+  process.on("SIGTERM", abort);
+  try {
+    const args = parseWorkflowArgs(argv);
+    const cwd = getCwd();
+    const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+    const readonly = ["status", "list", "artifacts", "export", "export-progress"].includes(
+      args.command,
+    );
+    if (args.command === "profiles") {
+      process.stdout.write(
+        `${JSON.stringify(new ProfileRegistry(cwd, { active: config.defaultModel }).list(), null, 2)}\n`,
+      );
+      return 0;
+    }
+    service = new NativeWorkflowService(cwd, config, undefined, readonly);
+    let lastSeq = 0;
+    const existingRun = args.command === "run" ? undefined : args.positional[0];
+    if (existingRun && args.flags.events) lastSeq = service.store.snapshot(existingRun).eventSeq;
+    if (typeof args.flags.after === "string") lastSeq = Number(args.flags.after);
+    const eventService = service;
+    const result = await executeWorkflowCommand(service, args, controller.signal, (runId) => {
+      if (!args.flags.events) return;
+      streams.push(
+        (async () => {
+          for await (const event of eventService.events(runId, lastSeq, eventController.signal)) {
+            process.stdout.write(`${JSON.stringify(event)}\n`);
+            lastSeq = event.seq;
+          }
+        })(),
+      );
+    });
+    await Promise.all(streams);
+    process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
+    return ["run", "resume"].includes(args.command)
+      ? workflowExit(
+          result as RunSnapshot,
+          PolicySchema.parse(
+            JSON.parse(service.store.run((result as RunSnapshot).runId).policy_json),
+          ).maxActiveMs,
+        )
+      : 0;
+  } catch (error) {
+    process.stderr.write(
+      `${JSON.stringify({ code: error instanceof WorkflowFault ? error.code : "ERROR", message: error instanceof Error ? error.message : String(error) })}\n`,
+    );
+    return error instanceof WorkflowFault &&
+      [
+        "REVISION_CONFLICT",
+        "COMMAND_CONFLICT",
+        "STALE_DECISION",
+        "WORKSPACE_BUSY",
+        "INPUT_CHANGED",
+      ].includes(error.code)
+      ? 5
+      : 1;
+  } finally {
+    eventController.abort();
+    await Promise.allSettled(streams);
+    process.removeListener("SIGINT", abort);
+    process.removeListener("SIGTERM", abort);
+    service?.close();
+  }
+}

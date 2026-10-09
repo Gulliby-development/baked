@@ -1,0 +1,27 @@
+name = "baked-telemetry"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+# Disable the public *.workers.dev URL so the email-derived subdomain isn't
+# exposed. The beacon is reached only via the custom domain below.
+workers_dev = false
+
+# Custom-domain route. Requires baked.com to be a zone in this Cloudflare
+# account; wrangler provisions the DNS record + cert automatically.
+routes = [
+  { pattern = "t.baked.baked.com", custom_domain = true }
+]
+
+# Anonymous usage beacon sink. Write-only into Analytics Engine.
+# No KV, no D1, no secrets — nothing here is sensitive.
+[[analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "baked_usage_v1"
+
+# Native per-IP rate limiter. 60 requests / 60s per source IP — generous for a
+# real client (one ping per session) but caps abuse. IP is a limiter key only,
+# never written to the dataset.
+[[unsafe.bindings]]
+name = "BEACON_LIMIT"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }

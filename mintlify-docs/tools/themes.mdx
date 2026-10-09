@@ -1,0 +1,21 @@
+---
+title: "Themes"
+description: "Two Baked palettes: warm dark and flour-white light."
+icon: "palette"
+---
+
+Use `/theme` to preview and select a palette, or choose it during setup.
+
+| Command | Appearance |
+| --- | --- |
+| `/theme dark` | Dark toasted surfaces, cream text, orange accents. Default. |
+| `/theme light` | Flour-white and cream surfaces, dark brown text, toasted orange accents. |
+
+The theme picker retains transparency, message background, diff background and border strength controls. Status and diff colors remain distinct from the orange brand accents.
+
+Existing light theme selections migrate to Baked Light; other retired or custom selections fall back to Baked Dark. Custom theme files are no longer loaded. Existing files are left untouched.
+
+
+## Development
+
+Palettes live in `src/core/theme/tokens.ts`. Components use semantic tokens through `useTheme()` or `getThemeTokens()`. No color palette package is required.

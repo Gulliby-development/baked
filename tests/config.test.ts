@@ -1,0 +1,216 @@
+import { describe, expect, spyOn, test } from "bun:test";
+import {
+  DEFAULT_CONFIG,
+  loadConfig,
+  loadProjectConfig,
+  mergeConfigs,
+  saveGlobalConfig,
+  saveProjectConfig,
+} from "../src/config/index.js";
+import { AppConfig } from "../src/types/index.js";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+describe("config retry deep-merge", () => {
+  describe("mergeConfigs", () => {
+    test("merges retry settings from layer", () => {
+      const base: AppConfig = {
+        ...DEFAULT_CONFIG,
+        retry: { maxRetries: 3, baseDelayMs: 1000 },
+      };
+      const layer = { retry: { maxRetries: 5 } };
+      const result = mergeConfigs(base, layer);
+      expect(result.retry).toEqual({ maxRetries: 5, baseDelayMs: 1000 });
+    });
+
+    test("keeps base retry when layer has no retry", () => {
+      const base: AppConfig = {
+        ...DEFAULT_CONFIG,
+        retry: { maxRetries: 3, baseDelayMs: 1000 },
+      };
+      const layer = {};
+      const result = mergeConfigs(base, layer);
+      expect(result.retry).toEqual({ maxRetries: 3, baseDelayMs: 1000 });
+    });
+
+    test("layer overrides all retry fields", () => {
+      const base: AppConfig = {
+        ...DEFAULT_CONFIG,
+        retry: { maxRetries: 3, baseDelayMs: 1000 },
+      };
+      const layer = { retry: { maxRetries: 10, baseDelayMs: 2000 } };
+      const result = mergeConfigs(base, layer);
+      expect(result.retry).toEqual({ maxRetries: 10, baseDelayMs: 2000 });
+    });
+
+    test("multiple layers merge correctly", () => {
+      const base: AppConfig = {
+        ...DEFAULT_CONFIG,
+        retry: { maxRetries: 3, baseDelayMs: 1000 },
+      };
+      const layer1 = { retry: { maxRetries: 5 } };
+      const layer2 = { retry: { baseDelayMs: 3000 } };
+      const result = mergeConfigs(mergeConfigs(base, layer1), layer2);
+      expect(result.retry).toEqual({ maxRetries: 5, baseDelayMs: 3000 });
+    });
+  });
+
+  describe("saveProjectConfig", () => {
+    const testDir = join(tmpdir(), "baked-config-test");
+
+    test("deep-merges retry into project config", () => {
+      // Create test project directory
+      mkdirSync(join(testDir, ".baked"), { recursive: true });
+      const configFile = join(testDir, ".baked", "config.json");
+
+      // Write initial config with retry
+      const initial = { retry: { maxRetries: 3, baseDelayMs: 1000 } };
+      writeFileSync(configFile, JSON.stringify(initial));
+
+      // Patch with new retry settings
+      saveProjectConfig(testDir, { retry: { maxRetries: 5 } });
+
+      const saved = JSON.parse(readFileSync(configFile, "utf-8"));
+      expect(saved.retry).toEqual({ maxRetries: 5, baseDelayMs: 1000 });
+
+      // Cleanup
+      rmSync(testDir, { recursive: true, force: true });
+    });
+  });
+
+  describe("saveGlobalConfig", () => {
+    // saveGlobalConfig resolves $HOME/.baked/config.json on POSIX and
+    // %LOCALAPPDATA%/baked/config.json on Windows. Override both to a
+    // throwaway dir so the real user config can't be touched.
+    test("deep-merges retry into global config", () => {
+      const sandbox = join(tmpdir(), `sf-global-${process.pid}-${Date.now()}`);
+      const origHome = process.env.HOME;
+      const origLocal = process.env.LOCALAPPDATA;
+      process.env.HOME = sandbox;
+      process.env.LOCALAPPDATA = sandbox;
+      try {
+        const cfgDir = process.platform === "win32"
+          ? join(sandbox, "baked")
+          : join(sandbox, ".baked");
+        const cfgFile = join(cfgDir, "config.json");
+        mkdirSync(cfgDir, { recursive: true });
+        writeFileSync(
+          cfgFile,
+          JSON.stringify({ retry: { maxRetries: 3, baseDelayMs: 1000 } }),
+        );
+
+        saveGlobalConfig({ retry: { maxRetries: 5 } });
+
+        const saved = JSON.parse(readFileSync(cfgFile, "utf-8"));
+        expect(saved.retry).toEqual({ maxRetries: 5, baseDelayMs: 1000 });
+      } finally {
+        if (origHome !== undefined) process.env.HOME = origHome;
+        else delete process.env.HOME;
+        if (origLocal !== undefined) process.env.LOCALAPPDATA = origLocal;
+        else delete process.env.LOCALAPPDATA;
+        rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    test("loadConfig round-trips through configDir() routing", () => {
+      const sandbox = join(tmpdir(), `sf-global-rt-${process.pid}-${Date.now()}`);
+      const origHome = process.env.HOME;
+      const origLocal = process.env.LOCALAPPDATA;
+      process.env.HOME = sandbox;
+      process.env.LOCALAPPDATA = sandbox;
+      try {
+        // saveGlobalConfig → loadConfig must route to the same configDir().
+        saveGlobalConfig({ retry: { maxRetries: 7, baseDelayMs: 1234 } });
+        const loaded = loadConfig();
+        expect(loaded.retry?.maxRetries).toBe(7);
+        expect(loaded.retry?.baseDelayMs).toBe(1234);
+      } finally {
+        if (origHome !== undefined) process.env.HOME = origHome;
+        else delete process.env.HOME;
+        if (origLocal !== undefined) process.env.LOCALAPPDATA = origLocal;
+        else delete process.env.LOCALAPPDATA;
+        rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    test("creates new global config when none exists", () => {
+      const sandbox = join(tmpdir(), `sf-global-new-${process.pid}-${Date.now()}`);
+      const origHome = process.env.HOME;
+      const origLocal = process.env.LOCALAPPDATA;
+      process.env.HOME = sandbox;
+      process.env.LOCALAPPDATA = sandbox;
+      try {
+        saveGlobalConfig({ retry: { maxRetries: 9 } });
+        const cfgFile = process.platform === "win32"
+          ? join(sandbox, "baked", "config.json")
+          : join(sandbox, ".baked", "config.json");
+        const saved = JSON.parse(readFileSync(cfgFile, "utf-8"));
+        expect(saved.retry?.maxRetries).toBe(9);
+      } finally {
+        if (origHome !== undefined) process.env.HOME = origHome;
+        else delete process.env.HOME;
+        if (origLocal !== undefined) process.env.LOCALAPPDATA = origLocal;
+        else delete process.env.LOCALAPPDATA;
+        rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe("invalid config.json exits with error", () => {
+  test("loadConfig exits with code 1 on malformed JSON", () => {
+    const sandbox = join(tmpdir(), `sf-invalid-cfg-${process.pid}-${Date.now()}`);
+    const origHome = process.env.HOME;
+    const origLocal = process.env.LOCALAPPDATA;
+    process.env.HOME = sandbox;
+    process.env.LOCALAPPDATA = sandbox;
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`EXIT_${code}`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const cfgDir =
+        process.platform === "win32" ? join(sandbox, "baked") : join(sandbox, ".baked");
+      mkdirSync(cfgDir, { recursive: true });
+      writeFileSync(join(cfgDir, "config.json"), "{ invalid json missing comma }");
+
+      expect(() => loadConfig()).toThrow("EXIT_1");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+
+      // Verify stderr got a helpful message
+      const output = stderrSpy.mock.calls.map((c) => c[0]).join("");
+      expect(output).toContain("invalid config.json");
+      expect(output).toContain("NOT overwritten");
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (origHome !== undefined) process.env.HOME = origHome;
+      else delete process.env.HOME;
+      if (origLocal !== undefined) process.env.LOCALAPPDATA = origLocal;
+      else delete process.env.LOCALAPPDATA;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test("loadProjectConfig returns null and warns on malformed JSON", () => {
+    const sandbox = join(tmpdir(), `sf-invalid-proj-${process.pid}-${Date.now()}`);
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      mkdirSync(join(sandbox, ".baked"), { recursive: true });
+      writeFileSync(join(sandbox, ".baked", "config.json"), "not valid { json");
+
+      const result = loadProjectConfig(sandbox);
+      expect(result).toBeNull();
+
+      const output = stderrSpy.mock.calls.map((c) => c[0]).join("");
+      expect(output).toContain("invalid project config.json");
+    } finally {
+      stderrSpy.mockRestore();
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+});
