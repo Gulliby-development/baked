@@ -457,10 +457,11 @@ export class WalkSession {
     if (this.monitor) clearInterval(this.monitor);
     this.monitor = null;
     const exit = (await this.app?.stop()) ?? null;
-    this.store.transaction(() => {
-      for (const id of this.effects.splice(0))
-        this.store.effectStatus(this.runId, id, "reconciled");
-    });
+    const effects = this.effects.splice(0);
+    if (effects.length)
+      this.store.transaction(() => {
+        for (const id of effects) this.store.effectStatus(this.runId, id, "reconciled");
+      });
     return exit;
   }
   private async record(input: z.infer<typeof StepInputSchema>): Promise<{ stepId: string }> {
@@ -609,7 +610,11 @@ async function runTest(
   proxy: FilterProxy | null,
 ): Promise<TestRun> {
   const env = appEnv(gate.acceptance.start.envNames);
-  if (proxy) env.BAKED_ACCEPTANCE_PROXY = proxy.url;
+  if (proxy) {
+    env.BAKED_ACCEPTANCE_PROXY = proxy.url;
+    // A client honouring NO_PROXY would reach loopback past the filter.
+    for (const name of ["NO_PROXY", "no_proxy"]) delete env[name];
+  }
   const excluded = [...generatedPaths(policy), ...gate.acceptance.capabilities.writePaths];
   const before = await sourceManifest(workspace, excluded, signal);
   const command = testCommand(gate.acceptance.promote.testPath);

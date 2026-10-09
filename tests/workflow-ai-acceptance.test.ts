@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
@@ -11,7 +12,9 @@ import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { type AcceptanceGateDefinition, failedAssertions, forbiddenConstructs, walkProblems } from "../src/core/workflows/v2/acceptance.js";
 import { listenerViolations, parseProcNetTcp } from "../src/core/workflows/v2/terminal-driver.js";
-import { recordedSteps, runTestOnce, WalkSession } from "../src/core/workflows/v2/acceptance-gate.js";
+import { recordedSteps, runTestOnce, WalkSession, type WalkStep } from "../src/core/workflows/v2/acceptance-gate.js";
+import { type BrowserLauncher, type BrowserPage, MISSING_PLAYWRIGHT } from "../src/core/workflows/v2/browser-driver.js";
+import type { ProxyDecision } from "../src/core/workflows/v2/filter-proxy.js";
 import { type Gate, GateSchema, validateGate, type WorkflowV2 } from "../src/core/workflows/v2/definition.js";
 import { builtinPresets, instantiatePreset } from "../src/core/workflows/v2/definitions.js";
 import { confirmGates, loadGateLibrary, unconfirmedGates } from "../src/core/workflows/v2/library.js";
@@ -80,7 +83,111 @@ interface Script {
   /** What the walker cites for E2 instead of the step it recorded. */
   citeE2?: string;
   writer?: "correct" | "always-passes";
+  /** Walk the web fixture on this port with the browser tools instead of the terminal. */
+  browserPort?: number;
 }
+
+/** The fixture web application: a counter page that loads a third-party script. Broken: +2. */
+const webApp = (offset: number) => `
+const port = Number(process.env.PORT);
+const page = (body) => new Response("<html><head><title>Counter</title><script src=\\"http://tracker.example.test/t.js\\"></script></head><body>" + body + "</body></html>", { headers: { "content-type": "text/html" } });
+Bun.serve({ port, hostname: "127.0.0.1", fetch(request) {
+  const path = new URL(request.url).pathname;
+  if (path === "/") return page("<h1>Count: 0</h1><a href=\\"/inc\\">Increment</a>");
+  if (path === "/inc") return page("<h1>Count: " + (1 + ${offset}) + "</h1>");
+  return new Response("not found", { status: 404 });
+} });
+console.log("listening on " + port);
+`;
+
+/** The browser test the scripted writer produces: it reaches the application through the proxy. */
+const generatedBrowserTest = (port: number) => `
+const proxy = process.env.BAKED_ACCEPTANCE_PROXY;
+const child = Bun.spawn([process.execPath, "web.ts"], { env: { ...process.env, PORT: "${port}" }, stdout: "pipe", stderr: "pipe" });
+const get = async (path) => {
+  for (let i = 0; i < 100; i++) {
+    try {
+      const response = await fetch("http://127.0.0.1:${port}" + path, proxy ? { proxy } : {});
+      // 502: the proxy could not reach the application yet.
+      if (response.status !== 502) return await response.text();
+    } catch {}
+    await Bun.sleep(50);
+  }
+  return "";
+};
+let failed = false;
+const home = await get("/");
+if (!home.includes("Count: 0")) { console.log("ASSERTION FAILED: A1 the counter does not start at 0"); failed = true; }
+const after = await get("/inc");
+if (!after.includes("Count: 1")) { console.log("ASSERTION FAILED: A2 expected Count: 1, got " + JSON.stringify(after)); failed = true; }
+child.kill();
+await child.exited;
+process.exit(failed ? 1 : 0);
+`;
+
+/** A GET through the proxy over a raw socket; fetch would honour NO_PROXY of the environment. */
+async function proxiedGet(proxy: string, url: string): Promise<{ status: number; text: string }> {
+  const target = new URL(url);
+  const raw = await new Promise<string>((resolve, reject) => {
+    const socket = connect(Number(new URL(proxy).port), "127.0.0.1");
+    let data = "";
+    socket.on("data", (chunk) => {
+      data += chunk.toString();
+    });
+    socket.on("close", () => resolve(data));
+    socket.on("error", reject);
+    socket.write(`GET ${target.href} HTTP/1.1\r\nHost: ${target.host}\r\n\r\n`);
+  });
+  const [head = "", ...body] = raw.split("\r\n\r\n");
+  return { status: Number(head.split(" ")[1]), text: body.join("\r\n\r\n") };
+}
+
+/**
+ * A stand-in for the Playwright page: it fetches documents and their scripts through the proxy
+ * the gate configured, so the filtering is real; only rendering is faked.
+ */
+class FakePage implements BrowserPage {
+  private html = "";
+  private current = "about:blank";
+  constructor(private proxy: string) {}
+  private fetch(url: string) {
+    return proxiedGet(this.proxy, url);
+  }
+  async goto(url: string) {
+    const document = await this.fetch(url);
+    this.current = url;
+    this.html = document.text;
+    for (const match of this.html.matchAll(/<script src="([^"]+)"/g))
+      if (match[1]) await this.fetch(new URL(match[1], url).href).catch(() => undefined);
+    return { status: document.status };
+  }
+  url() {
+    return this.current;
+  }
+  async title() {
+    return /<title>(.*?)<\/title>/.exec(this.html)?.[1] ?? "";
+  }
+  async snapshot() {
+    return this.html.replace(/<(script|title)[^>]*>.*?<\/\1>/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  async click(selector: string) {
+    const text = selector.replace(/^text=/, "");
+    const href = new RegExp(`<a href="([^"]+)">${text}</a>`).exec(this.html)?.[1];
+    if (!href) throw new Error(`No element matches ${selector}`);
+    await this.goto(new URL(href, this.current).href);
+  }
+  async fill() {
+    throw new Error("The fixture page has no inputs");
+  }
+  async press() {
+    throw new Error("The fixture page has no inputs");
+  }
+  async close() {}
+}
+const fakeLauncher = (missing: string | null = null): BrowserLauncher => ({
+  missing: async () => missing,
+  launch: async (_workspace, options) => new FakePage(options.proxyServer),
+});
 
 class AcceptanceExecutor implements AgentExecutor {
   calls: string[] = [];
@@ -111,6 +218,28 @@ class AcceptanceExecutor implements AgentExecutor {
         output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
         break;
       case "acceptance": {
+        if (this.script.browserPort) {
+          // A scripted model in the browser: it opens the page, follows the link and judges.
+          await this.tool(request, "app_start", {});
+          const home = (await this.tool(request, "browser_open", { url: "/" })) as { snapshot: string; refused: string[] };
+          const first = (await this.tool(request, "record_step", {
+            action: "Opened the counter page", observation: `${home.snapshot} (refused: ${home.refused.join("; ")})`, expectationIds: ["E1"],
+          })) as { stepId: string };
+          const clicked = (await this.tool(request, "browser_click", { selector: "text=Increment" })) as { snapshot: string };
+          const second = (await this.tool(request, "record_step", {
+            action: "Clicked Increment", observation: clicked.snapshot, expectationIds: ["E2"],
+          })) as { stepId: string };
+          await this.tool(request, "app_stop", {});
+          const ok = clicked.snapshot.includes("Count: 1");
+          output = {
+            schemaVersion: 1,
+            expectations: [
+              { expectationId: "E1", verdict: home.snapshot.includes("Count: 0") ? "pass" : "fail", stepIds: [first.stepId], explanation: "The counter starts at 0" },
+              { expectationId: "E2", verdict: ok ? "pass" : "fail", stepIds: [second.stepId], explanation: ok ? "Count: 1" : `Expected Count: 1, saw ${clicked.snapshot}` },
+            ],
+          };
+          break;
+        }
         // A scripted model: it drives the application and judges what it actually read.
         const started = (await this.tool(request, "app_start", {})) as { output: string; ready: boolean };
         const first = (await this.tool(request, "record_step", {
@@ -134,7 +263,9 @@ class AcceptanceExecutor implements AgentExecutor {
       }
       case "acceptance-draft": {
         const testPath = "tests/acceptance/calc-walk.ts";
-        await this.tool(request, "write_test", { content: generatedTest(this.script.writer ?? "correct") });
+        await this.tool(request, "write_test", {
+          content: this.script.browserPort ? generatedBrowserTest(this.script.browserPort) : generatedTest(this.script.writer ?? "correct"),
+        });
         output = {
           schemaVersion: 1, testPath,
           assertions: [
@@ -165,14 +296,17 @@ const walkGate = (patch: (gate: AcceptanceGateDefinition) => AcceptanceGateDefin
     },
   });
 
-function setup(script: Script = {}, gate: AcceptanceGateDefinition = walkGate(), offset = 1) {
+function setup(script: Script = {}, gate: AcceptanceGateDefinition = walkGate(), offset = 1, browser: BrowserLauncher = fakeLauncher()) {
   const root = mkdtempSync(join(tmpdir(), "baked-ai-acceptance-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "calc.ts"), calculator(offset));
+  writeFileSync(join(root, "web.ts"), webApp(offset));
   const executor = new AcceptanceExecutor(root, script);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
   cleanups.push(() => service.close());
+  // Fake host names of the fixtures resolve to nothing real; the proxy refuses them anyway.
+  service.scheduler.browserDriver = { launcher: browser };
   const writeGate = (definition: Gate) => {
     mkdirSync(join(root, "baked", "gates"), { recursive: true });
     writeFileSync(join(root, "baked", "gates", `${definition.id}.json`), JSON.stringify(definition));
@@ -404,19 +538,100 @@ describe("AI acceptance gate", () => {
     expect(parseRunDefinition(fixture.service.store.run(run.runId).definition_json).schemaVersion).toBe(2);
   }, 60000);
 
-  test("the gate rules keep metadata out of write and test paths, and the browser driver is skipped", async () => {
+  test("the gate rules keep metadata out of write and test paths, and a browser walk without Playwright does not run", async () => {
     const bad = walkGate((g) => ({ ...g, acceptance: { ...g.acceptance, capabilities: { ...g.acceptance.capabilities, writePaths: [".git"] }, promote: { ...g.acceptance.promote, testPath: "baked/gates/x.json" } } }));
     expect(validateGate(bad)).toEqual([
       "calc-walk: write paths must not include the workspace root or workflow metadata",
       "calc-walk: the test path must not be workflow metadata",
     ]);
     const browser = walkGate((g) => ({ ...g, acceptance: { ...g.acceptance, driver: "browser" } }));
+    const fixture = setup({}, browser, 1, fakeLauncher(MISSING_PLAYWRIGHT));
+    const run = await fixture.start();
+    expect((await fixture.complete(run.runId)).status).toBe("completed");
+    const entry = fixture.service.store.state(run.runId).acceptance["calc-walk"];
+    expect(entry).toMatchObject({ phase: "inconclusive" });
+    expect(entry?.reason).toContain("missing dependency: install playwright");
+    expect(gateEvents(fixture.service, run.runId).find((g) => g.gateId === "calc-walk")?.status).toBe("inconclusive");
+    // No model is called and nothing is downloaded.
+    expect(fixture.executor.calls).toEqual(["plan", "implementation"]);
+  }, 60000);
+
+  test("a browser walk goes through the filtering proxy, records refusals and promotes a reproducing test", async () => {
+    const reserve = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
+    const port = reserve.port;
+    reserve.stop(true);
+    const gate = walkGate((g) => ({
+      ...g,
+      id: "web-walk",
+      acceptance: {
+        ...g.acceptance,
+        scenario: { title: "Incrementing the counter", steps: ["Open the counter.", "Click Increment."], expectations: ["The counter starts at 0.", "After Increment it shows Count: 1."] },
+        start: { executable: "bun", args: ["web.ts"], cwd: ".", envNames: [], readyWhen: { url: `http://127.0.0.1:${port}/` } },
+        driver: "browser",
+        capabilities: { spawnApp: true, listenPorts: [port], outboundHosts: ["cdn.example.test"], writePaths: [] },
+        promote: { commandGateId: "web-count", testPath: "tests/acceptance/calc-walk.ts", framework: "playwright", stableRuns: 2 },
+      },
+    }));
+    const fixture = setup({ browserPort: port }, gate);
+    const { service } = fixture;
+    const run = await fixture.start();
+    await service.drive(run.runId, new AbortController().signal);
+    const approval = service.store.requests(run.runId).find((r) => r.kind === "approval");
+    expect(JSON.parse(approval?.body_json ?? "{}").acceptanceCapabilities[0]).toMatchObject({ gateId: "web-walk", driver: "browser" });
+    const final = await fixture.complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+
+    // The walk found the broken increment, with the step that shows it.
+    const entry = service.store.state(run.runId).acceptance["web-walk"];
+    expect(entry).toMatchObject({ phase: "awaiting_approval", verdict: "failed" });
+    expect(phases(service, run.runId).find((p) => p.phase === "walked")?.detail).toContain("failed: E2 failed (steps S2)");
+    const steps: WalkStep[] = recordedSteps(service.store, run.runId, "web-walk", entry?.attemptId ?? "");
+    expect(steps.map((s) => [s.stepId, s.url])).toEqual([["S1", `http://127.0.0.1:${port}/`], ["S2", `http://127.0.0.1:${port}/inc`]]);
+    expect(steps[0]?.frame).toContain("Count: 0");
+    expect(steps[1]?.frame).toContain("Count: 2");
+    // The third-party script is refused by the proxy and kept with the step that loaded it.
+    expect(steps[0]?.refused?.map((d) => [d.host, d.reason])).toEqual([["tracker.example.test", "tracker.example.test is not in outboundHosts"]]);
+    expect(steps[0]?.observation).toContain("refused: GET tracker.example.test:80");
+    const walk = service.store.artifacts(run.runId).find((a) => a.logical_path === `acceptance/web-walk/${entry?.attemptId}/walk.json`);
+    const network = (JSON.parse(service.store.readArtifact(run.runId, walk?.id ?? "")) as { network: { allowed: string[]; refused: ProxyDecision[] } }).network;
+    expect(network.allowed).toEqual([`127.0.0.1:${port}`]);
+    expect(network.refused.map((d) => d.host)).toEqual(["tracker.example.test", "tracker.example.test"]);
+
+    // The generated test ran through the proxy in every stable run and failed on A2.
+    const draft = draftOf(service, run.runId) as ReturnType<typeof draftOf> & { runs: { refused?: string[] }[] };
+    expect(draft.runs).toHaveLength(2);
+    for (const testRun of draft.runs) expect(testRun).toMatchObject({ failed: ["A2"], violations: [], refused: [] });
+    const request = fixture.acceptanceRequest(run.runId);
+    if (!request) throw new Error("No acceptance request");
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: final.revision }, { kind: "approve", requestId: request.id, digest: request.digest });
+    const promoted = GateSchema.parse(JSON.parse(readFileSync(join(fixture.root, "baked/gates/web-count.json"), "utf8")));
+    if (promoted.type !== "command") throw new Error("not a command gate");
+    expect(promoted.command).toMatchObject({ executable: "bun", args: ["tests/acceptance/calc-walk.ts"] });
+
+    // After the fix the promoted test passes without a model.
+    writeFileSync(join(fixture.root, "web.ts"), webApp(0));
+    const fixed = await runTestOnce(fixture.root, gate, JSON.parse(service.store.run(run.runId).policy_json) as RunPolicy, new AbortController().signal);
+    expect(fixed).toMatchObject({ exitCode: 0, failed: [], violations: [] });
+  }, 120000);
+
+  test("browser tools refuse non-web URLs, and a walk without spawnApp or hosts does not run", async () => {
+    const browser = walkGate((g) => ({ ...g, acceptance: { ...g.acceptance, driver: "browser", capabilities: { spawnApp: false, listenPorts: [], outboundHosts: [], writePaths: [] } } }));
     const fixture = setup({}, browser);
     const run = await fixture.start();
     expect((await fixture.complete(run.runId)).status).toBe("completed");
-    expect(fixture.service.store.state(run.runId).acceptance["calc-walk"]).toMatchObject({ phase: "skipped" });
-    expect(gateEvents(fixture.service, run.runId).find((g) => g.gateId === "calc-walk")?.status).toBe("skipped");
+    expect(fixture.service.store.state(run.runId).acceptance["calc-walk"]?.reason).toContain("Neither spawnApp nor outboundHosts is granted");
     expect(fixture.executor.calls).toEqual(["plan", "implementation"]);
+    const session = new WalkSession(undefined as unknown as WorkflowStore, run.runId, "attempt", browser, fixture.root, new AbortController().signal, { launcher: fakeLauncher() });
+    const tools = session.tools();
+    expect(Object.keys(tools).sort()).toEqual(["app_start", "app_stop", "browser_click", "browser_key", "browser_open", "browser_snapshot", "browser_type", "record_step"]);
+    await expect(tools.browser_open?.execute({ url: "file:///etc/passwd" }) ?? Promise.resolve()).rejects.toThrow("Only http and https URLs can be opened");
+    // Without any grant the proxy refuses every host the page asks for.
+    const opened = (await tools.browser_open?.execute({ url: "http://example.test/" })) as { status: number; refused: string[] };
+    expect(opened.status).toBe(403);
+    expect(opened.refused).toEqual(["GET example.test:80: example.test is not in outboundHosts"]);
+    expect(session.network()?.refused).toHaveLength(1);
+    await session.close();
   }, 60000);
 
   test("listeners, assertion markers and forbidden test constructs are read by the host", () => {
