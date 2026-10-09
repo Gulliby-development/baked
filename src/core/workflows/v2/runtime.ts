@@ -248,6 +248,18 @@ export function carriedValue(state: RuntimeState, stage: Stage): unknown {
 export const autoApprovalHash = (limits: NonNullable<WorkflowV2["autoApproval"]>): string =>
   hashJson(limits);
 
+/** The limits of auto approval in words, for the confirmation a person types and the refusal. */
+export function describeAutoApproval(limits: NonNullable<WorkflowV2["autoApproval"]>): string {
+  return [
+    `at most ${limits.maxTasks} tasks`,
+    `${limits.maxFiles} files`,
+    `paths ${limits.allowedPaths.join(", ")}`,
+    limits.allowDelete ? "deletions allowed" : "no deletions",
+    "no new dependencies",
+    `a token budget up to ${limits.maxTotalTokens}`,
+  ].join("; ");
+}
+
 /**
  * The run policy's auto approval for a v2 definition. Auto approval is a property of the
  * definition: a definition without an auto approval stage never approves on its own, whatever the

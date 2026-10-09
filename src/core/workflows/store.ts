@@ -216,10 +216,17 @@ export class WorkflowStore {
   history(only?: string): PastRun[] {
     const runs = this.db
       .query<
-        { id: string; status: string; token_usage: number; agent_calls: number; active_ms: number },
+        {
+          id: string;
+          workflow_id: string | null;
+          status: string;
+          token_usage: number;
+          agent_calls: number;
+          active_ms: number;
+        },
         []
       >(
-        "SELECT id,status,token_usage,agent_calls,active_ms FROM runs WHERE status<>'created' ORDER BY created_at DESC LIMIT 200",
+        "SELECT id,json_extract(definition_json,'$.id') AS workflow_id,status,token_usage,agent_calls,active_ms FROM runs WHERE status<>'created' ORDER BY created_at DESC LIMIT 200",
       )
       .all()
       .filter((r) => only === undefined || r.id === only);
@@ -228,6 +235,7 @@ export class WorkflowStore {
         r.id,
         {
           runId: r.id,
+          workflowId: r.workflow_id,
           status: r.status,
           tokens: r.token_usage,
           calls: r.agent_calls,
