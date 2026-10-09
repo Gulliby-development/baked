@@ -387,13 +387,17 @@ export class WorkflowScheduler {
                 );
                 state.manifest.baselineSnapshotId = snapshot.id;
                 const digest = approvalDigest(state);
-                const auto = evaluateAutoApproval(
-                  policy,
-                  state.manifest,
-                  state.spec,
-                  state.graph,
-                  this.store.requests(runId),
-                );
+                // A v2 approval stage marked human never approves on its own.
+                const human = v2?.stage.type === "approval" && v2.stage.decision === "human";
+                const auto = human
+                  ? { approval: null, reasons: [] }
+                  : evaluateAutoApproval(
+                      policy,
+                      state.manifest,
+                      state.spec,
+                      state.graph,
+                      this.store.requests(runId),
+                    );
                 const body = {
                   manifest: state.manifest,
                   writes: state.graph.tasks.flatMap((t) => t.writes),
