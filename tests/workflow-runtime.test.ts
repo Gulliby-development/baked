@@ -490,6 +490,93 @@ describe("durable SDD runtime", () => {
     const imported = await artifacts.importCandidate({ commandId: newId(), source: "spec-kit", sourcePath: join(root, "import"), featureId: "fixture" });
     expect(imported.candidateHash).toHaveLength(64);
   });
+  test("workflow list status filter returns only matching runs with the existing response shape", async () => {
+    const { service } = setup();
+    const runs = [await start(service), await start(service), await start(service)];
+    for (const [index, status] of (["completed", "failed", "completed"] as const).entries())
+      service.store.transaction(() => service.store.transition(runs[index]!.run.runId, status));
+
+    const result = await executeWorkflowCommand(
+      service,
+      parseWorkflowArgs(["list", "--status", "completed"]),
+      new AbortController().signal,
+    ) as { items: { runId: string; status: string }[]; cursor?: string };
+
+    expect(result.items.map((run) => run.runId)).toEqual(
+      service.store.list(100).items.filter((run) => run.status === "completed").map((run) => run.runId),
+    );
+    expect(result.items.every((run) => run.status === "completed")).toBe(true);
+    expect(Object.keys(result)).toEqual(["items"]);
+  });
+  test("workflow list rejects an unsupported status and names every valid status", () => {
+    expect(() => parseWorkflowArgs(["list", "--status", "unknown"])).toThrow(
+      'Invalid --status value "unknown". Valid statuses: created, running, waiting, paused, blocked, completed, failed, cancelled',
+    );
+  });
+  test("workflow list intersects status and feature filters", async () => {
+    const { service } = setup();
+    const create = (featureId: string) => service.start({
+      commandId: newId(), featureId, workflowId: "sdd", prompt: "List fixture",
+      ownerLabel: "test", policy,
+    });
+    const matching = await create("feature-a");
+    const otherStatus = await create("feature-a");
+    const otherFeature = await create("feature-b");
+    service.store.transaction(() => service.store.transition(matching.runId, "completed"));
+    service.store.transaction(() => service.store.transition(otherStatus.runId, "failed"));
+    service.store.transaction(() => service.store.transition(otherFeature.runId, "completed"));
+
+    const result = await executeWorkflowCommand(
+      service,
+      parseWorkflowArgs(["list", "--status", "completed", "--feature", "feature-a"]),
+      new AbortController().signal,
+    ) as { items: { runId: string; featureId: string; status: string }[] };
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ runId: matching.runId, featureId: "feature-a", status: "completed" });
+  });
+  test("workflow list applies status filtering before pagination and preserves ordering and cursors", async () => {
+    const { service } = setup();
+    const runs: Awaited<ReturnType<typeof start>>[] = [];
+    for (let index = 0; index < 5; index++) runs.push(await start(service));
+    const statuses = ["failed", "completed", "failed", "completed", "completed"] as const;
+    const db = new Database(service.store.path);
+    try {
+      for (const [index, item] of runs.entries()) {
+        service.store.transaction(() => service.store.transition(item.run.runId, statuses[index]!));
+        db.run("UPDATE runs SET created_at=? WHERE id=?", [1000 + index * 1000, item.run.runId]);
+      }
+    } finally { db.close(); }
+
+    const allRuns = service.store.list(100).items;
+    const sortedIds = [...allRuns].sort((a, b) => {
+      const left = service.store.run(a.runId);
+      const right = service.store.run(b.runId);
+      return right.created_at - left.created_at || right.id.localeCompare(left.id);
+    }).map((run) => run.runId);
+    expect(allRuns.map((run) => run.runId)).toEqual(sortedIds);
+    const matchingIds = allRuns.filter((run) => run.status === "completed").map((run) => run.runId);
+    expect(matchingIds).toHaveLength(3);
+
+    const firstPage = await executeWorkflowCommand(
+      service,
+      parseWorkflowArgs(["list", "--status", "completed", "--limit", "2"]),
+      new AbortController().signal,
+    ) as { items: { runId: string; status: string }[]; cursor?: string };
+    expect(firstPage.items.map((run) => run.runId)).toEqual(matchingIds.slice(0, 2));
+    expect(firstPage.items.every((run) => run.status === "completed")).toBe(true);
+    expect(firstPage.cursor).toBe(matchingIds[1]);
+
+    const secondPage = await executeWorkflowCommand(
+      service,
+      parseWorkflowArgs(["list", "--status", "completed", "--limit", "2", "--cursor", firstPage.cursor!]),
+      new AbortController().signal,
+    ) as { items: { runId: string; status: string }[]; cursor?: string };
+    expect(secondPage.items.map((run) => run.runId)).toEqual(matchingIds.slice(2));
+    expect(secondPage.items.every((run) => run.status === "completed")).toBe(true);
+    expect(secondPage.cursor).toBeUndefined();
+    expect(Object.keys(firstPage).sort()).toEqual(["cursor", "items"]);
+  });
   test("CLI rejects unknown options and missing values", () => {
     expect(() => parseWorkflowArgs(["run", "--secret-mode"])).toThrow();
     expect(() => parseWorkflowArgs(["run", "--feature"])).toThrow();

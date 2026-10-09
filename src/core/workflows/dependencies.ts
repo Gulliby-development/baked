@@ -7,7 +7,7 @@ export function dependencyContracts(store: WorkflowStore, state: RuntimeState) {
   return (state.spec?.dependencies ?? []).map((dependency) => {
     let cursor: string | undefined;
     do {
-      const page = store.list(100, dependency.featureId, cursor);
+      const page = store.list(100, dependency.featureId, undefined, cursor);
       for (const run of page.items) {
         const upstream = store.state(run.runId);
         if (!upstream.approvalRoot || !upstream.spec) continue;

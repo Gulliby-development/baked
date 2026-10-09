@@ -1,4 +1,5 @@
 import { WorkflowFault } from "../core/workflows/errors.js";
+import { RunStatus } from "../core/workflows/schemas.js";
 
 const commands = [
   "run",
@@ -55,6 +56,7 @@ const flags = new Set([
   "dry-run",
   "limit",
   "cursor",
+  "status",
   "after",
   "effect",
   "resolution",
@@ -79,7 +81,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "after",
   ],
   status: [],
-  list: ["feature", "limit", "cursor"],
+  list: ["feature", "limit", "cursor", "status"],
   resume: ["expected-revision", "command-id", "events", "after"],
   approve: ["request", "digest", "expected-revision", "command-id"],
   answer: ["request", "answers-file", "expected-revision", "command-id"],
@@ -125,6 +127,11 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   for (const name of Object.keys(result.flags)) {
     if (!["json", "cwd", "help", ...commandFlags[result.command]].includes(name))
       throw new WorkflowFault("INVALID_DEFINITION", `--${name} is not valid for ${result.command}`);
+    if (name === "status" && !RunStatus.safeParse(result.flags[name]).success)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Invalid --status value ${JSON.stringify(result.flags[name])}. Valid statuses: ${RunStatus.options.join(", ")}`,
+      );
     if (["expected-revision", "limit", "after"].includes(name)) {
       const value = Number(result.flags[name]);
       if (
@@ -160,7 +167,9 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 export const workflowHelp = `baked workflow <command> [options]
 
 run [sdd] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events]
-status RUN_ID [--json]     list [--feature ID] [--limit 20] [--cursor RUN_ID]
+status RUN_ID [--json]
+list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
+  --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]
 approve RUN_ID --request ID --digest SHA256 --expected-revision N
 answer RUN_ID --request ID --answers-file FILE --expected-revision N

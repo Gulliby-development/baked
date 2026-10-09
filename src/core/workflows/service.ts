@@ -24,6 +24,7 @@ import {
   type Decision,
   PolicySchema,
   type RunSnapshot,
+  type RunState,
   SafeId,
   type StartRequest,
   validateWorkflow,
@@ -193,8 +194,8 @@ export class NativeWorkflowService implements WorkflowService {
   async get(runId: string): Promise<RunSnapshot> {
     return this.store.snapshot(runId);
   }
-  async list(opts: { featureId?: string; limit: number; cursor?: string }) {
-    return this.store.list(opts.limit, opts.featureId, opts.cursor);
+  async list(opts: { featureId?: string; status?: RunState; limit: number; cursor?: string }) {
+    return this.store.list(opts.limit, opts.featureId, opts.status, opts.cursor);
   }
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     this.enabled();

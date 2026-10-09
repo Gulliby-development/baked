@@ -713,6 +713,7 @@ export interface WorkflowService {
   get(runId: string): Promise<RunSnapshot>;
   list(opts: {
     featureId?: string;
+    status?: RunState;
     limit: number;
     cursor?: string;
   }): Promise<{ items: RunSnapshot[]; cursor?: string }>;

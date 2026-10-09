@@ -249,6 +249,7 @@ export class WorkflowStore {
   list(
     limit: number,
     featureId?: string,
+    status?: RunState,
     cursor?: string,
   ): { items: RunSnapshot[]; cursor?: string } {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100)
@@ -257,13 +258,24 @@ export class WorkflowStore {
     const rows = this.db
       .query<
         RunRow,
-        [string | null, string | null, number | null, number | null, string | null, number]
+        [
+          string | null,
+          string | null,
+          RunState | null,
+          RunState | null,
+          number | null,
+          number | null,
+          string | null,
+          number,
+        ]
       >(
-        "SELECT * FROM runs WHERE (? IS NULL OR feature_id=?) AND (? IS NULL OR (created_at,id)<(?,?)) ORDER BY created_at DESC,id DESC LIMIT ?",
+        "SELECT * FROM runs WHERE (? IS NULL OR feature_id=?) AND (? IS NULL OR status=?) AND (? IS NULL OR (created_at,id)<(?,?)) ORDER BY created_at DESC,id DESC LIMIT ?",
       )
       .all(
         featureId ?? null,
         featureId ?? null,
+        status ?? null,
+        status ?? null,
         after?.created_at ?? null,
         after?.created_at ?? null,
         cursor ?? null,

@@ -6,7 +6,12 @@ import { getCwd } from "../core/cwd.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
-import { type Decision, PolicySchema, type RunSnapshot } from "../core/workflows/schemas.js";
+import {
+  type Decision,
+  PolicySchema,
+  type RunSnapshot,
+  type RunState,
+} from "../core/workflows/schemas.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
@@ -75,6 +80,7 @@ export async function executeWorkflowCommand(
     case "list":
       return service.list({
         featureId: typeof args.flags.feature === "string" ? args.flags.feature : undefined,
+        status: typeof args.flags.status === "string" ? (args.flags.status as RunState) : undefined,
         limit: Number(stringFlag(args, "limit", "20")),
         cursor: typeof args.flags.cursor === "string" ? args.flags.cursor : undefined,
       });
