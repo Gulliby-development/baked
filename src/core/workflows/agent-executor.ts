@@ -21,6 +21,7 @@ import {
   ImplementationSchema,
   PlanSchema,
   RefutationSchema,
+  ReportSchema,
   ResearchSchema,
   ReviewSchema,
   type RunPolicy,
@@ -45,6 +46,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   review: ReviewSchema,
   convergence: ReviewSchema,
   refutation: RefutationSchema,
+  report: ReportSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 

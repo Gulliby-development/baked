@@ -93,7 +93,8 @@ export function builtinReviewGates(policy: RunPolicy): Gate[] {
     review: {
       profileId,
       dimension,
-      blockingSeverities: ["critical", "high"],
+      // The v1 review stage repairs every finding the skeptic does not refute.
+      blockingSeverities: ["critical", "high", "medium", "low"],
       skepticProfileId: policy.skepticProfileId,
       appliesWhen,
     },

@@ -50,6 +50,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "reporter",
+    version: "1.0.0",
+    description: "Write the report of a spike",
+    role: "reporter",
+    model: "$active",
+    context: "research",
+    instructions:
+      "Answer the request from the research report and the files it cites. State findings with the paths that support them, give one recommendation (proceed, do-not-proceed, research-more or needs-decision) and list the questions that remain open. Do not change code, run commands or propose a task graph. Return ReportSchema.",
+    skills: [],
+    allowedTools: ["read", "navigate", "submit_result"],
+    output: "report",
+    maxSteps: 12,
+    maxOutputTokens: 8192,
+  },
+  {
+    schemaVersion: 1,
     id: "spec-author",
     version: "1.3.0",
     description: "Write the specification",
