@@ -19,7 +19,7 @@ export function readyTasks(
   const statuses = new Map(rows.map((r) => [r.id, r.status]));
   return graph.tasks.filter(
     (t) =>
-      ["pending", "invalidated"].includes(statuses.get(t.id) ?? "pending") &&
+      ["pending", "invalidated", "interrupted"].includes(statuses.get(t.id) ?? "pending") &&
       t.dependsOn.every((dep) =>
         rows.some(
           (row) =>

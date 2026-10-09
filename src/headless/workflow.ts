@@ -83,6 +83,9 @@ export async function executeWorkflowCommand(
           ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
+        ...(typeof args.flags.writers === "string"
+          ? { maxConcurrentWriters: Number(args.flags.writers) }
+          : {}),
       });
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
