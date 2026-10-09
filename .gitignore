@@ -98,7 +98,6 @@ __hooks_test__/
 Thumbs.db
 .vscode/
 
-# Internal audit logs, workflow specs, design notes
+# Internal audit logs and local workflow specs (root only; src/core/specs/ is source)
 .audit/
-specs/
-design/
+/specs/
