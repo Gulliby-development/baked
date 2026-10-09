@@ -77,6 +77,7 @@ const flags = new Set([
   "cwd",
   "from",
   "all",
+  "confirm-auto-approval",
   "help",
 ]);
 const booleanFlags = new Set(["json", "events", "accept", "dry-run", "help", "all"]);
@@ -92,6 +93,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "events",
     "command-id",
     "after",
+    "confirm-auto-approval",
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
@@ -191,7 +193,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [sdd] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events] [--confirm-auto-approval HASH]
 status RUN_ID [--json]
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}

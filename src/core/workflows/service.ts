@@ -52,6 +52,8 @@ import { type Gate, validateWorkflowV2, type WorkflowV2 } from "./v2/definition.
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
 import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
 import {
+  autoApprovalHash,
+  autoApprovalOf,
   checksOf,
   frozenGates,
   hostSpec,
@@ -171,8 +173,23 @@ export class NativeWorkflowService implements WorkflowService {
         const entry = library.entries.get(gate.id);
         if (entry?.path) gateFiles[entry.path] = hashBytes(readFileSync(entry.path));
       }
-      // The command gates the definition binds are the run's checks, with their effective modes.
-      policy = PolicySchema.parse({ ...policy, checks: checksOf(definition, gates) });
+      const autoApproval = autoApprovalOf(definition);
+      if (definition.autoApproval && autoApproval) {
+        const expected = autoApprovalHash(definition.autoApproval);
+        if (request.autoApprovalConfirmation !== expected)
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            `Workflow ${definition.id} approves plans automatically within: ${describeAutoApproval(definition.autoApproval)}. Confirm these limits to start it (CLI: --confirm-auto-approval ${expected}).`,
+            { autoApprovalHash: expected },
+          );
+      }
+      // The command gates the definition binds are the run's checks, with their effective modes;
+      // auto approval comes from the definition only.
+      policy = PolicySchema.parse({
+        ...policy,
+        checks: checksOf(definition, gates),
+        autoApproval,
+      });
       validateChecks(this.workspace, policy);
       for (const stage of definition.stages) {
         const kind = stageKind(stage);
@@ -888,4 +905,15 @@ function restartPosition(definitionJson: string, keepsPackage: boolean): Runtime
     position.visits = { [stage.id]: 1 };
   }
   return position;
+}
+
+function describeAutoApproval(limits: NonNullable<WorkflowV2["autoApproval"]>): string {
+  return [
+    `at most ${limits.maxTasks} tasks`,
+    `${limits.maxFiles} files`,
+    `paths ${limits.allowedPaths.join(", ")}`,
+    limits.allowDelete ? "deletions allowed" : "no deletions",
+    "no new dependencies",
+    `a token budget up to ${limits.maxTotalTokens}`,
+  ].join("; ");
 }
