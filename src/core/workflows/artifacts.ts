@@ -16,6 +16,7 @@ import {
   TaskGraphSchema,
 } from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
+import { runRoot } from "./worktree.js";
 
 export class WorkflowArtifacts implements ArtifactService {
   constructor(
@@ -61,7 +62,7 @@ export class WorkflowArtifacts implements ArtifactService {
     state.manifest.constitutionHash =
       instructions.files[join(store.workspace, "baked/constitution.md")] ?? null;
     for (const path of Object.keys(state.published)) {
-      const current = fileHash(workspacePath(store.workspace, path));
+      const current = fileHash(workspacePath(runRoot(store.workspace, state), path));
       if (current === null) delete state.published[path];
       else state.published[path] = current;
     }

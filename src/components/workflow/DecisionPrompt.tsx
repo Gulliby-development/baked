@@ -13,6 +13,8 @@ interface ApprovalBody {
   writes?: { path: string; action: string }[];
   checks?: Check[];
   deferredCriteria?: string[];
+  executionMode?: "inline" | "worktree";
+  worktree?: { path: string; branch: string; baseHead: string; userChangesInScope: string[] };
 }
 interface ClarificationBody {
   questions?: { id?: string; question: string; blocking?: boolean }[];
@@ -193,7 +195,16 @@ export function DecisionPrompt({
     if ((request.kind === "approval" || request.kind === "delivery") && !rejecting) {
       if (key === "a") {
         evt.preventDefault();
-        onDecision({ kind: "approve", requestId: request.id, digest: request.digest });
+        // The prompt names the files whose uncommitted changes the worktree leaves out.
+        const excluded =
+          request.kind === "approval" &&
+          (parse<ApprovalBody>(request.body_json).worktree?.userChangesInScope.length ?? 0) > 0;
+        onDecision({
+          kind: "approve",
+          requestId: request.id,
+          digest: request.digest,
+          ...(excluded ? { userChanges: "exclude" as const } : {}),
+        });
       }
       if (key === "x") {
         evt.preventDefault();
@@ -337,6 +348,16 @@ export function DecisionPrompt({
             <text
               fg={t.warning}
             >{`  Deferred to post-release: ${body.deferredCriteria.join(", ")}`}</text>
+          ) : null}
+          {body.worktree ? (
+            <text fg={t.textMuted}>
+              {`  Runs in worktree ${body.worktree.path} on branch ${body.worktree.branch}; your working copy is not changed.`}
+            </text>
+          ) : null}
+          {body.worktree?.userChangesInScope.length ? (
+            <text fg={t.warning}>
+              {`  Uncommitted changes in your working copy are left out of the worktree: ${body.worktree.userChangesInScope.join(", ")}. Approving accepts this; to keep them, reject, commit them and start a new run.`}
+            </text>
           ) : null}
         </Section>
         {rejecting ? (

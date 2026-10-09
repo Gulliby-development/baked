@@ -16,6 +16,7 @@ import type { RunPolicy, RunSnapshot, StageState, WorkflowEvent } from "./schema
 import type { NativeWorkflowService } from "./service.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
 import { parseRunDefinition, stageKind } from "./v2/runtime.js";
+import { runRoot } from "./worktree.js";
 
 const RECENT_EVENTS = 40;
 const OUTPUT_TAIL_LINES = 40;
@@ -247,6 +248,7 @@ function detailsOf(store: WorkflowStore, runId: string): RunDetails {
   };
 }
 function changesOf(store: WorkflowStore, runId: string): FileChange[] {
+  const root = runRoot(store.workspace, store.state(runId));
   const byPath = new Map<string, FileChange & { before: string | null; after: string | null }>();
   for (const effect of store.effects(runId)) {
     if (effect.kind === "command") continue;
@@ -272,7 +274,7 @@ function changesOf(store: WorkflowStore, runId: string): FileChange[] {
     const settled = change.status === "applied" || change.status === "reconciled";
     let current: string | null = null;
     try {
-      current = fileHash(workspacePath(store.workspace, change.path));
+      current = fileHash(workspacePath(root, change.path));
     } catch {
       current = null;
     }

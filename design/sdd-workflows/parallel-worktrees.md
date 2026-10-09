@@ -25,7 +25,9 @@ Several writing agents of one run execute independent tasks at the same time, ea
 
 `ExecutionRequest.root` sets the directory where the agent reads and edits files and runs `request_check`. It defaults to the project root, so behavior does not change. `NativeAgentExecutor`, `WorkflowToolPolicy` and `CheckRunner.run` use it. The database, leases, the spec publication journal and approval stay in the project root.
 
-### Phase 1. One writer in an isolated worktree
+### Phase 1. One writer in an isolated worktree (done)
+
+Implemented on 2026-10-09; see [worktree execution](runtime-guide.md#worktree-execution) and the defaults in the [implementation status](implementation-status.md#workflow-v2-from-2026-10-09). One deviation: the worktree and branch are created when the run first executes rather than after approval, so research, spec publication and the approval snapshot already work in the worktree and the working copy is never written; uncommitted user changes in the approved scope still need the explicit choice at approval.
 
 - Git is required; without it the run executes as today.
 - After approval, the branch `baked/wf/<runId>` is created from the recorded baseline HEAD together with the worktree `.baked/worktrees/<runId>/main`. Uncommitted user changes do not enter the worktree; if a task touches such files, approval shows this and requires a decision.

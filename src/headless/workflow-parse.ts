@@ -32,6 +32,7 @@ const commands = [
   "define",
   "gates",
   "deliver",
+  "discard-worktree",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 export interface WorkflowArgs {
@@ -85,6 +86,8 @@ const flags = new Set([
   "draft",
   "no-pr",
   "execute",
+  "worktree",
+  "exclude-user-changes",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -96,6 +99,8 @@ const booleanFlags = new Set([
   "draft",
   "no-pr",
   "execute",
+  "worktree",
+  "exclude-user-changes",
 ]);
 const commandFlags: Record<WorkflowCommand, string[]> = {
   run: [
@@ -110,11 +115,12 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "command-id",
     "after",
     "confirm-auto-approval",
+    "worktree",
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
   resume: ["expected-revision", "command-id", "events", "after"],
-  approve: ["request", "digest", "expected-revision", "command-id"],
+  approve: ["request", "digest", "expected-revision", "command-id", "exclude-user-changes"],
   answer: ["request", "answers-file", "expected-revision", "command-id"],
   evidence: ["request", "file", "accept", "expected-revision", "command-id"],
   reject: ["request", "reason", "expected-revision", "command-id"],
@@ -140,6 +146,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   define: ["from"],
   gates: ["all"],
   deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
+  "discard-worktree": ["expected-revision", "command-id"],
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -226,12 +233,14 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events] [--confirm-auto-approval HASH]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events] [--confirm-auto-approval HASH] [--worktree]
+  --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
 status RUN_ID [--json]
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]
-approve RUN_ID --request ID --digest SHA256 --expected-revision N
+approve RUN_ID --request ID --digest SHA256 --expected-revision N [--exclude-user-changes]
+  --exclude-user-changes is required when a worktree run's approved files have uncommitted changes in your working copy
 answer RUN_ID --request ID --answers-file FILE --expected-revision N
 evidence RUN_ID --request ID --file FILE --accept --expected-revision N
 reject RUN_ID --request ID --reason TEXT --expected-revision N
@@ -259,6 +268,9 @@ deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
 deliver RUN_ID --execute --expected-revision N [--request ID]
   Perform the approved plan. Retries check what already exists; nothing is force-pushed or merged.
   The pull request token is read from workflows.delivery.tokenEnv (default GITHUB_TOKEN).
+  A worktree run is delivered from its branch; its worktree is removed afterwards, the branch stays.
+discard-worktree RUN_ID --expected-revision N
+  Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
   replan, extend; see baked workflow initiative --help

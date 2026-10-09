@@ -213,7 +213,8 @@ CREATE TABLE effects (
 ) STRICT;
 
 CREATE TABLE workspace_leases (
-  resource TEXT PRIMARY KEY CHECK(resource IN ('execution','mutation')),
+  -- 'worktree:' and a worktree path relative to the project: the mutation lease of a run worktree (migration 005).
+  resource TEXT PRIMARY KEY CHECK(resource IN ('execution','mutation') OR (resource LIKE 'worktree:%' AND length(resource) > 9)),
   owner_id TEXT NOT NULL,
   owner_epoch INTEGER NOT NULL CHECK(owner_epoch > 0),
   run_id TEXT REFERENCES runs(id),

@@ -351,6 +351,11 @@ export const WorkflowV2Schema = z
     transitions: z.array(TransitionSchema).min(1).max(128),
     limits: z.object({ maxStageVisits: z.number().int().min(1).max(100) }).strict(),
     autoApproval: DefinitionAutoApprovalSchema.nullable(),
+    /**
+     * Where the run edits files: the project working copy (`inline`, the default) or its own Git
+     * worktree on the branch `baked/wf/RUN_ID` (`worktree`). Frozen into the run policy.
+     */
+    execution: z.enum(["inline", "worktree"]).optional(),
   })
   .strict();
 export type WorkflowV2 = z.infer<typeof WorkflowV2Schema>;
