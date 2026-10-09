@@ -472,6 +472,8 @@ const AcceptanceRequestBody = z
     steps: z.array(z.unknown()),
     testPath: z.string(),
     testHash: z.string(),
+    /** The test as the person reviews it; the digest of the request covers it. */
+    testContent: z.string(),
     testArtifactId: z.string(),
     baseTestHash: z.string().nullable(),
     assertions: AcceptanceDraftSchema.shape.assertions,
@@ -720,6 +722,7 @@ export async function runAcceptanceGate(
     steps,
     testPath,
     testHash,
+    testContent: accepted.content,
     testArtifactId: "",
     baseTestHash,
     assertions: accepted.draft.assertions,

@@ -258,8 +258,9 @@ export function acceptanceGrants(gates: readonly Gate[]): {
 }[] {
   return gates
     .filter((g): g is AcceptanceGateDefinition => g.type === "ai-acceptance")
-    .filter(({ acceptance: { capabilities: c } }) =>
-      c.spawnApp || c.listenPorts.length || c.outboundHosts.length || c.writePaths.length,
+    .filter(
+      ({ acceptance: { capabilities: c } }) =>
+        c.spawnApp || c.listenPorts.length || c.outboundHosts.length || c.writePaths.length,
     )
     .map((g) => ({
       gateId: g.id,
