@@ -156,6 +156,15 @@ export async function executeWorkflowCommand(
           : {}),
         ...(args.flags.plan ? { plan: readFlagFile("plan") } : {}),
         ...(args.flags.policy ? { policy: PolicySchema.parse(jsonFile("policy")) } : {}),
+        ...(typeof args.flags.workflow === "string"
+          ? {
+              definition: jsonFile("workflow"),
+              definitionPath: resolve(service.store.workspace, args.flags.workflow),
+            }
+          : {}),
+        ...(typeof args.flags["confirm-auto-approval"] === "string"
+          ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
+          : {}),
       });
     case "approve":
       return service.decide(runId, identity(), {
