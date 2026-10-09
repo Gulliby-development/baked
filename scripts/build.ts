@@ -19,6 +19,7 @@ import { type BunPlugin, spawnSync } from "bun";
 import { chmodSync, copyFileSync, cpSync, renameSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import pkgJson from "../package.json";
+import { buildMachinePaths, stripAbsolutePaths } from "./strip-paths";
 
 // Inlined into every native-lookup plugin so the runtime resolution honours
 // %LOCALAPPDATA% on Windows and ~/.baked on POSIX. Single source of truth
@@ -90,21 +91,28 @@ export default libPath;
 };
 
 // ── React Compiler Plugin ────────────────────────────────────────────
+const REACT_COMPILER_FILTER = /src\/.*\.tsx?$/;
+
+async function compileReact(path: string): Promise<string> {
+  const { transformSync } = await import("@babel/core");
+  const source = await Bun.file(path).text();
+  const result = transformSync(source, {
+    filename: path,
+    plugins: [["babel-plugin-react-compiler", { target: "19" }]],
+    parserOpts: {
+      plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
+    },
+  });
+  return result?.code ?? source;
+}
+
 const reactCompilerPlugin: BunPlugin = {
   name: "react-compiler",
   setup(build) {
-    build.onLoad({ filter: /src\/.*\.tsx?$/ }, async ({ path, loader }) => {
-      const { transformSync } = await import("@babel/core");
-      const source = await Bun.file(path).text();
-      const result = transformSync(source, {
-        filename: path,
-        plugins: [["babel-plugin-react-compiler", { target: "19" }]],
-        parserOpts: {
-          plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
-        },
-      });
-      return { contents: result?.code ?? source, loader };
-    });
+    build.onLoad({ filter: REACT_COMPILER_FILTER }, async ({ path, loader }) => ({
+      contents: await compileReact(path),
+      loader,
+    }));
   },
 };
 
@@ -112,17 +120,20 @@ const reactCompilerPlugin: BunPlugin = {
 // Bun's bundler may inline absolute paths (cwd, $HOME) into the bundle as
 // __dirname / __filename strings or comment markers. Replace them so the
 // dev machine's filesystem doesn't ship with the binary.
+// Bun uses only the first onLoad callback that matches a file, so this
+// plugin also runs the React Compiler on src/ instead of shadowing it.
 const stripAbsPathsPlugin: BunPlugin = {
   name: "strip-abs-paths",
   setup(build) {
-    const cwd = process.cwd();
     // POSIX uses $HOME; Windows uses $USERPROFILE. Strip whichever is set.
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+    // Replacement is boundary-aware (see strip-paths.ts): a naive substring
+    // split turned `'./root.js'` into `'.~.js'` when HOME=/root.
+    const paths = buildMachinePaths();
     build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async ({ path, loader }) => {
-      let src = await Bun.file(path).text();
-      if (cwd && src.includes(cwd)) src = src.split(cwd).join("");
-      if (home && src.includes(home)) src = src.split(home).join("~");
-      return { contents: src, loader };
+      const src = REACT_COMPILER_FILTER.test(path)
+        ? await compileReact(path)
+        : await Bun.file(path).text();
+      return { contents: stripAbsolutePaths(src, paths), loader };
     });
   },
 };
@@ -206,7 +217,7 @@ if (isCompile) {
   const msg = "baked native runtime missing: " + home + "\\n" +
     "  platform: " + triplet + "\\n" +
     "  fix: reinstall baked or rerun the installer from the release tarball.\\n" +
-    "  if the problem persists, file an issue at https://github.com/baked/baked/issues with this output.";
+    "  if the problem persists, file an issue at https://github.com/Gulliby-development/baked/issues with this output.";
   throw new Error(msg);
 })();`,
     );
@@ -342,11 +353,7 @@ if (isCompile) {
       "*.wasm",
       "*.scm",
     ],
-    plugins: [
-      stripAbsPathsPlugin,
-      reactCompilerPlugin,
-      devtoolsStubPlugin,
-    ],
+    plugins: [stripAbsPathsPlugin, devtoolsStubPlugin],
     minify,
     sourcemap: "none",
   });
@@ -502,12 +509,7 @@ if (isCompile) {
     // Post-build path scrub. The onLoad strip-paths plugin only sees our
     // source; pre-bundled CJS deps inline absolute __dirname/__filename paths
     // that survive into dist/index.js. Replace them.
-    const cwd = process.cwd();
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-    let raw = bundle;
-    for (const needle of [cwd, home].filter(Boolean)) {
-      if (raw.includes(needle)) raw = raw.split(needle).join("");
-    }
+    const raw = stripAbsolutePaths(bundle, buildMachinePaths());
     if (raw !== bundle) {
       await Bun.write("dist/index.js", raw);
     }

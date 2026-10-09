@@ -1,5 +1,5 @@
 import { readFileSync, unlinkSync } from "node:fs";
-import { generateText, stepCountIs, type Tool, type ToolSet, tool } from "ai";
+import { generateText, type StepResult, stepCountIs, type Tool, type ToolSet, tool } from "ai";
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
 import { ContextManager } from "../context/manager.js";
@@ -26,7 +26,12 @@ import {
   type RunPolicy,
   SpecSchema,
 } from "./schemas.js";
-import { AttemptStepController, DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
+import {
+  AttemptStepController,
+  type AttemptUsageRecord,
+  DEFAULT_MAX_ATTEMPT_TOKENS,
+  stepTokens,
+} from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
 import { WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse } from "./types.js";
@@ -52,6 +57,8 @@ export class NativeAgentExecutor implements AgentExecutor {
     private parentContext?: ContextManager,
   ) {}
   async execute(request: ExecutionRequest): Promise<ExecutionResponse> {
+    // Nothing is spent until the first model step; each finished step raises this record.
+    this.store.recordAttemptUsage(request.runId, request.attemptId, 0);
     if (hasToolHooks(this.store.workspace))
       throw new WorkflowFault(
         "CAPABILITY_DENIED",
@@ -237,51 +244,81 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
         (name) => name in available,
       );
+      // The attempt cap never exceeds what the run budget still allows, so an attempt started
+      // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
-        maxTokens: policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+        maxTokens: Math.min(
+          request.maxTokens ?? Number.POSITIVE_INFINITY,
+          policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+          this.store.remainingTokens(request.runId, policy, request.attemptId),
+        ),
         submitTools,
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
-      });
-      const result = await generateText({
-        model: resolveModel(request.profile.model),
-        system: request.profile.instructions,
-        prompt: request.prompt,
-        tools: available,
-        stopWhen: [
-          () => submitted !== undefined,
-          stepCountIs(request.maxSteps),
-          ({ steps: done }) => budget.overBudget(done),
-        ],
-        maxRetries: 0,
         maxOutputTokens: request.profile.maxOutputTokens,
-        abortSignal: request.signal,
-        providerOptions: provider.providerOptions,
-        headers: provider.headers,
-        prepareStep: ({ stepNumber, steps: done, messages }) => {
-          request.signal.throwIfAborted();
-          const reserve =
-            budget.consumed(done) +
-            Math.ceil(Buffer.byteLength(JSON.stringify(messages)) / 2) +
-            request.profile.maxOutputTokens +
-            8192;
-          this.store.expandReservation(request.runId, request.attemptId, reserve, policy);
-          return budget.prepare({ stepNumber, steps: done, messages });
-        },
       });
-      const usage = budget.record(result.steps, submitted !== undefined, {
-        profileId: request.profile.id,
-        taskId: request.task?.id ?? null,
-      });
-      this.store.transaction(() =>
-        this.store.artifact(
-          request.runId,
-          "usage",
-          `attempts/${request.attemptId}/usage.json`,
-          canonical(usage),
-        ),
-      );
+      const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
+      const writeUsage = (usage: AttemptUsageRecord) =>
+        this.store.transaction(() =>
+          this.store.artifact(
+            request.runId,
+            "usage",
+            `attempts/${request.attemptId}/usage.json`,
+            canonical(usage),
+          ),
+        );
+      // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
+      const finished: StepResult<ToolSet>[] = [];
+      let result: Awaited<ReturnType<typeof generateText<ToolSet>>>;
+      try {
+        result = await generateText({
+          model: resolveModel(request.profile.model),
+          system: request.profile.instructions,
+          prompt: request.prompt,
+          tools: available,
+          stopWhen: [
+            () => submitted !== undefined,
+            stepCountIs(request.maxSteps),
+            ({ steps: done }) => budget.overBudget(done),
+          ],
+          maxRetries: 0,
+          maxOutputTokens: request.profile.maxOutputTokens,
+          abortSignal: request.signal,
+          providerOptions: provider.providerOptions,
+          headers: provider.headers,
+          onStepFinish: (step) => {
+            finished.push(step);
+            this.store.recordAttemptUsage(
+              request.runId,
+              request.attemptId,
+              budget.consumed(finished),
+            );
+          },
+          prepareStep: ({ stepNumber, steps: done, messages }) => {
+            request.signal.throwIfAborted();
+            const prepared = budget.prepare({ stepNumber, steps: done, messages });
+            this.store.expandReservation(
+              request.runId,
+              request.attemptId,
+              budget.reservation(done, prepared.messages ?? messages),
+              policy,
+            );
+            return prepared;
+          },
+        });
+      } catch (error) {
+        try {
+          writeUsage(
+            budget.record(finished, false, meta, request.signal.aborted ? "aborted" : "error"),
+          );
+        } catch {
+          // The original failure matters more than a usage record that could not be stored.
+        }
+        throw error;
+      }
+      const usage = budget.record(result.steps, submitted !== undefined, meta);
+      writeUsage(usage);
       if (usage.stopReason === "tokens")
         throw new WorkflowFault(
           "BUDGET_EXHAUSTED",
@@ -311,6 +348,8 @@ export class NativeAgentExecutor implements AgentExecutor {
               8192,
             policy,
           );
+          // Zero until the single correction step reports its usage.
+          let correctionTokens = 0;
           try {
             const corrected = await generateText({
               model: resolveModel(request.profile.model),
@@ -323,19 +362,22 @@ export class NativeAgentExecutor implements AgentExecutor {
               abortSignal: request.signal,
               providerOptions: provider.providerOptions,
               headers: provider.headers,
+              onStepFinish: (step) => {
+                correctionTokens += stepTokens(step.usage, request.profile.maxOutputTokens);
+              },
             });
             submitted = schema.parse(submitted ?? JSON.parse(corrected.text));
+            this.store.transaction(() =>
+              this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
+            );
+          } catch {
             this.store.transaction(() =>
               this.store.finishAttempt(
                 request.runId,
                 attempt,
-                "completed",
-                corrected.totalUsage.totalTokens ?? null,
+                request.signal.aborted ? "cancelled" : "failed",
+                correctionTokens,
               ),
-            );
-          } catch {
-            this.store.transaction(() =>
-              this.store.finishAttempt(request.runId, attempt, "failed", null),
             );
             throw new WorkflowFault(
               "OUTPUT_INVALID",

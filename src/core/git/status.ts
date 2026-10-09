@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { buildSafeEnv, SAFE_STDIO } from "../spawn.js";
+import { buildSafeEnv } from "../spawn.js";
 
 const encoder = new TextEncoder();
 
@@ -32,7 +32,9 @@ export function run(
       cwd,
       timeout,
       env: buildSafeEnv(),
-      stdio: SAFE_STDIO,
+      // stderr is never read; piping it lets a long message (git's usage text
+      // outside a repository) fill the pipe and block git until the timeout.
+      stdio: ["ignore", "pipe", "ignore"],
     });
     proc.stdout?.on("data", (d: Buffer) => chunks.push(d.toString()));
     proc.on("close", (code) => resolve({ ok: code === 0, stdout: chunks.join("") }));
@@ -201,8 +203,8 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
 
 export async function getGitDiff(cwd: string, staged?: boolean): Promise<string> {
   const args = staged ? ["diff", "--cached"] : ["diff"];
-  const { stdout } = await run(args, cwd);
-  return stdout;
+  const { ok, stdout } = await run(args, cwd);
+  return ok ? stdout : "";
 }
 
 export async function getGitLog(cwd: string, count = 10): Promise<GitLogEntry[]> {

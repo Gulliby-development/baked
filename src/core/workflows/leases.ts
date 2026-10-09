@@ -36,9 +36,9 @@ export function leaseOwnerAlive(lease: LeaseRow): boolean | null {
  * process nor a descendant started after it is alive. An unreadable process table counts as alive.
  */
 export function commandProcessMayRun(intentJson: string, createdAt = 0): boolean {
-  const intent = JSON.parse(intentJson) as { pid?: number; spawnedAt?: number };
+  const intent = JSON.parse(intentJson) as { pid?: number; spawnedAt?: number; scope?: string };
   if (intent.pid === undefined) return true;
-  return processTreeAlive(intent.pid, intent.spawnedAt ?? createdAt) !== false;
+  return processTreeAlive(intent.pid, intent.spawnedAt ?? createdAt, intent.scope) !== false;
 }
 export function commandMayBeRunning(store: WorkflowStore, runId: string): boolean {
   return store

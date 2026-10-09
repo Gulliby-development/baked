@@ -41,7 +41,7 @@ Select a configured BAKED model. `defaultModel: "none"` does not allow starting 
 
 Check definitions contain an executable and argv. They run reviewed project code; this is not an OS sandbox. `envNames` allows specific additional variables on top of `buildSafeEnv`; values are not stored in definitions. `writes` marks only generated outputs. Task sources, the execution configuration and the internal database must not be excluded from a check. `network: deny` forbids network agent tools, but it does not replace network isolation of the executed project script and does not forbid calls to the selected LLM provider.
 
-A monetary cap is currently rejected: the current BAKED provider metadata has no verified shared source of exact prices. Use token/time/call limits; unknown usage keeps its reservation. Arbitrary command hooks and unknown MCP/compound effects are forbidden inside a workflow. Approved commands run as checks. The ECC import does not enable hooks.
+A monetary cap is currently rejected: the current BAKED provider metadata has no verified shared source of exact prices. Use token/time/call limits; usage left unknown by a crash keeps its reservation. Arbitrary command hooks and unknown MCP/compound effects are forbidden inside a workflow. Approved commands run as checks. The ECC import does not enable hooks.
 
 ## First run
 
@@ -78,6 +78,12 @@ baked workflow reject RUN_ID --request ID --reason "Needs clarification" --expec
 baked workflow pause RUN_ID --expected-revision N
 baked workflow cancel RUN_ID --expected-revision N
 ```
+
+An answer does not restart the run. It is appended to the request, and `resume` continues from the stage the answer affects: research questions continue with specify and keep the research report, spec questions repeat specify, and analysis findings repeat specify when a blocking finding refers to the spec and plan when it refers only to `plan.md` or `tasks.json`.
+
+Research, spec and analysis run before any code changes, so they cannot know check outcomes. A blocking research unknown or analysis finding that only says checks were not run (lint, typecheck, tests) is returned to the agent at submission to be made non-blocking; if the agent keeps it, the runtime records it as a non-blocking note. The planner and spec author take verification commands from the policy checks, and the spec reviewer treats a policy check that runs a superset of a named command (the whole test suite for one test file) as satisfying it and ignores project-instruction checks for files no task writes.
+
+Research is scoped to the request. When the request names files, the researcher gets `4 + 2 × files` steps (at most its profile limit of 12) and 14,000 tokens per step (at most the policy `maxAttemptTokens`); it is told to read the named files together, follow their direct dependencies with `bake_find`/`bake_impact` and submit once they are covered. A request that names no file keeps the profile step limit and the policy token cap.
 
 Answers is a JSON object of string answers. Manual evidence describes the user's actual observation. It is bound to a snapshot; a new source change makes it stale. Post-release criteria require explicit consent in the scope approval and keep the deferred status.
 
@@ -137,6 +143,12 @@ Detection offers gates; nothing is added until the user confirms. It reads the p
 
 The same detection fills the checks written when E enables workflows on the runs screen; the build gate is not part of that set. Gates that are already configured (same ID or same command) are not offered again. Existing CI scripts are not read. On Windows, give the command name (`npm`, `pnpm`, `yarn`), not the shim file: Bun launches `npm` without a shell, but a name ending in `.cmd` fails with `EINVAL`. Only `npm` was tried on this host (npm 11.16); `pnpm` and `yarn` were not installed here.
 
+### Token accounting and reservations
+
+An agent attempt records its spend as each model step finishes, not only when it returns. An attempt that fails, is cancelled or stops on a cap is charged the tokens of its finished steps, writes `attempts/ID/usage.json` with stop reason `error` or `aborted` where it threw, and releases its reservation; `baked workflow usage` therefore includes failed attempts. Only an attempt interrupted by a crashed process, whose executor left no record, keeps its reservation as unknown usage.
+
+Before each step the attempt reserves its spend so far plus an estimate of that step: the input tokens the provider reported for the previous step, adjusted by the bytes added or compacted since at three bytes per token, and an output of twice the largest output seen (at least 4096 tokens, at most the profile's output cap). Before any usage is known it counts the messages at three bytes per token plus 8192 tokens for the system prompt and tool definitions. A step is refused (`Next model step exceeds remaining token budget`, with the used, held and requested tokens) only when the spend plus this estimate would pass the run limit. The attempt cap is `maxAttemptTokens` or, when less, what the run limit still leaves after the other attempts, so an attempt that starts near the limit switches to its submit-only final step in time instead of failing mid-loop.
+
 ### Raising a budget limit
 
 A run blocked with `budget_exhausted` shows B (raise limits) next to fork and cancel. The confirmation names the new values: every limit that is used up, or at least 80% used, doubles, and the tokens double when nothing else explains the stop; calls stop at 1000, active time at 24 hours and tokens at 50 million. Y applies it and the run continues from the stage that stopped.
@@ -146,7 +158,7 @@ baked workflow extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--t
 baked workflow resume RUN_ID --expected-revision NEW_N
 ```
 
-Limits can only go up. The change is stored as the immutable artifact `policy-revisions/COMMAND_ID.json` (previous and new limits, both policy hashes, usage, the stage) and the run moves to `paused`. Scope, tools, checks, the stage, the evidence and the approval digest are untouched, so no new approval of the plan is needed and nothing is re-run. The user's command is the approval of the new limits.
+Limits can only go up. The change is stored as the immutable artifact `policy-revisions/COMMAND_ID.json` (previous and new limits, both policy hashes, usage, the stage) and the run moves to `paused`. Scope, tools, checks, the stage, the evidence and the approval digest are untouched, so no new approval of the plan is needed and nothing is re-run. The user's command is the approval of the new limits. When `autoApproval.limits.maxTotalTokens` covered the old token limit, it is raised with it, so a later scope approval is not sent to a person only because of the larger budget; a bound set below the old limit is kept.
 
 ### Soft token checkpoints
 
@@ -159,7 +171,7 @@ baked workflow continue RUN_ID --request REQUEST_ID --expected-revision N
 baked workflow resume RUN_ID --expected-revision NEW_N
 ```
 
-Set `workflows.policy.checkpointTokens` (at least 10000, or `null`) to choose the interval of the preset. An interrupted call whose usage is unknown keeps its reservation and counts toward the next checkpoint.
+Set `workflows.policy.checkpointTokens` (at least 10000, or `null`) to choose the interval of the preset. A call interrupted by a crash, whose usage is unknown, keeps its reservation and counts toward the next checkpoint.
 
 ### Estimates
 
@@ -192,7 +204,7 @@ baked workflow recover RUN_ID --request ID --effect EFFECT_ID --resolution recor
 
 Resolutions: `record-applied`, `record-not-applied`, `retry`, `cancel`. For a command, the end of its process must be confirmed first. `retry` allows the next attempt, not an immediate replay of the previous shell command. With PID reuse the decision is conservative: a live PID blocks takeover. Do not delete the lease or the database to bypass recovery.
 
-Before recovery or a lease takeover, the runtime checks the recorded command process and its descendants: on Windows, live processes whose parent is the recorded PID and that started after the command; on POSIX, the command's process group. A process table that cannot be read counts as running. On Windows, a descendant whose intermediate parent also exited cannot be linked to the command; confirm such cases by hand. Recovery `cancel` requires confirmation that all processes of the run and their descendants stopped. A known live command PID blocks this decision. The runtime stores an immutable `abandoned-effects` artifact, keeps the effect's original unknown status in history and releases only the previous leases of that run. Cancelling does not claim that the command did not change files.
+Before recovery or a lease takeover, the runtime checks the recorded command process and its descendants: on Windows, live processes whose parent is the recorded PID and that started after the command; on POSIX, the command's process group, and on Linux also any process that inherited the command's `BAKED_PROCESS_SCOPE` marker, which finds descendants that left the group with `setsid`. Cancel and timeout signal the same set. A process table that cannot be read counts as running. On Windows, a descendant whose intermediate parent also exited cannot be linked to the command; confirm such cases by hand. Recovery `cancel` requires confirmation that all processes of the run and their descendants stopped. A known live command PID blocks this decision. The runtime stores an immutable `abandoned-effects` artifact, keeps the effect's original unknown status in history and releases only the previous leases of that run. Cancelling does not claim that the command did not change files.
 
 Workspace and evidence files are written to a unique temp file and renamed into place. A failed write, including ENOSPC part-way through, removes the partial temp file, leaves the target unchanged and keeps the effect unknown until reconcile compares hashes. Interrupted task checks repeat before dependent tasks open. After a successful check, the runtime stores a gate bound to the generation, the snapshot and the task definition. Nested corrective tasks restore the whole chain of predecessors only after the required checks pass. The final `verified` is set during final acceptance.
 

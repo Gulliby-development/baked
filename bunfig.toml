@@ -18,3 +18,4 @@ minimumReleaseAgeExcludes = [
 
 [test]
 coverageSkipTestFiles = true
+preload = ["./tests/setup/isolate-home.ts"]

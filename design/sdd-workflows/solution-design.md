@@ -138,10 +138,10 @@ Every task has at least one requirement and criterion. A preparatory task also e
 
 | Stage | Input | Result | Transition condition |
 | --- | --- | --- | --- |
-| research | Request, active instructions, project index | Research report with paths, constraints and unknowns | A valid report; a blocking question creates a request |
+| research | Request, active instructions, project index | Research report with paths, constraints and unknowns | A valid report; a blocking question creates a request. The step and token limits scale with the files the request names (see the runtime guide); check outcomes are never blocking unknowns |
 | specify | Request and research | Spec candidate | Valid IDs and criteria; questions are explicitly marked blocking |
 | plan | Spec and project architecture | plan.md and a TaskGraph candidate | The result parses and refers to the specification hash |
-| analyze | Spec, plan, graph, constitution | Deterministic consistency report | No cycles, dangling refs, uncovered criteria or blocking questions |
+| analyze | Spec, plan, graph, constitution | Deterministic consistency report | No cycles, dangling refs, uncovered criteria or blocking questions. Policy checks are the authoritative verification; missing check outcomes are not findings |
 | approve | The full package of requirements, scope, policy and models | Decision with a digest | A human accepted exactly this digest |
 | task-graph | Accepted tasks and their dependencies | Implemented tasks and task checks | All executable tasks satisfy the implementation contract |
 | checks | Frozen workspace snapshot | Feature checks | All required checks passed |
@@ -329,7 +329,7 @@ The approval digest binds the workflow definition hash, profile/skill hashes, in
 
 A decision is accepted only by a host adapter through WorkflowService and is absent from the model tool registry. An API caller does not assign itself the user role with a string. The user's CLI and the TUI handler are trusted origins within the current local trust model. If a remote API appears, authentication is a separate mandatory project.
 
-Approving an old requestId/digest again gives STALE_DECISION. Rejecting a package moves the run to paused with an explanation; it does not revert sources. An answer to a clarification forms a new candidate revision instead of changing the previously accepted artifact. Pending requests of the previous revision become superseded.
+Approving an old requestId/digest again gives STALE_DECISION. Rejecting a package moves the run to paused with an explanation; it does not revert sources. An answer to a clarification forms a new candidate revision instead of changing the previously accepted artifact. Pending requests of the previous revision become superseded. The answer is appended to the request and the run continues from the earliest stage whose output it invalidates, reusing the outputs before it: an answer to research questions continues with specify (the research report stays valid and its unknowns are marked non-blocking), an answer to spec questions repeats specify, and an answer to analysis findings repeats specify when a blocking finding refers to the spec (`spec.json`, `spec.md` or FR/NFR/AC IDs) and plan otherwise.
 
 `revise` accepts an existing candidate artifact hash, validates the package and invalidates the stages whose input hashes changed and all subsequent stages. V1 uses conservative invalidation from the first changed stage. A change of task text alone also creates a new revision. Executed effects are kept; a new implementer gets the diff and must check the current state before new edits.
 

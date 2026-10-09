@@ -4,7 +4,7 @@
   "description": "Graph-powered code intelligence — multi-agent coding with codebase-aware AI",
   "repository": {
     "type": "git",
-    "url": "https://github.com/baked/baked.git"
+    "url": "https://github.com/Gulliby-development/baked.git"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",

@@ -3,6 +3,7 @@ import { extensionFor, extensionText, headline, runActions } from "../src/compon
 import { type BudgetLimits, proposeExtension } from "../src/core/workflows/budget.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
+import { PolicySchema } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { type BudgetView, readWorkflowView } from "../src/core/workflows/view.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -97,6 +98,29 @@ describe("extending the budget of a blocked run", () => {
     expect(service.store.run(run.runId).approval_digest).toBe(rowBefore.approval_digest);
     const view = readWorkflowView(service, run.runId);
     expect(view.budget.maxTokens).toBe(600000);
+  });
+
+  test("an auto-approval token bound that covered the old budget follows the extension", async () => {
+    const limits = { maxTasks: 5, maxFiles: 5, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: 300000 };
+    const fixture = workflowFixture({ policy: { ...tight, autoApproval: { renewal: false, limits } }, tokensPerCall: heavy });
+    cleanups.push(fixture.dispose);
+    const { service } = fixture;
+    const run = await fixture.start();
+    const blocked = await runUntilBlocked(fixture, run.runId);
+    expect(blocked).toMatchObject({ status: "blocked", reason: "budget_exhausted" });
+    await service.extendBudget(run.runId, { commandId: newId(), expectedRevision: blocked.revision }, { maxTotalTokens: 2_000_000 });
+    const policy = PolicySchema.parse(JSON.parse(service.store.run(run.runId).policy_json));
+    expect(policy.maxTotalTokens).toBe(2_000_000);
+    expect(policy.autoApproval?.limits?.maxTotalTokens).toBe(2_000_000);
+    // A bound set below the budget on purpose is the operator's choice and stays.
+    const strict = workflowFixture({ policy: { ...tight, autoApproval: { renewal: false, limits: { ...limits, maxTotalTokens: 100000 } } }, tokensPerCall: heavy });
+    cleanups.push(strict.dispose);
+    const strictRun = await strict.start();
+    const strictBlocked = await runUntilBlocked(strict, strictRun.runId);
+    expect(strictBlocked).toMatchObject({ status: "blocked", reason: "budget_exhausted" });
+    await strict.service.extendBudget(strictRun.runId, { commandId: newId(), expectedRevision: strictBlocked.revision }, { maxTotalTokens: 2_000_000 });
+    const kept = PolicySchema.parse(JSON.parse(strict.service.store.run(strictRun.runId).policy_json));
+    expect(kept.autoApproval?.limits?.maxTotalTokens).toBe(100000);
   });
 
   test("a run keeps going through repeated extensions until it completes", async () => {

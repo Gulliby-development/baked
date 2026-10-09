@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
@@ -48,12 +48,53 @@ const EXT_TO_LANG: Record<string, string> = {
 
 const TS_JS_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);
 
-function resolveAstGrep(cwd: string): string | null {
+/** @ast-grep/cli's optional per-platform packages, keyed by `${platform}-${arch}`. */
+const AST_GREP_PLATFORM_PACKAGE: Record<string, string> = {
+  "darwin-arm64": "cli-darwin-arm64",
+  "darwin-x64": "cli-darwin-x64",
+  "linux-arm64": "cli-linux-arm64-gnu",
+  "linux-x64": "cli-linux-x64-gnu",
+  "win32-arm64": "cli-win32-arm64-msvc",
+  "win32-ia32": "cli-win32-ia32-msvc",
+  "win32-x64": "cli-win32-x64-msvc",
+};
+
+const astGrepIdentity = new Map<string, boolean>();
+
+/**
+ * `sg` is also the name of shadow-utils' switch-group command, present on most
+ * Linux systems, so a bare `sg` on PATH is only trusted after it reports itself
+ * as ast-grep.
+ */
+function isAstGrep(bin: string): boolean {
+  const cached = astGrepIdentity.get(bin);
+  if (cached !== undefined) return cached;
+  const result = spawnSync(bin, ["--version"], {
+    encoding: "utf-8",
+    timeout: 5000,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const ok = result.status === 0 && /ast-grep/i.test(result.stdout ?? "");
+  astGrepIdentity.set(bin, ok);
+  return ok;
+}
+
+export function resolveAstGrep(cwd: string): string | null {
   // 1. Vendored — present in every production install once prerequisites run.
   const vendored = getVendoredPath("ast-grep");
   if (vendored) return vendored;
 
-  // 2. node_modules (dev). On Windows npm writes `ast-grep.cmd` (+ `.ps1`).
+  // 2. node_modules (dev).
+  // The per-platform package holds the real executable. Prefer it: when the
+  // package manager skipped @ast-grep/cli's postinstall (Bun does by default),
+  // the launcher names below are a Node script that needs `node` on PATH.
+  const platformPackage = AST_GREP_PLATFORM_PACKAGE[`${process.platform}-${process.arch}`];
+  if (platformPackage) {
+    const candidate = join(cwd, "node_modules", "@ast-grep", platformPackage, `ast-grep${EXE}`);
+    if (existsSync(candidate)) return candidate;
+  }
+  // On Windows npm writes `ast-grep.cmd` (+ `.ps1`).
   const binDir = join(cwd, "node_modules", ".bin");
   const localCandidates = IS_WIN
     ? ["ast-grep.cmd", "ast-grep.exe", "ast-grep.ps1", "ast-grep", "sg.cmd", "sg.exe", "sg"]
@@ -69,7 +110,10 @@ function resolveAstGrep(cwd: string): string | null {
   }
 
   // 3. PATH.
-  return findOnPath("ast-grep") ?? findOnPath("sg") ?? null;
+  const named = findOnPath("ast-grep");
+  if (named) return named;
+  const short = findOnPath("sg");
+  return short && isAstGrep(short) ? short : null;
 }
 
 const MISSING_HINT =

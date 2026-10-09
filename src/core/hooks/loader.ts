@@ -14,12 +14,12 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { userHome } from "../platform/index.js";
 import type { HookEventName, HookRule, HooksConfig } from "./types.js";
 
 function getHookPaths(cwd: string): string[] {
-  const home = homedir();
+  const home = userHome();
   return [
     join(home, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.json"),
@@ -92,11 +92,12 @@ const _cache = new Map<string, CacheEntry>();
 /** Get hooks config (cached per-cwd with 5s TTL). Multi-tab safe. */
 export function getHooks(cwd?: string): HooksConfig {
   const effectiveCwd = cwd ?? process.cwd();
-  const entry = _cache.get(effectiveCwd);
+  const key = `${userHome()}\0${effectiveCwd}`;
+  const entry = _cache.get(key);
   if (entry && Date.now() < entry.expiresAt) return entry.hooks;
 
   const hooks = loadHooks(effectiveCwd);
-  _cache.set(effectiveCwd, { hooks, expiresAt: Date.now() + CACHE_TTL_MS });
+  _cache.set(key, { hooks, expiresAt: Date.now() + CACHE_TTL_MS });
   return hooks;
 }
 

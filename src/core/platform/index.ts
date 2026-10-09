@@ -6,7 +6,7 @@
  */
 
 import { type SpawnOptions, spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -25,6 +25,14 @@ export const CMD_EXT = IS_WIN ? ".cmd" : "";
 /** OS temp dir. Re-exported so callers don't import node:os for a one-liner. */
 export function tmpDir(): string {
   return tmpdir();
+}
+
+/**
+ * The user's home directory, read from the environment on each call like os.homedir()
+ * would at startup, so an embedding process or a test can point it at another profile.
+ */
+export function userHome(): string {
+  return (IS_WIN ? process.env.USERPROFILE : process.env.HOME) || homedir();
 }
 
 export function configDir(): string {
@@ -69,13 +77,23 @@ export function spawnShell(commandLine: string, options?: SpawnOptions): ReturnT
 
 /**
  * Kill a process and ALL descendants. POSIX: kill the process group via
- * negative PID. Windows: `taskkill /F /T /PID`.
+ * negative PID. Windows: `taskkill /F /T /PID`. With `scope`, Linux also signals
+ * processes that carry the scope marker (see `scopedProcesses`).
  *
  * Returns true on best-effort success; swallows ESRCH / EPERM because callers
  * typically run this during shutdown where the target may already be gone.
  */
-export function killTree(pid: number, signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): boolean {
+export function killTree(
+  pid: number,
+  signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
+  scope?: string,
+): boolean {
   if (!pid) return false;
+  if (scope)
+    for (const marked of scopedProcesses(scope) ?? [])
+      try {
+        process.kill(marked, signal);
+      } catch {}
   try {
     if (IS_WIN) {
       const args = ["/T", "/PID", String(pid)];
@@ -98,6 +116,39 @@ export function killTree(pid: number, signal: "SIGTERM" | "SIGKILL" = "SIGTERM")
   }
 }
 
+/** Environment variable that marks every process started for one owned command. */
+export const PROCESS_SCOPE_ENV = "BAKED_PROCESS_SCOPE";
+
+/**
+ * PIDs of processes that inherited `PROCESS_SCOPE_ENV=scope`, or null where the platform
+ * offers no readable process environment. Linux only: a descendant that calls setsid()
+ * leaves the command's process group and is reparented, so only the inherited marker
+ * still links it to the command. A process that clears its environment is not found.
+ */
+export function scopedProcesses(scope: string): number[] | null {
+  if (!IS_LINUX) return null;
+  const marker = Buffer.from(`${PROCESS_SCOPE_ENV}=${scope}\0`);
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return null;
+  }
+  const found: number[] = [];
+  for (const entry of entries) {
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try {
+      const environ = readFileSync(`/proc/${pid}/environ`);
+      const at = environ.indexOf(marker);
+      if (at === 0 || (at > 0 && environ[at - 1] === 0)) found.push(pid);
+    } catch {
+      // Exited meanwhile, or owned by another user and so unable to inherit our environment.
+    }
+  }
+  return found;
+}
+
 /** Windows FILETIME (100 ns since 1601) to Unix milliseconds. */
 const FILETIME_UNIX_OFFSET_MS = 11644473600000;
 
@@ -108,9 +159,10 @@ const FILETIME_UNIX_OFFSET_MS = 11644473600000;
  * On Windows, descendants are found by ParentProcessId and must have started at or after
  * `sinceMs` (minus a small clock tolerance); this skips unrelated processes whose parent
  * PID was reused. On POSIX the command runs as a process group leader, so a live group
- * member counts.
+ * member counts; with `scope`, Linux also counts a process carrying the scope marker, which
+ * finds descendants that left the group.
  */
-export function processTreeAlive(pid: number, sinceMs: number): boolean | null {
+export function processTreeAlive(pid: number, sinceMs: number, scope?: string): boolean | null {
   if (!pid) return false;
   if (!IS_WIN) {
     for (const target of [pid, -pid]) {
@@ -121,7 +173,9 @@ export function processTreeAlive(pid: number, sinceMs: number): boolean | null {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") return true;
       }
     }
-    return false;
+    if (!scope) return false;
+    const marked = scopedProcesses(scope);
+    return marked === null ? false : marked.length > 0;
   }
   const result = spawnSync(
     "powershell.exe",

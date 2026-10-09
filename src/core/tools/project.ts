@@ -46,10 +46,24 @@ interface ProjectProfile {
   typecheck: string | null;
   run: string | null;
   format: string | null;
+  /**
+   * Formatter command that takes one file path as its last argument and touches only that file.
+   * Package `format` scripts usually already name directories (e.g. `biome format --write src/`),
+   * so appending a file to them would rewrite the whole tree.
+   */
+  formatFile: string | null;
 }
 
 export async function detectProfile(cwd: string): Promise<ProjectProfile> {
-  const profile: ProjectProfile = {
+  const { formatFile, ...profile } = await detectToolchain(cwd);
+  // Outside JS package scripts every detected formatter already accepts a single file.
+  return { ...profile, formatFile: formatFile === undefined ? profile.format : formatFile };
+}
+
+type DetectedToolchain = Omit<ProjectProfile, "formatFile"> & { formatFile?: string | null };
+
+async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
+  const profile: DetectedToolchain = {
     test: null,
     build: null,
     lint: null,
@@ -88,7 +102,8 @@ export async function detectProfile(cwd: string): Promise<ProjectProfile> {
         ? "bunx tsc --noEmit"
         : null;
     profile.run = scripts.dev ? "bun run dev" : scripts.start ? "bun run start" : null;
-    profile.format = scripts.format ? "bun run format" : await detectJsFormatter(cwd, "bunx");
+    profile.formatFile = await detectJsFormatter(cwd, "bunx");
+    profile.format = scripts.format ? "bun run format" : profile.formatFile;
     profile.formatAndLint = await detectFormatAndLint(cwd, "bunx");
     return profile;
   }
@@ -117,7 +132,8 @@ export async function detectProfile(cwd: string): Promise<ProjectProfile> {
         ? "npx tsc --noEmit"
         : null;
     profile.run = scripts.dev ? `${run} dev` : scripts.start ? `${run} start` : null;
-    profile.format = scripts.format ? `${run} format` : await detectJsFormatter(cwd, "npx");
+    profile.formatFile = await detectJsFormatter(cwd, "npx");
+    profile.format = scripts.format ? `${run} format` : profile.formatFile;
     profile.formatAndLint = await detectFormatAndLint(cwd, "npx");
     return profile;
   }
@@ -834,13 +850,15 @@ export const projectTool = {
         break;
       case "format": {
         // Prefer formatAndLint (fixes both lint + format in one pass), then dedicated formatter, then lint --fix
+        if (args.file) {
+          // Whole-project commands cannot be narrowed by appending a path.
+          command = profile.formatFile ? `${profile.formatFile} ${shellQuote(args.file)}` : null;
+          break;
+        }
         const isCombo = !!profile.formatAndLint;
         command = profile.formatAndLint ?? profile.format ?? profile.lint;
         if (command && !isCombo && !profile.format && !args.raw) {
           command = applyFixFlag(command);
-        }
-        if (command && args.file) {
-          command = `${command} ${shellQuote(args.file)}`;
         }
         formatCoversLint = isCombo;
         break;
@@ -1037,9 +1055,9 @@ export const projectTool = {
 export async function formatFile(filePath: string, cwd?: string): Promise<boolean> {
   const effectiveCwd = cwd ?? process.cwd();
   const profile = await detectProfile(effectiveCwd);
-  if (!profile.format) return false;
+  if (!profile.formatFile) return false;
 
-  const command = `${profile.format} ${shellQuote(filePath)}`;
+  const command = `${profile.formatFile} ${shellQuote(filePath)}`;
   try {
     const proc = Bun.spawn(bunShellArgs(command), {
       cwd: effectiveCwd,
