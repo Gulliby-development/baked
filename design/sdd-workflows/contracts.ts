@@ -162,6 +162,10 @@ export const WorkflowConfigSchema = z.object({
   enabled: z.boolean().default(false), importsEnabled: z.boolean().default(false),
   defaultWorkflow: SafeId.default("sdd"),
   policy: PolicySchema,
+  delivery: z.object({
+    tokenEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/).default("GITHUB_TOKEN"),
+    apiUrl: z.string().regex(/^https:\/\/[^\s/]+(\/[^\s]*)?$/).default("https://api.github.com"),
+  }).strict().optional(),
 }).strict();
 export const InputManifestSchema = z.object({
   schemaVersion: z.literal(1), featureId: SafeId,
@@ -193,7 +197,7 @@ export const EventSchema = z.discriminatedUnion("type", [
   z.object({ ...EventBase, type: z.literal("check.finished"), payload: z.object({ checkId: SafeId, evidenceId: SafeId, status: z.enum(["passed", "failed", "inconclusive"]) }).strict() }).strict(),
   z.object({ ...EventBase, type: z.literal("finding.recorded"), payload: z.object({ findingId: SafeId, artifactId: SafeId }).strict() }).strict(),
   z.object({ ...EventBase, type: z.literal("criterion.assessed"), payload: z.object({ criterionId: CriterionId, snapshotId: SafeId, verdict: z.enum(["pass", "fail", "inconclusive", "deferred"]) }).strict() }).strict(),
-  z.object({ ...EventBase, type: z.literal("request.created"), payload: z.object({ requestId: SafeId, kind: z.enum(["approval", "clarification", "manual_evidence", "recovery", "checkpoint"]), digest: Hash }).strict() }).strict(),
+  z.object({ ...EventBase, type: z.literal("request.created"), payload: z.object({ requestId: SafeId, kind: z.enum(["approval", "clarification", "manual_evidence", "recovery", "checkpoint", "delivery"]), digest: Hash }).strict() }).strict(),
   z.object({ ...EventBase, type: z.literal("request.decided"), payload: z.object({ requestId: SafeId, status: z.enum(["accepted", "rejected", "superseded"]), actor: z.enum(["user", "system-invalidation"]) }).strict() }).strict(),
   z.object({ ...EventBase, type: z.literal("effect.reconciled"), payload: z.object({ effectId: SafeId, status: z.enum(["applied", "unknown", "reconciled", "failed"]) }).strict() }).strict(),
   z.object({ ...EventBase, type: z.literal("budget.updated"), payload: z.object({ usedTokens: z.number().int().nonnegative(), reservedTokens: z.number().int().nonnegative(), activeMs: z.number().int().nonnegative(), estimatedCostUsd: z.number().nonnegative().nullable() }).strict() }).strict(),

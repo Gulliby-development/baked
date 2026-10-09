@@ -19,6 +19,7 @@ import {
 import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs, frozenInstructions } from "./context.js";
+import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -410,10 +411,16 @@ export class NativeWorkflowService implements WorkflowService {
   }
   async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
+      const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
+      // Delivery happens after a run completed; its decisions never change the run's state.
+      if (named && isDeliveryRequest(named)) {
+        if (named.status !== "pending")
+          throw new WorkflowFault("STALE_DECISION", `Request is ${named.status}, not pending`);
+        decideDelivery(this.store, runId, named, decision);
+        return;
+      }
+      const request = named?.status === "pending" ? named : undefined;
       assertMutable(this.store.run(runId).status);
-      const request = this.store
-        .requests(runId)
-        .find((r) => r.id === decision.requestId && r.status === "pending");
       if (!request) throw new WorkflowFault("STALE_DECISION", "Pending request not found");
       const state = this.store.state(runId);
       const body = JSON.parse(request.body_json) as Record<string, unknown>;
