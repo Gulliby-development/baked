@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "tests",
+  "description": "The whole test suite passes.",
+  "required": true,
+  "scope": "feature",
+  "timeoutMs": 600000,
+  "retries": {
+    "max": 1,
+    "retryOn": [
+      "timeout",
+      "inconclusive"
+    ]
+  },
+  "evidence": {
+    "kind": "exit",
+    "keepOutputLines": 40,
+    "artifactPaths": []
+  },
+  "type": "command",
+  "command": {
+    "executable": "bun",
+    "args": [
+      "test"
+    ],
+    "cwd": ".",
+    "envNames": [],
+    "writes": []
+  }
+}

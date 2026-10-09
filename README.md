@@ -47,7 +47,7 @@ bun run build
 - [Getting started](GETTING_STARTED.md): setup, interface, configuration, and CLI usage.
 - [Development guide](CONTRIBUTING.md): architecture and extension points.
 - [SDD workflows](design/sdd-workflows/README.md): opt-in specification, planning, agent execution, review and convergence, with implementation verification status.
-- [Codex instructions](AGENTS.md): conventions and verification commands.
+- [Agent instructions](AGENTS.md): how BAKED works, task workflow, conventions and verification commands for any coding agent.
 - [Technical reference](mintlify-docs/introduction.mdx): detailed guides and recipes.
 - [Localization](locales/README.md): translation format and validation.
 - [Telemetry service](telemetry-worker/README.md): receiver implementation and deployment.
