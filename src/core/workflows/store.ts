@@ -821,6 +821,32 @@ export class WorkflowStore {
       payload: { attemptId: id, status, usageComplete: usedTokens !== null, usedTokens },
     });
   }
+  /**
+   * Persist the tokens a running attempt has spent so far. The executor calls it after every
+   * model step, so an attempt that fails, is cancelled or hits a cap still ends with its spend.
+   */
+  recordAttemptUsage(runId: string, attemptId: string, usedTokens: number): void {
+    this.db.run("UPDATE attempts SET used_tokens=? WHERE run_id=? AND id=? AND status='running'", [
+      Math.max(0, Math.ceil(usedTokens)),
+      runId,
+      attemptId,
+    ]);
+  }
+  /** Tokens an executor recorded for the attempt so far, or null when none reported any. */
+  recordedUsage(runId: string, attemptId: string): number | null {
+    return this.attempts(runId).find((a) => a.id === attemptId)?.used_tokens ?? null;
+  }
+  /**
+   * Tokens of the run's hard cap still free for one attempt: the limit less the counted spend
+   * and the reservations of every other attempt whose usage is not final.
+   */
+  remainingTokens(runId: string, policy: RunPolicy, attemptId?: string): number {
+    const run = this.run(runId);
+    const reserved = this.attempts(runId)
+      .filter((a) => !a.usage_complete && a.id !== attemptId)
+      .reduce((sum, a) => sum + a.reserved_tokens, 0);
+    return Math.max(0, policy.maxTotalTokens - run.token_usage - reserved);
+  }
   expandReservation(runId: string, attemptId: string, tokens: number, policy: RunPolicy): void {
     this.transaction(() => {
       const run = this.run(runId);
@@ -833,6 +859,12 @@ export class WorkflowStore {
         throw new WorkflowFault(
           "BUDGET_EXHAUSTED",
           "Next model step exceeds remaining token budget",
+          {
+            usedTokens: run.token_usage,
+            reservedTokens: reserved,
+            requestedTokens: tokens,
+            maxTotalTokens: policy.maxTotalTokens,
+          },
         );
       this.assertBelowCheckpoint(runId, policy, run.token_usage + reserved + tokens);
       this.db.run(
