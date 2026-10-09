@@ -45,6 +45,7 @@ export function NewRunForm({
   const [error, setError] = useState<string | null>(null);
   const workflows = info?.workflows ?? ["sdd"];
   const workflowId = workflow ?? info?.defaultWorkflow ?? "sdd";
+  const definition = info?.definitions?.[workflowId];
   const modelMissing = !model || model === "none";
   const checks = info?.policy.checks ?? [];
   const problems = [
@@ -176,6 +177,13 @@ export function NewRunForm({
           value={`‹ ${workflowId} ›${workflows.length > 1 ? `  (${workflows.length} available)` : ""}`}
           keyHint="←/→"
         />
+        {definition ? (
+          <Field
+            label="Stages"
+            labelWidth={10}
+            value={`${definition.stages.join(" → ")}${definition.writes ? "" : "  · no file will change"}`}
+          />
+        ) : null}
         <Field
           label="Budget"
           labelWidth={10}
@@ -223,7 +231,14 @@ export function NewRunForm({
           No checks configured. Approval will be refused for automated criteria until checks exist.
         </Hint>
       ) : null}
-      <Hint>Nothing in your source tree changes until you approve the plan.</Hint>
+      {definition?.problems.length ? (
+        <Hint kind="warn">{`This workflow cannot start: ${definition.problems.slice(0, 2).join(" · ")}`}</Hint>
+      ) : null}
+      <Hint>
+        {definition && !definition.writes
+          ? "This workflow only reads: no file in your source tree changes."
+          : "Nothing in your source tree changes until you approve the plan."}
+      </Hint>
     </box>
   );
 }

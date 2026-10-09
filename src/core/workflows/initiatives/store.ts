@@ -6,6 +6,9 @@ import { PolicySchema, SafeId } from "../schemas.js";
 import { newId, type WorkflowStore } from "../store.js";
 import { InitiativeId, type InitiativePlan, InitiativePlanSchema } from "./plan.js";
 
+/** The workflow schema version that adds initiatives (migration 004). */
+export const INITIATIVES_SCHEMA_VERSION = 4;
+
 export const InitiativeStatus = z.enum([
   "decomposing",
   "awaiting_approval",
@@ -40,11 +43,16 @@ export const InitiativeSettingsSchema = z
      */
     featureAutoApproval: z
       .object({
-        maxTasks: z.number().int().min(1).max(500),
-        maxFiles: z.number().int().min(1).max(500),
+        maxTasks: z.number().int().min(1).max(20),
+        maxFiles: z.number().int().min(1).max(50),
       })
       .strict()
       .nullable(),
+    /**
+     * The confirmation hash of a v2 feature workflow's own auto approval limits, given by the user
+     * at start and passed to every feature run. Null when the workflow has none.
+     */
+    autoApprovalConfirmation: z.string().length(64).nullable().default(null),
     model: z.string().min(1).nullable(),
     ownerLabel: z.string().min(1).max(200),
   })
@@ -116,7 +124,7 @@ export class InitiativeStore {
   }
   /** A reader opened on a database written before initiatives existed sees none. */
   available(): boolean {
-    return this.runs.schemaVersion() >= 3;
+    return this.runs.schemaVersion() >= INITIATIVES_SCHEMA_VERSION;
   }
   transaction<T>(action: () => T): T {
     return this.runs.transaction(action);
@@ -343,7 +351,10 @@ export class InitiativeStore {
   }
   events(id: string, after = 0, limit = 200): InitiativeEvent[] {
     return this.db
-      .query<{ seq: number; type: string; at: number; payload_json: string }, [string, number, number]>(
+      .query<
+        { seq: number; type: string; at: number; payload_json: string },
+        [string, number, number]
+      >(
         "SELECT seq,type,at,payload_json FROM initiative_events WHERE initiative_id=? AND seq>? ORDER BY seq LIMIT ?",
       )
       .all(id, after, limit)

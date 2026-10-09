@@ -1,83 +1,40 @@
 /**
- * Adds initiatives: a plan split into features, its immutable revisions, the durable approval of
- * the split, links from features to their runs, an append-only event log and idempotent commands.
- * Additive only; no existing table changes.
+ * Adds Git delivery: the `delivery` request kind (a human approval of one delivery plan) and the
+ * `delivery` effect kind (commit, push and pull request as journaled external effects). SQLite
+ * cannot alter a CHECK constraint, so both tables are rebuilt with their rows copied unchanged;
+ * no other table references `requests` or `effects`.
  */
-export const migration003 = `CREATE TABLE initiatives (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  prompt TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('decomposing','awaiting_approval','active','paused','completed','refused')),
-  reason TEXT NOT NULL DEFAULT '',
-  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
-  event_seq INTEGER NOT NULL DEFAULT 0 CHECK(event_seq >= 0),
-  plan_revision INTEGER NOT NULL DEFAULT 0 CHECK(plan_revision >= 0),
-  approved_plan_revision INTEGER,
-  approval_digest TEXT CHECK(approval_digest IS NULL OR length(approval_digest) = 64),
-  settings_json TEXT NOT NULL CHECK(json_valid(settings_json)),
-  decompose_run_id TEXT REFERENCES runs(id),
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE initiative_revisions (
-  initiative_id TEXT NOT NULL REFERENCES initiatives(id),
-  revision INTEGER NOT NULL CHECK(revision > 0),
-  plan_json TEXT NOT NULL CHECK(json_valid(plan_json)),
-  budget_json TEXT NOT NULL CHECK(json_valid(budget_json)),
-  digest TEXT NOT NULL CHECK(length(digest) = 64),
-  source TEXT NOT NULL CHECK(source IN ('decomposer','user')),
-  edit_json TEXT CHECK(edit_json IS NULL OR json_valid(edit_json)),
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY(initiative_id, revision)
-) STRICT;
-
-CREATE TABLE initiative_requests (
-  initiative_id TEXT NOT NULL REFERENCES initiatives(id),
+export const migration003 = `CREATE TABLE requests_v3 (
+  run_id TEXT NOT NULL REFERENCES runs(id),
   id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('split_approval')),
+  kind TEXT NOT NULL CHECK(kind IN ('approval','clarification','manual_evidence','recovery','checkpoint','delivery')),
   status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected','superseded')),
-  plan_revision INTEGER NOT NULL,
   digest TEXT NOT NULL CHECK(length(digest) = 64),
+  body_json TEXT NOT NULL CHECK(json_valid(body_json)),
   answer_json TEXT CHECK(answer_json IS NULL OR json_valid(answer_json)),
   actor TEXT,
-  created_at INTEGER NOT NULL,
   decided_at INTEGER,
-  PRIMARY KEY(initiative_id, id),
-  FOREIGN KEY(initiative_id, plan_revision) REFERENCES initiative_revisions(initiative_id, revision)
+  PRIMARY KEY(run_id, id)
 ) STRICT;
-
-CREATE TABLE initiative_runs (
-  initiative_id TEXT NOT NULL REFERENCES initiatives(id),
-  feature_id TEXT NOT NULL,
-  run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
-  plan_revision INTEGER NOT NULL,
-  feature_digest TEXT NOT NULL CHECK(length(feature_digest) = 64),
-  origin TEXT NOT NULL CHECK(origin IN ('start','rebase','replan')),
-  superseded_at INTEGER,
-  superseded_reason TEXT,
+INSERT INTO requests_v3 (run_id,id,kind,status,digest,body_json,answer_json,actor,decided_at)
+  SELECT run_id,id,kind,status,digest,body_json,answer_json,actor,decided_at FROM requests;
+DROP TABLE requests;
+ALTER TABLE requests_v3 RENAME TO requests;
+CREATE TABLE effects_v3 (
+  run_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('file_patch','artifact_write','command','delivery')),
+  status TEXT NOT NULL CHECK(status IN ('prepared','applied','unknown','reconciled','failed')),
+  intent_json TEXT NOT NULL CHECK(json_valid(intent_json)),
+  before_hash TEXT,
+  after_hash TEXT,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY(initiative_id, run_id)
+  PRIMARY KEY(run_id, id),
+  FOREIGN KEY(run_id, attempt_id) REFERENCES attempts(run_id, id)
 ) STRICT;
-CREATE INDEX initiative_runs_feature ON initiative_runs(initiative_id, feature_id, created_at DESC);
-
-CREATE TABLE initiative_events (
-  initiative_id TEXT NOT NULL REFERENCES initiatives(id),
-  seq INTEGER NOT NULL CHECK(seq > 0),
-  type TEXT NOT NULL,
-  at INTEGER NOT NULL,
-  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
-  PRIMARY KEY(initiative_id, seq)
-) STRICT;
-
-CREATE TABLE initiative_commands (
-  id TEXT PRIMARY KEY,
-  initiative_id TEXT NOT NULL,
-  request_hash TEXT NOT NULL CHECK(length(request_hash) = 64),
-  result_json TEXT NOT NULL CHECK(json_valid(result_json)),
-  created_at INTEGER NOT NULL
-) STRICT;
-
-CREATE TRIGGER initiative_revisions_no_update BEFORE UPDATE ON initiative_revisions BEGIN SELECT RAISE(ABORT, 'initiative revisions are immutable'); END;
-CREATE TRIGGER initiative_events_no_update BEFORE UPDATE ON initiative_events BEGIN SELECT RAISE(ABORT, 'initiative events are append-only'); END;
+INSERT INTO effects_v3 (run_id,id,attempt_id,kind,status,intent_json,before_hash,after_hash,created_at)
+  SELECT run_id,id,attempt_id,kind,status,intent_json,before_hash,after_hash,created_at FROM effects;
+DROP TABLE effects;
+ALTER TABLE effects_v3 RENAME TO effects;
 `;

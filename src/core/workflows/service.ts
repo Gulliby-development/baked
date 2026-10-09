@@ -19,6 +19,7 @@ import {
 import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs, frozenInstructions } from "./context.js";
+import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -51,8 +52,10 @@ import { newId, WorkflowStore } from "./store.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
 import { type Gate, validateWorkflowV2, type WorkflowV2 } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
-import { loadGateLibrary } from "./v2/library.js";
+import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
 import {
+  autoApprovalHash,
+  autoApprovalOf,
   checksOf,
   frozenGates,
   hostSpec,
@@ -157,12 +160,38 @@ export class NativeWorkflowService implements WorkflowService {
       const validation = validateWorkflowV2(definition, library.gates);
       if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
       gates = frozenGates(definition, library.gates);
+      const unconfirmed = unconfirmedGates(
+        this.workspace,
+        library,
+        gates.map((g) => g.id),
+      );
+      if (unconfirmed.length)
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Review the project gates this workflow uses before they run:\n${unconfirmed.map(describeGate).join("\n")}\nConfirm them with: baked workflow gates confirm ${unconfirmed.map((e) => e.gate.id).join(" ")}`,
+          { unconfirmedGates: unconfirmed.map((e) => e.gate.id) },
+        );
       for (const gate of gates) {
         const entry = library.entries.get(gate.id);
         if (entry?.path) gateFiles[entry.path] = hashBytes(readFileSync(entry.path));
       }
-      // The command gates the definition binds are the run's checks, with their effective modes.
-      policy = PolicySchema.parse({ ...policy, checks: checksOf(definition, gates) });
+      const autoApproval = autoApprovalOf(definition);
+      if (definition.autoApproval && autoApproval) {
+        const expected = autoApprovalHash(definition.autoApproval);
+        if (request.autoApprovalConfirmation !== expected)
+          throw new WorkflowFault(
+            "INVALID_DEFINITION",
+            `Workflow ${definition.id} approves plans automatically within: ${describeAutoApproval(definition.autoApproval)}. Confirm these limits to start it (CLI: --confirm-auto-approval ${expected}).`,
+            { autoApprovalHash: expected },
+          );
+      }
+      // The command gates the definition binds are the run's checks, with their effective modes;
+      // auto approval comes from the definition only.
+      policy = PolicySchema.parse({
+        ...policy,
+        checks: checksOf(definition, gates),
+        autoApproval,
+      });
       validateChecks(this.workspace, policy);
       for (const stage of definition.stages) {
         const kind = stageKind(stage);
@@ -404,10 +433,16 @@ export class NativeWorkflowService implements WorkflowService {
   }
   async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
+      const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
+      // Delivery happens after a run completed; its decisions never change the run's state.
+      if (named && isDeliveryRequest(named)) {
+        if (named.status !== "pending")
+          throw new WorkflowFault("STALE_DECISION", `Request is ${named.status}, not pending`);
+        decideDelivery(this.store, runId, named, decision);
+        return;
+      }
+      const request = named?.status === "pending" ? named : undefined;
       assertMutable(this.store.run(runId).status);
-      const request = this.store
-        .requests(runId)
-        .find((r) => r.id === decision.requestId && r.status === "pending");
       if (!request) throw new WorkflowFault("STALE_DECISION", "Pending request not found");
       const state = this.store.state(runId);
       const body = JSON.parse(request.body_json) as Record<string, unknown>;
@@ -768,9 +803,9 @@ export class NativeWorkflowService implements WorkflowService {
     return this.forkRun(runId, command, { runId, ...command, action: "fork" });
   }
   /**
-   * A fork of an initiative feature whose upstream contracts changed: the new run keeps the
-   * package, pins the given contract hashes as its dependencies and starts again at analysis, so
-   * the plan is reviewed and approved against the new contracts. `policy` replaces the run policy
+   * A fork of an initiative feature whose upstream contracts changed: the new run keeps its spec,
+   * pins the given contract hashes as its dependencies and starts again at the plan stage, so the
+   * plan is made, analyzed and approved against the new contracts. `policy` replaces the run policy
    * (an initiative drops auto approval here, so a person reviews the changed contract).
    */
   async rebase(
@@ -836,16 +871,19 @@ export class NativeWorkflowService implements WorkflowService {
         state.manifest.policyHash = hashJson(policy);
         state.manifest.dependencyContracts = [];
         if (state.spec) {
-          // The package stays; its hashes follow the spec whose dependencies changed.
+          // The feature's own spec stays; the plan is made again against the new upstream
+          // contracts and the workspace as it is now, then analyzed and approved again.
           state.spec = { ...state.spec, dependencies: rebase.dependencies };
-          const specHash = hashJson(state.spec);
-          state.manifest.specHash = specHash;
-          if (state.graph) {
-            state.graph = { ...state.graph, specHash };
-            state.rootGraph = structuredClone(state.graph);
-            state.manifest.rootGraphHash = hashJson(state.graph);
-            state.manifest.effectiveGraphHash = hashJson(state.graph);
-          }
+          state.manifest.specHash = hashJson(state.spec);
+          state.plan = null;
+          state.graph = null;
+          state.rootGraph = null;
+          state.manifest.planHash = null;
+          state.manifest.rootGraphHash = null;
+          state.manifest.effectiveGraphHash = null;
+          const restart = planPosition(run.definition_json);
+          state.stageIndex = restart.stageIndex;
+          state.position = restart.position;
         }
       }
       const parsed = parseRunDefinition(run.definition_json);
@@ -947,4 +985,34 @@ function restartPosition(definitionJson: string, keepsPackage: boolean): Runtime
     position.visits = { [stage.id]: 1 };
   }
   return position;
+}
+
+/** Where a rebased run starts: the stage that produces the plan. */
+function planPosition(definitionJson: string): {
+  stageIndex: number;
+  position: RuntimeState["position"];
+} {
+  const parsed = parseRunDefinition(definitionJson);
+  if (parsed.schemaVersion === 1) {
+    const index = parsed.definition.stages.findIndex((s) => s.kind === "plan");
+    if (index < 0) throw new WorkflowFault("INVALID_DEFINITION", "The workflow has no plan stage");
+    return { stageIndex: index, position: null };
+  }
+  const position = initialPosition(parsed.definition);
+  const stage = parsed.definition.stages.find((s) => s.produces === "plan");
+  if (!stage) throw new WorkflowFault("INVALID_DEFINITION", "The workflow has no plan stage");
+  position.stageId = stage.id;
+  position.visits = { [stage.id]: 1 };
+  return { stageIndex: 0, position };
+}
+
+function describeAutoApproval(limits: NonNullable<WorkflowV2["autoApproval"]>): string {
+  return [
+    `at most ${limits.maxTasks} tasks`,
+    `${limits.maxFiles} files`,
+    `paths ${limits.allowedPaths.join(", ")}`,
+    limits.allowDelete ? "deletions allowed" : "no deletions",
+    "no new dependencies",
+    `a token budget up to ${limits.maxTotalTokens}`,
+  ].join("; ");
 }

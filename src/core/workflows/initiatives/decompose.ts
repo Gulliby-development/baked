@@ -11,7 +11,8 @@ export const decomposeWorkflow: WorkflowV2 = {
   schemaVersion: 2,
   id: DECOMPOSE_WORKFLOW_ID,
   version: "1.0.0",
-  description: "Propose the split of a large request into features with contracts and a dependency DAG.",
+  description:
+    "Propose the split of a large request into features with contracts and a dependency DAG.",
   preset: "custom",
   inputs: ["request"],
   entry: "decompose",

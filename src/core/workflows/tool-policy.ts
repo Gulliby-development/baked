@@ -25,6 +25,8 @@ export class WorkflowToolPolicy {
     workspacePath(this.root, path);
     if (
       /^\.(baked|git)(\/|$)/i.test(path) ||
+      // Definitions, gates, profiles and skills decide what a run may do; no agent edits them.
+      /^baked\/(workflows|gates|agents|skills)(\/|$)|^baked\/constitution\.md$/i.test(path) ||
       /(^|\/)(\.env(?:\..*)?|credentials(?:\..*)?)$/i.test(path)
     )
       throw new WorkflowFault("CAPABILITY_DENIED", `Protected workflow path: ${path}`);

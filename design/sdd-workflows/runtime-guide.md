@@ -214,7 +214,10 @@ Definitions of schema version 2 describe stages, transitions, contracts and gate
 - A run of a v2 definition walks its graph: each stage reports an outcome (`passed`, `failed` for a check stage whose required gate failed, `changes_requested` for review and reflection), and the transition that answers it is taken after its gates pass. `transition.taken` and `gate.finished` events record the walk. A loop edge runs at most `maxIterations` times and the run at most `limits.maxStageVisits` stage visits; either bound stops the run as `no_progress`.
 - Quick fix plans from the request alone (the host states it as one requirement), asks for approval and runs the tasks and checks. Spike researches and writes a report (`report.json`, also in `completion.json`); it changes no file and asks for no approval. Review only freezes `git diff HEAD` (or the last commit when the tree is clean) when the run starts and runs the correctness and, for security-sensitive paths, the security reviewer on it; its findings are the result and are not repaired.
 - An advisory gate is recorded and never blocks. A command gate with `retries` records every attempt; a pass after a failure is flagged flaky. A human gate on a transition waits for evidence: answer it with `baked workflow evidence RUN_ID --request ID --file FILE --accept --expected-revision N`.
+- Auto approval belongs to the definition: an approval stage with `decision: "auto"` and the definition's `autoApproval` limits. Such a run starts only when the user confirms the limits; the refusal names them and the hash to pass (`--confirm-auto-approval HASH`). Inside the limits the host records the approval with the actor `auto-approval` and the digest a person would sign; anything outside them, or an always-human path, waits for a person. A stage with `decision: "human"` never approves on its own, and the project policy's `autoApproval` does not apply to v2 runs. The run overview shows the limits for the life of the run.
 - `baked workflow gates` lists the gate library: the built-in review gates, the policy checks, the user's `~/.baked/gates/*.json` and the project's `baked/gates/*.json`, in that order of precedence, with what each gate shadows. A file that does not parse is listed as a problem and never used. Reading the library runs nothing.
+- A project gate (`baked/gates/*.json`) runs only after the user confirms it: a run that binds an unconfirmed project gate does not start and names the command `baked workflow gates confirm ID...` (or `--all`). The confirmation stores the gate's hash in `.baked/gate-confirmations.json`, so editing the file asks again; the confirmation message says when the gate replaces a built-in, policy or user gate of the same ID. `baked workflow gates` marks confirmed project gates.
+- Workflow agents cannot edit `baked/workflows/`, `baked/gates/`, `baked/agents/`, `baked/skills/` or `baked/constitution.md`; these paths decide what a run may do.
 
 ## Pause, crash and recovery
 
@@ -244,7 +247,7 @@ Workspace and evidence files are written to a unique temp file and renamed into 
 
 If workflows are off in the project, the panel shows what will be written, and E enables them: a `workflows` block with the default policy and checks found in the `package.json` scripts (`typecheck`, `lint`, `test`) for the project's runner is added to `.baked/config.json`. An existing block only gets `enabled: true`. While the project is off, the panel starts no worker and creates no database.
 
-The new-run form contains the description, the feature ID (derived from the description; Cyrillic text is transliterated), the workflow (`sdd`, the five presets and `baked/workflows/*.json`), the budget `quick`/`standard`/`extended`/`checkpoints` (×0.5/×1/×2 of the configured policy's token, call and time limits; `checkpoints` has no token cap and asks every N tokens), an estimate of the spend labeled as an estimate, the current chat tab's model and the configured checks. Ctrl+S starts from any field. The run executes in the worker in the background; the panel switches to it immediately.
+The new-run form contains the description, the feature ID (derived from the description; Cyrillic text is transliterated), the workflow (`sdd`, the five presets and `baked/workflows/*.json`, with the stages of the chosen one and "no file will change" for a workflow that only reads), the budget `quick`/`standard`/`extended`/`checkpoints` (×0.5/×1/×2 of the configured policy's token, call and time limits; `checkpoints` has no token cap and asks every N tokens), an estimate of the spend labeled as an estimate, the current chat tab's model and the configured checks. Ctrl+S starts from any field. The run executes in the worker in the background; the panel switches to it immediately.
 
 The worker reports new events of its runs to the panel immediately; the panel reads changes from other processes and active time by polling every 150 ms, and a poll without changes does not re-read the view.
 
@@ -276,6 +279,45 @@ For a review by another model, save the full definition of `reviewer` or `securi
 Export creates a new directory inside the workspace. The host API allows a separate outside-path approval callback; the CLI does not provide one automatically. Raw provider messages and command output are not part of the portable report; known credentials are masked. Redaction removes the selected artifact content, keeps the original hash and a tombstone and invalidates evidence. It does not promise to remove every possible copy of a string from other artifacts.
 
 GC removes only terminal runs older than 30 days and the given cutoff when no child run needs them and they hold no lease. Active/waiting/blocked data and the shared `specs/` are kept. For a backup, stop the writers and save `.baked/workflows.sqlite` together with `.baked/workflow-runs/`. Copying a live SQLite database also needs the WAL/SHM files or an SQLite backup; an arbitrary copy of one file during writes is not a consistent backup.
+
+## Delivery
+
+A completed run whose verification is `current` can be delivered through Git: one commit of the run's files on a new branch, a push of that branch and a pull request. Every step needs a person's approval of the exact plan; delivery never runs inside auto approval.
+
+```sh
+baked workflow deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
+baked workflow approve RUN_ID --request ID --digest SHA256 --expected-revision N
+baked workflow deliver RUN_ID --execute --expected-revision N [--request ID]
+```
+
+`deliver` prepares a plan and changes nothing in Git. It is stored as the immutable artifact `delivery/PLAN_ID/plan.json` with the reviewable diff in `delivery/PLAN_ID/diff.patch`, and a pending request of kind `delivery` carries the plan's digest. The plan names the operations (`commit`, `push`, `pull_request`), the remote and its URL, the branch (default `baked/FEATURE-` followed by the first 8 characters of the run ID), the base commit and branch (the current HEAD), the commit author, every file with its action, content hash and mode, the excluded files with a reason, the user's other uncommitted changes, the commit message, the pull request title, body, base and draft flag, and the check, criterion and review results. The command prints the `approve` command for that digest. A new `deliver` supersedes an older pending plan. Approving or rejecting a delivery request does not change the run's status; the run stays `completed`.
+
+Which files are delivered: the files of the run's effect journal (task edits and published spec artifacts) and the files that changed between the approval baseline snapshot and the final snapshot inside the tasks' declared writes. Other files in the workspace are never committed; they are listed under `userChanges` and left as they are. Excluded and reported: anything under `.baked/` or `.git/`, symbolic links, files ignored by Git, files with no net change from HEAD, and files that look like secrets (`.env*`, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.git-credentials`, `credentials.json`, SSH keys, `*.pem`, `*.key`, `*.crt`, `*.cer`, `*.der`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.asc`, `*.gpg`, `*.ovpn`, or content with a private key header).
+
+Preparation refuses, with `details.reason` in the error:
+
+| Reason | Cause |
+| --- | --- |
+| `git_required` | The workspace is not a Git repository, or not its top level. Delivery needs Git; a filesystem-only project keeps its changes in place |
+| `run_not_completed`, `verification_not_current` | Only a completed and currently verified result is delivered |
+| `dirty_files` | A delivered file differs from the run's verified snapshot |
+| `base_mismatch` | A delivered file had uncommitted user changes before the run, or a commit since the run started changed it; the run's changes cannot be separated, so commit or revert those changes by hand |
+| `missing_remote`, `remote_unreachable`, `missing_auth` | The remote is not configured, cannot be read, or credentials (Git or the pull request token) are missing |
+| `branch_exists` | The branch exists locally or on the remote; delivery never overwrites a branch |
+| `detached_head`, `no_commits`, `missing_identity` | No base branch, no base commit, or no `user.name`/`user.email` |
+| `nothing_to_deliver` | Every changed file was excluded |
+
+A HEAD that moved since the run's baseline is accepted when the new commits do not touch the delivered files; the plan records `headMoved`.
+
+`deliver --execute` performs the latest approved plan (or `--request ID`). It refuses a plan approved by anyone but a person, a plan whose artifact no longer matches its digest, a changed remote URL, HEAD moved since the plan (`head_moved`) and files changed since the plan (`dirty_files`). The commit is built in a temporary index from the approved content; the user's checkout, index, HEAD and files are not touched, and the new branch is created only if it does not exist. The author and committer date is the plan's time, so the same plan always produces the same commit ID. Commit hooks do not run because no checkout is used; the push runs the local `pre-push` hook and the remote's hooks. The push names the branch without `+`, so Git only creates or fast-forwards it. Delivery never force-pushes, merges, resets, rebases or deletes anything.
+
+Every operation is a `delivery` effect in the run's journal with its plan ID, branch and commit. A failure Git or the host reports for certain (non-fast-forward, hook rejection, authentication, unreachable remote, HTTP 401/403) marks the effect `failed` and stops with that reason; the next `--execute` retries only the failed step. When the outcome is not known (a crash, a dropped connection, a lost API response), the runtime checks before doing anything again: the local branch for the commit, `git ls-remote` for the push, the pull request by head branch for the pull request. A found result is recorded as `reconciled`; a confirmed absence as `failed`, which allows a retry. If the check itself cannot be answered, the effect stays `unknown` and a `recovery` request is created, as for v1 commands; it is answered with `recover` (`record-applied`, `record-not-applied`, `retry`, or `cancel`, which abandons the delivery). A later `--execute` that can check the remote settles the effect itself and supersedes the request. When everything is done, `delivery/PLAN_ID/result.json` links the commit ID, the branch, the remote and the pull request URL to the run, its revision at planning, the accepted snapshot and the approval root. Executing a delivered plan again returns that result and creates nothing.
+
+Pull requests use the GitHub REST API. The token is read from the environment variable named in the configuration (default `GITHUB_TOKEN`) and sent only to the configured API URL; github.com remotes map to `https://api.github.com`, other API URLs (GitHub Enterprise) serve remotes on their own host. Other hosts are delivered with `--no-pr` (commit and push only).
+
+```json
+{ "workflows": { "delivery": { "tokenEnv": "GITHUB_TOKEN", "apiUrl": "https://api.github.com" } } }
+```
 
 ## Exit codes
 

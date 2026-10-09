@@ -10,6 +10,7 @@ import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
 import { migration002 } from "./migrations/002.js";
 import { migration003 } from "./migrations/003.js";
+import { migration004 } from "./migrations/004.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -81,7 +82,7 @@ export interface TaskRow {
 }
 export interface RequestRow {
   id: string;
-  kind: "approval" | "clarification" | "manual_evidence" | "recovery" | "checkpoint";
+  kind: "approval" | "clarification" | "manual_evidence" | "recovery" | "checkpoint" | "delivery";
   status: string;
   digest: string;
   body_json: string;
@@ -91,7 +92,7 @@ export interface RequestRow {
 export interface EffectRow {
   id: string;
   attempt_id: string;
-  kind: "file_patch" | "artifact_write" | "command";
+  kind: "file_patch" | "artifact_write" | "command" | "delivery";
   status: "prepared" | "applied" | "unknown" | "reconciled" | "failed";
   intent_json: string;
   before_hash: string | null;
@@ -154,6 +155,7 @@ const MIGRATIONS = [
   { version: 1, sql: migration001 },
   { version: 2, sql: migration002 },
   { version: 3, sql: migration003 },
+  { version: 4, sql: migration004 },
 ] as const;
 
 export class WorkflowStore {
@@ -283,8 +285,9 @@ export class WorkflowStore {
   /** The schema version this database is at. A reader may be opened on an older one. */
   schemaVersion(): number {
     return (
-      this.db.query<{ v: number | null }, []>("SELECT MAX(version) AS v FROM schema_migrations").get()
-        ?.v ?? 0
+      this.db
+        .query<{ v: number | null }, []>("SELECT MAX(version) AS v FROM schema_migrations")
+        .get()?.v ?? 0
     );
   }
   transaction<T>(action: () => T): T {
@@ -636,6 +639,15 @@ export class WorkflowStore {
       ]);
     return { id, hash, files };
   }
+  /** The file manifest of one stored workspace snapshot, or null when the run has no such snapshot. */
+  snapshotFiles(runId: string, snapshotId: string): Record<string, string> | null {
+    const row = this.db
+      .query<{ manifest_json: string }, [string, string]>(
+        "SELECT manifest_json FROM workspace_snapshots WHERE run_id=? AND id=?",
+      )
+      .get(runId, snapshotId);
+    return row ? (JSON.parse(row.manifest_json) as Record<string, string>) : null;
+  }
   request(runId: string, kind: RequestRow["kind"], digest: string, body: unknown): string {
     const id = newId();
     this.db.run(
@@ -735,6 +747,32 @@ export class WorkflowStore {
     if (!parent) this.db.run("UPDATE runs SET stage_id=? WHERE id=?", [stageId, runId]);
     this.emit(runId, { type: "stage.started", payload: { stepId: id, stageId, generation } });
     return id;
+  }
+  /**
+   * A step and attempt outside the workflow definition for actions taken after a run ended (Git
+   * delivery), so their effects join the run's journal. The run's current stage is not changed.
+   */
+  beginExternalAttempt(runId: string, stageId: string): { stepId: string; attemptId: string } {
+    const generation =
+      (this.db
+        .query<{ n: number | null }, [string, string]>(
+          "SELECT MAX(generation) AS n FROM steps WHERE run_id=? AND stage_id=?",
+        )
+        .get(runId, stageId)?.n ?? -1) + 1;
+    const stepId = newId();
+    const attemptId = newId();
+    const inputHash = this.run(runId).input_hash;
+    this.db.run(
+      "INSERT INTO steps (run_id,id,stage_id,parent_step_id,generation,status,input_hash) VALUES (?,?,?,NULL,?,'running',?)",
+      [runId, stepId, stageId, generation, inputHash],
+    );
+    this.emit(runId, { type: "stage.started", payload: { stepId, stageId, generation } });
+    this.db.run(
+      "INSERT INTO attempts (run_id,id,step_id,ordinal,model_id,status,input_hash,reserved_tokens,started_at) VALUES (?,?,?,1,NULL,'running',?,0,?)",
+      [runId, attemptId, stepId, inputHash, Date.now()],
+    );
+    this.emit(runId, { type: "attempt.started", payload: { attemptId, stepId, modelId: null } });
+    return { stepId, attemptId };
   }
   finishStep(
     runId: string,

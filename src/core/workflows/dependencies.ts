@@ -50,7 +50,10 @@ export function dependencyContracts(store: WorkflowStore, state: RuntimeState) {
         `No accepted dependency contract: ${dependency.featureId}`,
       );
     if (accepted.contractHash !== dependency.contractHash)
-      throw new WorkflowFault("INPUT_CHANGED", `Upstream contract changed: ${dependency.featureId}`);
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        `Upstream contract changed: ${dependency.featureId}`,
+      );
     return {
       featureId: dependency.featureId,
       contractHash: dependency.contractHash,

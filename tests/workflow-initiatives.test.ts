@@ -63,6 +63,7 @@ class InitiativeExecutor implements AgentExecutor {
   contracts: Record<string, string> = {};
   /** Extra path a feature's plan writes, to step outside its boundary. */
   extraWrites: Record<string, string> = {};
+  writes: Record<string, number> = {};
   constructor(private root: string, public split: unknown = threeFeatures, private tokens = 100) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
@@ -114,8 +115,12 @@ class InitiativeExecutor implements AgentExecutor {
         output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       case "implementation": {
-        for (const write of request.task?.writes ?? [])
-          writeFileSync(join(this.root, write.path), `ready ${this.contracts[write.path.replace(".txt", "")] ?? "v1"}`);
+        for (const write of request.task?.writes ?? []) {
+          // Each write changes the file, as a rebased feature adapts its result to the new contract.
+          const count = (this.writes[write.path] = (this.writes[write.path] ?? 0) + 1);
+          const version = this.contracts[write.path.replace(".txt", "")] ?? "v1";
+          writeFileSync(join(this.root, write.path), `ready ${version}${count > 1 ? ` (write ${count})` : ""}`);
+        }
         output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
         break;
       }
@@ -280,8 +285,14 @@ describe("initiative runtime", () => {
     // api keeps its finished result but cannot count it until core is accepted again.
     expect(t.featureOf(view, "api").state).toBe("waiting");
 
+    // docs' run is still open and waits for its approval; one feature run is open at a time.
     view = await t.drive();
-    // docs had an open run; it continues first? No: one writer, dependency order.
+    expect(view.next.kind).toBe("decide");
+    expect(view.next.featureId).toBe("docs");
+    expect(t.featureOf(view, "core").state).toBe("ready");
+    await t.approveFeature("docs");
+    view = await t.drive();
+    expect(t.featureOf(view, "docs").state).toBe("accepted");
     expect(t.featureOf(view, "core").state).toBe("needs_decision");
     await t.approveFeature("core");
     view = await t.drive();
@@ -301,16 +312,16 @@ describe("initiative runtime", () => {
     expect(t.workflows.store.requests(api.runId ?? "").find((r) => r.id === reapproval.requestId)?.actor).toBe("user");
 
     view = await t.drive();
-    expect(t.featureOf(view, "api").state).toBe("accepted");
-    expect(view.status).toBe("active");
-    await t.approveFeature("docs");
-    view = await t.drive();
     expect(view.features.every((f) => f.state === "accepted")).toBe(true);
     expect(view.status).toBe("completed");
-    expect(readFileSync(join(t.root, "core.txt"), "utf8")).toBe("ready v2");
+    expect(readFileSync(join(t.root, "core.txt"), "utf8")).toStartWith("ready v2");
     // Every run of the initiative is linked: three originals, the re-plan of core and the rebase of api.
     expect(t.initiatives.store.links("values").map((l) => `${l.feature_id}:${l.origin}`)).toEqual([
-      "core:start", "api:start", "docs:start", "core:replan", "api:rebase",
+      "core:start",
+      "api:start",
+      "docs:start",
+      "core:replan",
+      "api:rebase",
     ]);
   });
 
@@ -331,13 +342,22 @@ describe("initiative runtime", () => {
     expect(corePolicy.autoApproval ?? null).toBeNull();
     await t.approveFeature("core");
     view = await t.drive();
-    const used = view.budget.used;
-    expect(used.tokens).toBeGreaterThan(0);
-    expect(view.budget.used).toEqual(t.featureOf(view, "core").usage);
+    // core finished: its usage counts. api's run is open: its whole limit is held back.
+    const core = t.featureOf(view, "core").usage;
+    expect(core.tokens).toBeGreaterThan(0);
     const apiRun = t.featureOf(view, "api").runId ?? "";
     const apiPolicy = JSON.parse(t.workflows.store.run(apiRun).policy_json) as RunPolicy;
-    expect(apiPolicy.maxTotalTokens).toBe(Math.floor((budget.maxTotalTokens - used.tokens) / 2));
-    expect(apiPolicy.maxAgentCalls).toBe(Math.floor((budget.maxAgentCalls - used.calls) / 2));
+    expect(apiPolicy.maxTotalTokens).toBe(Math.floor((budget.maxTotalTokens - core.tokens) / 2));
+    expect(apiPolicy.maxAgentCalls).toBe(Math.floor((budget.maxAgentCalls - core.calls) / 2));
+    const api = t.featureOf(view, "api").usage;
+    expect(view.budget.used).toEqual({
+      tokens: core.tokens + api.tokens,
+      calls: core.calls + api.calls,
+      activeMs: core.activeMs + api.activeMs,
+    });
+    expect(view.budget.reserved.tokens).toBe(apiPolicy.maxTotalTokens - api.tokens);
+    expect(view.budget.remaining.tokens).toBe(budget.maxTotalTokens - core.tokens - apiPolicy.maxTotalTokens);
+    expect(view.budget.nextShare?.tokens).toBe(view.budget.remaining.tokens);
   });
 
   test("a feature cannot start when the shared budget is exhausted until it is extended", async () => {
@@ -379,8 +399,7 @@ describe("initiative runtime", () => {
     await t.approveSplit();
     const view = await t.drive();
     const runId = t.featureOf(view, "core").runId ?? "";
-    const errors = t.workflows.store.artifacts(runId).filter((a) => a.logical_path.startsWith("errors/"));
-    console.log(t.featureOf(view, "core").blockers, errors.map((a) => t.workflows.store.readArtifact(runId, a.id)));
+    expect(JSON.parse(t.workflows.store.run(runId).policy_json).autoApproval ?? null).toBeNull();
     expect(t.featureOf(view, "core").state).toBe("needs_decision");
   });
 
