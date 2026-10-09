@@ -59,8 +59,8 @@ class FixtureExecutor implements AgentExecutor {
     return { output, inputTokens: 20, outputTokens: 30 };
   }
 }
-function setup(repair = false) {
-  const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+function setup(repair = false, parent = tmpdir()) {
+  const root = mkdtempSync(join(parent, "baked-workflow-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new FixtureExecutor(root, repair);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
@@ -770,6 +770,46 @@ describe("full disk during file writes", () => {
       expect(tempFiles(join(root, ".baked", "workflow-runs"))).toEqual([]);
     } finally { write.mockRestore(); }
     // Reconcile finds the original content, so the write is marked not applied and is safe to retry.
+    expect(service.scheduler.journal.reconcile(run.runId)).toEqual([]);
+    expect(service.store.effects(run.runId)[0]?.status).toBe("failed");
+    service.scheduler.journal.publish(run.runId, attempt, "value.txt", "after", hashBytes("before"));
+    expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("after");
+  });
+});
+
+// Release gate on a real small volume, e.g. `mount -t tmpfs -o size=8m tmpfs <dir>` on Linux.
+const fullVolume = process.env.BAKED_FULL_VOLUME_DIR;
+describe.skipIf(!fullVolume)("full disk on a real volume", () => {
+  test("running out of space leaves the original file, no temp files and no false evidence", async () => {
+    const { existsSync, readdirSync, openSync, writeSync, closeSync, ftruncateSync, fstatSync } = await import("node:fs");
+    const { service, root } = setup(false, fullVolume);
+    const { run } = await start(service);
+    writeFileSync(join(root, "value.txt"), "before");
+    const step = service.store.beginStep(run.runId, "publication");
+    const attempt = service.store.reserve(run.runId, step, null, 0, policy);
+    service.leases.acquire("mutation", run.runId);
+    const tempFiles = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".tmp")) : [];
+    // Fill the volume, then free 256 KiB so SQLite can still commit small rows while 1 MiB writes fail.
+    const filler = join(fullVolume!, `filler-${newId()}`);
+    const fd = openSync(filler, "w");
+    try {
+      const chunk = Buffer.alloc(64 * 1024, 1);
+      try { for (;;) writeSync(fd, chunk); } catch (error) { expect((error as NodeJS.ErrnoException).code).toBe("ENOSPC"); }
+      ftruncateSync(fd, Math.max(0, fstatSync(fd).size - 256 * 1024));
+      const large = "x".repeat(1024 * 1024);
+      expect(() => service.scheduler.journal.publish(run.runId, attempt, "value.txt", large, hashBytes("before"))).toThrow("ENOSPC");
+      expect(service.store.effects(run.runId)[0]?.status).toBe("unknown");
+      expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("before");
+      expect(tempFiles(root)).toEqual([]);
+      const artifacts = service.store.artifacts(run.runId).length;
+      expect(() => service.store.transaction(() => service.store.artifact(run.runId, "check", "checks/big.json", large))).toThrow(/ENOSPC|SQLITE_FULL|full/i);
+      expect(service.store.artifacts(run.runId).length).toBe(artifacts);
+      expect(tempFiles(join(root, ".baked", "workflow-runs"))).toEqual([]);
+    } finally {
+      closeSync(fd);
+      rmSync(filler, { force: true });
+    }
+    // With space back, reconcile marks the unapplied write failed and a retry succeeds.
     expect(service.scheduler.journal.reconcile(run.runId)).toEqual([]);
     expect(service.store.effects(run.runId)[0]?.status).toBe("failed");
     service.scheduler.journal.publish(run.runId, attempt, "value.txt", "after", hashBytes("before"));
