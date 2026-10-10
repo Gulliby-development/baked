@@ -6,6 +6,7 @@ import {
   finalizeNotice,
   finalizeReason,
   KEEP_RECENT_TOOL_MESSAGES,
+  truncationNotice,
 } from "../src/core/workflows/step-budget.js";
 
 const BIG = "x".repeat(4000);
@@ -129,6 +130,31 @@ describe("AttemptStepController", () => {
       messages: longer,
     });
     expect(second.messages?.[messages.length]).toEqual(first.messages?.at(-1));
+    expect(second.messages?.at(-1)).toEqual(longer.at(-1));
+  });
+
+  test("tells the agent once that a step was cut off at the output cap, and keeps it in place", () => {
+    const controller = new AttemptStepController({
+      maxSteps: 14,
+      maxTokens: 100_000,
+      submitTools: ["submit_result"],
+      fallbackStepTokens: 100,
+      maxOutputTokens: 4096,
+    });
+    const messages = history(1);
+    const cut = { ...usage(100, 4096), finishReason: "length" };
+    const first = controller.prepare({ stepNumber: 1, steps: [cut], messages });
+    const notice = { role: "user", content: truncationNotice(4096) };
+    expect(first.messages?.at(-1)).toEqual(notice);
+    expect(first.activeTools).toBeUndefined();
+    const longer = [...messages, call("retry", "edit_file", {})];
+    const second = controller.prepare({
+      stepNumber: 2,
+      steps: [cut, { ...usage(120, 50), finishReason: "tool-calls" }],
+      messages: longer,
+    });
+    expect(second.messages?.[messages.length]).toEqual(notice);
+    expect(second.messages?.filter((m) => m.role === "user" && m.content === notice.content)).toHaveLength(1);
     expect(second.messages?.at(-1)).toEqual(longer.at(-1));
   });
 
