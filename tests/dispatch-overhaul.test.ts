@@ -1,7 +1,7 @@
 /**
  * Battle-hardened tests for the Spark/Ember dispatch overhaul.
  *
- * Covers: classifyTask, selectModel, guardForgeTools, multi-agent display,
+ * Covers: classifyTask, selectModel, guardBakeTools, multi-agent display,
  * pricing accuracy, cost computation, AgentBus deadlocks, cross-agent
  * security, and headless model resolution.
  */
@@ -72,7 +72,7 @@ describe("selectModel", () => {
 // ── Tool guarding ────────────────────────────────────────────────────────
 
 describe("tool blocking sets", () => {
-  // We can't import guardForgeTools (not exported), but we can verify the
+  // We can't import guardBakeTools (not exported), but we can verify the
   // blocking sets are correct by importing the constants indirectly.
   // The sets are module-level constants — we verify their behavior through
   // the public createAgent API in integration tests. Here we verify the
