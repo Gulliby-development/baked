@@ -160,7 +160,7 @@ export function budgetLimitText(budget: BudgetView): string {
 export interface RunAction {
   key: string;
   label: string;
-  action: "resume" | "pause" | "cancel" | "fork" | "decide" | "extend";
+  action: "resume" | "pause" | "cancel" | "fork" | "decide" | "extend" | "undo";
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
@@ -209,6 +209,9 @@ export function runActions(snapshot: RunSnapshot, budget: BudgetView | null = nu
   )
     actions.push({ key: "B", label: "raise limits", action: "extend" });
   if (s === "blocked" || isTerminal(s)) actions.push({ key: "F", label: "fork", action: "fork" });
+  // Undo needs the run's leases, so it is offered only while nothing executes the run.
+  if (s !== "created" && s !== "running")
+    actions.push({ key: "U", label: "undo edits", action: "undo" });
   if (!isTerminal(s)) actions.push({ key: "C", label: "cancel", action: "cancel" });
   return actions;
 }
