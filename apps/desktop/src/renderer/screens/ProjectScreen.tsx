@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
-import type { DesktopProject, RunSnapshot } from "../../shared/api.js";
-import { api } from "../client/api.js";
-import { backendLabel, tokens, usd } from "../format.js";
+import type { DesktopProject } from "../../shared/api.js";
+import { backendLabel } from "../format.js";
 import type { ProjectSection } from "../router.js";
 import { useDesktop, useProject } from "../store.js";
+import { SECTION_VIEWS } from "./sections.js";
 
 const TITLES: Record<ProjectSection, string> = {
   overview: "Overview",
@@ -42,60 +41,17 @@ function Closed({ project }: { project: DesktopProject }) {
   );
 }
 
-function RunsTable({ project }: { project: DesktopProject }) {
-  const [runs, setRuns] = useState<RunSnapshot[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const running = project.backend.kind === "running";
-  useEffect(() => {
-    if (!running) return;
-    let live = true;
-    api.runs(project.key).then(
-      (list) => live && setRuns(list.items),
-      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
-    );
-    return () => {
-      live = false;
-    };
-  }, [project.key, running]);
-  if (error) return <div className="banner error">{error}</div>;
-  if (!runs) return <div className="muted">Loading runs…</div>;
-  if (runs.length === 0) return <div className="empty">No workflow runs in this project yet.</div>;
-  return (
-    <table className="table">
-      <thead>
-        <tr>
-          <th>Feature</th>
-          <th>Status</th>
-          <th>Stage</th>
-          <th>Tokens</th>
-          <th>Cost</th>
-        </tr>
-      </thead>
-      <tbody>
-        {runs.map((run) => (
-          <tr key={run.runId}>
-            <td className="mono">{run.featureId}</td>
-            <td style={{ color: run.status === "waiting" ? "var(--warn)" : undefined }}>
-              {run.status}
-            </td>
-            <td>{run.stageId ?? "–"}</td>
-            <td className="mono">{tokens(run.tokenUsage)}</td>
-            <td className="mono">{usd(run.estimatedCostUsd)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
 export function ProjectScreen({
   projectKey,
   section,
+  id,
 }: {
   projectKey: string;
   section: ProjectSection;
+  id: string | null;
 }) {
   const project = useProject(projectKey);
+  const View = SECTION_VIEWS[section];
   if (!project)
     return (
       <div className="page">
@@ -117,14 +73,8 @@ export function ProjectScreen({
       project.backend.kind !== "starting" &&
       project.backend.kind !== "restarting" ? (
         <Closed project={project} />
-      ) : section === "overview" || section === "runs" ? (
-        <section
-          aria-label="Workflow runs"
-          style={{ display: "flex", flexDirection: "column", gap: 10 }}
-        >
-          <p className="label">Workflow runs</p>
-          <RunsTable project={project} />
-        </section>
+      ) : View ? (
+        <View project={project} id={id} />
       ) : (
         <div className="empty">{TITLES[section]} comes in the next desktop pull requests.</div>
       )}

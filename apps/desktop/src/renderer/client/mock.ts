@@ -4,10 +4,10 @@ import {
   type AttentionItem,
   DEFAULT_SETTINGS,
   type DesktopProject,
-  type RunSnapshot,
   type StreamEvent,
 } from "../../shared/api.js";
 import type { DesktopBridge, HttpMethod } from "../../shared/bridge.js";
+import { MOCK_ROUTES, MOCK_STREAMS, response } from "./mock-routes.js";
 
 const HOUR = 3_600_000;
 
@@ -32,26 +32,6 @@ function project(
     backend: { kind: "stopped" },
     overview,
     ...extra,
-  };
-}
-
-function run(
-  featureId: string,
-  status: RunSnapshot["status"],
-  stageId: string,
-  tokens: number,
-): RunSnapshot {
-  return {
-    runId: `run-${featureId}`,
-    featureId,
-    status,
-    revision: 4,
-    eventSeq: 120,
-    stageId,
-    tokenUsage: tokens,
-    activeMs: 18 * 60_000,
-    estimatedCostUsd: tokens / 1_000_000,
-    pendingRequestIds: status === "waiting" ? ["req-1"] : [],
   };
 }
 
@@ -103,16 +83,6 @@ export function createMockBridge(): DesktopBridge {
     item("site", "site", "pricing-table", "clarification", true, 26),
     item("baked", "BAKED", "settings-dark-mode", "acceptance", false, 40),
   ];
-  const runs: Record<string, RunSnapshot[]> = {
-    baked: [
-      run("usage-totals", "waiting", "plan", 412_000),
-      run("headless-json", "waiting", "research", 96_000),
-      run("locale-validation", "completed", "learn", 664_000),
-    ],
-    docs: [run("guide-refresh", "running", "implement", 230_000)],
-    site: [run("pricing-table", "waiting", "plan", 180_000)],
-    client: [],
-  };
   let settings: AppSettings = { ...DEFAULT_SETTINGS, theme: "dark" };
   const projectListeners = new Set<(p: DesktopProject[]) => void>();
   const emitProjects = (): void => {
@@ -143,17 +113,37 @@ export function createMockBridge(): DesktopBridge {
       projectListeners.add(listener);
       return () => projectListeners.delete(listener);
     },
-    request: async <T>(key: string, method: HttpMethod, path: string): Promise<ApiResponse<T>> => {
+    request: async <T>(
+      key: string,
+      method: HttpMethod,
+      path: string,
+      body?: unknown,
+    ): Promise<ApiResponse<T>> => {
       const found = projects.find((p) => p.key === key);
       if (!found?.open)
         return response(409, { error: { code: "PROJECT_CLOSED", message: "Not open" } });
       if (method === "GET" && path === "/v1/health")
         return response(200, { apiVersion: 1, version: "0.1.1", workspace: found.path });
-      if (method === "GET" && path.startsWith("/v1/workflow/runs"))
-        return response(200, { items: runs[key] ?? [] });
+      const url = new URL(path, "http://mock");
+      for (const route of MOCK_ROUTES) {
+        const result = await route({
+          key,
+          method,
+          path: url.pathname,
+          query: url.searchParams,
+          body,
+        });
+        if (result) return result as ApiResponse<T>;
+      }
       return response(404, { error: { code: "NOT_FOUND", message: `Mock has no ${path}` } });
     },
-    subscribe: (_key: string, _path: string, _listener: (event: StreamEvent) => void) => () => {},
+    subscribe: (key: string, path: string, listener: (event: StreamEvent) => void) => {
+      for (const stream of MOCK_STREAMS) {
+        const stop = stream({ key, path, emit: listener });
+        if (stop) return stop;
+      }
+      return () => {};
+    },
     attention: async () => attention,
     onAttention: () => () => {},
     settings: async () => settings,
@@ -187,8 +177,4 @@ export function createMockBridge(): DesktopBridge {
       projectName,
     };
   }
-}
-
-function response<T>(status: number, body: unknown): ApiResponse<T> {
-  return { status, body: body as T };
 }

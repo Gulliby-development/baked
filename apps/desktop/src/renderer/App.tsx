@@ -27,7 +27,7 @@ export function App() {
         {route.name === "projects" && <ProjectsScreen />}
         {route.name === "attention" && <AttentionScreen />}
         {route.name === "project" && (
-          <ProjectScreen projectKey={route.key} section={route.section} />
+          <ProjectScreen projectKey={route.key} section={route.section} id={route.id} />
         )}
         {route.name === "settings" && <SettingsScreen section={route.section} />}
       </main>
