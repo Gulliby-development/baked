@@ -222,7 +222,7 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 `baked doctor` (short for `baked workflow doctor [WORKFLOW]`, same options as `estimate`) checks a run before it starts and exits 1 when something must be fixed:
 
 - Start refusals: workflows disabled, then everything `workflow run` would refuse (policy, definition, routing, gates and their confirmation, auto approval confirmation, profiles, skills, worktree prerequisites, writers). The doctor calls the same validation as the start.
-- Credentials: every model the run can call (stage routes, stage profiles, review and skeptic profiles, and every profile that may implement a task) needs a known provider with a key.
+- Credentials: every model the run can call (stage routes, stage profiles, review and skeptic profiles, and every profile that may implement a task) needs a known provider with a key. These are the same checks a start makes: a primary model without credentials fails; an unknown provider, an unanswered check, a fallback model or an unbound profile warns.
 - Commands: every check command and AI walk-through start command resolves from its working directory. Missing required ones fail, optional ones warn. Nothing is executed.
 - Warnings that do not block: review on the implementer's model, uncommitted changes, stale run worktrees, no Git repository for an inline run, a run that exited without releasing the workspace, and an estimate above `maxTotalTokens`.
 - A live run holding the workspace, or one that stopped with a command of unknown outcome, fails.
@@ -476,7 +476,7 @@ The primary model gets two retries on a transient provider error (timeouts, 408,
 
 ### Preflight and independent review
 
-Before a run is created, every model it can call is checked for a configured provider. A model that a bound profile or a stage route uses as its primary, and whose known provider has no credentials, refuses the start with `CAPABILITY_DENIED`. Fallback models, profiles the workflow does not bind, unknown providers and a check that does not answer within 5 seconds only add a warning.
+Before a run is created, every model it can call is checked the way `baked doctor` checks it, and the start reports the same lines. A model that a bound profile or a stage route uses as its primary, and whose known provider has no credentials, refuses the start with `CAPABILITY_DENIED`. Fallback models, profiles the workflow does not bind, unknown providers and a check that does not answer within 5 seconds only add a warning.
 
 `independentReview` controls whether a reviewer may run on a model the implementation also uses, fallback models included: `warn` records a warning, `require` refuses the start, `off` skips the check. Without the field, `warn` applies once `modelRouting` is configured. Review, converge and reflection stages and review gates count as the review side; task stages as the implementation side.
 

@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import type { ContextManager } from "../context/manager.js";
 import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
-import { modelReadinessProblem } from "../llm/provider.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
 import {
@@ -28,6 +27,7 @@ import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
+import { checkLine, checkStartModels, type DoctorDeps, defaultDoctorDeps } from "./doctor.js";
 import { WorkflowFault } from "./errors.js";
 import { readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -40,7 +40,6 @@ import {
 } from "./leases.js";
 import { estimatePrepared } from "./pre-run.js";
 import { undoRunEdits } from "./rollback.js";
-import { reachableModels } from "./routing.js";
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
@@ -73,7 +72,6 @@ import {
   type WorkflowV2,
   WorkflowV2Schema,
 } from "./v2/definition.js";
-import { loadGateLibrary } from "./v2/library.js";
 import { definitionRevisionProblems } from "./v2/revision.js";
 import {
   autoApprovalHash,
@@ -94,12 +92,10 @@ export class NativeWorkflowService implements WorkflowService {
     { controller: AbortController; promise: Promise<RunSnapshot> }
   >();
   /**
-   * Why a model cannot be called, or null; checked for every bound model before a run starts.
-   * Only the native executor calls providers, so a service given its own executor checks nothing.
+   * Answers whether a provider can be called; checked for every model before a run starts. Only
+   * the native executor calls providers, so a service given its own executor checks nothing.
    */
-  modelReadiness: (
-    model: string,
-  ) => Promise<{ problem: string; missingCredentials: boolean } | null>;
+  providerReady: DoctorDeps["providerReady"] | null;
   constructor(
     readonly workspace: string,
     readonly config: AppConfig,
@@ -107,7 +103,7 @@ export class NativeWorkflowService implements WorkflowService {
     readonly = false,
     parentContext?: ContextManager,
   ) {
-    this.modelReadiness = executor ? async () => null : (model) => modelReadinessProblem(model);
+    this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
     this.scheduler = new WorkflowScheduler(
@@ -271,42 +267,24 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Keeps the expectation made at creation, so a finished run can be compared with it. */
   /**
-   * Refuses a start when a bound model's provider has no credentials, naming what uses it; the
-   * run would otherwise fail at that stage much later. Fallback models, unbound profiles and
-   * model IDs this build does not know (they fail at their first call either way) add warnings.
+   * Refuses a start on the model checks `workflow doctor` fails: a bound model whose provider has
+   * no credentials, naming what uses it; the run would otherwise fail at that stage much later.
+   * Its warnings (fallback models, unbound profiles, unknown providers, an unanswered probe) are
+   * recorded with the routing.
    */
   private async preflight(prepared: PreparedStart): Promise<void> {
-    const { routing, loaded, policy, profiles } = prepared;
-    const { required, optional } = reachableModels(
-      routing,
-      loaded.definition,
-      policy,
-      loadGateLibrary(this.workspace, policy).gates,
-      profiles,
-    );
-    const check = async (models: Map<string, string[]>) =>
-      (
-        await Promise.all(
-          [...models].map(async ([model, users]) => {
-            const found = await this.modelReadiness(model);
-            return found
-              ? { ...found, line: `${found.problem}; used by ${users.join(", ")}` }
-              : null;
-          }),
-        )
-      ).filter((found) => found !== null);
-    const [bound, other] = await Promise.all([check(required), check(optional)]);
-    const refusals = bound.filter((found) => found.missingCredentials).map((found) => found.line);
+    if (!this.providerReady) return;
+    const checks = await checkStartModels(this.workspace, prepared, this.providerReady);
+    const refusals = checks.filter((check) => check.status === "fail").map(checkLine);
     if (refusals.length)
       throw new WorkflowFault(
         "CAPABILITY_DENIED",
         `These models cannot be called:\n${refusals.join("\n")}`,
         { reason: "model_unavailable", problems: refusals },
       );
-    const warnings = [...bound, ...other]
-      .filter((found) => !refusals.includes(found.line))
-      .map((found) => found.line);
-    if (warnings.length) routing.warnings = [...(routing.warnings ?? []), ...warnings];
+    const warnings = checks.filter((check) => check.status === "warn").map(checkLine);
+    if (warnings.length)
+      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
   }
   private saveEstimate(runId: string, prepared: PreparedStart, workflowId: string): void {
     try {

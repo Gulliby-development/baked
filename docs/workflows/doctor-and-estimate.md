@@ -76,15 +76,20 @@ calls it with a placeholder feature and prompt and reports a thrown fault as one
 1. **config.enabled.** `workflows.enabled` is true. Fail otherwise; fix: the opt-in setting.
 2. **start.** `prepareStart` succeeds. Fail with the fault message. When it fails, checks that need its
    result (models, commands, estimate) are `skip`.
-3. **models.** For every distinct model the run can use, collected from the prepared start: stage routes,
-   the profiles of agent and reflection stages, the bound `ai-review` gates' review and skeptic profiles,
-   `policy.reviewProfiles` and `skepticProfileId`, and every profile whose output is `implementation`
-   (the planner may assign any of them to a task):
-   - `models.provider`: the provider prefix names a known provider. Fail otherwise.
+3. **models.** `checkStartModels` checks every distinct model the run can call, the same set and the same
+   verdicts `workflow run` uses to refuse a start. Primary models of bound stage routes and profiles (the
+   profiles of agent and reflection stages, the bound `ai-review` gates' review and skeptic profiles,
+   `policy.reviewProfiles`, `skepticProfileId`, and every profile whose output is `implementation`, since
+   the planner may assign any of them to a task) are required; fallback models and profiles the workflow
+   does not bind are optional:
+   - `models.provider`: the model ID is `provider/model` and names a known provider. Warn otherwise: the
+     model fails at its first call, and `workflow run` starts anyway.
    - `models.key`: the provider is available (its `checkAvailability`, else a key from
-     `getProviderApiKey`). Fail; fix: `baked --set-key PROVIDER KEY` or the provider's env variable.
-   One line per model, naming the stages or profiles that use it. Tool-calling support is not checked: the
-   model catalog has no reliable capability flag.
+     `getProviderApiKey`); fix: `baked --set-key PROVIDER KEY` or the provider's env variable. Fail for a
+     required model (and `workflow run` refuses to start), warn for an optional one. A
+     `checkAvailability` probe that does not answer within 5 seconds warns. One line per model,
+   naming the stages or profiles that use it. Tool-calling support is not checked: the model catalog has no
+   reliable capability flag.
 4. **review.independent.** A review model equals the implementer model: `warn`. R2 makes this
    configurable (`independentReview`); the doctor only reports.
 5. **commands.** For every command the run will execute: `policy.checks`, every bound `command` gate in
@@ -112,8 +117,9 @@ estimate ranges; a database this build cannot read (`VERSION_UNSUPPORTED`) is a 
 which(cmd, cwd): string | null; git: (args) => Promise<{ code; stdout }> }` with real defaults. Tests
 inject them, so they do not depend on keys in the developer's environment.
 
-`checkModels(models: string[], providerReady)` is exported for R2's start-time preflight, so both report
-the same thing in the same words.
+`checkStartModels(workspace, prepared, providerReady)` is also the start-time preflight of
+`NativeWorkflowService.start`: its failures are the refusal and its warnings go into the routing record,
+so doctor and start report the same problem in the same words.
 
 ## Estimate
 
