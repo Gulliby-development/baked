@@ -53,6 +53,11 @@ export function finalizeNotice(reason: FinalizeReason): string {
   return `The ${limit} for this task is reached. Do not call any other tool. Call submit_result now with the complete result for the work already done; list anything unfinished as unresolved instead of continuing. The host runs the checks after you, so a check you did not run again is not unresolved.`;
 }
 
+/** Notice added once when an attempt that must edit has only read for several steps. */
+export function editNudgeNotice(steps: number): string {
+  return `You have only read files for the last ${steps} steps. What you read is in your context: apply the edits now with multi_edit or edit_file, then call submit_result. Read again only a span you have not seen.`;
+}
+
 /** Notice added after a step whose output reached the output token cap. */
 export function truncationNotice(maxOutputTokens: number | undefined): string {
   const limit = maxOutputTokens ? `the ${maxOutputTokens}-token output limit` : "the output limit";
@@ -94,6 +99,7 @@ export function compactToolHistory(
     let content: typeof message.content | undefined;
     for (const [partIndex, part] of message.content.entries()) {
       if (part.type !== "tool-result" || !COMPACTABLE_TOOLS.has(part.toolName)) continue;
+      if (part.toolName === "read" && targetedRead(callInputs.get(part.toolCallId))) continue;
       const original = serializeOutput(part.output);
       if (original === undefined || Buffer.byteLength(original) < MIN_COMPACT_BYTES) continue;
       const stub: JSONValue = {
@@ -117,6 +123,28 @@ export function compactToolHistory(
     }
   }
   return result ? { messages: result, savedBytes } : { messages, savedBytes: 0 };
+}
+
+/**
+ * A read of line ranges or symbols only. It is kept verbatim: it is small and chosen for the
+ * edit, and once stubbed the agent reads the same ranges again instead of editing.
+ */
+function targetedRead(input: JSONValue | undefined): boolean {
+  const files = asRecord(input)?.files;
+  return (
+    Array.isArray(files) &&
+    files.length > 0 &&
+    files.every((file) => {
+      const spec = asRecord(file);
+      return !!spec?.target || (Array.isArray(spec?.ranges) && spec.ranges.length > 0);
+    })
+  );
+}
+
+function asRecord(value: JSONValue | undefined): Record<string, JSONValue | undefined> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, JSONValue | undefined>)
+    : null;
 }
 
 function outputValue(output: unknown): unknown {
@@ -185,6 +213,7 @@ export class AttemptStepController {
   private readonly notices: { at: number; content: string }[] = [];
   private finalizeNoticed = false;
   private truncatedStep = -1;
+  private nudged = false;
   private readonly compactedBytes: number[] = [];
   /** Serialized size of the messages sent with each step, to estimate the next one. */
   private readonly sentBytes: number[] = [];
@@ -198,6 +227,8 @@ export class AttemptStepController {
       fallbackStepTokens: number;
       /** Output cap of one step; bounds the output estimate of the next step. */
       maxOutputTokens?: number;
+      /** For an attempt that must edit: read-only steps in a row before it is told to edit. */
+      editNudgeAfterReads?: number;
     },
   ) {}
   get maxTokens(): number {
@@ -236,7 +267,11 @@ export class AttemptStepController {
   }
   prepare(input: {
     stepNumber: number;
-    steps: ReadonlyArray<{ usage: StepUsageLike; finishReason?: string }>;
+    steps: ReadonlyArray<{
+      usage: StepUsageLike;
+      finishReason?: string;
+      toolCalls?: readonly { toolName: string }[];
+    }>;
     messages: ModelMessage[];
   }): { messages?: ModelMessage[]; activeTools?: string[]; toolChoice?: "required" } {
     const last = input.steps[input.steps.length - 1];
@@ -258,6 +293,20 @@ export class AttemptStepController {
         at: compacted.messages.length,
         content: truncationNotice(this.options.maxOutputTokens),
       });
+    }
+    const nudgeAfter = this.options.editNudgeAfterReads;
+    if (nudgeAfter && !this.nudged && !finalizing) {
+      let reads = 0;
+      for (const step of [...input.steps].reverse()) {
+        const calls = step.toolCalls ?? [];
+        if (calls.length === 0 || !calls.every((call) => COMPACTABLE_TOOLS.has(call.toolName)))
+          break;
+        reads++;
+      }
+      if (reads >= nudgeAfter) {
+        this.nudged = true;
+        this.notices.push({ at: compacted.messages.length, content: editNudgeNotice(reads) });
+      }
     }
     if (finalizing && this.finalizedBy && !this.finalizeNoticed) {
       this.finalizeNoticed = true;

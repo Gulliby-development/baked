@@ -9,25 +9,34 @@ import type { SymbolInfo } from "../intelligence/types.js";
  * 20k input tokens per step; most tasks need a few of its symbols.
  */
 export const LARGE_READ_BYTES = 20_000;
+/**
+ * A file the task writes is read whole up to this size: the edit needs its exact text, and an
+ * outline of it turned into many range reads that cost more than the file.
+ */
+export const WRITTEN_READ_BYTES = 64_000;
 const MAX_OUTLINE_LINES = 200;
 const STRUCTURE = new Set(["class", "interface", "type", "enum", "function", "method"]);
 
 type ReadSpec = string | { path?: unknown; ranges?: unknown; target?: unknown };
 
 /** The absolute path of a whole-file read of a file larger than the limit, else null. */
-function largeWholeRead(spec: ReadSpec): string | null {
+function largeWholeRead(spec: ReadSpec, written: ReadonlySet<string>): string | null {
   const path = typeof spec === "string" ? spec : spec.path;
   if (typeof path !== "string") return null;
-  if (
-    typeof spec === "object" &&
-    (spec.target || (Array.isArray(spec.ranges) && spec.ranges.length))
-  )
-    return null;
+  if (isTargetedRead(spec)) return null;
   try {
-    return statSync(path).size > LARGE_READ_BYTES ? path : null;
+    const limit = written.has(path) ? WRITTEN_READ_BYTES : LARGE_READ_BYTES;
+    return statSync(path).size > limit ? path : null;
   } catch {
     return null;
   }
+}
+
+/** A read spec of line ranges or a symbol. */
+export function isTargetedRead(spec: unknown): boolean {
+  if (!spec || typeof spec !== "object") return false;
+  const { ranges, target } = spec as { ranges?: unknown; target?: unknown };
+  return !!target || (Array.isArray(ranges) && ranges.length > 0);
 }
 
 /** Declarations with their line spans; variables only outside a function or method. */
@@ -84,13 +93,15 @@ async function outline(path: string): Promise<string | null> {
  */
 export async function outlineLargeReads(
   files: unknown[],
+  written: readonly string[] = [],
 ): Promise<{ files: unknown[]; outlines: string[] }> {
+  const writes = new Set(written);
   const kept: unknown[] = [];
   const outlines: string[] = [];
   for (const spec of files) {
     const path =
       spec && (typeof spec === "string" || typeof spec === "object")
-        ? largeWholeRead(spec as ReadSpec)
+        ? largeWholeRead(spec as ReadSpec, writes)
         : null;
     const text = path ? await outline(path) : null;
     if (text) outlines.push(text);

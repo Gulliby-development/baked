@@ -6,6 +6,7 @@ import {
   finalizeNotice,
   finalizeReason,
   KEEP_RECENT_TOOL_MESSAGES,
+  editNudgeNotice,
   truncationNotice,
 } from "../src/core/workflows/step-budget.js";
 
@@ -103,6 +104,17 @@ describe("finalizeReason", () => {
   });
 });
 
+test("reads of line ranges or symbols stay verbatim", () => {
+  const messages: ModelMessage[] = [];
+  const ranged = { files: [{ path: "a.ts", ranges: [{ start: 1, end: 90 }] }, { path: "b.ts", target: "function", name: "f" }] };
+  messages.push(call("r", "read", ranged), result("r", "read", { result: BIG, evidenceId: "ev-r" }));
+  for (let i = 0; i < KEEP_RECENT_TOOL_MESSAGES; i++)
+    messages.push(call(`c${String(i)}`, "read", { files: [{ path: "c.ts" }] }), result(`c${String(i)}`, "read", { result: "short" }));
+  expect(compactToolHistory(messages).messages).toBe(messages);
+  const mixed = [call("r", "read", { files: [{ path: "a.ts", ranges: [{ start: 1, end: 9 }] }, { path: "d.ts" }] }), ...messages.slice(1)];
+  expect(compactToolHistory(mixed).savedBytes).toBeGreaterThan(0);
+});
+
 describe("AttemptStepController", () => {
   const usage = (inputTokens: number, outputTokens: number) => ({
     usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
@@ -156,6 +168,35 @@ describe("AttemptStepController", () => {
     expect(second.messages?.[messages.length]).toEqual(notice);
     expect(second.messages?.filter((m) => m.role === "user" && m.content === notice.content)).toHaveLength(1);
     expect(second.messages?.at(-1)).toEqual(longer.at(-1));
+  });
+
+  test("tells an attempt that must edit to edit after several read-only steps, once", () => {
+    const controller = new AttemptStepController({
+      maxSteps: 20,
+      maxTokens: 100_000,
+      submitTools: ["submit_result"],
+      fallbackStepTokens: 100,
+      editNudgeAfterReads: 3,
+    });
+    const reading = { ...usage(100, 10), toolCalls: [{ toolName: "read" }] };
+    const editing = { ...usage(100, 10), toolCalls: [{ toolName: "multi_edit" }] };
+    const messages = history(1);
+    expect(
+      controller.prepare({ stepNumber: 3, steps: [editing, reading, reading], messages }),
+    ).toEqual({});
+    const nudged = controller.prepare({
+      stepNumber: 4,
+      steps: [editing, reading, reading, reading],
+      messages,
+    });
+    expect(nudged.messages?.at(-1)).toEqual({ role: "user", content: editNudgeNotice(3) });
+    expect(nudged.activeTools).toBeUndefined();
+    const later = controller.prepare({
+      stepNumber: 5,
+      steps: [editing, reading, reading, reading, reading],
+      messages,
+    });
+    expect(later.messages?.filter((m) => m.role === "user" && m.content === editNudgeNotice(3))).toHaveLength(1);
   });
 
   test("records per-step usage and the stop reason", () => {

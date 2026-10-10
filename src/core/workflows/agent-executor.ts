@@ -26,7 +26,7 @@ import { WorkflowFault } from "./errors.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { ProcessScope } from "./process-scope.js";
-import { outlineLargeReads } from "./read-outline.js";
+import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
@@ -67,6 +67,8 @@ export const outputSchemas: Record<string, z.ZodType> = {
   initiativePlan: InitiativePlanSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+/** Read-only steps in a row before an implementer is told to edit. */
+const EDIT_NUDGE_AFTER_READS = 4;
 
 /** Input and output tokens over steps; a side stays undefined when no step reported it. */
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
@@ -170,10 +172,17 @@ export class NativeAgentExecutor implements AgentExecutor {
             const result = await guard.execute(name, args, async () => {
               if (name !== "read" || !Array.isArray(normalized.files))
                 return execute(normalized, options);
-              const { files, outlines } = await outlineLargeReads(normalized.files);
-              if (outlines.length === 0) return execute(normalized, options);
+              const { files, outlines } = await outlineLargeReads(
+                normalized.files,
+                (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
+              );
+              // The read tool refuses a fourth range read of a file as "already in your
+              // context"; after an outline the agent reads several spans of one file.
+              const fresh = files.length > 0 && files.every(isTargetedRead);
+              const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
+              if (outlines.length === 0) return execute(input, options);
               const read = files.length
-                ? ((await execute({ ...normalized, files }, options)) as { output?: unknown })
+                ? ((await execute(input, options)) as { output?: unknown })
                 : null;
               const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
                 .filter(Boolean)
@@ -319,6 +328,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
         maxOutputTokens: request.profile.maxOutputTokens,
+        ...(request.profile.role === "implementer" && request.task?.writes.length
+          ? { editNudgeAfterReads: EDIT_NUDGE_AFTER_READS }
+          : {}),
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const writeUsage = (usage: AttemptUsageRecord) =>
