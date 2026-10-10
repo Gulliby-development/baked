@@ -46,6 +46,11 @@ if (cliArgs[0] === "serve") {
   process.exit(await runServeCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "self-check") {
+  const { runSelfCheck } = await import("./headless/self-check.js");
+  process.exit(await runSelfCheck());
+}
+
 const hasCli =
   cliArgs.includes("--headless") ||
   cliArgs.includes("--list-providers") ||

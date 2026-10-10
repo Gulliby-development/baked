@@ -1,0 +1,226 @@
+name: Builds
+
+# Builds every distributable and runs `baked self-check` on each one that can
+# execute on its runner. Linux builds run on every pull request; Windows and
+# macOS runners cost 2x and 10x Linux minutes, so they run when a pull request
+# touches packaging-related files, nightly, and on demand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: builds-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: "1.4.2"
+
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.decide.outputs.native }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" = "schedule" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "native=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          echo "$changed"
+          pattern='^(scripts/|packaging/|package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.github/workflows/builds\.yml$|src/boot\.tsx$|src/headless/self-check\.ts$|src/core/workers/|src/core/platform/|src/core/utils/hydrate-runtime\.ts$|src/core/intelligence/backends/tree-sitter\.ts$)'
+          if echo "$changed" | grep -Eq "$pattern"; then
+            echo "native=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "native=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  npm-package:
+    needs: scope
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Skip
+        if: matrix.os != 'ubuntu-latest' && needs.scope.outputs.native != 'true'
+        run: echo "Packaging files unchanged; this platform runs nightly."
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: matrix.os == 'ubuntu-latest' || needs.scope.outputs.native == 'true'
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: matrix.os == 'ubuntu-latest' || needs.scope.outputs.native == 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Build and pack
+        if: matrix.os == 'ubuntu-latest' || needs.scope.outputs.native == 'true'
+        shell: bash
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+      - name: Install the package and self-check
+        if: matrix.os == 'ubuntu-latest' || needs.scope.outputs.native == 'true'
+        shell: bash
+        run: |
+          app="$RUNNER_TEMP/app"
+          mkdir -p "$app" "$RUNNER_TEMP/home"
+          cd "$app"
+          echo '{"name":"baked-smoke","private":true}' > package.json
+          npm install --no-audit --no-fund "$RUNNER_TEMP"/pack/*.tgz
+          export HOME="$RUNNER_TEMP/home" USERPROFILE="$RUNNER_TEMP/home" LOCALAPPDATA="$RUNNER_TEMP/home/local"
+          npx --no-install baked --version
+          npx --no-install baked self-check
+
+  bundle-unix:
+    needs: scope
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, arch: x64, runner: ubuntu-latest, smoke: true, native: false }
+          - { platform: linux, arch: x64-baseline, runner: ubuntu-latest, smoke: true, native: false }
+          # No arm64 Linux runner here: cross-built and checked for contents only.
+          - { platform: linux, arch: arm64, runner: ubuntu-latest, smoke: false, native: false }
+          - { platform: darwin, arch: arm64, runner: macos-latest, smoke: true, native: true }
+          - { platform: darwin, arch: x64, runner: macos-15-intel, smoke: true, native: true }
+    runs-on: ${{ matrix.runner }}
+    name: bundle (${{ matrix.platform }}-${{ matrix.arch }})
+    env:
+      RUN: ${{ !matrix.native || needs.scope.outputs.native == 'true' }}
+    steps:
+      - name: Skip
+        if: env.RUN != 'true'
+        run: echo "Packaging files unchanged; this platform runs nightly."
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: env.RUN == 'true'
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: env.RUN == 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Bundle
+        if: env.RUN == 'true'
+        run: |
+          bun install --frozen-lockfile
+          bash scripts/bundle.sh "${{ matrix.arch }}" "${{ matrix.platform }}"
+      - name: Check bundle contents
+        if: env.RUN == 'true'
+        run: |
+          name="baked-$(bun -e "console.log(require('./package.json').version)")-${{ matrix.platform }}-${{ matrix.arch }}"
+          echo "BUNDLE_NAME=$name" >> "$GITHUB_ENV"
+          tar tzf "dist/bundle/$name.tar.gz" > contents.txt
+          for f in baked install.sh deps/rg deps/fd deps/wasm/tree-sitter.wasm \
+                   deps/workers/io.worker.js deps/workers/intelligence.worker.js \
+                   deps/workers/workflow.worker.js deps/opentui-assets/parser.worker.js; do
+            grep -qx "$name/$f" contents.txt || { echo "missing $f"; exit 1; }
+          done
+          grep -Eq "^$name/deps/native/${{ matrix.platform }}-(x64|arm64)/libopentui\.(so|dylib)$" contents.txt \
+            || { echo "missing libopentui"; exit 1; }
+      - name: Install and self-check
+        if: env.RUN == 'true' && matrix.smoke
+        run: |
+          work="$RUNNER_TEMP/smoke"
+          mkdir -p "$work/home"
+          tar xzf "dist/bundle/$BUNDLE_NAME.tar.gz" -C "$work"
+          export HOME="$work/home"
+          "$work/$BUNDLE_NAME/install.sh" --quiet
+          cd "$RUNNER_TEMP"
+          "$HOME/.baked/bin/baked" --version
+          "$HOME/.baked/bin/baked" self-check
+
+  windows:
+    needs: scope
+    runs-on: windows-latest
+    steps:
+      - name: Skip
+        if: needs.scope.outputs.native != 'true'
+        run: echo "Packaging files unchanged; this platform runs nightly."
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: needs.scope.outputs.native == 'true'
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: needs.scope.outputs.native == 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        if: needs.scope.outputs.native == 'true'
+        run: bun install --frozen-lockfile
+      - name: Bundle x64
+        if: needs.scope.outputs.native == 'true'
+        run: bun run bundle:windows
+      - name: Self-check the x64 zip
+        if: needs.scope.outputs.native == 'true'
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $dir = Join-Path $env:RUNNER_TEMP "zip"
+          Expand-Archive "dist/bundle/baked-$version-windows-x64.zip" -DestinationPath $dir
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "local-zip"
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          Set-Location $env:RUNNER_TEMP
+          & "$dir/baked.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$dir/baked.exe" self-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the installer
+        if: needs.scope.outputs.native == 'true'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            $nsis = "${env:ProgramFiles(x86)}\NSIS"
+            if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
+            $env:PATH = "$nsis;$env:PATH"
+            "$nsis" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          }
+          pwsh -NoProfile -File scripts/build-installer.ps1 -SkipBundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install silently and self-check
+        if: needs.scope.outputs.native == 'true'
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $target = Join-Path $env:RUNNER_TEMP "installed"
+          $setup = Start-Process -FilePath "dist/bundle/baked-setup-$version-x64.exe" `
+            -ArgumentList "/S", "/D=$target" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "installer exited with $($setup.ExitCode)" }
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "local-installed"
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          Set-Location $env:RUNNER_TEMP
+          & "$target/baked.exe" self-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the self-extracting installers
+        if: needs.scope.outputs.native == 'true'
+        run: |
+          bun run selfextract:windows
+          bun run selfextract:windows-arm64
+      # No arm64 Windows runner here: cross-built only.
+      - name: Bundle arm64
+        if: needs.scope.outputs.native == 'true'
+        run: bun run bundle:windows-arm64

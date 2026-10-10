@@ -101,7 +101,7 @@ makensis not found on PATH. Install NSIS:
 
     # ── makensis invocation ───────────────────────────────────────────
     Write-Host "==> makensis: building baked-setup-$version-$Arch.exe"
-    $nsi = Join-Path $repoRoot "packaging/windows/baked.nsi"
+    $nsi = Join-Path $repoRoot "packaging/windows/BAKED.nsi"
     # Pass the plugin dir as a -D define instead of -X "!addplugindir ..." —
     # PowerShell's argv splitter on Linux joins quoted -X args into a single
     # token (makensis then complains "Can't open script ..."). The NSI script
