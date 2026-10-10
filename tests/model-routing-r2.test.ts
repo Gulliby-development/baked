@@ -160,7 +160,8 @@ describe("fallback models", () => {
 
   test("a request the provider refuses, or a workflow fault, does not fall back", async () => {
     for (const error of [
-      Object.assign(new Error("unauthorized"), { statusCode: 401 }),
+      // A refused account goes to a fallback on another provider (workflow-provider-account.test.ts).
+      Object.assign(new Error("invalid request"), { statusCode: 400 }),
       new WorkflowFault("OUTPUT_INVALID", "bad output"),
     ]) {
       const { calls, start, drive } = routedRun(

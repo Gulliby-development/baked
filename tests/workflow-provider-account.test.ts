@@ -48,4 +48,31 @@ describe("provider account refusals", () => {
     expect(service.store.run(run.runId).reason).toBe("provider_account");
     expect(calls).toBe(1);
   });
+
+  test("hand the step to a fallback model on another provider", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-account-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const models: string[] = [];
+    const executor: AgentExecutor = {
+      async execute(request) {
+        models.push(request.profile.model);
+        throw noCredits;
+      },
+    };
+    const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
+    const config = {
+      ...DEFAULT_CONFIG,
+      defaultModel: "fixture/model",
+      modelFallback: { "fixture/model": ["fixture/other", "spare/model"] },
+      workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy },
+    };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    const final = await service.drive(run.runId, new AbortController().signal);
+    // fixture/other shares the refused account, so the step goes straight to spare/model.
+    expect(models).toEqual(["fixture/model", "spare/model"]);
+    expect(final.status).toBe("blocked");
+    expect(service.store.run(run.runId).reason).toBe("provider_account");
+  });
 });
