@@ -482,22 +482,22 @@ describe("durable SDD runtime", () => {
     expect(service.store.state(run.runId).correctionHashes).toHaveLength(1);
     expect(service.store.tasks(run.runId)).toHaveLength(2);
   });
-  test("plan-time sizing sends an oversized plan back to the planner once, then caps its tasks", async () => {
-    const sized: RunPolicy = { ...policy, sizing: { maxAttemptTokens: 10_000, maxRunTokens: 5_000_000 } };
+  test("plan-time sizing sends a plan above the run ceiling back to the planner once, then asks to split the feature", async () => {
+    const sized: RunPolicy = { ...policy, sizing: { maxRunTokens: 100_000 } };
     const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     const executor = new FixtureExecutor(root);
     const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: sized } }, executor);
     cleanups.push(() => service.close());
     const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: sized });
-    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
     expect(executor.calls.filter((call) => call === "plan")).toHaveLength(2);
     const paths = service.store.artifacts(run.runId).map((a) => a.logical_path);
     expect(paths).toContain("sizing/plan-0.json");
     expect(paths).toContain("sizing/plan-1.json");
-    const state = service.store.state(run.runId);
-    expect(state.prompt).toContain("Sizing: the plan is too large");
-    expect(state.taskBudgets.T001).toBe(10_000);
+    expect(service.store.state(run.runId).prompt).toContain("Sizing: the plan is too large");
+    const question = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
+    expect(question?.body_json).toContain("initiative");
   });
   test("plan-time sizing raises the run budget to the price and passes each task its cap", async () => {
     const sized: RunPolicy = { ...policy, maxTotalTokens: 50_000, sizing: { maxRunTokens: 5_000_000 } };
