@@ -50,7 +50,7 @@ try {
     await page.getByRole("navigation", { name: "Main" }).waitFor({ timeout: 10_000 });
     // The card appears only after the bundled baked answered `projects list`.
     await page
-      .getByRole("region", { name: basename(project) })
+      .getByRole("article", { name: basename(project) })
       .waitFor({ timeout: 30_000 });
     console.log(`smoke: ${await page.title()} shows All projects, the sidebar and the project`);
   } finally {

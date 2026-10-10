@@ -8,9 +8,16 @@ import { call } from "./api.js";
  */
 
 export interface RunStatus extends RunSnapshot {
+  /** Set once a plan is approved; an approval sends the request's own digest. */
   approvalDigest: string | null;
   /** Durable requests of the run, as `baked workflow status` returns them. */
-  requests: { request_id: string; kind: string; status: string; body_json: string | null }[];
+  requests: {
+    id: string;
+    kind: string;
+    status: string;
+    digest: string;
+    body_json: string | null;
+  }[];
 }
 
 const commandId = (): string => crypto.randomUUID();

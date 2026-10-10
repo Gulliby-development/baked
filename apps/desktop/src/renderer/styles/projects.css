@@ -1,0 +1,152 @@
+/* All projects: one card per known folder. */
+.proj-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.proj-header h1 {
+  margin-right: auto;
+}
+
+.proj-search {
+  min-height: 38px;
+  width: 240px;
+  max-width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+}
+
+.proj-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 16px;
+}
+
+.proj-card {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.proj-card[data-open] {
+  border-color: var(--bg-selected);
+}
+
+.proj-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.proj-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.proj-head h2 a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.proj-head h2 a:hover {
+  color: var(--accent-soft);
+}
+
+.proj-head .sub-line {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proj-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  font-size: 14px;
+  color: var(--bg);
+}
+
+.proj-card[data-open] .proj-avatar {
+  background: var(--accent);
+}
+
+.proj-state {
+  margin-left: auto;
+  flex: none;
+  font-size: 12px;
+}
+
+.proj-state.ok {
+  color: var(--info);
+}
+
+.proj-state.warn {
+  color: var(--warn);
+}
+
+.proj-state.err {
+  color: var(--err);
+}
+
+.proj-state.muted {
+  color: var(--text-4);
+}
+
+.proj-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.proj-log {
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.proj-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+}
+
+fieldset.proj-actions {
+  border: 0;
+  padding: 0;
+  margin: auto 0 0;
+  min-width: 0;
+}
+
+.proj-pin {
+  margin-left: auto;
+}
+
+.proj-pin[aria-pressed="true"] {
+  color: var(--accent-soft);
+}
+
+.proj-confirm {
+  flex-basis: 100%;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+@media (max-width: 520px) {
+  .proj-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
