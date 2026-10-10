@@ -58,7 +58,10 @@ export function appendCorrections(
       "no_progress: consecutive reflection rounds repeat the same findings",
     );
   let next = Math.max(...state.graph.tasks.map((t) => Number(t.id.slice(1)))) + 1;
-  const additions = findings.map((finding) => {
+  // Findings against the same task and file become one corrective task: each task reads the
+  // files again from scratch, so three failed checks of one task were three full rereads.
+  const groups = new Map<string, { base: Task; findings: Review["findings"] }>();
+  for (const finding of findings) {
     const predecessor = state.repairPredecessors[finding.id];
     const base =
       (predecessor && state.graph?.tasks.find((t) => t.id === predecessor)) ||
@@ -74,6 +77,13 @@ export function appendCorrections(
         "Correction requires writes outside the approved task scope",
       );
     state.repairPredecessors[finding.id] = base.id;
+    const key = `${base.id}\n${finding.file ?? ""}`;
+    const group = groups.get(key) ?? { base, findings: [] };
+    group.findings.push(finding);
+    groups.set(key, group);
+  }
+  const additions = [...groups.values()].map(({ base, findings: grouped }) => {
+    const ids = grouped.map((f) => f.id);
     return {
       ...base,
       writes: base.writes.map((write) => ({
@@ -84,12 +94,17 @@ export function appendCorrections(
             : write.action,
       })),
       id: `T${String(next++).padStart(3, "0")}`,
-      title: `Correct ${finding.id}`,
-      description: `${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}`,
+      title: `Correct ${ids.join(", ")}`,
+      description: grouped
+        .map(
+          (finding) =>
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}`,
+        )
+        .join("\n\n"),
       dependsOn: [],
       origin: kind,
-      findingIds: [finding.id],
-      rationale: `Finding ${finding.id} against approved criteria`,
+      findingIds: ids,
+      rationale: `${ids.length > 1 ? "Findings" : "Finding"} ${ids.join(", ")} against approved criteria`,
     };
   });
   const graph: TaskGraph = { ...state.graph, tasks: [...state.graph.tasks, ...additions] };
