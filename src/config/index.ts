@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { mergeModelRouting } from "../core/llm/model-routing.js";
 import { configDir } from "../core/platform/index.js";
 import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
 import { WorkflowConfigSchema } from "../core/workflows/schemas.js";
@@ -27,7 +28,6 @@ function getConfigFile(): string {
 
 export const DEFAULT_CONFIG: AppConfig = {
   defaultModel: "none",
-  routerRules: [],
   theme: {
     name: "dark",
     transparent: false,
@@ -187,6 +187,8 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       retry,
       mcpServers,
     };
+    const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
+    if (routing) merged.modelRouting = routing;
   }
   if (merged.workflows) merged.workflows = WorkflowConfigSchema.parse(merged.workflows);
   return merged;

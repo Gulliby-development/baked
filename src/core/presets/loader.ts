@@ -15,7 +15,9 @@ export interface Preset {
   homepage?: string;
   tags?: string[];
   router?: Record<string, unknown>;
+  /** Ignored; kept so presets written for the removed keyword router still load. */
   routerRules?: unknown;
+  modelRouting?: unknown;
   providers?: unknown;
   theme?: unknown;
   themes?: Record<string, unknown>;
@@ -192,6 +194,7 @@ const PresetSchema = z
     tags: z.array(z.string()).optional(),
     router: z.record(z.string(), z.unknown()).optional(),
     routerRules: z.unknown().optional(),
+    modelRouting: z.unknown().optional(),
     providers: z.unknown().optional(),
     theme: z.unknown().optional(),
     themes: z.record(z.string(), z.unknown()).optional(),

@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
-import { ProfileRegistry } from "../core/agents/profiles/registry.js";
 import { getCwd } from "../core/cwd.js";
+import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import type { BudgetLimits } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
@@ -10,6 +10,7 @@ import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js"
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
+import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
 import {
   type Decision,
   PolicySchema,
@@ -19,6 +20,7 @@ import {
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
+import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
@@ -40,6 +42,40 @@ const stringFlag = (args: WorkflowArgs, name: string, fallback?: string): string
     throw new WorkflowFault("INVALID_DEFINITION", `--${name} is required`);
   return value;
 };
+const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
+  typeof args.flags.model === "string" ? args.flags.model : config.defaultModel;
+const routeRequest = (args: WorkflowArgs, config: AppConfig) => ({
+  workflowId:
+    (typeof args.flags.workflow === "string" ? args.flags.workflow : undefined) ??
+    args.positional[0] ??
+    config.workflows?.defaultWorkflow ??
+    "sdd",
+  model: typeof args.flags.model === "string" ? args.flags.model : undefined,
+  ...(typeof args.flags.route === "string"
+    ? { routes: parseRouteOverrides(args.flags.route) }
+    : {}),
+});
+/** A table of stages and profiles with their models and the source of each choice. */
+export function formatRoute(route: RouteExplanation): string {
+  const rows: string[][] = [["STAGE", "KIND", "MODEL", "SOURCE"]];
+  for (const stage of route.stages) {
+    const own = stage.profileId ? route.profiles[stage.profileId] : undefined;
+    rows.push([
+      stage.stageId,
+      stage.kind,
+      stage.model ?? own?.model ?? "(per profile)",
+      stage.source ?? (own ? `${own.source} via ${stage.profileId}` : "-"),
+    ]);
+  }
+  rows.push([], ["PROFILE", "", "MODEL", "SOURCE"]);
+  for (const [id, entry] of Object.entries(route.profiles).sort(([a], [b]) => a.localeCompare(b)))
+    rows.push([id, "", entry.model, entry.source]);
+  const widths = [0, 1, 2].map((i) => Math.max(...rows.map((r) => r[i]?.length ?? 0)));
+  const lines = rows.map((r) =>
+    r.length ? r.map((cell, i) => (i < 3 ? cell.padEnd(widths[i] ?? 0) : cell)).join("  ") : "",
+  );
+  return `Workflow ${route.workflowId}, run model ${route.runModel}\n\n${lines.join("\n").replace(/ +$/gm, "")}\n`;
+}
 export async function executeWorkflowCommand(
   service: NativeWorkflowService,
   args: WorkflowArgs,
@@ -83,6 +119,9 @@ export async function executeWorkflowCommand(
           ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
+        ...(typeof args.flags.route === "string"
+          ? { routes: parseRouteOverrides(args.flags.route) }
+          : {}),
         ...(typeof args.flags.writers === "string"
           ? { maxConcurrentWriters: Number(args.flags.writers) }
           : {}),
@@ -229,7 +268,11 @@ export async function executeWorkflowCommand(
       } as Decision);
     }
     case "profiles":
-      return new ProfileRegistry(service.workspace, { active: service.config.defaultModel }).list();
+      return routedProfiles(
+        service.workspace,
+        service.config,
+        modelFlag(args, service.config),
+      ).list();
     case "artifacts":
       return args.flags.file
         ? {
@@ -311,6 +354,8 @@ export async function executeWorkflowCommand(
         service.store.workspace,
         PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy),
       ).result;
+    case "route":
+      return explainRoute(service.workspace, service.config, routeRequest(args, service.config));
   }
 }
 export async function runWorkflowCli(argv: string[]): Promise<number> {
@@ -350,7 +395,14 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     );
     if (args.command === "profiles") {
       process.stdout.write(
-        `${JSON.stringify(new ProfileRegistry(cwd, { active: config.defaultModel }).list(), null, 2)}\n`,
+        `${JSON.stringify(routedProfiles(cwd, config, modelFlag(args, config)).list(), null, 2)}\n`,
+      );
+      return 0;
+    }
+    if (args.command === "route") {
+      const explained = explainRoute(cwd, config, routeRequest(args, config));
+      process.stdout.write(
+        args.flags.json ? `${JSON.stringify(explained, null, 2)}\n` : formatRoute(explained),
       );
       return 0;
     }

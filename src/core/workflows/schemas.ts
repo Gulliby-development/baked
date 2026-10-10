@@ -861,6 +861,11 @@ export interface StartRequest {
   executionMode?: ExecutionMode;
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /**
+   * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
+   * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
+   */
+  routes?: Record<string, string>;
 }
 export type Decision =
   | {
