@@ -49,7 +49,7 @@ import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from ".
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
-import { abortableDelay, isTransient, retryAfterMs, retryDelay } from "./retry.js";
+import { abortableDelay, accountRefusal, isTransient, retryAfterMs, retryDelay } from "./retry.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -1268,6 +1268,13 @@ export class WorkflowScheduler {
             this.store.recordedUsage(runId, attempt),
           ),
         );
+      const refusal = accountRefusal(error);
+      if (refusal && !signal.aborted)
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}. ${error instanceof Error ? error.message : String(error)}`,
+          { reason: "provider_account" },
+        );
       const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
@@ -2071,7 +2078,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (runSignal.aborted) return { kind: "fatal", entry, error: runSignal.reason ?? error };
       if (
         error instanceof WorkflowFault &&
-        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+        (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
+          error.details.reason === "provider_account")
       )
         return { kind: "fatal", entry, error };
       // The task's worker or its worktree lease is gone; the other tasks continue.
@@ -2084,7 +2092,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "interrupted",
           entry,
-          reason: error instanceof Error ? error.message : String(error),
+          reason:
+            leaseSignal.aborted && !(error instanceof Error && error.message)
+              ? "its worktree lease was lost"
+              : error instanceof Error
+                ? error.message || error.name
+                : String(error),
         };
       return { kind: "rejected", entry, error };
     } finally {

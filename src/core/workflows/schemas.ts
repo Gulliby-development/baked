@@ -364,6 +364,7 @@ export const ReasonCode = z.enum([
   "no_progress",
   "verification_failed",
   "provider_unavailable",
+  "provider_account",
   "tool_denied",
   "storage_failure",
   "invalid_output",

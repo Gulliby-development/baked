@@ -93,6 +93,7 @@ const REASONS: Record<string, string> = {
   no_progress: "repairs stopped making progress",
   verification_failed: "checks or reviews did not pass",
   provider_unavailable: "the model provider is unavailable",
+  provider_account: "the model provider refused the account: add credits or fix the API key",
   tool_denied: "a tool call was denied by policy",
   storage_failure: "workflow storage failed",
   invalid_output: "a model returned output that failed validation",
