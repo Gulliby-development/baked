@@ -59,7 +59,7 @@ const EXPLORE_PAIRS: [string, string][] = [
 ];
 
 const EDIT_PAIRS: [string, string][] = [
-  ["Forging changes…", "Forged changes"],
+  ["Baking changes…", "Baked changes"],
   ["Hammering code…", "Hammered code"],
   ["Shaping the metal…", "Shaped the metal"],
   ["Welding it together…", "Welded it together"],

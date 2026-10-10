@@ -16,7 +16,7 @@ SDD ends with confirmation of the engineering criteria. Post-release metrics are
 
 | Code today | Use | Change |
 | --- | --- | --- |
-| [Forge](../../src/core/agents/forge.ts) | Assembling context, models and tools | Add a restricted execution context; do not put the scheduler into prepareStep |
+| [Bake](../../src/core/agents/bake.ts) | Assembling context, models and tools | Add a restricted execution context; do not put the scheduler into prepareStep |
 | [dispatch](../../src/core/agents/subagent-tools.ts) and [runner](../../src/core/agents/agent-runner.ts) | Executing child tasks | Extract AgentExecutor; separate the transport result from task acceptance |
 | [AgentBus](../../src/core/agents/agent-bus.ts) | Cache and local coordination | Use it inside an attempt; do not keep durable run state in it |
 | [Verifier](../../src/core/agents/agent-verification.ts) | Existing checks | Extract CheckRunner and a typed ReviewResult; keep a text formatter for the old dispatch |
@@ -27,7 +27,7 @@ SDD ends with confirmation of the engineering criteria. Post-release metrics are
 | [Sessions](../../src/core/sessions/types.ts) | Conversation and tabs | Add an optional workflowRunId; a run exists independently of a session |
 | [MemoryDB](../../src/core/memory/db.ts) | Bun SQLite and project memory | Reuse the way the DB is opened; a new DB with its own migrations |
 | [WorkspaceCoordinator](../../src/core/coordination/WorkspaceCoordinator.ts) | Tab warnings and claims | Add a shared mutation guard for every change path while a workflow is active |
-| [Tools](../../src/core/tools/index.ts), [hooks](../../src/core/hooks/runner.ts) | Executing actions and extensions | One policy wrapper for Forge, subagents, checks and workflows |
+| [Tools](../../src/core/tools/index.ts), [hooks](../../src/core/hooks/runner.ts) | Executing actions and extensions | One policy wrapper for Bake, subagents, checks and workflows |
 | [cwd](../../src/core/cwd.ts), [boot](../../src/boot.tsx) | One cwd per process | Do not switch cwd for parallel tasks |
 
 Fix the following contracts before enabling workflows:
@@ -73,8 +73,8 @@ flowchart TB
   SCHED --> CHECK[CheckRunner]
   SCHED --> ART[ArtifactStore]
   SCHED --> POLICY[ExecutionPolicy]
-  EXEC --> FORGE[Existing providers and ToolLoopAgent]
-  FORGE --> TOOLS[Shared tool wrapper]
+  EXEC --> BAKE[Existing providers and ToolLoopAgent]
+  BAKE --> TOOLS[Shared tool wrapper]
   CHECK --> TOOLS
   TOOLS --> COORD[Workspace mutation guard]
   TOOLS --> HOOKS[Allowed hooks]
@@ -84,7 +84,7 @@ flowchart TB
   EVENTS --> CLI
 ```
 
-WorkflowService does not import React, components, Zustand or CommandContext. The runtime receives adapters for model resolution, tools, logging and context. UI stores are projections. The existing imports of `stores/errors` and `stores/model-events` in agents are gradually closed behind an EventSink interface; the whole of Forge is not rewritten for this change.
+WorkflowService does not import React, components, Zustand or CommandContext. The runtime receives adapters for model resolution, tools, logging and context. UI stores are projections. The existing imports of `stores/errors` and `stores/model-events` in agents are gradually closed behind an EventSink interface; the whole of Bake is not rewritten for this change.
 
 AgentExecutor accepts `ExecutionContext { workspaceRoot, runId, stepId, attemptId, ownerEpoch, policy, signal, eventSink }`, the selected profile and an input manifest, and returns a validated result plus the actual effects. Workflow task IDs are always strings. The legacy dispatch adapter keeps accepting numeric task_list IDs separately.
 
@@ -285,7 +285,7 @@ ProfileRegistry looks up the built-in definitions, then global ones, then projec
 
 submit_artifact and submit_review do not write an arbitrary path. They validate the type and write a candidate through ArtifactStore. The model has no write access to SQLite, run blobs, policy, profiles, workflows, AGENTS.md, the constitution or the spec, unless the current stage is meant to form the corresponding candidate.
 
-Effective capabilities are computed as the intersection of BAKED global permissions, the user's run policy, the stage profile and the task scope. Neither a skill, project config nor hook output extends this intersection. Tool names are an allowlist only; an unknown tool is forbidden. `auto` in Forge does not lift workflow restrictions. For the legacy chat, its semantics stay the same.
+Effective capabilities are computed as the intersection of BAKED global permissions, the user's run policy, the stage profile and the task scope. Neither a skill, project config nor hook output extends this intersection. Tool names are an allowlist only; an unknown tool is forbidden. `auto` in Bake does not lift workflow restrictions. For the legacy chat, its semantics stay the same.
 
 Wrapper order: schema parse; canonical path/tool classification; role/scope check; acquire the needed lease; call the allowed PreToolUse; re-check the input changed by the hook; apply approvals; record the effect intent; execute; record the outcome; PostToolUse. Any deny takes precedence over allow. Mandatory internal gates work even with disableAllHooks.
 

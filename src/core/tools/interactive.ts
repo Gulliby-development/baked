@@ -11,10 +11,10 @@ function planFileName(sessionId?: string): string {
 
 export function buildInteractiveTools(
   callbacks: InteractiveCallbacks,
-  opts?: { cwd?: string; sessionId?: string; forgeMode?: string },
+  opts?: { cwd?: string; sessionId?: string; bakeMode?: string },
 ) {
   const cwd = opts?.cwd ?? process.cwd();
-  const forgeMode = opts?.forgeMode;
+  const bakeMode = opts?.bakeMode;
   const fname = planFileName(opts?.sessionId);
 
   return {
@@ -147,7 +147,7 @@ export function buildInteractiveTools(
 
         // Gate: reject plans for trivial changes — edit directly
         const fileCount = args.files.length;
-        if (fileCount <= 2 && !forgeMode?.startsWith("plan")) {
+        if (fileCount <= 2 && !bakeMode?.startsWith("plan")) {
           return {
             output:
               `Plan rejected — ${String(fileCount)} file${fileCount === 1 ? "" : "s"} doesn't need a plan. ` +

@@ -6,7 +6,7 @@ BAKED runs on Bun. Install dependencies with `bun install`, then start the termi
 
 - `src/boot.tsx` routes startup to the terminal UI or headless CLI.
 - `src/components/`, `src/hooks/`, and `src/stores/` implement the OpenTUI/React interface.
-- `src/core/agents/forge.ts` assembles the agent, prompts, tools, approvals, and execution modes.
+- `src/core/agents/bake.ts` assembles the agent, prompts, tools, approvals, and execution modes.
 - `src/core/tools/` provides file operations, shell execution, Git, and code analysis.
 - `src/core/context/` and `src/core/intelligence/` maintain context, repository graphs, and standalone language servers.
 - `src/core/llm/providers/` contains Claude, OpenAI API, Codex, GitHub Copilot, and GitHub Models connections.

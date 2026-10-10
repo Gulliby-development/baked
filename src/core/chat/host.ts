@@ -18,7 +18,7 @@ interface SessionResources {
  * servers are started once, on the first turn, and shared by every session; each session gets its
  * own context manager and file cache.
  */
-export class ForgeChatHost implements ChatAgentHost {
+export class BakeChatHost implements ChatAgentHost {
   private parent: Promise<ContextManager> | undefined;
   private readonly sessions = new Map<string, SessionResources>();
   private mcpConnected = false;
@@ -60,7 +60,7 @@ export class ForgeChatHost implements ChatAgentHost {
     context.setProjectInstructions(
       buildInstructionPrompt(loadInstructions(this.workspace, this.config.instructionFiles)),
     );
-    context.setForgeMode(request.mode);
+    context.setBakeMode(request.mode);
     const agent = createChatAgent({
       config: this.config,
       cwd: this.workspace,

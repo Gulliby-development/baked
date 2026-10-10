@@ -16,6 +16,7 @@ import { safeRename } from "../platform/index.js";
 import { projectIdOf } from "../projects/resolve.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { getIOClient } from "../workers/io-client.js";
+import { parseSessionMeta } from "./meta.js";
 import { rebuildCoreMessages, validateCoreMessages } from "./rebuild.js";
 import type { SessionMeta, TabMeta } from "./types.js";
 
@@ -159,7 +160,7 @@ export class SessionManager {
     if (!existsSync(metaPath)) return null;
 
     try {
-      const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as SessionMeta;
+      const meta = parseSessionMeta(readFileSync(metaPath, "utf-8"));
       const jsonlPath = join(sessionDir, "messages.jsonl");
       const allMessages: ChatMessage[] = [];
 
@@ -281,7 +282,7 @@ export class SessionManager {
           if (!existsSync(metaPath)) continue;
 
           const raw = readFileSync(metaPath, "utf-8");
-          const meta = JSON.parse(raw) as SessionMeta;
+          const meta = parseSessionMeta(raw);
           const totalMessages = meta.tabs.reduce(
             (sum, t) => sum + (t.messageRange.endLine - t.messageRange.startLine),
             0,
@@ -377,7 +378,7 @@ export class SessionManager {
     try {
       const metaPath = join(dir, "meta.json");
       if (existsSync(metaPath)) {
-        const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as SessionMeta;
+        const meta = parseSessionMeta(readFileSync(metaPath, "utf-8"));
         for (const tab of meta.tabs) {
           if (tab.checkpointTags) {
             for (const ct of tab.checkpointTags) {
@@ -402,7 +403,7 @@ export class SessionManager {
     const metaPath = join(this.dir, id, "meta.json");
     if (!existsSync(metaPath)) return false;
     try {
-      const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as SessionMeta;
+      const meta = parseSessionMeta(readFileSync(metaPath, "utf-8"));
       meta.title = newTitle;
       meta.customTitle = newTitle;
       const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -479,7 +480,7 @@ export class SessionManager {
       title: string;
       customTitle?: string | null;
       cwd: string;
-      forgeMode: import("../../types/index.js").ForgeMode;
+      bakeMode: import("../../types/index.js").BakeMode;
       activeTabId: string;
     },
   ): Promise<void> {
@@ -506,7 +507,7 @@ export class SessionManager {
       title: string;
       customTitle?: string | null;
       cwd: string;
-      forgeMode: import("../../types/index.js").ForgeMode;
+      bakeMode: import("../../types/index.js").BakeMode;
       activeTabId: string;
     },
   ): Promise<void> {
@@ -524,7 +525,7 @@ export class SessionManager {
     let existingMeta: SessionMeta | null = null;
     if (existsSync(metaPath)) {
       try {
-        existingMeta = JSON.parse(readFileSync(metaPath, "utf-8")) as SessionMeta;
+        existingMeta = parseSessionMeta(readFileSync(metaPath, "utf-8"));
       } catch {
         existingMeta = null;
       }
@@ -622,7 +623,7 @@ export class SessionManager {
       startedAt: existingMeta?.startedAt ?? allMessages[0]?.timestamp ?? Date.now(),
       updatedAt: Date.now(),
       activeTabId: fallback.activeTabId,
-      forgeMode: fallback.forgeMode,
+      bakeMode: fallback.bakeMode,
       tabs: updatedTabs,
       ...withProjectId(existingMeta?.projectId ?? projectIdOf(fallback.cwd)),
     };
@@ -663,7 +664,7 @@ export class SessionManager {
       .then(async () => {
         let meta: SessionMeta;
         try {
-          meta = JSON.parse(readFileSync(metaPath, "utf-8")) as SessionMeta;
+          meta = parseSessionMeta(readFileSync(metaPath, "utf-8"));
         } catch {
           return;
         }

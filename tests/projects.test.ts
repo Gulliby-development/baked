@@ -209,7 +209,7 @@ describe("projectId on sessions", () => {
     await manager.saveTab("s1", tab, [{ id: "m1", role: "user", content: "hi", timestamp: 1 }], undefined, {
       title: "Hello",
       cwd: app,
-      forgeMode: "default",
+      bakeMode: "default",
       activeTabId: "t1",
     });
     expect(JSON.parse(readFileSync(join(app, ".baked", "sessions", "s1", "meta.json"), "utf8")).projectId).toBe("demo");

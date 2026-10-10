@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModel, ModelMessage } from "ai";
-import type { createForgeAgent } from "../core/agents/index.js";
+import type { createBakeAgent } from "../core/agents/index.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
 import { createChatAgent, createSharedCacheRef } from "../core/chat/agent.js";
 import { expandCustomCommandInput } from "../core/commands/custom.js";
@@ -13,7 +13,7 @@ import { buildProviderOptions } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { setActiveSessionId } from "../stores/session.js";
-import type { AppConfig, ChatMessage, ForgeMode, InteractiveCallbacks } from "../types/index.js";
+import type { AppConfig, BakeMode, ChatMessage, InteractiveCallbacks } from "../types/index.js";
 import { DIM, EXIT_ABORT, EXIT_ERROR, EXIT_OK, EXIT_TIMEOUT, PURPLE, RST } from "./constants.js";
 import {
   formatDuration,
@@ -31,9 +31,9 @@ import type { HeadlessChatOptions, HeadlessEvent, HeadlessRunOptions } from "./t
 interface AgentEnv {
   cwd: string;
   modelId: string;
-  mode: ForgeMode;
+  mode: BakeMode;
   model: LanguageModel;
-  agent: ReturnType<typeof createForgeAgent>;
+  agent: ReturnType<typeof createBakeAgent>;
   contextManager: ContextManager;
   sessionManager: SessionManager;
   repoMap: ReturnType<ContextManager["getRepoMap"]> | undefined;
@@ -59,7 +59,7 @@ async function setupAgent(
   opts: {
     cwd?: string;
     modelId?: string;
-    mode?: ForgeMode;
+    mode?: BakeMode;
     noRepomap?: boolean;
     system?: string;
     quiet?: boolean;
@@ -151,7 +151,7 @@ async function setupAgent(
   }
   contextManager.setProjectInstructions(instructionText);
 
-  if (mode !== "default") contextManager.setForgeMode(mode);
+  if (mode !== "default") contextManager.setBakeMode(mode);
 
   try {
     const { warmupIntelligence } = await import("../core/intelligence/index.js");
@@ -207,7 +207,7 @@ interface TurnResult {
 }
 
 async function streamTurn(
-  agent: ReturnType<typeof createForgeAgent>,
+  agent: ReturnType<typeof createBakeAgent>,
   messages: ModelMessage[],
   prompt: string,
   signal: AbortSignal,
@@ -364,7 +364,7 @@ async function saveSession(
       startedAt: chatMessages[0]?.timestamp ?? Date.now(),
       updatedAt: Date.now(),
       activeTabId: "headless",
-      forgeMode: env.mode,
+      bakeMode: env.mode,
       tabs: [
         {
           id: "headless",

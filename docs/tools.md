@@ -50,7 +50,7 @@ A `git commit` run by the agent first runs the project's native checks (for exam
 
 ## Dispatch
 
-For larger tasks the main agent (Forge) dispatches subagents in parallel: `spark` agents for read-only research and `ember` agents for edits, each on the model of its [router slot](guide.md#models-and-the-task-router). They share a file cache, serialize writes to the same file, and pass findings to each other at their next step. Forge decides when to dispatch; typing while they run steers them.
+For larger tasks the main agent (Bake) dispatches subagents in parallel: `spark` agents for read-only research and `ember` agents for edits, each on the model of its [router slot](guide.md#models-and-the-task-router). They share a file cache, serialize writes to the same file, and pass findings to each other at their next step. Bake decides when to dispatch; typing while they run steers them.
 
 ## Code intelligence
 

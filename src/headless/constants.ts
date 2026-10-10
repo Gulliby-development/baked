@@ -1,6 +1,6 @@
 import { getThemeTokens } from "../core/theme/index.js";
 import { CURRENT_VERSION } from "../core/version.js";
-import type { ForgeMode } from "../types/index.js";
+import type { BakeMode } from "../types/index.js";
 
 export const RST = "\x1b[0m";
 export const BOLD = "\x1b[1m";
@@ -26,7 +26,7 @@ export function YELLOW(): string {
   return hexToAnsi(getThemeTokens().warning);
 }
 
-export const VALID_MODES: ForgeMode[] = ["default", "architect", "plan", "auto"];
+export const VALID_MODES: BakeMode[] = ["default", "architect", "plan", "auto"];
 
 export const EXIT_OK = 0;
 export const EXIT_ERROR = 1;

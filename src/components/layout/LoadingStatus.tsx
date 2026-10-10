@@ -3,9 +3,9 @@ import { useEffect, useRef } from "react";
 import { getThemeTokens } from "../../core/theme/index.js";
 import { formatElapsed } from "../../hooks/useElapsed.js";
 import { useStatusBarStore } from "../../stores/statusbar.js";
-import { FORGE_TICK_MS, forgeSpinnerChunks } from "./ForgeSpinner.js";
+import { BAKE_TICK_MS, bakeSpinnerChunks } from "./BakeSpinner.js";
 
-const FORGE_STATUSES = [
+const BAKE_STATUSES = [
   "Baked is responding",
   "Stoking the flames",
   "Summoning spirits",
@@ -57,18 +57,18 @@ function breathe(tick: number): number {
 function buildBusyLine(
   spinnerFrame: number,
   isCompacting: boolean,
-  forgeStatus: string,
+  bakeStatus: string,
   elapsedSec: number,
 ): StyledText {
   const tk = getThemeTokens();
   const baseColor = isCompacting ? tk.info : tk.brand;
-  const statusText = isCompacting ? "Compacting context" : forgeStatus;
+  const statusText = isCompacting ? "Compacting context" : bakeStatus;
   const dots = DOTS_CYCLE[Math.floor(spinnerFrame / DOTS_SPEED) % DOTS_CYCLE.length] ?? ".";
 
   const t = breathe(spinnerFrame);
   const textColor = lerpColor(tk.textMuted, baseColor, t);
 
-  const runeChunks = forgeSpinnerChunks(
+  const runeChunks = bakeSpinnerChunks(
     spinnerFrame,
     tk.brand,
     tk.textMuted,
@@ -98,7 +98,7 @@ interface LoadingStatusProps {
 
 export function LoadingStatus({ isLoading, isCompacting, loadingStartedAt }: LoadingStatusProps) {
   const textRef = useRef<TextRenderable>(null);
-  const forgeStatusRef = useRef("");
+  const bakeStatusRef = useRef("");
   const wasLoadingRef = useRef(false);
   const loadingStartRef = useRef(0);
   const elapsedSecRef = useRef(0);
@@ -109,8 +109,8 @@ export function LoadingStatus({ isLoading, isCompacting, loadingStartedAt }: Loa
   const showBusy = isLoading || isCompacting;
 
   if (isLoading && !wasLoadingRef.current) {
-    forgeStatusRef.current = FORGE_STATUSES[
-      Math.floor(Math.random() * FORGE_STATUSES.length)
+    bakeStatusRef.current = BAKE_STATUSES[
+      Math.floor(Math.random() * BAKE_STATUSES.length)
     ] as string;
     loadingStartRef.current = loadingStartedAt || Date.now();
     elapsedSecRef.current = 0;
@@ -134,12 +134,12 @@ export function LoadingStatus({ isLoading, isCompacting, loadingStartedAt }: Loa
           textRef.current.content = buildBusyLine(
             spinnerTickRef.current,
             cp,
-            forgeStatusRef.current,
+            bakeStatusRef.current,
             elapsed,
           );
         }
       } catch {}
-    }, FORGE_TICK_MS);
+    }, BAKE_TICK_MS);
     return () => clearInterval(timer);
   }, [showBusy]);
 
@@ -152,7 +152,7 @@ export function LoadingStatus({ isLoading, isCompacting, loadingStartedAt }: Loa
         content={buildBusyLine(
           spinnerTickRef.current,
           isCompacting,
-          forgeStatusRef.current,
+          bakeStatusRef.current,
           elapsedSecRef.current,
         )}
       />

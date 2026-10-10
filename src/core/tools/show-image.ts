@@ -276,7 +276,7 @@ const YT_DL_MESSAGES = [
 ];
 
 const FFMPEG_MESSAGES = [
-  "Forging the GIF",
+  "Baking the GIF",
   "Transmuting video to art",
   "Compressing spacetime",
   "Weaving pixel tapestry",

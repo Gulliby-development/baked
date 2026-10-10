@@ -310,7 +310,7 @@ export async function runAgentTask(
     enrichedPrompt += `\n\n--- Return format: ${task.returnFormat} ---\n${RETURN_FORMAT_INSTRUCTIONS[task.returnFormat]}`;
   }
 
-  // Doppelganger: sparks inherit the parent forge's full conversation —
+  // Doppelganger: sparks inherit the parent bake's full conversation —
   // same system prompt, same tools, same messages. No role preamble needed.
   const isDoppelganger =
     taskTier === "spark" &&
@@ -319,7 +319,7 @@ export async function runAgentTask(
 
   // Non-doppelganger sparks: inject role instructions into the user message.
   // Works across all providers — automatic caching (OpenAI, Gemini, DeepSeek) benefits from shared prefix.
-  const useSpark = models.forgeInstructions != null && taskTier === "spark";
+  const useSpark = models.bakeInstructions != null && taskTier === "spark";
   if (useSpark && !isDoppelganger) {
     let rolePreamble: string;
     if (task.role === "code") {

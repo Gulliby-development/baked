@@ -1,16 +1,16 @@
 export { useAllProviderModels } from "./useAllProviderModels.js";
 export { useAnimatedNumber } from "./useAnimatedNumber.js";
-export type { ChatInstance, TabState, UseChatOptions } from "./useChat.js";
-export { useChat } from "./useChat.js";
-export { useConfigSync } from "./useConfigSync.js";
 export {
-  cycleForgeMode,
+  cycleBakeMode,
   getModeColor,
   getModeLabel,
   MODE_COLORS,
   MODE_LABELS,
   MODE_ORDER,
-} from "./useForgeMode.js";
+} from "./useBakeMode.js";
+export type { ChatInstance, TabState, UseChatOptions } from "./useChat.js";
+export { useChat } from "./useChat.js";
+export { useConfigSync } from "./useConfigSync.js";
 export { useGitStatus } from "./useGitStatus.js";
 export { useGlobalKeyboard } from "./useGlobalKeyboard.js";
 export { useGroupedModels } from "./useGroupedModels.js";

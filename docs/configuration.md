@@ -62,7 +62,7 @@ The type of the whole file is `AppConfig` in `src/types/index.ts`; the comments 
 | `keyPriority` | `"env"` | Key lookup order, see below |
 | `theme`, `diffStyle`, `chatStyle`, `collapseDiffs`, `showReasoning`, `verbose` | | Display; `/theme`, `/diff-style`, `/chat-style`, `/reasoning`, `/verbose` |
 | `coAuthorCommits` | `true` | Co-author trailer on commits made through BAKED |
-| `defaultForgeMode` | `"default"` | Mode of new sessions |
+| `defaultBakeMode` | `"default"` | Mode of new sessions; the earlier name `defaultForgeMode` is still read |
 | `telemetry`, `telemetryUrl` | `true`, unset | Local usage events and an optional receiver ([privacy](privacy.md)) |
 
 ## Provider keys

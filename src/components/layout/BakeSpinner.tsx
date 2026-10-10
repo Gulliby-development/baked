@@ -12,7 +12,7 @@ import { useTheme } from "../../core/theme/index.js";
  * Reverse:  ᛞ → ᛉ → ᛏ → ᛊ → ᚠ → ᚲ → ᛁ  (intensity fades)
  *
  * Color follows the rotation — brighter as it spins forward, dimmer
- * as it returns. Feels like a pendulum or breathing forge bellows.
+ * as it returns. Feels like a pendulum or breathing oven.
  *
  * Single character wide. Unicode Runic block (U+16A0–U+16FF).
  */
@@ -21,7 +21,7 @@ import { useTheme } from "../../core/theme/index.js";
 
 type Intensity = 0 | 1 | 2 | 3 | 4;
 
-// Runes that tell a forging story — all full-height glyphs
+// Runes that tell a baking story — all full-height glyphs
 const WHEEL: string[] = [
   "ᛁ", // Isa — stillness/ice (seed)
   "ᚲ", // Kenaz — torch kindles
@@ -102,7 +102,7 @@ function ensureTick() {
 
 // ── React component ─────────────────────────────────────────────────
 
-export const ForgeSpinner = memo(function ForgeSpinner({ color }: { color?: string } = {}) {
+export const BakeSpinner = memo(function BakeSpinner({ color }: { color?: string } = {}) {
   const t = useTheme();
   // biome-ignore lint/suspicious/noExplicitAny: ref shared across text/span renderables with imperative updates
   const textRef = useRef<any>(null);
@@ -157,7 +157,7 @@ export const ForgeSpinner = memo(function ForgeSpinner({ color }: { color?: stri
 // ── Imperative API (for StyledText / status bar) ────────────────────
 
 /** Build styled TextChunk[] for the current rune spinner frame. */
-export function forgeSpinnerChunks(
+export function bakeSpinnerChunks(
   frame: number,
   brand: string,
   muted: string,
@@ -169,4 +169,4 @@ export function forgeSpinnerChunks(
   return [fgStyle(fg)(glyph)];
 }
 
-export { TICK_MS as FORGE_TICK_MS };
+export { TICK_MS as BAKE_TICK_MS };

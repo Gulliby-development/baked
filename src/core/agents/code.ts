@@ -60,9 +60,9 @@ interface CodeAgentOptions {
   contextWindow?: number;
   disablePruning?: boolean;
   tabId?: string;
-  forgeInstructions?: string;
+  bakeInstructions?: string;
   /** Baked tool definitions with role guards — use instead of buildSubagentCodeTools for spark cache prefix hits. */
-  forgeTools?: Record<string, unknown>;
+  bakeTools?: Record<string, unknown>;
   /** Skip bus coordination tools — for solo agents like desloppify. */
   skipBusTools?: boolean;
 }
@@ -73,11 +73,11 @@ export function createCodeAgent(model: LanguageModel, options?: CodeAgentOptions
   const hasBus = !!(bus && agentId);
   const busTools = hasBus && !options?.skipBusTools ? buildBusTools(bus, agentId, "code") : {};
 
-  // Spark mode: use forge's tool definitions (with role guards) for cache prefix hits.
+  // Spark mode: use bake's tool definitions (with role guards) for cache prefix hits.
   // Regular mode: build code-specific tools.
   let allTools: Record<string, unknown>;
-  if (options?.forgeTools) {
-    allTools = { ...options.forgeTools, ...busTools };
+  if (options?.bakeTools) {
+    allTools = { ...options.bakeTools, ...busTools };
   } else {
     let tools = buildSubagentCodeTools({
       webSearchModel: options?.webSearchModel,
@@ -128,12 +128,12 @@ export function createCodeAgent(model: LanguageModel, options?: CodeAgentOptions
         // SDK swallows throws in onStepEnd; surfacing happens in prepareStep (step-utils.ts).
       }
     },
-    // biome-ignore lint/suspicious/noExplicitAny: forgeTools come as Record<string, unknown> for cache sharing
+    // biome-ignore lint/suspicious/noExplicitAny: bakeTools come as Record<string, unknown> for cache sharing
     tools: allTools as any,
     instructions: {
       role: "system" as const,
-      content: options?.forgeInstructions
-        ? options.forgeInstructions
+      content: options?.bakeInstructions
+        ? options.bakeInstructions
         : (() => {
             const base = codeBase();
             if (!hasBus || options?.skipBusTools) return base;
@@ -152,7 +152,7 @@ export function createCodeAgent(model: LanguageModel, options?: CodeAgentOptions
           unknown
         >) ?? {}),
         cacheControl: { type: "ephemeral", ttl: cacheTtl },
-        // See forge.ts: gateways strip SDK-level maxOutputTokens; mirror to wire.
+        // See bake.ts: gateways strip SDK-level maxOutputTokens; mirror to wire.
         max_tokens: MAX_OUTPUT_TOKENS,
       },
     } as ProviderOptions,

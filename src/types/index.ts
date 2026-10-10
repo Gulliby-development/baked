@@ -311,7 +311,7 @@ export interface AppConfig {
   /** Add co-author trailer on AI-assisted commits. Default: true */
   coAuthorCommits?: boolean;
   /** Default Baked mode for new sessions. Default: "default" */
-  defaultForgeMode?: ForgeMode;
+  defaultBakeMode?: BakeMode;
   /** Enable/disable Baked map (AST index). Disabling saves ~4-8k prompt tokens. Default: true. Toggle via /repo-map → 'e'. */
   repoMap?: boolean;
   /** Semantic summary mode: "off", "ast" (docstrings only), "synthetic" (ast + name-derived, free), "llm" (ast + AI-generated), "full" (ast + llm + synthetic). Boolean compat: true → "synthetic", false → "off". "on" is legacy alias for "full". */
@@ -327,7 +327,7 @@ export interface AppConfig {
   agentFeatures?: AgentFeatures;
   /** Tools disabled by the user. Persisted across sessions. */
   disabledTools?: string[];
-  /** Instruction files to load into system prompt. Default: ["forge"] (FORGE.md only). */
+  /** Instruction files to load into system prompt. Default: ["baked"] (baked.md only). */
   instructionFiles?: string[];
   /** API key resolution priority: "env" = env vars first (default), "app" = keychain/file first. */
   keyPriority?: "env" | "app";
@@ -432,6 +432,6 @@ export interface MCPServerConfig {
   headers?: Record<string, string>;
 }
 
-export type ForgeMode = "default" | "architect" | "plan" | "auto";
+export type BakeMode = "default" | "architect" | "plan" | "auto";
 
 export type ChatStyle = "accent" | "bubble";

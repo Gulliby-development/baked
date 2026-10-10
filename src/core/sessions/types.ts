@@ -1,4 +1,4 @@
-import type { ForgeMode } from "../../types/index.js";
+import type { BakeMode } from "../../types/index.js";
 
 export interface TabMeta {
   workflowRunId?: string;
@@ -9,7 +9,7 @@ export interface TabMeta {
   planMode: boolean;
   planRequest: string | null;
   coAuthorCommits: boolean;
-  forgeMode?: ForgeMode;
+  bakeMode?: BakeMode;
   tokenUsage: {
     prompt: number;
     completion: number;
@@ -34,7 +34,7 @@ export interface SessionMeta {
   startedAt: number;
   updatedAt: number;
   activeTabId: string;
-  forgeMode: ForgeMode;
+  bakeMode: BakeMode;
   tabs: TabMeta[];
   /** The project (`baked/project.json`) of `cwd` when the session was saved. */
   projectId?: string;

@@ -61,7 +61,7 @@ function makeMeta(id: string, tabs: Array<{ id: string }> = [{ id: "tab-1" }]): 
 		updatedAt: Date.now(),
 		activeTabId: tabs[0]!.id,
 		cwd: "/tmp",
-		forgeMode: "default",
+		bakeMode: "default",
 		tabs: tabs.map((t) => makeTab(t.id)),
 	};
 }

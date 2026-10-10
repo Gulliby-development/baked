@@ -495,7 +495,7 @@ if (isCompile) {
       /\bclass\s+AgentBus\b/,
       /\bclass\s+RepoMap\b/,
       /\bclass\s+WorkspaceCoordinator\b/,
-      /\bfunction\s+createForgeAgent\b/,
+      /\bfunction\s+createBakeAgent\b/,
     ];
     const leaks = sentinels.filter((re) => re.test(bundle)).map((re) => re.source);
     if (leaks.length > 0) {

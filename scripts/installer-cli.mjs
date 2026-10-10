@@ -45,7 +45,7 @@ if (!IS_WIN) {
 // ── Brand pipeline (mirrors src/boot.tsx) ──────────────────────────
 const COLOR = {
   amber: "\x1b[38;2;232;163;71m",
-  forge: "\x1b[38;2;255;107;42m",
+  bake: "\x1b[38;2;255;107;42m",
   muted: "\x1b[38;2;128;128;128m",
   ok:    "\x1b[38;2;127;200;127m",
   err:   "\x1b[38;2;232;90;90m",
@@ -77,7 +77,7 @@ function startSpinner(label) {
   process.stdout.write("\x1b[?25l"); // hide cursor
   spinTimer = setInterval(() => {
     spinFrame = (spinFrame + 1) % SPINNER.length;
-    process.stdout.write(`\r  ${COLOR.forge}${SPINNER[spinFrame]}${COLOR.reset}  ${spinLabel}   `);
+    process.stdout.write(`\r  ${COLOR.bake}${SPINNER[spinFrame]}${COLOR.reset}  ${spinLabel}   `);
   }, 80);
 }
 function stopSpinner(ok, msg) {
