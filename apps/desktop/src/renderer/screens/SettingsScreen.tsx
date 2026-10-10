@@ -1,6 +1,7 @@
 import type { AppSettings } from "../../shared/api.js";
 import { href, type SettingsSection } from "../router.js";
 import { useDesktop } from "../store.js";
+import { GlobalSettings } from "./setup/GlobalSettings.js";
 
 function Toggle({ label, field }: { label: string; field: keyof AppSettings }) {
   const { settings, updateSettings } = useDesktop();
@@ -147,17 +148,7 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
         </a>
       </nav>
       <div className="page" style={{ flex: 1, maxWidth: 900 }}>
-        {section === "app" ? (
-          <AppSection />
-        ) : (
-          <>
-            <h1>All projects</h1>
-            <div className="empty">
-              Providers, model routing, global commands and telemetry come in a later desktop pull
-              request.
-            </div>
-          </>
-        )}
+        {section === "app" ? <AppSection /> : <GlobalSettings />}
       </div>
     </div>
   );

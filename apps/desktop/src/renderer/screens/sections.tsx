@@ -2,6 +2,9 @@ import type { ComponentType } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { ProjectSection } from "../router.js";
 import { RunsSection } from "./project/RunsSection.js";
+import { GatesSection } from "./setup/GatesSection.js";
+import { InstructionsSection } from "./setup/InstructionsSection.js";
+import { WorkingSetSection } from "./setup/WorkingSetSection.js";
 
 export interface SectionProps {
   project: DesktopProject;
@@ -13,4 +16,7 @@ export interface SectionProps {
 export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<SectionProps>>> = {
   overview: RunsSection,
   runs: RunsSection,
+  gates: GatesSection,
+  instructions: InstructionsSection,
+  "working-set": WorkingSetSection,
 };

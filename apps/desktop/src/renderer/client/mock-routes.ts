@@ -1,5 +1,6 @@
 import type { ApiResponse, RunSnapshot, StreamEvent } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
+import { setupRoutes } from "./mock-setup.js";
 
 export interface MockRequest {
   key: string;
@@ -62,7 +63,7 @@ const workflowRuns: MockRoute = ({ key, method, path }) =>
     : undefined;
 
 /** Sample answers per feature; screens add theirs here. */
-export const MOCK_ROUTES: MockRoute[] = [workflowRuns];
+export const MOCK_ROUTES: MockRoute[] = [workflowRuns, setupRoutes];
 
 /** Sample event streams per feature; screens add theirs here. */
 export const MOCK_STREAMS: MockStream[] = [];
