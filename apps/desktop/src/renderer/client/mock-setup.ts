@@ -6,12 +6,13 @@ import type { ApiResponse } from "../../shared/api.js";
 import type { MockRequest, MockRoute } from "./mock-routes.js";
 import type {
   Check,
+  CheckList,
+  CheckRunResult,
+  CheckSuggestion,
   CommandEntry,
   ConfigFile,
   ConfigView,
   GateEntry,
-  GateResult,
-  GateSuggestion,
   InstructionFile,
   ModelRouting,
   ProjectSummary,
@@ -106,7 +107,7 @@ const POLICY_BASE = {
 };
 
 interface ProjectGate {
-  entry: Omit<GateEntry, "lastResult">;
+  entry: GateEntry;
 }
 
 interface SetupState {
@@ -114,7 +115,37 @@ interface SetupState {
   instructions: InstructionFile[];
   project: ConfigFile;
   projectGates: ProjectGate[];
-  results: Record<string, GateResult>;
+  /** The latest on-demand result of each check, as the backend keeps it until it stops. */
+  results: Record<string, CheckRunResult>;
+}
+
+const TESTS_OUTPUT = `bun test v1.4.2
+
+tests/usage.test.ts:
+✓ usage summary > groups by stage and model [3.10ms]
+✗ usage summary > counts host attempts as (host) [1.92ms]
+
+  expect(received).toBe(expected)
+  Expected: "(host)"
+  Received: "host"
+
+      at tests/usage.test.ts:88:31
+
+ 41 pass
+ 1 fail
+Ran 42 tests across 9 files. [1.84s]`;
+
+function result(checkId: string, minutesAgo: number, extra: Partial<CheckRunResult>) {
+  return {
+    checkId,
+    at: NOW - minutesAgo * MIN,
+    status: "passed",
+    exitCode: 0,
+    durationMs: 6000,
+    outputTail: "",
+    truncated: false,
+    ...extra,
+  } satisfies CheckRunResult;
 }
 
 function instruction(
@@ -250,10 +281,14 @@ function initialState(key: string): SetupState {
       },
     ],
     results: {
-      typecheck: { outcome: "passed", at: NOW - 12 * MIN, durationMs: 14_000, exitCode: 0 },
-      lint: { outcome: "passed", at: NOW - 12 * MIN, durationMs: 6_000, exitCode: 0 },
-      tests: { outcome: "failed", at: NOW - 11 * MIN, durationMs: 112_000, exitCode: 1 },
-      "cli-walkthrough": { outcome: "passed", at: NOW - 3 * 60 * MIN, durationMs: 240_000 },
+      lint: result("lint", 12, { outputTail: "Checked 412 files in 310ms. No fixes applied." }),
+      tests: result("tests", 11, {
+        status: "failed",
+        exitCode: 1,
+        durationMs: 112_000,
+        outputTail: TESTS_OUTPUT,
+        truncated: true,
+      }),
     },
   };
 }
@@ -390,13 +425,49 @@ function gates(s: SetupState): { gates: GateEntry[]; problems: string[] } {
     return at === -1 ? order.length : at;
   };
   list.sort((a, b) => rank(a.id) - rank(b.id));
+  return { gates: list, problems: [] };
+}
+
+function checkList(s: SetupState): CheckList {
+  const view = configView(s);
+  const checks = view.effective.workflows?.policy?.checks ?? [];
   return {
-    gates: list.map((g) => ({ ...g, lastResult: s.results[g.id] ?? null })),
-    problems: [],
+    checks: checks.map((c) => {
+      const last = s.results[c.id];
+      return last ? { ...c, lastResult: last } : c;
+    }),
+    workflowsEnabled: view.effective.workflows?.enabled === true,
   };
 }
 
-const SUGGESTIONS: GateSuggestion[] = [
+/** What `PUT /v1/workflow/checks` refuses, roughly as the core's `CheckSchema` does. */
+function invalidChecks(checks: Check[]): string | null {
+  const ids = new Set<string>();
+  for (const c of checks) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(c.id ?? "")) return `Invalid check ID ${c.id}`;
+    if (ids.has(c.id)) return "Check IDs must be unique";
+    ids.add(c.id);
+    if (!c.executable) return `${c.id}: executable is required`;
+    if (Object.keys(c).some((k) => !(k in check("x", "x", [])))) return `${c.id}: unknown field`;
+  }
+  return null;
+}
+
+/** A sample run of a check: `tests` fails, the rest pass. */
+function runCheck(c: Check): CheckRunResult {
+  const failed = c.id === "tests";
+  return {
+    checkId: c.id,
+    at: Date.now(),
+    status: failed ? "failed" : "passed",
+    exitCode: failed ? 1 : 0,
+    durationMs: 4000 + c.id.length * 900,
+    outputTail: failed ? TESTS_OUTPUT : `$ ${[c.executable, ...c.args].join(" ")}\nDone.`,
+    truncated: failed,
+  };
+}
+
+const SUGGESTIONS: CheckSuggestion[] = [
   {
     check: check("typecheck", "bun", ["run", "typecheck"], { timeoutMs: 120_000 }),
     source: 'package.json script "typecheck"',
@@ -419,32 +490,54 @@ const SUGGESTIONS: GateSuggestion[] = [
 
 const COMMANDS: CommandEntry[] = [
   {
-    name: "fix-ci",
-    scope: "project",
-    path: ".baked/commands/fix-ci.md",
-    description: "Read the failing CI job and fix it",
-  },
-  { name: "release-notes", scope: "project", path: ".baked/commands/release-notes.md" },
-  { name: "triage", scope: "project", path: ".baked/commands/triage.md" },
-  {
-    name: "standup",
+    name: "/explain",
     scope: "global",
-    path: "~/.baked/commands/standup.md",
+    path: "C:\\Users\\you\\.baked\\commands\\explain.md",
+    description: "Explain the selected code",
+  },
+  {
+    name: "/fix-ci",
+    scope: "project",
+    path: "C:\\Project\\BAKED\\.baked\\commands\\fix-ci.md",
+    description: "Read the failing CI job and fix it",
+    argumentHint: "[job name]",
+  },
+  {
+    name: "/release-notes",
+    scope: "project",
+    path: "C:\\Project\\BAKED\\.baked\\commands\\release-notes.md",
+    description: "Draft release notes from merged pull requests",
+    argumentHint: "<version>",
+  },
+  {
+    name: "/standup",
+    scope: "global",
+    path: "C:\\Users\\you\\.baked\\commands\\standup.md",
     description: "Summarize yesterday's commits",
   },
   {
-    name: "explain",
-    scope: "global",
-    path: "~/.baked/commands/explain.md",
-    description: "Explain the selected code",
+    name: "/triage",
+    scope: "project",
+    path: "C:\\Project\\BAKED\\.baked\\commands\\triage.md",
+    description: "Label and summarize new issues",
   },
 ];
 
-const SKILLS: SkillEntry[] = ["api-contract", "locales", "release", "workflow-debug"].map((id) => ({
-  id,
-  scope: "project",
-  path: `baked/skills/${id}/SKILL.md`,
-}));
+const SKILLS: SkillEntry[] = [
+  ...["api-contract", "locales", "release", "workflow-debug"].map(
+    (id): SkillEntry => ({
+      id,
+      scope: "project",
+      path: `C:\\Project\\BAKED\\.baked\\skills\\${id}\\SKILL.md`,
+      description: `How this repository handles ${id.replace("-", " ")}`,
+    }),
+  ),
+  {
+    id: "pdf",
+    scope: "global",
+    path: "C:\\Users\\you\\.claude\\skills\\pdf\\SKILL.md",
+  },
+];
 
 const WORKFLOW_STAGES: Record<string, string[]> = {
   sdd: ["research", "specify", "plan", "analyze", "implement", "review", "converge"],
@@ -548,8 +641,30 @@ export const setupRoutes: MockRoute = (request) => {
           .map((g) => ({ id: g.entry.id, hash: g.entry.hash })),
       });
     }
-    case "GET /v1/workflow/gates/suggestions":
-      return response(200, { suggestions: SUGGESTIONS });
+    case "GET /v1/workflow/checks":
+      return response(200, checkList(s));
+    case "PUT /v1/workflow/checks": {
+      const checks = body<{ checks: Check[] }>(request).checks ?? [];
+      const invalid = invalidChecks(checks);
+      if (invalid) return error(400, "INVALID_REQUEST", invalid);
+      // Only the check list changes; a project without workflows gets the effective block.
+      const workflows = s.project.workflows ??
+        configView(s).effective.workflows ?? {
+          enabled: false,
+          policy: { ...POLICY_BASE, checks: [] },
+        };
+      s.project = {
+        ...s.project,
+        workflows: { ...workflows, policy: { ...POLICY_BASE, ...workflows.policy, checks } },
+      };
+      return response(200, checkList(s));
+    }
+    case "GET /v1/workflow/checks/suggestions": {
+      const configured = new Set(checkList(s).checks.map((c) => c.id));
+      return response(200, {
+        suggestions: SUGGESTIONS.filter((sg) => !configured.has(sg.check.id)),
+      });
+    }
     case "GET /v1/projects/current/instructions":
       return response(200, {
         files: s.instructions,
@@ -616,17 +731,17 @@ export const setupRoutes: MockRoute = (request) => {
       return response(204, null);
     }
   }
-  const run = /^\/v1\/workflow\/gates\/([^/]+)\/run$/.exec(path);
+  const run = /^\/v1\/workflow\/checks\/([^/]+)\/run$/.exec(path);
   if (run?.[1] && method === "POST") {
     const id = decodeURIComponent(run[1]);
-    const result: GateResult = {
-      outcome: id === "tests" ? "failed" : "passed",
-      at: Date.now(),
-      durationMs: 4000 + id.length * 900,
-      exitCode: id === "tests" ? 1 : 0,
-    };
-    s.results[id] = result;
-    return response(200, result);
+    const found = checkList(s).checks.find((c) => c.id === id);
+    if (!found) return error(404, "NOT_FOUND", `No check ${id}`);
+    // In the sample data a run of the docs project is driving and holds its workspace.
+    if (key === "docs")
+      return error(409, "WORKSPACE_BUSY", "A workflow run holds the workspace; try again later");
+    const record = runCheck(found);
+    s.results[id] = record;
+    return response(200, record);
   }
   return undefined;
 };

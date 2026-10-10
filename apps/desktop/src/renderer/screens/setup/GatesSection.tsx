@@ -1,24 +1,29 @@
 import { type ChangeEvent, useState } from "react";
+import { ApiError } from "../../client/api.js";
 import {
   type Check,
+  type CheckList,
+  type CheckRunResult,
+  type CheckSuggestion,
   type ConfigView,
   type GateEntry,
-  type GateResult,
-  type GateSuggestion,
   isMissingEndpoint,
   setup,
 } from "../../client/setup.js";
+import { ago } from "../../format.js";
 import "../../styles/setup.css";
 import type { SectionProps } from "../sections.js";
 import {
   type CheckDraft,
   checkDraft,
+  checkResultText,
   checkScope,
   draftToCheck,
-  duration,
   effectiveChecks,
+  gateMark,
   gateOrigin,
   joinCommand,
+  plainCheck,
   upsertCheck,
   workflowsWithChecks,
 } from "./logic.js";
@@ -31,33 +36,33 @@ const TYPE_LABEL: Record<GateEntry["type"], string> = {
   "ai-acceptance": "AI acceptance",
 };
 
-function resultText(result: GateResult): string {
-  const exit = result.exitCode ? ` · exit ${result.exitCode}` : "";
-  return `${result.outcome}${exit} · ${duration(result.durationMs)}`;
-}
+/** An on-demand run of one check from this screen. */
+type CheckRun =
+  | { kind: "running" }
+  | { kind: "done"; result: CheckRunResult }
+  | { kind: "error"; message: string };
 
-function mark(gate: GateEntry): { text: string; tone: string; label: string } {
-  if (gate.source === "project" && gate.confirmed === false)
-    return { text: "!", tone: "warn", label: "not confirmed" };
-  const outcome = gate.lastResult?.outcome;
-  if (outcome === "passed") return { text: "✓", tone: "ok", label: "passed" };
-  if (outcome === "failed" || outcome === "error")
-    return { text: "✗", tone: "err", label: outcome };
-  return { text: "·", tone: "", label: "not run" };
+function runError(error: unknown, id: string): string {
+  if (error instanceof ApiError && error.code === "WORKSPACE_BUSY")
+    return "A workflow run holds the workspace. Run the check again when that run finishes or pauses.";
+  if (isMissingEndpoint(error)) return `The backend has no check ${id}; save it first.`;
+  return errorText(error);
 }
 
 function GateRow({
   gate,
   config,
+  result,
   selected,
   onSelect,
 }: {
   gate: GateEntry;
   config: ConfigView | null;
+  result: CheckRunResult | null;
   selected: boolean;
   onSelect: () => void;
 }) {
-  const m = mark(gate);
+  const m = gateMark(gate, result);
   return (
     <li>
       <button type="button" className="setup-gate" aria-pressed={selected} onClick={onSelect}>
@@ -72,9 +77,11 @@ function GateRow({
         <span className="mono muted setup-push">
           {gate.source === "project" && gate.confirmed === false
             ? "not confirmed"
-            : gate.lastResult
-              ? resultText(gate.lastResult)
-              : "not run"}
+            : result
+              ? checkResultText(result)
+              : gate.source === "policy"
+                ? "not run here"
+                : ""}
         </span>
       </button>
     </li>
@@ -87,7 +94,7 @@ function Suggestions({
   onAdd,
   busy,
 }: {
-  suggestions: GateSuggestion[];
+  suggestions: CheckSuggestion[];
   existing: Set<string>;
   onAdd: (checks: Check[]) => void;
   busy: boolean;
@@ -158,6 +165,27 @@ function Suggestions({
   );
 }
 
+/** The latest result of a check: from this screen's run, or the backend's `lastResult`. */
+function RunResult({ run, last }: { run: CheckRun | undefined; last: CheckRunResult | null }) {
+  if (run?.kind === "running") return <span className="muted setup-note">Running…</span>;
+  if (run?.kind === "error") return <div className="banner error">{run.message}</div>;
+  const result = run?.kind === "done" ? run.result : last;
+  if (!result) return null;
+  const tone = result.status === "passed" ? "ok" : result.status === "cancelled" ? "" : "err";
+  return (
+    <section className="setup-stack" aria-label="Last result">
+      <span className="setup-note">
+        <span className={`mono setup-result ${tone}`}>{checkResultText(result)}</span>
+        <span className="muted"> · {ago(result.at)}</span>
+      </span>
+      {result.outputTail && <pre className="setup-output mono">{result.outputTail}</pre>}
+      {result.truncated && (
+        <span className="muted setup-note">Only the last lines of the output are kept.</span>
+      )}
+    </section>
+  );
+}
+
 function CheckForm({
   initial,
   isNew,
@@ -166,7 +194,9 @@ function CheckForm({
   onSave,
   onDelete,
   onRun,
-  runResult,
+  canRun,
+  run,
+  last,
 }: {
   initial: Check | null;
   isNew: boolean;
@@ -175,7 +205,9 @@ function CheckForm({
   onSave: (draft: CheckDraft) => void;
   onDelete: () => void;
   onRun: () => void;
-  runResult: string | null;
+  canRun: boolean;
+  run: CheckRun | undefined;
+  last: CheckRunResult | null;
 }) {
   const [draft, setDraft] = useState(() => checkDraft(initial));
   const set = <K extends keyof CheckDraft>(key: K, value: CheckDraft[K]): void =>
@@ -267,7 +299,17 @@ function CheckForm({
         </button>
         {!isNew && (
           <>
-            <button type="button" className="btn" disabled={busy} onClick={onRun}>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || !canRun || run?.kind === "running"}
+              title={
+                canRun
+                  ? "Runs the saved check as a run would, without recording evidence"
+                  : "Running one check on its own needs a newer BAKED"
+              }
+              onClick={onRun}
+            >
               Run now
             </button>
             <button type="button" className="btn" disabled={busy} onClick={onDelete}>
@@ -276,7 +318,12 @@ function CheckForm({
           </>
         )}
       </div>
-      {runResult && <span className="muted setup-note">{runResult}</span>}
+      {!isNew && !canRun && (
+        <span className="muted setup-note">
+          Running one check on its own needs a newer BAKED; it runs as part of every workflow run.
+        </span>
+      )}
+      {!isNew && <RunResult run={run} last={last} />}
     </form>
   );
 }
@@ -339,21 +386,32 @@ function GateDetails({
 export function GatesSection({ project }: SectionProps) {
   const key = project.key;
   const [gates, reloadGates] = useLoad(() => setup.gates(key), [key]);
-  const [config, , setConfig] = useLoad(() => setup.config(key), [key]);
-  const [suggestions] = useLoad(() => setup.gateSuggestions(key), [key]);
+  const [config, reloadConfig, setConfig] = useLoad(() => setup.config(key), [key]);
+  // `missing` means an older backend: checks are then read from and written to the config.
+  const [checkList, , setCheckList] = useLoad(() => setup.checks(key), [key]);
+  const [suggestions, reloadSuggestions] = useLoad(() => setup.checkSuggestions(key), [key]);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [runResult, setRunResult] = useState<string | null>(null);
+  const [runs, setRuns] = useState<Record<string, CheckRun>>({});
 
   if (gates.state !== "ready") return <LoadState value={gates} what="gates and checks" />;
+  if (checkList.state === "loading") return <LoadState value={checkList} what="checks" />;
+  const api: CheckList | null = checkList.state === "ready" ? checkList.data : null;
   const configView = config.state === "ready" ? config.data : null;
-  const checks = effectiveChecks(configView);
+  const checks: Check[] = api ? api.checks.map(plainCheck) : effectiveChecks(configView);
+  const lastResult = (id: string): CheckRunResult | null => {
+    const run = runs[id];
+    if (run?.kind === "done") return run.result;
+    return api?.checks.find((c) => c.id === id)?.lastResult ?? null;
+  };
   const list = gates.data.gates;
   const current = list.find((g) => g.id === selected) ?? list[0] ?? null;
   const currentCheck = current ? (checks.find((c) => c.id === current.id) ?? null) : null;
   const unconfirmed = list.filter((g) => g.source === "project" && g.confirmed === false);
+  // A server error on the checks endpoint leaves the list read-only rather than guessing.
+  const canEdit = api !== null || (checkList.state === "missing" && configView !== null);
 
   const act = async (work: () => Promise<void>): Promise<boolean> => {
     setBusy(true);
@@ -370,43 +428,42 @@ export function GatesSection({ project }: SectionProps) {
   };
   const saveChecks = (next: Check[]) =>
     act(async () => {
-      if (!configView) throw new Error("The project config could not be read.");
-      const workflows = workflowsWithChecks(configView, next);
-      if (!workflows)
-        throw new Error(
-          "Workflows are not set up in this project. Run `baked workflow init` once, then add checks here.",
-        );
-      setConfig(await setup.patchConfig(key, "project", { set: { workflows } }));
+      if (api) {
+        setCheckList(await setup.saveChecks(key, next.map(plainCheck)));
+        reloadConfig();
+      } else {
+        if (!configView) throw new Error("The project config could not be read.");
+        const workflows = workflowsWithChecks(configView, next);
+        if (!workflows)
+          throw new Error(
+            "Workflows are not set up in this project. Run `baked workflow init` once, then add checks here.",
+          );
+        setConfig(await setup.patchConfig(key, "project", { set: { workflows } }));
+      }
       reloadGates();
+      reloadSuggestions();
     });
   const confirm = (ids: string[]) =>
     act(async () => {
       await setup.confirmGates(key, ids);
       reloadGates();
     });
-  const runNow = (id: string) =>
-    act(async () => {
-      setRunResult(`Running ${id}…`);
-      try {
-        const result = await setup.runGate(key, id);
-        setRunResult(`${id}: ${resultText(result)}`);
-        reloadGates();
-      } catch (e) {
-        setRunResult(
-          isMissingEndpoint(e)
-            ? "Running one gate on its own needs a newer BAKED; it runs as part of every workflow run."
-            : null,
-        );
-        if (!isMissingEndpoint(e)) throw e;
-      }
-    });
+  const runNow = async (id: string): Promise<void> => {
+    setRuns((r) => ({ ...r, [id]: { kind: "running" } }));
+    try {
+      const result = await setup.runCheck(key, id);
+      setRuns((r) => ({ ...r, [id]: { kind: "done", result } }));
+    } catch (e) {
+      setRuns((r) => ({ ...r, [id]: { kind: "error", message: runError(e, id) } }));
+    }
+  };
 
-  const editable = creating || currentCheck !== null;
+  const editable = canEdit && (creating || currentCheck !== null);
   const formKey = creating ? "new" : (current?.id ?? "none");
   const scopeNote = creating
     ? "saved in .baked/config.json"
     : current && checkScope(current.id, configView) === "global"
-      ? "from ~/.baked/config.json; saving copies it to this checkout"
+      ? "from ~/.baked/config.json; saving copies the list to this checkout"
       : "saved in .baked/config.json";
 
   return (
@@ -415,21 +472,20 @@ export function GatesSection({ project }: SectionProps) {
         <p className="lede setup-grow">
           A required gate must pass before a run can finish. An advisory gate reports, the run goes
           on. Shared gates live in <span className="mono">baked/gates/</span>; checks you add here
-          go to <span className="mono">.baked/config.json</span>.
+          go to <span className="mono">.baked/config.json</span>. New runs use them at once; started
+          runs keep the list they froze.
         </p>
         <button
           type="button"
           className="btn-primary"
-          onClick={() => {
-            setCreating(true);
-            setRunResult(null);
-          }}
+          disabled={!canEdit}
+          onClick={() => setCreating(true)}
         >
           New check
         </button>
       </div>
 
-      {suggestions.state === "ready" && (
+      {canEdit && suggestions.state === "ready" && (
         <Suggestions
           suggestions={suggestions.data.suggestions}
           existing={new Set(list.map((g) => g.id))}
@@ -472,7 +528,18 @@ export function GatesSection({ project }: SectionProps) {
           Not used, could not be read: {gates.data.problems.join("; ")}
         </div>
       )}
-      {config.state === "missing" && (
+      {api && !api.workflowsEnabled && (
+        <div className="banner">
+          Workflows are off in this project, so no run uses these checks yet. The list is kept in{" "}
+          <span className="mono">.baked/config.json</span> for when you turn them on.
+        </div>
+      )}
+      {checkList.state === "error" && (
+        <div className="banner error">
+          The checks could not be read, so they are read-only here: {checkList.message}
+        </div>
+      )}
+      {checkList.state === "missing" && config.state === "missing" && (
         <div className="banner setup-needs">
           Editing checks needs a newer BAKED; the list below is read-only.
         </div>
@@ -490,11 +557,11 @@ export function GatesSection({ project }: SectionProps) {
                   key={gate.id}
                   gate={gate}
                   config={configView}
+                  result={gate.source === "policy" ? lastResult(gate.id) : null}
                   selected={!creating && gate.id === current?.id}
                   onSelect={() => {
                     setCreating(false);
                     setSelected(gate.id);
-                    setRunResult(null);
                   }}
                 />
               ))}
@@ -502,15 +569,18 @@ export function GatesSection({ project }: SectionProps) {
           )}
         </section>
         <div className="setup-side">
-          {editable && configView ? (
+          {editable ? (
             <CheckForm
               key={formKey}
               initial={creating ? null : currentCheck}
               isNew={creating}
               scopeNote={scopeNote}
               busy={busy}
-              runResult={runResult}
-              onRun={() => current && void runNow(current.id)}
+              canRun={api !== null}
+              {...(currentCheck && !creating
+                ? { run: runs[currentCheck.id], last: lastResult(currentCheck.id) }
+                : { run: undefined, last: null })}
+              onRun={() => currentCheck && void runNow(currentCheck.id)}
               onDelete={() => {
                 if (!currentCheck) return;
                 void saveChecks(checks.filter((c) => c.id !== currentCheck.id)).then(

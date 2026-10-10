@@ -3,6 +3,7 @@ import type {
   AttemptUsageRow,
   InitiativeFeature,
   RunUsageReport,
+  UsageGroup,
   UsageSummary,
 } from "../src/renderer/client/insights.ts";
 import {
@@ -12,6 +13,9 @@ import {
 } from "../src/renderer/screens/insights/initiative-model.ts";
 import {
   aggregateUsage,
+  crossUsage,
+  isCurrentSummary,
+  serverFilter,
   stageKey,
   summarizeUsage,
 } from "../src/renderer/screens/insights/usage-model.ts";
@@ -174,6 +178,189 @@ describe("summarizeUsage", () => {
   test("stage keys", () => {
     expect(stageKey("task-T009")).toBe("implement");
     expect(stageKey("review")).toBe("review");
+  });
+
+  test("an older summary is not mistaken for a current one", () => {
+    expect(isCurrentSummary(BY_STAGE)).toBe(false);
+  });
+});
+
+type Figures = Omit<UsageGroup, "key" | "keys">;
+
+function cell(stage: string, model: string, figures: Partial<Figures>): UsageGroup {
+  return {
+    key: `${stage} / ${model}`,
+    keys: { stage, model },
+    runs: 1,
+    attempts: 1,
+    tokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    costUsd: 0,
+    unpricedTokens: 0,
+    ...figures,
+  };
+}
+
+function current(groups: UsageGroup[], runs: number): UsageSummary {
+  const sum = (pick: (g: UsageGroup) => number | undefined) =>
+    groups.reduce((s, g) => s + (pick(g) ?? 0), 0);
+  return {
+    days: 7,
+    since: 0,
+    groupBy: ["stage", "model"],
+    filters: {},
+    runs,
+    attempts: sum((g) => g.attempts),
+    tokens: sum((g) => g.tokens),
+    totalTokens: sum((g) => g.tokens),
+    inputTokens: sum((g) => g.inputTokens),
+    outputTokens: sum((g) => g.outputTokens),
+    cacheReadTokens: sum((g) => g.cacheReadTokens),
+    costUsd: sum((g) => g.costUsd),
+    unpricedTokens: sum((g) => g.unpricedTokens),
+    groups,
+  };
+}
+
+const CROSS = current(
+  [
+    cell("task-T001", "sonnet", {
+      runs: 2,
+      tokens: 500,
+      inputTokens: 450,
+      outputTokens: 50,
+      cacheReadTokens: 300,
+      costUsd: 2,
+    }),
+    cell("task-T002", "sonnet", {
+      runs: 2,
+      tokens: 100,
+      inputTokens: 90,
+      outputTokens: 10,
+      cacheReadTokens: 0,
+      costUsd: 1,
+    }),
+    cell("plan", "sonnet", {
+      runs: 3,
+      tokens: 200,
+      inputTokens: 180,
+      outputTokens: 20,
+      cacheReadTokens: 100,
+      costUsd: 0.5,
+    }),
+    cell("plan", "local", {
+      runs: 1,
+      tokens: 80,
+      inputTokens: 70,
+      outputTokens: 10,
+      cacheReadTokens: 0,
+      unpricedTokens: 80,
+    }),
+    // Recorded without per-step usage: tokens but no split, and no price.
+    cell("review", "gpt", { tokens: 60, unpricedTokens: 60 }),
+    cell("checks", "(host)", {}),
+  ],
+  3,
+);
+
+describe("crossUsage", () => {
+  test("recognizes the current shape and folds task stages", () => {
+    expect(isCurrentSummary(CROSS)).toBe(true);
+    const report = crossUsage(CROSS, none);
+    expect(report.totalTokens).toBe(940);
+    expect(report.inputTokens).toBe(790);
+    expect(report.outputTokens).toBe(90);
+    expect(report.costUsd).toBeCloseTo(3.5);
+    expect(report.unpricedTokens).toBe(140);
+    expect(report.costPartial).toBe(true);
+    expect(report.runs).toBe(3);
+    expect(report.runsExact).toBe(true);
+    expect(report.byStage.map((s) => [s.key, s.tokens])).toEqual([
+      ["plan", 280],
+      ["implement", 600],
+      ["checks", 0],
+      ["review", 60],
+    ]);
+    expect(report.byModel.map((s) => s.key)).toEqual(["sonnet", "local", "gpt", "(host)"]);
+    expect(report.byStageModel.map((s) => s.key)).toEqual([
+      "plan / sonnet",
+      "plan / local",
+      "implement / sonnet",
+      "checks / (host)",
+      "review / gpt",
+    ]);
+    expect(report.stages).toEqual(["plan", "implement", "checks", "review"]);
+  });
+
+  test("splits tokens into cache reads, uncached input, output and the unsplit rest", () => {
+    const report = crossUsage(CROSS, none);
+    const implement = report.byStage.find((s) => s.key === "implement");
+    expect(implement).toMatchObject({ cached: 300, input: 540, fresh: 240, output: 60, unsplit: 0 });
+    const review = report.byStage.find((s) => s.key === "review");
+    expect(review).toMatchObject({ cached: 0, fresh: 0, output: 0, unsplit: 60 });
+    expect(review?.costUsd).toBe(0);
+    expect(review?.unpricedTokens).toBe(60);
+  });
+
+  test("filters narrow every breakdown; runs are an upper bound until the exact answer", () => {
+    const report = crossUsage(CROSS, { stage: "plan", model: null });
+    expect(report.totalTokens).toBe(280);
+    expect(report.byModel.map((s) => s.key)).toEqual(["sonnet", "local"]);
+    expect(report.byStageModel).toHaveLength(2);
+    expect(report.runs).toBe(3);
+    expect(report.runsExact).toBe(false);
+    expect(report.costPartial).toBe(true);
+    // Options keep everything so the filter can be changed.
+    expect(report.models).toContain("gpt");
+
+    const exact = current(CROSS.groups.slice(2, 4), 2);
+    const withExact = crossUsage(CROSS, { stage: "plan", model: null }, exact);
+    expect(withExact.runs).toBe(2);
+    expect(withExact.runsExact).toBe(true);
+    expect(withExact.totalTokens).toBe(280);
+  });
+
+  test("a model filter on folded task stages adds up", () => {
+    const report = crossUsage(CROSS, { stage: "implement", model: "sonnet" });
+    expect(report.totalTokens).toBe(600);
+    expect(report.costUsd).toBeCloseTo(3);
+    expect(report.costPartial).toBe(false);
+    expect(report.byStageModel.map((s) => s.key)).toEqual(["implement / sonnet"]);
+  });
+
+  test("server filters", () => {
+    expect(serverFilter({ stage: "plan", model: "(host)" })).toEqual({
+      stage: "plan",
+      model: "(host)",
+    });
+    expect(serverFilter({ stage: null, model: "gpt" })).toEqual({ model: "gpt" });
+    expect(serverFilter({ stage: "implement", model: "gpt" })).toBeNull();
+  });
+});
+
+describe("aggregateUsage with per-attempt cost", () => {
+  test("uses each attempt's cost and counts unpriced tokens", () => {
+    const reports = [
+      run("e", [
+        attempt("plan", "m", 100, 40, { inputTokens: 90, outputTokens: 10, costUsd: 0.25 }),
+        attempt("review", "x", 50, 0, { inputTokens: 45, outputTokens: 5, costUsd: null }),
+        attempt("checks", null, 0, 0, { inputTokens: null, outputTokens: null, costUsd: 0 }),
+      ]),
+    ];
+    // The run estimate is ignored when attempts carry their own.
+    const report = aggregateUsage(reports, { e: 99 }, none);
+    expect(report.costUsd).toBeCloseTo(0.25);
+    expect(report.unpricedTokens).toBe(50);
+    expect(report.costPartial).toBe(true);
+    expect(report.inputTokens).toBe(135);
+    expect(report.outputTokens).toBe(15);
+    expect(report.byStageModel.map((s) => s.key)).toEqual([
+      "plan / m",
+      "checks / (host)",
+      "review / x",
+    ]);
   });
 });
 

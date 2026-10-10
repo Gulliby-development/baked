@@ -1,5 +1,8 @@
+import type { RunSnapshot, RunState } from "../../../shared/api.js";
 import type {
   Check,
+  CheckRunResult,
+  CheckRunStatus,
   ConfigFile,
   ConfigView,
   Effort,
@@ -113,6 +116,21 @@ export function checkScope(id: string, config: ConfigView | null): "project" | "
   return null;
 }
 
+/** A check as `PUT /v1/workflow/checks` takes it: without `lastResult` or other extra fields. */
+export function plainCheck(check: Check): Check {
+  return {
+    id: check.id,
+    executable: check.executable,
+    args: check.args,
+    cwd: check.cwd,
+    timeoutMs: check.timeoutMs,
+    required: check.required,
+    scope: check.scope,
+    envNames: check.envNames,
+    writes: check.writes,
+  };
+}
+
 /** The checks runs use, as the merged config holds them. */
 export function effectiveChecks(config: ConfigView | null): Check[] {
   return config?.effective.workflows?.policy?.checks ?? [];
@@ -210,6 +228,77 @@ export function classRoute(model: string, effort: Effort, fallback: string[]): R
 /** The family part of a `provider/model` ID, used to tell whether two models are independent. */
 export function modelName(id: string): string {
   return id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
+}
+
+const RUN_STATUS_TEXT: Record<CheckRunStatus, string> = {
+  passed: "passed",
+  failed: "failed",
+  timeout: "timed out",
+  cancelled: "cancelled",
+  error: "could not start",
+};
+
+/** One line about a check's result: `failed · exit 1 · 1m 52s`. */
+export function checkResultText(
+  result: Pick<CheckRunResult, "status" | "exitCode" | "durationMs">,
+) {
+  const exit =
+    result.exitCode !== null && result.exitCode !== 0 && result.status === "failed"
+      ? ` · exit ${result.exitCode}`
+      : "";
+  return `${RUN_STATUS_TEXT[result.status]}${exit} · ${duration(result.durationMs)}`;
+}
+
+/** The mark of a gate row: a project gate waiting for confirmation, or its check's last result. */
+export function gateMark(
+  gate: Pick<GateEntry, "source" | "confirmed">,
+  result: Pick<CheckRunResult, "status"> | null,
+): { text: string; tone: "ok" | "err" | "warn" | ""; label: string } {
+  if (gate.source === "project" && gate.confirmed === false)
+    return { text: "!", tone: "warn", label: "not confirmed" };
+  switch (result?.status) {
+    case "passed":
+      return { text: "✓", tone: "ok", label: "passed" };
+    case "failed":
+    case "timeout":
+    case "error":
+      return { text: "✗", tone: "err", label: RUN_STATUS_TEXT[result.status] };
+    case "cancelled":
+      return { text: "·", tone: "", label: "cancelled" };
+    default:
+      return { text: "·", tone: "", label: "not run" };
+  }
+}
+
+/** A custom command as typed in chat; older backends listed names without the slash. */
+export function commandLabel(name: string): string {
+  return name.startsWith("/") ? name : `/${name}`;
+}
+
+const ENDED_RUNS: readonly RunState[] = ["completed", "failed", "cancelled"];
+
+/**
+ * What changing a frozen input (an instruction file) means for a run, and whether its plan can be
+ * revised now. A driving run is not paused: it stops at its next step as `blocked` with reason
+ * `input_changed`. A waiting or paused run is refused when resumed until its plan is revised.
+ */
+export function frozenRunState(run: Pick<RunSnapshot, "status" | "reason">): {
+  text: string;
+  canRevise: boolean;
+} {
+  if (ENDED_RUNS.includes(run.status))
+    return { text: `${run.status}; nothing to revise`, canRevise: false };
+  if (run.status === "running" || run.status === "created")
+    return {
+      text: "running; stops at its next step as blocked (input changed)",
+      canRevise: false,
+    };
+  if (run.status === "blocked" && run.reason === "input_changed")
+    return { text: "blocked: input changed; revise the plan to continue", canRevise: true };
+  return {
+    text: `${run.status}${run.reason && run.reason !== "none" ? ` (${run.reason.replaceAll("_", " ")})` : ""}; resuming needs a revised plan`,
+    canRevise: true,
+  };
 }
 
 /** Where an instruction file comes from, as the Instructions screen says it. */

@@ -89,30 +89,53 @@ export interface InitiativeView {
   next: InitiativeNext;
 }
 
-export type UsageGroupBy = "model" | "stage" | "day";
-
-export interface UsageGroup {
-  key: string;
-  runs: number;
+export type UsageDimension = "model" | "stage" | "day";
+/**
+ * Token and cost figures of `GET /v1/usage` (totals and every group). Backends before the cost
+ * estimate (API PR #93) report only `tokens` and `cacheReadTokens`; the rest is then absent.
+ */
+export interface UsageFigures {
   attempts: number;
   tokens: number;
   cacheReadTokens: number;
-  /** Proposed: output tokens of the group. Current servers do not report it. */
+  /** Input tokens, cache reads included. */
+  inputTokens?: number;
   outputTokens?: number;
-  /** Proposed: estimated cost of the group in USD. Current servers do not report it. */
+  /** Estimated from the price table; leaves out `unpricedTokens`. */
   costUsd?: number;
+  /** Tokens of attempts without per-step usage or a known price. */
+  unpricedTokens?: number;
 }
 
-/** `GET /v1/usage?days=&groupBy=`: every attempt started in the window, grouped. */
-export interface UsageSummary {
+export interface UsageGroup extends UsageFigures {
+  /** The group's values joined with " / ", in `groupBy` order. */
+  key: string;
+  /** The group's value per dimension; absent on older backends. */
+  keys?: Partial<Record<UsageDimension, string>>;
+  runs: number;
+}
+
+/** `GET /v1/usage?days=&groupBy=&model=&stage=`: every attempt started in the window, grouped. */
+export interface UsageSummary extends Omit<UsageFigures, "tokens"> {
+  /** The same as `totalTokens`; absent on older backends. */
+  tokens?: number;
   days: number;
   since: number;
-  groupBy: UsageGroupBy;
+  /** One or two dimensions; a single string on older backends. */
+  groupBy: UsageDimension[] | UsageDimension;
+  filters?: { model?: string; stage?: string };
   runs: number;
-  attempts: number;
   totalTokens: number;
-  cacheReadTokens: number;
   groups: UsageGroup[];
+}
+
+export interface UsageQuery {
+  days: number;
+  groupBy: readonly UsageDimension[];
+  /** A model ID, or `(host)` for host attempts. */
+  model?: string | null;
+  /** A stage ID as the backend records it (`plan`, `task-T001`). */
+  stage?: string | null;
 }
 
 export interface AttemptUsageRow {
@@ -123,8 +146,11 @@ export interface AttemptUsageRow {
   status: string;
   usedTokens: number | null;
   cacheReadTokens: number | null;
-  /** Proposed: output tokens of the attempt. Current servers do not report it. */
+  /** Input tokens, cache reads included; null without per-step usage, absent on older backends. */
+  inputTokens?: number | null;
   outputTokens?: number | null;
+  /** Estimated cost; 0 for host attempts, null when it cannot be priced, absent on older backends. */
+  costUsd?: number | null;
 }
 
 /** `GET /v1/workflow/runs/:id/usage`, as `baked workflow usage RUN_ID` prints it. */
@@ -134,9 +160,25 @@ export interface RunUsageReport {
   attempts: AttemptUsageRow[];
 }
 
+/** The query string of a usage summary request. */
+export function usageQuery(query: UsageQuery): string {
+  const params = new URLSearchParams({
+    days: String(query.days),
+    groupBy: query.groupBy.join(","),
+  });
+  if (query.model) params.set("model", query.model);
+  if (query.stage) params.set("stage", query.stage);
+  return params.toString();
+}
+
 /** True when the backend is too old to have the endpoint that was called. */
 export function isMissingEndpoint(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
+}
+
+/** True when the backend refused the query: one from before two-dimension grouping and filters. */
+export function isRejectedQuery(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 400;
 }
 
 const initiativePath = (id: string, action?: string): string =>
@@ -164,8 +206,8 @@ export const insights = {
       requestId: decision.requestId,
       digest: decision.digest,
     }),
-  usage: (key: string, days: number, groupBy: UsageGroupBy) =>
-    call<UsageSummary>(key, "GET", `/v1/usage?days=${days}&groupBy=${groupBy}`),
+  usage: (key: string, query: UsageQuery) =>
+    call<UsageSummary>(key, "GET", `/v1/usage?${usageQuery(query)}`),
   runUsage: (key: string, runId: string) =>
     call<RunUsageReport>(key, "GET", `/v1/workflow/runs/${encodeURIComponent(runId)}/usage`),
 };

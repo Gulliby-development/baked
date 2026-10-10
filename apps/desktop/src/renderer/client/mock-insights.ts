@@ -5,8 +5,9 @@ import type {
   InitiativeStatus,
   InitiativeView,
   RunUsageReport,
+  UsageDimension,
+  UsageFigures,
   UsageGroup,
-  UsageGroupBy,
   UsageSummary,
 } from "./insights.js";
 import { type MockRoute, response } from "./mock-routes.js";
@@ -196,7 +197,7 @@ const STAGES: [string, number, string][] = [
   ["research", 198_000, "claude-haiku-5-5"],
   ["specify", 88_000, "claude-sonnet-5-5"],
   ["plan", 81_000, "claude-sonnet-5-5"],
-  ["analyze", 45_000, "claude-sonnet-5-5"],
+  ["analyze", 45_000, "local/qwen3-coder"],
   ["task-T001", 412_000, "claude-sonnet-5-5"],
   ["task-T002", 290_000, "claude-sonnet-5-5"],
   ["checks", 0, ""],
@@ -204,15 +205,37 @@ const STAGES: [string, number, string][] = [
   ["converge", 83_000, "gpt-5.1"],
 ];
 
+/** USD per million tokens: input, cache reads, output. The local model has no price. */
+const PRICES: Record<string, [number, number, number]> = {
+  "claude-haiku-5-5": [1, 0.1, 5],
+  "claude-sonnet-5-5": [3, 0.3, 15],
+  "gpt-5.1": [1.25, 0.125, 10],
+};
+
 function attempts(runId: string, scale: number): AttemptUsageRow[] {
-  return STAGES.map(([stage, tokens, model], i) => ({
-    attemptId: `${runId}-a${i}`,
-    stage,
-    model: model || null,
-    status: "succeeded",
-    usedTokens: Math.round(tokens * scale),
-    cacheReadTokens: Math.round(tokens * scale * (0.6 + (i % 3) * 0.05)),
-  }));
+  return STAGES.map(([stage, tokens, model], i) => {
+    const used = Math.round(tokens * scale);
+    const output = Math.round(used * 0.08);
+    const input = used - output;
+    const cacheRead = Math.round(input * (0.6 + (i % 3) * 0.05));
+    const price = PRICES[model];
+    const costUsd = !model
+      ? 0
+      : price
+        ? ((input - cacheRead) * price[0] + cacheRead * price[1] + output * price[2]) / 1e6
+        : null;
+    return {
+      attemptId: `${runId}-a${i}`,
+      stage,
+      model: model || null,
+      status: "succeeded",
+      usedTokens: used,
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      costUsd,
+    };
+  });
 }
 
 const RUN_SCALE: Record<string, number> = {
@@ -223,47 +246,101 @@ const RUN_SCALE: Record<string, number> = {
   "run-pricing-table": 0.2,
 };
 
-function summary(days: number, groupBy: UsageGroupBy): UsageSummary {
+type Figures = Omit<UsageFigures, "inputTokens" | "outputTokens" | "costUsd" | "unpricedTokens"> &
+  Required<Pick<UsageFigures, "inputTokens" | "outputTokens" | "costUsd" | "unpricedTokens">>;
+
+const emptyFigures = (): Figures => ({
+  attempts: 0,
+  tokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  costUsd: 0,
+  unpricedTokens: 0,
+});
+
+function addAttempt(into: Figures, row: AttemptUsageRow): void {
+  into.attempts++;
+  into.tokens += row.usedTokens ?? 0;
+  into.inputTokens += row.inputTokens ?? 0;
+  into.outputTokens += row.outputTokens ?? 0;
+  into.cacheReadTokens += row.cacheReadTokens ?? 0;
+  if (row.costUsd === null || row.costUsd === undefined) into.unpricedTokens += row.usedTokens ?? 0;
+  else into.costUsd += row.costUsd;
+}
+
+const DIMENSIONS: readonly UsageDimension[] = ["model", "stage", "day"];
+
+/** `GET /v1/usage` as a current backend answers it: one or two dimensions, optional filters. */
+function summary(
+  days: number,
+  groupBy: UsageDimension[],
+  filters: { model?: string; stage?: string },
+): UsageSummary {
   const scale = Math.min(days, 30) / 7;
-  const rows = Object.keys(RUN_SCALE).flatMap((runId) =>
-    attempts(runId, (RUN_SCALE[runId] ?? 0) * scale).map((a) => ({ ...a, runId })),
-  );
-  const groups = new Map<string, UsageGroup & { ids: Set<string> }>();
+  const rows = Object.keys(RUN_SCALE)
+    .flatMap((runId, r) =>
+      attempts(runId, (RUN_SCALE[runId] ?? 0) * scale).map((a) => ({ ...a, runId, r })),
+    )
+    .filter(
+      (row) =>
+        (filters.model === undefined || (row.model ?? "(host)") === filters.model) &&
+        (filters.stage === undefined || row.stage === filters.stage),
+    );
+  const groups = new Map<string, UsageGroup & Figures & { ids: Set<string> }>();
+  const totals = emptyFigures();
+  const runIds = new Set<string>();
   for (const row of rows) {
-    const key = groupBy === "model" ? (row.model ?? "(host)") : row.stage;
-    const group = groups.get(key) ?? {
-      key,
-      runs: 0,
-      attempts: 0,
-      tokens: 0,
-      cacheReadTokens: 0,
-      ids: new Set<string>(),
+    const values: Record<UsageDimension, string> = {
+      model: row.model ?? "(host)",
+      stage: row.stage,
+      day: new Date(Date.now() - row.r * 86_400_000).toISOString().slice(0, 10),
     };
+    const keys: Partial<Record<UsageDimension, string>> = {};
+    for (const dimension of groupBy) keys[dimension] = values[dimension];
+    const key = groupBy.map((dimension) => values[dimension]).join(" / ");
+    const group = groups.get(key) ?? { ...emptyFigures(), key, keys, runs: 0, ids: new Set() };
     group.ids.add(row.runId);
-    group.attempts++;
-    group.tokens += row.usedTokens ?? 0;
-    group.cacheReadTokens += row.cacheReadTokens ?? 0;
+    addAttempt(group, row);
     groups.set(key, group);
+    addAttempt(totals, row);
+    runIds.add(row.runId);
   }
   return {
     days,
     since: Date.now() - days * 86_400_000,
     groupBy,
-    runs: Object.keys(RUN_SCALE).length,
-    attempts: rows.length,
-    totalTokens: rows.reduce((sum, r) => sum + (r.usedTokens ?? 0), 0),
-    cacheReadTokens: rows.reduce((sum, r) => sum + (r.cacheReadTokens ?? 0), 0),
+    filters,
+    runs: runIds.size,
+    ...totals,
+    totalTokens: totals.tokens,
     groups: [...groups.values()]
       .map(({ ids, ...group }) => ({ ...group, runs: ids.size }))
-      .sort((a, b) => b.tokens - a.tokens),
+      .sort((a, b) => (groupBy[0] === "day" ? a.key.localeCompare(b.key) : b.tokens - a.tokens)),
   };
 }
+
+const error = (message: string) => response(400, { error: { code: "INVALID_REQUEST", message } });
 
 const usageRoutes: MockRoute = ({ method, path, query }) => {
   if (method !== "GET") return undefined;
   if (path === "/v1/usage") {
-    const groupBy = (query.get("groupBy") ?? "model") as UsageGroupBy;
-    return response(200, summary(Number(query.get("days") ?? 7), groupBy));
+    const groupBy = (query.get("groupBy") ?? "model").split(",");
+    if (
+      groupBy.length > 2 ||
+      new Set(groupBy).size !== groupBy.length ||
+      !groupBy.every((d): d is UsageDimension => (DIMENSIONS as readonly string[]).includes(d))
+    )
+      return error("groupBy: one or two of model, stage, day");
+    const model = query.get("model");
+    const stage = query.get("stage");
+    return response(
+      200,
+      summary(Number(query.get("days") ?? 7), groupBy, {
+        ...(model !== null ? { model } : {}),
+        ...(stage !== null ? { stage } : {}),
+      }),
+    );
   }
   const match = /^\/v1\/workflow\/runs\/([^/]+)\/usage$/.exec(path);
   if (!match?.[1]) return undefined;

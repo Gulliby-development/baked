@@ -46,6 +46,8 @@ interface MockRun {
   artifacts: { entry: ArtifactEntry; content: string }[];
   requests: RunRequest[];
   usage: RunUsage;
+  /** A frozen input changed while the run was not driving; resuming is refused until revised. */
+  inputChanged?: boolean;
 }
 
 class Log {
@@ -891,9 +893,52 @@ function decide(run: MockRun, body: { requestId?: string }, status: string): voi
   if (run.status === "waiting") setStatus(run, "paused", "none");
 }
 
+const ENDED: readonly RunState[] = ["completed", "failed", "cancelled"];
+
+/**
+ * An instruction file the given runs froze was saved: the runs that are driving stop as blocked
+ * with `input_changed`, as the backend does at their next step, and the others are marked so
+ * that resuming them is refused until the plan is revised. Returns the runs that have not ended.
+ */
+export function freezeInputChanged(key: string, runIds: readonly string[]): string[] {
+  if (key !== PROJECT) return [];
+  const affected = all().filter((r) => runIds.includes(r.runId) && !ENDED.includes(r.status));
+  for (const run of affected) {
+    if (run.status === "running") setStatus(run, "blocked", "input_changed");
+    else run.inputChanged = true;
+  }
+  return affected.map((r) => r.runId);
+}
+
+/** IDs of the sample runs that have not ended. */
+export function activeRunIds(key: string): string[] {
+  return key === PROJECT
+    ? all()
+        .filter((r) => !ENDED.includes(r.status))
+        .map((r) => r.runId)
+    : [];
+}
+
+const conflict = (code: string, message: string) => response(409, { error: { code, message } });
+
 /** A run action on the sample runs: changes their state the way the backend would, roughly. */
 function mutate(run: MockRun, action: string, body: { requestId?: string; tokens?: number }) {
   switch (action) {
+    case "candidate":
+      // Adopts the current instruction files; the hash only has to look like one.
+      return response(200, {
+        candidateHash: run.runId
+          .padEnd(64, "0")
+          .replace(/[^0-9a-f]/g, "a")
+          .slice(0, 64),
+        reportArtifactId: `art-candidate-${run.revision}`,
+      });
+    case "revise":
+      if (ENDED.includes(run.status) || run.status === "running")
+        return conflict("RUN_TERMINAL", "Only a stopped run can be revised");
+      run.inputChanged = false;
+      setStatus(run, "waiting", "approval");
+      break;
     case "approve":
       decide(run, body, "accepted");
       if (run.stageId === "approve") {
@@ -914,6 +959,8 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
       decide(run, body, "accepted");
       break;
     case "resume":
+      if (run.inputChanged || run.reason === "input_changed")
+        return conflict("INPUT_CHANGED", "An input of this run changed; revise its plan first");
       if (run.status !== "running") setStatus(run, "running");
       if (
         run.stageId === "implement" &&
