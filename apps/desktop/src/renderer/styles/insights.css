@@ -69,19 +69,21 @@
   gap: 4px;
   padding: 12px 14px;
   border-radius: var(--radius-lg);
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   background: var(--bg-panel);
   color: var(--text-2);
   text-decoration: none;
 }
 
 .ins-item:hover {
-  border-color: var(--line-strong);
+  background: var(--bg-hover);
   color: var(--text-2);
 }
 
 .ins-item[aria-current="page"] {
-  border-color: var(--accent);
+  border-color: var(--ink);
+  background: var(--bg-selected);
+  box-shadow: var(--shadow-sm);
   background: var(--bg-hover);
 }
 
@@ -174,7 +176,8 @@
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
+  box-shadow: var(--shadow-sm);
   border-radius: var(--radius-lg);
   background: var(--bg-panel);
 }
@@ -184,7 +187,8 @@
 }
 
 .ins-feature.tone-busy {
-  border-color: var(--bg-selected);
+  border-color: var(--ink);
+  background: var(--bg-selected);
   background: var(--bg-raised);
 }
 

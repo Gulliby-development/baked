@@ -15,7 +15,7 @@
   width: 240px;
   max-width: 100%;
   background: var(--bg-panel);
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   color: var(--text);
   padding: 0 12px;
@@ -37,7 +37,8 @@
 }
 
 .proj-card[data-open] {
-  border-color: var(--bg-selected);
+  border-color: var(--ink);
+  background: var(--bg-selected);
 }
 
 .proj-head {
