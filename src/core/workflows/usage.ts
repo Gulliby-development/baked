@@ -129,3 +129,85 @@ export function runUsage(
         : [...attempts].sort((a, b) => (b.usedTokens ?? 0) - (a.usedTokens ?? 0)).slice(0, top),
   };
 }
+
+export interface UsageSummary {
+  days: number;
+  since: number;
+  groupBy: "model" | "stage" | "day";
+  runs: number;
+  attempts: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  /** Most tokens first; days in date order. Host attempts are grouped as `(host)`. */
+  groups: Array<{
+    key: string;
+    runs: number;
+    attempts: number;
+    tokens: number;
+    cacheReadTokens: number;
+  }>;
+}
+
+/**
+ * Usage of every attempt that started in the last `days` days, across runs, grouped by model,
+ * stage, or UTC day of the attempt's start.
+ */
+export function usageSummary(
+  store: WorkflowStore,
+  options: { days: number; groupBy: UsageSummary["groupBy"]; now?: number },
+): UsageSummary {
+  const since = (options.now ?? Date.now()) - options.days * 86_400_000;
+  const groups = new Map<string, UsageSummary["groups"][number] & { runIds: Set<string> }>();
+  const runIds = store.runIdsWithAttemptsSince(since);
+  let attempts = 0;
+  let totalTokens = 0;
+  let cacheReadTokens = 0;
+  for (const runId of runIds) {
+    const started = new Map(store.attempts(runId).map((a) => [a.id, a.started_at]));
+    for (const attempt of runUsage(store, runId).attempts) {
+      const at = started.get(attempt.attemptId) ?? 0;
+      if (at < since) continue;
+      const key =
+        options.groupBy === "model"
+          ? (attempt.model ?? "(host)")
+          : options.groupBy === "stage"
+            ? attempt.stage
+            : new Date(at).toISOString().slice(0, 10);
+      const entry = groups.get(key) ?? {
+        key,
+        runs: 0,
+        attempts: 0,
+        tokens: 0,
+        cacheReadTokens: 0,
+        runIds: new Set<string>(),
+      };
+      entry.runIds.add(runId);
+      entry.attempts++;
+      entry.tokens += attempt.usedTokens ?? 0;
+      entry.cacheReadTokens += attempt.cacheReadTokens ?? 0;
+      groups.set(key, entry);
+      attempts++;
+      totalTokens += attempt.usedTokens ?? 0;
+      cacheReadTokens += attempt.cacheReadTokens ?? 0;
+    }
+  }
+  const list = [...groups.values()].map(({ runIds: ids, ...entry }) => ({
+    ...entry,
+    runs: ids.size,
+  }));
+  list.sort((a, b) =>
+    options.groupBy === "day"
+      ? a.key.localeCompare(b.key)
+      : b.tokens - a.tokens || a.key.localeCompare(b.key),
+  );
+  return {
+    days: options.days,
+    since,
+    groupBy: options.groupBy,
+    runs: runIds.length,
+    attempts,
+    totalTokens,
+    cacheReadTokens,
+    groups: list,
+  };
+}
