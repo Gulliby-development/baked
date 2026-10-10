@@ -5,6 +5,8 @@ name: Builds
 # macOS runners cost 2x and 10x Linux minutes, so they run when a pull request
 # touches packaging-related files, nightly, and on demand. The release workflow
 # calls it with `release: true` to build everything and upload the archives.
+# The desktop jobs package the Electron app around the `baked` bundle their
+# platform's bundle job built, with the same platform rules.
 
 on:
   push:
@@ -62,7 +64,7 @@ jobs:
           fi
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
           echo "$changed"
-          pattern='^(scripts/|packaging/|package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.github/workflows/builds\.yml$|src/boot\.tsx$|src/headless/self-check\.ts$|src/core/workers/|src/core/platform/|src/core/utils/hydrate-runtime\.ts$|src/core/intelligence/backends/tree-sitter\.ts$)'
+          pattern='^(scripts/|packaging/|package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.github/workflows/builds\.yml$|apps/desktop/(package\.json|bun\.lock|electron-builder\.yml|build/|scripts/)|src/boot\.tsx$|src/headless/self-check\.ts$|src/core/workers/|src/core/platform/|src/core/utils/hydrate-runtime\.ts$|src/core/intelligence/backends/tree-sitter\.ts$)'
           if echo "$changed" | grep -Eq "$pattern"; then
             echo "native=true" >> "$GITHUB_OUTPUT"
           else
@@ -115,12 +117,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: linux, arch: x64, runner: ubuntu-latest, smoke: true, native: false }
-          - { platform: linux, arch: x64-baseline, runner: ubuntu-latest, smoke: true, native: false }
+          - { platform: linux, arch: x64, runner: ubuntu-latest, smoke: true, native: false, desktop: true }
+          - { platform: linux, arch: x64-baseline, runner: ubuntu-latest, smoke: true, native: false, desktop: false }
           # No arm64 Linux runner here: cross-built and checked for contents only.
-          - { platform: linux, arch: arm64, runner: ubuntu-latest, smoke: false, native: false }
-          - { platform: darwin, arch: arm64, runner: macos-latest, smoke: true, native: true }
-          - { platform: darwin, arch: x64, runner: macos-15-intel, smoke: true, native: true }
+          - { platform: linux, arch: arm64, runner: ubuntu-latest, smoke: false, native: false, desktop: false }
+          - { platform: darwin, arch: arm64, runner: macos-latest, smoke: true, native: true, desktop: true }
+          - { platform: darwin, arch: x64, runner: macos-15-intel, smoke: true, native: true, desktop: true }
     runs-on: ${{ matrix.runner }}
     name: bundle (${{ matrix.platform }}-${{ matrix.arch }})
     env:
@@ -166,6 +168,14 @@ jobs:
           cd "$RUNNER_TEMP"
           "$HOME/.baked/bin/baked" --version
           "$HOME/.baked/bin/baked" self-check
+      - name: Upload the bundle for the desktop app
+        if: env.RUN == 'true' && matrix.desktop
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-baked-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/bundle/${{ env.BUNDLE_NAME }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload the release archive
         if: env.RUN == 'true' && inputs.release
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -244,6 +254,22 @@ jobs:
       - name: Bundle arm64
         if: needs.scope.outputs.native == 'true'
         run: bun run bundle:windows-arm64
+      - name: Upload the x64 bundle for the desktop app
+        if: needs.scope.outputs.native == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-baked-windows-x64
+          path: dist/bundle/baked-*-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload the arm64 bundle for the desktop app
+        if: needs.scope.outputs.native == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-baked-windows-arm64
+          path: dist/bundle/baked-*-windows-arm64.zip
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload the release archives
         if: needs.scope.outputs.native == 'true' && inputs.release
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -254,3 +280,85 @@ jobs:
             dist/bundle/baked-setup-*.exe
             bin/baked-installer-*.exe
           if-no-files-found: error
+
+  desktop:
+    needs: [scope, bundle-unix, windows]
+    # Runs after a failed bundle job too: the jobs whose bundle exists still package.
+    if: ${{ !cancelled() && needs.scope.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, arch: x64, runner: ubuntu-latest, native: false }
+          - { platform: windows, arch: x64, runner: windows-latest, native: true }
+          # No arm64 Windows runner here: cross-packaged on x64.
+          - { platform: windows, arch: arm64, runner: windows-latest, native: true }
+          - { platform: darwin, arch: arm64, runner: macos-latest, native: true }
+          # Cross-packaged on Apple Silicon around the bundle built on the Intel runner.
+          - { platform: darwin, arch: x64, runner: macos-latest, native: true }
+    runs-on: ${{ matrix.runner }}
+    name: desktop (${{ matrix.platform }}-${{ matrix.arch }})
+    env:
+      RUN: ${{ !matrix.native || needs.scope.outputs.native == 'true' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Skip
+        if: env.RUN != 'true'
+        run: echo "Packaging files unchanged; this platform runs nightly."
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: env.RUN == 'true'
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: env.RUN == 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: env.RUN == 'true'
+        with:
+          name: desktop-baked-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/baked-bundle
+      # The binary goes into the app with the deps/ folder next to it.
+      - name: Unpack the bundle
+        if: env.RUN == 'true' && matrix.platform != 'windows'
+        run: |
+          cd "$RUNNER_TEMP/baked-bundle"
+          tar xzf ./*.tar.gz
+          dir="$(find . -mindepth 1 -maxdepth 1 -type d -name 'baked-*')"
+          echo "BAKED_BINARY=$PWD/${dir#./}/baked" >> "$GITHUB_ENV"
+      - name: Unpack the bundle
+        if: env.RUN == 'true' && matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "baked-bundle"
+          $zip = Get-ChildItem $dir -Filter *.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath (Join-Path $dir "baked")
+          "BAKED_BINARY=$(Join-Path $dir 'baked/baked.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Package
+        if: env.RUN == 'true'
+        working-directory: apps/desktop
+        run: |
+          bun install --frozen-lockfile
+          bun run package -- --arch ${{ matrix.arch }}
+      - name: Smoke-test the packaged app
+        if: env.RUN == 'true' && matrix.platform == 'linux'
+        working-directory: apps/desktop
+        run: |
+          command -v xvfb-run || { sudo apt-get update && sudo apt-get install -y xvfb; }
+          xvfb-run -a bun run smoke
+      - name: Upload the installers
+        if: env.RUN == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          # The release workflow publishes every release-* artifact.
+          name: ${{ inputs.release && 'release-' || '' }}desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/*.deb
+          if-no-files-found: error
+          retention-days: 7
