@@ -249,6 +249,18 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check"]);
   }, 30000);
 
+  // Runs de6cf1ab and 2fa658c0 used up their repair rounds on ever deeper medium findings while
+  // every check passed. A medium finding after the first round is recorded, not repaired.
+  test("a medium review finding after the first repair round does not start another", async () => {
+    const { start, complete, service, executor } = setup({ reviewVerdict: "changes_requested" });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.calls.filter((c) => c === "review")).toHaveLength(2);
+    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+  }, 30000);
+
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {
     const { start, complete, service, define } = setup({ broken: 1 });
     define(quickFix());

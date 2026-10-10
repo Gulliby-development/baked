@@ -121,6 +121,15 @@ import {
 /** Severity of a review finding. */
 type Severity = Review["findings"][number]["severity"];
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
+const SERIOUS: readonly Severity[] = ["critical", "high"];
+
+/**
+ * The severities that start a correction. After the first repair or convergence round, medium and
+ * low findings are recorded in the review artifact but no longer start another round: runs
+ * de6cf1ab and 2fa658c0 spent their rounds on ever deeper medium findings while every check passed.
+ */
+const repairSeverities = (run: { repair_rounds: number; convergence_rounds: number }) =>
+  run.repair_rounds + run.convergence_rounds > 0 ? SERIOUS : ALL_SEVERITIES;
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph }): TaskGraph {
@@ -799,7 +808,12 @@ export class WorkflowScheduler {
                 for (const item of review.coverage)
                   this.store.criterion(runId, state.snapshotId ?? "", item);
               });
-              const findings = this.recordFindings(runId, review);
+              const severities = repairSeverities(this.store.run(runId));
+              const findings = this.recordFindings(
+                runId,
+                review,
+                review.findings.filter((f) => severities.includes(f.severity)),
+              );
               if (findings.length) {
                 repairFindings = { findings, kind: "convergence" };
                 advance = false;
@@ -2564,6 +2578,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
     const findings: Review["findings"] = [];
     const owners = new Map<string, Reviewer>();
+    const severities = repairSeverities(this.store.run(runId));
     const reviewSpec = state.spec;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
@@ -2607,7 +2622,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         state.reviews[reviewer.key] = result;
         // Advisory reviewers and findings below the blocking severities are recorded, not repaired.
         const blocking = reviewer.required
-          ? result.findings.filter((f) => reviewer.blocking.includes(f.severity))
+          ? result.findings.filter(
+              (f) => reviewer.blocking.includes(f.severity) && severities.includes(f.severity),
+            )
           : [];
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);
