@@ -28,7 +28,7 @@ import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { WorkflowFault } from "./errors.js";
-import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
+import { readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
 import {
   commandProcessMayRun,
@@ -37,6 +37,7 @@ import {
   releaseDeadOwnerLeases,
   WorkspaceLeases,
 } from "./leases.js";
+import { estimatePrepared } from "./pre-run.js";
 import { undoRunEdits } from "./rollback.js";
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
@@ -56,7 +57,7 @@ import {
   type WorkflowService,
   writerPolicyProblem,
 } from "./schemas.js";
-import { bindDefinition, prepareStart } from "./start.js";
+import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
 import { reusableImplementations } from "./task-graph.js";
@@ -120,6 +121,7 @@ export class NativeWorkflowService implements WorkflowService {
       throw new WorkflowFault("INVALID_DEFINITION", "Workflow prompt is required");
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
+    const prepared = await prepareStart(this.workspace, this.config, request);
     const {
       policy,
       registry,
@@ -131,7 +133,7 @@ export class NativeWorkflowService implements WorkflowService {
       instructions,
       skillHashes,
       instructionHashes,
-    } = await prepareStart(this.workspace, this.config, request);
+    } = prepared;
     const v2 = loaded.schemaVersion === 2 ? loaded.definition : null;
     // A definition without a spec stage works on the request stated as one requirement.
     const hostDependencies = request.dependencies
@@ -244,23 +246,25 @@ export class NativeWorkflowService implements WorkflowService {
         state.diff = { artifactId: artifact.id, hash: artifact.content_hash, files: diff.files };
         this.store.saveState(id, state);
       }
-      this.saveEstimate(id, policy);
+      this.saveEstimate(id, prepared, request.workflowId);
       const snapshot = this.store.snapshot(id);
       this.store.saveCommand(request.commandId, request, snapshot);
       return snapshot;
     });
   }
   /** Keeps the expectation made at creation, so a finished run can be compared with it. */
-  private saveEstimate(runId: string, policy: RunPolicy): void {
+  private saveEstimate(runId: string, prepared: PreparedStart, workflowId: string): void {
     try {
-      const estimate = estimateStart(readHistory(this.store));
+      const estimate = estimatePrepared(prepared, workflowId, readHistory(this.store));
       const saved: SavedEstimate = {
         schemaVersion: 1,
         at: Date.now(),
         tokens: estimate.tokens,
         basis: estimate.basis,
         samples: estimate.samples,
-        maxTokens: policy.maxTotalTokens,
+        maxTokens: prepared.policy.maxTotalTokens,
+        workflowId,
+        costUsd: estimate.costUsd,
       };
       this.store.artifact(runId, "estimate", "estimates/start.json", canonical(saved));
     } catch {

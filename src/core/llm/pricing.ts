@@ -197,49 +197,53 @@ export function isModelFree(modelId: string): boolean {
 }
 
 /**
- * The table price of a model, or null when the table has no entry for it or its family. Callers
- * that must not invent a number (estimates) use this; the status bar uses `matchPricing`.
+ * A model's price and how it was found: `table` for an entry of the table (or a free model),
+ * `approximate` for a family guess or a Copilot request multiplier. Null when the table has no
+ * entry or family for the model, so estimates can say "price unknown" instead of inventing one.
  */
-export function findPricing(modelId: string): ModelPricing | null {
+export function findPricing(
+  modelId: string,
+): { pricing: ModelPricing; match: "table" | "approximate" } | null {
   const id = modelId.toLowerCase();
+  const table = (pricing: ModelPricing) => ({ pricing, match: "table" as const });
+  const approximate = (pricing: ModelPricing) => ({ pricing, match: "approximate" as const });
 
   // Local and free models — zero cost
-  if (isModelFree(modelId)) return FREE_PRICING;
+  if (isModelFree(modelId)) return table(FREE_PRICING);
 
   // GitHub Copilot: premium request-based pricing
   if (id.startsWith("copilot/")) {
     const model = id.slice("copilot/".length);
-    return matchCopilotPricing(model) ?? M1;
+    return approximate(matchCopilotPricing(model) ?? M1);
   }
   // GitHub Models: per-token pricing via multipliers ($0.00001/unit)
   // The catalog provides real per-model pricing; fall through to standard matching
   // since github-models model IDs include provider prefix (openai/gpt-4o etc)
+  const entries = Object.entries(MODEL_PRICING).sort((a, b) => b[0].length - a[0].length);
   if (id.startsWith("github-models/")) {
     const model = id.slice("github-models/".length);
-    const entries = Object.entries(MODEL_PRICING).sort((a, b) => b[0].length - a[0].length);
     for (const [key, pricing] of entries) {
-      if (model.includes(key)) return pricing;
+      if (model.includes(key)) return table(pricing);
     }
     return null;
   }
   // Sort by key length descending so "claude-opus-4-6" matches before "claude-opus-4"
-  const entries = Object.entries(MODEL_PRICING).sort((a, b) => b[0].length - a[0].length);
   for (const [key, pricing] of entries) {
-    if (id.includes(key)) return pricing;
+    if (id.includes(key)) return table(pricing);
   }
-  if (id.includes("fable") || id.includes("mythos"))
-    return MODEL_PRICING["claude-fable-5"] ?? DEFAULT_PRICING;
-  if (id.includes("opus")) return MODEL_PRICING["claude-opus-4-8"] ?? DEFAULT_PRICING;
-  if (id.includes("sonnet")) return DEFAULT_PRICING; // the default is the Sonnet price
-  if (id.includes("haiku")) return MODEL_PRICING["claude-haiku-4-5"] ?? DEFAULT_PRICING;
-  if (id.includes("gemini")) return MODEL_PRICING["gemini-2.5-flash"] ?? DEFAULT_PRICING;
-  if (id.includes("grok")) return MODEL_PRICING["grok-4.3"] ?? DEFAULT_PRICING;
-  if (id.includes("gpt")) return MODEL_PRICING["gpt-5.4"] ?? DEFAULT_PRICING;
-  if (id.includes("deepseek")) return MODEL_PRICING["deepseek-chat"] ?? DEFAULT_PRICING;
+  const family = (key: string) => approximate(MODEL_PRICING[key] ?? DEFAULT_PRICING);
+  if (id.includes("fable") || id.includes("mythos")) return family("claude-fable-5");
+  if (id.includes("opus")) return family("claude-opus-4-8");
+  if (id.includes("sonnet")) return approximate(DEFAULT_PRICING); // the default is the Sonnet price
+  if (id.includes("haiku")) return family("claude-haiku-4-5");
+  if (id.includes("gemini")) return family("gemini-2.5-flash");
+  if (id.includes("grok")) return family("grok-4.3");
+  if (id.includes("gpt")) return family("gpt-5.4");
+  if (id.includes("deepseek")) return family("deepseek-chat");
   return null;
 }
 
 /** The table price, or a Sonnet-class default for models the table does not know. */
 export function matchPricing(modelId: string): ModelPricing {
-  return findPricing(modelId) ?? DEFAULT_PRICING;
+  return findPricing(modelId)?.pricing ?? DEFAULT_PRICING;
 }
