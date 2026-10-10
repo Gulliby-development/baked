@@ -25,6 +25,7 @@ import { validateChecks } from "./check-policy.js";
 import {
   deferredBlockingProblems,
   demoteDeferred,
+  planOnlyFindings,
   researchBudget,
   SCOPING_PLANNERS,
   scopedPlanBudget,
@@ -494,6 +495,21 @@ export class WorkflowScheduler {
                 !blocking &&
                 (analysis.verdict === "pass" ||
                   (analysis.verdict === "needs_revision" && onlyDeferred));
+              const planOnly = state.analysisPassed ? [] : planOnlyFindings(findings);
+              if (!v2 && planOnly.length && state.analysisReplans === 0) {
+                const stages = WorkflowSchema.parse(
+                  JSON.parse(this.store.run(runId).definition_json),
+                ).stages;
+                const plan = stages.findIndex((stage) => stage.kind === "plan");
+                if (plan >= 0) {
+                  // Gaps in the plan text go back to the planner once before a person is asked.
+                  state.analysisReplans = 1;
+                  state.prompt += `\nAnalysis findings on the plan; fix every one of them in plan.md and tasks.json:\n${canonical(planOnly.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                  state.stageIndex = plan;
+                  advance = false;
+                  break;
+                }
+              }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
                 advance = false;

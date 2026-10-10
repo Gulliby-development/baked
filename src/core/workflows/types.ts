@@ -64,6 +64,8 @@ export const RuntimeStateSchema = z
     taskSteps: z.record(z.string(), z.number().int().positive()).default({}),
     /** Times plan-time sizing sent the plan back to be split; it does so once. */
     sizingReplans: z.number().int().nonnegative().default(0),
+    /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
+    analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
       .record(
         z.string(),

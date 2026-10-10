@@ -69,6 +69,25 @@ export function demoteDeferred<T extends { blocking: boolean }>(
 const SPEC_REF = /(^|[^a-z])spec(\.json|\.md)?\b|^(FR|NFR|AC)-\d+/i;
 
 /**
+ * Blocking analysis findings the planner can fix alone: gaps in coverage or consistency that refer
+ * only to the plan (plan.md, tasks.json), not to the spec. Run 2fa658c0 asked a person twice that
+ * a task description did not list some checks.
+ */
+export function planOnlyFindings<T extends { kind: string; refs: string[]; blocking: boolean }>(
+  findings: readonly T[],
+): T[] {
+  const blocking = findings.filter((f) => f.blocking);
+  return blocking.length > 0 &&
+    blocking.every(
+      (f) =>
+        (f.kind === "coverage" || f.kind === "inconsistency") &&
+        !f.refs.some((ref) => SPEC_REF.test(ref.trim())),
+    )
+    ? blocking
+    : [];
+}
+
+/**
  * The stage to continue from after the user answers a clarification raised at `askingIndex`.
  * The answer is appended to the request, so completed outputs stay valid unless they are the
  * ones the questions were about:

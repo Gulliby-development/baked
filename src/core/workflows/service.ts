@@ -220,6 +220,7 @@ export class NativeWorkflowService implements WorkflowService {
       taskBudgets: {},
       taskSteps: {},
       sizingReplans: 0,
+      analysisReplans: 0,
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
       report: null,
