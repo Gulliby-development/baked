@@ -50,3 +50,14 @@ Checkouts use LF line endings on every platform (`.gitattributes`). A Windows ch
 | `bun run selfextract:windows`, `selfextract:windows-arm64` | Installer that downloads the zip from GitHub Releases | any OS |
 
 Every package must keep its `deps/` tree (OpenTUI native library, worker bundles, tree-sitter WASM) next to the binary or in the per-user data directory. `baked self-check` loads each of them plus SQLite without a terminal or provider key and exits non-zero on a failure. The `Builds` workflow runs it on every package that can execute on its runner: Linux on every pull request; Windows and macOS when a pull request changes packaging files, nightly, and on manual dispatch. Linux arm64 and Windows arm64 are cross-built and checked for contents only. Binaries are not code-signed or notarized.
+
+## Releases
+
+Versions follow semantic versioning and are tagged `vX.Y.Z`. From an up-to-date `main` with every change merged:
+
+```sh
+bun run release:dry     # next version and the commits since the last tag
+bun run release:minor   # or release:patch / release:major
+```
+
+`scripts/release.sh` runs the checks, commits the version bump as "Release X.Y.Z", tags it and pushes `main` and the tag. The tag starts `.github/workflows/release.yml`, which runs the full check suite, builds every archive through the Builds workflow and publishes a GitHub release with `SHA256SUMS.txt` and notes generated from the merged pull requests. Label a pull request `skip-changelog` to leave it out of the notes; Dependabot pull requests are grouped under "Dependencies".

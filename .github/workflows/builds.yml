@@ -3,7 +3,8 @@ name: Builds
 # Builds every distributable and runs `baked self-check` on each one that can
 # execute on its runner. Linux builds run on every pull request; Windows and
 # macOS runners cost 2x and 10x Linux minutes, so they run when a pull request
-# touches packaging-related files, nightly, and on demand.
+# touches packaging-related files, nightly, and on demand. The release workflow
+# calls it with `release: true` to build everything and upload the archives.
 
 on:
   push:
@@ -13,6 +14,17 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      release:
+        description: Also upload the release archives as artifacts (a dry run of the release build).
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      release:
+        description: Build every platform and upload the release archives as artifacts.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,8 +50,9 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RELEASE: ${{ inputs.release }}
         run: |
-          if [ "$EVENT" = "schedule" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+          if [ "$RELEASE" = "true" ] || [ "$EVENT" = "schedule" ] || [ "$EVENT" = "workflow_dispatch" ]; then
             echo "native=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -153,6 +166,13 @@ jobs:
           cd "$RUNNER_TEMP"
           "$HOME/.baked/bin/baked" --version
           "$HOME/.baked/bin/baked" self-check
+      - name: Upload the release archive
+        if: env.RUN == 'true' && inputs.release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/bundle/${{ env.BUNDLE_NAME }}.tar.gz
+          if-no-files-found: error
 
   windows:
     needs: scope
@@ -224,3 +244,13 @@ jobs:
       - name: Bundle arm64
         if: needs.scope.outputs.native == 'true'
         run: bun run bundle:windows-arm64
+      - name: Upload the release archives
+        if: needs.scope.outputs.native == 'true' && inputs.release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-windows
+          path: |
+            dist/bundle/baked-*-windows-*.zip
+            dist/bundle/baked-setup-*.exe
+            bin/baked-installer-*.exe
+          if-no-files-found: error
