@@ -301,12 +301,12 @@ function AppRoot({ opts }: { opts: StartOptions }) {
     resetUIStore();
 
     try {
-      const { loadConfig, loadProjectConfig } = await import("./config/index.js");
+      const { loadConfig, loadEffectiveProjectConfig } = await import("./config/index.js");
       const { checkProviders } = await import("./core/llm/provider.js");
       const { checkPrerequisites } = await import("./core/setup/prerequisites.js");
 
       const newConfig = loadConfig();
-      const newProjectConfig = loadProjectConfig(getCwd());
+      const newProjectConfig = loadEffectiveProjectConfig(getCwd());
       const [newProviders, newPrereqs] = await Promise.all([
         checkProviders(),
         Promise.resolve(checkPrerequisites()),

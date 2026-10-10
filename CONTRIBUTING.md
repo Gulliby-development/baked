@@ -12,6 +12,7 @@ BAKED runs on Bun. Install dependencies with `bun install`, then start the termi
 - `src/core/llm/providers/` contains Claude, OpenAI API, Codex, GitHub Copilot, and GitHub Models connections.
 - `src/headless/` provides command-line automation and interactive console chat.
 - `src/core/sessions/` and `src/core/memory/` manage persisted sessions and memory.
+- `src/core/projects/` resolves the project manifest (`baked/project.json`), its trusted roots and working set; `ProjectService` is the contract for the CLI and the local API ([design](design/projects-lite.md)).
 - `src/core/workflows/` owns durable workflow commands, scheduling, approvals, budgets, leases and recovery. `src/core/specs/`, `src/core/agents/profiles/` and `src/core/verification/` implement artifact validation, agent capabilities and acceptance.
 
 Keep agent logic independent of the UI. Preserve approval callbacks, secret handling, file access checks, and coordination between tabs when changing tools. Use strict TypeScript and the existing Biome configuration.

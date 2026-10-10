@@ -110,6 +110,15 @@ export const RuntimeStateSchema = z
       .nullable()
       .default(null),
     /**
+     * The project working set rendered at run creation (artifact `project/working-set.md`);
+     * the agents that start the run read it. Null without a project or working set.
+     */
+    workingSet: z
+      .object({ artifactId: z.string(), hash: z.string(), files: z.array(z.string()) })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
      * The run's own Git worktree once it exists (worktree execution mode). From then on the run
      * reads, edits, checks and snapshots there; the project working copy is never written.
      */

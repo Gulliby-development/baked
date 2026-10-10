@@ -1,4 +1,5 @@
 import type { ModelMessage } from "ai";
+import { projectIdOf } from "../core/projects/resolve.js";
 import type { SessionMeta, TabMeta } from "../core/sessions/types.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";
 import { useUIStore } from "../stores/ui.js";
@@ -108,6 +109,8 @@ export function buildSessionMeta({
     forgeMode: activeTabState?.forgeMode ?? "default",
     tabs,
   };
+  const projectId = projectIdOf(cwd);
+  if (projectId) meta.projectId = projectId;
 
   return { meta, tabMessages, tabCoreMessages };
 }

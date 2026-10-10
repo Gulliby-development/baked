@@ -1089,8 +1089,18 @@ export class WorkflowScheduler {
     profile: AgentProfile,
     extra: unknown,
   ): string {
+    // The agents that start a run see the project's working set; later ones get the research.
+    const workingSet =
+      state.workingSet &&
+      state.research === null &&
+      (profile.context === "research" ||
+        profile.context === "specification" ||
+        profile.context === "planning")
+        ? this.store.readArtifact(runId, state.workingSet.artifactId)
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
+      ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       executionContract: {
         checks: policy.checks,
         profiles: ProfileSchema.array()
