@@ -173,14 +173,16 @@ try {
     $parserWorker = Join-Path $repoRoot "node_modules/@opentui/core/parser.worker.js"
     if (Test-Path $parserWorker) {
         & bun build $parserWorker --outdir (Join-Path $depsDir "opentui-assets") --target=bun --asset-naming="[name].[ext]"
+        # No post-build patching: since OpenTUI 0.5 the main thread resolves
+        # tree-sitter.wasm and passes its path to the worker in the INIT
+        # message, and the worker is plain ESM where Bun provides `require`.
+        # The 0.4.x require() -> __require() rewrites now crash the worker.
         $workerJs = Join-Path $depsDir "opentui-assets/parser.worker.js"
         if (Test-Path $workerJs) {
             $content = Get-Content $workerJs -Raw
-            $content = $content -replace 'module2.exports = "./tree-sitter.wasm"', 'module2.exports = ((process.env.LOCALAPPDATA || __require("os").homedir() + "/AppData/Local") + "/baked/wasm/tree-sitter.wasm")'
-            $content = $content -replace 'var fs = require\("fs"\)', 'var fs = __require("fs")'
-            $content = $content -replace 'var nodePath = require\("path"\)', 'var nodePath = __require("path")'
-            $content = $content -replace 'require\("url"\)', '__require("url")'
-            Set-Content $workerJs -Value $content -NoNewline
+            if ($content.Contains('__require(') -and -not $content.Contains('__require =')) {
+                throw "parser.worker.js calls __require() without defining it"
+            }
         }
     }
     Write-Host "    OK opentui-assets"
