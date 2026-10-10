@@ -121,6 +121,9 @@ test("after a revision, a file the run created does not fail plan consistency an
   expect((await finish(fixture, run.runId)).status).toBe("completed");
   const prompt = fixture.executor.prompts.implementation?.at(-1) ?? "";
   expect(prompt).toContain("earlierEdits");
+  // The retry gets the earlier attempt's edit as a patch instead of rereading the file.
+  const extra = (JSON.parse(prompt.split("\n").at(-1) ?? "{}") as { extra: { earlierEdits?: { patch: string } } }).extra;
+  expect(extra.earlierEdits?.patch).toContain("+ready");
   expect(rollbacks(fixture, run.runId)).toEqual([]);
 }, 30000);
 

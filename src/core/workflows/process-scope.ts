@@ -41,6 +41,8 @@ export class ProcessScope {
       signal: AbortSignal;
       /** Receives the PID and the scope marker its descendants inherit. */
       onSpawn?: (pid: number, scope: string) => void;
+      /** The args are a `bunShellArgs` command line, passed to cmd.exe unescaped on Windows. */
+      verbatim?: boolean;
     },
   ): Promise<ProcessResult> {
     options.signal.throwIfAborted();
@@ -52,6 +54,7 @@ export class ProcessScope {
         env: { ...options.env, [PROCESS_SCOPE_ENV]: scope },
         shell: false,
         windowsHide: true,
+        windowsVerbatimArguments: options.verbatim === true && process.platform === "win32",
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       });
