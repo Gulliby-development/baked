@@ -1,92 +1,10 @@
-/* Chat: icon rail, one centered column, compact chips and the composer (Chat.dc.html). */
+/* Chat: one centered column, compact chips and the composer (Chat.dc.html). */
 
 /* The chat fills the main area and scrolls only its conversation. */
 .main:has(> .chat) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-/* Icon rail */
-.rail {
-  flex: 0 0 64px;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--line);
-  padding: 12px 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  overflow-y: auto;
-}
-
-.rail-item {
-  position: relative;
-  width: 44px;
-  height: 44px;
-  flex: none;
-  border: none;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text-3);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.rail-item:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-.rail-item[aria-current="page"] {
-  background: var(--bg-selected);
-  color: var(--text);
-}
-
-.rail-tile {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  color: var(--text-3);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.rail-tile.current {
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-text);
-  font-weight: 500;
-  font-size: 14px;
-}
-
-.rail-dot {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 8px;
-  height: 8px;
-  border-radius: 4px;
-  background: var(--warn);
-}
-
-.rail-rule {
-  width: 28px;
-  height: 1px;
-  flex: none;
-  background: var(--line);
-  margin: 4px 0;
 }
 
 /* Layout */
@@ -211,12 +129,6 @@
 
 .chip.small {
   min-height: 26px;
-}
-
-.chip.icon {
-  width: 30px;
-  padding: 0;
-  justify-content: center;
 }
 
 .ring-track {

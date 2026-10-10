@@ -172,5 +172,7 @@ export function createMockBridge(): DesktopBridge {
       window.open(url, "_blank", "noopener");
     },
     onNavigate: () => () => {},
+    windowAction: async () => {},
+    onMaximized: () => () => {},
   };
 }

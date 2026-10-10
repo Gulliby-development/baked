@@ -8,7 +8,6 @@ import {
   type Usage,
 } from "../../client/chat.js";
 import { Icon } from "../../components/Icon.js";
-import { setSidebarExpanded, useSidebarExpanded } from "../../components/rail-state.js";
 import { ago, tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import { shortModel } from "./Composer.js";
@@ -27,9 +26,9 @@ function SessionMenu({
 }) {
   return (
     <Popover
-      label="Sessions"
+      label="Chats"
       className="session-title"
-      buttonLabel={`${title}, switch session`}
+      buttonLabel={`${title}, switch chat`}
       button={
         <>
           <h1>{title}</h1>
@@ -76,14 +75,14 @@ function SessionList({
   return (
     <div className="menu-list sessions">
       <a className="btn-primary" href={projectHref(project.key, "chat", "new")} onClick={close}>
-        New session
+        New chat
       </a>
       <p className="label" style={{ padding: "6px 4px 2px" }}>
         Recent
       </p>
       {error && <p className="menu-note">{error}</p>}
       {!sessions && !error && <p className="menu-note">Loading…</p>}
-      {sessions?.length === 0 && <p className="menu-note">No sessions yet.</p>}
+      {sessions?.length === 0 && <p className="menu-note">No chats yet.</p>}
       {sessions?.map((s) => (
         <a
           key={s.id}
@@ -273,20 +272,8 @@ export function ChatHeader({
   model?: string | null;
   filesEdited?: string[];
 }) {
-  const expanded = useSidebarExpanded();
   return (
     <header className="chat-head">
-      {expanded && (
-        <button
-          type="button"
-          className="chip icon"
-          aria-label="Collapse the sidebar"
-          title="Collapse the sidebar"
-          onClick={() => setSidebarExpanded(false)}
-        >
-          <Icon name="panel" size={14} />
-        </button>
-      )}
       <a className="crumb" href={projectHref(project.key)} title={project.path}>
         {project.name} · {project.path}
       </a>
@@ -298,6 +285,12 @@ export function ChatHeader({
         {usage && <ContextChip context={context ?? null} usage={usage} model={model ?? null} />}
         {filesEdited && <FilesChip files={filesEdited} />}
         <WorkingSetChip project={project} />
+        {sessionId !== null && (
+          <a className="chip" href={projectHref(project.key, "chat", "new")}>
+            <Icon name="plus" size={13} />
+            New chat
+          </a>
+        )}
       </div>
     </header>
   );

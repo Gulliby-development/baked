@@ -11,6 +11,7 @@ import {
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
 import { type ChatMode, chat, isMissingChatApi } from "../../client/chat.js";
+import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
@@ -145,7 +146,10 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           if (!live) return;
           dispatch(event);
           // The saved session carries context fill and edited files the events leave out.
-          if (event.type === "turn-done") refresh();
+          if (event.type === "turn-done") {
+            refresh();
+            chatSessionsChanged();
+          }
         });
       },
       async (error: unknown) => {
@@ -197,6 +201,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           mode: draftMode,
           ...(draftModel ? { model: draftModel } : {}),
         });
+        chatSessionsChanged();
         window.location.replace(projectHref(key, "chat", created.id));
         return true;
       } catch (error) {
@@ -245,9 +250,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     return (
       <Centered project={project}>
         <div className="empty chat-empty">
-          <p className="chat-empty-title">This session no longer exists</p>
+          <p className="chat-empty-title">This chat no longer exists</p>
           <a className="btn" href={projectHref(key, "chat", NEW)}>
-            Start a new session
+            Start a new chat
           </a>
         </div>
       </Centered>
@@ -259,7 +264,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     <div className="chat">
       <ChatHeader
         project={project}
-        title={draft ? "New session" : (session?.title ?? "Chat")}
+        title={draft ? "New chat" : (session?.title ?? "Chat")}
         sessionId={draft ? null : sessionId}
         {...(draft
           ? {}
