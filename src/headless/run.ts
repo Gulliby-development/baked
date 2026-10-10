@@ -4,6 +4,7 @@ import type { LanguageModel, ModelMessage } from "ai";
 import { normalizePath } from "../core/agents/agent-bus.js";
 import { createForgeAgent } from "../core/agents/index.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
+import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getCwd } from "../core/cwd.js";
 import { resolveModel } from "../core/llm/provider.js";
@@ -485,8 +486,10 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
     }
   }
 
+  // Custom slash commands from .baked/commands; headless has no built-in slash commands.
+  let prompt = expandHeadlessPrompt(opts.prompt, env.cwd, showProgress);
+
   // Include files
-  let prompt = opts.prompt;
   if (opts.include && opts.include.length > 0) {
     const fileParts: string[] = [];
     for (const file of opts.include) {
@@ -637,6 +640,15 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
   env.contextManager.dispose();
   await disposeMCPManager();
   reraiseOrExit(exitCode);
+}
+
+function expandHeadlessPrompt(prompt: string, cwd: string, showProgress: boolean): string {
+  const expanded = expandCustomCommandInput(prompt, cwd);
+  if (!expanded) return prompt;
+  if (showProgress) {
+    stderrDim(`Custom command ${expanded.command.name} (${expanded.command.scope})`);
+  }
+  return expanded.prompt;
 }
 
 /**
@@ -843,8 +855,9 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   const readPrompt = opts.readPrompt ?? readPromptFromStdin;
 
   while (!aborted) {
-    const prompt = await readPrompt();
-    if (prompt === null) break;
+    const rawPrompt = await readPrompt();
+    if (rawPrompt === null) break;
+    const prompt = expandHeadlessPrompt(rawPrompt, env.cwd, showProgress);
 
     turns++;
     const turnStart = Date.now();
