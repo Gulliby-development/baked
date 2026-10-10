@@ -19,6 +19,12 @@
   --color-secondary-background: var(--bg);
   --color-foreground: var(--text);
   --color-muted-foreground: var(--text-3);
+  --color-soft-foreground: var(--text-2);
+  --color-dim-foreground: var(--text-4);
+  --color-sidebar: var(--bg-sidebar);
+  --color-raised: var(--bg-raised);
+  --color-hover: var(--bg-hover);
+  --color-selected: var(--bg-selected);
   --color-border: var(--ink);
   --color-ring: var(--accent);
   --color-overlay: rgb(0 0 0 / 0.6);
