@@ -549,6 +549,8 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/health` | | returns `apiVersion`, `version`, `workspace` |
 | `GET /v1/workflow/definitions` | `definitions` | |
 | `GET /v1/workflow/profiles` | `profiles` | |
+| `GET /v1/workflow/doctor` | `doctor` | `?workflow=&model=&route=STAGE=MODEL,...&worktree=true&writers=&confirmAutoApproval=`; uses the configured policy; 200 with the report, `ready` false when a check failed |
+| `GET /v1/workflow/estimate` | `estimate` | same query as `doctor`; 404 for an unknown workflow, 400 for a start refusal |
 | `GET /v1/workflow/runs` | `list` | `?feature=&status=&limit=&cursor=` |
 | `POST /v1/workflow/runs` | `run` | `commandId`, `feature`, `prompt`, optional `workflow`, `policy` (object), `model`, `owner` (default `API`), `confirmAutoApproval`, `worktree`, `writers` |
 | `GET /v1/workflow/runs/RUN_ID` | `status` | snapshot with `requests` |

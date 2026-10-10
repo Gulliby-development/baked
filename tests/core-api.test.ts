@@ -233,6 +233,27 @@ describe("local core API", () => {
     expect(Array.isArray(await profiles.json())).toBe(true);
   });
 
+  test("runs the doctor and the pre-run estimate", async () => {
+    const { call, post } = await setup();
+    const doctor = await call("/v1/workflow/doctor?workflow=standard");
+    expect(doctor.status).toBe(200);
+    const report = (await doctor.json()) as { workflowId: string; checks: { id: string; status: string }[] };
+    expect(report.workflowId).toBe("standard");
+    expect(report.checks.find((c) => c.id === "start")?.status).toBe("ok");
+
+    const estimate = await call(
+      `/v1/workflow/estimate?workflow=standard&route=${encodeURIComponent("research=anthropic/claude-haiku-4-5")}`,
+    );
+    expect(estimate.status).toBe(200);
+    const body = (await estimate.json()) as { stages: { stageId: string; models: string[] }[] };
+    expect(body.stages.find((s) => s.stageId === "research")?.models).toEqual(["anthropic/claude-haiku-4-5"]);
+
+    expect((await call("/v1/workflow/estimate?workflow=missing")).status).toBe(404);
+    expect((await call("/v1/workflow/estimate?policy=x")).status).toBe(400);
+    expect((await call("/v1/workflow/doctor?writers=2")).status).toBe(400);
+    expect((await post("/v1/workflow/doctor", {})).status).toBe(405);
+  });
+
   test("maps faults and request problems to HTTP statuses", async () => {
     const { call, post } = await setup({ maxBodyBytes: 1024 });
     const unknown = await call("/v1/workflow/runs/no-such-run");
