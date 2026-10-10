@@ -43,6 +43,7 @@ import {
   EventsQuery,
   ExtendBody,
   ListQuery,
+  PreRunQuery,
   RejectBody,
   StartBody,
 } from "./schemas.js";
@@ -398,6 +399,23 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       only("GET");
       const command = path.endsWith("definitions") ? "definitions" : "profiles";
       return json(200, await execute({ command, positional: [], flags: {} }), origin);
+    }
+    if (path === "/v1/workflow/doctor" || path === "/v1/workflow/estimate") {
+      only("GET");
+      const query = queryOf(url, PreRunQuery);
+      const flags: WorkflowArgs["flags"] = {};
+      if (query.workflow) flags.workflow = query.workflow;
+      if (query.model) flags.model = query.model;
+      if (query.route) flags.route = query.route;
+      if (query.worktree === "true") flags.worktree = true;
+      if (query.writers) flags.writers = query.writers;
+      if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
+      const command = path.endsWith("doctor") ? "doctor" : "estimate";
+      return json(
+        200,
+        await execute(validateWorkflowArgs({ command, positional: [], flags })),
+        origin,
+      );
     }
     if (path === "/v1/workflow/runs") {
       if (method === "POST") return json(202, await launch(startArgs(await readJson(req))), origin);

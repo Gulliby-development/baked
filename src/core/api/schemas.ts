@@ -41,6 +41,15 @@ export const ExtendBody = Command.extend({
   timeMs: PositiveInt.optional(),
 }).strict();
 
+/** `doctor` and `estimate`: the run inputs that change a start; the API uses the configured policy. */
+export const PreRunQuery = z.strictObject({
+  workflow: SafeId.optional(),
+  model: z.string().min(1).optional(),
+  route: z.string().min(1).optional(),
+  worktree: z.enum(["true", "false"]).optional(),
+  writers: z.string().regex(/^\d+$/).optional(),
+  confirmAutoApproval: z.string().min(1).optional(),
+});
 export const ListQuery = z.strictObject({
   feature: SafeId.optional(),
   status: RunStatus.optional(),
