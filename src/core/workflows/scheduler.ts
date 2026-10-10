@@ -1974,6 +1974,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           if (outcome.kind === "fatal") continue;
           if (outcome.kind === "done") {
             if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+            delete state.taskCarry[entry.task.id];
           } else if (outcome.kind === "interrupted") {
             lost.set(entry.task.id, outcome.reason);
             this.store.transaction(() => {
@@ -1982,7 +1983,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             });
           } else if (outcome.kind === "rejected") {
             const again =
-              outcome.edited === true && this.continueAtCap(runId, state, entry.child, entry.task);
+              outcome.edits !== undefined &&
+              this.continueAtCap(runId, state, entry.child, entry.task);
+            if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
             if (!again) failure ??= outcome.error;
             this.store.transaction(() => {
               this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
@@ -2111,6 +2114,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     try {
       const known = new Set(this.store.effects(runId).map((e) => e.id));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
+      const earlierEdits = await this.applyCarry(runId, state, entry, root);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2118,7 +2122,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           state,
           policy,
           entry.profile,
-          entry.extra,
+          earlierEdits && entry.extra && typeof entry.extra === "object"
+            ? { ...entry.extra, earlierEdits }
+            : entry.extra,
           signal,
           task,
           0,
@@ -2160,7 +2166,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "rejected",
           entry,
-          edited: changed.length > 0,
+          ...(changed.length ? { edits: { before, changed } } : {}),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
@@ -2451,6 +2457,59 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         }),
       ),
     );
+  }
+  /**
+   * Keeps what a batch task's attempt changed before its worktree is removed: the content after
+   * the edit is stored like a pre-image, by hash, so the continuing attempt can get it back.
+   */
+  private carryEdits(
+    runId: string,
+    state: RuntimeState,
+    entry: BatchEntry,
+    edits: { before: Record<string, string>; changed: string[] },
+  ): void {
+    const root = join(this.store.workspace, entry.path);
+    this.store.transaction(() => {
+      state.taskCarry[entry.task.id] = Object.fromEntries(
+        edits.changed.map((path) => [
+          path,
+          {
+            before: edits.before[path] ?? null,
+            after: capturePreImage(this.store, runId, workspacePath(root, path)),
+          },
+        ]),
+      );
+      this.store.saveState(runId, state);
+    });
+  }
+  /**
+   * Puts a continued batch task's earlier edits into its new worktree, for each path the base has
+   * not changed since, and describes them for the prompt like the single-writer path does.
+   */
+  private async applyCarry(
+    runId: string,
+    state: RuntimeState,
+    entry: BatchEntry,
+    root: string,
+  ): Promise<{ paths: string[]; patch: string; note: string } | null> {
+    const carry = state.taskCarry[entry.task.id];
+    if (!carry) return null;
+    const applied: Record<string, string | null> = {};
+    for (const [path, { before, after }] of Object.entries(carry)) {
+      if (fileHash(workspacePath(root, path)) !== before) continue;
+      const content = after === null ? null : readKept(this.store, runId, after);
+      if (after !== null && content === null) continue;
+      // Journaled as the new attempt's own edit: its write tools accept the file as one they made.
+      this.journal.publish(runId, entry.attemptId, path, content, before, "file_patch", root);
+      applied[path] = before;
+    }
+    const paths = Object.keys(applied);
+    if (!paths.length) return null;
+    return {
+      paths,
+      patch: await this.taskPatch(runId, root, applied),
+      note: "These files already contain the edits in the patch, from an earlier attempt of this task in this run; keep what is correct. Read only the spans you still have to change.",
+    };
   }
   /** Removes a settled task's worktree and releases its lease; a worktree with unsettled effects stays for recovery. */
   private async releaseTaskWorktree(runId: string, entry: BatchEntry): Promise<void> {
@@ -3495,7 +3554,13 @@ type WorkerOutcome =
       checks: WorkerCheck[];
     }
   /** The task's result is refused: a change outside its writes, or no complete implementation. */
-  | { kind: "rejected"; entry: BatchEntry; error: unknown; edited?: boolean }
+  | {
+      kind: "rejected";
+      entry: BatchEntry;
+      error: unknown;
+      /** The files the attempt changed in its worktree, with the manifest before it. */
+      edits?: { before: Record<string, string>; changed: string[] };
+    }
   /** The task's worker or worktree lease was lost; only this task stops. */
   | { kind: "interrupted"; entry: BatchEntry; reason: string }
   /** The whole run stops: it was aborted or its budget is used up. */
