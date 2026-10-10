@@ -63,9 +63,17 @@ jobs:
           path: assets
           merge-multiple: true
 
+      # An artifact with files from several directories (release-windows) keeps
+      # those directories, so collect every file into one flat folder.
       - name: Checksums
-        working-directory: assets
         run: |
+          mkdir release
+          find assets -type f -exec mv -n -t release {} +
+          if [ -n "$(find assets -type f)" ]; then
+            echo "::error::Two release files share a name"
+            exit 1
+          fi
+          cd release
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -74,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" assets/* \
+          gh release create "$TAG" release/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "BAKED ${TAG#v}" \
