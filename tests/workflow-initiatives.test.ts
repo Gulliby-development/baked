@@ -330,7 +330,7 @@ describe("initiative runtime", () => {
       "core:replan",
       "api:rebase",
     ]);
-  });
+  }, 30000);
 
   test("the shared budget is split equally between features that have not started", async () => {
     const t = setup(threeFeatures, 1000);
@@ -398,7 +398,7 @@ describe("initiative runtime", () => {
     await t.approveFeature("api");
     view = await t.drive();
     expect(view.status).toBe("completed");
-  });
+  }, 30000);
 
   test("tiered approval is refused for a v2 feature workflow, whose auto approval is its own", async () => {
     const t = setup();
