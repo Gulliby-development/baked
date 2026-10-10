@@ -172,8 +172,8 @@ function initialState(key: string): SetupState {
   const root = key === "baked" ? "C:\\Project\\BAKED" : `C:\\Work\\${key}`;
   const files: [string, number][] = [
     ["AGENTS.md", 6250],
-    ["design/desktop-app.md", 9800],
-    ["design/desktop-api.md", 14_900],
+    ["docs/desktop/app.md", 9800],
+    ["docs/desktop/api.md", 14_900],
     ["src/core/api/chat-routes.ts", 5200],
     ["src/core/api/route-context.ts", 820],
     ["src/core/api/schemas.ts", 3900],
@@ -192,7 +192,7 @@ function initialState(key: string): SetupState {
       workingSet: {
         entries: [
           "AGENTS.md",
-          "design/desktop-*.md",
+          "docs/desktop/*.md",
           "src/core/api/*.ts",
           "src/core/projects/service.ts",
           "src/core/projects/working-set.ts",

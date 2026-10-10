@@ -26,7 +26,7 @@ import {
 import { checkToGate, gateToCheck, loadGateLibrary } from "../src/core/workflows/v2/library.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
 
-const examples = join(import.meta.dir, "..", "design", "sdd-workflows", "examples", "v2");
+const examples = join(import.meta.dir, "fixtures", "workflow-v2");
 const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
@@ -68,7 +68,7 @@ const examplePreset = (name: string): WorkflowV2 =>
   WorkflowV2Schema.parse(JSON.parse(readFileSync(join(examples, "presets", `${name}.json`), "utf8")));
 
 describe("v2 definitions and presets (V2-01, V2-04)", () => {
-  test("every design example gate and preset is valid under the runtime validator", () => {
+  test("every example gate and preset is valid under the runtime validator", () => {
     const library = exampleLibrary();
     expect(library.size).toBe(9);
     for (const gate of library.values()) expect(validateGate(gate)).toEqual([]);

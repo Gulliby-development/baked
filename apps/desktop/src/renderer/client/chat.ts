@@ -3,7 +3,7 @@ import { ApiError, call } from "./api.js";
 import { bridge } from "./bridge.js";
 
 /**
- * Chat sessions over `/v1/sessions/*` and `GET /v1/models` (design/desktop-api.md, group A).
+ * Chat sessions over `/v1/sessions/*` and `GET /v1/models` (docs/desktop/api.md, group A).
  * Shapes mirror `src/core/chat/sessions.ts`; only the fields the chat screen reads are declared.
  */
 

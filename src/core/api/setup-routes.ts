@@ -1,6 +1,6 @@
 /**
  * Project setup and settings endpoints of the local API: the known-project list, instruction
- * files, global and project config, and provider keys. The contract is `design/desktop-api.md`.
+ * files, global and project config, and provider keys. The contract is `docs/desktop/api.md`.
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

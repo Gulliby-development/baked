@@ -53,8 +53,6 @@ scripts/test-release.sh
 # Improvement plans
 improvements
 
-# Legacy docs (docs site is in mintlify-docs/)
-docs/
 
 # Benchmark artifacts
 bench/results-*.json

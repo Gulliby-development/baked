@@ -178,7 +178,7 @@ export const approveRequest = (
 ) =>
   workflow.approve(key, { ...run, approvalDigest: request.digest }, request.id, excludeUserChanges);
 
-/** The group of `design/desktop-api.md` that adds evidence, continue and recover. */
+/** The group of `docs/desktop/api.md` that adds evidence, continue and recover. */
 export const GROUP_B_CAPABILITY = "setup";
 
 export const isNotFound = (error: unknown): boolean =>

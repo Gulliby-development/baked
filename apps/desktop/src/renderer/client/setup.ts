@@ -1,7 +1,7 @@
 /**
  * Project setup and "All projects" settings: working set, gates and checks, instruction files,
  * commands and skills, global and project config, providers and model routing. Paths and shapes
- * follow `design/desktop-api.md`. Checks (`checks` capability) and commands and skills (`library`
+ * follow `docs/desktop/api.md`. Checks (`checks` capability) and commands and skills (`library`
  * capability) came after the first desktop release: their calls check `GET /v1/health` first and
  * fail like a missing endpoint (404) when the backend does not list the capability, so screens
  * show "needs a newer BAKED" either way.
