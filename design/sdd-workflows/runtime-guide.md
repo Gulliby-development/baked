@@ -95,6 +95,8 @@ baked workflow revise RUN_ID --candidate CANDIDATE_HASH --expected-revision N
 baked workflow resume RUN_ID --expected-revision NEW_N
 ```
 
+`revise` leaves the run paused. `revise ... --resume [--events]` resumes and drives it in the same command, with the exit codes of `resume`.
+
 Candidate fields are optional: missing ones are taken from the current package. The plan must contain Context, Decisions, Components, Data, Verification and Risks; DEC-001 and references to requirements. A candidate explicitly accepts the current instructions and configuration hashes. A changed skill requires a new profile/run. Profile versions inside an existing run stay frozen; a v2 definition changes only through a definition revision (see [Workflow definitions](#workflow-definitions-v2)). A repeated analyze and approval are mandatory; with `autoApproval.renewal` the host may give that approval (see below).
 
 The terminal states completed/cancelled/failed are immutable; `fork RUN_ID --expected-revision N` creates a new run with the parent's artifacts, a new approval and no passing evidence. It does not start the model before resume. There is no automatic rollback of user changes.
@@ -105,6 +107,7 @@ A run keeps the edits it executed. A revision, a failed or interrupted task atte
 
 - Plan consistency and the implementer accept a `create` target that exists only because this run, or the run it was forked from, created it and nothing changed it since. Any other existing file is still a conflict ("already exists; use modify").
 - The workspace check before each stage accepts a file that differs from the last snapshot when it holds exactly what the run's last journaled write produced, and records it in the expected baseline. Pausing or interrupting a task no longer blocks the resume with "Sources changed outside the active task"; a change by anyone else still does.
+- A package revision implements again only the tasks it changed. When the spec, plan and project instructions are unchanged, no task's write scope changed and the revision is not a definition revision, an implemented task whose definition is unchanged keeps its implementation, unless it depends on a task that is implemented again or shares a file with one. Its evidence is invalidated like all other evidence: after the new approval the implementation stage runs its task checks again without calling the implementer, and the check stage reruns every check on the current snapshot. A policy-only revision, such as a changed check command, therefore reruns the checks and implements nothing.
 - A repeated task receives the paths that still contain its earlier attempt's edits (`earlierEdits` in its input) and must read them before editing. Those edits count as the task's changes, so a repeated attempt that finds the work already done does not fail with "did not complete its implementation".
 
 Undo is an explicit command:
@@ -113,7 +116,7 @@ Undo is an explicit command:
 baked workflow undo RUN_ID --expected-revision N [--path PATH]
 ```
 
-It restores the files changed by the run's uncommitted task edits: edits of a task that has no snapshot because its attempt failed or was interrupted, a revision invalidated it or dropped it, or the run was cancelled. A task's edits are committed when the runtime snapshots them after the task; to undo implemented work, apply a revision first. Before each task edit the runtime stores the file's previous content as a `pre-image` artifact. Undo restores a file only while it still holds exactly what the run wrote last, and never overwrites a later change by a person or another tool. Before replacing a file, it keeps the run's version as a `rolled-back` artifact. Each restore is a journaled `file_patch` effect with the tool `rollback`, and the outcome is an immutable `workspace-rollback` artifact that lists restored files and the files left in place with the reason. The command prints that report. Files restored or left in place are settled and are not reported again; a file whose restore failed, or whose edit has an unknown outcome, is retried by the next undo. The expected baseline follows each restored path, so the next resume does not treat the restore as an outside change. The run must not be running: undo takes the run's execution and mutation leases.
+It restores the files changed by the run's uncommitted task edits: edits of a task that has no snapshot because its attempt failed or was interrupted, a revision invalidated it or dropped it, or the run was cancelled. A task's edits are committed when the runtime snapshots them after the task; to undo implemented work, apply a revision that changes the task first (a task the revision keeps stays committed). Before each task edit the runtime stores the file's previous content as a `pre-image` artifact. Undo restores a file only while it still holds exactly what the run wrote last, and never overwrites a later change by a person or another tool. Before replacing a file, it keeps the run's version as a `rolled-back` artifact. Each restore is a journaled `file_patch` effect with the tool `rollback`, and the outcome is an immutable `workspace-rollback` artifact that lists restored files and the files left in place with the reason. The command prints that report. Files restored or left in place are settled and are not reported again; a file whose restore failed, or whose edit has an unknown outcome, is retried by the next undo. The expected baseline follows each restored path, so the next resume does not treat the restore as an outside change. The run must not be running: undo takes the run's execution and mutation leases.
 
 A typical recovery from a rejected implementation: `candidate`, `revise`, optionally `undo` to start the tasks from the original files, then `resume`.
 
@@ -174,6 +177,8 @@ A run blocked with `budget_exhausted` shows B (raise limits) next to fork and ca
 ```sh
 baked workflow extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]
 baked workflow resume RUN_ID --expected-revision NEW_N
+# or both in one command, with the exit codes of resume:
+baked workflow extend RUN_ID --expected-revision N --tokens N --resume [--events]
 ```
 
 Limits can only go up. The change is stored as the immutable artifact `policy-revisions/COMMAND_ID.json` (previous and new limits, both policy hashes, usage, the stage) and the run moves to `paused`. Scope, tools, checks, the stage, the evidence and the approval digest are untouched, so no new approval of the plan is needed and nothing is re-run. The user's command is the approval of the new limits. When `autoApproval.limits.maxTotalTokens` covered the old token limit, it is raised with it, so a later scope approval is not sent to a person only because of the larger budget; a bound set below the old limit is kept. For the same reason `autoApproval.renewal` accepts the extended limits: they are the policy the operator set (see [Auto approval](#auto-approval)).

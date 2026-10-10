@@ -72,6 +72,7 @@ const flags = new Set([
   "limit",
   "cursor",
   "status",
+  "stage",
   "after",
   "effect",
   "resolution",
@@ -94,6 +95,7 @@ const flags = new Set([
   "worktree",
   "writers",
   "exclude-user-changes",
+  "resume",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -107,6 +109,7 @@ const booleanFlags = new Set([
   "execute",
   "worktree",
   "exclude-user-changes",
+  "resume",
 ]);
 const commandFlags: Record<WorkflowCommand, string[]> = {
   run: [
@@ -134,7 +137,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   pause: ["expected-revision", "command-id"],
   cancel: ["expected-revision", "command-id"],
   fork: ["expected-revision", "command-id"],
-  revise: ["candidate", "expected-revision", "command-id"],
+  revise: ["candidate", "expected-revision", "command-id", "resume", "events", "after"],
   candidate: ["spec", "plan", "tasks", "policy", "workflow", "confirm-auto-approval", "command-id"],
   profiles: [],
   artifacts: ["file"],
@@ -144,8 +147,17 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
-  usage: [],
-  extend: ["tokens", "calls", "time-ms", "expected-revision", "command-id"],
+  usage: ["stage"],
+  extend: [
+    "tokens",
+    "calls",
+    "time-ms",
+    "expected-revision",
+    "command-id",
+    "resume",
+    "events",
+    "after",
+  ],
   continue: ["request", "expected-revision", "command-id"],
   undo: ["path", "expected-revision", "command-id"],
   definitions: [],
@@ -212,6 +224,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         `${result.command} expects ${count} positional argument(s)`,
       );
   }
+  if (
+    (result.command === "revise" || result.command === "extend") &&
+    !result.flags.resume &&
+    ("events" in result.flags || "after" in result.flags)
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
   if (!result.flags.help && result.command === "deliver") {
     const planning = ["remote", "branch", "draft", "no-pr"].filter((name) => name in result.flags);
     if (result.flags.execute) {
@@ -271,12 +289,15 @@ reject RUN_ID --request ID --reason TEXT --expected-revision N
   written to the project and confirmed; reject discards it. Neither changes the run's state.
 pause|cancel|fork RUN_ID --expected-revision N
 continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
-extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the limits of a run blocked on its budget; resume continues it)
+extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
+  (raise the limits of a run blocked on its budget; resume continues it, or --resume in the same command)
 candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE] [--workflow FILE [--confirm-auto-approval HASH]]
   --workflow stages a revised schema 2 definition for a started v2 run; it is refused with the
   reasons when the current or a completed stage is gone or changed, or a contract the run needs
   is no longer produced
-revise RUN_ID --candidate SHA256 --expected-revision N   (applies the candidate; the plan is approved again)
+revise RUN_ID --candidate SHA256 --expected-revision N [--resume [--events]]   (applies the candidate; the plan is approved again)
+  Implemented tasks the revision leaves unchanged keep their implementation; their checks run again.
+  --resume resumes and drives the revised run in the same command (exit codes as resume)
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
@@ -287,7 +308,7 @@ gates confirm ID... | --all  confirm project gates (baked/gates) before a run ma
 profiles                  artifacts RUN_ID [--file ARTIFACT_ID]
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
-usage RUN_ID              per-stage and per-attempt token and step usage
+usage RUN_ID [--stage NAME]   per-stage and per-attempt token and step usage
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new

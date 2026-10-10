@@ -118,14 +118,23 @@ export async function executeWorkflowCommand(
     case "extend": {
       const number = (flag: string): number | undefined =>
         typeof args.flags[flag] === "string" ? Number(args.flags[flag]) : undefined;
-      return service.extendBudget(runId, identity(), {
+      const extended = await service.extendBudget(runId, identity(), {
         ...(number("tokens") !== undefined ? { maxTotalTokens: number("tokens") } : {}),
         ...(number("calls") !== undefined ? { maxAgentCalls: number("calls") } : {}),
         ...(number("time-ms") !== undefined ? { maxActiveMs: number("time-ms") } : {}),
       } as Partial<BudgetLimits>);
+      if (args.flags.resume !== true) return extended;
+      await service.resume(runId, { commandId: newId(), expectedRevision: extended.revision });
+      onDrive?.(runId);
+      return service.drive(runId, signal);
     }
-    case "revise":
-      return service.revise(runId, identity(), stringFlag(args, "candidate"));
+    case "revise": {
+      const revised = await service.revise(runId, identity(), stringFlag(args, "candidate"));
+      if (args.flags.resume !== true) return revised;
+      await service.resume(runId, { commandId: newId(), expectedRevision: revised.revision });
+      onDrive?.(runId);
+      return service.drive(runId, signal);
+    }
     case "undo": {
       const snapshot = await service.undo(
         runId,
@@ -259,7 +268,11 @@ export async function executeWorkflowCommand(
       return artifacts.exportProgress(runId);
     case "usage":
       service.store.run(runId);
-      return runUsage(service.store, runId);
+      return runUsage(
+        service.store,
+        runId,
+        typeof args.flags.stage === "string" ? args.flags.stage : undefined,
+      );
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),
@@ -370,7 +383,8 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     });
     await Promise.all(streams);
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
-    return ["run", "resume"].includes(args.command)
+    return ["run", "resume"].includes(args.command) ||
+      (["revise", "extend"].includes(args.command) && args.flags.resume === true)
       ? workflowExit(
           result as RunSnapshot,
           PolicySchema.parse(

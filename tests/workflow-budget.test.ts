@@ -179,4 +179,17 @@ describe("extending the budget of a blocked run", () => {
     expect(() => parseWorkflowArgs(["extend", run.runId, "--tokens", "0", "--expected-revision", "1"])).toThrow("integer");
     expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--tokens", "5"])).toThrow("not valid");
   });
+
+  test("extend --resume raises the limits and drives the run on in one command", async () => {
+    const fixture = workflowFixture({ policy: tight, tokensPerCall: heavy });
+    cleanups.push(fixture.dispose);
+    const { service } = fixture;
+    const run = await fixture.start();
+    const blocked = await runUntilBlocked(fixture, run.runId);
+    const signal = new AbortController().signal;
+    const result = await executeWorkflowCommand(service, parseWorkflowArgs(["extend", run.runId, "--expected-revision", String(blocked.revision), "--tokens", "2000000", "--resume"]), signal) as { status: string; revision: number };
+    expect(result.status).not.toBe("paused");
+    expect(result.revision).toBeGreaterThan(blocked.revision + 1);
+    expect(() => parseWorkflowArgs(["extend", run.runId, "--expected-revision", "1", "--events"])).toThrow("--events and --after need --resume");
+  });
 });
