@@ -40,6 +40,11 @@ const bridge: DesktopBridge = {
   updateSettings: (patch) => ipcRenderer.invoke(IPC.updateSettings, patch),
   openExternal: (url) => ipcRenderer.invoke(IPC.openExternal, url),
   onNavigate: (listener) => listen(IPC.navigate, listener),
+  windowAction: (action) => ipcRenderer.invoke(IPC.windowAction, action),
+  onMaximized: (listener) => {
+    void ipcRenderer.invoke(IPC.windowState).then(listener);
+    return listen(IPC.windowMaximized, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld("baked", bridge);

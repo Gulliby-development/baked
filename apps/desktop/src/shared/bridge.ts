@@ -10,6 +10,8 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type ProjectAction = "pin" | "unpin" | "forget";
 
+export type WindowAction = "minimize" | "maximize" | "close";
+
 /**
  * What the preload script exposes as `window.baked`. Every call names a project by its key; the
  * main process owns the backends, their URLs and their tokens.
@@ -50,6 +52,10 @@ export interface DesktopBridge {
   openExternal(url: string): Promise<void>;
   /** The main process asks the window to show a route, e.g. after a notification click. */
   onNavigate(listener: (hash: string) => void): () => void;
+  /** The title bar's own window buttons; "maximize" toggles between maximized and restored. */
+  windowAction(action: WindowAction): Promise<void>;
+  /** Calls back with whether the window is maximized now and whenever that changes. */
+  onMaximized(listener: (maximized: boolean) => void): () => void;
 }
 
 export const IPC = {
@@ -71,4 +77,7 @@ export const IPC = {
   updateSettings: "baked:settings:update",
   openExternal: "baked:open-external",
   navigate: "baked:navigate",
+  windowAction: "baked:window:action",
+  windowMaximized: "baked:window:maximized",
+  windowState: "baked:window:state",
 } as const;

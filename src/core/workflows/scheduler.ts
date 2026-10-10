@@ -825,23 +825,31 @@ export class WorkflowScheduler {
                   this.store.criterion(runId, state.snapshotId ?? "", item);
               });
               const severities = repairSeverities(this.store.run(runId));
+              const failing = new Set(
+                review.coverage
+                  .filter(
+                    (c) =>
+                      c.verdict === "fail" ||
+                      (c.verdict === "inconclusive" &&
+                        state.spec?.criteria.find((s) => s.id === c.criterionId)?.method ===
+                          "automated"),
+                  )
+                  .map((c) => c.criterionId),
+              );
+              // Below the severity floor a finding still repairs when it is why a criterion fails:
+              // acceptance needs every automated criterion to pass.
               const findings = this.recordFindings(
                 runId,
                 review,
-                review.findings.filter((f) => severities.includes(f.severity)),
+                review.findings.filter(
+                  (f) =>
+                    severities.includes(f.severity) || f.criterionIds.some((id) => failing.has(id)),
+                ),
               );
               if (findings.length) {
                 repairFindings = { findings, kind: "convergence" };
                 advance = false;
-              } else if (
-                review.coverage.some(
-                  (c) =>
-                    c.verdict === "fail" ||
-                    (c.verdict === "inconclusive" &&
-                      state.spec?.criteria.find((s) => s.id === c.criterionId)?.method ===
-                        "automated"),
-                )
-              )
+              } else if (failing.size)
                 throw new WorkflowFault(
                   "OUTPUT_INVALID",
                   "Coverage is incomplete without an actionable finding",

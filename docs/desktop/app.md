@@ -102,11 +102,12 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 
 | Screen | Content |
 | --- | --- |
-| Sidebar | Needs you (count), All projects; the selected project expanded with Quick task, New run, Overview, Chat, Runs, Initiatives, Acceptance, Usage and a Setup group (Gates and checks, Instructions, Working set, each with a count); other projects collapsed to one line with their state; Open folder; Settings at the bottom with backend status and version. Chat collapses it to an icon rail. |
+| Sidebar | Needs you (count), All projects; the selected project expanded with Quick task, New run, Overview, Chat, Runs, Initiatives, Acceptance, Usage and a Setup group (Gates and checks, Instructions, Working set, each with a count); other projects collapsed to one line with their state; Open folder; Settings at the bottom with backend status and version. Under Chat: New chat and the five latest chats, counted by the running backend. The sidebar stays expanded on every screen, chat included. |
+| Title bar | Drawn by the app: the window has no system frame on Windows and Linux, and the bar carries BAKED's name and its own minimize, maximize/restore and close buttons; the bar drags the window and a double click maximizes it. macOS keeps its traffic lights inset in the same bar. The native menu is not shown; its shortcuts still work. |
 | All projects | Project cards: open, running in the background or closed, branch, sessions, active runs, items waiting; open folder, pin, forget. |
 | Needs you | Blocking and advisory items of all open projects with project tags and a filter; the selected item's detail with its actions (approve, reject, answer, deliver). |
 | Project home | Task box with Quick, Full run and Ask in chat; recent sessions and runs; working set; doctor summary. |
-| Chat | One centered column (about 820 px): messages, collapsed tool lines, inline diffs, approval cards, suggestions; compact chips for context, changed files and working set; composer with model, effort and approval mode. |
+| Chat | One centered column (about 820 px): messages, collapsed tool lines, inline diffs, approval cards, suggestions; compact chips for context, changed files and working set, and New chat; the title opens the list of chats; composer with model, effort and approval mode. |
 | Quick task, New run | Workflow and budget preset choice (built-in presets), writers, model, checks, pre-run estimate. |
 | Run | Stage pipeline, approval card, tabs (overview, decision, tasks, changes, spec, plan, checks, criteria, findings), budget and activity. |
 | Parallel writers | Writer columns with worktrees, integrator, task graph. |

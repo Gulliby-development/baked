@@ -1,4 +1,7 @@
+import { Fragment } from "react";
 import type { DesktopProject } from "../../shared/api.js";
+import type { SessionState } from "../client/chat.js";
+import { useChatSessions } from "../client/chat-sessions.js";
 import { backendLabel, initial, projectLine } from "../format.js";
 import { href, type ProjectSection, projectHref, type Route } from "../router.js";
 import { useDesktop } from "../store.js";
@@ -6,6 +9,10 @@ import { Icon, type IconName } from "./Icon.js";
 
 /** How many projects the sidebar lists before "All projects" takes over. */
 const SIDEBAR_PROJECTS = 8;
+/** How many recent chats the selected project lists under Chat; the rest are in the chat's menu. */
+const SIDEBAR_CHATS = 5;
+/** How many sessions are asked for to count them. */
+const COUNTED_CHATS = 200;
 
 const WORK: [ProjectSection, string, IconName][] = [
   ["overview", "Overview", "home"],
@@ -21,6 +28,8 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["instructions", "Instructions", "file"],
   ["working-set", "Working set", "folder"],
 ];
+
+const STATE_TONE: Record<SessionState, string> = { idle: "", working: "busy", waiting: "warn" };
 
 function current(active: boolean): "page" | undefined {
   return active ? "page" : undefined;
@@ -46,7 +55,22 @@ function ProjectEntry({ project, route }: { project: DesktopProject; route: Rout
         ) : null}
       </a>
     );
-  const section = route.section;
+  return <SelectedProject project={project} section={route.section} id={route.id} />;
+}
+
+/** The selected project with its sections, New chat and its recent chats. */
+function SelectedProject({
+  project,
+  section,
+  id: routeId,
+}: {
+  project: DesktopProject;
+  section: ProjectSection;
+  id: string | null;
+}) {
+  const chats = useChatSessions(project.key, project.backend.kind === "running", COUNTED_CHATS);
+  const chatCount = chats ? chats.length : project.overview.sessions;
+  const chatId = section === "chat" ? routeId : null;
   return (
     <div className="project-box">
       <a className="nav" href={projectHref(project.key)} style={{ background: "var(--bg-hover)" }}>
@@ -67,19 +91,48 @@ function ProjectEntry({ project, route }: { project: DesktopProject; route: Rout
         </a>
       </div>
       {WORK.map(([id, label, icon]) => (
-        <a
-          key={id}
-          className="nav sub"
-          href={projectHref(project.key, id)}
-          aria-current={current(section === id)}
-        >
-          <Icon name={icon} />
-          {label}
-          {id === "chat" && <span className="count">{project.overview.sessions}</span>}
-          {id === "runs" && project.overview.activeRuns > 0 && (
-            <span className="count">{project.overview.activeRuns} active</span>
+        <Fragment key={id}>
+          <a
+            className="nav sub"
+            href={projectHref(project.key, id)}
+            aria-current={current(section === id && (id !== "chat" || chatId === null))}
+          >
+            <Icon name={icon} />
+            {label}
+            {id === "chat" && chatCount > 0 && (
+              <span className="count">
+                {chatCount >= COUNTED_CHATS ? `${COUNTED_CHATS}+` : chatCount}
+              </span>
+            )}
+            {id === "runs" && project.overview.activeRuns > 0 && (
+              <span className="count">{project.overview.activeRuns} active</span>
+            )}
+          </a>
+          {id === "chat" && (
+            <div className="chat-links">
+              <a
+                className="nav chat-link new"
+                href={projectHref(project.key, "chat", "new")}
+                aria-current={current(chatId === "new")}
+              >
+                <Icon name="plus" size={13} />
+                New chat
+              </a>
+              {chats?.slice(0, SIDEBAR_CHATS).map((session) => (
+                <a
+                  key={session.id}
+                  className="nav chat-link"
+                  href={projectHref(project.key, "chat", session.id)}
+                  aria-current={current(chatId === session.id)}
+                  title={session.title}
+                >
+                  <span className={`dot ${STATE_TONE[session.state]}`} />
+                  <span className="chat-link-title">{session.title}</span>
+                </a>
+              ))}
+            </div>
           )}
-        </a>
+        </Fragment>
       ))}
       <p className="label" style={{ padding: "8px 10px 4px 22px", fontSize: 11 }}>
         Setup
