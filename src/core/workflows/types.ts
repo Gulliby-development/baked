@@ -64,6 +64,11 @@ export const RuntimeStateSchema = z
     taskSteps: z.record(z.string(), z.number().int().positive()).default({}),
     /** Times plan-time sizing sent the plan back to be split; it does so once. */
     sizingReplans: z.number().int().nonnegative().default(0),
+    /**
+     * Continuations per task: an attempt that stopped at its step or token cap after editing
+     * files gets one more with caps raised by half instead of blocking the run.
+     */
+    taskContinuations: z.record(z.string(), z.number().int().nonnegative()).default({}),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
