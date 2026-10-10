@@ -121,6 +121,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "quick-planner",
+    version: "1.0.0",
+    description: "Find the files and plan a small change",
+    role: "planner",
+    model: "$fast",
+    context: "planning",
+    instructions:
+      "There is no research stage: find the files yourself, then plan. Start from the paths the request names (extra.researchScope.namedPaths) and read them together in one read call; use bake_find or bake_impact only for their direct callers and tests. Do not survey the repository. Plan the smallest change that does the request: one task, more only when files must change in a fixed order, never more than three. Keep each plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision DEC-001 that references FR-001 is enough. Every task lists FR-001 and AC-001. Take checks from the policy under approval and do not plan verification-only tasks. Submit as soon as the files to change are known; extra.researchScope.maxSteps is a hard limit.",
+    skills: [],
+    allowedTools: ["read", "bake_find", "bake_impact", "navigate", "submit_result"],
+    output: "plan",
+    maxSteps: 12,
+    maxOutputTokens: 16384,
+  },
+  {
+    schemaVersion: 1,
     id: "implementer",
     version: "1.2.0",
     description: "Implement one task",

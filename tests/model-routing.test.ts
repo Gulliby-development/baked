@@ -60,7 +60,7 @@ describe("resolving a profile's model", () => {
   });
 
   test("unknown classes, classes naming classes and malformed sections are refused", () => {
-    expect(() => resolveProfileModel({ ...planner, model: "$fast" }, run)).toThrow(/Unknown model class \$fast/);
+    expect(() => resolveProfileModel({ ...planner, model: "$deep" }, run)).toThrow(/Unknown model class \$deep/);
     expect(() => parseModelRouting({ classes: { fast: "$deep" } })).toThrow(/Name a model here, not a class/);
     expect(() => parseModelRouting({ classes: { fast: { model: "$deep" } } })).toThrow(/Name a model here, not a class/);
     expect(() => parseModelRouting({ roles: { wizard: "a/b" } })).toThrow(/Invalid modelRouting/);

@@ -4,6 +4,7 @@ import { MAX_CONCURRENT_WRITERS, RunStatus } from "../core/workflows/schemas.js"
 
 const commands = [
   "run",
+  "quick",
   "status",
   "list",
   "resume",
@@ -145,6 +146,19 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "writers",
     "route",
   ],
+  quick: [
+    "feature",
+    "prompt-file",
+    "policy",
+    "owner",
+    "model",
+    "events",
+    "command-id",
+    "after",
+    "confirm-auto-approval",
+    "worktree",
+    "route",
+  ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
   resume: ["expected-revision", "command-id", "events", "after"],
@@ -246,7 +260,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "INVALID_DEFINITION",
         "Specify at most one workflow ID, positional or --workflow",
       );
-  } else if (!result.flags.help && result.command !== "run" && result.command !== "gates") {
+  } else if (
+    !result.flags.help &&
+    result.command !== "run" &&
+    result.command !== "quick" &&
+    result.command !== "gates"
+  ) {
     const count =
       ["list", "profiles", "import", "gc", "definitions"].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
@@ -304,6 +323,15 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         throw new WorkflowFault("INVALID_DEFINITION", "--writers above 1 requires --worktree");
     }
   }
+  if (
+    !result.flags.help &&
+    result.command === "quick" &&
+    Number(result.positional.length > 0) + Number(!!result.flags["prompt-file"]) !== 1
+  )
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      "Describe the task as text or with --prompt-file, not both",
+    );
   return result;
 }
 export const workflowHelp = `baked workflow <command> [options]
@@ -312,6 +340,10 @@ run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE]
   --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
+quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--events] [--worktree] [--confirm-auto-approval HASH]
+  A small task without specification: one agent finds the files and plans, then approval,
+  implementation, the policy checks and one correctness review. The feature ID is derived from
+  the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
 status RUN_ID [--json]
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}

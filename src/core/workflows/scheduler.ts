@@ -22,7 +22,13 @@ import { writeViaTemp } from "./atomic-write.js";
 import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
-import { deferredBlockingProblems, demoteDeferred, researchBudget } from "./clarification.js";
+import {
+  deferredBlockingProblems,
+  demoteDeferred,
+  researchBudget,
+  SCOPING_PLANNERS,
+  scopedPlanBudget,
+} from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
@@ -343,14 +349,31 @@ export class WorkflowScheduler {
               const spec = state.spec;
               if (!spec)
                 throw new WorkflowFault("ARTIFACT_MISSING", "Spec required before planning");
+              const planner = this.requireProfile(profile);
+              // A scoping planner finds the files itself, within a budget sized by the request.
+              const scope =
+                state.research === null && SCOPING_PLANNERS.has(planner.id)
+                  ? scopedPlanBudget(state.prompt, planner, policy)
+                  : null;
               const plan = PlanSchema.parse(
                 await this.call(
                   runId,
                   stepId,
                   state,
                   policy,
-                  this.requireProfile(profile),
-                  { checks: policy.checks, profiles },
+                  planner,
+                  {
+                    checks: policy.checks,
+                    profiles,
+                    ...(scope
+                      ? {
+                          researchScope: {
+                            namedPaths: scope.namedPaths,
+                            maxSteps: scope.maxSteps,
+                          },
+                        }
+                      : {}),
+                  },
                   signal,
                   undefined,
                   0,
@@ -361,6 +384,7 @@ export class WorkflowScheduler {
                       ? this.planProblems(runId, spec, parsed.data, policy, profiles)
                       : [parsed.error.message];
                   },
+                  scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
                 ),
               );
               state.plan = plan.markdown;
@@ -1246,6 +1270,13 @@ export class WorkflowScheduler {
   ): Promise<void> {
     signal.throwIfAborted();
     if (!state.spec || !state.graph || !state.plan) return;
+    const definition = parseRunDefinition(this.store.run(runId).definition_json);
+    // A definition that keeps its documents as run artifacts only still takes the snapshot the
+    // later stages compare against.
+    if (definition.schemaVersion === 2 && definition.definition.publish === false) {
+      await this.snapshot(runId, state, policy, signal);
+      return;
+    }
     const attempt = this.store.reserve(runId, stepId, null, 0, policy);
     const root = runRoot(this.store.workspace, state);
     const files = {

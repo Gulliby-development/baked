@@ -25,10 +25,10 @@ const cliArgs = process.argv.slice(2);
 // memory, all tools) inherits it for free via process.cwd().
 resolveCwdFromArgv(cliArgs);
 
-if (cliArgs[0] === "workflow" || cliArgs[0] === "doctor") {
+if (cliArgs[0] === "workflow" || cliArgs[0] === "doctor" || cliArgs[0] === "quick") {
   const { runWorkflowCli } = await import("./headless/workflow.js");
-  // `baked doctor` is short for `baked workflow doctor`.
-  process.exit(await runWorkflowCli(cliArgs[0] === "doctor" ? cliArgs : cliArgs.slice(1)));
+  // `baked doctor` and `baked quick TEXT` are short for `baked workflow doctor` and `quick TEXT`.
+  process.exit(await runWorkflowCli(cliArgs[0] === "workflow" ? cliArgs.slice(1) : cliArgs));
 }
 
 if (cliArgs[0] === "telemetry") {

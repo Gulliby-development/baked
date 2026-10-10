@@ -70,8 +70,11 @@ export const ModelRoutingSchema = z
   .strict();
 export type ModelRouting = z.infer<typeof ModelRoutingSchema>;
 
-/** Built-in classes. Each falls back to the legacy router slot, then to the run model. */
-export const BUILTIN_CLASSES = ["active", "coding", "review"] as const;
+/**
+ * Built-in classes. Each falls back to the legacy router slot, then to the run model. `fast` is
+ * for cheap scoping work (the quick planner); without a configured class it is the run model.
+ */
+export const BUILTIN_CLASSES = ["active", "fast", "coding", "review"] as const;
 
 export interface RoutingInputs {
   /** The run model: the tab's model or `--model`. */

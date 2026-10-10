@@ -500,6 +500,8 @@ export const WorkflowConfigSchema = z
     enabled: z.boolean().default(false),
     importsEnabled: z.boolean().default(false),
     defaultWorkflow: SafeId.default("sdd"),
+    /** The definition `baked quick` runs; the shipped quick preset when absent. */
+    quickWorkflow: SafeId.optional(),
     policy: PolicySchema,
     delivery: DeliveryConfigSchema.optional(),
   })

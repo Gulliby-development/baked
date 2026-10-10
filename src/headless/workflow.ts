@@ -10,6 +10,7 @@ import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js"
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
 import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
+import { uniqueFeatureId } from "../core/workflows/feature-id.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
 import {
@@ -21,6 +22,7 @@ import {
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
+import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
 import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
@@ -44,6 +46,32 @@ const stringFlag = (args: WorkflowArgs, name: string, fallback?: string): string
     throw new WorkflowFault("INVALID_DEFINITION", `--${name} is required`);
   return value;
 };
+/**
+ * The `run` a quick task stands for: the quick workflow (or `workflows.quickWorkflow`), the task
+ * text as the prompt and a feature ID derived from it unless `--feature` names one.
+ */
+export function quickRunArgs(service: NativeWorkflowService, args: WorkflowArgs): WorkflowArgs {
+  const { "prompt-file": promptFile, ...flags } = args.flags;
+  const prompt =
+    typeof promptFile === "string"
+      ? readFileSync(resolve(service.store.workspace, promptFile), "utf8")
+      : args.positional.join(" ");
+  if (!prompt.trim()) throw new WorkflowFault("INVALID_DEFINITION", "Describe the task to run");
+  const feature =
+    typeof flags.feature === "string"
+      ? flags.feature
+      : uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0);
+  return {
+    command: "run",
+    positional: [],
+    flags: {
+      ...flags,
+      workflow: service.config.workflows?.quickWorkflow ?? QUICK_WORKFLOW_ID,
+      feature,
+      prompt,
+    },
+  };
+}
 const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
   typeof args.flags.model === "string" ? args.flags.model : config.defaultModel;
 const routeRequest = (args: WorkflowArgs, config: AppConfig) => ({
@@ -107,6 +135,20 @@ export async function executeWorkflowCommand(
   const jsonFile = (flag: string): unknown =>
     args.inline && flag in args.inline ? args.inline[flag] : JSON.parse(readFlagFile(flag));
   switch (args.command) {
+    case "quick": {
+      const run = quickRunArgs(service, args);
+      const policy = PolicySchema.parse(
+        run.flags.policy
+          ? jsonFile("policy")
+          : (service.config.workflows?.policy ?? defaultWorkflowPolicy),
+      );
+      if (!policy.checks.some((c) => c.scope === "feature"))
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          "A quick task needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them",
+        );
+      return executeWorkflowCommand(service, run, signal, onDrive, options);
+    }
     case "run": {
       const policy = PolicySchema.parse(
         args.flags.policy
@@ -453,7 +495,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     service = new NativeWorkflowService(cwd, config, undefined, readonly);
     let lastSeq = 0;
-    const existingRun = args.command === "run" ? undefined : args.positional[0];
+    const existingRun = ["run", "quick"].includes(args.command) ? undefined : args.positional[0];
     if (existingRun && args.flags.events) lastSeq = service.store.snapshot(existingRun).eventSeq;
     if (typeof args.flags.after === "string") lastSeq = Number(args.flags.after);
     const eventService = service;
@@ -470,7 +512,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     });
     await Promise.all(streams);
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
-    return ["run", "resume"].includes(args.command) ||
+    return ["run", "quick", "resume"].includes(args.command) ||
       (["revise", "extend"].includes(args.command) && args.flags.resume === true)
       ? workflowExit(
           result as RunSnapshot,
