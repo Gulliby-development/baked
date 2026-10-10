@@ -111,6 +111,14 @@ export const CheckSchema = z
     scope: z.enum(["task", "feature"]),
     envNames: UniqueStrings,
     writes: z.array(RelativePath),
+    /**
+     * A fixer for what the check reports, such as `ruff check --fix` or `biome check --write`.
+     * Implementers run it on their task's files with `apply_fix`; the file path is appended.
+     */
+    fix: z
+      .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+      .strict()
+      .optional(),
   })
   .strict();
 
