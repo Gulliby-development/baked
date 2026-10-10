@@ -482,6 +482,21 @@ describe("durable SDD runtime", () => {
     expect(service.store.state(run.runId).correctionHashes).toHaveLength(1);
     expect(service.store.tasks(run.runId)).toHaveLength(2);
   });
+  test("failed checks against one task become one corrective task", async () => {
+    const twoChecks: RunPolicy = { ...policy, checks: [policy.checks[0]!, { ...policy.checks[0]!, id: "check-again" }] };
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: twoChecks } }, new FixtureExecutor(root, true));
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: twoChecks });
+    await service.drive(run.runId, new AbortController().signal);
+    await approve(service, run.runId);
+    expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
+    const tasks = service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { id: string; findingIds: string[]; description: string });
+    expect(tasks).toHaveLength(2);
+    expect(tasks[1]!.findingIds).toHaveLength(2);
+    expect(tasks[1]!.description).toContain(`Finding ${tasks[1]!.findingIds[1]}`);
+  });
   test("stale approval and manual source changes never execute implementation", async () => {
     const { service, root, executor } = setup(); const { run } = await start(service);
     const waiting = await service.drive(run.runId, new AbortController().signal);
