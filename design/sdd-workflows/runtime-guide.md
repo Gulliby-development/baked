@@ -177,6 +177,8 @@ A run blocked with `budget_exhausted` shows B (raise limits) next to fork and ca
 ```sh
 baked workflow extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]
 baked workflow resume RUN_ID --expected-revision NEW_N
+# or both in one command, with the exit codes of resume:
+baked workflow extend RUN_ID --expected-revision N --tokens N --resume [--events]
 ```
 
 Limits can only go up. The change is stored as the immutable artifact `policy-revisions/COMMAND_ID.json` (previous and new limits, both policy hashes, usage, the stage) and the run moves to `paused`. Scope, tools, checks, the stage, the evidence and the approval digest are untouched, so no new approval of the plan is needed and nothing is re-run. The user's command is the approval of the new limits. When `autoApproval.limits.maxTotalTokens` covered the old token limit, it is raised with it, so a later scope approval is not sent to a person only because of the larger budget; a bound set below the old limit is kept. For the same reason `autoApproval.renewal` accepts the extended limits: they are the policy the operator set (see [Auto approval](#auto-approval)).

@@ -142,7 +142,16 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: [],
-  extend: ["tokens", "calls", "time-ms", "expected-revision", "command-id"],
+  extend: [
+    "tokens",
+    "calls",
+    "time-ms",
+    "expected-revision",
+    "command-id",
+    "resume",
+    "events",
+    "after",
+  ],
   continue: ["request", "expected-revision", "command-id"],
   undo: ["path", "expected-revision", "command-id"],
   definitions: [],
@@ -206,7 +215,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
       );
   }
   if (
-    result.command === "revise" &&
+    (result.command === "revise" || result.command === "extend") &&
     !result.flags.resume &&
     ("events" in result.flags || "after" in result.flags)
   )
@@ -270,7 +279,8 @@ reject RUN_ID --request ID --reason TEXT --expected-revision N
   written to the project and confirmed; reject discards it. Neither changes the run's state.
 pause|cancel|fork RUN_ID --expected-revision N
 continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
-extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the limits of a run blocked on its budget; resume continues it)
+extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
+  (raise the limits of a run blocked on its budget; resume continues it, or --resume in the same command)
 candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE] [--workflow FILE [--confirm-auto-approval HASH]]
   --workflow stages a revised schema 2 definition for a started v2 run; it is refused with the
   reasons when the current or a completed stage is gone or changed, or a contract the run needs
