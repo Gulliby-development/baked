@@ -84,9 +84,9 @@ describe("policy and presets", () => {
   });
   test("the checkpoint preset removes the token cap and keeps the other guards", () => {
     const preset = scaledPolicy(defaultWorkflowPolicy, "checkpoints");
-    expect(preset).toMatchObject({ maxTotalTokens: UNCAPPED_TOKENS, checkpointTokens: 200000, maxAgentCalls: 160, maxActiveMs: 7200000 });
+    expect(preset).toMatchObject({ maxTotalTokens: UNCAPPED_TOKENS, checkpointTokens: defaultWorkflowPolicy.maxTotalTokens / 2, maxAgentCalls: 160, maxActiveMs: 7200000 });
     expect(scaledPolicy({ ...defaultWorkflowPolicy, checkpointTokens: 50000 }, "checkpoints").checkpointTokens).toBe(50000);
-    expect(scaledPolicy(defaultWorkflowPolicy, "quick")).toMatchObject({ maxTotalTokens: 200000, checkpointTokens: null });
+    expect(scaledPolicy(defaultWorkflowPolicy, "quick")).toMatchObject({ maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens / 2, checkpointTokens: null });
     // Scaling a checkpointed policy back to a capped preset drops the checkpoints.
     expect(scaledPolicy(preset, "extended")).toMatchObject({ checkpointTokens: null });
     expect(scaledPolicy(defaultWorkflowPolicy, "standard")).toBe(defaultWorkflowPolicy);

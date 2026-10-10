@@ -337,7 +337,7 @@ Raising the token, call or time limits of a run that stopped on its budget is a 
 
 ## 13. Budget, retries and observability
 
-Default policy: maxConcurrentReadAgents=3, maxConcurrentWriters=1, maxAgentSteps=24, maxAgentCalls=80, maxTotalTokens=400000, maxActiveMs=3600000, maxCostUsd=null. These are starting engineering limits, not an estimate of a task's cost. The UI shows them before the start. Waiting for a human and paused time do not count toward activeMs; retries, tools, checks and review do.
+Default policy: maxConcurrentReadAgents=3, maxConcurrentWriters=1, maxAgentSteps=24, maxAgentCalls=80, maxTotalTokens=800000, maxActiveMs=3600000, maxCostUsd=null. These are starting engineering limits, not an estimate of a task's cost. The token limit was raised from 400000 after measured runs of a one-task feature used 480k–660k tokens and every one stopped for a budget extension at the last stage. The UI shows them before the start. Waiting for a human and paused time do not count toward activeMs; retries, tools, checks and review do.
 
 Before a model call, the service reserves an input token estimate and maxOutputTokens. Concurrent reservations are counted transactionally. With known usage, the reservation is replaced by the actual value. Unknown usage stays reserved and is shown as unknown; after a crash it cannot be reset. Provider billing may differ from the estimate. A hard dollar cap is allowed only with known prices for the specific model; otherwise a start with such a cap is refused; token/time caps stay available.
 

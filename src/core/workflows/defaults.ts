@@ -4,7 +4,7 @@ export const defaultWorkflowPolicy = PolicySchema.parse({
   maxConcurrentWriters: 1,
   maxAgentSteps: 24,
   maxAgentCalls: 80,
-  maxTotalTokens: 400000,
+  maxTotalTokens: 800000,
   maxActiveMs: 3600000,
   maxCostUsd: null,
   maxRepairRounds: 2,
