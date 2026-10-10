@@ -121,7 +121,8 @@ export function planOnlyFindings<T extends { kind: string; refs: string[]; block
  * ones the questions were about:
  * - research questions do not invalidate the research report; continue with the next stage;
  * - spec questions require a new spec; repeat specify;
- * - analysis findings repeat specify when a finding refers to the spec, otherwise plan.
+ * - analysis findings repeat specify when any finding of the request, blocking or not, refers to
+ *   the spec, otherwise plan.
  */
 export function clarificationResumeIndex(
   stages: readonly { kind: string }[],
@@ -142,15 +143,14 @@ export function clarificationResumeIndex(
         body && typeof body === "object" && "findings" in body && Array.isArray(body.findings)
           ? (body.findings as { refs?: unknown; blocking?: unknown }[])
           : [];
-      const relevant = findings.some((f) => f.blocking === true)
-        ? findings.filter((f) => f.blocking === true)
-        : findings;
-      const touchesSpec = relevant.some(
+      // The person sees every finding of the request and may answer a non-blocking one about the
+      // spec too; resuming at plan would drop that answer (expenses-py-r4 asked it twice).
+      const touchesSpec = findings.some(
         (finding) =>
           Array.isArray(finding.refs) &&
           finding.refs.some((ref) => typeof ref === "string" && SPEC_REF.test(ref.trim())),
       );
-      return touchesSpec || relevant.length === 0 ? index("specify") : index("plan");
+      return touchesSpec || findings.length === 0 ? index("specify") : index("plan");
     }
     default:
       return askingIndex;
