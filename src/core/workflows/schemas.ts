@@ -174,6 +174,13 @@ export const PolicySchema = z
     checks: z.array(CheckSchema),
     autoApproval: AutoApprovalSchema.nullable().optional(),
     /**
+     * What a blocking question of research, spec or analysis does. Absent means `ask`: the run
+     * waits for a person, as before this field existed, so stored policies keep their hash.
+     * `assume` returns the question to its agent to settle with a recorded default first; only
+     * questions without a safe default reach a person (see clarification.ts).
+     */
+    clarification: z.enum(["ask", "assume"]).optional(),
+    /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
      */

@@ -23,6 +23,9 @@ import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import {
+  ASSUME_NOTE,
+  assumeProblems,
+  clarificationResumeIndex,
   deferredBlockingProblems,
   demoteDeferred,
   planOnlyFindings,
@@ -322,12 +325,13 @@ export class WorkflowScheduler {
                   0,
                   (output) => {
                     const parsed = ResearchSchema.safeParse(output);
-                    return parsed.success
-                      ? deferredBlockingProblems(
-                          parsed.data.unknowns,
-                          (_, index) => parsed.data.unknowns[index]?.question ?? "",
-                        )
-                      : [];
+                    if (!parsed.success) return [];
+                    const question = (_: unknown, index: number) =>
+                      parsed.data.unknowns[index]?.question ?? "";
+                    return [
+                      ...deferredBlockingProblems(parsed.data.unknowns, question),
+                      ...assumeProblems(policy, parsed.data.unknowns, question),
+                    ];
                   },
                   { maxSteps: budget.maxSteps, maxTokens: budget.maxTokens },
                 ),
@@ -353,6 +357,18 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   { featureId: run.feature_id },
                   signal,
+                  undefined,
+                  0,
+                  (output) => {
+                    const parsed = SpecSchema.safeParse(output);
+                    if (!parsed.success) return [];
+                    const questions = parsed.data.openQuestions;
+                    return assumeProblems(
+                      policy,
+                      questions,
+                      (_, index) => questions[index]?.question ?? "",
+                    );
+                  },
                 ),
               );
               if (state.spec.featureId !== run.feature_id)
@@ -524,6 +540,25 @@ export class WorkflowScheduler {
                   advance = false;
                   break;
                 }
+              }
+              if (
+                !v2 &&
+                !state.analysisPassed &&
+                policy.clarification === "assume" &&
+                state.analysisReplans < 2
+              ) {
+                const stages = WorkflowSchema.parse(
+                  JSON.parse(this.store.run(runId).definition_json),
+                ).stages;
+                const blockingFindings = findings.filter((f) => f.blocking);
+                // Findings a default settles go back to the stage they refer to before a person.
+                state.analysisReplans = 2;
+                state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                state.stageIndex = clarificationResumeIndex(stages, state.stageIndex, {
+                  findings: blockingFindings,
+                });
+                advance = false;
+                break;
               }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
