@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { access, readdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { bunShellArgs } from "../platform/index.js";
@@ -1049,11 +1050,27 @@ export const projectTool = {
 };
 
 /**
+ * The checkout that holds a file: the nearest ancestor with a `.git` entry (a directory, or the
+ * file a linked worktree has). A workflow task edits files in a worktree under the ignored
+ * `.baked/`, so the formatter has to run from that worktree, where its config and ignore rules
+ * apply to the file; from the main checkout it would skip the file as ignored.
+ */
+export function formatRoot(filePath: string): string | null {
+  let dir = dirname(resolve(filePath));
+  for (;;) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
  * Run the project's configured formatter on a single file.
  * Returns whether formatting was applied. Best-effort — failures return false.
  */
 export async function formatFile(filePath: string, cwd?: string): Promise<boolean> {
-  const effectiveCwd = cwd ?? process.cwd();
+  const effectiveCwd = cwd ?? formatRoot(filePath) ?? process.cwd();
   const profile = await detectProfile(effectiveCwd);
   if (!profile.formatFile) return false;
 
