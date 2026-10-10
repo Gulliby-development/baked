@@ -587,10 +587,23 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `POST /v1/workflow/runs/RUN_ID/answer` | `answer` | plus `requestId`, `answers` (object of strings) |
 | `POST /v1/workflow/runs/RUN_ID/extend` | `extend` | plus optional `tokens`, `calls`, `timeMs` |
 | `GET /v1/workflow/runs/RUN_ID/events` | `--events` | `?after=SEQ`; SSE, or JSON with `Accept: application/json` (`?limit=`, at most 1000) |
+| `POST /v1/workflow/runs/RUN_ID/continue` | `continue` | plus `requestId` |
+| `POST /v1/workflow/runs/RUN_ID/evidence` | `evidence` | plus `requestId`, `evidence` (text), `accepted` |
+| `POST /v1/workflow/runs/RUN_ID/recover` | `recover` | plus `requestId`, `effectId`, `resolution`, `evidence` (text) |
+| `POST /v1/workflow/runs/RUN_ID/fork`, `/discard-worktree` | `fork`, `discard-worktree` | `commandId`, `expectedRevision` |
+| `POST /v1/workflow/runs/RUN_ID/undo` | `undo` | plus optional `path` |
+| `POST /v1/workflow/runs/RUN_ID/deliver` | `deliver` | optional `remote`, `branch`, `draft`, `pullRequest` |
+| `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `deliver --execute` | `expectedRevision`, optional `requestId` |
+| `GET /v1/workflow/runs/RUN_ID/progress` | `export-progress` | |
+| `GET /v1/workflow/gates`, `POST /v1/workflow/gates/confirm` | `gates`, `gates confirm` | confirm takes `ids` or `all: true` |
+| `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
+| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day`: tokens of every attempt started in the window, grouped |
+| `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `design/desktop-api.md`; start, approve and resume drive the initiative in the background |
 | `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
 | `GET /v1/projects` | `projects list --json` | every folder BAKED was opened in (`~/.baked/known-projects.json`), pinned first: `path`, `name`, `projectId` (null without `baked/project.json`), `pinned`, `exists`, `current` and `overview` (`sessions`, `lastSessionAt`, `activeRuns`, `attention`). Each folder is served by its own `baked serve`. |
 | `GET /v1/projects/current` | `project show` | the workspace's project: roots, working set, instruction files, latest sessions and runs; 404 without `baked/project.json` |
 | `POST /v1/projects/current/working-set` | `project add`, `project remove` | `add`, `remove` (path or glob lists, removals first); returns the project; an entry outside the project roots is 400 |
+| `POST /v1/projects/pin`, `/unpin`, `/forget`; `GET\|PUT /v1/projects/current/instructions`; `GET\|PATCH /v1/config`; `GET /v1/providers`, `PUT\|DELETE /v1/providers/ID/key` | `projects pin`, `projects unpin`, `projects forget` for the first three | project setup and settings; see `design/desktop-api.md` |
 
 Every mutation requires a client-chosen `commandId` (letters, digits, `_` and `-`): a retry with the same ID and body returns the stored result, the same ID with a different body is a conflict. Errors are `{"error":{"code","message"}}` with the workflow fault code: `NOT_FOUND` and `ARTIFACT_MISSING` 404; `INVALID_DEFINITION`, `INVALID_REFERENCE`, `CYCLE_DETECTED` and request validation (`INVALID_REQUEST`) 400; `CAPABILITY_DENIED` 403; `REVISION_CONFLICT`, `COMMAND_CONFLICT`, `STALE_DECISION`, `WORKSPACE_BUSY`, `INPUT_CHANGED` and `RUN_TERMINAL` 409; anything else 500. Messages pass through the export redaction (`redactSecrets`).
 
@@ -602,11 +615,12 @@ The event endpoint polls the durable event log by sequence every 250 ms and send
 
 - Every pending request of a run that is not `cancelled` or `failed`: `kind` is the request kind (`approval`, `clarification`, `manual_evidence`, `recovery`, `checkpoint`, `delivery`). An advisory acceptance-test request (an `approval` request carrying an acceptance walk-through) has `blocking: false`, because the run does not wait for it; every other request has `blocking: true`. `createdAt` is the time of the request's `request.created` event.
 - Every run with status `blocked`: `requestId` is `null`, `kind` is the run's reason (for example `input_changed` or `verification_failed`), `blocking` is `true` and `createdAt` is the run's last status change.
+- Every pending request of an initiative: `source` is `initiative`, `initiativeId` and `title` name it, `runId`, `featureId` and `sessionId` are `null`.
 - Every pending prompt of a chat session loaded by this server: `source` is `chat`, `sessionId` and `title` name the session, `runId` and `featureId` are `null`, `status` is `waiting`, `requestId` is the prompt id and `kind` the prompt kind (`outside-cwd`, `destructive`, `web-search`, `fetch-page`, `question`).
 
 With `Accept: application/json` the answer is `{"items":[...]}`. Otherwise it is an SSE stream that polls the store every 250 ms and sends the whole list as `event: attention` with `data: {"items":[...]}` once on connect and again whenever the list changes, with the same `: keep-alive` heartbeats; there is no event ID to resume from, since every frame is complete. The list is derived from the store, so runs driven by the CLI or the TUI appear as well, and no new durable event type exists for it.
 
-Limitations: event payloads and artifact contents are returned as `baked workflow status`, `--events` and `artifacts` return them, without the export redaction. `evidence`, `recover`, `candidate`, `revise`, `fork`, `undo`, `import`, `export`, `deliver`, `gates` and initiatives are not exposed yet; use the CLI. A run driven by another process (the CLI or the TUI) can be watched through the event endpoint; the workspace leases decide which process may drive a run, as between two CLI processes.
+Limitations: event payloads and artifact contents are returned as `baked workflow status`, `--events` and `artifacts` return them, without the export redaction. `candidate`, `revise`, `import` and `export` are not exposed yet; use the CLI. A run driven by another process (the CLI or the TUI) can be watched through the event endpoint; the workspace leases decide which process may drive a run, as between two CLI processes.
 
 ## Exit codes
 

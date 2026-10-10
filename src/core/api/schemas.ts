@@ -103,3 +103,44 @@ export const PromptAnswerBody = z.union([
 ]);
 export const SessionListQuery = z.strictObject({ limit: z.string().regex(/^\d+$/).optional() });
 export const ModelsQuery = z.strictObject({ provider: z.string().min(1).optional() });
+
+export const ContinueBody = Command.extend({ requestId: SafeId }).strict();
+export const EvidenceBody = Command.extend({
+  requestId: SafeId,
+  evidence: z.string().min(1).max(200_000),
+  accepted: z.boolean(),
+}).strict();
+export const RecoverBody = Command.extend({
+  requestId: SafeId,
+  effectId: SafeId,
+  resolution: z.enum(["record-applied", "record-not-applied", "retry", "cancel"]),
+  evidence: z.string().min(1).max(200_000),
+}).strict();
+export const UndoBody = Command.extend({ path: z.string().min(1).optional() }).strict();
+export const DeliverBody = z.strictObject({
+  remote: z.string().min(1).optional(),
+  branch: z.string().min(1).optional(),
+  draft: z.boolean().optional(),
+  pullRequest: z.boolean().optional(),
+});
+export const DeliverExecuteBody = z.strictObject({
+  expectedRevision: z.number().int().min(0),
+  requestId: SafeId.optional(),
+});
+export const GatesConfirmBody = z
+  .strictObject({
+    ids: z.array(SafeId).min(1).max(200).optional(),
+    all: z.literal(true).optional(),
+  })
+  .refine((body) => Boolean(body.ids) !== Boolean(body.all), {
+    message: "Name the gates to confirm in ids, or send all: true",
+  });
+export const RouteQuery = z.strictObject({
+  workflow: SafeId.optional(),
+  model: z.string().min(1).optional(),
+  route: z.string().min(1).optional(),
+});
+export const UsageQuery = z.strictObject({
+  days: z.string().regex(/^\d+$/).optional(),
+  groupBy: z.enum(["model", "stage", "day"]).optional(),
+});

@@ -2,10 +2,10 @@
  * The chat endpoints of the local API: `/v1/sessions` and `/v1/models`. The contract is
  * `design/desktop-api.md`; the sessions themselves live in `ChatService`.
  */
-import type { z } from "zod";
 import type { ChatError, ChatService } from "../chat/sessions.js";
 import { fetchProviderModels } from "../llm/models.js";
 import { checkProviders } from "../llm/provider.js";
+import type { RouteContext } from "./route-context.js";
 import {
   CreateSessionBody,
   ForkSessionBody,
@@ -16,21 +16,8 @@ import {
   UpdateSessionBody,
 } from "./schemas.js";
 
-export interface ChatRouteContext {
+export interface ChatRouteContext extends RouteContext {
   chat: ChatService;
-  req: Request;
-  url: URL;
-  path: string;
-  method: string;
-  origin: string | null;
-  json(status: number, body: unknown): Response;
-  readJson(): Promise<unknown>;
-  query<T extends z.ZodType>(schema: T): z.infer<T>;
-  fail(status: number, code: string, message: string): never;
-  /** A pushed SSE response; `attach` returns the function that detaches the source. */
-  stream(attach: (send: (text: string) => void, close: () => void) => () => void): Response;
-  /** Lets a stream outlive the server's idle timeout. */
-  keepOpen(): void;
 }
 
 const ID = "[A-Za-z0-9-]+";
@@ -52,10 +39,7 @@ export function chatErrorStatus(error: ChatError): number {
 /** Answers a chat request, or returns null when the path is not a chat endpoint. */
 export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null> {
   const { chat, path, method } = ctx;
-  const only = (...expected: string[]): void => {
-    if (!expected.includes(method))
-      ctx.fail(405, "METHOD_NOT_ALLOWED", `Use ${expected.join(" or ")} for ${path}`);
-  };
+  const { only } = ctx;
   if (path === "/v1/models") {
     only("GET");
     return ctx.json(200, await models(ctx.query(ModelsQuery).provider));

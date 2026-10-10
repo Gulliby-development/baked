@@ -38,6 +38,7 @@ import { ProjectService } from "../projects/service.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
 import { WorkflowFault } from "../workflows/errors.js";
+import { InitiativeService } from "../workflows/initiatives/service.js";
 import { redactSecrets } from "../workflows/redaction.js";
 import {
   type RunSnapshot,
@@ -46,6 +47,7 @@ import {
   type WorkflowErrorCode,
 } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
+import { usageSummary } from "../workflows/usage.js";
 import { isAcceptanceRequest } from "../workflows/v2/acceptance.js";
 import {
   bearerMatches,
@@ -56,24 +58,43 @@ import {
   writeTokenFile,
 } from "./auth.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
+import { initiativeRoute } from "./initiative-routes.js";
+import type { RouteContext } from "./route-context.js";
 import {
   AnswerBody,
   ApproveBody,
   CommandBody,
+  ContinueBody,
+  DeliverBody,
+  DeliverExecuteBody,
   EventsQuery,
+  EvidenceBody,
   ExtendBody,
+  GatesConfirmBody,
   ListQuery,
   PreRunQuery,
+  RecoverBody,
   RejectBody,
+  RouteQuery,
   StartBody,
+  UndoBody,
+  UsageQuery,
   WorkingSetBody,
 } from "./schemas.js";
+import { setupRoute } from "./setup-routes.js";
 
 /** How long shutdown waits for the HTTP server to report its connections closed. */
 const STOP_WAIT_MS = 1000;
 export const API_VERSION = 1;
 /** The endpoint groups of `design/desktop-api.md` this server implements. */
-export const CAPABILITIES = ["workflow", "attention", "projects", "sessions"] as const;
+export const CAPABILITIES = [
+  "workflow",
+  "attention",
+  "projects",
+  "sessions",
+  "setup",
+  "initiatives",
+] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
 
@@ -157,7 +178,21 @@ function errorOf(error: unknown): { status: number; code: string; message: strin
   };
 }
 
-const MUTATIONS = ["pause", "resume", "cancel", "approve", "reject", "answer", "extend"] as const;
+const MUTATIONS = [
+  "pause",
+  "resume",
+  "cancel",
+  "approve",
+  "reject",
+  "answer",
+  "extend",
+  "continue",
+  "evidence",
+  "recover",
+  "fork",
+  "undo",
+  "discard-worktree",
+] as const;
 type Mutation = (typeof MUTATIONS)[number];
 
 const identity = (body: { commandId: string; expectedRevision: number }) => ({
@@ -178,7 +213,42 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
     case "pause":
     case "resume":
     case "cancel":
+    case "fork":
+    case "discard-worktree":
       return args(identity(CommandBody.parse(raw)));
+    case "continue": {
+      const body = ContinueBody.parse(raw);
+      return args({ ...identity(body), request: body.requestId });
+    }
+    case "evidence": {
+      const body = EvidenceBody.parse(raw);
+      return args(
+        {
+          ...identity(body),
+          request: body.requestId,
+          file: true,
+          ...(body.accepted ? { accept: true as const } : {}),
+        },
+        { file: body.evidence },
+      );
+    }
+    case "recover": {
+      const body = RecoverBody.parse(raw);
+      return args(
+        {
+          ...identity(body),
+          request: body.requestId,
+          effect: body.effectId,
+          resolution: body.resolution,
+          file: true,
+        },
+        { file: body.evidence },
+      );
+    }
+    case "undo": {
+      const body = UndoBody.parse(raw);
+      return args({ ...identity(body), ...(body.path ? { path: body.path } : {}) });
+    }
     case "approve": {
       const body = ApproveBody.parse(raw);
       return args({
@@ -241,12 +311,14 @@ function wantsJson(req: Request): boolean {
 
 /** One thing waiting for a person: a pending request, or a blocked run (`requestId` null). */
 export interface AttentionItem {
-  /** A run's request or blocked run, or a chat session's pending prompt. */
-  source: "run" | "chat";
+  /** A run's request or blocked run, a chat session's pending prompt, or an initiative's request. */
+  source: "run" | "chat" | "initiative";
+  /** Set on initiative items only. */
+  initiativeId?: string;
   runId: string | null;
   featureId: string | null;
   sessionId: string | null;
-  /** The session title of a chat prompt. */
+  /** The session title of a chat prompt, or the initiative title. */
   title: string | null;
   status: RunState;
   requestId: string | null;
@@ -289,6 +361,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       config: service.config,
       host: new ForgeChatHost(service.workspace, service.config),
     });
+  const initiatives = new InitiativeService(service);
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
   /** The latest background drive of each run. */
@@ -384,6 +457,46 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   async function settle(runId: string): Promise<void> {
     const drive = runDrives.get(runId);
     if (drive && service.store.run(runId).status !== "running") await drive;
+  }
+
+  /**
+   * Drives an initiative in the background after `start`, `approve` or `resume`, like the CLI
+   * does in the foreground; its outcome is in its events and view.
+   */
+  /** The latest drive of each initiative, and whether another one is queued behind it. */
+  const initiativeDrives = new Map<string, { latest: Promise<unknown>; queued: boolean }>();
+
+  /**
+   * Drives an initiative in the background. Drives of one initiative run one after another, and a
+   * launch while one waits to start adds nothing: the queued drive reads the newest state.
+   */
+  function driveInitiative(id: string): void {
+    const current = initiativeDrives.get(id);
+    if (current?.queued) return;
+    const entry = { latest: Promise.resolve() as Promise<unknown>, queued: Boolean(current) };
+    const tracked: Promise<unknown> = (current?.latest ?? Promise.resolve())
+      .then(() => {
+        entry.queued = false;
+        if (shutdown.signal.aborted) return undefined;
+        return initiatives.drive(id, shutdown.signal);
+      })
+      .catch((error: unknown) => {
+        const { code, message } = errorOf(error);
+        log(
+          JSON.stringify({
+            event: "initiative-drive-error",
+            code,
+            message: redactSecrets(message),
+          }),
+        );
+      })
+      .finally(() => {
+        drives.delete(tracked);
+        if (initiativeDrives.get(id) === entry) initiativeDrives.delete(id);
+      });
+    entry.latest = tracked;
+    initiativeDrives.set(id, entry);
+    drives.add(tracked);
   }
 
   /**
@@ -504,7 +617,27 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       blocking: true,
       createdAt: prompt.createdAt,
     }));
-    return [...runs, ...prompts].sort((a, b) => a.createdAt - b.createdAt);
+    const decisions: AttentionItem[] = initiatives.store.list().flatMap((row) =>
+      initiatives.store
+        .requests(row.id)
+        .filter((request) => request.status === "pending")
+        .map(
+          (request): AttentionItem => ({
+            source: "initiative",
+            initiativeId: row.id,
+            sessionId: null,
+            title: row.title,
+            runId: null,
+            featureId: null,
+            status: "waiting",
+            requestId: request.id,
+            kind: request.kind,
+            blocking: true,
+            createdAt: request.created_at,
+          }),
+        ),
+    );
+    return [...runs, ...prompts, ...decisions].sort((a, b) => a.createdAt - b.createdAt);
   }
 
   /** Streams the whole attention list once at the start and again whenever it changes. */
@@ -553,23 +686,36 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       server.timeout(req, 0);
       return attentionStream(req, origin);
     }
-    const chatResponse = await chatRoute({
-      chat,
+    const ctx: RouteContext = {
       req,
       url,
       path,
       method,
-      origin,
       json: (status, body) => json(status, body, origin),
       readJson: () => readJson(req),
       query: (schema) => queryOf(url, schema),
       fail: (status, code, message) => {
         throw new ApiError(status, code, message);
       },
+      only: (...methods) => {
+        if (!methods.includes(method))
+          throw new ApiError(405, "METHOD_NOT_ALLOWED", `Use ${methods.join(" or ")} for ${path}`);
+      },
       stream: (attach) => sseStream(req, origin, { attach }),
+      poll: (tick) => sseStream(req, origin, { tick }),
+      wantsJson: () => wantsJson(req),
       keepOpen: () => server.timeout(req, 0),
-    });
-    if (chatResponse) return chatResponse;
+    };
+    const routed =
+      (await chatRoute({ ...ctx, chat })) ??
+      (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
+      (await setupRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
+      }));
+    if (routed) return routed;
     if (path === "/v1/projects") {
       only("GET");
       const here = realPath(service.workspace);
@@ -644,7 +790,51 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
-    const match = /^\/v1\/workflow\/runs\/([^/]+)(?:\/([a-z]+))?$/.exec(path);
+    if (path === "/v1/workflow/gates") {
+      only("GET");
+      return json(200, await execute({ command: "gates", positional: [], flags: {} }), origin);
+    }
+    if (path === "/v1/workflow/gates/confirm") {
+      only("POST");
+      const body = GatesConfirmBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute(
+          validateWorkflowArgs({
+            command: "gates",
+            positional: ["confirm", ...(body.ids ?? [])],
+            flags: body.all ? { all: true } : {},
+          }),
+        ),
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/route") {
+      only("GET");
+      const query = queryOf(url, RouteQuery);
+      const flags: WorkflowArgs["flags"] = {};
+      if (query.workflow) flags.workflow = query.workflow;
+      if (query.model) flags.model = query.model;
+      if (query.route) flags.route = query.route;
+      return json(
+        200,
+        await execute(validateWorkflowArgs({ command: "route", positional: [], flags })),
+        origin,
+      );
+    }
+    if (path === "/v1/usage") {
+      only("GET");
+      const query = queryOf(url, UsageQuery);
+      return json(
+        200,
+        usageSummary(service.store, {
+          days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
+          groupBy: query.groupBy ?? "model",
+        }),
+        origin,
+      );
+    }
+    const match = /^\/v1\/workflow\/runs\/([^/]+)(?:\/([a-z-]+(?:\/execute)?))?$/.exec(path);
     if (!match?.[1]) throw new ApiError(404, "NOT_FOUND", `No endpoint ${path}`);
     const runId = SafeId.parse(decodeURIComponent(match[1]));
     const action = match[2];
@@ -661,6 +851,36 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       const args = mutationArgs(action as Mutation, runId, await readJson(req));
       if (action !== "pause" && action !== "cancel") await settle(runId);
       return json(200, action === "resume" ? await launch(args) : await execute(args), origin);
+    }
+    if (action === "deliver" || action === "deliver/execute") {
+      only("POST");
+      const flags: WorkflowArgs["flags"] = {};
+      if (action === "deliver") {
+        const body = DeliverBody.parse(await readJson(req));
+        if (body.remote) flags.remote = body.remote;
+        if (body.branch) flags.branch = body.branch;
+        if (body.draft) flags.draft = true;
+        if (body.pullRequest === false) flags["no-pr"] = true;
+      } else {
+        const body = DeliverExecuteBody.parse(await readJson(req));
+        flags.execute = true;
+        flags["expected-revision"] = String(body.expectedRevision);
+        if (body.requestId) flags.request = body.requestId;
+        await settle(runId);
+      }
+      return json(
+        200,
+        await execute(validateWorkflowArgs({ command: "deliver", positional: [runId], flags })),
+        origin,
+      );
+    }
+    if (action === "progress") {
+      only("GET");
+      return json(
+        200,
+        await execute({ command: "export-progress", positional: [runId], flags: {} }),
+        origin,
+      );
     }
     if (action === "usage" || action === "artifacts") {
       only("GET");
