@@ -67,17 +67,20 @@ describe("workflow panel formatting", () => {
     const keys = (s: RunSnapshot) => runActions(s).map((a) => a.action);
     
     expect(keys(snapshot({ status: "running" }))).toEqual(["pause", "cancel"]);
-    expect(keys(snapshot({ status: "paused" }))).toEqual(["resume", "cancel"]);
+    expect(keys(snapshot({ status: "paused" }))).toEqual(["resume", "undo", "cancel"]);
     expect(keys(snapshot({ status: "waiting", pendingRequestIds: ["r"] }))).toEqual([
       "decide",
+      "undo",
       "cancel",
     ]);
     expect(keys(snapshot({ status: "blocked", reason: "budget_exhausted" }))).toEqual([
       "extend",
       "fork",
+      "undo",
       "cancel",
     ]);
-    expect(keys(snapshot({ status: "completed" }))).toEqual(["fork"]);
+    expect(keys(snapshot({ status: "completed" }))).toEqual(["fork", "undo"]);
+    expect(keys(snapshot({ status: "created" }))).toEqual(["resume", "cancel"]);
   });
   test("headline explains state and next step", () => {
     expect(headline(snapshot(), stages, true).now).toBe("Working on Plan.");

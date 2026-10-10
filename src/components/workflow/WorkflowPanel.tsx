@@ -2,6 +2,7 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { useTheme } from "../../core/theme/index.js";
+import type { UndoResult } from "../../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../../core/workflows/defaults.js";
 import type { StartRunInput } from "../../core/workflows/view.js";
 import {
@@ -36,6 +37,7 @@ import { Onboarding } from "./Onboarding.js";
 import { orderRuns, RunList } from "./RunList.js";
 import { RunOverview } from "./RunOverview.js";
 import { TaskGraphView } from "./TaskGraphView.js";
+import { UndoReport } from "./UndoReport.js";
 import { WorkflowEditorPopup } from "./WorkflowEditor.js";
 
 const sections = [
@@ -105,6 +107,11 @@ export function WorkflowPanel({
   const [cursor, setCursor] = useState(0);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmExtend, setConfirmExtend] = useState(false);
+  const [confirmUndo, setConfirmUndo] = useState(false);
+  // The last undo of the open run, shown until Esc or another run.
+  const [undone, setUndone] = useState<{ runId: string; report: UndoResult["report"] } | null>(
+    null,
+  );
   const [gatesMode, setGatesMode] = useState<GatesMode>("list");
   const [flash, setFlash] = useState<{ kind: "ok" | "err" | "info"; message: string } | null>(null);
   const { width, height } = useTerminalDimensions();
@@ -161,6 +168,14 @@ export function WorkflowPanel({
         : { kind: "info", message: "Enabled. Restart BAKED after the active run to apply it." },
     );
     reload();
+  };
+  const undo = async (id: string): Promise<void> => {
+    try {
+      const { report } = await workflowSession(workspace).undo(id);
+      setUndone({ runId: id, report });
+    } catch (err) {
+      setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+    }
   };
   const start = async (input: StartRunInput): Promise<void> => {
     const run = await workflowSession(workspace).start(input);
@@ -234,6 +249,14 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setConfirmExtend(false);
       return;
     }
+    if (confirmUndo) {
+      event.preventDefault();
+      if (key === "y") {
+        setConfirmUndo(false);
+        void undo(runId);
+      } else if (key === "escape" || key === "n") setConfirmUndo(false);
+      return;
+    }
     if (confirmCancel) {
       event.preventDefault();
       if (key === "y") {
@@ -246,7 +269,8 @@ export function WorkflowPanel({
     if (tab === "decision" && pending) return;
     if (key === "escape") {
       event.preventDefault();
-      useWorkflowStore.getState().leaveRun();
+      if (undone?.runId === runId) setUndone(null);
+      else useWorkflowStore.getState().leaveRun();
       return;
     }
     if (!snapshot) return;
@@ -264,7 +288,9 @@ export function WorkflowPanel({
     event.preventDefault();
     if (action.action === "extend") setConfirmExtend(true);
     else if (action.action === "cancel") setConfirmCancel(true);
-    else void act(action.action);
+    else if (action.action === "undo") {
+      if (!driving) setConfirmUndo(true);
+    } else void act(action.action);
   });
 
   if (!visible) return null;
@@ -441,7 +467,9 @@ export function WorkflowPanel({
     };
   });
   const budgetView = service ? service.store.budget(runId) : null;
-  const actions = snapshot ? runActions(snapshot, budgetView) : [];
+  const actions = snapshot
+    ? runActions(snapshot, budgetView).filter((a) => !(a.action === "undo" && driving))
+    : [];
   const hints =
     tab === "decision" && pending
       ? [
@@ -502,6 +530,13 @@ export function WorkflowPanel({
             {`Raise the limits (${extensionText(budgetView)}) and continue from this stage? The approved plan, scope and checks stay as they are. Y confirms; N keeps the run blocked.`}
           </text>
         ) : null}
+        {confirmUndo ? (
+          <text fg={t.warning}>
+            Undo this run's uncommitted task edits? Files changed since the run wrote them stay as
+            they are. Y confirms; N keeps the files.
+          </text>
+        ) : null}
+        {undone?.runId === runId ? <UndoReport report={undone.report} /> : null}
         {confirmCancel ? (
           <text fg={t.warning}>
             Cancel this run? It cannot be resumed afterwards. Y confirms; N keeps it.

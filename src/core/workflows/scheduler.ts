@@ -49,7 +49,7 @@ import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from ".
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
-import { abortableDelay, isTransient, retryAfterMs, retryDelay } from "./retry.js";
+import { abortableDelay, accountRefusal, isTransient, retryAfterMs, retryDelay } from "./retry.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -86,6 +86,7 @@ import {
   splitNote,
   withTestDependencies,
 } from "./sizing.js";
+import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
@@ -1038,6 +1039,28 @@ export class WorkflowScheduler {
       }
     }
   }
+  /**
+   * Once per task, an attempt that stopped at its step or token cap after editing files gets
+   * another with both caps raised by half, instead of blocking the run for a manual resume. Test
+   * tasks stopped at the cap with the work nearly done (runs 7df4e666, b0d7484c, 8e117dfa).
+   */
+  private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
+    if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
+    const attempt = this.store
+      .attempts(runId)
+      .filter((a) => a.step_id === stepId)
+      .at(-1);
+    const usage = attempt
+      ? this.store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`)
+      : undefined;
+    if (!usage) return false;
+    const record = JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord;
+    if (record.finalizedBy === null) return false;
+    state.taskContinuations[task.id] = 1;
+    state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
+    state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
+    return true;
+  }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
     runId: string,
@@ -1267,6 +1290,13 @@ export class WorkflowScheduler {
             signal.aborted ? "cancelled" : "failed",
             this.store.recordedUsage(runId, attempt),
           ),
+        );
+      const refusal = accountRefusal(error);
+      if (refusal && !signal.aborted)
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}. ${error instanceof Error ? error.message : String(error)}`,
+          { reason: "provider_account" },
         );
       const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const next = route.models[fallbackIndex + 1];
@@ -1723,6 +1753,15 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.unresolved.length > 0 ||
         (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
       ) {
+        if (changed.length > 0 && this.continueAtCap(runId, state, child, task)) {
+          // The task is ready again and the next pass of the task loop continues it.
+          this.store.transaction(() => {
+            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+          });
+          return;
+        }
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw new WorkflowFault(
           "OUTPUT_INVALID",
@@ -1876,10 +1915,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
               this.store.finishStep(runId, entry.child, "interrupted");
             });
           } else if (outcome.kind === "rejected") {
-            failure ??= outcome.error;
+            const again =
+              outcome.edited === true && this.continueAtCap(runId, state, entry.child, entry.task);
+            if (!again) failure ??= outcome.error;
             this.store.transaction(() => {
-              this.store.taskStatus(runId, entry.task.id, "blocked");
+              this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
               this.store.finishStep(runId, entry.child, "failed");
+              if (again) this.store.saveState(runId, state);
             });
           }
           await this.releaseTaskWorktree(runId, entry);
@@ -2052,6 +2094,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "rejected",
           entry,
+          edited: changed.length > 0,
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
@@ -2071,7 +2114,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (runSignal.aborted) return { kind: "fatal", entry, error: runSignal.reason ?? error };
       if (
         error instanceof WorkflowFault &&
-        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+        (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
+          error.details.reason === "provider_account")
       )
         return { kind: "fatal", entry, error };
       // The task's worker or its worktree lease is gone; the other tasks continue.
@@ -2084,7 +2128,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "interrupted",
           entry,
-          reason: error instanceof Error ? error.message : String(error),
+          reason:
+            leaseSignal.aborted && !(error instanceof Error && error.message)
+              ? "its worktree lease was lost"
+              : error instanceof Error
+                ? error.message || error.name
+                : String(error),
         };
       return { kind: "rejected", entry, error };
     } finally {
@@ -3380,7 +3429,7 @@ type WorkerOutcome =
       checks: WorkerCheck[];
     }
   /** The task's result is refused: a change outside its writes, or no complete implementation. */
-  | { kind: "rejected"; entry: BatchEntry; error: unknown }
+  | { kind: "rejected"; entry: BatchEntry; error: unknown; edited?: boolean }
   /** The task's worker or worktree lease was lost; only this task stops. */
   | { kind: "interrupted"; entry: BatchEntry; reason: string }
   /** The whole run stops: it was aborted or its budget is used up. */

@@ -17,6 +17,7 @@ import {
   type InitiativeListView,
 } from "../workflows/initiatives/view-model.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
+import { ROLLBACK_ARTIFACT_KIND, type RollbackReport } from "../workflows/rollback.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
 import {
   CheckSchema,
@@ -36,6 +37,7 @@ import {
   readWorkflowViewIfChanged,
 } from "../workflows/view.js";
 import { createWorkerHandler } from "./rpc.js";
+import type { UndoResult } from "./workflow-client.js";
 
 let service: NativeWorkflowService | undefined;
 let initiatives: InitiativeService | undefined;
@@ -230,6 +232,27 @@ const ctx = createWorkerHandler(
       )
         return runtime.drive(id, new AbortController().signal);
       return state;
+    },
+    // Undo never drives: the run stays where it stopped, and the report says what changed.
+    async undo(runId) {
+      const runtime = current();
+      const id = SafeId.parse(runId);
+      const latest = () =>
+        runtime.store
+          .artifacts(id)
+          .filter((a) => a.kind === ROLLBACK_ARTIFACT_KIND)
+          .at(-1)?.id;
+      const before = latest();
+      const snapshot = await runtime.undo(id, {
+        commandId: newId(),
+        expectedRevision: (await runtime.get(id)).revision,
+      });
+      const after = latest();
+      const report =
+        after && after !== before
+          ? (JSON.parse(runtime.store.readArtifact(id, after)) as RollbackReport)
+          : null;
+      return { snapshot, report } satisfies UndoResult;
     },
     // Runs one gate outside any run. The worker keeps the UI thread free while it executes.
     async gateRun(requestId, check) {
