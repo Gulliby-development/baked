@@ -89,7 +89,7 @@ const limits = {
   allowedPaths: ["src/**", "tests/**"],
   allowDelete: false,
   allowNewDependencies: false as const,
-  maxTotalTokens: 400000,
+  maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens,
 };
 const limited: RunPolicy = { ...defaultWorkflowPolicy, autoApproval: { renewal: false, limits } };
 const renewing: RunPolicy = { ...defaultWorkflowPolicy, autoApproval: { renewal: true, limits: null } };
@@ -125,7 +125,7 @@ describe("auto approval", () => {
     ["too many files", limited, graph([modify("src/a.ts"), modify("src/b.ts"), modify("src/c.ts"), modify("src/d.ts")]), "4 files exceed 3"],
     ["a path outside the globs", limited, graph([modify("scripts/run.ts")]), "scripts/run.ts is outside"],
     ["a delete", limited, graph([{ path: "src/a.ts", action: "delete" }]), "src/a.ts would be deleted"],
-    ["a larger token budget", { ...limited, maxTotalTokens: 500000 }, graph([modify("src/a.ts")]), "token budget"],
+    ["a larger token budget", { ...limited, maxTotalTokens: limits.maxTotalTokens + 100000 }, graph([modify("src/a.ts")]), "token budget"],
     ["a package manifest", { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify("package.json")]), "always needs a person"],
     ["a lock file", { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify("bun.lock")]), "always needs a person"],
     ["CI configuration", { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } }, graph([modify(".github/workflows/ci.yml")]), "always needs a person"],

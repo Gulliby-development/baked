@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RouteEffort } from "../llm/model-routing.js";
 import {
   type AgentProfile,
   Hash,
@@ -205,6 +206,8 @@ export interface ExecutionRequest {
    * and no tool of the registry.
    */
   hostTools?: Record<string, HostTool>;
+  /** Reasoning effort from the attempt's model route; unset keeps the configured default. */
+  effort?: RouteEffort;
 }
 export interface ExecutionResponse {
   output: unknown;

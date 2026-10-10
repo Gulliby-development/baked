@@ -17,7 +17,7 @@ Select a configured BAKED model. `defaultModel: "none"` does not allow starting 
       "maxConcurrentWriters": 1,
       "maxAgentSteps": 24,
       "maxAgentCalls": 80,
-      "maxTotalTokens": 400000,
+      "maxTotalTokens": 800000,
       "maxActiveMs": 3600000,
       "maxCostUsd": null,
       "maxRepairRounds": 2,
@@ -128,7 +128,7 @@ Auto approval is off by default. Enabling it is a human act: set `workflows.poli
 "autoApproval": {
   "renewal": true,
   "limits": { "maxTasks": 3, "maxFiles": 5, "allowedPaths": ["src/**", "tests/**"],
-              "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 200000 }
+              "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 800000 }
 }
 ```
 
@@ -185,7 +185,7 @@ Limits can only go up. The change is stored as the immutable artifact `policy-re
 
 ### Soft token checkpoints
 
-The budget preset `checkpoints` removes the hard token cap (the limit becomes 1,000,000,000) and sets `checkpointTokens`, by default half the configured token limit (200k with the default policy). Calls and time are doubled like the extended preset. A run never reserves tokens past the next multiple of the interval: when the next model step could pass it, the step does not start, the run moves to `waiting` with reason `checkpoint` and a durable request of kind `checkpoint` records the usage. The same guard applies to every step of one agent loop, so a runaway loop stops at the checkpoint and not after it.
+The budget preset `checkpoints` removes the hard token cap (the limit becomes 1,000,000,000) and sets `checkpointTokens`, by default half the configured token limit (400k with the default policy). Calls and time are doubled like the extended preset. A run never reserves tokens past the next multiple of the interval: when the next model step could pass it, the step does not start, the run moves to `waiting` with reason `checkpoint` and a durable request of kind `checkpoint` records the usage. The same guard applies to every step of one agent loop, so a runaway loop stops at the checkpoint and not after it.
 
 C (or Enter) continues up to the next checkpoint, one interval beyond the projected spend; X stops the run in `paused`, and resuming asks again instead of spending. From the CLI:
 
@@ -425,6 +425,33 @@ The model of an agent is chosen in this order, the first match winning:
 A stage route applies to every agent of that stage, including its tasks, review dimensions and skeptics; gates on transitions use their profile's model. A route naming a stage the workflow does not have, or an unknown class, is refused when the run starts.
 
 A run freezes its routing at start in the `routing.json` artifact (each profile's and each routed stage's model with the source of the choice); resume, revise and fork use it, whatever the configuration says later. `baked workflow route [WORKFLOW] [--model ID] [--route ...] [--json]` prints the same table without starting a run, and `workflow profiles [--model ID]` shows each profile's resolved model and `modelSource`.
+
+### Effort and fallback models
+
+Any route, and any class, can be an object instead of a model ID:
+
+```jsonc
+"modelRouting": {
+  "classes": { "deep": { "model": "anthropic/claude-opus-5-5", "effort": "high", "fallback": ["openai/gpt-5.1"] } },
+  "roles": { "researcher": { "model": "$deep", "effort": "low" } },
+  "independentReview": "warn"
+}
+```
+
+- `effort` is `default`, `low`, `medium`, `high`, `xhigh` or `max`. It replaces `performance.effort` and `performance.openaiReasoningEffort` for that agent's calls only; an OpenAI level the model does not support is lowered to the nearest one it does. `default` sends no effort setting, so the provider's default applies. Models configured with a fixed effort in a compatible provider's own settings keep it.
+- `fallback` lists up to three model IDs (not classes) tried in order. A class reference brings the class's effort and fallback models; the object route's own fields override them.
+
+The primary model gets two retries on a transient provider error (timeouts, 408, 429, 5xx, 529, network errors); each fallback model gets one. When a route has another model and the provider asks for a `retry-after` over 30 seconds, the step moves on instead of waiting, and a fallback model whose provider asks for such a wait is not waited for. A step also moves to the next model when its prompt does not fit the model's context window. A step never moves to another model after its attempt changed files, after a cancel, or on a non-transient error (401, 403, a refused request, invalid output). When every model fails, the step fails with `provider_unavailable`, naming the primary's failure and the last model's.
+
+`routing.json` records each entry's `effort` and `fallback`, and `workflow route` prints them in the EFFORT and FALLBACK columns. `workflow usage RUN_ID` reports each attempt's `model` and a `models` summary (attempts, tokens and steps per model, most tokens first; host attempts such as checks are grouped as `(host)`).
+
+### Preflight and independent review
+
+Before a run is created, every model it can call is checked for a configured provider. A model that a bound profile or a stage route uses as its primary, and whose known provider has no credentials, refuses the start with `CAPABILITY_DENIED`. Fallback models, profiles the workflow does not bind, unknown providers and a check that does not answer within 5 seconds only add a warning.
+
+`independentReview` controls whether a reviewer may run on a model the implementation also uses, fallback models included: `warn` records a warning, `require` refuses the start, `off` skips the check. Without the field, `warn` applies once `modelRouting` is configured. Review, converge and reflection stages and review gates count as the review side; task stages as the implementation side.
+
+Warnings are stored in `routing.json` under `warnings` and printed by `workflow route` as `warning:` lines.
 
 ## Delivery
 

@@ -16,7 +16,7 @@ export function Onboarding({ checks, model }: { checks: Check[]; model: string |
         </text>
         <text fg={t.textMuted}>{"  · enabled: true, default workflow: sdd"}</text>
         <text fg={t.textMuted}>
-          {"  · budget: 400k tokens, 80 agent calls, 60 min active time per run"}
+          {"  · budget: 800k tokens, 80 agent calls, 60 min active time per run"}
         </text>
         {checks.length ? (
           <text fg={t.textMuted}>
