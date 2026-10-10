@@ -36,7 +36,7 @@ When baked starts you'll see:
 └─────────────────────────────────────────────────┘
 ```
 
-**Header** shows token usage, context budget, git branch, and active model.
+**Header** shows the active model, project name, git branch, context budget and token usage.
 
 **Chat area** renders messages with markdown, syntax-highlighted code blocks, and live tool call progress.
 
@@ -189,7 +189,28 @@ Project settings override global; session overrides both.
 
 ## Projects
 
-A project groups the sessions and workflow runs of one piece of work, across one or more checkouts. It is described by `baked/project.json`, which can be committed:
+A project is any folder baked was opened in. One baked process works in one folder, and each folder keeps its own sessions and workflow runs in its `.baked/` directory, so nothing moves between folders when you switch.
+
+### Switching projects
+
+- **`/projects`** or **`Alt+O`** opens the project picker: every known folder with its name, path, sessions, active workflow runs and requests waiting for you. The current folder is marked; pinned folders come first, then the most recently opened. `Enter` opens a folder. `Tab` opens its actions: resume one of its sessions, pin or unpin, rename, forget. **Open folder…** asks for a path (`~` and paths relative to the current folder work), checks that it is a folder, adds it to the list and opens it.
+- **`/project`** shows the current folder: its name and path, the working set when `baked/project.json` exists, and what waits for you. Its picker lists the folder's sessions (`Enter` resumes one) and workflow runs (`Enter` opens the run in the workflow panel).
+- **Switching** saves the current session as an exit does, then starts baked again in the other folder with `--cwd`, resuming the session you picked. If a workflow run is executing in this process, baked asks first: the run pauses and is resumed from `/workflow` when you come back to the folder. Nothing resumes it automatically.
+- **Header**: the project name, and a badge such as `2 waiting in other projects` counted over the pinned folders and the 10 most recently opened. It is refreshed at startup and every 60 seconds.
+
+The list lives in `~/.baked/known-projects.json`. Opening baked in a folder adds it, except the home directory, a filesystem root and the config directory; unpinned folders beyond the 100 most recently opened are dropped. The list grants no file access: trusting secondary roots stays with `baked project register`. The `baked projects` command manages it from a shell:
+
+```sh
+baked projects list [--json]       # pinned first, with sessions, active runs and waiting requests
+baked projects add [PATH]          # add a folder without opening it (default: this directory)
+baked projects pin [PATH]          # keep a folder at the top; unpin reverses it
+baked projects rename [PATH] NAME  # "" restores the manifest or folder name
+baked projects forget [PATH]       # remove from the list; its sessions and runs stay in the folder
+```
+
+### Project manifest
+
+A manifest groups the sessions and workflow runs of one piece of work across one or more checkouts. It is described by `baked/project.json`, which can be committed:
 
 ```sh
 baked project init --name "My app" --root ../my-app-docs

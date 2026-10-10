@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_CONFIG } from "../src/config/index.js";
 import {
   addKnownProject,
   type KnownProject,
@@ -15,10 +16,15 @@ import {
   overviewLine,
   projectDetails,
   resolveFolderInput,
+  runsExecutingInProcess,
   waitingBadgeText,
   waitingElsewhere,
 } from "../src/core/projects/switcher.js";
 import { getRestartSpec, projectSwitchArgs } from "../src/core/restart.js";
+import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { NativeWorkflowService } from "../src/core/workflows/service.js";
+import { newId } from "../src/core/workflows/store.js";
+import type { AgentExecutor } from "../src/core/workflows/types.js";
 
 describe("projectSwitchArgs", () => {
   test("adds --cwd and keeps the other arguments", () => {
@@ -190,5 +196,55 @@ describe("with a temporary profile", () => {
     expect(details.runs).toEqual([]);
     expect(details.attention).toEqual([]);
     expect(listKnownProjects({ configDir })).toHaveLength(1);
+  });
+});
+
+describe("runsExecutingInProcess", () => {
+  test("finds running runs whose lease this process holds", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-switch-runs-"));
+    const config = {
+      ...DEFAULT_CONFIG,
+      defaultModel: "fixture/model",
+      workflows: { enabled: true, defaultWorkflow: "sdd", policy: defaultWorkflowPolicy },
+    };
+    const executor: AgentExecutor = {
+      execute: async () => {
+        throw new Error("not driven in this test");
+      },
+    };
+    const service = new NativeWorkflowService(root, config, executor);
+    try {
+      expect(runsExecutingInProcess(root)).toEqual([]);
+      const run = await service.start({
+        commandId: newId(),
+        featureId: "fixture",
+        workflowId: "sdd",
+        prompt: "Create a value",
+        ownerLabel: "test",
+        policy: defaultWorkflowPolicy,
+      });
+      const lease = (pid: number, extra: Record<string, string> = {}) =>
+        service.store.putLease({
+          resource: "execution",
+          owner_id: "owner",
+          owner_epoch: 1,
+          run_id: run.runId,
+          expires_at: 0,
+          process_identity_json: JSON.stringify({ pid, ...extra }),
+        });
+      lease(process.pid);
+      // A created run holds no execution yet.
+      expect(runsExecutingInProcess(root)).toEqual([]);
+      service.store.transition(run.runId, "running");
+      expect(runsExecutingInProcess(root)).toEqual([run.runId]);
+      lease(2147483647);
+      expect(runsExecutingInProcess(root)).toEqual([]);
+      lease(process.pid, { exitedWorkerOwner: "owner" });
+      expect(runsExecutingInProcess(root)).toEqual([]);
+    } finally {
+      service.store.releaseLease("execution", "owner", 1);
+      service.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

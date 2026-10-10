@@ -16,7 +16,12 @@ import {
 } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
-import { overviewLine, projectDetails, resolveFolderInput } from "../projects/switcher.js";
+import {
+  overviewLine,
+  projectDetails,
+  resolveFolderInput,
+  runsExecutingInProcess,
+} from "../projects/switcher.js";
 import { SessionManager } from "../sessions/manager.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
@@ -62,7 +67,7 @@ export async function switchToProject(
     host.notify(`Already in ${shortPath(target)}.`);
     return;
   }
-  const running = drivingWorkflowRuns();
+  const running = [...new Set([...drivingWorkflowRuns(), ...runsExecutingInProcess(host.cwd)])];
   if (running.length) {
     const ok = await confirm({
       title: "Switch project?",

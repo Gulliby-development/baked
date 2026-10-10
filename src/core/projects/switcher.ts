@@ -178,3 +178,30 @@ export function projectDetails(
   }
   return details;
 }
+
+/**
+ * Runs of `folder` this process executes, read from the workspace leases: a run started from the
+ * panel and one an initiative drives in the background both hold a lease with this process ID.
+ */
+export function runsExecutingInProcess(folder: string, pid = process.pid): string[] {
+  if (!existsSync(join(folder, ".baked", "workflows.sqlite"))) return [];
+  let store: WorkflowStore | null = null;
+  try {
+    store = new WorkflowStore(folder, true);
+    const runs = new Set<string>();
+    for (const lease of store.leases()) {
+      if (!lease.run_id) continue;
+      const owner = JSON.parse(lease.process_identity_json) as {
+        pid?: number;
+        exitedWorkerOwner?: string;
+      };
+      if (owner.pid !== pid || owner.exitedWorkerOwner === lease.owner_id) continue;
+      if (store.run(lease.run_id).status === "running") runs.add(lease.run_id);
+    }
+    return [...runs];
+  } catch {
+    return [];
+  } finally {
+    store?.close();
+  }
+}
