@@ -49,3 +49,12 @@ test("a large file without an outline is read as asked", async () => {
   const result = await outlineLargeReads([{ path: text }]);
   expect(result).toEqual({ files: [{ path: text }], outlines: [] });
 });
+
+test("a large file the task writes is read whole up to the written-file limit", async () => {
+  const dir = workspace();
+  const large = join(dir, "large.ts");
+  expect(await outlineLargeReads([{ path: large }], [large])).toEqual({
+    files: [{ path: large }],
+    outlines: [],
+  });
+});
