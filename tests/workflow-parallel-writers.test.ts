@@ -78,6 +78,10 @@ class ParallelExecutor implements AgentExecutor {
   hooks: Record<string, (request: ExecutionRequest) => Promise<void> | void> = {};
   /** Content the integrator writes for each conflicting file. */
   resolution: Record<string, string> = {};
+  /** Tasks whose first attempt writes a partial file and stops at its token cap. */
+  capped = new Set<string>();
+  /** The earlier edits each implementation was handed. */
+  earlier: { taskId: string; root: string; content: string | null; earlierEdits?: { paths: string[]; patch: string } }[] = [];
   constructor(private workspace: string, private plans: Plan[]) {}
   async execute(request: ExecutionRequest) {
     const root = request.root ?? this.workspace;
@@ -90,7 +94,9 @@ class ParallelExecutor implements AgentExecutor {
       return new FixtureExecutor(root).execute(request);
     const task = request.task;
     if (!task) throw new Error("Implementation without a task");
-    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { extra: { integration?: Record<string, unknown> } };
+    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+      extra: { integration?: Record<string, unknown>; earlierEdits?: { paths: string[]; patch: string } };
+    };
     const guard = new WorkflowToolPolicy(
       service.store, service.leases, request.runId, request.attemptId, request.profile,
       PolicySchema.parse(JSON.parse(service.store.run(request.runId).policy_json)), task, root,
@@ -108,6 +114,21 @@ class ParallelExecutor implements AgentExecutor {
       this.started.push(entry);
       await this.hooks[task.id]?.(request);
       const plan = this.plans.find((p) => p.id === task.id);
+      const first = Object.keys(plan?.files ?? {})[0] ?? "";
+      this.earlier.push({
+        taskId: task.id, root,
+        content: existsSync(join(root, first)) ? readFileSync(join(root, first), "utf8") : null,
+        ...(data.extra.earlierEdits ? { earlierEdits: data.extra.earlierEdits } : {}),
+      });
+      if (this.capped.delete(task.id)) {
+        await write(first, "partial");
+        service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
+        return {
+          output: { schemaVersion: 1, taskId: task.id, outcome: "blocked", summary: "Ran out of tokens", evidenceIds: [], unresolved: [`${first} is only partly written`] },
+          inputTokens: 25,
+          outputTokens: 25,
+        };
+      }
       for (const [path, content] of Object.entries(plan?.files ?? {})) await write(path, content);
       entry.end = performance.now();
     }
@@ -215,6 +236,25 @@ describe("workflow parallel writers", () => {
     expect(existsSync(join(fx.root, `.baked/worktrees/${run.runId}/T001`))).toBe(false);
     expect(git(fx.root, "worktree", "list")).not.toContain("/T00");
     expect(fx.store.leases()).toEqual([]);
+  });
+
+  test("a task capped after editing continues in a new worktree with its earlier edits", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.capped.add("T001");
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(fx.lastError(run.runId)).toBe("");
+    expect(done.status).toBe("completed");
+    const attempts = fx.executor.earlier.filter((e) => e.taskId === "T001");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]?.content).toBeNull();
+    // The continuing attempt finds the partial file in its new worktree and is told about it.
+    expect(attempts[1]?.content).toBe("partial");
+    expect(attempts[1]?.earlierEdits?.paths).toEqual(["a.txt"]);
+    expect(attempts[1]?.earlierEdits?.patch).toContain("+partial");
+    expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
+    expect(fx.store.state(run.runId).taskCarry).toEqual({});
+    expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
   });
 
   test("tasks that would create the same directory are serialized into batches", async () => {
