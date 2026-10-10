@@ -379,6 +379,17 @@ export class WorkflowStore {
     };
   }
   /** The latest runs of a project, newest first; none in a database older than migration 007. */
+  /** How many runs are in each state, for overviews that do not need the runs themselves. */
+  statusCounts(): Partial<Record<RunState, number>> {
+    const counts: Partial<Record<RunState, number>> = {};
+    for (const row of this.db
+      .query<{ status: RunState; n: number }, []>(
+        "SELECT status, COUNT(*) AS n FROM runs GROUP BY status",
+      )
+      .all())
+      counts[row.status] = row.n;
+    return counts;
+  }
   projectRuns(projectId: string, limit = 20): RunSnapshot[] {
     const columns = this.db
       .query<{ name: string }, []>("SELECT name FROM pragma_table_info('runs')")

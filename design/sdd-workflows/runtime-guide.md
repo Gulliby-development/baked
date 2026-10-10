@@ -586,6 +586,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `POST /v1/workflow/runs/RUN_ID/extend` | `extend` | plus optional `tokens`, `calls`, `timeMs` |
 | `GET /v1/workflow/runs/RUN_ID/events` | `--events` | `?after=SEQ`; SSE, or JSON with `Accept: application/json` (`?limit=`, at most 1000) |
 | `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
+| `GET /v1/projects` | `projects list --json` | every folder BAKED was opened in (`~/.baked/known-projects.json`), pinned first: `path`, `name`, `projectId` (null without `baked/project.json`), `pinned`, `exists`, `current` and `overview` (`sessions`, `lastSessionAt`, `activeRuns`, `attention`). Each folder is served by its own `baked serve`. |
 | `GET /v1/projects/current` | `project show` | the workspace's project: roots, working set, instruction files, latest sessions and runs; 404 without `baked/project.json` |
 | `POST /v1/projects/current/working-set` | `project add`, `project remove` | `add`, `remove` (path or glob lists, removals first); returns the project; an entry outside the project roots is 400 |
 

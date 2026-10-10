@@ -36,6 +36,11 @@ if (cliArgs[0] === "telemetry") {
   process.exit(runTelemetryCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "projects") {
+  const { runProjectsCli } = await import("./headless/projects.js");
+  process.exit(await runProjectsCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "project") {
   const { runProjectCli } = await import("./headless/project.js");
   process.exit(await runProjectCli(cliArgs.slice(1)));
@@ -386,6 +391,10 @@ for (let i = 0; i < args.length; i++) {
 }
 
 status("Reading the scrolls");
+// The project list behind the project picker; a failed write never blocks startup.
+import("./core/projects/known.js")
+  .then(({ recordProjectOpen }) => recordProjectOpen(getCwd()))
+  .catch(() => {});
 const config = loadConfig();
 const projectConfig = loadEffectiveProjectConfig(getCwd());
 
