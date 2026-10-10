@@ -68,9 +68,13 @@ function rollbacks(fixture: Fixture, runId: string): RollbackReport[] {
     .map((a) => JSON.parse(fixture.service.store.readArtifact(runId, a.id)) as RollbackReport);
 }
 
+/** Revises T001's definition, so the revision invalidates its edits; an unchanged task keeps them. */
 async function revise(fixture: Fixture, runId: string) {
   const { service } = fixture;
-  const candidate = await new WorkflowArtifacts(service).stageRevision(runId, { commandId: newId(), expectedInputHash: (await service.get(runId)).inputHash });
+  const graph = service.store.state(runId).graph;
+  if (!graph) throw new Error("No task graph");
+  const revised = { ...graph, tasks: graph.tasks.map((t) => (t.id === "T001" ? { ...t, description: `${t.description}, revised` } : t)) };
+  const candidate = await new WorkflowArtifacts(service).stageRevision(runId, { commandId: newId(), expectedInputHash: (await service.get(runId)).inputHash, graph: revised });
   await service.revise(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, candidate.candidateHash);
 }
 

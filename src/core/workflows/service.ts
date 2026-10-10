@@ -54,6 +54,7 @@ import {
 } from "./schemas.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
+import { reusableImplementations } from "./task-graph.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
 import { blocksRun, isAcceptanceRequest } from "./v2/acceptance.js";
 import { decideAcceptance } from "./v2/acceptance-gate.js";
@@ -762,8 +763,9 @@ export class NativeWorkflowService implements WorkflowService {
           "INVALID_DEFINITION",
           "Revision requires a complete spec, plan and task package",
         );
+      const previous = this.store.state(runId);
       // The run keeps its worktree; the candidate cannot move it.
-      state.worktree = this.store.state(runId).worktree;
+      state.worktree = previous.worktree;
       const root = runRoot(this.workspace, state);
       // The initiative owns the upstream contracts of its features; a revision cannot repoint them.
       const pinned = this.store.state(runId).hostDependencies;
@@ -859,7 +861,22 @@ export class NativeWorkflowService implements WorkflowService {
           }),
         );
       this.store.setPolicy(runId, policy);
-      if (state.graph && keepsPackage) this.store.syncTasks(runId, state.graph, true);
+      if (state.graph && keepsPackage) {
+        // Tasks the revision leaves as they were keep their implementation; their checks run
+        // again on the new snapshot, as every other evidence does. A definition revision may
+        // change how tasks are implemented, and so may new project instructions: either
+        // implements every task again. The gates are compared with the definition.
+        const instructions = (s: RuntimeState) =>
+          hashJson([
+            s.manifest.instructionHashes.filter((h) => h.source !== GATES_ARTIFACT),
+            s.manifest.constitutionHash,
+          ]);
+        const kept =
+          definition || instructions(previous) !== instructions(state)
+            ? new Set<string>()
+            : reusableImplementations(previous, state, this.store.tasks(runId));
+        this.store.syncTasks(runId, state.graph, true, kept);
+      }
       this.store.saveState(runId, state);
       this.store.transition(runId, "paused");
     });

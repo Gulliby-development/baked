@@ -709,7 +709,17 @@ export class WorkflowStore {
       .query<TaskRow, [string]>("SELECT * FROM tasks WHERE run_id=? ORDER BY rowid")
       .all(runId);
   }
-  syncTasks(runId: string, graph: TaskGraph, invalidate = false): void {
+  /**
+   * Stores the task graph. With `invalidate`, every task is invalidated except those in `keep`,
+   * which stay implemented on the snapshot they were implemented on; their check gates are the
+   * caller's to clear, so their task checks run again.
+   */
+  syncTasks(
+    runId: string,
+    graph: TaskGraph,
+    invalidate = false,
+    keep: ReadonlySet<string> = new Set(),
+  ): void {
     if (invalidate) {
       const previous = this.findings(runId);
       if (previous.length)
@@ -724,12 +734,15 @@ export class WorkflowStore {
         if (!graph.tasks.some((t) => t.id === task.id))
           this.taskStatus(runId, task.id, "cancelled");
     }
+    const rows = new Map(this.tasks(runId).map((row) => [row.id, row]));
     for (const task of graph.tasks) {
       this.db.run(
         "INSERT INTO tasks (run_id,id,definition_json,definition_hash,status,updated_at) VALUES (?,?,?,?,'pending',?) ON CONFLICT(run_id,id) DO UPDATE SET definition_json=excluded.definition_json,definition_hash=excluded.definition_hash",
         [runId, task.id, canonical(task), hashJson(task), Date.now()],
       );
-      if (invalidate) this.taskStatus(runId, task.id, "invalidated");
+      const kept = keep.has(task.id) ? rows.get(task.id)?.snapshot_id : null;
+      if (invalidate && kept) this.taskStatus(runId, task.id, "implemented", kept);
+      else if (invalidate) this.taskStatus(runId, task.id, "invalidated");
     }
     this.db.run("DELETE FROM task_dependencies WHERE run_id=?", [runId]);
     for (const task of graph.tasks)
