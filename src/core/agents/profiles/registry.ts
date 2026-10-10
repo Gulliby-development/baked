@@ -57,7 +57,18 @@ export class ProfileRegistry {
       "submit_artifact",
     ]);
     // Host tools of the AI acceptance gate exist only for its own two roles.
-    const walkTools = ["app_start", "app_stop", "terminal_send", "terminal_read", "record_step"];
+    const walkTools = [
+      "app_start",
+      "app_stop",
+      "terminal_send",
+      "terminal_read",
+      "browser_open",
+      "browser_snapshot",
+      "browser_click",
+      "browser_type",
+      "browser_key",
+      "record_step",
+    ];
     if (resolved.role === "acceptance-walker") for (const name of walkTools) available.add(name);
     if (resolved.role === "acceptance-writer") available.add("write_test");
     if (resolved.allowedTools.some((t) => !available.has(t)))

@@ -65,7 +65,7 @@ import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
-import { runAcceptanceGate } from "./v2/acceptance-gate.js";
+import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
 import {
   effectiveMode,
   type Gate,
@@ -116,6 +116,8 @@ export class WorkflowScheduler {
   readonly checks: CheckRunner;
   /** The mutation lease of the root the driven run writes: the project or its worktree. */
   private mutation: LeaseResource = "mutation";
+  /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
+  browserDriver: BrowserDriverOptions | undefined;
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -2589,6 +2591,7 @@ export class WorkflowScheduler {
             policy,
             transitionId: transition.id,
             signal,
+            ...(this.browserDriver ? { browser: this.browserDriver } : {}),
             profile: (id) => profiles.find((p) => p.id === id),
             callAgent: (profile, extra, validate, tools, attemptSignal) =>
               this.call(
