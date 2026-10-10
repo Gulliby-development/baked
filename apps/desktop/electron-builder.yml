@@ -37,6 +37,10 @@ win:
   # Unsigned until a code signing certificate is available.
   target: [nsis]
 
+# Not built by CI; `bun run package -- --baked <path> --target portable` makes one on Windows.
+portable:
+  artifactName: baked-desktop-${version}-${os}-${arch}-portable.${ext}
+
 nsis:
   oneClick: false
   perMachine: false

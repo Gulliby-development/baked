@@ -38,10 +38,95 @@ a:hover {
   color: var(--text-4);
 }
 
+.frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .shell {
   display: flex;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   min-width: 0;
+}
+
+/* The app's own title bar; the whole bar drags the window except its buttons. */
+.titlebar {
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar.mac {
+  flex-basis: 38px;
+  justify-content: center;
+}
+
+.titlebar-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.titlebar.mac .titlebar-brand {
+  padding-left: 0;
+}
+
+.titlebar-logo {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.window-controls {
+  display: flex;
+  height: 100%;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.window-btn {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: default;
+}
+
+.window-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.window-btn.close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.window-btn:focus-visible {
+  outline-offset: -2px;
 }
 
 .main {
@@ -128,6 +213,35 @@ a:hover {
 .nav.sub {
   padding-left: 22px;
   font-size: 13px;
+}
+
+/* New chat and the recent chats, nested under the project's Chat entry. */
+.chat-links {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 4px 30px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+
+.nav.chat-link {
+  min-height: 28px;
+  padding: 4px 8px;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.nav.chat-link.new {
+  color: var(--accent);
+}
+
+.chat-link-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav .count {
