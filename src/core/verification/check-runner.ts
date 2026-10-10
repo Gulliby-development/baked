@@ -27,6 +27,20 @@ export function buildCheckEnv(check: Check): NodeJS.ProcessEnv {
   return env;
 }
 
+const ALL_PASSED =
+  /^\s*(?:\d+ pass\b[\s\S]*^\s*0 fail\b|=+ \d+ passed(?: in [\d.]+s)? =+$|Tests?:\s+\d+ passed, \d+ total)/m;
+const ANY_FAILED = /^\s*[1-9]\d* fail\b|\b[1-9]\d* (?:failed|errors?)\b/m;
+
+/**
+ * Explains a failed exit whose output reports every test passing. Run 1185f909: a test called
+ * the CLI in-process, the CLI set `process.exitCode = 1` for an error case, and the agent read
+ * "9 pass 0 fail" with exit 1 as an unexplained mismatch and gave up.
+ */
+export function passedOutputNote(output: string, exitCode: number | null): string | null {
+  if (!exitCode || !ALL_PASSED.test(output) || ANY_FAILED.test(output)) return null;
+  return `Note: the command exited with code ${exitCode} although its output reports every test passing. Something the tests ran left a nonzero exit code in the test process, for example code that sets \`process.exitCode\` or calls \`process.exit\` when called in-process. Fix that (run such code in a child process, or restore the exit code in the test) instead of the assertions.`;
+}
+
 export class CheckRunner {
   constructor(
     private store: WorkflowStore,
@@ -130,6 +144,8 @@ export class CheckRunner {
         durationMs: 0,
       };
     }
+    const note = passedOutputNote(result.output, result.exitCode);
+    if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;
     const status =

@@ -4,6 +4,7 @@ import {
   CorrectionSchema,
   type Review,
   type RunPolicy,
+  type Spec,
   type TaskGraph,
   validateTaskGraph,
 } from "../workflows/schemas.js";
@@ -76,6 +77,43 @@ export function correctionAuthorized(task: Task, root: TaskGraph): boolean {
   );
 }
 
+const unique = (ids: string[]): string[] => [...new Set(ids)];
+
+/**
+ * The planned task a finding is corrected from. A task that writes the finding's file and covers
+ * one of its criteria comes first. Otherwise the task that writes the file is widened to the
+ * finding's criteria that tasks of its profile cover, with the requirements those tasks map them
+ * to, so the correction may also write their files: a plan can give the store to one task and the
+ * criterion the store breaks to the CLI and test tasks.
+ */
+export function correctionBase(
+  finding: Pick<Review["findings"][number], "file" | "criterionIds" | "requirementIds">,
+  root: TaskGraph,
+  spec: Spec,
+): Task | undefined {
+  const exact = root.tasks.find(
+    (t) =>
+      (!finding.file || t.writes.some((w) => w.path === finding.file)) &&
+      (finding.criterionIds.some((id) => t.criterionIds.includes(id)) ||
+        finding.requirementIds.some((id) => t.requirementIds.includes(id))),
+  );
+  if (exact || !finding.file) return exact;
+  const owner = root.tasks.find((t) => t.writes.some((w) => w.path === finding.file));
+  if (!owner) return undefined;
+  const covering = (id: string) =>
+    root.tasks.filter((t) => t.profileId === owner.profileId && t.criterionIds.includes(id));
+  const criteria = finding.criterionIds.filter((id) => covering(id).length > 0);
+  const requirements = criteria.flatMap((id) => {
+    const verified = spec.criteria.find((c) => c.id === id)?.requirementIds ?? [];
+    return covering(id).flatMap((t) => t.requirementIds.filter((r) => verified.includes(r)));
+  });
+  return {
+    ...owner,
+    criterionIds: unique([...owner.criterionIds, ...criteria]),
+    requirementIds: unique([...owner.requirementIds, ...requirements]),
+  };
+}
+
 export function appendCorrections(
   store: WorkflowStore,
   runId: string,
@@ -111,12 +149,7 @@ export function appendCorrections(
     const predecessor = state.repairPredecessors[finding.id];
     const base =
       (predecessor && state.graph?.tasks.find((t) => t.id === predecessor)) ||
-      state.rootGraph?.tasks.find(
-        (t) =>
-          (!finding.file || t.writes.some((w) => w.path === finding.file)) &&
-          (finding.criterionIds.some((id) => t.criterionIds.includes(id)) ||
-            finding.requirementIds.some((id) => t.requirementIds.includes(id))),
-      );
+      correctionBase(finding, state.rootGraph, state.spec);
     if (!base || (finding.file && !base.writes.some((w) => w.path === finding.file)))
       throw new WorkflowFault(
         "INPUT_CHANGED",
@@ -124,7 +157,17 @@ export function appendCorrections(
       );
     state.repairPredecessors[finding.id] = base.id;
     const key = `${base.id}\n${finding.file ?? ""}`;
-    const group = groups.get(key) ?? { base, findings: [] };
+    const existing = groups.get(key);
+    const group = existing
+      ? {
+          base: {
+            ...existing.base,
+            criterionIds: unique([...existing.base.criterionIds, ...base.criterionIds]),
+            requirementIds: unique([...existing.base.requirementIds, ...base.requirementIds]),
+          },
+          findings: existing.findings,
+        }
+      : { base, findings: [] as Review["findings"] };
     group.findings.push(finding);
     groups.set(key, group);
   }
