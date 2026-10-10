@@ -78,6 +78,45 @@ async function readEvents(response: Response, count: number): Promise<{ id: numb
   return events;
 }
 
+interface AttentionItem {
+  runId: string;
+  featureId: string;
+  status: string;
+  requestId: string | null;
+  kind: string;
+  blocking: boolean;
+  createdAt: number;
+}
+
+/** Collects `attention` frames from an open stream; `next` waits for one that satisfies `done`. */
+function attentionFrames(response: Response) {
+  if (!response.body) throw new Error("No body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  return {
+    async next(done: (items: AttentionItem[]) => boolean): Promise<AttentionItem[]> {
+      for (;;) {
+        let end = buffer.indexOf("\n\n");
+        while (end >= 0) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const data = /^data: (.*)$/m.exec(frame)?.[1];
+          if (/^event: attention$/m.test(frame) && data) {
+            const { items } = JSON.parse(data) as { items: AttentionItem[] };
+            if (done(items)) return items;
+          }
+          end = buffer.indexOf("\n\n");
+        }
+        const { done: ended, value } = await reader.read();
+        if (ended) throw new Error("Stream ended");
+        buffer += decoder.decode(value, { stream: true });
+      }
+    },
+    close: () => reader.cancel(),
+  };
+}
+
 const startBody = (commandId = newId()) => ({ commandId, feature: "fixture", prompt: "Create ready value" });
 
 describe("local core API", () => {
@@ -224,6 +263,77 @@ describe("local core API", () => {
     const content = (await (await call(`/v1/workflow/runs/${run.runId}/artifacts?file=${first.id}`)).json()) as { content: string };
     expect(typeof content.content).toBe("string");
     expect(server.port).toBeGreaterThan(0);
+  }, 60000);
+
+  test("attention lists a run waiting for approval until it is approved", async () => {
+    const { server, call, post } = await setup();
+    expect((await fetch(`${server.url}/v1/attention`)).status).toBe(401);
+    expect((await fetch(`${server.url}/v1/attention`, { headers: { Accept: "application/json" } })).status).toBe(401);
+    expect((await call("/v1/attention", { method: "POST" })).status).toBe(405);
+
+    const stream = await call("/v1/attention");
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    const frames = attentionFrames(stream);
+    try {
+      // The list is sent once on connect, even when nothing waits.
+      expect(await frames.next(() => true)).toEqual([]);
+      const run = (await (await post("/v1/workflow/runs", startBody())).json()) as RunSnapshot;
+      const streamed = await frames.next((items) => items.length > 0);
+      const pending = (await (await call(`/v1/workflow/runs/${run.runId}`)).json()) as RunSnapshot & { requests: { id: string; kind: string; status: string; digest: string }[] };
+      const request = pending.requests.find((r) => r.kind === "approval" && r.status === "pending");
+      if (!request) throw new Error("No pending approval");
+      expect(streamed).toEqual([
+        {
+          runId: run.runId,
+          featureId: "fixture",
+          status: "waiting",
+          requestId: request.id,
+          kind: "approval",
+          blocking: true,
+          createdAt: expect.any(Number),
+        },
+      ]);
+      const listed = (await (await call("/v1/attention", { headers: { Accept: "application/json" } })).json()) as {
+        items: AttentionItem[];
+      };
+      expect(listed.items).toEqual(streamed);
+
+      const approved = await post(`/v1/workflow/runs/${run.runId}/approve`, {
+        commandId: newId(),
+        expectedRevision: pending.revision,
+        requestId: request.id,
+        digest: request.digest,
+      });
+      expect(approved.status).toBe(200);
+      expect(await frames.next((items) => items.length === 0)).toEqual([]);
+      expect(await (await call("/v1/attention", { headers: { Accept: "application/json" } })).json()).toEqual({ items: [] });
+    } finally {
+      await frames.close();
+    }
+  }, 60000);
+
+  test("attention lists blocked runs and advisory acceptance requests as not blocking", async () => {
+    const { call, post, fixture } = await setup();
+    const run = (await (await post("/v1/workflow/runs", startBody())).json()) as RunSnapshot;
+    const json = async () =>
+      ((await (await call("/v1/attention", { headers: { Accept: "application/json" } })).json()) as { items: AttentionItem[] }).items;
+    await until(json, (items) => items.length === 1);
+    const store = fixture.service.store;
+    const approval = store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+    if (!approval) throw new Error("No pending approval");
+    store.transaction(() => {
+      store.decideRequest(run.runId, approval.id, "rejected", { kind: "reject" });
+      store.request(run.runId, "approval", "b".repeat(64), { acceptance: { gateId: "walkthrough" } });
+      store.transition(run.runId, "blocked", "input_changed");
+    });
+    // Both are dated to about the same moment; their order is not what this test is about.
+    const items = (await json()).sort((a, b) => a.kind.localeCompare(b.kind));
+    expect(items.map(({ status, requestId, kind, blocking }) => ({ status, requestId: requestId !== null, kind, blocking }))).toEqual([
+      { status: "blocked", requestId: true, kind: "approval", blocking: false },
+      { status: "blocked", requestId: false, kind: "input_changed", blocking: true },
+    ]);
+    expect(items.every((item) => item.runId === run.runId && item.featureId === "fixture")).toBe(true);
   }, 60000);
 
   test("lists definitions and profiles", async () => {
