@@ -1,10 +1,6 @@
-/* Project home, new run and quick task. */
+/* Project home panels, new run and quick task. */
 
-.start-home,
 .start-form,
-.start-section,
-.start-main-col,
-.start-side-col,
 .start-aside,
 .start-quick,
 .start-quick-panels {
@@ -13,11 +9,6 @@
   min-width: 0;
 }
 
-.start-home {
-  gap: 20px;
-}
-
-.start-chips-line,
 .start-inline,
 .start-chips,
 .start-more {
@@ -25,22 +16,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-}
-
-.start-pill {
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: var(--bg-raised);
-  color: var(--text-2);
-  font-size: 12px;
-}
-
-.start-pill.muted-pill {
-  color: var(--text-3);
-}
-
-.start-settings {
-  margin-left: auto;
 }
 
 .start-hint,
@@ -61,39 +36,6 @@
   color: var(--err);
 }
 
-/* Task box */
-.start-taskbox {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-color: var(--bg-selected);
-}
-
-.start-taskbox-label {
-  font-weight: 500;
-}
-
-.start-taskbox textarea {
-  resize: none;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 16px;
-}
-
-.start-taskbox:focus-within {
-  border-color: var(--accent);
-}
-
-.start-taskbox-hint {
-  margin-left: auto;
-  font-size: 13px;
-}
-
-/* Two columns that wrap on narrow windows */
-.start-columns,
 .start-layout {
   display: flex;
   flex-wrap: wrap;
@@ -101,28 +43,12 @@
   align-items: flex-start;
 }
 
-.start-main-col {
-  flex: 999 1 520px;
-  gap: 22px;
-}
-
-.start-side-col {
-  flex: 1 1 300px;
-  gap: 18px;
-}
-
-.start-section {
-  gap: 8px;
-}
-
-.start-section-head,
 .start-panel-head {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.start-section-head > a,
 .start-panel-head > :last-child:not(:first-child) {
   margin-left: auto;
   font-size: 13px;
@@ -166,40 +92,6 @@
   color: var(--info);
 }
 
-.start-small {
-  min-height: 30px;
-}
-
-/* Attention cards */
-.start-attention {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-}
-
-.start-attention.blocking {
-  border-color: var(--warn);
-}
-
-.start-grow {
-  flex: 1;
-  min-width: 0;
-}
-
-.start-ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Tables */
-.start-table-card {
-  padding: 0;
-  overflow-x: auto;
-}
-
 .start-table-wrap {
   overflow-x: auto;
 }
@@ -222,67 +114,10 @@
   border-bottom: none;
 }
 
-.start-run-link {
-  color: var(--text);
-  text-decoration: none;
-}
-
-.start-run-link:hover {
-  color: var(--accent-soft);
-}
-
 .start-table td.start-model {
   color: var(--text-3);
   white-space: normal;
   overflow-wrap: anywhere;
-}
-
-/* Lists */
-.start-list {
-  list-style: none;
-  margin: 0;
-  padding: 4px;
-}
-
-.start-list-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  padding: 8px 10px;
-  border-radius: 6px;
-  color: var(--text-2);
-  text-decoration: none;
-}
-
-.start-list-row:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-.start-files {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.start-files li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--text-2);
-}
-
-.start-files li > :last-child {
-  flex: none;
-  white-space: nowrap;
-}
-
-.start-files li.skipped {
-  color: var(--text-4);
 }
 
 .start-checks,
