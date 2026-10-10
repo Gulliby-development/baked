@@ -3,6 +3,12 @@ import type { ModelMessage } from "@ai-sdk/provider-utils";
 
 /** Per-attempt token cap used when the run policy does not set `maxAttemptTokens`. */
 export const DEFAULT_MAX_ATTEMPT_TOKENS = 250_000;
+/**
+ * Steps an attempt may always take, whatever one step costs on its provider. Token caps are sized
+ * from history, and a provider whose steps cost several times more (Codex replays a fixed ~20k
+ * prompt per step) otherwise ran out of an attempt after 3-8 steps.
+ */
+export const MIN_ATTEMPT_STEPS = 10;
 /** Tool-result messages at the end of the history that stay verbatim. */
 export const KEEP_RECENT_TOOL_MESSAGES = 3;
 /** Tool outputs smaller than this are cheaper to replay than to re-read. */
@@ -229,10 +235,24 @@ export class AttemptStepController {
       maxOutputTokens?: number;
       /** For an attempt that must edit: read-only steps in a row before it is told to edit. */
       editNudgeAfterReads?: number;
+      /**
+       * Steps the token cap always allows: the cap grows to this many steps at the attempt's
+       * average step cost so far, up to `ceilingTokens`.
+       */
+      minSteps?: number;
+      /** Hard limit the step floor never passes, such as what the run budget still allows. */
+      ceilingTokens?: number;
     },
   ) {}
   get maxTokens(): number {
     return this.options.maxTokens;
+  }
+  /** The token cap after the step floor, given the steps taken so far. */
+  tokenCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
+    const { maxTokens, minSteps, ceilingTokens } = this.options;
+    if (!minSteps || steps.length === 0) return maxTokens;
+    const floor = Math.ceil((this.consumed(steps) / steps.length) * minSteps);
+    return Math.max(maxTokens, Math.min(floor, ceilingTokens ?? maxTokens));
   }
   /**
    * Tokens the attempt holds once the next step runs: its spend so far plus an estimate of that
@@ -263,7 +283,7 @@ export class AttemptStepController {
     );
   }
   overBudget(steps: ReadonlyArray<{ usage: StepUsageLike }>): boolean {
-    return this.consumed(steps) >= this.options.maxTokens;
+    return this.consumed(steps) >= this.tokenCap(steps);
   }
   prepare(input: {
     stepNumber: number;
@@ -280,7 +300,7 @@ export class AttemptStepController {
       maxSteps: this.options.maxSteps,
       consumed: this.consumed(input.steps),
       lastStepTokens: last ? stepTokens(last.usage, this.options.fallbackStepTokens) : 0,
-      maxTokens: this.options.maxTokens,
+      maxTokens: this.tokenCap(input.steps),
     });
     const compacted = compactToolHistory(input.messages);
     this.compactedBytes[input.stepNumber] = compacted.savedBytes;
@@ -333,17 +353,18 @@ export class AttemptStepController {
     failure?: "error" | "aborted",
   ): AttemptUsageRecord {
     const totalTokens = this.consumed(steps);
+    const maxTokens = this.tokenCap(steps);
     return {
       schemaVersion: 1,
       profileId: meta.profileId,
       taskId: meta.taskId,
       maxSteps: this.options.maxSteps,
-      maxTokens: this.options.maxTokens,
+      maxTokens,
       stopReason: failure
         ? failure
         : submitted
           ? "submitted"
-          : totalTokens >= this.options.maxTokens
+          : totalTokens >= maxTokens
             ? "tokens"
             : steps.length >= this.options.maxSteps
               ? "steps"
