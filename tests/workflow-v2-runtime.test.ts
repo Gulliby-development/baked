@@ -43,6 +43,8 @@ interface Behavior {
   broken?: number;
   /** Convergence rounds that report a new gap each before passing. */
   gaps?: number;
+  /** Severity of the convergence gaps; high by default. */
+  gapSeverity?: "high" | "medium";
   reviewVerdict?: "pass" | "changes_requested";
 }
 
@@ -98,7 +100,7 @@ class V2Executor implements AgentExecutor {
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
               coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }],
-              findings: [{ id: `G${round}`, kind: "missing", severity: "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+              findings: [{ id: `G${round}`, kind: "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Command checked the value" }], findings: [] };
         break;
@@ -260,6 +262,17 @@ describe("workflow v2 scheduler", () => {
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(2);
     expect(service.store.run(run.runId).repair_rounds).toBe(1);
   }, 30000);
+
+  // Run 936ddfa5 blocked on "Coverage is incomplete" after round 1: the only finding for the
+  // failing criteria was medium, below the floor. It still repairs, since acceptance needs a pass.
+  test("a medium gap behind a failing criterion is repaired after the first round", async () => {
+    const { start, complete, service } = setup({ gaps: 2, gapSeverity: "medium" }, { ...policy, maxConvergenceRounds: 3 });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+  }, 60000);
 
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {
     const { start, complete, service, define } = setup({ broken: 1 });
