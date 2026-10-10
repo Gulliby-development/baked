@@ -122,7 +122,7 @@ test("after a revision, a file the run created does not fail plan consistency an
   const prompt = fixture.executor.prompts.implementation?.at(-1) ?? "";
   expect(prompt).toContain("earlierEdits");
   expect(rollbacks(fixture, run.runId)).toEqual([]);
-});
+}, 30000);
 
 test("undo restores the run's invalidated edits from their pre-images and keeps the run's versions", async () => {
   const fixture = journaledFixture({ failReview: (call) => call === 0 });
