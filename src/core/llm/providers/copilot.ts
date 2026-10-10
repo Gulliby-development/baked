@@ -94,6 +94,32 @@ function detectInitiator(body: unknown): "agent" | "user" {
   return "user";
 }
 
+interface ChatMessage {
+  role?: string;
+  copilot_cache_control?: { type: "ephemeral" };
+}
+
+/** Copilot translates /chat/completions to Anthropic for Claude models but
+ *  drops the SDK's Anthropic cache breakpoints, so the conversation is never
+ *  cached. The IDE clients mark breakpoints with a message-level
+ *  `copilot_cache_control`; mark the first two system messages and the last
+ *  message the same way (at most 3 of Anthropic's 4 breakpoints). */
+export function addCopilotCacheControl(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { model?: unknown; messages?: ChatMessage[] };
+    if (typeof parsed.model !== "string" || !/claude/i.test(parsed.model)) return body;
+    const messages = parsed.messages;
+    if (!Array.isArray(messages) || messages.length === 0) return body;
+    const marks = messages.filter((m) => m?.role === "system").slice(0, 2);
+    const last = messages[messages.length - 1];
+    if (last && last.role !== "system") marks.push(last);
+    for (const m of marks) m.copilot_cache_control = { type: "ephemeral" };
+    return JSON.stringify(parsed);
+  } catch {
+    return body;
+  }
+}
+
 function createCopilotFetch(
   githubToken: string,
   reasoningBody: Record<string, unknown>,
@@ -115,6 +141,7 @@ function createCopilotFetch(
         patchedBody = JSON.stringify({ ...parsed, ...reasoningBody });
       } catch {}
     }
+    if (typeof patchedBody === "string") patchedBody = addCopilotCacheControl(patchedBody);
     const buildHeaders = (token: string): Headers => {
       const h = new Headers(init?.headers);
       h.set("Authorization", `Bearer ${token}`);

@@ -81,9 +81,11 @@ import {
 import {
   codeTaskCheckProblems,
   plannerSizing,
+  type SizingReport,
   sizePlan,
   sizingHistory,
   splitNote,
+  splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
@@ -372,8 +374,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
+              // The run owns the feature ID; a spec author that renames it changes nothing.
               if (state.spec.featureId !== run.feature_id)
-                throw new WorkflowFault("OUTPUT_INVALID", "Spec feature ID differs from the run");
+                state.spec = { ...state.spec, featureId: run.feature_id };
               // An initiative decides which contracts a feature depends on, not the spec author.
               if (state.hostDependencies)
                 state.spec = { ...state.spec, dependencies: state.hostDependencies };
@@ -441,11 +444,12 @@ export class WorkflowScheduler {
                 ),
               );
               state.plan = plan.markdown;
-              const graph = planGraph(spec, plan);
-              state.graph = graph;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
+              const planned = planGraph(spec, plan);
+              const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
+              state.graph = graph;
               state.rootGraph = structuredClone(state.graph);
               state.manifest.planHash = hashBytes(state.plan);
               state.manifest.rootGraphHash = hashJson(state.graph);
@@ -1061,6 +1065,27 @@ export class WorkflowScheduler {
     state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
     return true;
   }
+  /** The planned graph with its oversized test tasks split by file, recorded when it splits. */
+  private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
+    const report = sizePlan({
+      graph,
+      policy,
+      samples: sizingHistory(this.store.workspace, policy),
+      spent: this.store.run(runId).token_usage,
+    });
+    const split = splitTestTasks(graph, report);
+    if (!split) return graph;
+    const revision = this.store.state(runId).sizingReplans;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "sizing",
+        `sizing/split-${String(revision)}.json`,
+        canonical({ reasons: report.reasons, tasks: split.tasks.map((t) => t.id) }),
+      ),
+    );
+    return split;
+  }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
     runId: string,
@@ -1291,14 +1316,41 @@ export class WorkflowScheduler {
             this.store.recordedUsage(runId, attempt),
           ),
         );
+      const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const refusal = accountRefusal(error);
+      // Another model on the same provider shares the refused account; one elsewhere does not.
+      const provider = (model: string) => model.split("/")[0];
+      const elsewhere = refusal
+        ? route.models.findIndex(
+            (model, index) => index > fallbackIndex && provider(model) !== provider(profile.model),
+          )
+        : -1;
+      if (refusal && elsewhere > 0 && !signal.aborted && !wrote)
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          extra,
+          signal,
+          task,
+          0,
+          validate,
+          limits,
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            fallbackIndex: elsewhere,
+            primaryError: placement.primaryError ?? error,
+          },
+        );
       if (refusal && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
           `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}. ${error instanceof Error ? error.message : String(error)}`,
           { reason: "provider_account" },
         );
-      const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
       // and once the chain has already failed over, the run stops instead of blocking on it.
@@ -1418,6 +1470,7 @@ export class WorkflowScheduler {
       const stages = WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
       const plan = stages.findIndex((stage) => stage.kind === "plan");
       if (plan >= 0) {
+        this.raiseBudget(runId, state, policy, report);
         state.sizingReplans = 1;
         state.prompt += `
 ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
@@ -1451,6 +1504,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     state.taskBudgets = Object.fromEntries(
       report.tasks.map((task) => [task.taskId, task.attemptTokens]),
     );
+    this.raiseBudget(runId, state, policy, report);
+    return "continue";
+  }
+  /**
+   * Grows the run budget to the sized price, up to the policy's ceiling. A plan sent back to be
+   * split is raised too: the price only grows with the re-plan, and a run on a provider with a
+   * high per-step cost otherwise ran out before its plan was accepted (expenses-py-r4).
+   */
+  private raiseBudget(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    report: SizingReport,
+  ): void {
     if (report.budgetAfter > policy.maxTotalTokens) {
       const before = hashJson(policy);
       const after = PolicySchema.parse({ ...policy, maxTotalTokens: report.budgetAfter });
@@ -1474,7 +1541,6 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       policy.maxTotalTokens = after.maxTotalTokens;
       state.manifest.policyHash = hashJson(after);
     }
-    return "continue";
   }
   /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   private wait(

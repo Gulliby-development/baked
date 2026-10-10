@@ -28,6 +28,8 @@ The Copilot connection uses your Copilot subscription through the same API as th
 
 A 401 means the token was rotated; copy it again.
 
+For Claude models BAKED marks the system prompt and the newest message with Copilot's `copilot_cache_control`, the cache marker the IDE extensions send, so later agent steps can read the conversation from the prompt cache. GPT models on Copilot rely on the upstream automatic prefix cache. Copilot bills premium requests rather than tokens, so the cache shortens responses and lowers the token counts BAKED records, not the Copilot bill.
+
 ## OpenAI Codex
 
 The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation: while a conversation only grows, each step sends just the new messages, so Codex reuses the same prompt cache key and the cached prefix. A compacted, edited or retried conversation starts a new thread. Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off, because BAKED sends its own.
@@ -48,6 +50,8 @@ When a model fails with a transient error, BAKED retries it, then moves to the n
 ```
 
 Chains are edited in `/router` (Model Fallback section: `Enter` adds, `d` clears) or in config.
+
+Workflow runs use the same chains for routes that have no fallback models of their own, and a run whose provider refuses the account (no credits or quota, rejected key) moves to the first model of the chain on another provider. See [workflow runtime](workflows/runtime.md).
 
 - Each model gets `retry.maxTransientRetries` attempts (default 3) with exponential backoff before the next one is tried. After the last fallback the chain starts again from the primary, at most 3 cycles, then the original error is raised.
 - Transient means overload, 429, 5xx, rate limits, timeouts and connection errors. A 403 counts only when its body mentions overload or a rate limit. 401, invalid requests and unknown models fail at once.

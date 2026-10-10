@@ -483,7 +483,7 @@ describe("durable SDD runtime", () => {
     expect(service.store.tasks(run.runId)).toHaveLength(2);
   });
   test("plan-time sizing sends a plan above the run ceiling back to the planner once, then asks to split the feature", async () => {
-    const sized: RunPolicy = { ...policy, sizing: { maxRunTokens: 100_000 } };
+    const sized: RunPolicy = { ...policy, maxTotalTokens: 60_000, sizing: { maxRunTokens: 100_000 } };
     const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     const executor = new FixtureExecutor(root);
@@ -496,6 +496,8 @@ describe("durable SDD runtime", () => {
     expect(paths).toContain("sizing/plan-0.json");
     expect(paths).toContain("sizing/plan-1.json");
     expect(service.store.state(run.runId).prompt).toContain("Sizing: the plan is too large");
+    // The budget grows to the price before the re-plan, not only once a plan is accepted.
+    expect(paths).toContain("policy-revisions/sizing-0.json");
     const question = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
     expect(question?.body_json).toContain("initiative");
   });

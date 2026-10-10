@@ -101,11 +101,12 @@ describe("clarification resume point", () => {
     expect(clarificationResumeIndex(stages, at("research"), { questions: [] })).toBe(at("specify"));
     expect(clarificationResumeIndex(stages, at("specify"), { questions: [] })).toBe(at("specify"));
   });
-  test("analysis repeats the earliest stage its blocking findings refer to", () => {
+  test("analysis repeats the earliest stage its findings refer to, since an answer may cover any of them", () => {
     const finding = (refs: string[], blocking = true) => ({ id: "F", kind: "coverage", refs, description: "x", blocking });
     expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["plan.md", "tasks.json"])] })).toBe(at("plan"));
     expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["plan.md"]), finding(["NFR-001", "AC-004"])] })).toBe(at("specify"));
-    expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["spec.json"], false), finding(["tasks.json"])] })).toBe(at("plan"));
+    expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["spec.json"], false), finding(["tasks.json"])] })).toBe(at("specify"));
+    expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["plan.md"], false), finding(["tasks.json"])] })).toBe(at("plan"));
   });
 });
 

@@ -47,6 +47,8 @@ interface Behavior {
   capped?: number;
   /** Severity of the convergence gaps; high by default. */
   gapSeverity?: "high" | "medium";
+  /** A spec that names another feature than the run's. */
+  renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
 }
 
@@ -70,7 +72,7 @@ class V2Executor implements AgentExecutor {
         output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
         break;
       case "spec":
-        output = spec;
+        output = this.behavior.renamedFeature ? { ...spec, featureId: "expense-report" } : spec;
         break;
       case "plan": {
         const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\nvalue.txt\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture";
@@ -285,6 +287,15 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+  }, 60000);
+
+  test("a spec that renames the feature keeps the run's feature ID", async () => {
+    const { start, complete, service } = setup({ renamedFeature: true });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.state(run.runId).spec?.featureId).toBe("fixture");
   }, 60000);
 
   test("an attempt that stops at its cap after editing continues once with larger caps", async () => {

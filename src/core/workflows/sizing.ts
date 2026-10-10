@@ -271,7 +271,7 @@ export function plannerSizing(
   const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / rates.code.perFile.high));
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
   };
 }
 
@@ -336,6 +336,56 @@ export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): stri
       (task) =>
         `Task ${task.id} writes source code but its checkIds do not name the policy check ${id}; add it so its type errors show in that task.`,
     );
+}
+
+/**
+ * Splits each oversized test task into one task per test file, so the plan needs no second round
+ * for it: test files rarely depend on each other, and a planner told to split a test task did not
+ * (expenses-py-r4). The first file keeps the task's ID and the others get new ones; every part
+ * keeps the task's criteria, checks and dependencies, and a task that depended on it depends on
+ * every part. Returns null when no test task is oversized.
+ */
+export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGraph | null {
+  const oversized = new Set(
+    report.tasks.filter((task) => task.oversized && task.kind === "test").map((t) => t.taskId),
+  );
+  if (!oversized.size) return null;
+  let next = Math.max(...graph.tasks.map((task) => Number(task.id.slice(1)))) + 1;
+  const parts = new Map<string, string[]>();
+  const tasks = graph.tasks.flatMap((task) => {
+    if (!oversized.has(task.id)) return [task];
+    const files = task.writes.filter((write) => write.action !== "delete");
+    const deletes = task.writes.filter((write) => write.action === "delete");
+    const split = files.map((write, index) => {
+      const id = index === 0 ? task.id : `T${String(next++).padStart(3, "0")}`;
+      const siblings = files.filter((other) => other !== write).map((other) => other.path);
+      return {
+        ...task,
+        id,
+        writes: index === 0 ? [write, ...deletes] : [write],
+        description: `${task.description}\nSizing split this task by file: write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.`,
+      };
+    });
+    parts.set(
+      task.id,
+      split.map((part) => part.id),
+    );
+    return split;
+  });
+  return {
+    ...graph,
+    tasks: tasks.map((task) => ({
+      ...task,
+      dependsOn: [
+        ...new Set(
+          task.dependsOn.flatMap((id) => {
+            const split = parts.get(id);
+            return split && !split.includes(task.id) ? split : [id];
+          }),
+        ),
+      ],
+    })),
+  };
 }
 
 /** The note that sends an oversized plan back to the planner once. */
