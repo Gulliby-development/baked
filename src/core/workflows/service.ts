@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
-import { ProfileRegistry } from "../agents/profiles/registry.js";
 import type { ContextManager } from "../context/manager.js";
+import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
 import { hostDiff } from "../verification/snapshot.js";
@@ -31,6 +31,7 @@ import {
   WorkspaceLeases,
 } from "./leases.js";
 import { undoRunEdits } from "./rollback.js";
+import { routedProfiles, routingRecord } from "./routing.js";
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
@@ -134,11 +135,7 @@ export class NativeWorkflowService implements WorkflowService {
         "INVALID_DEFINITION",
         "A dollar cap requires verified model pricing; use the token/time limits with maxCostUsd=null",
       );
-    const registry = new ProfileRegistry(this.workspace, {
-      active: model,
-      coding: this.config.taskRouter?.ember ?? this.config.taskRouter?.coding ?? undefined,
-      review: this.config.taskRouter?.verify ?? undefined,
-    });
+    const registry = routedProfiles(this.workspace, this.config, model);
     let loaded: LoadedDefinition;
     try {
       loaded = loadDefinition(this.workspace, request.workflowId, policy);
@@ -150,6 +147,14 @@ export class NativeWorkflowService implements WorkflowService {
         error instanceof Error ? error.message : String(error),
       );
     }
+    const routing = routingRecord(
+      this.config,
+      registry,
+      model,
+      request.workflowId,
+      loaded.definition.stages.map((stage) => stage.id),
+      request.routes,
+    );
     const profiles = registry.list().map((p) => p.profile);
     const outputs: Record<string, string> = {
       research: "research",
@@ -310,6 +315,7 @@ export class NativeWorkflowService implements WorkflowService {
       if (duplicate) return duplicate;
       const id = newId();
       this.store.create(id, request.featureId, workflow, profiles, policy, state);
+      this.store.artifact(id, "routing", ROUTING_ARTIFACT, canonical(routing));
       if (gates.length) this.store.artifact(id, "gates", GATES_ARTIFACT, canonical(gates));
       if (diff) {
         const artifact = this.store.artifact(id, "diff", "diff/input.patch", diff.text);
@@ -1053,6 +1059,15 @@ export class NativeWorkflowService implements WorkflowService {
       const gates = this.store.artifacts(runId).find((a) => a.logical_path === GATES_ARTIFACT);
       if (gates)
         this.store.artifact(id, "gates", GATES_ARTIFACT, this.store.readArtifact(runId, gates.id));
+      // A fork keeps the models its parent froze at start, stage routes included.
+      const routing = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
+      if (routing)
+        this.store.artifact(
+          id,
+          "routing",
+          ROUTING_ARTIFACT,
+          this.store.readArtifact(runId, routing.id),
+        );
       if (state.diff) {
         const diff = this.store.artifact(
           id,

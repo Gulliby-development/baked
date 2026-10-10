@@ -370,11 +370,38 @@ For import, enable `importsEnabled` separately and point to a local source direc
 
 To accept a schema-compatible imported package, pass its spec/plan/tasks to `candidate`; the import itself does not change accepted data. Profiles are loaded from the built-in definitions, `~/.baked/agents/*.json`, then `baked/agents/*.json`. The source and hash are visible in `workflow profiles`. A project workflow is stored in `baked/workflows/ID.json`; the mandatory SDD stages cannot be removed or reordered. Skills live in `baked/skills/ID/SKILL.md` and are frozen by hash.
 
-For a review by another model, save the full definition of `reviewer` or `security-reviewer` in `baked/agents/ID.json` and set its `model` to a specific configured `provider/model`. `workflow profiles` shows the format of the other fields. Correctness, security and skeptic profiles can use different models. Without such an assignment, the built-in `$review` uses an available review slot or the active model. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
+For a review by another model, route it with `modelRouting` (see [Model routing](#model-routing)) rather than copying a profile. A copied profile in `baked/agents/ID.json` can still name a specific `provider/model`, but a project file then carries one person's model choice. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
 
 Export creates a new directory inside the workspace. The host API allows a separate outside-path approval callback; the CLI does not provide one automatically. Raw provider messages and command output are not part of the portable report; known credentials are masked. Redaction removes the selected artifact content, keeps the original hash and a tombstone and invalidates evidence. It does not promise to remove every possible copy of a string from other artifacts.
 
 GC removes only terminal runs older than 30 days and the given cutoff when no child run needs them and they hold no lease. Active/waiting/blocked data and the shared `specs/` are kept. For a backup, stop the writers and save `.baked/workflows.sqlite` together with `.baked/workflow-runs/`. Copying a live SQLite database also needs the WAL/SHM files or an SQLite backup; an arbitrary copy of one file during writes is not a consistent backup.
+
+## Model routing
+
+Profiles name a model class: built-in ones use `$active` (the run model: the tab model or `--model`), `$coding` and `$review`. The `modelRouting` section of the global or project configuration turns classes, roles, profiles and workflow stages into concrete models:
+
+```jsonc
+"modelRouting": {
+  "classes": { "fast": "anthropic/claude-haiku-5-5", "review": "openai/gpt-5.1" },
+  "roles": { "researcher": "$fast", "reporter": "$fast" },
+  "profiles": { "security-reviewer": "anthropic/claude-opus-5-5" },
+  "workflows": { "sdd": { "stages": { "research": "$fast" } } }
+}
+```
+
+A value is a `provider/model` ID or `$class`. A class names a model, not another class. A project layer is merged over the global one section by section, and stage routes workflow by workflow.
+
+The model of an agent is chosen in this order, the first match winning:
+
+1. `--route STAGE=MODEL,...` on `workflow run`;
+2. `modelRouting.workflows.<workflow>.stages.<stage>`;
+3. `modelRouting.profiles.<profile>`;
+4. `modelRouting.roles.<role>`;
+5. the profile's class through `modelRouting.classes`; `$coding` and `$review` then fall back to the `/router` Code (`taskRouter.ember`) and Review (`taskRouter.verify`) slots, and every built-in class to the run model.
+
+A stage route applies to every agent of that stage, including its tasks, review dimensions and skeptics; gates on transitions use their profile's model. A route naming a stage the workflow does not have, or an unknown class, is refused when the run starts.
+
+A run freezes its routing at start in the `routing.json` artifact (each profile's and each routed stage's model with the source of the choice); resume, revise and fork use it, whatever the configuration says later. `baked workflow route [WORKFLOW] [--model ID] [--route ...] [--json]` prints the same table without starting a run, and `workflow profiles [--model ID]` shows each profile's resolved model and `modelSource`.
 
 ## Delivery
 
