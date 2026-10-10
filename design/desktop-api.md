@@ -121,7 +121,7 @@ The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/I
 
 ### Attention (exists, extended by A)
 
-`GET /v1/attention` items gain `source: "run" | "chat"`. Chat items are the pending prompts of sessions: `{source: "chat", sessionId, title, requestId: PROMPT_ID, kind: prompt kind, blocking: true, createdAt, runId: null, featureId: null, status: "waiting"}`. Run items keep their fields and get `source: "run"`, `sessionId: null`, `title: null`.
+`GET /v1/attention` items gain `source: "run" | "chat" | "initiative"`. Chat items are the pending prompts of sessions: `{source: "chat", sessionId, title, requestId: PROMPT_ID, kind: prompt kind, blocking: true, createdAt, runId: null, featureId: null, status: "waiting"}`. Run items keep their fields and get `source: "run"`, `sessionId: null`, `title: null`.
 
 ## Workflow runs (exists, gaps filled by B)
 
@@ -133,32 +133,32 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | --- | --- | --- |
 | `POST /v1/workflow/runs/RUN_ID/continue` | `requestId` | `continue` |
 | `POST /v1/workflow/runs/RUN_ID/evidence` | `requestId`, `evidence` (text), `accepted` | `evidence` (manual acceptance criterion) |
-| `POST /v1/workflow/runs/RUN_ID/recover` | `requestId`, `effectId`, `resolution`, `evidence` | `recover` |
+| `POST /v1/workflow/runs/RUN_ID/recover` | `requestId`, `effectId`, `resolution: "record-applied" \| "record-not-applied" \| "retry" \| "cancel"`, `evidence` | `recover` |
 | `POST /v1/workflow/runs/RUN_ID/fork` | | `fork` |
 | `POST /v1/workflow/runs/RUN_ID/undo` | `path?` | `undo` |
 | `POST /v1/workflow/runs/RUN_ID/discard-worktree` | | `discard-worktree` |
 | `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true); no revision | `deliver` (prepares the plan and its approval request) |
-| `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `requestId?` | `deliver --execute`, after the plan was approved |
+| `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `expectedRevision`, `requestId?`; no `commandId` | `deliver --execute`, after the plan was approved |
 | `GET /v1/workflow/runs/RUN_ID/progress` | | `export-progress` |
 | `GET /v1/workflow/gates` | | `gates`: gates with `required`, `scope`, `source`, `confirmed`, plus `problems` |
 | `POST /v1/workflow/gates/confirm` | `{ids?: string[], all?: true}` | `gates confirm` |
 | `GET /v1/workflow/route` | `?workflow=&model=&route=` | `route`: who runs each stage and why |
-| `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` | usage of every run updated in the window, summed |
+| `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` | `{days, since, groupBy, runs, attempts, totalTokens, cacheReadTokens, groups: [{key, runs, attempts, tokens, cacheReadTokens}]}` over every attempt started in the window; stage keys are stage IDs (`plan`, `task-T001`, `checks`), days are UTC dates |
 
 ## Initiatives (B)
 
-The `baked workflow initiative` commands over HTTP. Mutations take `commandId` and `expectedRevision`.
+The `baked workflow initiative` commands over HTTP. Mutations take `commandId` and `expectedRevision`. Drives of one initiative run one after another; a launch while another drive waits to start is merged into it.
 
 | Method and path | Body | CLI |
 | --- | --- | --- |
 | `GET /v1/initiatives` | | `list` |
-| `POST /v1/initiatives` | `prompt`, `workflow?`, `policy?`, `model?`, `budget?: {tokens?, calls?, timeMs?}`, `tieredApproval?`, `maxTasks?`, `maxFiles?`, `confirmAutoApproval?` | `start` (planning is driven in the background like a run) |
+| `POST /v1/initiatives` | `commandId`, `initiativeId`, `prompt`, `plan?`, `workflow?`, `policy?`, `model?`, `owner?`, `budget?: {tokens, calls, timeMs}`, `tieredApproval?: {maxTasks, maxFiles}`, `confirmAutoApproval?` | `start`; 202 with the view, planning is driven in the background like a run |
 | `GET /v1/initiatives/ID` | | `show` |
 | `GET /v1/initiatives/ID/events` | `?after=` | `events` as SSE, or JSON with `Accept: application/json` |
-| `POST /v1/initiatives/ID/merge` | `features`, `id`, `title` | `merge` |
+| `POST /v1/initiatives/ID/merge` | `features`, `id?`, `title?` | `merge` |
 | `POST /v1/initiatives/ID/split` | `feature`, `parts` | `split` |
 | `POST /v1/initiatives/ID/remove`, `/rename`, `/replan` | `feature` (and `title` for rename) | same |
-| `POST /v1/initiatives/ID/approve`, `/reject` | `requestId` and `digest`, or `reason` | same |
+| `POST /v1/initiatives/ID/approve`, `/reject` | `requestId` and `digest`, or `requestId` and `reason` | same; approve drives in the background |
 | `POST /v1/initiatives/ID/resume`, `/pause` | | same; resume drives in the background |
 | `POST /v1/initiatives/ID/extend` | `tokens?`, `calls?`, `timeMs?` | `extend` |
 
@@ -171,12 +171,13 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 | Method and path | Body | Result |
 | --- | --- | --- |
 | `POST /v1/projects/pin`, `/unpin`, `/forget` | `{path}` | `{projects}` as `GET /v1/projects` |
-| `GET /v1/projects/current/instructions` | | `{files: [{order, path, source, bytes, hash, content}]}`: the instruction files every chat and workflow agent reads, in order |
-| `PUT /v1/projects/current/instructions` | `{path, content, expectedHash}` | the file entry; only a listed file can be written, 409 `INPUT_CHANGED` when `expectedHash` no longer matches |
-| `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`; secrets never appear in config |
-| `PATCH /v1/config` | `{scope: "global" \| "project", set?: object, remove?: string[]}` | as `GET`; `set` replaces top-level keys, `remove` deletes them. Model routing, fallbacks, workflow policy (checks, budget presets), default model and mode live here |
-| `GET /v1/providers` | | `{providers: [{id, name, configured, source: "env" \| "app" \| null}]}` |
-| `PUT /v1/providers/ID/key` | `{key}` | `{configured: true, storage: "keychain" \| "file"}` |
+| `POST /v1/projects/pin`, `/unpin`, `/forget` | `{path}` (absolute) | the `GET /v1/projects` list; 404 for a folder that is not known |
+| `GET /v1/projects/current/instructions` | | `{files: [{order, path, absolutePath, source, scope: "project" \| "global", bytes, hash, content}], promptBytes}`: the instruction files every chat and workflow agent reads, in order; `hash` is the SHA-256 of the file's bytes |
+| `PUT /v1/projects/current/instructions` | `{path, content, expectedHash}` | the file entry; only a listed file can be written (404 otherwise; a project file wins over a global one with the same path), 409 `INPUT_CHANGED` when `expectedHash` no longer matches |
+| `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`: both files as stored and the merged config the server runs with. Provider keys live in the secret store, not here, but values the user put in these files themselves (an MCP server's `env`) are returned as written |
+| `PATCH /v1/config` | `{scope: "global" \| "project", set?: object, remove?: string[]}` | as `GET`; `set` replaces top-level keys, `remove` deletes them; the running server uses the new config at once. Model routing, fallbacks, workflow policy (checks, budget presets), default model and mode live here |
+| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| null, keyUrl?}]}`; `acceptsKey` is false for providers signed in another way (Copilot, Codex) |
+| `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
 
 ## Screen map
