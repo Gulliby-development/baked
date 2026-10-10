@@ -1261,7 +1261,6 @@ export class WorkflowScheduler {
       },
     });
   }
-  /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
    * the planner once with a split note; a plan still above the run ceiling waits for the user,
@@ -1350,6 +1349,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxTaskKb)}`;
     }
     return "continue";
   }
+  /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   private wait(
     kind: "clarification" | "manual_evidence",
     state: RuntimeState,
