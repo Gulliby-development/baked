@@ -170,6 +170,7 @@ export interface AttemptRow {
   used_tokens: number | null;
   usage_complete: number;
   input_hash: string;
+  started_at: number;
 }
 type EventInput = WorkflowEvent extends infer E
   ? E extends WorkflowEvent
@@ -914,6 +915,15 @@ export class WorkflowStore {
         "SELECT id,stage_id,parent_step_id,generation,status FROM steps WHERE run_id=? ORDER BY rowid",
       )
       .all(runId);
+  }
+  /** Runs with an attempt that started at or after `since`, newest first. */
+  runIdsWithAttemptsSince(since: number): string[] {
+    return this.db
+      .query<{ run_id: string }, [number]>(
+        "SELECT run_id FROM attempts WHERE started_at>=? GROUP BY run_id ORDER BY MAX(started_at) DESC",
+      )
+      .all(since)
+      .map((row) => row.run_id);
   }
   attempts(runId: string): AttemptRow[] {
     return this.db.query<AttemptRow, [string]>("SELECT * FROM attempts WHERE run_id=?").all(runId);
