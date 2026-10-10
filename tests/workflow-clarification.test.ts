@@ -13,6 +13,7 @@ import {
   demoteDeferred,
   namedPaths,
   narrowsVerification,
+  planOnlyFindings,
   researchBudget,
 } from "../src/core/workflows/clarification.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
@@ -108,15 +109,28 @@ describe("clarification resume point", () => {
   });
 });
 
+describe("plan-only analysis findings", () => {
+  const finding = (kind: string, refs: string[], blocking = true) => ({ kind, refs, blocking });
+  test("coverage and inconsistency gaps in plan artifacts qualify", () => {
+    expect(planOnlyFindings([finding("coverage", ["tasks.json"]), finding("inconsistency", ["plan.md", "T002"])])).toHaveLength(2);
+    expect(planOnlyFindings([finding("coverage", ["tasks.json"]), finding("ambiguity", ["spec.json"], false)])).toHaveLength(1);
+  });
+  test("a spec reference, another kind or no blocking finding keeps the person in the loop", () => {
+    expect(planOnlyFindings([finding("coverage", ["tasks.json"]), finding("coverage", ["AC-002"])])).toEqual([]);
+    expect(planOnlyFindings([finding("ambiguity", ["plan.md"])])).toEqual([]);
+    expect(planOnlyFindings([finding("coverage", ["plan.md"], false)])).toEqual([]);
+  });
+});
+
 const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title: "Fixture", problem: "Missing value", outcome: "Value exists", inScope: ["Create value"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "Value is ready", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "the task completes", then: "value is ready", method: "automated" }], dependencies: [] };
 const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
 const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\nvalue.txt\n## Data\nText\n## Verification\ncheck\n## Risks\nNone for fixture";
 
-/** Scripted agents: research may ask once, analysis may raise one plan finding once. */
+/** Scripted agents: research may ask once, analysis may raise one plan finding a given number of times. */
 class ScriptedExecutor implements AgentExecutor {
   calls: string[] = [];
   requests: ExecutionRequest[] = [];
-  constructor(private script: { researchUnknowns?: { question: string; blocking: boolean }[]; planFinding?: boolean }) {}
+  constructor(private script: { researchUnknowns?: { question: string; blocking: boolean }[]; planFinding?: number }) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     this.requests.push(request);
@@ -132,8 +146,8 @@ class ScriptedExecutor implements AgentExecutor {
       case "spec": output = spec; break;
       case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [{ id: "T001", title: "Create value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }] } }; break;
       case "analysis": {
-        const ask = this.script.planFinding === true;
-        this.script.planFinding = false;
+        const ask = (this.script.planFinding ?? 0) > 0;
+        this.script.planFinding = Math.max(0, (this.script.planFinding ?? 0) - 1);
         output = ask
           ? { schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision", findings: [{ id: "F1", kind: "coverage", refs: ["tasks.json"], description: "Task order unclear", blocking: true }] }
           : { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
@@ -186,14 +200,23 @@ describe("answering a clarification", () => {
     expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
     expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
   });
-  test("a plan finding from analysis resumes at plan and keeps the spec", async () => {
-    const executor = new ScriptedExecutor({ planFinding: true });
+  test("a plan-only finding from analysis goes back to the planner without a person", async () => {
+    const executor = new ScriptedExecutor({ planFinding: 1 });
+    const service = setup(executor);
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis"]);
+    expect(executor.requests[4]?.prompt).toContain("Task order unclear");
+    expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+  });
+  test("a plan finding that survives the replan asks a person and resumes at plan", async () => {
+    const executor = new ScriptedExecutor({ planFinding: 2 });
     const service = setup(executor);
     const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
     expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
     await answerPending(service, run.runId);
     expect(service.store.state(run.runId).stageIndex).toBe(2);
     expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
-    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis"]);
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis", "plan", "analysis"]);
   });
 });
