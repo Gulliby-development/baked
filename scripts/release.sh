@@ -1,109 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# baked Release Script
-# Usage: ./scripts/release.sh <patch|minor|major> [--dry-run|--skip-checks]
+# Cut a BAKED release.
+# Usage: scripts/release.sh <patch|minor|major> [--dry-run|--skip-checks]
 #
-# 1. Runs lint + typecheck + test (skip with --skip-checks)
-# 2. Bumps version in package.json
-# 3. Generates CHANGELOG.md via git-cliff
-# 4. Commits, tags, pushes
-# 5. Creates GitHub release with changelog
+# 1. Runs lint, typecheck, locale validation and tests (skip with --skip-checks).
+# 2. Bumps the version in package.json.
+# 3. Commits "Release X.Y.Z", tags vX.Y.Z and pushes main and the tag.
 #
-# Prerequisites: git-cliff (brew install git-cliff), gh (GitHub CLI)
+# The tag starts .github/workflows/release.yml, which builds every archive and
+# publishes the GitHub release with notes generated from merged pull requests.
 
 BUMP="${1:-}"
-DRY_RUN="${2:-}"
+FLAG="${2:-}"
 
-if [[ -z "$BUMP" ]] || [[ ! "$BUMP" =~ ^(patch|minor|major)$ ]]; then
-  echo "Usage: ./scripts/release.sh <patch|minor|major> [--dry-run]"
+if [[ ! "$BUMP" =~ ^(patch|minor|major)$ ]]; then
+  echo "Usage: scripts/release.sh <patch|minor|major> [--dry-run|--skip-checks]"
   exit 1
 fi
 
-# Check tools
-command -v git-cliff >/dev/null 2>&1 || { echo "Install git-cliff: brew install git-cliff"; exit 1; }
-command -v gh >/dev/null 2>&1 || { echo "Install gh: brew install gh"; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "Install jq: brew install jq"; exit 1; }
-
-# Ensure clean working tree
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "Working tree is dirty. Commit or stash changes first."
   exit 1
 fi
 
-# Ensure on main
 BRANCH=$(git branch --show-current)
 if [[ "$BRANCH" != "main" ]]; then
-  echo "Must be on main branch (currently on: $BRANCH)"
+  echo "Must be on main (currently on: $BRANCH)"
   exit 1
 fi
 
-# Pre-flight — catch lint/typecheck/test failures BEFORE tagging.
-# CI runs these too, but a failed CI on a published tag means a broken
-# Homebrew formula or npm tarball before the npm-publish job can veto it.
-# --skip-checks is an escape hatch for emergency releases.
-if [[ "$DRY_RUN" != "--skip-checks" && "$DRY_RUN" != "--dry-run" ]]; then
-  echo "  Pre-flight: lint, typecheck, test..."
-  bun run lint
-  bun run typecheck
-  bun test
-  echo "  Pre-flight OK"
-  echo ""
+git fetch --quiet origin main
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+  echo "Local main differs from origin/main. Pull or push first."
+  exit 1
 fi
 
-# Current version
-CURRENT=$(jq -r .version package.json)
+CURRENT=$(bun -e "console.log(require('./package.json').version)")
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-
 case "$BUMP" in
   major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
   minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
   patch) PATCH=$((PATCH + 1)) ;;
 esac
-
 VERSION="${MAJOR}.${MINOR}.${PATCH}"
 TAG="v${VERSION}"
 
-echo ""
-echo "  Release: ${CURRENT} → ${VERSION} (${BUMP})"
-echo "  Tag:     ${TAG}"
-echo ""
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  echo "Tag $TAG already exists."
+  exit 1
+fi
 
-if [[ "$DRY_RUN" == "--dry-run" ]]; then
-  echo "  [dry-run] Would generate changelog:"
-  git-cliff --tag "$TAG" --unreleased --strip header
-  echo ""
-  echo "  [dry-run] No changes made."
+echo "Release: ${CURRENT} -> ${VERSION} (${BUMP}), tag ${TAG}"
+
+if [[ "$FLAG" == "--dry-run" ]]; then
+  echo "[dry-run] Pull requests merged since the last tag:"
+  LAST=$(git describe --tags --abbrev=0 2>/dev/null || true)
+  git log --oneline ${LAST:+"$LAST"..HEAD}
   exit 0
 fi
 
-# Bump version in package.json
-TMPFILE=$(mktemp)
-jq ".version = \"${VERSION}\"" package.json > "$TMPFILE" && mv "$TMPFILE" package.json
+if [[ "$FLAG" != "--skip-checks" ]]; then
+  bun run lint
+  bun run typecheck
+  bun scripts/validate-locales.ts
+  bun test
+fi
 
-# Generate release notes for this version (for GH release body)
-RELEASE_NOTES=$(git-cliff --tag "$TAG" --unreleased --strip header)
-
-# Prepend new version to CHANGELOG.md (preserve existing v1.0.0 and earlier)
-git-cliff --tag "$TAG" --unreleased --prepend CHANGELOG.md
-
-# Commit and tag
-git add package.json CHANGELOG.md
-git commit -m "chore(release): ${VERSION}"
-git tag -a "$TAG" -m "Release ${VERSION}"
-
-echo ""
-echo "  Pushing to origin..."
+bun -e "
+const fs = require('node:fs');
+const text = fs.readFileSync('package.json', 'utf8');
+fs.writeFileSync('package.json', text.replace(/\"version\": \"[^\"]+\"/, '\"version\": \"${VERSION}\"'));
+"
+git add package.json
+git commit -m "Release ${VERSION}"
+git tag -a "$TAG" -m "BAKED ${VERSION}"
 git push origin main
 git push origin "$TAG"
 
-echo ""
-echo "  Creating GitHub release..."
-gh release create "$TAG" \
-  --title "baked ${VERSION}" \
-  --notes "$RELEASE_NOTES"
-
-echo ""
-echo "  Done! Release ${VERSION} created."
-echo "  GitHub Actions will now build binaries and update Homebrew."
-echo ""
+echo "Pushed ${TAG}. The Release workflow builds the archives and publishes the release."
