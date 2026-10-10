@@ -11,13 +11,18 @@ import {
   type WebContents,
 } from "electron";
 import type { AppSettings, AttentionItem, DesktopProject } from "../shared/api.js";
-import { type HttpMethod, IPC } from "../shared/bridge.js";
+import { attentionHash, attentionTitle, kindLabel } from "../shared/attention.js";
+import { type HttpMethod, IPC, type ProjectAction } from "../shared/bridge.js";
 import { AttentionHub } from "./attention.js";
 import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
 import { addKnownProject, cliRunner, listKnownProjects } from "./baked-cli.js";
+import { readGitBranch } from "./git-branch.js";
+import { manageKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
+import { AppTray } from "./tray.js";
+import { closeAction } from "./tray-model.js";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const settings = new SettingsStore(join(app.getPath("userData"), "settings.json"));
@@ -34,18 +39,35 @@ function backendCommand() {
 }
 
 let window: BrowserWindow | null = null;
+let quitting = false;
 const broadcast = (channel: string, ...args: unknown[]): void => {
   if (window && !window.isDestroyed()) window.webContents.send(channel, ...args);
 };
 
+function showWindow(hash?: string): void {
+  if (!window) createWindow();
+  if (window?.isMinimized()) window.restore();
+  window?.show();
+  window?.focus();
+  if (hash) broadcast(IPC.navigate, hash);
+}
+
+const tray = new AppTray({
+  show: () => showWindow(),
+  showAttention: () => showWindow("#/attention"),
+  quit: () => app.quit(),
+});
+
 const attention = new AttentionHub((items, added) => {
   broadcast(IPC.attentionChanged, items);
+  tray.update(items);
   notify(added);
 });
 const attentionStreams = new Map<string, Stream>();
 
 const supervisor = new ProjectSupervisor({
   listProjects: () => listKnownProjects(cliRunner(backendCommand())),
+  readBranch: readGitBranch,
   createBackend: (project, key, onState) => {
     mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
     return new Backend({
@@ -85,13 +107,10 @@ function notify(items: AttentionItem[]): void {
   for (const item of items) {
     if (item.blocking ? !notifyBlocking : !notifyAdvisory) continue;
     const notification = new Notification({
-      title: `${item.projectName}: ${item.featureId}`,
-      body: item.blocking ? `Waiting for you: ${item.kind}` : `For your review: ${item.kind}`,
+      title: `${item.projectName}: ${attentionTitle(item)}`,
+      body: `${item.blocking ? "Waiting for you" : "For your review"}: ${kindLabel(item.kind)}`,
     });
-    notification.on("click", () => {
-      window?.show();
-      broadcast(IPC.navigate, "#/attention");
-    });
+    notification.on("click", () => showWindow(attentionHash(item)));
     notification.show();
   }
 }
@@ -162,6 +181,20 @@ function registerIpc(): void {
     const projects = await supervisor.refresh();
     return projects.find((p) => resolve(p.path) === resolve(folder)) ?? null;
   });
+  handle(IPC.manageProject, async (_e, key: string, action: ProjectAction) => {
+    const project = supervisor.projects().find((p) => p.key === key);
+    if (!project) throw new Error("Unknown project");
+    if (action === "forget" && project.open) await supervisor.close(key);
+    const running = supervisor.projects().filter((p) => p.open && p.backend.kind === "running");
+    await manageKnownProject(
+      project.path,
+      action,
+      running.map((p) => (path, body) => supervisor.request(p.key, "POST", path, body)),
+      cliRunner(backendCommand()),
+    );
+    if (action === "forget") rememberOpen();
+    return supervisor.refresh();
+  });
   handle(IPC.request, (_e, key: string, method: HttpMethod, path: string, body?: unknown) =>
     supervisor.request(key, method, path, body),
   );
@@ -222,6 +255,30 @@ function createWindow(): void {
   });
   if (devServerUrl) void window.loadURL(devServerUrl);
   else void window.loadFile(join(app.getAppPath(), "out", "renderer", "index.html"));
+  window.on("close", (event) => {
+    if (quitting || !settings.get().keepRunningInTray) return;
+    // Whether a run still works is read fresh; the list may be minutes old.
+    event.preventDefault();
+    const current = window;
+    void supervisor
+      .refresh()
+      .catch(() => supervisor.projects())
+      .then((projects) => {
+        if (!current || current.isDestroyed()) return;
+        const action = closeAction({
+          quitting,
+          keepRunningInTray: settings.get().keepRunningInTray,
+          projects,
+        });
+        if (action === "hide") {
+          current.hide();
+          tray.show();
+        } else {
+          current.destroy();
+        }
+      });
+  });
+  window.on("show", () => tray.hide());
   window.on("closed", () => {
     window = null;
   });
@@ -249,21 +306,15 @@ async function boot(): Promise<void> {
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on("second-instance", () => {
-    if (window?.isMinimized()) window.restore();
-    window?.focus();
-  });
+  app.on("second-instance", () => showWindow());
   app.whenReady().then(boot, (error: unknown) => {
     dialog.showErrorBox("BAKED failed to start", String(error));
     app.quit();
   });
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  app.on("activate", () => showWindow());
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
-  let quitting = false;
   app.on("before-quit", (event) => {
     if (quitting) return;
     // Backends get to pause their active runs before the app exits.

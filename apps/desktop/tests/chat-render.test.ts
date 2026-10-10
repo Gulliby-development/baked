@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseInline, parseMarkdown } from "../src/renderer/screens/chat/markdown.ts";
+import { parseInline, parseMarkdown } from "../src/renderer/screens/chat/markdown-parse.ts";
 import { toolDiff, toolTitle } from "../src/renderer/screens/chat/tools.ts";
 import { parseChatEvent } from "../src/renderer/screens/chat/transcript.ts";
 

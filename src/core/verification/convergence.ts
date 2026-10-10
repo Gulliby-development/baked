@@ -10,23 +10,60 @@ import {
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
 
+/**
+ * Planned tasks a correction of `task` may write for: those of the same profile that cover one of
+ * its criteria. A plan that gives tests a task of their own leaves a code fix and the test that
+ * pins the old behavior in two tasks; the correction needs both files.
+ */
+function relatedRootTasks(task: Pick<Task, "profileId" | "criterionIds">, root: TaskGraph): Task[] {
+  return root.tasks.filter(
+    (base) =>
+      base.profileId === task.profileId &&
+      base.criterionIds.some((id) => task.criterionIds.includes(id)),
+  );
+}
+
+/**
+ * What a correction of `base` may write: its own files and those of the related planned tasks,
+ * once each; a file the plan created is modified from then on.
+ */
+export function correctionWrites(
+  base: Task,
+  root: TaskGraph,
+  expectedFiles: Record<string, string> | null | undefined,
+): Task["writes"] {
+  return [
+    ...new Map(
+      [base, ...relatedRootTasks(base, root)]
+        .flatMap((task) => task.writes)
+        .map((write) => [write.path, write] as const),
+    ).values(),
+  ].map((write) => ({
+    ...write,
+    action:
+      write.action === "create" && expectedFiles?.[write.path] !== undefined
+        ? ("modify" as const)
+        : write.action,
+  }));
+}
+
 export function correctionAuthorized(task: Task, root: TaskGraph): boolean {
+  const related = relatedRootTasks(task, root);
   return (
     task.origin !== "planned" &&
-    root.tasks.some(
-      (base) =>
-        task.profileId === base.profileId &&
-        task.writes.every((w) =>
-          base.writes.some(
-            (b) =>
-              b.path === w.path &&
-              (b.action === w.action || (b.action === "create" && w.action === "modify")),
-          ),
-        ) &&
-        task.checkIds.every((id) => base.checkIds.includes(id)) &&
-        task.requirementIds.every((id) => base.requirementIds.includes(id)) &&
-        task.criterionIds.every((id) => base.criterionIds.includes(id)),
-    )
+    related.length > 0 &&
+    task.writes.every((w) =>
+      related.some((base) =>
+        base.writes.some(
+          (b) =>
+            b.path === w.path &&
+            (b.action === w.action || (b.action === "create" && w.action === "modify")),
+        ),
+      ),
+    ) &&
+    task.checkIds.every((id) => related.some((base) => base.checkIds.includes(id))) &&
+    task.requirementIds.every((id) => related.some((base) => base.requirementIds.includes(id))) &&
+    task.criterionIds.every((id) => related.some((base) => base.criterionIds.includes(id)))
   );
 }
 
@@ -82,17 +119,12 @@ export function appendCorrections(
     group.findings.push(finding);
     groups.set(key, group);
   }
+  const root = state.rootGraph;
   const additions = [...groups.values()].map(({ base, findings: grouped }) => {
     const ids = grouped.map((f) => f.id);
     return {
       ...base,
-      writes: base.writes.map((write) => ({
-        ...write,
-        action:
-          write.action === "create" && state.expectedFiles?.[write.path] !== undefined
-            ? ("modify" as const)
-            : write.action,
-      })),
+      writes: correctionWrites(base, root, state.expectedFiles),
       id: `T${String(next++).padStart(3, "0")}`,
       title: `Correct ${ids.join(", ")}`,
       description: grouped
