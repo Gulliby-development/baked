@@ -78,8 +78,11 @@ async function readEvents(response: Response, count: number): Promise<{ id: numb
 }
 
 interface AttentionItem {
-  runId: string;
-  featureId: string;
+  source: "run" | "chat";
+  runId: string | null;
+  featureId: string | null;
+  sessionId: string | null;
+  title: string | null;
   status: string;
   requestId: string | null;
   kind: string;
@@ -284,6 +287,9 @@ describe("local core API", () => {
       if (!request) throw new Error("No pending approval");
       expect(streamed).toEqual([
         {
+          source: "run",
+          sessionId: null,
+          title: null,
           runId: run.runId,
           featureId: "fixture",
           status: "waiting",
