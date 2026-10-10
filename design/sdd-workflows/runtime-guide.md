@@ -203,7 +203,25 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 - The range is built from the runs already in this project: per stage the middle half of the samples (the full spread with two or three samples, minus 30% to plus 40% around a single one), a typical number of tasks and the cost of one task. Without history it uses generic ranges and says so.
 - The form compares the range with the chosen preset: it fits, the high end exceeds the budget, or even the low end does. The checkpoint preset has no cap, so it only reports the interval.
 - After the plan exists, the remaining cost is the open tasks times the typical task cost plus the later stages, less what the running stage already spent. The burn rate is tokens per active minute, and the forecast names the stage where the budget runs out at the typical cost and at the high end.
-- The range shown at creation is kept as `estimates/start.json`. A completed run shows it next to the actual usage.
+- The range shown at creation is kept as `estimates/start.json`, with the approximate cost and the workflow ID. A completed run shows it next to the actual usage.
+
+`baked workflow estimate [WORKFLOW]` prints the estimate before a run, stage by stage and model by model, with the options of `workflow run` that change it (`--model`, `--route`, `--policy`, `--worktree`, `--writers`, `--json`):
+
+- Only the definition's stages count. A stage uses earlier runs of the same workflow when they reached it, then runs of other workflows, then a generic range by stage type (tasks stages: task cost times task count; approval, check and learn stages without history: zero).
+- Each stage carries the models routing gives it: the stage route, else its profile's model; tasks stages use `implementer`, review stages their review profiles, and their tokens are split evenly.
+- The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. Cache writes are not recorded, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The cost is advice only: `maxCostUsd` stays disabled.
+
+### Doctor
+
+`baked doctor` (short for `baked workflow doctor [WORKFLOW]`, same options as `estimate`) checks a run before it starts and exits 1 when something must be fixed:
+
+- Start refusals: workflows disabled, then everything `workflow run` would refuse (policy, definition, routing, gates and their confirmation, auto approval confirmation, profiles, skills, worktree prerequisites, writers). The doctor calls the same validation as the start.
+- Credentials: every model the run can call (stage routes, stage profiles, review and skeptic profiles, and every profile that may implement a task) needs a known provider with a key.
+- Commands: every check command and AI walk-through start command resolves from its working directory. Missing required ones fail, optional ones warn. Nothing is executed.
+- Warnings that do not block: review on the implementer's model, uncommitted changes, stale run worktrees, no Git repository for an inline run, a run that exited without releasing the workspace, and an estimate above `maxTotalTokens`.
+- A live run holding the workspace, or one that stopped with a command of unknown outcome, fails.
+
+`--json` prints the report with every check's `id`, `status`, `title`, `detail` and `fix`, and the estimate.
 
 ### Context compaction
 
