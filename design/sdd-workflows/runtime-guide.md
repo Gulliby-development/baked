@@ -227,6 +227,8 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 
 Every model step resends the whole conversation, so a stage that reads many files pays for each old file again on every later step. The step budget of an agent attempt (`maxAttemptTokens`, see [step-budget](../../src/core/workflows/step-budget.ts)) replaces older large results of `read`, `navigate`, `bake_find` and `bake_impact` with short stubs that keep every evidence ID; the last three tool results stay verbatim, and edits and check results are never compacted. Evidence is written by the tools into the run store, so nothing is lost; the model reads a file again if it needs the content.
 
+The evidence handed to later agents is shaped the same way. Each implemented task stores a unified diff of its changes in its `diff` evidence (`patch`, from the content kept before each edit, cut at 48,000 characters), so reviewers and the convergence auditor see the change without reading whole files. Earlier `read` evidence reaches them as its tool, the paths it named and its size, not its content; implementers get no reads at all.
+
 ## Workflow definitions (v2)
 
 Definitions of schema version 2 describe stages, transitions, contracts and gates as data ([design](workflow-v2-design.md)). `baked workflow run --workflow ID` starts a run from `sdd`, a preset or `baked/workflows/ID.json`; the new-run form lists the same IDs. A run validates the definition against the gate library when it starts and freezes the definition and the gates it binds.
