@@ -58,25 +58,25 @@
     "postinstall": "bun scripts/postinstall.mjs"
   },
   "devDependencies": {
-    "@ast-grep/cli": "^0.43.0",
+    "@ast-grep/cli": "^0.45.3",
     "@babel/core": "8.0.6",
     "@biomejs/biome": "2.5.15",
     "@types/babel__core": "7.20.5",
-    "@types/bun": "1.3.14",
-    "@types/node": "26.0.0",
-    "@types/react": "19.2.17",
+    "@types/bun": "1.4.2",
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
     "babel-plugin-react-compiler": "1.0.0",
-    "bun-types": "1.3.14",
+    "bun-types": "1.4.2",
     "typescript": "6.0.3"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.127",
     "@ai-sdk/mcp": "^1.0.90",
     "@ai-sdk/openai": "^3.0.124",
-    "@anthropic-ai/sdk": "0.105.0",
+    "@anthropic-ai/sdk": "0.131.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "0.6.0",
-    "@opentui/react": "0.4.2",
+    "@opentui/react": "0.5.14",
     "ai": "^6.0.300",
     "ignore": "^7.0.12",
     "isbinaryfile": "6.0.0",
@@ -84,22 +84,22 @@
     "linkedom": "0.18.13",
     "linkify-it": "6.1.0",
     "marked": "18.1.0",
-    "react": "19.2.7",
+    "react": "19.3.0",
     "shiki": "4.5.0",
     "strip-ansi": "7.2.0",
     "tree-sitter-wasms": "0.1.13",
     "ts-morph": "28.0.0",
     "undici": "^8.11.2",
-    "web-tree-sitter": "0.25.10",
+    "web-tree-sitter": "0.27.0",
     "zod": "4.6.5",
     "zustand": "5.0.15"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-arm64": "0.4.2",
-    "@opentui/core-darwin-x64": "0.4.2",
-    "@opentui/core-linux-arm64": "0.4.2",
-    "@opentui/core-linux-x64": "0.4.2",
-    "@opentui/core-win32-arm64": "0.4.2",
-    "@opentui/core-win32-x64": "0.4.2"
+    "@opentui/core-darwin-arm64": "0.5.14",
+    "@opentui/core-darwin-x64": "0.5.14",
+    "@opentui/core-linux-arm64": "0.5.14",
+    "@opentui/core-linux-x64": "0.5.14",
+    "@opentui/core-win32-arm64": "0.5.14",
+    "@opentui/core-win32-x64": "0.5.14"
   }
 }
