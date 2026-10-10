@@ -138,13 +138,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "implementer",
-    version: "1.3.0",
+    version: "1.4.0",
     description: "Implement one task",
     role: "implementer",
     model: "$coding",
     context: "implementation",
     instructions:
-      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. Read every file you need in one call, then apply all edits to a file in one multi_edit call.",
+      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. Read every file you need in one call; for a large file where only a few symbols matter, read those symbols or line ranges instead of the whole file. Keep each multi_edit to a few short hunks, and use several calls for a large change.",
     skills: [],
     allowedTools: [
       "read",
@@ -156,7 +156,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
     ],
     output: "implementation",
     maxSteps: 20,
-    maxOutputTokens: 4096,
+    maxOutputTokens: 16384,
   },
   {
     schemaVersion: 1,

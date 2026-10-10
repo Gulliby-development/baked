@@ -53,6 +53,12 @@ export function finalizeNotice(reason: FinalizeReason): string {
   return `The ${limit} for this task is reached. Do not call any other tool. Call submit_result now with the complete result for the work already done; list anything unfinished as unresolved instead of continuing. The host runs the checks after you, so a check you did not run again is not unresolved.`;
 }
 
+/** Notice added after a step whose output reached the output token cap. */
+export function truncationNotice(maxOutputTokens: number | undefined): string {
+  const limit = maxOutputTokens ? `the ${maxOutputTokens}-token output limit` : "the output limit";
+  return `Your last response reached ${limit} and was cut off, so the tool call in it did not run as written. Split the change into smaller calls: a multi_edit with a few short hunks per call, or one edit_file per region, instead of one large edit.`;
+}
+
 /**
  * Replace large outputs of older observation tool calls with a short stub. The stub keeps
  * every evidence ID, because results must cite them. The transformation is deterministic,
@@ -163,6 +169,7 @@ export interface AttemptUsageRecord {
 
 export interface StepLike {
   usage: StepUsageLike;
+  finishReason?: string;
   toolCalls: readonly unknown[];
 }
 
@@ -172,7 +179,10 @@ export interface StepLike {
  */
 export class AttemptStepController {
   private finalizedBy: FinalizeReason | null = null;
-  private noticeAt = -1;
+  /** Notices injected into the history, by message index, so later steps replay them in place. */
+  private readonly notices: { at: number; content: string }[] = [];
+  private finalizeNoticed = false;
+  private truncatedStep = -1;
   private readonly compactedBytes: number[] = [];
   /** Serialized size of the messages sent with each step, to estimate the next one. */
   private readonly sentBytes: number[] = [];
@@ -224,7 +234,7 @@ export class AttemptStepController {
   }
   prepare(input: {
     stepNumber: number;
-    steps: ReadonlyArray<{ usage: StepUsageLike }>;
+    steps: ReadonlyArray<{ usage: StepUsageLike; finishReason?: string }>;
     messages: ModelMessage[];
   }): { messages?: ModelMessage[]; activeTools?: string[]; toolChoice?: "required" } {
     const last = input.steps[input.steps.length - 1];
@@ -237,19 +247,32 @@ export class AttemptStepController {
     });
     const compacted = compactToolHistory(input.messages);
     this.compactedBytes[input.stepNumber] = compacted.savedBytes;
-    if (!this.finalizedBy || this.options.submitTools.length === 0) {
-      this.sentBytes[input.stepNumber] = Buffer.byteLength(JSON.stringify(compacted.messages));
-      return compacted.messages === input.messages ? {} : { messages: compacted.messages };
+    const finalizing = this.finalizedBy !== null && this.options.submitTools.length > 0;
+    // A step cut off at the output cap usually carried an oversized edit; say so once, unless
+    // the attempt is already finalizing and no further edit can run.
+    if (last?.finishReason === "length" && this.truncatedStep < input.steps.length && !finalizing) {
+      this.truncatedStep = input.steps.length;
+      this.notices.push({
+        at: compacted.messages.length,
+        content: truncationNotice(this.options.maxOutputTokens),
+      });
     }
-    // Keep the notice where it first appeared so the replayed prefix stays identical across
-    // the remaining finalize steps.
-    if (this.noticeAt < 0) this.noticeAt = compacted.messages.length;
-    const messages = [...compacted.messages];
-    messages.splice(this.noticeAt, 0, {
-      role: "user",
-      content: finalizeNotice(this.finalizedBy),
-    });
+    if (finalizing && this.finalizedBy && !this.finalizeNoticed) {
+      this.finalizeNoticed = true;
+      this.notices.push({
+        at: compacted.messages.length,
+        content: finalizeNotice(this.finalizedBy),
+      });
+    }
+    let messages = compacted.messages;
+    if (this.notices.length > 0) {
+      // Keep each notice where it first appeared so the replayed prefix stays identical.
+      messages = [...compacted.messages];
+      for (const [offset, notice] of this.notices.entries())
+        messages.splice(notice.at + offset, 0, { role: "user", content: notice.content });
+    }
     this.sentBytes[input.stepNumber] = Buffer.byteLength(JSON.stringify(messages));
+    if (!finalizing) return messages === input.messages ? {} : { messages };
     return { messages, activeTools: this.options.submitTools, toolChoice: "required" };
   }
   record(

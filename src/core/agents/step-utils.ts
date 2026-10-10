@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import type { PrepareStepFunction, StopCondition } from "ai";
 import { isStepCount } from "ai";
@@ -556,14 +557,15 @@ export function buildPrepareStep({
       };
 
       const json = JSON.stringify(exportData, null, 2);
-      import("node:fs").then(({ mkdirSync, writeFileSync }) => {
+      {
+        // Synchronous so the dump is on disk before a headless run exits.
         const dir = `${getCwd()}/.baked/api-export`;
         mkdirSync(dir, { recursive: true });
         const subDir = agentId ? `${dir}/subagents/${agentId}` : dir;
         mkdirSync(subDir, { recursive: true });
         const file = `${subDir}/step-${String(stepNumber).padStart(2, "0")}.json`;
         writeFileSync(file, json, "utf-8");
-      });
+      }
     }
 
     const contextSize = lastStep?.usage.inputTokens ?? 0;

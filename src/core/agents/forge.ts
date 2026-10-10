@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { forwardAnthropicContainerIdFromLastStep } from "@ai-sdk/anthropic";
 import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModel } from "ai";
@@ -588,7 +589,8 @@ function buildForgePrepareStep(
           };
         }),
       };
-      import("node:fs").then(({ mkdirSync, writeFileSync }) => {
+      {
+        // Synchronous so the dump is on disk before a headless run exits.
         const dir = `${getCwd()}/.baked/api-export`;
         mkdirSync(dir, { recursive: true });
         writeFileSync(
@@ -596,7 +598,7 @@ function buildForgePrepareStep(
           JSON.stringify(exportData, null, 2),
           "utf-8",
         );
-      });
+      }
     }
 
     if (sanitized !== messages && !result.messages) {
