@@ -218,13 +218,16 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
       ["expected-revision", "limit", "after", "tokens", "calls", "time-ms", "top"].includes(name)
     ) {
       const value = Number(result.flags[name]);
+      const minimum = ["limit", "tokens", "calls", "time-ms", "top"].includes(name) ? 1 : 0;
       if (
         !Number.isSafeInteger(value) ||
-        value <
-          (name === "limit" || ["tokens", "calls", "time-ms", "top"].includes(name) ? 1 : 0) ||
+        value < minimum ||
         !/^\d+$/.test(String(result.flags[name]))
       )
-        throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires an integer`);
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `--${name} requires a ${minimum ? "positive" : "non-negative"} integer`,
+        );
     }
   }
   if (typeof result.flags.route === "string") parseRouteOverrides(result.flags.route);

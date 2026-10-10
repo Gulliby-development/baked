@@ -105,6 +105,9 @@ describe("runUsage totals", () => {
     ])
       expectInvalidDefinition(() => parseWorkflowArgs(argv));
     expectInvalidDefinition(() => parseWorkflowArgs(["status", runId, "--top", "2"]));
+    expect(() => parseWorkflowArgs(["usage", runId, "--top", "0"])).toThrow(
+      "--top requires a positive integer",
+    );
   });
 
   test("limits only attempts and preserves full-run aggregates", () => {
