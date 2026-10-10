@@ -31,30 +31,41 @@ export interface RunUsageReport {
  * Per-attempt token and step usage of a run. Attempts recorded before per-step usage existed
  * report only their total tokens, so older runs remain comparable at the stage level.
  */
-export function runUsage(store: WorkflowStore, runId: string): RunUsageReport {
+export function runUsage(
+  store: WorkflowStore,
+  runId: string,
+  stageFilter?: string,
+): RunUsageReport {
   const stages = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
-  const attempts = store.attempts(runId).map((attempt): AttemptUsageRow => {
-    const row = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
-    const usage = row
-      ? (JSON.parse(store.readArtifact(runId, row.id)) as AttemptUsageRecord)
-      : undefined;
-    const sum = (pick: (step: AttemptUsageRecord["steps"][number]) => number | null) =>
-      usage ? usage.steps.reduce((total, step) => total + (pick(step) ?? 0), 0) : null;
-    return {
-      attemptId: attempt.id,
-      stage: stages.get(attempt.step_id) ?? attempt.step_id,
-      status: attempt.status,
-      usedTokens: attempt.used_tokens,
-      steps: usage?.steps.length ?? null,
-      peakInputTokens: usage
-        ? Math.max(0, ...usage.steps.map((step) => step.inputTokens ?? 0))
-        : null,
-      cacheReadTokens: sum((step) => step.cacheReadTokens),
-      compactedBytes: sum((step) => step.compactedBytes),
-      stopReason: usage?.stopReason ?? null,
-      finalizedBy: usage?.finalizedBy ?? null,
-    };
-  });
+  const attempts = store
+    .attempts(runId)
+    .filter(
+      (attempt) =>
+        stageFilter === undefined ||
+        (stages.get(attempt.step_id) ?? attempt.step_id) === stageFilter,
+    )
+    .map((attempt): AttemptUsageRow => {
+      const row = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+      const usage = row
+        ? (JSON.parse(store.readArtifact(runId, row.id)) as AttemptUsageRecord)
+        : undefined;
+      const sum = (pick: (step: AttemptUsageRecord["steps"][number]) => number | null) =>
+        usage ? usage.steps.reduce((total, step) => total + (pick(step) ?? 0), 0) : null;
+      return {
+        attemptId: attempt.id,
+        stage: stages.get(attempt.step_id) ?? attempt.step_id,
+        status: attempt.status,
+        usedTokens: attempt.used_tokens,
+        steps: usage?.steps.length ?? null,
+        peakInputTokens: usage
+          ? Math.max(0, ...usage.steps.map((step) => step.inputTokens ?? 0))
+          : null,
+        cacheReadTokens: sum((step) => step.cacheReadTokens),
+        compactedBytes: sum((step) => step.compactedBytes),
+        stopReason: usage?.stopReason ?? null,
+        finalizedBy: usage?.finalizedBy ?? null,
+      };
+    });
   const byStage = new Map<string, RunUsageReport["stages"][number]>();
   for (const attempt of attempts) {
     const entry = byStage.get(attempt.stage) ?? {
