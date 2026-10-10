@@ -79,6 +79,60 @@ export function correctionAuthorized(task: Task, root: TaskGraph): boolean {
 
 const unique = (ids: string[]): string[] => [...new Set(ids)];
 
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Planned files a check's output names, in plan order. Linters and compilers print the paths
+ * they reject, often absolute and with backslashes on Windows.
+ */
+export function pathsInOutput(output: string, tasks: Task[]): string[] {
+  const text = output.replaceAll("\\", "/");
+  const paths = unique(tasks.flatMap((t) => t.writes.map((w) => w.path)));
+  return paths.filter((path) =>
+    new RegExp(`(?:^|[\\s/"'(:])${escapeRegExp(path)}(?![\\w.-])`, "m").test(text),
+  );
+}
+
+/**
+ * Findings for a failed run-level check. Run 6931efd6: ruff flagged three test files of three
+ * tasks, but the one finding (no file) went to the first task with the check, whose correction
+ * could not edit the other two files. When the output names planned files, each task that
+ * writes one gets its own finding on that file, so each is corrected from its owner.
+ */
+export function failedCheckFindings(
+  check: { id: string },
+  evidenceId: string,
+  output: string,
+  tasks: Task[],
+  fallback: Pick<Review["findings"][number], "requirementIds" | "criterionIds">,
+  suggestedFix: string,
+  newId: () => string,
+): Review["findings"] {
+  const finding = (
+    file: string | null,
+    ids: Pick<Review["findings"][number], "requirementIds" | "criterionIds">,
+  ): Review["findings"][number] => ({
+    id: newId(),
+    kind: "correctness",
+    severity: "high",
+    requirementIds: ids.requirementIds,
+    criterionIds: ids.criterionIds,
+    file,
+    symbol: null,
+    evidenceIds: [evidenceId],
+    claim: `Required check ${check.id} failed`,
+    impact: "Implementation cannot be accepted",
+    suggestedFix,
+  });
+  const owners = new Map<string, { task: Task; file: string }>();
+  for (const path of pathsInOutput(output, tasks)) {
+    const task = tasks.find((t) => t.writes.some((w) => w.path === path));
+    if (task && !owners.has(task.id)) owners.set(task.id, { task, file: path });
+  }
+  if (!owners.size) return [finding(null, fallback)];
+  return [...owners.values()].map(({ task, file }) => finding(file, task));
+}
+
 /**
  * The planned task a finding is corrected from. A task that writes the finding's file and covers
  * one of its criteria comes first. Otherwise the task that writes the file is widened to the
