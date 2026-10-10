@@ -17,7 +17,8 @@ import {
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
 import {
-  overviewLine,
+  fitLabel,
+  overviewBrief,
   projectDetails,
   resolveFolderInput,
   runsExecutingInProcess,
@@ -35,6 +36,8 @@ export interface ProjectHost {
 }
 
 const OPEN_FOLDER = "\u0000open-folder";
+/** Characters a picker row leaves for the label beside its meta column (DialogSelect, 80 wide). */
+const PICKER_LABEL_WIDTH = 32;
 
 function shortPath(path: string): string {
   const home = process.env.HOME ?? homedir();
@@ -212,8 +215,8 @@ export async function openProjectPicker(host: ProjectHost): Promise<void> {
           const overview = p.exists ? projectOverview(p.path) : null;
           return {
             value: p.path,
-            label: `${p.name}  ${shortPath(p.path)}`,
-            meta: overview ? overviewLine(overview) : "missing",
+            label: fitLabel(p.name, shortPath(p.path), PICKER_LABEL_WIDTH),
+            meta: overview ? overviewBrief(overview) : "missing",
             category: p.pinned ? "Pinned" : "Recent",
             status: !p.exists
               ? ("offline" as const)

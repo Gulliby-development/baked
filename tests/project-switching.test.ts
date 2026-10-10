@@ -13,6 +13,8 @@ import type { ProjectOverview } from "../src/core/projects/overview.js";
 import { realPath } from "../src/core/projects/paths.js";
 import {
   badgeProjects,
+  fitLabel,
+  overviewBrief,
   overviewLine,
   projectDetails,
   resolveFolderInput,
@@ -116,6 +118,19 @@ describe("badge aggregation", () => {
     const o: ProjectOverview = { sessions: 1, lastSessionAt: null, activeRuns: 2, attention: 0 };
     expect(overviewLine(o)).toBe("1 session · 2 active runs");
     expect(overviewLine({ ...o, attention: 4 })).toBe("1 session · 2 active runs · 4 waiting");
+    expect(overviewBrief({ ...o, activeRuns: 0 })).toBe("1 session");
+    expect(overviewBrief({ ...o, sessions: 3, attention: 4 })).toBe(
+      "3 sessions · 2 active · 4 waiting",
+    );
+  });
+
+  test("picker labels fit their column", () => {
+    expect(fitLabel("app", "~/code/app", 32)).toBe("app  ~/code/app");
+    const long = fitLabel("app", "/very/long/path/to/some/nested/project/app", 32);
+    expect(long.length).toBeLessThanOrEqual(32);
+    expect(long.startsWith("app  …")).toBe(true);
+    expect(long.endsWith("project/app")).toBe(true);
+    expect(fitLabel("x".repeat(40), "/p", 32)).toHaveLength(32);
   });
 });
 

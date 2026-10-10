@@ -80,6 +80,22 @@ export function overviewLine(o: ProjectOverview): string {
   return parts.join(" · ");
 }
 
+/** The picker's short form: "3 sessions · 1 active · 2 waiting", leaving out zero counts. */
+export function overviewBrief(o: ProjectOverview): string {
+  const parts = [plural(o.sessions, "session")];
+  if (o.activeRuns) parts.push(`${o.activeRuns} active`);
+  if (o.attention) parts.push(`${o.attention} waiting`);
+  return parts.join(" · ");
+}
+
+/** "name  path" in at most `max` characters; the path keeps its end, the name its start. */
+export function fitLabel(name: string, path: string, max: number): string {
+  if (name.length + 2 + path.length <= max) return `${name}  ${path}`;
+  const room = max - name.length - 3;
+  if (room >= 8) return `${name}  …${path.slice(-(room - 1))}`;
+  return name.length <= max ? name : `${name.slice(0, max - 1)}…`;
+}
+
 /** The name shown for a folder: its known-project name, else the folder name. */
 export function projectName(folder: string, opts: KnownProjectOptions = {}): string {
   const path = realPath(folder);

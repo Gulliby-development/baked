@@ -82,7 +82,7 @@ export function PromptDialog({
     <PremiumPopup
       visible
       width={Math.max(50, width)}
-      height={error ? 13 : 11}
+      height={(message ? 13 : 11) + (error ? 3 : 0)}
       title={title}
       titleIcon={icon ?? "pencil"}
       footerHints={[

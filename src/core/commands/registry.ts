@@ -163,18 +163,18 @@ export const CATEGORIES = [
 
 const COMMAND_DEFS: CommandDef[] = [
   {
-    cmd: "/projects",
-    ic: "folder",
-    desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",
-    category: "Session",
-    tags: ["folder", "workspace", "switch", "cwd", "open"],
-  },
-  {
     cmd: "/project",
     ic: "folder",
     desc: "This project: sessions, workflow runs, what waits for you",
     category: "Session",
     tags: ["folder", "workspace", "sessions", "runs", "working set"],
+  },
+  {
+    cmd: "/projects",
+    ic: "folder",
+    desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",
+    category: "Session",
+    tags: ["folder", "workspace", "switch", "cwd", "open"],
   },
   {
     cmd: "/workflow",
