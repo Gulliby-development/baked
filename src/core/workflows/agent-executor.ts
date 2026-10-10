@@ -44,6 +44,7 @@ import {
   AttemptStepController,
   type AttemptUsageRecord,
   DEFAULT_MAX_ATTEMPT_TOKENS,
+  MIN_ATTEMPT_STEPS,
   type StepLike,
   stepTokens,
 } from "./step-budget.js";
@@ -320,13 +321,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
       // The attempt cap never exceeds what the run budget still allows, so an attempt started
       // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
+      const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
         maxTokens: Math.min(
           request.maxTokens ?? Number.POSITIVE_INFINITY,
           request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
-          this.store.remainingTokens(request.runId, policy, request.attemptId),
+          remaining,
         ),
+        // Token caps come from history on whatever provider produced it; each attempt may still
+        // take a minimum number of steps at its own step cost, within what the run allows.
+        minSteps: Math.min(request.maxSteps, MIN_ATTEMPT_STEPS),
+        ceilingTokens: remaining,
         submitTools,
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
