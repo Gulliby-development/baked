@@ -44,7 +44,7 @@ describe("storage migration 002", () => {
       expect(store.requests("r1").find((r) => r.id === id)?.kind).toBe("checkpoint");
     } finally { store.close(); }
     const db = new Database(join(root, ".baked", "workflows.sqlite"));
-    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]); } finally { db.close(); }
+    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }]); } finally { db.close(); }
     const again = new WorkflowStore(root);
     again.close();
   });
@@ -71,7 +71,7 @@ describe("storage migration 002", () => {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
     const db = new Database(fixture.service.store.path, { readonly: true });
-    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]); } finally { db.close(); }
+    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }]); } finally { db.close(); }
   });
 });
 
@@ -84,9 +84,9 @@ describe("policy and presets", () => {
   });
   test("the checkpoint preset removes the token cap and keeps the other guards", () => {
     const preset = scaledPolicy(defaultWorkflowPolicy, "checkpoints");
-    expect(preset).toMatchObject({ maxTotalTokens: UNCAPPED_TOKENS, checkpointTokens: 200000, maxAgentCalls: 160, maxActiveMs: 7200000 });
+    expect(preset).toMatchObject({ maxTotalTokens: UNCAPPED_TOKENS, checkpointTokens: defaultWorkflowPolicy.maxTotalTokens / 2, maxAgentCalls: 160, maxActiveMs: 7200000 });
     expect(scaledPolicy({ ...defaultWorkflowPolicy, checkpointTokens: 50000 }, "checkpoints").checkpointTokens).toBe(50000);
-    expect(scaledPolicy(defaultWorkflowPolicy, "quick")).toMatchObject({ maxTotalTokens: 200000, checkpointTokens: null });
+    expect(scaledPolicy(defaultWorkflowPolicy, "quick")).toMatchObject({ maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens / 2, checkpointTokens: null });
     // Scaling a checkpointed policy back to a capped preset drops the checkpoints.
     expect(scaledPolicy(preset, "extended")).toMatchObject({ checkpointTokens: null });
     expect(scaledPolicy(defaultWorkflowPolicy, "standard")).toBe(defaultWorkflowPolicy);

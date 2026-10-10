@@ -28,6 +28,7 @@
               "introduction",
               "installation",
               "quickstart",
+              "guide",
               "faq"
             ]
           },
@@ -86,7 +87,6 @@
             "pages": [
               "reference/commands",
               "reference/configuration",
-              "reference/presets",
               "reference/telemetry",
               "troubleshooting",
               "reference/data-flow"

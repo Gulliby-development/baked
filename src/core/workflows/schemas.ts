@@ -561,7 +561,9 @@ export const EventSchema = z.discriminatedUnion("type", [
     .object({
       ...EventBase,
       type: z.literal("run.created"),
-      payload: z.object({ featureId: SafeId, inputHash: Hash }).strict(),
+      payload: z
+        .object({ featureId: SafeId, inputHash: Hash, projectId: z.string().optional() })
+        .strict(),
     })
     .strict(),
   z
@@ -831,6 +833,8 @@ export interface RunSnapshot {
   estimatedCostUsd: number | null;
   verificationState: "not_verified" | "current" | "stale" | "invalid";
   pendingRequestIds: string[];
+  /** The project of the run's workspace when it was created. */
+  projectId?: string;
 }
 export type WorkflowEvent = z.infer<typeof EventSchema>;
 export interface CommandIdentity {
@@ -863,6 +867,11 @@ export interface StartRequest {
   executionMode?: ExecutionMode;
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /**
+   * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
+   * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
+   */
+  routes?: Record<string, string>;
 }
 export type Decision =
   | {

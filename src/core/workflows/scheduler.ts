@@ -1,5 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  ROUTING_ARTIFACT,
+  type RouteEffort,
+  type RoutingRecord,
+  RoutingRecordSchema,
+} from "../llm/model-routing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -39,10 +45,11 @@ import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from ".
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
-import { abortableDelay, retryDelay } from "./retry.js";
+import { abortableDelay, isTransient, retryAfterMs, retryDelay } from "./retry.js";
 import {
   capturePreImage,
   createdByRunLineage,
+  readKept,
   runWrittenHash,
   uncommittedEdits,
 } from "./rollback.js";
@@ -113,6 +120,43 @@ function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph })
   return { ...plan.taskGraph, specHash: hashJson(spec), planHash: hashBytes(plan.markdown) };
 }
 
+/** A request for a person that the current step raised and has not made durable yet. */
+interface QueuedRequest {
+  kind: "approval" | "clarification" | "manual_evidence";
+  digest: string;
+  body: unknown;
+}
+
+/** A provider asking to wait longer than this is not waited for once a route has fallback models. */
+const LONG_RETRY_AFTER_MS = 30_000;
+/** Characters of a task's unified diff kept in its diff evidence. */
+const MAX_PATCH_CHARS = 48_000;
+
+/** What one read evidence looked at: the tool, the paths or symbols it named and its size. */
+function readSummary(content: string): { tool: string; targets: string[]; bytes: number } {
+  const targets: string[] = [];
+  let tool = "read";
+  try {
+    const parsed = JSON.parse(content) as { tool?: unknown; input?: unknown };
+    if (typeof parsed.tool === "string") tool = parsed.tool;
+    const input = (parsed.input ?? {}) as Record<string, unknown>;
+    for (const key of ["path", "file", "symbol", "query", "target"])
+      if (typeof input[key] === "string") targets.push(input[key]);
+    if (Array.isArray(input.files))
+      for (const file of input.files)
+        if (typeof file === "string") targets.push(file);
+        else if (
+          file &&
+          typeof file === "object" &&
+          "path" in file &&
+          typeof file.path === "string"
+        )
+          targets.push(file.path);
+  } catch {
+    // A read artifact that is not JSON is summarized by its size only.
+  }
+  return { tool, targets, bytes: Buffer.byteLength(content) };
+}
 export class WorkflowScheduler {
   dispose(): void {
     this.executor.dispose?.();
@@ -124,6 +168,14 @@ export class WorkflowScheduler {
   private mutation: LeaseResource = "mutation";
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
+  /**
+   * Requests for a person raised by the current step. They become durable only together with the
+   * state they were raised on (see `flushWaits`), so a decision never sees a request whose state
+   * is not saved yet, and a later save never overwrites what the decision wrote.
+   */
+  private queued: QueuedRequest[] = [];
+  /** Frozen routing records by run; `null` for runs started before routing was recorded. */
+  private routing = new Map<string, RoutingRecord | null>();
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -165,6 +217,7 @@ export class WorkflowScheduler {
         controller.abort(new Error("Run management command"));
     }, 100);
     let stepId: string | null = null;
+    this.queued = [];
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
       if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
@@ -260,7 +313,7 @@ export class WorkflowScheduler {
               };
               state.research = canonical(research);
               if (research.unknowns.some((q) => q.blocking)) {
-                this.wait(runId, "clarification", state, { questions: research.unknowns });
+                this.wait("clarification", state, { questions: research.unknowns });
                 advance = false;
               }
               break;
@@ -287,7 +340,7 @@ export class WorkflowScheduler {
                 this.store.artifact(runId, "spec", "spec.json", canonical(state.spec)),
               );
               if (state.spec.openQuestions.some((q) => q.blocking)) {
-                this.wait(runId, "clarification", state, { questions: state.spec.openQuestions });
+                this.wait("clarification", state, { questions: state.spec.openQuestions });
                 advance = false;
               }
               break;
@@ -376,7 +429,7 @@ export class WorkflowScheduler {
                 profiles,
               );
               if (problems.length) {
-                this.wait(runId, "clarification", state, {
+                this.wait("clarification", state, {
                   findings: problems.map((description, index) => ({
                     id: `RUNTIME-${index + 1}`,
                     kind: "inconsistency",
@@ -421,7 +474,7 @@ export class WorkflowScheduler {
                 (analysis.verdict === "pass" ||
                   (analysis.verdict === "needs_revision" && onlyDeferred));
               if (!state.analysisPassed) {
-                this.wait(runId, "clarification", state, { findings });
+                this.wait("clarification", state, { findings });
                 advance = false;
               }
               break;
@@ -516,12 +569,13 @@ export class WorkflowScheduler {
                     ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
                     : {}),
                 };
+                if (!auto.approval) {
+                  this.queued.push({ kind: "approval", digest, body });
+                  advance = false;
+                  break;
+                }
                 this.store.transaction(() => {
                   const requestId = this.store.request(runId, "approval", digest, body);
-                  if (!auto.approval) {
-                    this.store.transition(runId, "waiting", "approval");
-                    return;
-                  }
                   // The host signs the same digest a person would; post-release criteria never get here.
                   this.store.decideRequest(
                     runId,
@@ -534,7 +588,6 @@ export class WorkflowScheduler {
                   state.approvalRoot = digest;
                   state.deferredCriteria = [];
                 });
-                if (!auto.approval) advance = false;
               }
               break;
             }
@@ -547,7 +600,7 @@ export class WorkflowScheduler {
               );
               if (unavailable.length) {
                 for (const dependency of unavailable)
-                  this.wait(runId, "manual_evidence", state, {
+                  this.wait("manual_evidence", state, {
                     criterionId: `dependency-${dependency.featureId}`,
                     snapshotId: state.snapshotId,
                     dependency,
@@ -742,7 +795,7 @@ export class WorkflowScheduler {
                 );
                 if (pending.length) {
                   for (const criterion of pending)
-                    this.wait(runId, "manual_evidence", state, {
+                    this.wait("manual_evidence", state, {
                       criterionId: criterion.id,
                       snapshotId: state.snapshotId,
                       criterion,
@@ -789,14 +842,17 @@ export class WorkflowScheduler {
             this.repair(runId, state, policy, repairFindings.findings, repairFindings.kind);
           signal.throwIfAborted();
           await this.assertWorkspace(runId, state, policy, signal);
-          if (v2 && state.position && this.store.run(runId).status === "running") {
+          const waiting = this.queued.length > 0;
+          if (v2 && state.position && !waiting && this.store.run(runId).status === "running") {
             // The visit is decided; the next pass takes the transition that answers it.
             state.position.outcome = this.outcomeOf(v2.stage, repairFindings !== null);
             state.position.findings = repairFindings?.findings.map((f) => f.id) ?? [];
             state.position.repairKind = repairFindings?.kind ?? null;
           } else if (advance && !v2) state.stageIndex++;
+          // The state, the requests it raised, the waiting status and the finished step are one
+          // durable change, written only after the workspace check passed.
           this.store.transaction(() => {
-            this.store.saveState(runId, state);
+            this.flushWaits(runId, state);
             this.store.finishStep(
               runId,
               stepId ?? "",
@@ -807,6 +863,9 @@ export class WorkflowScheduler {
         }
       });
     } catch (error) {
+      // Requests of a step that failed never reach the store: the step runs again and raises
+      // them on the state it then has.
+      this.queued = [];
       await this.processes.stop();
       const fault =
         signal.aborted && signal.reason instanceof WorkflowFault ? signal.reason : error;
@@ -909,6 +968,39 @@ export class WorkflowScheduler {
   private rootOf(runId: string): string {
     return runRoot(this.store.workspace, this.store.state(runId));
   }
+  /**
+   * The models and effort of an agent call from the run's frozen routing: the route of the
+   * definition stage this step belongs to, else the profile's own route. Child steps (tasks,
+   * review dimensions, skeptics) follow their parent stage; transition gates have no stage and
+   * keep the profile's route. The first model is the primary; the rest are its fallback chain.
+   */
+  private route(
+    runId: string,
+    stepId: string,
+    profile: AgentProfile,
+  ): { models: string[]; effort?: RouteEffort } {
+    let routing = this.routing.get(runId);
+    if (routing === undefined) {
+      const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
+      routing = row
+        ? RoutingRecordSchema.parse(JSON.parse(this.store.readArtifact(runId, row.id)))
+        : null;
+      this.routing.set(runId, routing);
+    }
+    if (!routing) return { models: [profile.model] };
+    const stage = this.store.rootStage(runId, stepId);
+    const staged = stage ? routing.stages[stage] : undefined;
+    const entry = staged ?? routing.profiles[profile.id];
+    return {
+      models: [staged?.model ?? profile.model, ...(entry?.fallback ?? [])],
+      ...(entry?.effort ? { effort: entry.effort } : {}),
+    };
+  }
+  /** The profile running on the model at `index` of its route's chain. */
+  private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
+    const model = this.route(runId, stepId, profile).models[index] ?? profile.model;
+    return model === profile.model ? profile : { ...profile, model };
+  }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
     return profile;
@@ -972,7 +1064,7 @@ export class WorkflowScheduler {
     stepId: string,
     state: RuntimeState,
     policy: RunPolicy,
-    profile: AgentProfile,
+    stageProfile: AgentProfile,
     extra: unknown,
     signal: AbortSignal,
     task?: Task,
@@ -980,8 +1072,18 @@ export class WorkflowScheduler {
     validate?: (output: unknown) => string[],
     limits?: { maxSteps: number; maxTokens: number | undefined },
     hostTools?: (attemptId: string) => Record<string, HostTool>,
-    placement: { root?: string; attemptId?: string } = {},
+    placement: {
+      root?: string;
+      attemptId?: string;
+      /** Position in the route's model chain: 0 is the primary model, then its fallbacks. */
+      fallbackIndex?: number;
+      /** The primary model's failure, reported if every fallback model fails too. */
+      primaryError?: unknown;
+    } = {},
   ): Promise<unknown> {
+    const route = this.route(runId, stepId, stageProfile);
+    const fallbackIndex = placement.fallbackIndex ?? 0;
+    const profile = this.routed(runId, stepId, stageProfile, fallbackIndex);
     const prompt = this.promptFor(runId, state, policy, profile, extra);
     const inputHash = this.store.run(runId).input_hash;
     // A batch of parallel tasks reserves its attempts before any of them starts.
@@ -1007,6 +1109,7 @@ export class WorkflowScheduler {
         ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
         ...(validate ? { validate } : {}),
         ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
+        ...(route.effort ? { effort: route.effort } : {}),
       });
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
       if (!parsed?.success)
@@ -1051,27 +1154,52 @@ export class WorkflowScheduler {
             this.store.recordedUsage(runId, attempt),
           ),
         );
-      const delay = retryDelay(error, retry);
-      if (
-        delay !== null &&
-        !signal.aborted &&
-        !this.store.effects(runId).some((effect) => effect.attempt_id === attempt)
-      ) {
-        await abortableDelay(delay, signal);
-        return this.call(
+      const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
+      const next = route.models[fallbackIndex + 1];
+      // Each fallback model gets one retry. A long retry-after is better spent on the next model,
+      // and once the chain has already failed over, the run stops instead of blocking on it.
+      const delay =
+        (next !== undefined || fallbackIndex > 0) && retryAfterMs(error) > LONG_RETRY_AFTER_MS
+          ? null
+          : retryDelay(error, retry, fallbackIndex === 0 ? 2 : 1);
+      const again = (retryNumber: number, index: number, primaryError?: unknown) =>
+        this.call(
           runId,
           stepId,
           state,
           policy,
-          profile,
+          stageProfile,
           extra,
           signal,
           task,
-          retry + 1,
+          retryNumber,
           validate,
           limits,
           hostTools,
-          { ...(placement.root ? { root: placement.root } : {}) },
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            ...(index ? { fallbackIndex: index } : {}),
+            ...(primaryError !== undefined ? { primaryError } : {}),
+          },
+        );
+      if (delay !== null && !signal.aborted && !wrote) {
+        await abortableDelay(delay, signal);
+        return again(retry + 1, fallbackIndex, placement.primaryError);
+      }
+      // A model that keeps failing, or whose window cannot hold the prompt, hands the step to the
+      // next model of its route. Nothing is handed over once the attempt has changed files.
+      const windowTooSmall =
+        error instanceof WorkflowFault &&
+        error.code === "BUDGET_EXHAUSTED" &&
+        error.details.reason === "context_window";
+      if (next !== undefined && !signal.aborted && !wrote && (isTransient(error) || windowTooSmall))
+        return again(0, fallbackIndex + 1, placement.primaryError ?? error);
+      if (placement.primaryError !== undefined && !signal.aborted) {
+        const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          `${route.models[0]} failed: ${message(placement.primaryError)}; last fallback ${profile.model} failed: ${message(error)}`,
+          { reason: "provider_unavailable" },
         );
       }
       if (!(error instanceof WorkflowFault) && !signal.aborted)
@@ -1091,8 +1219,18 @@ export class WorkflowScheduler {
     profile: AgentProfile,
     extra: unknown,
   ): string {
+    // The agents that start a run see the project's working set; later ones get the research.
+    const workingSet =
+      state.workingSet &&
+      state.research === null &&
+      (profile.context === "research" ||
+        profile.context === "specification" ||
+        profile.context === "planning")
+        ? this.store.readArtifact(runId, state.workingSet.artifactId)
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
+      ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       executionContract: {
         checks: policy.checks,
         profiles: ProfileSchema.array()
@@ -1102,16 +1240,26 @@ export class WorkflowScheduler {
       },
     });
   }
+  /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   private wait(
-    runId: string,
     kind: "clarification" | "manual_evidence",
     state: RuntimeState,
     body: unknown,
   ): void {
-    this.store.transaction(() => {
-      this.store.request(runId, kind, hashJson(state.manifest), body);
-      this.store.transition(runId, "waiting", kind);
-    });
+    this.queued.push({ kind, digest: hashJson(state.manifest), body });
+  }
+  /**
+   * Saves the state and, when the step queued requests, creates them and moves the run to
+   * waiting. Callers run it inside a transaction.
+   */
+  private flushWaits(runId: string, state: RuntimeState): void {
+    const queued = this.queued;
+    this.queued = [];
+    for (const request of queued)
+      this.store.request(runId, request.kind, request.digest, request.body);
+    const last = queued.at(-1);
+    if (last) this.store.transition(runId, "waiting", last.kind);
+    this.store.saveState(runId, state);
   }
   private async publish(
     runId: string,
@@ -1189,11 +1337,43 @@ export class WorkflowScheduler {
       .evidence(runId)
       .filter((e) => e.snapshot_id === state.snapshotId && e.validity === "current")
       .filter((e) => options.reads || e.kind !== "read")
-      .map((e) => ({
-        id: e.id,
-        kind: e.kind,
-        content: this.store.readArtifact(runId, e.artifact_id).slice(0, 16000),
-      }));
+      .map((e) => {
+        const content = this.store.readArtifact(runId, e.artifact_id);
+        // A read is replaced by what it read: its content is resent on every step of every later
+        // agent, and cut at the limit it showed no file whole, so agents read the files again.
+        if (e.kind === "read") return { id: e.id, kind: e.kind, read: readSummary(content) };
+        return {
+          id: e.id,
+          kind: e.kind,
+          content: content.slice(0, e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000),
+        };
+      });
+  }
+  /**
+   * The unified diff of a task's changes, from the content the run kept before each edit to the
+   * file now in the root. Reviewers and the auditor read the change from it instead of reading
+   * whole files. Files whose earlier content was not kept are listed without a diff.
+   */
+  private async taskPatch(
+    runId: string,
+    root: string,
+    beforeHashes: Record<string, string | null>,
+  ): Promise<string> {
+    const parts: string[] = [];
+    for (const [path, hash] of Object.entries(beforeHashes)) {
+      const earlier = hash === null ? null : readKept(this.store, runId, hash);
+      const absolute = workspacePath(root, path);
+      const now = existsSync(absolute) ? readFileSync(absolute) : null;
+      parts.push(
+        hash !== null && earlier === null
+          ? `--- ${path}: earlier content not kept, read the file`
+          : await unifiedDiff(path, earlier, now),
+      );
+    }
+    const text = parts.filter(Boolean).join("\n");
+    return text.length > MAX_PATCH_CHARS
+      ? `${text.slice(0, MAX_PATCH_CHARS)}\n... patch cut at ${MAX_PATCH_CHARS} characters; read the files for the rest`
+      : text;
   }
   private async implement(
     runId: string,
@@ -1336,6 +1516,10 @@ export class WorkflowScheduler {
       if (result.outcome === "already_satisfied")
         validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
       await this.snapshot(runId, state, policy, signal);
+      const beforeHashes = Object.fromEntries(
+        changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
+      );
+      const patch = await this.taskPatch(runId, root, beforeHashes);
       this.store.transaction(() => {
         const diff = this.store.artifact(
           runId,
@@ -1343,10 +1527,9 @@ export class WorkflowScheduler {
           `tasks/${task.id}/diff.json`,
           canonical({
             changed,
-            before: Object.fromEntries(
-              changed.map((p) => [p, earlier.has(p) ? earlier.get(p) : (before[p] ?? null)]),
-            ),
+            before: beforeHashes,
             after: Object.fromEntries(changed.map((p) => [p, after[p] ?? null])),
+            patch,
           }),
         );
         this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.id);
@@ -1531,7 +1714,11 @@ export class WorkflowScheduler {
     const planned: { task: Task; profile: AgentProfile; extra: unknown; tokens: number }[] = [];
     let tokens = 0;
     for (const task of tasks) {
-      const profile = this.requireProfile(profiles.find((p) => p.id === task.profileId));
+      const profile = this.routed(
+        runId,
+        stepId,
+        this.requireProfile(profiles.find((p) => p.id === task.profileId)),
+      );
       const extra = {
         task,
         evidence: this.evidenceContext(runId, state, { reads: false }),
@@ -2621,7 +2808,7 @@ export class WorkflowScheduler {
         }
         if (stepId)
           this.store.transaction(() => this.store.finishStep(runId, stepId ?? "", "completed"));
-        this.wait(runId, "manual_evidence", state, {
+        this.wait("manual_evidence", state, {
           criterionId,
           snapshotId: state.snapshotId,
           gateId: gate.id,
@@ -2629,7 +2816,7 @@ export class WorkflowScheduler {
           question: gate.human.prompt,
           answer: gate.human.answer,
         });
-        this.store.transaction(() => this.store.saveState(runId, state));
+        this.store.transaction(() => this.flushWaits(runId, state));
         return;
       } else if (gate.type === "ai-acceptance") {
         // Advisory by construction: the walk-through's verdict is recorded and shown, and only a

@@ -467,8 +467,8 @@ export function buildPrepareStep({
     const lastStep = steps.length > 0 ? steps[steps.length - 1] : undefined;
 
     // API export: dump full request data per step
-    // Enable via /export api command or baked_DEBUG_API=1 env var
-    if (apiExportEnabled || process.env.baked_DEBUG_API) {
+    // Enable via /export api command or BAKED_DEBUG_API=1 env var
+    if (apiExportEnabled || process.env.BAKED_DEBUG_API) {
       const msgs = result.messages ?? messages;
       const prevUsage = lastStep?.usage;
 

@@ -1,4 +1,4 @@
-import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
 import { getProviderSecretEntries } from "../core/llm/providers/index.js";
 import { registerProviderSecrets } from "../core/secrets.js";
@@ -14,7 +14,7 @@ export type { HeadlessAction, HeadlessChatOptions, HeadlessRunOptions } from "./
 
 async function initConfig(): Promise<AppConfig> {
   const config = loadConfig();
-  const projectConfig = loadProjectConfig(getCwd());
+  const projectConfig = loadEffectiveProjectConfig(getCwd());
   const merged = mergeConfigs(config, projectConfig);
   if (merged.keyPriority) {
     const { setDefaultKeyPriority } = await import("../core/secrets.js");

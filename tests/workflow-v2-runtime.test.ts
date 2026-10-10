@@ -482,7 +482,7 @@ describe("project gates and protected definitions", () => {
 });
 
 describe("workflow v2 auto approval", () => {
-  const limits = { enabled: true as const, maxTasks: 3, maxFiles: 5, allowedPaths: ["value.txt"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: 400000 };
+  const limits = { enabled: true as const, maxTasks: 3, maxFiles: 5, allowedPaths: ["value.txt"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens };
   const autoFix = (allowedPaths = limits.allowedPaths) => quickFix((d) => ({
     ...d,
     stages: d.stages.map((s) => (s.type === "approval" ? { ...s, decision: "auto" as const } : s)),
@@ -526,7 +526,7 @@ describe("workflow v2 auto approval", () => {
   }, 30000);
 
   test("a human approval stage ignores auto approval in the project policy", async () => {
-    const auto = { ...policy, autoApproval: { renewal: false, limits: { maxTasks: 3, maxFiles: 5, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: 400000 } } };
+    const auto = { ...policy, autoApproval: { renewal: false, limits: { maxTasks: 3, maxFiles: 5, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens } } };
     const fixture = setup({}, auto);
     fixture.define(quickFix());
     const run = await fixture.start("custom-fix");

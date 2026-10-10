@@ -69,6 +69,7 @@ export function CommandPalette({ visible, onClose, onExecute }: Props) {
       Intelligence: t.brandSecondary,
       Tabs: t.warning,
       System: t.textMuted,
+      Custom: t.success,
     }),
     [t],
   );
@@ -78,7 +79,9 @@ export function CommandPalette({ visible, onClose, onExecute }: Props) {
   const cursorRef = useRef(0);
   cursorRef.current = cursor;
 
-  const allDefs = useMemo(() => getCommandDefs().filter((d) => !isDefHidden(d)), []);
+  // Recomputed on open so newly added custom commands appear.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: visible is the refresh trigger
+  const allDefs = useMemo(() => getCommandDefs().filter((d) => !isDefHidden(d)), [visible]);
 
   // Reset on open
   useEffect(() => {

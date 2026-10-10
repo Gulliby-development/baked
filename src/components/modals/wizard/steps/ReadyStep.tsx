@@ -64,7 +64,7 @@ export const ReadyStep = memo(function ReadyStep() {
       </text>
       <VSpacer />
       <text bg={t.bgPopup} fg={t.textFaint}>
-        Docs: <span fg={t.info}>https://baked.baked.com</span>
+        Docs: <span fg={t.info}>https://github.com/Gulliby-development/baked</span>
       </text>
     </box>
   );

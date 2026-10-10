@@ -228,7 +228,7 @@ if (isCompile) {
   // Bun.build() compile mode ignores outfile — it derives the binary name from
   // the entrypoint basename ("baked.js" → "./baked") and places it in cwd.
   //
-  // `__baked_COMPILED__` is the single source of truth for "are we the
+  // `__BAKED_COMPILED__` is the single source of truth for "are we the
   // standalone .exe?" — every isCompiledBinary() call collapses to a literal
   // `true` after Bun's tree-shake. Survives any future change to
   // import.meta.url or process.execPath formatting on any platform.
@@ -267,7 +267,7 @@ if (isCompile) {
       autoloadPackageJson: true,
     } as never,
     define: {
-      __baked_COMPILED__: "true",
+      __BAKED_COMPILED__: "true",
     },
   });
 
@@ -304,12 +304,12 @@ if (isCompile) {
   // builds clean but immediately crashes" regressions before the artifact
   // ships. Cross-compiled builds (e.g. building windows-x64 on darwin-arm64)
   // can't be exercised here — they're verified in release CI on the matching
-  // runner. baked_SKIP_SMOKE=1 escape hatch for sandboxed/CI environments
+  // runner. BAKED_SKIP_SMOKE=1 escape hatch for sandboxed/CI environments
   // where exec is restricted.
   const hostArch = process.arch === "arm64" ? "aarch64" : process.arch;
   const hostTarget = `bun-${process.platform === "win32" ? "windows" : process.platform}-${hostArch}`;
   const canSmoke =
-    !process.env.baked_SKIP_SMOKE &&
+    !process.env.BAKED_SKIP_SMOKE &&
     (!compileTarget || compileTarget === hostTarget);
   if (canSmoke) {
     const smoke = spawnSync({

@@ -237,7 +237,7 @@ export function writesOutside(changed: readonly string[], writePaths: readonly s
 }
 
 /** Whether a request is the human decision on a verified acceptance test. */
-export function isAcceptanceRequest(request: RequestRow): boolean {
+export function isAcceptanceRequest(request: { kind: string; body_json: string }): boolean {
   if (request.kind !== "approval") return false;
   const body = JSON.parse(request.body_json) as { acceptance?: unknown };
   return typeof body.acceptance === "object" && body.acceptance !== null;

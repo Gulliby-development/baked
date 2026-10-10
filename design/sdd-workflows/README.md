@@ -9,15 +9,15 @@ This package describes the built-in workflows, agent profiles, specifications, b
 | [Architecture](solution-design.md) | Requirements, components, behavior, security, interfaces and operations |
 | [Contracts](contracts.ts) | Zod schemas of portable data and the WorkflowService interface |
 | [Storage](storage.sql) | Initial SQLite schema, constraints and indexes |
-| [Implementation plan](implementation-plan.md) | Change packages, dependencies and acceptance criteria |
+| [Implementation plan](implementation-plan.md) | Completed. The original change packages, dependencies and acceptance criteria |
 | [Examples](examples/) | Specification, tasks, profile, workflow and check settings |
 | [Design check](check-design.ts) | Checks the examples, SQL and local links without running an LLM |
 | [Runtime guide](runtime-guide.md) | Opt-in config, CLI/TUI, decisions, recovery and data transfer |
 | [Implementation status](implementation-status.md) | Implemented packages, actual checks and acceptance limits |
-| [Next implementation](next-implementation.md) | Finish v1, then only workflows, initiatives and Git delivery |
+| [Next implementation](next-implementation.md) | Implemented by 2026-10-10 (open acceptance items are in the status report). The plan for closing v1, workflows, initiatives and Git delivery |
 | [Parallel worktrees](parallel-worktrees.md) | Phases toward several writers in separate Git worktrees |
 | [Quick workflow](quick-workflow.md) | `baked quick`: one scoping planner, approval, tasks, checks and one review for a small change |
-| [Workflow v2 design](workflow-v2-design.md) | Proposed: definition schema v2, presets, the approval invariant, the gate library and editor, the AI acceptance gate, migration, threat model and test criteria |
+| [Workflow v2 design](workflow-v2-design.md) | Implemented: definition schema v2, presets, the approval invariant, the gate library and editor, the AI acceptance gate, migration, threat model and test criteria |
 | [Contracts v2](contracts-v2.ts) | Zod schemas and the definition validator of the v2 design, plus the v1 to v2 migration function |
 | [Examples v2](examples/v2) | The gate library (nine gates) and the presets (eight definitions) the design check validates |
 

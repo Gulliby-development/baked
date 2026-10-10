@@ -2,6 +2,8 @@
 
 globalThis.AI_SDK_LOG_WARNINGS = false;
 
+// Map legacy `baked_*` environment variables before any module reads them.
+import "./core/legacy-env.js";
 // Reap orphaned LSP processes from previous sessions BEFORE anything else.
 // Synchronous so a crashed-during-boot run still cleans up its predecessors.
 import { reapOrphanedLspProcesses } from "./core/intelligence/backends/lsp/pid-tracker.js";
@@ -23,10 +25,30 @@ const cliArgs = process.argv.slice(2);
 // memory, all tools) inherits it for free via process.cwd().
 resolveCwdFromArgv(cliArgs);
 
-if (cliArgs[0] === "workflow" || cliArgs[0] === "quick") {
+if (cliArgs[0] === "workflow" || cliArgs[0] === "doctor" || cliArgs[0] === "quick") {
   const { runWorkflowCli } = await import("./headless/workflow.js");
-  // `baked quick TEXT` is `baked workflow quick TEXT`.
-  process.exit(await runWorkflowCli(cliArgs[0] === "quick" ? cliArgs : cliArgs.slice(1)));
+  // `baked doctor` and `baked quick TEXT` are short for `baked workflow doctor` and `quick TEXT`.
+  process.exit(await runWorkflowCli(cliArgs[0] === "workflow" ? cliArgs.slice(1) : cliArgs));
+}
+
+if (cliArgs[0] === "telemetry") {
+  const { runTelemetryCli } = await import("./core/telemetry.js");
+  process.exit(runTelemetryCli(cliArgs.slice(1)));
+}
+
+if (cliArgs[0] === "project") {
+  const { runProjectCli } = await import("./headless/project.js");
+  process.exit(await runProjectCli(cliArgs.slice(1)));
+}
+
+if (cliArgs[0] === "serve") {
+  const { runServeCli } = await import("./headless/serve.js");
+  process.exit(await runServeCli(cliArgs.slice(1)));
+}
+
+if (cliArgs[0] === "self-check") {
+  const { runSelfCheck } = await import("./headless/self-check.js");
+  process.exit(await runSelfCheck());
 }
 
 const hasCli =
@@ -44,42 +66,6 @@ if (hasCli) {
   const action = await parseHeadlessArgs(cliArgs);
   if (action) await runHeadless(action);
   process.exit(0);
-}
-
-// Interactive presets wizard — pre-TUI, uses @clack/prompts.
-if (cliArgs.includes("--presets") || cliArgs[0] === "presets") {
-  const { runPresetsWizard } = await import("./core/presets/index.js");
-  const code = await runPresetsWizard();
-  process.exit(code);
-}
-
-// Collect `--plugin <spec>` (stackable) and pass to the boot pipeline via env.
-// Resolution + merge happens once AppConfig is loaded.
-{
-  const plugins: string[] = [];
-  for (let i = 0; i < cliArgs.length; i++) {
-    if (cliArgs[i] === "--plugin" && i + 1 < cliArgs.length) {
-      const next = cliArgs[i + 1];
-      if (next) plugins.push(next);
-      i++;
-    }
-  }
-  if (plugins.length > 0) process.env.baked_PRESETS = plugins.join(",");
-}
-
-// Resolve presets (from config + --plugin env) into the AppConfig overlay
-// before any loadConfig() consumer reads. Network call; fail-open if offline.
-{
-  const { initPresetsFromEnv } = await import("./core/presets/index.js");
-  const verbose = cliArgs.includes("--verbose-presets");
-  const report = await initPresetsFromEnv({
-    onStatus: verbose ? (msg: string) => process.stderr.write(`[presets] ${msg}\n`) : undefined,
-  });
-  if (report.failed.length > 0 && !verbose) {
-    process.stderr.write(
-      `[presets] ${report.failed.length} failed (run with --verbose-presets for detail)\n`,
-    );
-  }
 }
 
 import { existsSync, readFileSync } from "node:fs";
@@ -378,7 +364,7 @@ status("Loading Baked", "Preparing Baked");
 const appReady = import("./components/App.js");
 const [configMod, , installMod] = await earlyModules;
 
-const { loadConfig, loadProjectConfig } = configMod;
+const { loadConfig, loadEffectiveProjectConfig } = configMod;
 
 const { getVendoredPath, installRipgrep, installFd, installAstGrep } = installMod;
 
@@ -401,7 +387,7 @@ for (let i = 0; i < args.length; i++) {
 
 status("Reading the scrolls");
 const config = loadConfig();
-const projectConfig = loadProjectConfig(getCwd());
+const projectConfig = loadEffectiveProjectConfig(getCwd());
 
 {
   const priority = projectConfig?.keyPriority ?? config.keyPriority;

@@ -1,6 +1,6 @@
 # SDD runtime: running and operations
 
-The runtime is available through `baked workflow` and `/workflow` in the TUI. It is off by default. The release gate status is in the [report](implementation-status.md). Bun is required; SQLite and the existing BAKED providers are used. No separate server or daemon is needed.
+The runtime is available through `baked workflow` and `/workflow` in the TUI. It is off by default. The release gate status is in the [report](implementation-status.md). Bun is required; SQLite and the existing BAKED providers are used. No separate server or daemon is needed; `baked serve` optionally exposes the same commands to local clients ([Local API](#local-api-baked-serve)).
 
 ## Enabling
 
@@ -17,7 +17,7 @@ Select a configured BAKED model. `defaultModel: "none"` does not allow starting 
       "maxConcurrentWriters": 1,
       "maxAgentSteps": 24,
       "maxAgentCalls": 80,
-      "maxTotalTokens": 400000,
+      "maxTotalTokens": 800000,
       "maxActiveMs": 3600000,
       "maxCostUsd": null,
       "maxRepairRounds": 2,
@@ -128,7 +128,7 @@ Auto approval is off by default. Enabling it is a human act: set `workflows.poli
 "autoApproval": {
   "renewal": true,
   "limits": { "maxTasks": 3, "maxFiles": 5, "allowedPaths": ["src/**", "tests/**"],
-              "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 200000 }
+              "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 800000 }
 }
 ```
 
@@ -185,7 +185,7 @@ Limits can only go up. The change is stored as the immutable artifact `policy-re
 
 ### Soft token checkpoints
 
-The budget preset `checkpoints` removes the hard token cap (the limit becomes 1,000,000,000) and sets `checkpointTokens`, by default half the configured token limit (200k with the default policy). Calls and time are doubled like the extended preset. A run never reserves tokens past the next multiple of the interval: when the next model step could pass it, the step does not start, the run moves to `waiting` with reason `checkpoint` and a durable request of kind `checkpoint` records the usage. The same guard applies to every step of one agent loop, so a runaway loop stops at the checkpoint and not after it.
+The budget preset `checkpoints` removes the hard token cap (the limit becomes 1,000,000,000) and sets `checkpointTokens`, by default half the configured token limit (400k with the default policy). Calls and time are doubled like the extended preset. A run never reserves tokens past the next multiple of the interval: when the next model step could pass it, the step does not start, the run moves to `waiting` with reason `checkpoint` and a durable request of kind `checkpoint` records the usage. The same guard applies to every step of one agent loop, so a runaway loop stops at the checkpoint and not after it.
 
 C (or Enter) continues up to the next checkpoint, one interval beyond the projected spend; X stops the run in `paused`, and resuming asks again instead of spending. From the CLI:
 
@@ -203,11 +203,31 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 - The range is built from the runs already in this project: per stage the middle half of the samples (the full spread with two or three samples, minus 30% to plus 40% around a single one), a typical number of tasks and the cost of one task. Without history it uses generic ranges and says so.
 - The form compares the range with the chosen preset: it fits, the high end exceeds the budget, or even the low end does. The checkpoint preset has no cap, so it only reports the interval.
 - After the plan exists, the remaining cost is the open tasks times the typical task cost plus the later stages, less what the running stage already spent. The burn rate is tokens per active minute, and the forecast names the stage where the budget runs out at the typical cost and at the high end.
-- The range shown at creation is kept as `estimates/start.json`. A completed run shows it next to the actual usage.
+- The range shown at creation is kept as `estimates/start.json`, with the approximate cost and the workflow ID. A completed run shows it next to the actual usage.
+
+`baked workflow estimate [WORKFLOW]` prints the estimate before a run, stage by stage and model by model, with the options of `workflow run` that change it (`--model`, `--route`, `--policy`, `--worktree`, `--writers`, `--json`):
+
+- Only the definition's stages count. A stage uses earlier runs of the same workflow when they reached it, then runs of other workflows, then a generic range by stage type (tasks stages: task cost times task count; approval, check and learn stages without history: zero).
+- Each stage carries the models routing gives it: the stage route, else its profile's model; tasks stages use `implementer`, review stages their review profiles, and their tokens are split evenly.
+- The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. Cache writes are not recorded, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The cost is advice only: `maxCostUsd` stays disabled.
+
+### Doctor
+
+`baked doctor` (short for `baked workflow doctor [WORKFLOW]`, same options as `estimate`) checks a run before it starts and exits 1 when something must be fixed:
+
+- Start refusals: workflows disabled, then everything `workflow run` would refuse (policy, definition, routing, gates and their confirmation, auto approval confirmation, profiles, skills, worktree prerequisites, writers). The doctor calls the same validation as the start.
+- Credentials: every model the run can call (stage routes, stage profiles, review and skeptic profiles, and every profile that may implement a task) needs a known provider with a key.
+- Commands: every check command and AI walk-through start command resolves from its working directory. Missing required ones fail, optional ones warn. Nothing is executed.
+- Warnings that do not block: review on the implementer's model, uncommitted changes, stale run worktrees, no Git repository for an inline run, a run that exited without releasing the workspace, and an estimate above `maxTotalTokens`.
+- A live run holding the workspace, or one that stopped with a command of unknown outcome, fails.
+
+`--json` prints the report with every check's `id`, `status`, `title`, `detail` and `fix`, and the estimate.
 
 ### Context compaction
 
 Every model step resends the whole conversation, so a stage that reads many files pays for each old file again on every later step. The step budget of an agent attempt (`maxAttemptTokens`, see [step-budget](../../src/core/workflows/step-budget.ts)) replaces older large results of `read`, `navigate`, `bake_find` and `bake_impact` with short stubs that keep every evidence ID; the last three tool results stay verbatim, and edits and check results are never compacted. Evidence is written by the tools into the run store, so nothing is lost; the model reads a file again if it needs the content.
+
+The evidence handed to later agents is shaped the same way. Each implemented task stores a unified diff of its changes in its `diff` evidence (`patch`, from the content kept before each edit, cut at 48,000 characters), so reviewers and the convergence auditor see the change without reading whole files. Earlier `read` evidence reaches them as its tool, the paths it named and its size, not its content; implementers get no reads at all.
 
 ## Workflow definitions (v2)
 
@@ -377,11 +397,65 @@ For import, enable `importsEnabled` separately and point to a local source direc
 
 To accept a schema-compatible imported package, pass its spec/plan/tasks to `candidate`; the import itself does not change accepted data. Profiles are loaded from the built-in definitions, `~/.baked/agents/*.json`, then `baked/agents/*.json`. The source and hash are visible in `workflow profiles`. A project workflow is stored in `baked/workflows/ID.json`; the mandatory SDD stages cannot be removed or reordered. Skills live in `baked/skills/ID/SKILL.md` and are frozen by hash.
 
-For a review by another model, save the full definition of `reviewer` or `security-reviewer` in `baked/agents/ID.json` and set its `model` to a specific configured `provider/model`. `workflow profiles` shows the format of the other fields. Correctness, security and skeptic profiles can use different models. Without such an assignment, the built-in `$review` uses an available review slot or the active model. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
+For a review by another model, route it with `modelRouting` (see [Model routing](#model-routing)) rather than copying a profile. A copied profile in `baked/agents/ID.json` can still name a specific `provider/model`, but a project file then carries one person's model choice. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
 
 Export creates a new directory inside the workspace. The host API allows a separate outside-path approval callback; the CLI does not provide one automatically. Raw provider messages and command output are not part of the portable report; known credentials are masked. Redaction removes the selected artifact content, keeps the original hash and a tombstone and invalidates evidence. It does not promise to remove every possible copy of a string from other artifacts.
 
 GC removes only terminal runs older than 30 days and the given cutoff when no child run needs them and they hold no lease. Active/waiting/blocked data and the shared `specs/` are kept. For a backup, stop the writers and save `.baked/workflows.sqlite` together with `.baked/workflow-runs/`. Copying a live SQLite database also needs the WAL/SHM files or an SQLite backup; an arbitrary copy of one file during writes is not a consistent backup.
+
+## Model routing
+
+Profiles name a model class: built-in ones use `$active` (the run model: the tab model or `--model`), `$fast` (the quick planner), `$coding` and `$review`. The `modelRouting` section of the global or project configuration turns classes, roles, profiles and workflow stages into concrete models:
+
+```jsonc
+"modelRouting": {
+  "classes": { "fast": "anthropic/claude-haiku-5-5", "review": "openai/gpt-5.1" },
+  "roles": { "researcher": "$fast", "reporter": "$fast" },
+  "profiles": { "security-reviewer": "anthropic/claude-opus-5-5" },
+  "workflows": { "sdd": { "stages": { "research": "$fast" } } }
+}
+```
+
+A value is a `provider/model` ID or `$class`. A class names a model, not another class. A project layer is merged over the global one section by section, and stage routes workflow by workflow.
+
+The model of an agent is chosen in this order, the first match winning:
+
+1. `--route STAGE=MODEL,...` on `workflow run`;
+2. `modelRouting.workflows.<workflow>.stages.<stage>`;
+3. `modelRouting.profiles.<profile>`;
+4. `modelRouting.roles.<role>`;
+5. the profile's class through `modelRouting.classes`; `$coding` and `$review` then fall back to the `/router` Code (`taskRouter.ember`) and Review (`taskRouter.verify`) slots, and every built-in class to the run model.
+
+A stage route applies to every agent of that stage, including its tasks, review dimensions and skeptics; gates on transitions use their profile's model. A route naming a stage the workflow does not have, or an unknown class, is refused when the run starts.
+
+A run freezes its routing at start in the `routing.json` artifact (each profile's and each routed stage's model with the source of the choice); resume, revise and fork use it, whatever the configuration says later. `baked workflow route [WORKFLOW] [--model ID] [--route ...] [--json]` prints the same table without starting a run, and `workflow profiles [--model ID]` shows each profile's resolved model and `modelSource`.
+
+### Effort and fallback models
+
+Any route, and any class, can be an object instead of a model ID:
+
+```jsonc
+"modelRouting": {
+  "classes": { "deep": { "model": "anthropic/claude-opus-5-5", "effort": "high", "fallback": ["openai/gpt-5.1"] } },
+  "roles": { "researcher": { "model": "$deep", "effort": "low" } },
+  "independentReview": "warn"
+}
+```
+
+- `effort` is `default`, `low`, `medium`, `high`, `xhigh` or `max`. It replaces `performance.effort` and `performance.openaiReasoningEffort` for that agent's calls only; an OpenAI level the model does not support is lowered to the nearest one it does. `default` sends no effort setting, so the provider's default applies. Models configured with a fixed effort in a compatible provider's own settings keep it.
+- `fallback` lists up to three model IDs (not classes) tried in order. A class reference brings the class's effort and fallback models; the object route's own fields override them.
+
+The primary model gets two retries on a transient provider error (timeouts, 408, 429, 5xx, 529, network errors); each fallback model gets one. When a route has another model and the provider asks for a `retry-after` over 30 seconds, the step moves on instead of waiting, and a fallback model whose provider asks for such a wait is not waited for. A step also moves to the next model when its prompt does not fit the model's context window. A step never moves to another model after its attempt changed files, after a cancel, or on a non-transient error (401, 403, a refused request, invalid output). When every model fails, the step fails with `provider_unavailable`, naming the primary's failure and the last model's.
+
+`routing.json` records each entry's `effort` and `fallback`, and `workflow route` prints them in the EFFORT and FALLBACK columns. `workflow usage RUN_ID` reports each attempt's `model` and a `models` summary (attempts, tokens and steps per model, most tokens first; host attempts such as checks are grouped as `(host)`).
+
+### Preflight and independent review
+
+Before a run is created, every model it can call is checked for a configured provider. A model that a bound profile or a stage route uses as its primary, and whose known provider has no credentials, refuses the start with `CAPABILITY_DENIED`. Fallback models, profiles the workflow does not bind, unknown providers and a check that does not answer within 5 seconds only add a warning.
+
+`independentReview` controls whether a reviewer may run on a model the implementation also uses, fallback models included: `warn` records a warning, `require` refuses the start, `off` skips the check. Without the field, `warn` applies once `modelRouting` is configured. Review, converge and reflection stages and review gates count as the review side; task stages as the implementation side.
+
+Warnings are stored in `routing.json` under `warnings` and printed by `workflow route` as `warning:` lines.
 
 ## Delivery
 
@@ -459,6 +533,57 @@ Initiative IDs and feature IDs are lower case slugs. A feature's runs use the wo
 **Pause, resume and re-planning.** `pause` stops the initiative and pauses a running feature run; `resume` continues it. While paused, the split can be edited again: approving the new revision keeps every feature whose boundary, contract, dependencies and mandatory flag are unchanged (a rename keeps its run), and supersedes and cancels the runs of removed or changed features, which then run again under the new revision. `replan --feature F` supersedes one feature's current run so the next drive starts it again; other features' results stay. Superseded runs and their artifacts remain linked to the initiative and are not collected by `gc`.
 
 Exit codes of `start`, `approve`, `drive` and `resume`: 0 completed or still progressing, 1 refused or error, 3 waiting for a decision, 4 blocked, 5 revision conflict, 130 paused. The workflow panel lists initiatives and approves, pauses, resumes, continues and re-plans them; see [Initiatives in the TUI](#initiatives-in-the-tui).
+
+## Local API (`baked serve`)
+
+`baked serve` exposes the workflow commands to a desktop app or another local client over HTTP. It is a thin front end over the same code path as `baked workflow` (`src/core/api/server.ts` builds the CLI's `WorkflowArgs` and calls `executeWorkflowCommand`), so validation, the `workflows.enabled` opt-in, approval digests, expected revisions and command idempotency are identical.
+
+```sh
+baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR]
+```
+
+- The server binds `127.0.0.1` only. `--port 0` (the default) picks a free port. When it is ready it prints one JSON line on stdout: `{"url":"http://127.0.0.1:PORT","port":PORT,"tokenFile":"..."}`.
+- Each start generates a random 32-byte bearer token (base64url) and writes it to `.baked/serve-PORT.token` in the workspace, or to `--token-file`, with mode 0600 (on Windows the file inherits the directory's ACL). Every request, `/v1/health` included, needs `Authorization: Bearer TOKEN`; the token is compared in constant time.
+- The `Host` header must be `127.0.0.1:PORT` or `localhost:PORT`, otherwise the answer is 421 (DNS-rebinding protection). A request with an `Origin` header is refused with 403 unless that exact origin was given with `--allow-origin` (repeatable; `*` and paths are refused). Allowed origins get `Access-Control-Allow-Origin` with that origin and preflight answers; there is no wildcard.
+- POST bodies are JSON (`Content-Type: application/json`), at most 1 MiB (413 above), validated with zod; unknown fields are refused.
+- SIGINT or SIGTERM stops accepting, closes event streams, aborts active drives through their abort signals like the CLI's Ctrl+C, waits for them and removes the token file. A second signal exits at once with 130.
+
+| Method and path | CLI equivalent | Body or query |
+| --- | --- | --- |
+| `GET /v1/health` | | returns `apiVersion`, `version`, `workspace` |
+| `GET /v1/workflow/definitions` | `definitions` | |
+| `GET /v1/workflow/profiles` | `profiles` | |
+| `GET /v1/workflow/doctor` | `doctor` | `?workflow=&model=&route=STAGE=MODEL,...&worktree=true&writers=&confirmAutoApproval=`; uses the configured policy; 200 with the report, `ready` false when a check failed |
+| `GET /v1/workflow/estimate` | `estimate` | same query as `doctor`; 404 for an unknown workflow, 400 for a start refusal |
+| `GET /v1/workflow/runs` | `list` | `?feature=&status=&limit=&cursor=` |
+| `POST /v1/workflow/runs` | `run` | `commandId`, `feature`, `prompt`, optional `workflow`, `policy` (object), `model`, `owner` (default `API`), `confirmAutoApproval`, `worktree`, `writers` |
+| `GET /v1/workflow/runs/RUN_ID` | `status` | snapshot with `requests` |
+| `GET /v1/workflow/runs/RUN_ID/usage` | `usage` | |
+| `GET /v1/workflow/runs/RUN_ID/artifacts` | `artifacts` | `?file=ARTIFACT_ID` returns `{content}` |
+| `POST /v1/workflow/runs/RUN_ID/pause`, `/cancel`, `/resume` | `pause`, `cancel`, `resume` | `commandId`, `expectedRevision` |
+| `POST /v1/workflow/runs/RUN_ID/approve` | `approve` | plus `requestId`, `digest`, optional `excludeUserChanges` |
+| `POST /v1/workflow/runs/RUN_ID/reject` | `reject` | plus `requestId`, `reason` |
+| `POST /v1/workflow/runs/RUN_ID/answer` | `answer` | plus `requestId`, `answers` (object of strings) |
+| `POST /v1/workflow/runs/RUN_ID/extend` | `extend` | plus optional `tokens`, `calls`, `timeMs` |
+| `GET /v1/workflow/runs/RUN_ID/events` | `--events` | `?after=SEQ`; SSE, or JSON with `Accept: application/json` (`?limit=`, at most 1000) |
+| `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
+| `GET /v1/projects/current` | `project show` | the workspace's project: roots, working set, instruction files, latest sessions and runs; 404 without `baked/project.json` |
+| `POST /v1/projects/current/working-set` | `project add`, `project remove` | `add`, `remove` (path or glob lists, removals first); returns the project; an entry outside the project roots is 400 |
+
+Every mutation requires a client-chosen `commandId` (letters, digits, `_` and `-`): a retry with the same ID and body returns the stored result, the same ID with a different body is a conflict. Errors are `{"error":{"code","message"}}` with the workflow fault code: `NOT_FOUND` and `ARTIFACT_MISSING` 404; `INVALID_DEFINITION`, `INVALID_REFERENCE`, `CYCLE_DETECTED` and request validation (`INVALID_REQUEST`) 400; `CAPABILITY_DENIED` 403; `REVISION_CONFLICT`, `COMMAND_CONFLICT`, `STALE_DECISION`, `WORKSPACE_BUSY`, `INPUT_CHANGED` and `RUN_TERMINAL` 409; anything else 500. Messages pass through the export redaction (`redactSecrets`).
+
+`POST /v1/workflow/runs` (202) and `.../resume` (200) answer with the snapshot as soon as the run is driving; the drive continues in the server process, as it would in the foreground CLI, until the run waits for a person, stops, or the server shuts down. Like the CLI, `approve`, `answer` and `reject` only record the decision; the client then calls `resume`. A decision that arrives while a drive of that run is winding down after it stopped waits for that drive to return first. The runtime commits a run's `waiting` status, its new requests and the state they refer to (including the approval digest's inputs) in one transaction, so a decision from any process sees a consistent run; the wait only lets this server's own drive release its leases.
+
+The event endpoint polls the durable event log by sequence every 250 ms and sends each event as `id: SEQ` and `data: EVENT_JSON`, with a `: keep-alive` comment every 15 s. A reconnecting client sends `Last-Event-ID`, which takes precedence over `?after=`, and receives only later events. The stream stays open (also for waiting and terminal runs, which can still receive acceptance and delivery events) until the client disconnects or the server stops. Browsers' `EventSource` cannot send an `Authorization` header; read the stream with `fetch` instead.
+
+`GET /v1/attention` lists everything waiting for a person across all runs of the workspace, oldest first, from one store query. Each item is `{runId, featureId, status, requestId, kind, blocking, createdAt}`:
+
+- Every pending request of a run that is not `cancelled` or `failed`: `kind` is the request kind (`approval`, `clarification`, `manual_evidence`, `recovery`, `checkpoint`, `delivery`). An advisory acceptance-test request (an `approval` request carrying an acceptance walk-through) has `blocking: false`, because the run does not wait for it; every other request has `blocking: true`. `createdAt` is the time of the request's `request.created` event.
+- Every run with status `blocked`: `requestId` is `null`, `kind` is the run's reason (for example `input_changed` or `verification_failed`), `blocking` is `true` and `createdAt` is the run's last status change.
+
+With `Accept: application/json` the answer is `{"items":[...]}`. Otherwise it is an SSE stream that polls the store every 250 ms and sends the whole list as `event: attention` with `data: {"items":[...]}` once on connect and again whenever the list changes, with the same `: keep-alive` heartbeats; there is no event ID to resume from, since every frame is complete. The list is derived from the store, so runs driven by the CLI or the TUI appear as well, and no new durable event type exists for it.
+
+Limitations: event payloads and artifact contents are returned as `baked workflow status`, `--events` and `artifacts` return them, without the export redaction. `evidence`, `recover`, `candidate`, `revise`, `fork`, `undo`, `import`, `export`, `deliver`, `gates` and initiatives are not exposed yet; use the CLI. A run driven by another process (the CLI or the TUI) can be watched through the event endpoint; the workspace leases decide which process may drive a run, as between two CLI processes.
 
 ## Exit codes
 

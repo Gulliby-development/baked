@@ -487,7 +487,7 @@ describe("git — co-author handling", () => {
     setCoAuthorEnabled(true);
     await gitCommit(dir, "with co-author");
     const { stdout } = await run(["log", "-1", "--format=%B"], dir);
-    expect(stdout).toContain("Co-Authored-By: baked");
+    expect(stdout).toContain("Co-Authored-By: BAKED <noreply@github.com>");
   });
 
   it("co-author line is omitted when disabled", async () => {

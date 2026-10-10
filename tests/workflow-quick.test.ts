@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
+import { resolveProfileModel } from "../src/core/llm/model-routing.js";
 import { scopedPlanBudget } from "../src/core/workflows/clarification.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { uniqueFeatureId } from "../src/core/workflows/feature-id.js";
@@ -84,6 +85,15 @@ describe("quick workflow", () => {
     expect(plan?.maxTokens).toBeUndefined();
     expect(plan?.prompt).not.toContain('"researchScope":{');
   }, 30000);
+
+  test("the quick planner runs on the $fast class, which is the run model until it is configured", () => {
+    if (!quickPlanner) throw new Error("quick-planner missing");
+    expect(quickPlanner.model).toBe("$fast");
+    expect(resolveProfileModel(quickPlanner, { runModel: "p/big" }).model).toBe("p/big");
+    expect(
+      resolveProfileModel(quickPlanner, { runModel: "p/big", routing: { classes: { fast: "p/small" } } }),
+    ).toEqual({ model: "p/small", source: "modelRouting.classes.fast" });
+  });
 
   test("a request that names no file keeps the quick planner's profile limit", () => {
     if (!quickPlanner) throw new Error("quick-planner missing");

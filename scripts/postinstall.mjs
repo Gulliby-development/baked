@@ -18,17 +18,17 @@
  *
  * Idempotent. Soft-fails: any copy error is logged but does not abort
  * install. The runtime prints a clear error if something genuinely went
- * wrong, and `baked --doctor` (TODO) will rerun this.
+ * wrong; rerun it with `bun scripts/postinstall.mjs` from the package directory.
  *
- * Skipped when baked_SKIP_POSTINSTALL=1.
+ * Skipped when BAKED_SKIP_POSTINSTALL=1.
  */
 import { existsSync, copyFileSync, mkdirSync, readdirSync, statSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const QUIET = process.env.baked_POSTINSTALL_QUIET === "1";
-const SKIP = process.env.baked_SKIP_POSTINSTALL === "1";
+const QUIET = process.env.BAKED_POSTINSTALL_QUIET === "1";
+const SKIP = process.env.BAKED_SKIP_POSTINSTALL === "1";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -104,7 +104,7 @@ function copyTree(src, dest) {
 
 async function main() {
   if (SKIP) {
-    log("skipped (baked_SKIP_POSTINSTALL=1)");
+    log("skipped (BAKED_SKIP_POSTINSTALL=1)");
     return;
   }
 

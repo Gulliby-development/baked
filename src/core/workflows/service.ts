@@ -1,8 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
-import { ProfileRegistry } from "../agents/profiles/registry.js";
 import type { ContextManager } from "../context/manager.js";
+import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
+import { modelReadinessProblem } from "../llm/provider.js";
+import { displayPath } from "../projects/paths.js";
+import { activeProject } from "../projects/resolve.js";
+import {
+  renderWorkingSet,
+  resolveWorkingSet,
+  WORKING_SET_ARTIFACT,
+} from "../projects/working-set.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
 import { hostDiff } from "../verification/snapshot.js";
@@ -18,10 +26,10 @@ import {
 } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
-import { assertFrozenInputs, frozenInstructions } from "./context.js";
+import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { WorkflowFault } from "./errors.js";
-import { estimateStart, readHistory, type SavedEstimate } from "./estimate.js";
+import { readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
 import {
   commandProcessMayRun,
@@ -30,7 +38,9 @@ import {
   releaseDeadOwnerLeases,
   WorkspaceLeases,
 } from "./leases.js";
+import { estimatePrepared } from "./pre-run.js";
 import { undoRunEdits } from "./rollback.js";
+import { reachableModels } from "./routing.js";
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
@@ -45,12 +55,11 @@ import {
   type RunState,
   SafeId,
   type StartRequest,
-  validateWorkflow,
   WorkflowConfigSchema,
-  type WorkflowDefinition,
   type WorkflowService,
   writerPolicyProblem,
 } from "./schemas.js";
+import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
 import { reusableImplementations } from "./task-graph.js";
@@ -61,30 +70,20 @@ import {
   type ContractId,
   type Gate,
   GateSchema,
-  validateWorkflowV2,
   type WorkflowV2,
   WorkflowV2Schema,
-  worktreeRefusal,
 } from "./v2/definition.js";
-import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
-import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
+import { loadGateLibrary } from "./v2/library.js";
 import { definitionRevisionProblems } from "./v2/revision.js";
 import {
   autoApprovalHash,
-  autoApprovalOf,
-  checksOf,
-  describeAutoApproval,
-  frozenGates,
   hostSpec,
   initialPosition,
-  KIND_OUTPUT,
   parseRunDefinition,
   produces,
-  reviewersOf,
   stageKind,
-  stageProfileId,
 } from "./v2/runtime.js";
-import { removeRunWorktree, runRoot, worktreeBase } from "./worktree.js";
+import { removeRunWorktree, runRoot } from "./worktree.js";
 
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
@@ -94,6 +93,13 @@ export class NativeWorkflowService implements WorkflowService {
     string,
     { controller: AbortController; promise: Promise<RunSnapshot> }
   >();
+  /**
+   * Why a model cannot be called, or null; checked for every bound model before a run starts.
+   * Only the native executor calls providers, so a service given its own executor checks nothing.
+   */
+  modelReadiness: (
+    model: string,
+  ) => Promise<{ problem: string; missingCredentials: boolean } | null>;
   constructor(
     readonly workspace: string,
     readonly config: AppConfig,
@@ -101,6 +107,7 @@ export class NativeWorkflowService implements WorkflowService {
     readonly = false,
     parentContext?: ContextManager,
   ) {
+    this.modelReadiness = executor ? async () => null : (model) => modelReadinessProblem(model);
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
     this.scheduler = new WorkflowScheduler(
@@ -125,112 +132,20 @@ export class NativeWorkflowService implements WorkflowService {
       throw new WorkflowFault("INVALID_DEFINITION", "Workflow prompt is required");
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
-    const model = request.model ?? this.config.defaultModel;
-    if (!model?.trim() || model.trim() === "none")
-      throw new WorkflowFault("INVALID_DEFINITION", "Select a model before starting a workflow");
-    let policy = PolicySchema.parse(request.policy);
-    validateChecks(this.workspace, policy);
-    if (policy.maxCostUsd !== null)
-      throw new WorkflowFault(
-        "INVALID_DEFINITION",
-        "A dollar cap requires verified model pricing; use the token/time limits with maxCostUsd=null",
-      );
-    const registry = new ProfileRegistry(this.workspace, {
-      active: model,
-      coding: this.config.taskRouter?.ember ?? this.config.taskRouter?.coding ?? undefined,
-      review: this.config.taskRouter?.verify ?? undefined,
-    });
-    let loaded: LoadedDefinition;
-    try {
-      loaded = loadDefinition(this.workspace, request.workflowId, policy);
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith("Unknown workflow"))
-        throw new WorkflowFault("NOT_FOUND", error.message);
-      throw new WorkflowFault(
-        "INVALID_DEFINITION",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-    const profiles = registry.list().map((p) => p.profile);
-    const outputs: Record<string, string> = {
-      research: "research",
-      specify: "spec",
-      plan: "plan",
-      analyze: "analysis",
-      review: "review",
-      converge: "convergence",
-    };
-    const workflow: WorkflowDefinition | WorkflowV2 = loaded.definition;
-    let gates: Gate[] = [];
-    const gateFiles: Record<string, string> = {};
-    if (loaded.schemaVersion === 1) {
-      const validation = validateWorkflow(loaded.definition);
-      if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
-      for (const stage of loaded.definition.stages)
-        if (stage.profileId && registry.get(stage.profileId).output !== outputs[stage.kind])
-          throw new WorkflowFault(
-            "INVALID_DEFINITION",
-            `Profile output does not match stage ${stage.id}`,
-          );
-    } else {
-      const bound = bindDefinition(
-        this.workspace,
-        loaded.definition,
-        policy,
-        (id) => registry.get(id).output,
-        request.autoApprovalConfirmation,
-      );
-      gates = bound.gates;
-      Object.assign(gateFiles, bound.gateFiles);
-      policy = bound.policy;
-    }
-    // The CLI flag overrides the definition, which overrides the policy. Inline leaves the field
-    // out, so the policy hash of an inline run is what it was before execution modes existed.
-    const mode =
-      request.executionMode ??
-      (loaded.schemaVersion === 2 ? loaded.definition.execution : undefined) ??
-      executionModeOf(policy);
-    const { executionMode: _previous, allowOverlappingWrites, ...rest } = policy;
-    // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
-    // hash it had before the field existed; the requested writer count overrides the policy.
-    policy = PolicySchema.parse({
-      ...rest,
-      ...(mode === "worktree" ? { executionMode: mode } : {}),
-      ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
-      ...(request.maxConcurrentWriters !== undefined
-        ? { maxConcurrentWriters: request.maxConcurrentWriters }
-        : {}),
-    });
-    const writers = writerPolicyProblem(policy);
-    if (writers) throw new WorkflowFault("INVALID_DEFINITION", writers);
-    if (mode === "worktree") {
-      const refusal = loaded.schemaVersion === 2 ? worktreeRefusal(loaded.definition) : null;
-      if (refusal) throw new WorkflowFault("INVALID_DEFINITION", refusal);
-      await worktreeBase(this.workspace);
-    }
-    for (const id of Object.values(policy.reviewProfiles))
-      if (id && registry.get(id).output !== "review")
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          `Review profile ${id} has an incompatible output`,
-        );
-    if (registry.get(policy.skepticProfileId).output !== "refutation")
-      throw new WorkflowFault("INVALID_DEFINITION", "Skeptic must return RefutationSchema");
-    const instructions = frozenInstructions(this.workspace, this.config.instructionFiles);
-    const skillHashes: Record<string, string> = {};
-    for (const profile of profiles)
-      for (const skill of profile.skills) {
-        const path = join(this.workspace, "baked", "skills", skill.id, "SKILL.md");
-        if (!existsSync(path) || hashBytes(readFileSync(path)) !== skill.hash)
-          throw new WorkflowFault("INPUT_CHANGED", `Missing or changed skill ${skill.id}`);
-        skillHashes[skill.id] = skill.hash;
-        instructions.files[path] = skill.hash;
-      }
-    if (loaded.path) instructions.files[loaded.path] = hashBytes(readFileSync(loaded.path));
-    Object.assign(instructions.files, gateFiles);
-    const instructionHashes = gates.length
-      ? [...instructions.hashes, { source: GATES_ARTIFACT, hash: hashJson(gates) }]
-      : instructions.hashes;
+    const prepared = await prepareStart(this.workspace, this.config, request);
+    await this.preflight(prepared);
+    const {
+      policy,
+      registry,
+      loaded,
+      routing,
+      profiles,
+      workflow,
+      gates,
+      instructions,
+      skillHashes,
+      instructionHashes,
+    } = prepared;
     const v2 = loaded.schemaVersion === 2 ? loaded.definition : null;
     // A definition without a spec stage works on the request stated as one requirement.
     const hostDependencies = request.dependencies
@@ -253,6 +168,12 @@ export class NativeWorkflowService implements WorkflowService {
     for (const entry of registry.list())
       if (entry.source !== "builtin")
         instructions.files[entry.source] = hashBytes(readFileSync(entry.source));
+    // The working set is captured once; its hash joins the inputs before the run is created.
+    const project = activeProject(this.workspace);
+    const workingSet = project
+      ? renderWorkingSet(project.id, resolveWorkingSet(project), { cwd: this.workspace })
+      : null;
+    if (workingSet) instructionHashes.push({ source: WORKING_SET_ARTIFACT, hash: workingSet.hash });
     const state: RuntimeState = {
       prompt: request.prompt,
       ownerLabel: request.ownerLabel,
@@ -302,6 +223,7 @@ export class NativeWorkflowService implements WorkflowService {
       initiativePlan: null,
       hostDependencies,
       diff: null,
+      workingSet: null,
       worktree: null,
       gateResults: {},
       acceptance: {},
@@ -310,30 +232,89 @@ export class NativeWorkflowService implements WorkflowService {
       const duplicate = this.store.previousCommand(request.commandId, request);
       if (duplicate) return duplicate;
       const id = newId();
-      this.store.create(id, request.featureId, workflow, profiles, policy, state);
+      this.store.create(
+        id,
+        request.featureId,
+        workflow,
+        profiles,
+        policy,
+        state,
+        null,
+        project?.id ?? null,
+      );
+      this.store.artifact(id, "routing", ROUTING_ARTIFACT, canonical(routing));
       if (gates.length) this.store.artifact(id, "gates", GATES_ARTIFACT, canonical(gates));
+      if (workingSet) {
+        const artifact = this.store.artifact(id, "context", WORKING_SET_ARTIFACT, workingSet.text);
+        state.workingSet = {
+          artifactId: artifact.id,
+          hash: artifact.content_hash,
+          files: workingSet.included.map((path) => displayPath(this.workspace, path)),
+        };
+        this.store.saveState(id, state);
+      }
       if (diff) {
         const artifact = this.store.artifact(id, "diff", "diff/input.patch", diff.text);
         state.diff = { artifactId: artifact.id, hash: artifact.content_hash, files: diff.files };
         this.store.saveState(id, state);
       }
-      this.saveEstimate(id, policy);
+      this.saveEstimate(id, prepared, request.workflowId);
       const snapshot = this.store.snapshot(id);
       this.store.saveCommand(request.commandId, request, snapshot);
       return snapshot;
     });
   }
   /** Keeps the expectation made at creation, so a finished run can be compared with it. */
-  private saveEstimate(runId: string, policy: RunPolicy): void {
+  /**
+   * Refuses a start when a bound model's provider has no credentials, naming what uses it; the
+   * run would otherwise fail at that stage much later. Fallback models, unbound profiles and
+   * model IDs this build does not know (they fail at their first call either way) add warnings.
+   */
+  private async preflight(prepared: PreparedStart): Promise<void> {
+    const { routing, loaded, policy, profiles } = prepared;
+    const { required, optional } = reachableModels(
+      routing,
+      loaded.definition,
+      policy,
+      loadGateLibrary(this.workspace, policy).gates,
+      profiles,
+    );
+    const check = async (models: Map<string, string[]>) =>
+      (
+        await Promise.all(
+          [...models].map(async ([model, users]) => {
+            const found = await this.modelReadiness(model);
+            return found
+              ? { ...found, line: `${found.problem}; used by ${users.join(", ")}` }
+              : null;
+          }),
+        )
+      ).filter((found) => found !== null);
+    const [bound, other] = await Promise.all([check(required), check(optional)]);
+    const refusals = bound.filter((found) => found.missingCredentials).map((found) => found.line);
+    if (refusals.length)
+      throw new WorkflowFault(
+        "CAPABILITY_DENIED",
+        `These models cannot be called:\n${refusals.join("\n")}`,
+        { reason: "model_unavailable", problems: refusals },
+      );
+    const warnings = [...bound, ...other]
+      .filter((found) => !refusals.includes(found.line))
+      .map((found) => found.line);
+    if (warnings.length) routing.warnings = [...(routing.warnings ?? []), ...warnings];
+  }
+  private saveEstimate(runId: string, prepared: PreparedStart, workflowId: string): void {
     try {
-      const estimate = estimateStart(readHistory(this.store));
+      const estimate = estimatePrepared(prepared, workflowId, readHistory(this.store));
       const saved: SavedEstimate = {
         schemaVersion: 1,
         at: Date.now(),
         tokens: estimate.tokens,
         basis: estimate.basis,
         samples: estimate.samples,
-        maxTokens: policy.maxTotalTokens,
+        maxTokens: prepared.policy.maxTotalTokens,
+        workflowId,
+        costUsd: estimate.costUsd,
       };
       this.store.artifact(runId, "estimate", "estimates/start.json", canonical(saved));
     } catch {
@@ -1063,6 +1044,7 @@ export class NativeWorkflowService implements WorkflowService {
         policy,
         state,
         runId,
+        run.project_id ?? null,
       );
       // Dependents find a feature's accepted contract through this artifact.
       if (state.spec) this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
@@ -1070,6 +1052,15 @@ export class NativeWorkflowService implements WorkflowService {
       const gates = this.store.artifacts(runId).find((a) => a.logical_path === GATES_ARTIFACT);
       if (gates)
         this.store.artifact(id, "gates", GATES_ARTIFACT, this.store.readArtifact(runId, gates.id));
+      // A fork keeps the models its parent froze at start, stage routes included.
+      const routing = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
+      if (routing)
+        this.store.artifact(
+          id,
+          "routing",
+          ROUTING_ARTIFACT,
+          this.store.readArtifact(runId, routing.id),
+        );
       if (state.diff) {
         const diff = this.store.artifact(
           id,
@@ -1078,6 +1069,16 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.readArtifact(runId, state.diff.artifactId),
         );
         state.diff = { ...state.diff, artifactId: diff.id };
+        this.store.saveState(id, state);
+      }
+      if (state.workingSet) {
+        const copy = this.store.artifact(
+          id,
+          "context",
+          WORKING_SET_ARTIFACT,
+          this.store.readArtifact(runId, state.workingSet.artifactId),
+        );
+        state.workingSet = { ...state.workingSet, artifactId: copy.id };
         this.store.saveState(id, state);
       }
       const result = this.store.snapshot(id);
@@ -1221,93 +1222,4 @@ function planPosition(definitionJson: string): {
   position.stageId = stage.id;
   position.visits = { [stage.id]: 1 };
   return { stageIndex: 0, position };
-}
-
-/**
- * Validates a v2 definition against the gate library and the profiles a run can use, and derives
- * the run policy from it: the command gates it binds become the checks, with their effective
- * modes, and auto approval comes from the definition only. Shared by run start and by a revision
- * of a started run's definition.
- */
-export function bindDefinition(
-  workspace: string,
-  definition: WorkflowV2,
-  basePolicy: RunPolicy,
-  outputOf: (profileId: string) => string,
-  autoApprovalConfirmation: string | undefined,
-): { gates: Gate[]; gateFiles: Record<string, string>; policy: RunPolicy } {
-  let policy = basePolicy;
-  const gateFiles: Record<string, string> = {};
-  const library = loadGateLibrary(workspace, policy);
-  const validation = validateWorkflowV2(definition, library.gates);
-  if (validation.length) throw new WorkflowFault("INVALID_DEFINITION", validation.join("\n"));
-  const gates = frozenGates(definition, library.gates);
-  const unconfirmed = unconfirmedGates(
-    workspace,
-    library,
-    gates.map((g) => g.id),
-  );
-  if (unconfirmed.length)
-    throw new WorkflowFault(
-      "INVALID_DEFINITION",
-      `Review the project gates this workflow uses before they run:\n${unconfirmed.map(describeGate).join("\n")}\nConfirm them with: baked workflow gates confirm ${unconfirmed.map((e) => e.gate.id).join(" ")}`,
-      { unconfirmedGates: unconfirmed.map((e) => e.gate.id) },
-    );
-  for (const gate of gates) {
-    const entry = library.entries.get(gate.id);
-    if (entry?.path) gateFiles[entry.path] = hashBytes(readFileSync(entry.path));
-  }
-  const autoApproval = autoApprovalOf(definition);
-  if (definition.autoApproval && autoApproval) {
-    const expected = autoApprovalHash(definition.autoApproval);
-    if (autoApprovalConfirmation !== expected)
-      throw new WorkflowFault(
-        "INVALID_DEFINITION",
-        `Workflow ${definition.id} approves plans automatically within: ${describeAutoApproval(definition.autoApproval)}. Confirm these limits to start it (CLI: --confirm-auto-approval ${expected}).`,
-        { autoApprovalHash: expected },
-      );
-  }
-  // The command gates the definition binds are the run's checks, with their effective modes;
-  // auto approval comes from the definition only.
-  const acceptanceWrites = [
-    ...new Set(
-      gates.flatMap((g) =>
-        g.type === "ai-acceptance" ? g.acceptance.capabilities.writePaths : [],
-      ),
-    ),
-  ];
-  policy = PolicySchema.parse({
-    ...policy,
-    checks: checksOf(definition, gates),
-    autoApproval,
-    ...(acceptanceWrites.length ? { acceptanceWrites } : {}),
-  });
-  validateChecks(workspace, policy);
-  for (const stage of definition.stages) {
-    const kind = stageKind(stage);
-    if (!kind)
-      throw new WorkflowFault(
-        "INVALID_DEFINITION",
-        `Stage ${stage.id} produces ${stage.produces}, which no agent stage can submit`,
-      );
-    const profileId = stageProfileId(stage);
-    if (profileId && outputOf(profileId) !== KIND_OUTPUT[kind])
-      throw new WorkflowFault(
-        "INVALID_DEFINITION",
-        `Profile output does not match stage ${stage.id}`,
-      );
-    for (const reviewer of reviewersOf(stage, gates)) {
-      if (outputOf(reviewer.profileId) !== "review")
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          `Review gate ${reviewer.key} needs a profile that returns ReviewSchema`,
-        );
-      if (reviewer.skepticProfileId && outputOf(reviewer.skepticProfileId) !== "refutation")
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          `Skeptic of ${reviewer.key} must return RefutationSchema`,
-        );
-    }
-  }
-  return { gates, gateFiles, policy };
 }

@@ -13,6 +13,7 @@ import { migration003 } from "./migrations/003.js";
 import { migration004 } from "./migrations/004.js";
 import { migration005 } from "./migrations/005.js";
 import { migration006 } from "./migrations/006.js";
+import { migration007 } from "./migrations/007.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -53,6 +54,8 @@ export interface RunRow {
   token_usage: number;
   active_ms: number;
   estimated_cost_microusd: number | null;
+  /** Absent in a database a read-only reader left on migration 006. */
+  project_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -91,6 +94,19 @@ export interface RequestRow {
   body_json: string;
   answer_json: string | null;
   actor: string | null;
+}
+/** A pending request of any run, or a blocked run, as `attention()` lists it. */
+export interface AttentionRow {
+  run_id: string;
+  feature_id: string;
+  status: RunState;
+  /** Null for a blocked run. */
+  request_id: string | null;
+  /** The request kind, or the reason of a blocked run. */
+  kind: string;
+  /** Null for a blocked run. */
+  body_json: string | null;
+  created_at: number;
 }
 export interface EffectRow {
   id: string;
@@ -147,6 +163,8 @@ export interface StepRow {
 export interface AttemptRow {
   id: string;
   step_id: string;
+  /** The model the attempt ran on; null for host attempts. */
+  model_id: string | null;
   status: string;
   reserved_tokens: number;
   used_tokens: number | null;
@@ -166,6 +184,7 @@ const MIGRATIONS = [
   { version: 4, sql: migration004 },
   { version: 5, sql: migration005 },
   { version: 6, sql: migration006 },
+  { version: 7, sql: migration007 },
 ] as const;
 
 export class WorkflowStore {
@@ -356,7 +375,21 @@ export class WorkflowStore {
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
         .map((r) => r.id),
+      ...(row.project_id ? { projectId: row.project_id } : {}),
     };
+  }
+  /** The latest runs of a project, newest first; none in a database older than migration 007. */
+  projectRuns(projectId: string, limit = 20): RunSnapshot[] {
+    const columns = this.db
+      .query<{ name: string }, []>("SELECT name FROM pragma_table_info('runs')")
+      .all();
+    if (!columns.some((c) => c.name === "project_id")) return [];
+    return this.db
+      .query<{ id: string }, [string, number]>(
+        "SELECT id FROM runs WHERE project_id=? ORDER BY created_at DESC,id DESC LIMIT ?",
+      )
+      .all(projectId, limit)
+      .map((r) => this.snapshot(r.id));
   }
   list(
     limit: number,
@@ -453,6 +486,7 @@ export class WorkflowStore {
     policy: RunPolicy,
     state: RuntimeState,
     parent: string | null = null,
+    projectId: string | null = null,
   ): void {
     SafeId.parse(id);
     SafeId.parse(featureId);
@@ -462,11 +496,12 @@ export class WorkflowStore {
       Date.now(),
     ]);
     this.db.run(
-      "INSERT INTO runs (id,feature_id,parent_run_id,status,definition_json,profiles_json,policy_json,input_manifest_json,input_hash,created_at,updated_at) VALUES (?,?,?,'created',?,?,?,?,?,?,?)",
+      "INSERT INTO runs (id,feature_id,parent_run_id,project_id,status,definition_json,profiles_json,policy_json,input_manifest_json,input_hash,created_at,updated_at) VALUES (?,?,?,?,'created',?,?,?,?,?,?,?)",
       [
         id,
         featureId,
         parent,
+        projectId,
         canonical(definition),
         canonical(profiles),
         canonical(policy),
@@ -479,7 +514,11 @@ export class WorkflowStore {
     this.saveState(id, state);
     this.emit(id, {
       type: "run.created",
-      payload: { featureId, inputHash: hashJson(state.manifest) },
+      payload: {
+        featureId,
+        inputHash: hashJson(state.manifest),
+        ...(projectId ? { projectId } : {}),
+      },
     });
   }
   saveState(id: string, state: RuntimeState): void {
@@ -704,6 +743,26 @@ export class WorkflowStore {
       throw new WorkflowFault("STALE_DECISION", "Request is no longer pending");
     this.emit(runId, { type: "request.decided", payload: { requestId: id, status, actor } });
   }
+  /**
+   * Everything that waits for a person across all runs, oldest first: every pending request of a
+   * run that can still act on it, and every blocked run. Requests have no timestamp of their own,
+   * so a request is dated by its `request.created` event and a blocked run by its last change.
+   */
+  attention(): AttentionRow[] {
+    return this.db
+      .query<AttentionRow, []>(
+        `SELECT q.run_id AS run_id, r.feature_id AS feature_id, r.status AS status,
+           q.id AS request_id, q.kind AS kind, q.body_json AS body_json,
+           COALESCE((SELECT e.at FROM events e WHERE e.run_id=q.run_id AND e.type='request.created'
+             AND json_extract(e.payload_json,'$.requestId')=q.id), r.updated_at) AS created_at
+         FROM requests q JOIN runs r ON r.id=q.run_id
+         WHERE q.status='pending' AND r.status NOT IN ('cancelled','failed')
+         UNION ALL
+         SELECT id, feature_id, status, NULL, reason, NULL, updated_at FROM runs WHERE status='blocked'
+         ORDER BY created_at, run_id, request_id`,
+      )
+      .all();
+  }
   tasks(runId: string): TaskRow[] {
     return this.db
       .query<TaskRow, [string]>("SELECT * FROM tasks WHERE run_id=? ORDER BY rowid")
@@ -766,6 +825,21 @@ export class WorkflowStore {
       type: "task.state_changed",
       payload: { taskId: id, from: row.status, to: status, generation },
     });
+  }
+  /** The stage of a step's top-level ancestor: the definition stage a child step belongs to. */
+  rootStage(runId: string, stepId: string): string | null {
+    let id: string | null = stepId;
+    for (let depth = 0; id && depth < 16; depth++) {
+      const row: { stage_id: string; parent_step_id: string | null } | null = this.db
+        .query<{ stage_id: string; parent_step_id: string | null }, [string, string]>(
+          "SELECT stage_id,parent_step_id FROM steps WHERE run_id=? AND id=?",
+        )
+        .get(runId, id);
+      if (!row) return null;
+      if (!row.parent_step_id) return row.stage_id;
+      id = row.parent_step_id;
+    }
+    return null;
   }
   beginStep(runId: string, stageId: string, parent: string | null = null): string {
     const generation =

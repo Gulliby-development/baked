@@ -83,7 +83,7 @@ const SERVER_CANDIDATES: Record<string, ServerCandidate[]> = {
 const MASON_BIN_DIR = join(userDataDir(), "mason", "bin");
 
 /** baked installs LSP servers here via /lsp-install */
-const baked_BIN_DIR = join(configDir(), "lsp-servers");
+const BAKED_BIN_DIR = join(configDir(), "lsp-servers");
 
 /** Suffixes to probe when looking up a server binary. Windows installs as
  * `.cmd` shims (npm) or `.exe` (native), so we must try those before giving up. */
@@ -105,10 +105,10 @@ function commandExistsInMason(cmd: string): string | null {
 /** Check baked's own install directory */
 function findInbaked(cmd: string): string | null {
   // npm-installed servers go to node_modules/.bin/
-  const npmBin = firstExisting(join(baked_BIN_DIR, "node_modules", ".bin"), cmd);
+  const npmBin = firstExisting(join(BAKED_BIN_DIR, "node_modules", ".bin"), cmd);
   if (npmBin) return npmBin;
   // pip/go/cargo-installed servers go to bin/
-  const directBin = firstExisting(join(baked_BIN_DIR, "bin"), cmd);
+  const directBin = firstExisting(join(BAKED_BIN_DIR, "bin"), cmd);
   if (directBin) return directBin;
   return null;
 }

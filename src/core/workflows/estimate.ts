@@ -236,9 +236,12 @@ export interface SavedEstimate {
   schemaVersion: 1;
   at: number;
   tokens: TokenRange;
-  basis: Prices["basis"];
+  basis: Prices["basis"] | "workflow-history";
   samples: number;
   maxTokens: number;
+  /** Added with the pre-run estimate; older saved estimates lack them. */
+  workflowId?: string;
+  costUsd?: TokenRange | null;
 }
 export function compareWithActual(
   saved: SavedEstimate,
@@ -270,4 +273,235 @@ export function readHistory(store: WorkflowStore, maxAgeMs = 5000): PastRun[] {
   const rows = store.history();
   cache.set(store, { at: Date.now(), rows });
   return rows;
+}
+
+/** A stage of the definition about to run, with the models its agents will use. */
+export interface PlannedStage {
+  id: string;
+  /** The v2 stage type: agent, tasks, check, approval, review, reflection or learn. */
+  type: string;
+  /** Distinct models; tokens are split evenly between them. Empty for stages without agents. */
+  models: string[];
+}
+export interface ModelPrice {
+  /** USD per million tokens. */
+  input: number;
+  cacheRead: number;
+  output: number;
+  match: "table" | "approximate";
+}
+/** Shares of a stage's tokens priced as uncached input, cache reads and output. */
+export interface TokenMix {
+  input: number;
+  cacheRead: number;
+  output: number;
+}
+/**
+ * Attempts record input plus output, with cache reads inside input, and no cache writes. Agent
+ * loops re-send long contexts and write little, so most tokens are input and many are cached.
+ */
+export const DEFAULT_MIX: TokenMix = { input: 0.6, cacheRead: 0.3, output: 0.1 };
+/** Used for an agent stage that neither history nor the stage defaults know. */
+export const GENERIC_AGENT_RANGE: TokenRange = { low: 15_000, high: 60_000 };
+
+export type EstimateBasis = "workflow-history" | "history" | "defaults";
+export interface PreRunEstimate {
+  schemaVersion: 1;
+  workflowId: string;
+  tokens: TokenRange;
+  /** Null when no model with tokens has a known price. */
+  costUsd: TokenRange | null;
+  /** False when some tokens run on a model without a known price; the cost leaves them out. */
+  costComplete: boolean;
+  basis: EstimateBasis;
+  samples: number;
+  mix: TokenMix;
+  notes: string[];
+  stages: {
+    stageId: string;
+    type: string;
+    models: string[];
+    tokens: TokenRange;
+    costUsd: TokenRange | null;
+    basis: EstimateBasis;
+  }[];
+  models: {
+    model: string;
+    stages: string[];
+    tokens: TokenRange;
+    costUsd: TokenRange | null;
+    price: "table" | "approximate" | "unknown";
+  }[];
+  budget: { maxTotalTokens: number; fits: "yes" | "maybe" | "no" };
+  label: string;
+}
+
+const AGENT_TYPES = new Set(["agent", "reflection", "review"]);
+const usd = (n: number): string => (n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`);
+export const usdRangeText = (r: TokenRange): string => `${usd(r.low)}–${usd(r.high)}`;
+
+/**
+ * Tokens and approximate cost of a run before it starts, stage by stage. Ranges come from earlier
+ * runs of the same workflow where they reached the stage, then from runs of any workflow, then
+ * from defaults. Dollar figures price a fixed token mix and stay advisory.
+ */
+export function estimatePreRun(input: {
+  history: PastRun[];
+  workflowId: string;
+  stages: PlannedStage[];
+  maxTotalTokens: number;
+  price: (model: string) => ModelPrice | null;
+  mix?: TokenMix;
+}): PreRunEstimate {
+  const mix = input.mix ?? DEFAULT_MIX;
+  const same = input.history.filter((r) => r.workflowId === input.workflowId);
+  const pools: [EstimateBasis, PastRun[]][] = [
+    ["workflow-history", same],
+    ["history", input.history],
+  ];
+  const measure = (
+    pick: (runs: PastRun[]) => number[],
+  ): { range: TokenRange; basis: EstimateBasis } | null => {
+    for (const [basis, runs] of pools) {
+      const range = rangeOf(pick(runs));
+      if (range) return { range, basis };
+    }
+    return null;
+  };
+  const stageRange = (stage: PlannedStage): { range: TokenRange; basis: EstimateBasis } => {
+    if (stage.type === "tasks") {
+      const perTask = measure((runs) =>
+        runs
+          .filter((r) => r.taskCount > 0 && r.taskTokens > 0)
+          .map((r) => r.taskTokens / r.taskCount),
+      );
+      const counts = measure((runs) =>
+        runs.filter((r) => r.status === "completed" && r.taskCount > 0).map((r) => r.taskCount),
+      );
+      const count = counts
+        ? {
+            low: Math.max(1, Math.floor(counts.range.low)),
+            high: Math.max(1, Math.ceil(counts.range.high)),
+          }
+        : DEFAULT_TASK_COUNT;
+      const range = scale(perTask?.range ?? DEFAULT_TASK_RANGE, count);
+      return {
+        range: { low: Math.round(range.low), high: Math.round(range.high) },
+        basis: perTask?.basis ?? "defaults",
+      };
+    }
+    const seen = measure((runs) =>
+      runs.map((r) => r.stageTokens[stage.id]).filter((x): x is number => x !== undefined && x > 0),
+    );
+    if (seen) return seen;
+    const fallback = AGENT_TYPES.has(stage.type)
+      ? (DEFAULT_STAGE_RANGES[stage.id] ?? GENERIC_AGENT_RANGE)
+      : ZERO;
+    return { range: fallback, basis: "defaults" };
+  };
+
+  const prices = new Map<string, ModelPrice | null>();
+  const priceOf = (model: string): ModelPrice | null => {
+    if (!prices.has(model)) prices.set(model, input.price(model));
+    return prices.get(model) ?? null;
+  };
+  const perMillion = (p: ModelPrice): number =>
+    mix.input * p.input + mix.cacheRead * p.cacheRead + mix.output * p.output;
+  const byModel = new Map<string, PreRunEstimate["models"][number]>();
+  let costComplete = true;
+  let anyCost = false;
+  const stages = input.stages.map((stage) => {
+    const { range, basis } = stageRange(stage);
+    const share = stage.models.length ? 1 / stage.models.length : 0;
+    let cost: TokenRange | null = null;
+    if (range.high > 0 && !stage.models.length) costComplete = false;
+    for (const model of stage.models) {
+      const tokens = { low: range.low * share, high: range.high * share };
+      const price = priceOf(model);
+      const modelCost = price
+        ? {
+            low: (tokens.low / 1e6) * perMillion(price),
+            high: (tokens.high / 1e6) * perMillion(price),
+          }
+        : null;
+      if (modelCost) {
+        cost = add(cost ?? ZERO, modelCost);
+        if (tokens.high > 0) anyCost = true;
+      } else if (tokens.high > 0) costComplete = false;
+      const entry = byModel.get(model) ?? {
+        model,
+        stages: [],
+        tokens: ZERO,
+        costUsd: price ? ZERO : null,
+        price: price?.match ?? "unknown",
+      };
+      entry.stages.push(stage.id);
+      entry.tokens = add(entry.tokens, tokens);
+      if (entry.costUsd && modelCost) entry.costUsd = add(entry.costUsd, modelCost);
+      byModel.set(model, entry);
+    }
+    return {
+      stageId: stage.id,
+      type: stage.type,
+      models: stage.models,
+      tokens: range,
+      costUsd: cost,
+      basis,
+    };
+  });
+  const tokens = stages.reduce((sum, s) => add(sum, s.tokens), ZERO);
+  const costUsd = anyCost ? stages.reduce((sum, s) => add(sum, s.costUsd ?? ZERO), ZERO) : null;
+  const basis: EstimateBasis = stages.some((s) => s.basis === "workflow-history")
+    ? "workflow-history"
+    : stages.some((s) => s.basis === "history")
+      ? "history"
+      : "defaults";
+  const samples =
+    basis === "workflow-history"
+      ? same.length
+      : basis === "history"
+        ? input.history.filter((r) => Object.keys(r.stageTokens).length > 0).length
+        : 0;
+  const models = [...byModel.values()].map((m) => ({
+    ...m,
+    tokens: { low: Math.round(m.tokens.low), high: Math.round(m.tokens.high) },
+  }));
+  const notes: string[] = [];
+  if (costUsd) {
+    notes.push(
+      `Cost prices ${Math.round(mix.input * 100)}% uncached input, ${Math.round(mix.cacheRead * 100)}% cache reads and ${Math.round(mix.output * 100)}% output; cache writes are not counted.`,
+    );
+    const approx = models.filter((m) => m.price === "approximate").map((m) => m.model);
+    if (approx.length) notes.push(`Approximate prices: ${approx.join(", ")}.`);
+  }
+  const unknown = models.filter((m) => m.price === "unknown").map((m) => m.model);
+  if (unknown.length)
+    notes.push(`No price known for ${unknown.join(", ")}; the cost leaves them out.`);
+  const fits =
+    tokens.high <= input.maxTotalTokens
+      ? "yes"
+      : tokens.low > input.maxTotalTokens
+        ? "no"
+        : "maybe";
+  const basisLabel =
+    basis === "workflow-history"
+      ? `from ${samples} earlier run${samples === 1 ? "" : "s"} of ${input.workflowId}`
+      : basis === "history"
+        ? `from ${samples} earlier run${samples === 1 ? "" : "s"} of other workflows`
+        : "generic range: no earlier runs";
+  return {
+    schemaVersion: 1,
+    workflowId: input.workflowId,
+    tokens,
+    costUsd,
+    costComplete: costComplete && costUsd !== null,
+    basis,
+    samples,
+    mix,
+    notes,
+    stages,
+    models,
+    budget: { maxTotalTokens: input.maxTotalTokens, fits },
+    label: `Estimate: ${rangeText(tokens)} tokens${costUsd ? `, about ${usdRangeText(costUsd)}${costComplete ? "" : " (partial)"}` : ""} (${basisLabel})`,
+  };
 }

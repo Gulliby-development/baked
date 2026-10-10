@@ -19,7 +19,7 @@ BAKED already ships a `quick-fix` preset (plan, approve, implement, checks). It 
 ## Non-goals
 
 - Auto approval by default. A definition with auto approval still needs the typed confirmation hash (V2-12). A user who wants it copies the preset with `baked workflow define ID --from quick` and turns it on.
-- Model routing. When R1 lands, `quick` stages are routed like any other (`modelRouting.workflows.quick.stages.plan = "$fast"`). This design adds nothing router-specific.
+- New routing rules. `quick` stages are routed like any other (`modelRouting.workflows.quick.stages`, `--route`); the only routing change is the built-in class `$fast` (section 2).
 - Changing the `quick-fix` preset. It stays as it is for projects that use it.
 
 ## Design
@@ -44,12 +44,14 @@ Why one scoping agent instead of research followed by implement: a tasks stage n
 
 ### 2. The `quick-planner` profile
 
-A built-in profile, role `planner`, output `plan`, model `$active`, tools `read`, `bake_find`, `bake_impact`, `navigate`, `submit_result`, `maxSteps` 12, `maxOutputTokens` 16384 (the plan and task graph are one tool call). Instructions, in short:
+A built-in profile, role `planner`, output `plan`, model `$fast`, tools `read`, `bake_find`, `bake_impact`, `navigate`, `submit_result`, `maxSteps` 12, `maxOutputTokens` 16384 (the plan and task graph are one tool call). Instructions, in short:
 
 - There is no research stage: start from the paths the request names (`extra.researchScope.namedPaths`), read them in one call, and find only their direct callers and tests.
 - Plan the smallest change that does the request: one task, more only when files must change in order; never more than three.
 - Keep every required plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision `DEC-001` that references FR-001 is enough.
 - Take checks from `executionContract.checks`; do not plan verification-only tasks.
+
+`$fast` is a new built-in class: `modelRouting.classes.fast` sends the quick planner to a cheaper model, and without it the class is the run model, so a project without routing behaves as with `$active`.
 
 The plan package validation (`validatePackage`) is not relaxed: the six sections, a `DEC-` reference to a requirement and the task graph rules apply as for every plan. They are cheap when short, and the approval screen and `workflow revise` keep working on the same shapes.
 
