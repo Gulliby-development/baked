@@ -23,6 +23,9 @@ import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import {
+  ASSUME_NOTE,
+  assumeProblems,
+  clarificationResumeIndex,
   deferredBlockingProblems,
   demoteDeferred,
   planOnlyFindings,
@@ -81,6 +84,7 @@ import {
   sizePlan,
   sizingHistory,
   splitNote,
+  withTestDependencies,
 } from "./sizing.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
@@ -134,7 +138,11 @@ const repairSeverities = (run: { repair_rounds: number; convergence_rounds: numb
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph }): TaskGraph {
-  return { ...plan.taskGraph, specHash: hashJson(spec), planHash: hashBytes(plan.markdown) };
+  return withTestDependencies({
+    ...plan.taskGraph,
+    specHash: hashJson(spec),
+    planHash: hashBytes(plan.markdown),
+  });
 }
 
 /** A request for a person that the current step raised and has not made durable yet. */
@@ -317,12 +325,13 @@ export class WorkflowScheduler {
                   0,
                   (output) => {
                     const parsed = ResearchSchema.safeParse(output);
-                    return parsed.success
-                      ? deferredBlockingProblems(
-                          parsed.data.unknowns,
-                          (_, index) => parsed.data.unknowns[index]?.question ?? "",
-                        )
-                      : [];
+                    if (!parsed.success) return [];
+                    const question = (_: unknown, index: number) =>
+                      parsed.data.unknowns[index]?.question ?? "";
+                    return [
+                      ...deferredBlockingProblems(parsed.data.unknowns, question),
+                      ...assumeProblems(policy, parsed.data.unknowns, question),
+                    ];
                   },
                   { maxSteps: budget.maxSteps, maxTokens: budget.maxTokens },
                 ),
@@ -348,6 +357,18 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   { featureId: run.feature_id },
                   signal,
+                  undefined,
+                  0,
+                  (output) => {
+                    const parsed = SpecSchema.safeParse(output);
+                    if (!parsed.success) return [];
+                    const questions = parsed.data.openQuestions;
+                    return assumeProblems(
+                      policy,
+                      questions,
+                      (_, index) => questions[index]?.question ?? "",
+                    );
+                  },
                 ),
               );
               if (state.spec.featureId !== run.feature_id)
@@ -419,7 +440,8 @@ export class WorkflowScheduler {
                 ),
               );
               state.plan = plan.markdown;
-              state.graph = planGraph(spec, plan);
+              const graph = planGraph(spec, plan);
+              state.graph = graph;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
@@ -430,7 +452,7 @@ export class WorkflowScheduler {
               this.store.transaction(() => {
                 this.store.artifact(runId, "plan", "plan.md", state.plan ?? "");
                 this.store.artifact(runId, "tasks", "tasks.json", canonical(state.graph));
-                this.store.syncTasks(runId, plan.taskGraph);
+                this.store.syncTasks(runId, graph);
               });
               await this.publish(runId, stepId, state, policy, signal);
               break;
@@ -518,6 +540,25 @@ export class WorkflowScheduler {
                   advance = false;
                   break;
                 }
+              }
+              if (
+                !v2 &&
+                !state.analysisPassed &&
+                policy.clarification === "assume" &&
+                state.analysisReplans < 2
+              ) {
+                const stages = WorkflowSchema.parse(
+                  JSON.parse(this.store.run(runId).definition_json),
+                ).stages;
+                const blockingFindings = findings.filter((f) => f.blocking);
+                // Findings a default settles go back to the stage they refer to before a person.
+                state.analysisReplans = 2;
+                state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                state.stageIndex = clarificationResumeIndex(stages, state.stageIndex, {
+                  findings: blockingFindings,
+                });
+                advance = false;
+                break;
               }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
