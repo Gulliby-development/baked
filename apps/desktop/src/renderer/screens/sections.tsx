@@ -2,6 +2,8 @@ import type { ComponentType } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { ProjectSection } from "../router.js";
 import { RunsSection } from "./project/RunsSection.js";
+import { AcceptanceSection } from "./runs/AcceptanceSection.js";
+import { RunsView } from "./runs/RunsView.js";
 
 export interface SectionProps {
   project: DesktopProject;
@@ -12,5 +14,6 @@ export interface SectionProps {
 /** The view of each project section; a section without one shows a placeholder. */
 export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<SectionProps>>> = {
   overview: RunsSection,
-  runs: RunsSection,
+  runs: RunsView,
+  acceptance: AcceptanceSection,
 };
