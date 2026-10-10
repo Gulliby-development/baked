@@ -30,6 +30,12 @@ export function setFormatCache(cmd: string | null): void {
   formatOverride = cmd;
 }
 
+/** Drops the override and the detected commands, so the next edit detects the formatter again. */
+export function resetFormatCache(): void {
+  formatOverride = undefined;
+  formatCommands.clear();
+}
+
 /**
  * Auto-format a file after edit. Returns true if formatted, false if skipped/failed.
  * Uses cached format command to avoid re-detecting project profile on every edit.

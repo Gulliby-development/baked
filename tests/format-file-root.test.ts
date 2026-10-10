@@ -1,12 +1,15 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoFormatAfterEdit } from "../src/core/tools/auto-format.js";
+import { autoFormatAfterEdit, resetFormatCache } from "../src/core/tools/auto-format.js";
 import { formatFile, formatRoot } from "../src/core/tools/project.js";
 
 const root = mkdtempSync(join(tmpdir(), "baked-format-root-"));
 const nodeModules = join(import.meta.dir, "..", "node_modules");
+
+// Other test files in the same process turn post-edit formatting off.
+beforeAll(() => resetFormatCache());
 
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
