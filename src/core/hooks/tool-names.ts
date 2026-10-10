@@ -18,7 +18,7 @@
  * We map every baked tool to the closest Claude Code equivalent so
  * that matchers written for Claude Code hooks fire correctly here.
  */
-const baked_TO_CLAUDE: Record<string, string> = {
+const BAKED_TO_CLAUDE: Record<string, string> = {
   shell: "Bash",
   edit_file: "Edit",
   multi_edit: "MultiEdit",
@@ -59,7 +59,7 @@ const baked_TO_CLAUDE: Record<string, string> = {
 
 /** Map from Claude Code tool name → baked tool name(s). */
 const CLAUDE_TO_baked: Record<string, string[]> = {};
-for (const [sf, cc] of Object.entries(baked_TO_CLAUDE)) {
+for (const [sf, cc] of Object.entries(BAKED_TO_CLAUDE)) {
   if (!CLAUDE_TO_baked[cc]) CLAUDE_TO_baked[cc] = [];
   CLAUDE_TO_baked[cc].push(sf);
 }
@@ -82,7 +82,7 @@ CLAUDE_TO_baked.TodoWrite = [...(CLAUDE_TO_baked.TodoWrite ?? []), "task_list"];
  * Falls back to PascalCase conversion if no explicit mapping exists.
  */
 export function toClaudeToolName(bakedToolName: string): string {
-  return baked_TO_CLAUDE[bakedToolName] ?? bakedToolName;
+  return BAKED_TO_CLAUDE[bakedToolName] ?? bakedToolName;
 }
 
 /**

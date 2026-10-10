@@ -61,7 +61,7 @@ Any **one** of these disables telemetry completely:
 
 ```bash Environment variable
 # baked-specific
-export baked_TELEMETRY=0
+export BAKED_TELEMETRY=0
 
 # Or the cross-tool industry standard (respected by many CLIs)
 export DO_NOT_TRACK=1
@@ -78,7 +78,7 @@ When disabled, no network request is made and no id is created or read.
 - **First-run notice.** The first time telemetry runs, a one-line notice is
   printed to stderr telling you it's on and how to turn it off.
 - **Self-hostable.** Point the beacon at your own endpoint with
-  `baked_TELEMETRY_URL`.
+  `BAKED_TELEMETRY_URL`.
 - **No secrets shipped.** The client carries only a public, unauthenticated
   beacon URL — no API key, account id, or token. Reading the data requires a
   separate Cloudflare credential that never touches the client or the repo.

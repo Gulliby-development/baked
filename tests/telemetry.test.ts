@@ -14,8 +14,8 @@ beforeEach(() => {
   origHome = process.env.HOME;
   process.env.HOME = tmp;
   delete process.env.DO_NOT_TRACK;
-  delete process.env.baked_TELEMETRY;
-  delete process.env.baked_TELEMETRY_URL;
+  delete process.env.BAKED_TELEMETRY;
+  delete process.env.BAKED_TELEMETRY_URL;
 });
 
 afterEach(() => {
@@ -37,9 +37,9 @@ describe("telemetryDisabled", () => {
     expect(telemetryDisabled(true)).toBe(true);
   });
 
-  test("baked_TELEMETRY=0 disables", async () => {
+  test("BAKED_TELEMETRY=0 disables", async () => {
     const { telemetryDisabled } = await load();
-    process.env.baked_TELEMETRY = "0";
+    process.env.BAKED_TELEMETRY = "0";
     expect(telemetryDisabled(undefined)).toBe(true);
   });
 
@@ -55,7 +55,7 @@ describe("telemetryDisabled", () => {
 
   test("env enable overrides nothing harmful", async () => {
     const { telemetryDisabled } = await load();
-    process.env.baked_TELEMETRY = "1";
+    process.env.BAKED_TELEMETRY = "1";
     expect(telemetryDisabled(true)).toBe(false);
   });
 });
@@ -78,7 +78,7 @@ describe("sendBeacon", () => {
       calledInit = init as RequestInit;
       return Promise.resolve(new Response(null, { status: 204 }));
     });
-    process.env.baked_TELEMETRY_URL = "https://example.test/b";
+    process.env.BAKED_TELEMETRY_URL = "https://example.test/b";
 
     sendBeacon(
       {

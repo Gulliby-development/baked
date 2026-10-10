@@ -25,7 +25,7 @@ Routes to the custom domain `t.baked.baked.com` (set in
 `wrangler.toml`); the public `*.workers.dev` URL is disabled so the account
 subdomain isn't exposed. The client default endpoint lives in
 `src/core/telemetry.ts` (`DEFAULT_ENDPOINT`); override at runtime with
-`baked_TELEMETRY_URL`.
+`BAKED_TELEMETRY_URL`.
 
 ## Query active users
 

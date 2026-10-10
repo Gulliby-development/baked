@@ -70,7 +70,7 @@ function dedupe(list: string[]): string[] {
  * Resolve presets from:
  *   1. ~/.baked/config.json `presets[]` (global)
  *   2. <cwd>/.baked/config.json `presets[]` (project, overrides global)
- *   3. baked_PRESETS env (set from --plugin flags, ephemeral, wins last)
+ *   3. BAKED_PRESETS env (set from --plugin flags, ephemeral, wins last)
  *
  * Order = precedence (later wins). Failures are logged, not fatal:
  * one bad preset never blocks boot.
@@ -83,7 +83,7 @@ export async function initPresetsFromEnv(
 
   const globalSpecs = readPresetSpecs(getGlobalConfigFile());
   const projectSpecs = readPresetSpecs(projectFile);
-  const cliSpecs = (process.env.baked_PRESETS ?? "")
+  const cliSpecs = (process.env.BAKED_PRESETS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);

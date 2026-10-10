@@ -21,16 +21,16 @@ function truthy(v: string | undefined): boolean {
 /** Returns true when the user has opted out by any mechanism. */
 export function telemetryDisabled(configEnabled?: boolean): boolean {
   if (truthy(process.env.DO_NOT_TRACK)) return true;
-  if (process.env.baked_TELEMETRY !== undefined) {
+  if (process.env.BAKED_TELEMETRY !== undefined) {
     // Explicit env wins over config: "0"/"false" disables.
-    if (!truthy(process.env.baked_TELEMETRY)) return true;
+    if (!truthy(process.env.BAKED_TELEMETRY)) return true;
   }
   if (configEnabled === false) return true;
   return false;
 }
 
 function endpoint(): string {
-  return process.env.baked_TELEMETRY_URL || DEFAULT_ENDPOINT;
+  return process.env.BAKED_TELEMETRY_URL || DEFAULT_ENDPOINT;
 }
 
 /**

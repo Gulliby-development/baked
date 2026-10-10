@@ -1,5 +1,13 @@
 import { readFileSync, unlinkSync } from "node:fs";
-import { generateText, type StepResult, stepCountIs, type Tool, type ToolSet, tool } from "ai";
+import {
+  generateText,
+  type StepResult,
+  stepCountIs,
+  type Tool,
+  ToolChoiceViolationError,
+  type ToolSet,
+  tool,
+} from "ai";
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
 import { ContextManager } from "../context/manager.js";
@@ -292,7 +300,11 @@ export class NativeAgentExecutor implements AgentExecutor {
         );
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
       const finished: StepResult<ToolSet>[] = [];
-      let result: Awaited<ReturnType<typeof generateText<ToolSet>>>;
+      let result: {
+        text: string;
+        steps: StepResult<ToolSet>[];
+        totalUsage: { inputTokens?: number; outputTokens?: number };
+      };
       try {
         result = await generateText({
           model: resolveModel(request.profile.model),
@@ -330,14 +342,26 @@ export class NativeAgentExecutor implements AgentExecutor {
           },
         });
       } catch (error) {
-        try {
-          writeUsage(
-            budget.record(finished, false, meta, request.signal.aborted ? "aborted" : "error"),
-          );
-        } catch {
-          // The original failure matters more than a usage record that could not be stored.
+        // A forced submit step answered with text. Keep that text for the format correction below.
+        if (ToolChoiceViolationError.isInstance(error) && !request.signal.aborted) {
+          result = {
+            text: error.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+            steps: finished,
+            totalUsage: {
+              inputTokens: sumUsage(finished, "inputTokens"),
+              outputTokens: sumUsage(finished, "outputTokens"),
+            },
+          };
+        } else {
+          try {
+            writeUsage(
+              budget.record(finished, false, meta, request.signal.aborted ? "aborted" : "error"),
+            );
+          } catch {
+            // The original failure matters more than a usage record that could not be stored.
+          }
+          throw error;
         }
-        throw error;
       }
       const usage = budget.record(result.steps, submitted !== undefined, meta);
       writeUsage(usage);
@@ -425,4 +449,8 @@ export class NativeAgentExecutor implements AgentExecutor {
     this.ownedContext = undefined;
     return closed ?? Promise.resolve();
   }
+}
+
+function sumUsage(steps: StepResult<ToolSet>[], key: "inputTokens" | "outputTokens"): number {
+  return steps.reduce((total, step) => total + (step.usage[key] ?? 0), 0);
 }

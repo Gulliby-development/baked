@@ -11,7 +11,7 @@ Presets resolve in this order — later wins:
 
 1. **Global** — `~/.baked/config.json` → `presets[]`
 2. **Project** — `<cwd>/.baked/config.json` → `presets[]`
-3. **CLI** — `--plugin <spec>` (stackable) or `baked_PRESETS=spec1,spec2`
+3. **CLI** — `--plugin <spec>` (stackable) or `BAKED_PRESETS=spec1,spec2`
 
 ```json
 {
@@ -28,7 +28,7 @@ Presets resolve in this order — later wins:
 baked --plugin team/standard --plugin ./extra.json
 
 # Same via env
-baked_PRESETS=team/standard,./extra.json baked
+BAKED_PRESETS=team/standard,./extra.json baked
 ```
 
 ## Spec formats
@@ -98,7 +98,7 @@ Drop it under `~/.baked/presets/<name>.json` to make it discoverable, or host an
 
 | Variable | Purpose |
 |----------|---------|
-| `baked_PRESETS` | Comma-separated specs (set automatically by `--plugin` flags). |
+| `BAKED_PRESETS` | Comma-separated specs (set automatically by `--plugin` flags). |
 
 ## See also
 

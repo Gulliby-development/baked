@@ -2,6 +2,8 @@
 
 globalThis.AI_SDK_LOG_WARNINGS = false;
 
+// Map legacy `baked_*` environment variables before any module reads them.
+import "./core/legacy-env.js";
 // Reap orphaned LSP processes from previous sessions BEFORE anything else.
 // Synchronous so a crashed-during-boot run still cleans up its predecessors.
 import { reapOrphanedLspProcesses } from "./core/intelligence/backends/lsp/pid-tracker.js";
@@ -69,7 +71,7 @@ if (cliArgs.includes("--presets") || cliArgs[0] === "presets") {
       i++;
     }
   }
-  if (plugins.length > 0) process.env.baked_PRESETS = plugins.join(",");
+  if (plugins.length > 0) process.env.BAKED_PRESETS = plugins.join(",");
 }
 
 // Resolve presets (from config + --plugin env) into the AppConfig overlay

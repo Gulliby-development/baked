@@ -359,7 +359,7 @@ export interface AppConfig {
   configVersion?: number;
   /**
    * Anonymous usage telemetry. Default: enabled. Set false to opt out
-   * (also honoured: env DO_NOT_TRACK=1, baked_TELEMETRY=0). Sends only a
+   * (also honoured: env DO_NOT_TRACK=1, BAKED_TELEMETRY=0). Sends only a
    * version/os/surface ping with a rotating random id — never prompts, paths,
    * keys, or PII. See src/core/telemetry.ts.
    */

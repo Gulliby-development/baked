@@ -20,10 +20,10 @@ beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "sf-presets-"));
   originalHome = process.env.HOME;
   originalLocalAppData = process.env.LOCALAPPDATA;
-  originalbakedPresets = process.env.baked_PRESETS;
+  originalbakedPresets = process.env.BAKED_PRESETS;
   process.env.HOME = workDir;
   if (process.platform === "win32") process.env.LOCALAPPDATA = workDir;
-  delete process.env.baked_PRESETS;
+  delete process.env.BAKED_PRESETS;
 });
 
 afterEach(() => {
@@ -32,8 +32,8 @@ afterEach(() => {
   if (originalLocalAppData !== undefined) process.env.LOCALAPPDATA = originalLocalAppData;
   else delete process.env.LOCALAPPDATA;
   if (originalbakedPresets !== undefined)
-    process.env.baked_PRESETS = originalbakedPresets;
-  else delete process.env.baked_PRESETS;
+    process.env.BAKED_PRESETS = originalbakedPresets;
+  else delete process.env.BAKED_PRESETS;
   rmSync(workDir, { recursive: true, force: true });
 });
 
@@ -213,7 +213,7 @@ describe("init.initPresetsFromEnv", () => {
         JSON.stringify({ presets: [projectPreset] }),
       );
 
-      process.env.baked_PRESETS = cliPreset;
+      process.env.BAKED_PRESETS = cliPreset;
 
       const report = await initPresetsFromEnv({ cwd: projectCwd });
       expect(report.fromGlobal).toBe(1);
@@ -236,7 +236,7 @@ describe("init.initPresetsFromEnv", () => {
     setPresetOverlay(null);
 
     const good = writePreset("ok-one", { defaultModel: "from-good" });
-    process.env.baked_PRESETS = `${good},${join(workDir, "missing.json")}`;
+    process.env.BAKED_PRESETS = `${good},${join(workDir, "missing.json")}`;
     const report = await initPresetsFromEnv();
     expect(report.ok).toContain("ok-one");
     expect(report.failed).toHaveLength(1);

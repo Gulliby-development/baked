@@ -159,7 +159,7 @@ export async function repairToolCall({
         ...toolCall,
         input: JSON.stringify({
           __baked_truncated__: true,
-          message: `Tool call '${toolCall.toolName}' was truncated at ${MAX_OUTPUT_TOKENS} output tokens — arguments did not finish streaming. Retry with smaller inputs (split write/edit into chunks, narrower ranges) or raise baked_MAX_OUTPUT_TOKENS.`,
+          message: `Tool call '${toolCall.toolName}' was truncated at ${MAX_OUTPUT_TOKENS} output tokens — arguments did not finish streaming. Retry with smaller inputs (split write/edit into chunks, narrower ranges) or raise BAKED_MAX_OUTPUT_TOKENS.`,
         }),
       };
     }
@@ -187,9 +187,9 @@ export async function repairToolCall({
  * treats any non-"tool-calls" finish reason as end-of-turn, so a length-truncated
  * step terminates the agent silently mid-thought.
  *
- * Override via baked_MAX_OUTPUT_TOKENS. Mirrors opencode's pattern.
+ * Override via BAKED_MAX_OUTPUT_TOKENS. Mirrors opencode's pattern.
  */
-export const MAX_OUTPUT_TOKENS = Number(process.env.baked_MAX_OUTPUT_TOKENS) || 64_000;
+export const MAX_OUTPUT_TOKENS = Number(process.env.BAKED_MAX_OUTPUT_TOKENS) || 64_000;
 
 /**
  * Finish reasons that mean "the model did not voluntarily stop and did not
@@ -207,7 +207,7 @@ export function isAbnormalFinish(
 
 export function describeAbnormalFinish(reason: AbnormalFinishReason): string {
   if (reason === "length")
-    return `Model output truncated at ${MAX_OUTPUT_TOKENS} tokens (finish_reason=length). Set baked_MAX_OUTPUT_TOKENS to raise the cap.`;
+    return `Model output truncated at ${MAX_OUTPUT_TOKENS} tokens (finish_reason=length). Set BAKED_MAX_OUTPUT_TOKENS to raise the cap.`;
   if (reason === "content-filter")
     return "Model response blocked by content filter (finish_reason=content-filter).";
   return "Model returned finish_reason=error.";

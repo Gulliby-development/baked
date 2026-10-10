@@ -81,7 +81,7 @@ export class ContextManager {
   private projectInfoCache: { info: string | null; at: number } | null = null;
   private repoMap: IntelligenceClient;
   private repoMapReady = false;
-  private repoMapEnabled = process.env.baked_NO_REPOMAP !== "1";
+  private repoMapEnabled = process.env.BAKED_NO_REPOMAP !== "1";
   private repoMapGeneration = 0;
   private editedFiles = new Set<string>();
   private mentionedFiles = new Set<string>();
