@@ -4,7 +4,8 @@ name: Release
 # that the tag matches package.json, runs the full check suite, builds every
 # distributable through the Builds workflow, and publishes a GitHub release with
 # the archives, the desktop installers, their SHA-256 checksums and notes
-# generated from merged pull requests (categories in .github/release.yml).
+# generated from merged pull requests (categories in .github/release.yml),
+# after a note that the desktop installers are unsigned.
 
 on:
   push:
@@ -85,4 +86,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "BAKED ${TAG#v}" \
+            --notes "The desktop installers (baked-desktop-*) are not code-signed yet: Windows SmartScreen and macOS Gatekeeper warn on first launch. See docs/getting-started.md." \
             --generate-notes

@@ -15,6 +15,16 @@ gh release download --repo Gulliby-development/baked --pattern '*linux-x64.tar.g
 
 Each release lists `SHA256SUMS.txt` for the archives. `baked self-check` loads the native libraries, worker bundles, tree-sitter grammars and SQLite without a terminal or provider key, and exits non-zero when one is missing.
 
+### Desktop app
+
+Releases also carry the desktop app, which bundles its own `baked`:
+
+- **Windows**: `baked-desktop-<version>-win-<arch>.exe` (installer).
+- **macOS**: `baked-desktop-<version>-mac-<arch>.dmg`, or the `.zip`.
+- **Linux**: `baked-desktop-<version>-linux-<arch>.AppImage` or the `.deb` package.
+
+The installers are not signed yet. Windows SmartScreen warns on first launch (More info, then Run anyway); macOS blocks the app until you allow it in System Settings, Privacy & Security. See [Desktop app](desktop/app.md).
+
 ### From source
 
 Bun 1.3.13 or newer on Windows, macOS or Linux:
