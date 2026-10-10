@@ -12,6 +12,7 @@ import {
   deferredToChecks,
   demoteDeferred,
   namedPaths,
+  narrowsVerification,
   researchBudget,
 } from "../src/core/workflows/clarification.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
@@ -46,6 +47,33 @@ describe("blocking items that later stages resolve", () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("Item 1");
     expect(demoteDeferred(unknowns, (q) => q.question).map((q) => q.blocking)).toEqual([false, true, false]);
+  });
+});
+
+describe("policy checks narrower than the project's verification", () => {
+  test("are the operator's choice, not a finding", () => {
+    for (const text of [
+      "The policy checks run only tests/workflow-usage.test.ts, not the full test suite required by AGENTS.md",
+      "Verification lacks `bun test` and `bun run build`; the plan names only the targeted test file",
+      "executionContract.checks omit the build step that project instructions require before merging",
+    ])
+      expect(narrowsVerification(text)).toBe(true);
+    for (const text of [
+      "AC-003 has no test in any task; T002 writes tests/workflow-usage.test.ts for AC-001 only",
+      "plan.md says sorting is stable but FR-002 allows any order for ties",
+      "Run `bun test tests/workflow-usage.test.ts` as the task check for T002",
+    ])
+      expect(narrowsVerification(text)).toBe(false);
+  });
+  test("a blocking finding about it returns a correction and is demoted", () => {
+    const findings = [
+      { description: "The policy runs only one test file instead of the full suite and no bun run build", blocking: true },
+      { description: "FR-002 and plan.md disagree on the sort order for ties", blocking: true },
+    ];
+    const problems = deferredBlockingProblems(findings, (_, index) => findings[index]?.description ?? "");
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("operator chose");
+    expect(demoteDeferred(findings, (f) => f.description).map((f) => f.blocking)).toEqual([false, true]);
   });
 });
 
