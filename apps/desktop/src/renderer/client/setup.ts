@@ -305,7 +305,12 @@ export const setup = {
     call<RouteExplanation>(key, "GET", `/v1/workflow/route?workflow=${json(workflow)}`),
 };
 
-/** True when the backend has no such endpoint: an older `baked serve`. */
+/**
+ * True when the backend has no such endpoint: an older `baked serve`. Other 404s, such as a folder
+ * that is not a BAKED project yet, are errors the screen shows as they are.
+ */
 export function isMissingEndpoint(error: unknown): boolean {
-  return error instanceof ApiError && (error.status === 404 || error.status === 405);
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 405) return true;
+  return error.status === 404 && /^(No endpoint|This BAKED has no)/.test(error.message);
 }

@@ -150,7 +150,9 @@ export function createMockBridge(): DesktopBridge {
         });
         if (result) return result as ApiResponse<T>;
       }
-      return response(404, { error: { code: "NOT_FOUND", message: `Mock has no ${path}` } });
+      return response(404, {
+        error: { code: "NOT_FOUND", message: `No endpoint ${path} in the mock` },
+      });
     },
     subscribe: (key: string, path: string, listener: (event: StreamEvent) => void) => {
       for (const stream of MOCK_STREAMS) {
