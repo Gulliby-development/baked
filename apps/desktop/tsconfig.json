@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["bun", "node"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*", "vite.config.ts"]
+}
