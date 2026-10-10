@@ -12,6 +12,11 @@
  *
  * The durable event log is authoritative. The event endpoint polls it by sequence and streams it
  * as Server-Sent Events whose `id` is the sequence, so a client resumes with `Last-Event-ID`.
+ * The attention endpoint polls the store the same way for everything that waits for a person
+ * across all runs and streams the whole list whenever it changes.
+ *
+ * The project endpoints report the workspace's project (`baked/project.json`) with its working
+ * set, sessions and runs, and change the working set, as `baked project` does.
  *
  * Security: binds 127.0.0.1 only; every request needs the per-start bearer token; the Host header
  * must name the loopback address and port (DNS rebinding); requests with an Origin header are
@@ -22,12 +27,19 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import { ProjectService } from "../projects/service.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { redactSecrets } from "../workflows/redaction.js";
-import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/schemas.js";
+import {
+  type RunSnapshot,
+  type RunState,
+  SafeId,
+  type WorkflowErrorCode,
+} from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
+import { isAcceptanceRequest } from "../workflows/v2/acceptance.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -46,6 +58,7 @@ import {
   PreRunQuery,
   RejectBody,
   StartBody,
+  WorkingSetBody,
 } from "./schemas.js";
 
 /** How long shutdown waits for the HTTP server to report its connections closed. */
@@ -67,6 +80,8 @@ export interface ApiServerOptions {
   pollMs?: number;
   heartbeatMs?: number;
   maxBodyBytes?: number;
+  /** The user configuration directory that holds the project registry; tests point it elsewhere. */
+  configDir?: string;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
 }
@@ -204,6 +219,25 @@ function startArgs(raw: unknown): WorkflowArgs {
   });
 }
 
+/** A client that asks for JSON and not for an event stream gets the JSON variant of a stream. */
+function wantsJson(req: Request): boolean {
+  const accept = req.headers.get("accept") ?? "";
+  return /application\/json/i.test(accept) && !/text\/event-stream/i.test(accept);
+}
+
+/** One thing waiting for a person: a pending request, or a blocked run (`requestId` null). */
+export interface AttentionItem {
+  runId: string;
+  featureId: string;
+  status: RunState;
+  requestId: string | null;
+  /** The request kind, or the reason of a blocked run. */
+  kind: string;
+  /** False for an advisory acceptance request, which the run does not wait for. */
+  blocking: boolean;
+  createdAt: number;
+}
+
 function queryOf<T extends z.ZodType>(url: URL, schema: T): z.infer<T> {
   return schema.parse(Object.fromEntries(url.searchParams));
 }
@@ -217,6 +251,18 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const token = generateApiToken();
   const shutdown = new AbortController();
+  const projects = new ProjectService(
+    service.workspace,
+    options.configDir ? { configDir: options.configDir } : {},
+  );
+  const requireProject = (): void => {
+    if (!projects.current())
+      throw new ApiError(
+        404,
+        "NOT_FOUND",
+        "No project here; run baked project init in the workspace",
+      );
+  };
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
   /** The latest background drive of each run. */
@@ -303,17 +349,27 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   }
 
   /**
-   * The runtime commits a run's waiting or stopped status before its drive has saved the last
-   * state, so a decision must wait for a drive that has already stopped to return. A drive that
-   * is still running is left alone: pause and cancel stop it themselves.
+   * Waits for a drive that has already stopped to return before a decision or resume. The core
+   * commits a run's waiting status together with the state its requests refer to, so this no
+   * longer covers a gap there; it is kept because it is harmless and lets the stopped drive of
+   * this process release its leases first. A drive that is still running is left alone: pause and
+   * cancel stop it themselves.
    */
   async function settle(runId: string): Promise<void> {
     const drive = runDrives.get(runId);
     if (drive && service.store.run(runId).status !== "running") await drive;
   }
 
-  function eventStream(req: Request, runId: string, after: number, origin: string | null) {
-    let seq = after;
+  /**
+   * A Server-Sent Events response that calls `tick` every poll interval until the client leaves
+   * or the server stops, with heartbeats in between. An error from `tick` is sent as an `error`
+   * event and ends the stream.
+   */
+  function sseStream(
+    req: Request,
+    origin: string | null,
+    tick: (send: (text: string) => void) => void,
+  ) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     let closed = false;
@@ -339,14 +395,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         const poll = (): void => {
           if (closed) return;
           try {
-            for (;;) {
-              const page = service.store.events(runId, seq, EVENT_PAGE);
-              for (const event of page) {
-                send(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
-                seq = event.seq;
-              }
-              if (page.length < EVENT_PAGE) break;
-            }
+            tick(send);
           } catch (error) {
             const { code, message } = errorOf(error);
             send(
@@ -375,6 +424,48 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     });
   }
 
+  function eventStream(req: Request, runId: string, after: number, origin: string | null) {
+    let seq = after;
+    return sseStream(req, origin, (send) => {
+      for (;;) {
+        const page = service.store.events(runId, seq, EVENT_PAGE);
+        for (const event of page) {
+          send(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
+          seq = event.seq;
+        }
+        if (page.length < EVENT_PAGE) break;
+      }
+    });
+  }
+
+  /** Everything waiting for a person, as `GET /v1/attention` returns it. */
+  function attention(): AttentionItem[] {
+    return service.store.attention().map((row) => ({
+      runId: row.run_id,
+      featureId: row.feature_id,
+      status: row.status,
+      requestId: row.request_id,
+      kind: row.kind,
+      // An acceptance test's decision is advisory: the run goes on without it.
+      blocking:
+        row.body_json === null ||
+        !isAcceptanceRequest({ kind: row.kind, body_json: row.body_json }),
+      createdAt: row.created_at,
+    }));
+  }
+
+  /** Streams the whole attention list once at the start and again whenever it changes. */
+  function attentionStream(req: Request, origin: string | null) {
+    let last: string | null = null;
+    return sseStream(req, origin, (send) => {
+      const items = attention();
+      const key = JSON.stringify(items);
+      if (key === last) return;
+      last = key;
+      send(`event: attention\ndata: ${JSON.stringify({ items })}\n\n`);
+    });
+  }
+
   async function route(
     req: Request,
     url: URL,
@@ -394,6 +485,34 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         { apiVersion: API_VERSION, version: CURRENT_VERSION, workspace: service.workspace },
         origin,
       );
+    }
+    if (path === "/v1/attention") {
+      only("GET");
+      if (wantsJson(req)) return json(200, { items: attention() }, origin);
+      // Streams outlive the server's idle timeout; heartbeats keep intermediaries open.
+      server.timeout(req, 0);
+      return attentionStream(req, origin);
+    }
+    if (path === "/v1/projects/current") {
+      only("GET");
+      requireProject();
+      return json(200, projects.summary(), origin);
+    }
+    if (path === "/v1/projects/current/working-set") {
+      only("POST");
+      const body = WorkingSetBody.parse(await readJson(req));
+      requireProject();
+      try {
+        if (body.remove?.length) projects.removeFromWorkingSet(body.remove);
+        if (body.add?.length) projects.addToWorkingSet(body.add);
+      } catch (error) {
+        throw new ApiError(
+          400,
+          "INVALID_REQUEST",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return json(200, projects.summary(), origin);
     }
     if (path === "/v1/workflow/definitions" || path === "/v1/workflow/profiles") {
       only("GET");
@@ -471,8 +590,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (lastEventId !== null && !/^\d+$/.test(lastEventId))
         throw new ApiError(400, "INVALID_REQUEST", "Last-Event-ID must be an event sequence");
       const after = Number(lastEventId ?? query.after ?? 0);
-      const accept = req.headers.get("accept") ?? "";
-      if (/application\/json/i.test(accept) && !/text\/event-stream/i.test(accept)) {
+      if (wantsJson(req)) {
         const limit = Math.min(Math.max(Number(query.limit ?? EVENT_PAGE), 1), 1000);
         const events = service.store.events(runId, after, limit);
         return json(200, { events, lastSeq: events.at(-1)?.seq ?? after }, origin);

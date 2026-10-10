@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ApiServer, faultStatus, startApiServer } from "../src/core/api/server.js";
+import { ProjectService } from "../src/core/projects/service.js";
 import { parseServeArgs } from "../src/headless/serve.js";
 import type { RunSnapshot, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -14,7 +15,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function setup(options: { allowOrigins?: string[]; maxBodyBytes?: number } = {}) {
+async function setup(options: { allowOrigins?: string[]; maxBodyBytes?: number; configDir?: string } = {}) {
   const fixture = workflowFixture();
   const logs: string[] = [];
   const server = await startApiServer({
@@ -73,6 +74,45 @@ async function readEvents(response: Response, count: number): Promise<{ id: numb
     await reader.cancel();
   }
   return events;
+}
+
+interface AttentionItem {
+  runId: string;
+  featureId: string;
+  status: string;
+  requestId: string | null;
+  kind: string;
+  blocking: boolean;
+  createdAt: number;
+}
+
+/** Collects `attention` frames from an open stream; `next` waits for one that satisfies `done`. */
+function attentionFrames(response: Response) {
+  if (!response.body) throw new Error("No body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  return {
+    async next(done: (items: AttentionItem[]) => boolean): Promise<AttentionItem[]> {
+      for (;;) {
+        let end = buffer.indexOf("\n\n");
+        while (end >= 0) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const data = /^data: (.*)$/m.exec(frame)?.[1];
+          if (/^event: attention$/m.test(frame) && data) {
+            const { items } = JSON.parse(data) as { items: AttentionItem[] };
+            if (done(items)) return items;
+          }
+          end = buffer.indexOf("\n\n");
+        }
+        const { done: ended, value } = await reader.read();
+        if (ended) throw new Error("Stream ended");
+        buffer += decoder.decode(value, { stream: true });
+      }
+    },
+    close: () => reader.cancel(),
+  };
 }
 
 const startBody = (commandId = newId()) => ({ commandId, feature: "fixture", prompt: "Create ready value" });
@@ -223,6 +263,77 @@ describe("local core API", () => {
     expect(server.port).toBeGreaterThan(0);
   }, 60000);
 
+  test("attention lists a run waiting for approval until it is approved", async () => {
+    const { server, call, post } = await setup();
+    expect((await fetch(`${server.url}/v1/attention`)).status).toBe(401);
+    expect((await fetch(`${server.url}/v1/attention`, { headers: { Accept: "application/json" } })).status).toBe(401);
+    expect((await call("/v1/attention", { method: "POST" })).status).toBe(405);
+
+    const stream = await call("/v1/attention");
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    const frames = attentionFrames(stream);
+    try {
+      // The list is sent once on connect, even when nothing waits.
+      expect(await frames.next(() => true)).toEqual([]);
+      const run = (await (await post("/v1/workflow/runs", startBody())).json()) as RunSnapshot;
+      const streamed = await frames.next((items) => items.length > 0);
+      const pending = (await (await call(`/v1/workflow/runs/${run.runId}`)).json()) as RunSnapshot & { requests: { id: string; kind: string; status: string; digest: string }[] };
+      const request = pending.requests.find((r) => r.kind === "approval" && r.status === "pending");
+      if (!request) throw new Error("No pending approval");
+      expect(streamed).toEqual([
+        {
+          runId: run.runId,
+          featureId: "fixture",
+          status: "waiting",
+          requestId: request.id,
+          kind: "approval",
+          blocking: true,
+          createdAt: expect.any(Number),
+        },
+      ]);
+      const listed = (await (await call("/v1/attention", { headers: { Accept: "application/json" } })).json()) as {
+        items: AttentionItem[];
+      };
+      expect(listed.items).toEqual(streamed);
+
+      const approved = await post(`/v1/workflow/runs/${run.runId}/approve`, {
+        commandId: newId(),
+        expectedRevision: pending.revision,
+        requestId: request.id,
+        digest: request.digest,
+      });
+      expect(approved.status).toBe(200);
+      expect(await frames.next((items) => items.length === 0)).toEqual([]);
+      expect(await (await call("/v1/attention", { headers: { Accept: "application/json" } })).json()).toEqual({ items: [] });
+    } finally {
+      await frames.close();
+    }
+  }, 60000);
+
+  test("attention lists blocked runs and advisory acceptance requests as not blocking", async () => {
+    const { call, post, fixture } = await setup();
+    const run = (await (await post("/v1/workflow/runs", startBody())).json()) as RunSnapshot;
+    const json = async () =>
+      ((await (await call("/v1/attention", { headers: { Accept: "application/json" } })).json()) as { items: AttentionItem[] }).items;
+    await until(json, (items) => items.length === 1);
+    const store = fixture.service.store;
+    const approval = store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+    if (!approval) throw new Error("No pending approval");
+    store.transaction(() => {
+      store.decideRequest(run.runId, approval.id, "rejected", { kind: "reject" });
+      store.request(run.runId, "approval", "b".repeat(64), { acceptance: { gateId: "walkthrough" } });
+      store.transition(run.runId, "blocked", "input_changed");
+    });
+    // Both are dated to about the same moment; their order is not what this test is about.
+    const items = (await json()).sort((a, b) => a.kind.localeCompare(b.kind));
+    expect(items.map(({ status, requestId, kind, blocking }) => ({ status, requestId: requestId !== null, kind, blocking }))).toEqual([
+      { status: "blocked", requestId: true, kind: "approval", blocking: false },
+      { status: "blocked", requestId: false, kind: "input_changed", blocking: true },
+    ]);
+    expect(items.every((item) => item.runId === run.runId && item.featureId === "fixture")).toBe(true);
+  }, 60000);
+
   test("lists definitions and profiles", async () => {
     const { call } = await setup();
     const definitions = await call("/v1/workflow/definitions");
@@ -339,5 +450,37 @@ describe("baked serve arguments", () => {
     cleanups.push(() => fixture.dispose());
     await expect(startApiServer({ service: fixture.service, allowOrigins: ["*"] })).rejects.toThrow("Invalid origin");
     await expect(startApiServer({ service: fixture.service, allowOrigins: ["http://a.test/path"] })).rejects.toThrow("Invalid origin");
+  });
+});
+
+describe("project endpoints", () => {
+  test("report the workspace's project and change its working set", async () => {
+    const profile = mkdtempSync(join(tmpdir(), "baked-api-profile-"));
+    cleanups.push(async () => removeTempDir(profile));
+    const { fixture, call, post } = await setup({ configDir: profile });
+    expect((await call("/v1/projects/current")).status).toBe(404);
+    expect((await post("/v1/projects/current/working-set", { add: ["a.ts"] })).status).toBe(404);
+
+    new ProjectService(fixture.root, { configDir: profile }).init({ id: "demo" });
+    writeFileSync(join(fixture.root, "notes.md"), "notes\n");
+    const current = (await (await call("/v1/projects/current")).json()) as { id: string; workingSet: { entries: string[] } };
+    expect(current).toMatchObject({ id: "demo", workingSet: { entries: [] } });
+
+    const added = (await (await post("/v1/projects/current/working-set", { add: ["notes.md"] })).json()) as {
+      workingSet: { entries: string[]; files: { path: string }[] };
+    };
+    expect(added.workingSet.entries).toEqual(["notes.md"]);
+    expect(added.workingSet.files.map((f) => f.path)).toContain("notes.md");
+
+    const outside = await post("/v1/projects/current/working-set", { add: ["../elsewhere.md"] });
+    expect(outside.status).toBe(400);
+    expect(((await outside.json()) as { error: { message: string } }).error.message).toContain("outside the project roots");
+    expect((await post("/v1/projects/current/working-set", {})).status).toBe(400);
+    expect((await call("/v1/projects/current/working-set")).status).toBe(405);
+
+    const removed = (await (await post("/v1/projects/current/working-set", { remove: ["notes.md"] })).json()) as {
+      workingSet: { entries: string[] };
+    };
+    expect(removed.workingSet.entries).toEqual([]);
   });
 });

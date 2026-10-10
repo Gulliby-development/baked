@@ -95,6 +95,19 @@ export interface RequestRow {
   answer_json: string | null;
   actor: string | null;
 }
+/** A pending request of any run, or a blocked run, as `attention()` lists it. */
+export interface AttentionRow {
+  run_id: string;
+  feature_id: string;
+  status: RunState;
+  /** Null for a blocked run. */
+  request_id: string | null;
+  /** The request kind, or the reason of a blocked run. */
+  kind: string;
+  /** Null for a blocked run. */
+  body_json: string | null;
+  created_at: number;
+}
 export interface EffectRow {
   id: string;
   attempt_id: string;
@@ -729,6 +742,26 @@ export class WorkflowStore {
     if (result.changes !== 1)
       throw new WorkflowFault("STALE_DECISION", "Request is no longer pending");
     this.emit(runId, { type: "request.decided", payload: { requestId: id, status, actor } });
+  }
+  /**
+   * Everything that waits for a person across all runs, oldest first: every pending request of a
+   * run that can still act on it, and every blocked run. Requests have no timestamp of their own,
+   * so a request is dated by its `request.created` event and a blocked run by its last change.
+   */
+  attention(): AttentionRow[] {
+    return this.db
+      .query<AttentionRow, []>(
+        `SELECT q.run_id AS run_id, r.feature_id AS feature_id, r.status AS status,
+           q.id AS request_id, q.kind AS kind, q.body_json AS body_json,
+           COALESCE((SELECT e.at FROM events e WHERE e.run_id=q.run_id AND e.type='request.created'
+             AND json_extract(e.payload_json,'$.requestId')=q.id), r.updated_at) AS created_at
+         FROM requests q JOIN runs r ON r.id=q.run_id
+         WHERE q.status='pending' AND r.status NOT IN ('cancelled','failed')
+         UNION ALL
+         SELECT id, feature_id, status, NULL, reason, NULL, updated_at FROM runs WHERE status='blocked'
+         ORDER BY created_at, run_id, request_id`,
+      )
+      .all();
   }
   tasks(runId: string): TaskRow[] {
     return this.db
