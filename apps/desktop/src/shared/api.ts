@@ -72,6 +72,7 @@ export interface RunSnapshot {
   activeMs: number;
   estimatedCostUsd: number | null;
   pendingRequestIds: string[];
+  approvalDigest?: string | null;
   projectId?: string;
 }
 
