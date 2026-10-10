@@ -47,6 +47,8 @@ import {
   StartBody,
 } from "./schemas.js";
 
+/** How long shutdown waits for the HTTP server to report its connections closed. */
+const STOP_WAIT_MS = 1000;
 export const API_VERSION = 1;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -519,7 +521,9 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       shutdown.abort(new Error("API server shutdown"));
       for (const close of [...streams]) close();
       try {
-        await server.stop(true);
+        // stop(true) closes every connection at once. On Bun 1.3.13 its promise can stay pending
+        // after a client cancelled an event stream, so the wait for it is bounded.
+        await Promise.race([server.stop(true), Bun.sleep(STOP_WAIT_MS)]);
         await Promise.allSettled([...drives]);
         await service.shutdown();
         if (options.ownsService) service.close();

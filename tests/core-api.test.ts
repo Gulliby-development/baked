@@ -10,12 +10,9 @@ import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
-// Cleanup stops the server, which waits for its background drives to return, then removes the
-// workspace with removeTempDir's own retry window; together they can pass bun's 5 s hook default
-// on a loaded CI runner.
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-}, 30000);
+});
 
 async function setup(options: { allowOrigins?: string[]; maxBodyBytes?: number } = {}) {
   const fixture = workflowFixture();
