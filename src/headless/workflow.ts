@@ -57,7 +57,8 @@ export async function executeWorkflowCommand(
   };
   const readFlagFile = (flag: string): string =>
     readFileSync(resolve(service.store.workspace, stringFlag(args, flag)), "utf8");
-  const jsonFile = (flag: string): unknown => JSON.parse(readFlagFile(flag));
+  const jsonFile = (flag: string): unknown =>
+    args.inline && flag in args.inline ? args.inline[flag] : JSON.parse(readFlagFile(flag));
   switch (args.command) {
     case "run": {
       const policy = PolicySchema.parse(

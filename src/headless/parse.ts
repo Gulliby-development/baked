@@ -30,6 +30,10 @@ ${BOLD}Management:${RST}
   baked --set-key <provider> <key>                   Save an API key
   baked --version                                    Show version
 
+${BOLD}Automation:${RST}
+  baked workflow <command>                           Durable workflow runs (see --help)
+  baked serve [--port N] [--allow-origin ORIGIN]     Local workflow API on 127.0.0.1
+
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort
 `;
 

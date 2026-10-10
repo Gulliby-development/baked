@@ -28,6 +28,11 @@ if (cliArgs[0] === "workflow") {
   process.exit(await runWorkflowCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "serve") {
+  const { runServeCli } = await import("./headless/serve.js");
+  process.exit(await runServeCli(cliArgs.slice(1)));
+}
+
 const hasCli =
   cliArgs.includes("--headless") ||
   cliArgs.includes("--list-providers") ||

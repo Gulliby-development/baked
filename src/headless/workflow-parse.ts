@@ -39,6 +39,11 @@ export interface WorkflowArgs {
   command: WorkflowCommand;
   positional: string[];
   flags: Record<string, string | true>;
+  /**
+   * Values supplied in place of the JSON files named by file flags, keyed by flag name (the flag
+   * itself is then `true`). API clients send these in request bodies instead of file paths.
+   */
+  inline?: Record<string, unknown>;
 }
 const flags = new Set([
   "feature",
@@ -173,6 +178,10 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
       result.flags[name] = value;
     }
   }
+  return validateWorkflowArgs(result);
+}
+/** Checks option combinations and values of parsed or programmatically built workflow arguments. */
+export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   for (const name of Object.keys(result.flags)) {
     if (!["json", "cwd", "help", ...commandFlags[result.command]].includes(name))
       throw new WorkflowFault("INVALID_DEFINITION", `--${name} is not valid for ${result.command}`);
