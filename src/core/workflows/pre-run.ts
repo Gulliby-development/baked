@@ -66,25 +66,6 @@ export function plannedStages(prepared: PreparedStart): PlannedStage[] {
   });
 }
 
-/**
- * Every model the run can call: the stages' models plus every profile that may be assigned a
- * task (the planner picks any profile returning an implementation).
- */
-export function modelsInUse(prepared: PreparedStart): ModelUse[] {
-  const uses = new Map<string, Set<string>>();
-  const note = (model: string, by: string): void => {
-    const set = uses.get(model) ?? new Set<string>();
-    set.add(by);
-    uses.set(model, set);
-  };
-  for (const stage of plannedStages(prepared))
-    for (const model of stage.models) note(model, `stage ${stage.id}`);
-  for (const entry of prepared.registry.list())
-    if (entry.profile.output === "implementation")
-      note(entry.profile.model, `profile ${entry.profile.id}`);
-  return [...uses].map(([model, by]) => ({ model, usedBy: [...by] }));
-}
-
 export function tablePrice(model: string): ModelPrice | null {
   const found = findPricing(model);
   if (!found) return null;
