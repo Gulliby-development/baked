@@ -68,20 +68,24 @@ export function demoteDeferred<T extends { blocking: boolean }>(
 
 const SPEC_REF = /(^|[^a-z])spec(\.json|\.md)?\b|^(FR|NFR|AC)-\d+/i;
 
+const PLAN_REF = /(^|[^a-z])(plan\.md|tasks\.(json|md))\b|^T\d+\b/i;
+
 /**
- * Blocking analysis findings the planner can fix alone: gaps in coverage or consistency that refer
- * only to the plan (plan.md, tasks.json), not to the spec. Run 2fa658c0 asked a person twice that
- * a task description did not list some checks.
+ * Blocking analysis findings the planner can fix alone: a coverage gap in the plan (it names the
+ * criteria the tasks miss, so spec references are expected), or an inconsistency that refers only
+ * to the plan (plan.md, tasks.json). Runs 2fa658c0 and b0d7484c asked a person about tasks that
+ * did not cover some criteria.
  */
 export function planOnlyFindings<T extends { kind: string; refs: string[]; blocking: boolean }>(
   findings: readonly T[],
 ): T[] {
   const blocking = findings.filter((f) => f.blocking);
+  const refs = (f: T, pattern: RegExp) => f.refs.some((ref) => pattern.test(ref.trim()));
   return blocking.length > 0 &&
     blocking.every(
       (f) =>
-        (f.kind === "coverage" || f.kind === "inconsistency") &&
-        !f.refs.some((ref) => SPEC_REF.test(ref.trim())),
+        (f.kind === "coverage" && refs(f, PLAN_REF)) ||
+        (f.kind === "inconsistency" && !refs(f, SPEC_REF)),
     )
     ? blocking
     : [];

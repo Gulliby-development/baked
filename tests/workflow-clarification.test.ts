@@ -115,8 +115,14 @@ describe("plan-only analysis findings", () => {
     expect(planOnlyFindings([finding("coverage", ["tasks.json"]), finding("inconsistency", ["plan.md", "T002"])])).toHaveLength(2);
     expect(planOnlyFindings([finding("coverage", ["tasks.json"]), finding("ambiguity", ["spec.json"], false)])).toHaveLength(1);
   });
+  test("a coverage gap in the tasks qualifies even when it names the criteria it misses", () => {
+    const refs = ["spec.json:AC-002", "spec.json:AC-006", "plan.md:Verification", "tasks.json:T001"];
+    expect(planOnlyFindings([finding("coverage", refs)])).toHaveLength(1);
+    expect(planOnlyFindings([finding("coverage", ["T002", "AC-003"])])).toHaveLength(1);
+  });
   test("a spec reference, another kind or no blocking finding keeps the person in the loop", () => {
     expect(planOnlyFindings([finding("coverage", ["tasks.json"]), finding("coverage", ["AC-002"])])).toEqual([]);
+    expect(planOnlyFindings([finding("inconsistency", ["plan.md", "spec.json:FR-002"])])).toEqual([]);
     expect(planOnlyFindings([finding("ambiguity", ["plan.md"])])).toEqual([]);
     expect(planOnlyFindings([finding("coverage", ["plan.md"], false)])).toEqual([]);
   });
