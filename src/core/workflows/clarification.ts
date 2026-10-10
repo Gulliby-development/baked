@@ -66,6 +66,30 @@ export function demoteDeferred<T extends { blocking: boolean }>(
   );
 }
 
+/**
+ * With `clarification: "assume"`, a blocking question goes back to the agent that raised it. Every
+ * answer people gave in benchmark runs was the conventional default (0% shares for a zero total,
+ * the feed title from the site name), and each cost a specify, plan and analyze cycle.
+ */
+export const ASSUME_NOTE =
+  'Settle it yourself: choose the most conventional default a user of this feature would expect, apply it, record it in assumptions as "<question> Assumed: <default>, because <reason>.", and mark the question non-blocking. Keep it blocking only when every reasonable default risks data loss, security, money or an irreversible public interface, and say which in the question.';
+
+/** Submission errors for blocking questions when the policy assumes defaults. */
+export function assumeProblems(
+  policy: Pick<RunPolicy, "clarification">,
+  items: readonly { blocking: boolean }[],
+  text: (item: { blocking: boolean }, index: number) => string,
+): string[] {
+  if (policy.clarification !== "assume") return [];
+  return items.flatMap((item, index) =>
+    item.blocking && !resolvedLater(text(item, index))
+      ? [
+          `Question ${String(index + 1)} ("${text(item, index).slice(0, 120)}") is blocking. ${ASSUME_NOTE}`,
+        ]
+      : [],
+  );
+}
+
 const SPEC_REF = /(^|[^a-z])spec(\.json|\.md)?\b|^(FR|NFR|AC)-\d+/i;
 
 const PLAN_REF = /(^|[^a-z])(plan\.md|tasks\.(json|md))\b|^T\d+\b/i;
