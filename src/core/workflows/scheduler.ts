@@ -107,6 +107,13 @@ function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph })
   return { ...plan.taskGraph, specHash: hashJson(spec), planHash: hashBytes(plan.markdown) };
 }
 
+/** A request for a person that the current step raised and has not made durable yet. */
+interface QueuedRequest {
+  kind: "approval" | "clarification" | "manual_evidence";
+  digest: string;
+  body: unknown;
+}
+
 export class WorkflowScheduler {
   dispose(): void {
     this.executor.dispose?.();
@@ -118,6 +125,12 @@ export class WorkflowScheduler {
   private mutation: LeaseResource = "mutation";
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
+  /**
+   * Requests for a person raised by the current step. They become durable only together with the
+   * state they were raised on (see `flushWaits`), so a decision never sees a request whose state
+   * is not saved yet, and a later save never overwrites what the decision wrote.
+   */
+  private queued: QueuedRequest[] = [];
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -159,6 +172,7 @@ export class WorkflowScheduler {
         controller.abort(new Error("Run management command"));
     }, 100);
     let stepId: string | null = null;
+    this.queued = [];
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
       if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
@@ -254,7 +268,7 @@ export class WorkflowScheduler {
               };
               state.research = canonical(research);
               if (research.unknowns.some((q) => q.blocking)) {
-                this.wait(runId, "clarification", state, { questions: research.unknowns });
+                this.wait("clarification", state, { questions: research.unknowns });
                 advance = false;
               }
               break;
@@ -281,7 +295,7 @@ export class WorkflowScheduler {
                 this.store.artifact(runId, "spec", "spec.json", canonical(state.spec)),
               );
               if (state.spec.openQuestions.some((q) => q.blocking)) {
-                this.wait(runId, "clarification", state, { questions: state.spec.openQuestions });
+                this.wait("clarification", state, { questions: state.spec.openQuestions });
                 advance = false;
               }
               break;
@@ -352,7 +366,7 @@ export class WorkflowScheduler {
                 profiles,
               );
               if (problems.length) {
-                this.wait(runId, "clarification", state, {
+                this.wait("clarification", state, {
                   findings: problems.map((description, index) => ({
                     id: `RUNTIME-${index + 1}`,
                     kind: "inconsistency",
@@ -397,7 +411,7 @@ export class WorkflowScheduler {
                 (analysis.verdict === "pass" ||
                   (analysis.verdict === "needs_revision" && onlyDeferred));
               if (!state.analysisPassed) {
-                this.wait(runId, "clarification", state, { findings });
+                this.wait("clarification", state, { findings });
                 advance = false;
               }
               break;
@@ -492,12 +506,13 @@ export class WorkflowScheduler {
                     ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
                     : {}),
                 };
+                if (!auto.approval) {
+                  this.queued.push({ kind: "approval", digest, body });
+                  advance = false;
+                  break;
+                }
                 this.store.transaction(() => {
                   const requestId = this.store.request(runId, "approval", digest, body);
-                  if (!auto.approval) {
-                    this.store.transition(runId, "waiting", "approval");
-                    return;
-                  }
                   // The host signs the same digest a person would; post-release criteria never get here.
                   this.store.decideRequest(
                     runId,
@@ -510,7 +525,6 @@ export class WorkflowScheduler {
                   state.approvalRoot = digest;
                   state.deferredCriteria = [];
                 });
-                if (!auto.approval) advance = false;
               }
               break;
             }
@@ -523,7 +537,7 @@ export class WorkflowScheduler {
               );
               if (unavailable.length) {
                 for (const dependency of unavailable)
-                  this.wait(runId, "manual_evidence", state, {
+                  this.wait("manual_evidence", state, {
                     criterionId: `dependency-${dependency.featureId}`,
                     snapshotId: state.snapshotId,
                     dependency,
@@ -718,7 +732,7 @@ export class WorkflowScheduler {
                 );
                 if (pending.length) {
                   for (const criterion of pending)
-                    this.wait(runId, "manual_evidence", state, {
+                    this.wait("manual_evidence", state, {
                       criterionId: criterion.id,
                       snapshotId: state.snapshotId,
                       criterion,
@@ -765,14 +779,17 @@ export class WorkflowScheduler {
             this.repair(runId, state, policy, repairFindings.findings, repairFindings.kind);
           signal.throwIfAborted();
           await this.assertWorkspace(runId, state, policy, signal);
-          if (v2 && state.position && this.store.run(runId).status === "running") {
+          const waiting = this.queued.length > 0;
+          if (v2 && state.position && !waiting && this.store.run(runId).status === "running") {
             // The visit is decided; the next pass takes the transition that answers it.
             state.position.outcome = this.outcomeOf(v2.stage, repairFindings !== null);
             state.position.findings = repairFindings?.findings.map((f) => f.id) ?? [];
             state.position.repairKind = repairFindings?.kind ?? null;
           } else if (advance && !v2) state.stageIndex++;
+          // The state, the requests it raised, the waiting status and the finished step are one
+          // durable change, written only after the workspace check passed.
           this.store.transaction(() => {
-            this.store.saveState(runId, state);
+            this.flushWaits(runId, state);
             this.store.finishStep(
               runId,
               stepId ?? "",
@@ -783,6 +800,9 @@ export class WorkflowScheduler {
         }
       });
     } catch (error) {
+      // Requests of a step that failed never reach the store: the step runs again and raises
+      // them on the state it then has.
+      this.queued = [];
       await this.processes.stop();
       const fault =
         signal.aborted && signal.reason instanceof WorkflowFault ? signal.reason : error;
@@ -1078,16 +1098,26 @@ export class WorkflowScheduler {
       },
     });
   }
+  /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   private wait(
-    runId: string,
     kind: "clarification" | "manual_evidence",
     state: RuntimeState,
     body: unknown,
   ): void {
-    this.store.transaction(() => {
-      this.store.request(runId, kind, hashJson(state.manifest), body);
-      this.store.transition(runId, "waiting", kind);
-    });
+    this.queued.push({ kind, digest: hashJson(state.manifest), body });
+  }
+  /**
+   * Saves the state and, when the step queued requests, creates them and moves the run to
+   * waiting. Callers run it inside a transaction.
+   */
+  private flushWaits(runId: string, state: RuntimeState): void {
+    const queued = this.queued;
+    this.queued = [];
+    for (const request of queued)
+      this.store.request(runId, request.kind, request.digest, request.body);
+    const last = queued.at(-1);
+    if (last) this.store.transition(runId, "waiting", last.kind);
+    this.store.saveState(runId, state);
   }
   private async publish(
     runId: string,
@@ -2590,7 +2620,7 @@ export class WorkflowScheduler {
         }
         if (stepId)
           this.store.transaction(() => this.store.finishStep(runId, stepId ?? "", "completed"));
-        this.wait(runId, "manual_evidence", state, {
+        this.wait("manual_evidence", state, {
           criterionId,
           snapshotId: state.snapshotId,
           gateId: gate.id,
@@ -2598,7 +2628,7 @@ export class WorkflowScheduler {
           question: gate.human.prompt,
           answer: gate.human.answer,
         });
-        this.store.transaction(() => this.store.saveState(runId, state));
+        this.store.transaction(() => this.flushWaits(runId, state));
         return;
       } else if (gate.type === "ai-acceptance") {
         // Advisory by construction: the walk-through's verdict is recorded and shown, and only a
