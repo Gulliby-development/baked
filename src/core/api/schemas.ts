@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CHAT_MODES } from "../chat/sessions.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 
 /** Every mutation names a client-chosen command ID; a retry with the same ID returns the first result. */
@@ -70,3 +71,35 @@ export const WorkingSetBody = z
   .refine((body) => body.add?.length || body.remove?.length, {
     message: "Name entries to add or remove",
   });
+
+const ChatModeSchema = z.enum(CHAT_MODES);
+const ModelId = z
+  .string()
+  .min(3)
+  .max(200)
+  .regex(/^[^/\s]+\/\S+$/, "Use provider/model");
+const Title = z.string().trim().min(1).max(200);
+/** A chat message; large enough for pasted files, well under the body limit. */
+const Text = z.string().min(1).max(200_000);
+
+export const CreateSessionBody = z.strictObject({
+  title: Title.optional(),
+  model: ModelId.optional(),
+  mode: ChatModeSchema.optional(),
+  text: Text.optional(),
+});
+export const UpdateSessionBody = z
+  .strictObject({
+    title: Title.optional(),
+    model: ModelId.optional(),
+    mode: ChatModeSchema.optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, { message: "Name a field to change" });
+export const ForkSessionBody = z.strictObject({ atMessageId: z.string().min(1).optional() });
+export const MessageBody = z.strictObject({ text: Text });
+export const PromptAnswerBody = z.union([
+  z.strictObject({ approve: z.boolean() }),
+  z.strictObject({ answer: z.string().max(20_000) }),
+]);
+export const SessionListQuery = z.strictObject({ limit: z.string().regex(/^\d+$/).optional() });
+export const ModelsQuery = z.strictObject({ provider: z.string().min(1).optional() });

@@ -29,6 +29,8 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import { ForgeChatHost } from "../chat/host.js";
+import { ChatError, ChatService } from "../chat/sessions.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
@@ -53,6 +55,7 @@ import {
   removeTokenFile,
   writeTokenFile,
 } from "./auth.js";
+import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import {
   AnswerBody,
   ApproveBody,
@@ -69,6 +72,8 @@ import {
 /** How long shutdown waits for the HTTP server to report its connections closed. */
 const STOP_WAIT_MS = 1000;
 export const API_VERSION = 1;
+/** The endpoint groups of `design/desktop-api.md` this server implements. */
+export const CAPABILITIES = ["workflow", "attention", "projects", "sessions"] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
 
@@ -87,6 +92,8 @@ export interface ApiServerOptions {
   maxBodyBytes?: number;
   /** The user configuration directory that holds the project registry; tests point it elsewhere. */
   configDir?: string;
+  /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
+  chat?: ChatService;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
 }
@@ -129,6 +136,8 @@ export function faultStatus(code: WorkflowErrorCode): number {
 function errorOf(error: unknown): { status: number; code: string; message: string } {
   if (error instanceof ApiError)
     return { status: error.status, code: error.code, message: error.message };
+  if (error instanceof ChatError)
+    return { status: chatErrorStatus(error), code: error.code, message: error.message };
   if (error instanceof WorkflowFault)
     return { status: faultStatus(error.code), code: error.code, message: error.message };
   if (error instanceof ZodError)
@@ -232,8 +241,13 @@ function wantsJson(req: Request): boolean {
 
 /** One thing waiting for a person: a pending request, or a blocked run (`requestId` null). */
 export interface AttentionItem {
-  runId: string;
-  featureId: string;
+  /** A run's request or blocked run, or a chat session's pending prompt. */
+  source: "run" | "chat";
+  runId: string | null;
+  featureId: string | null;
+  sessionId: string | null;
+  /** The session title of a chat prompt. */
+  title: string | null;
   status: RunState;
   requestId: string | null;
   /** The request kind, or the reason of a blocked run. */
@@ -268,6 +282,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         "No project here; run baked project init in the workspace",
       );
   };
+  const chat =
+    options.chat ??
+    new ChatService({
+      workspace: service.workspace,
+      config: service.config,
+      host: new ForgeChatHost(service.workspace, service.config),
+    });
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
   /** The latest background drive of each run. */
@@ -366,18 +387,22 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   }
 
   /**
-   * A Server-Sent Events response that calls `tick` every poll interval until the client leaves
-   * or the server stops, with heartbeats in between. An error from `tick` is sent as an `error`
-   * event and ends the stream.
+   * A Server-Sent Events response with heartbeats that lives until the client leaves or the
+   * server stops. A `tick` stream calls `tick` every poll interval; an error from it is sent as
+   * an `error` event and ends the stream. An `attach` stream is pushed to by its source and
+   * returns the function that detaches it.
    */
   function sseStream(
     req: Request,
     origin: string | null,
-    tick: (send: (text: string) => void) => void,
+    source:
+      | { tick: (send: (text: string) => void) => void }
+      | { attach: (send: (text: string) => void, close: () => void) => () => void },
   ) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     let closed = false;
+    let detach = (): void => {};
     let close = (): void => {};
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -389,6 +414,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           closed = true;
           clearTimeout(timer);
           clearInterval(heartbeat);
+          detach();
           streams.delete(close);
           req.signal.removeEventListener("abort", close);
           try {
@@ -397,10 +423,18 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
             // The client already went away.
           }
         };
+        streams.add(close);
+        req.signal.addEventListener("abort", close, { once: true });
+        heartbeat = setInterval(() => send(": keep-alive\n\n"), heartbeatMs);
+        send("retry: 1000\n\n");
+        if ("attach" in source) {
+          detach = source.attach(send, close);
+          return;
+        }
         const poll = (): void => {
           if (closed) return;
           try {
-            tick(send);
+            source.tick(send);
           } catch (error) {
             const { code, message } = errorOf(error);
             send(
@@ -411,10 +445,6 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           }
           timer = setTimeout(poll, pollMs);
         };
-        streams.add(close);
-        req.signal.addEventListener("abort", close, { once: true });
-        heartbeat = setInterval(() => send(": keep-alive\n\n"), heartbeatMs);
-        send("retry: 1000\n\n");
         poll();
       },
       cancel() {
@@ -431,21 +461,26 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
 
   function eventStream(req: Request, runId: string, after: number, origin: string | null) {
     let seq = after;
-    return sseStream(req, origin, (send) => {
-      for (;;) {
-        const page = service.store.events(runId, seq, EVENT_PAGE);
-        for (const event of page) {
-          send(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
-          seq = event.seq;
+    return sseStream(req, origin, {
+      tick: (send) => {
+        for (;;) {
+          const page = service.store.events(runId, seq, EVENT_PAGE);
+          for (const event of page) {
+            send(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
+            seq = event.seq;
+          }
+          if (page.length < EVENT_PAGE) break;
         }
-        if (page.length < EVENT_PAGE) break;
-      }
+      },
     });
   }
 
   /** Everything waiting for a person, as `GET /v1/attention` returns it. */
   function attention(): AttentionItem[] {
-    return service.store.attention().map((row) => ({
+    const runs: AttentionItem[] = service.store.attention().map((row) => ({
+      source: "run",
+      sessionId: null,
+      title: null,
       runId: row.run_id,
       featureId: row.feature_id,
       status: row.status,
@@ -457,17 +492,32 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         !isAcceptanceRequest({ kind: row.kind, body_json: row.body_json }),
       createdAt: row.created_at,
     }));
+    const prompts: AttentionItem[] = chat.attention().map(({ session, prompt }) => ({
+      source: "chat",
+      sessionId: session.id,
+      title: session.title,
+      runId: null,
+      featureId: null,
+      status: "waiting",
+      requestId: prompt.id,
+      kind: prompt.kind,
+      blocking: true,
+      createdAt: prompt.createdAt,
+    }));
+    return [...runs, ...prompts].sort((a, b) => a.createdAt - b.createdAt);
   }
 
   /** Streams the whole attention list once at the start and again whenever it changes. */
   function attentionStream(req: Request, origin: string | null) {
     let last: string | null = null;
-    return sseStream(req, origin, (send) => {
-      const items = attention();
-      const key = JSON.stringify(items);
-      if (key === last) return;
-      last = key;
-      send(`event: attention\ndata: ${JSON.stringify({ items })}\n\n`);
+    return sseStream(req, origin, {
+      tick: (send) => {
+        const items = attention();
+        const key = JSON.stringify(items);
+        if (key === last) return;
+        last = key;
+        send(`event: attention\ndata: ${JSON.stringify({ items })}\n\n`);
+      },
     });
   }
 
@@ -487,7 +537,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       only("GET");
       return json(
         200,
-        { apiVersion: API_VERSION, version: CURRENT_VERSION, workspace: service.workspace },
+        {
+          apiVersion: API_VERSION,
+          version: CURRENT_VERSION,
+          workspace: service.workspace,
+          capabilities: CAPABILITIES,
+        },
         origin,
       );
     }
@@ -498,6 +553,23 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       server.timeout(req, 0);
       return attentionStream(req, origin);
     }
+    const chatResponse = await chatRoute({
+      chat,
+      req,
+      url,
+      path,
+      method,
+      origin,
+      json: (status, body) => json(status, body, origin),
+      readJson: () => readJson(req),
+      query: (schema) => queryOf(url, schema),
+      fail: (status, code, message) => {
+        throw new ApiError(status, code, message);
+      },
+      stream: (attach) => sseStream(req, origin, { attach }),
+      keepOpen: () => server.timeout(req, 0),
+    });
+    if (chatResponse) return chatResponse;
     if (path === "/v1/projects") {
       only("GET");
       const here = realPath(service.workspace);
@@ -640,7 +712,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           return new Response(null, {
             status: 204,
             headers: headers(allowedOrigin, {
-              "Access-Control-Allow-Methods": "GET, POST",
+              "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE",
               "Access-Control-Allow-Headers": "Authorization, Content-Type, Last-Event-ID",
               "Access-Control-Max-Age": "600",
             }),
@@ -682,6 +754,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         // after a client cancelled an event stream, so the wait for it is bounded.
         await Promise.race([server.stop(true), Bun.sleep(STOP_WAIT_MS)]);
         await Promise.allSettled([...drives]);
+        await chat.shutdown();
         await service.shutdown();
         if (options.ownsService) service.close();
       } finally {
