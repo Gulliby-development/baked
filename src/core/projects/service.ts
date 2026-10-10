@@ -5,12 +5,7 @@ import { type SessionListEntry, SessionManager } from "../sessions/manager.js";
 import type { RunSnapshot } from "../workflows/schemas.js";
 import { WorkflowStore } from "../workflows/store.js";
 import { projectInstructionFiles } from "./defaults.js";
-import {
-  defaultProjectId,
-  type ProjectManifest,
-  readManifest,
-  writeManifest,
-} from "./manifest.js";
+import { defaultProjectId, type ProjectManifest, readManifest, writeManifest } from "./manifest.js";
 import { displayPath, realPath } from "./paths.js";
 import { registerProject } from "./registry.js";
 import { clearProjectCache, projectAt, type ResolvedProject, resolveProject } from "./resolve.js";
