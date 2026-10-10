@@ -67,6 +67,10 @@ export class WorkflowClient extends WorkerClient {
   isDriving(runId: string): boolean {
     return !this.closed && this.driving.has(runId);
   }
+  /** Runs this process is executing now. */
+  drivingRuns(): string[] {
+    return this.closed ? [] : [...this.driving];
+  }
   driveError(runId: string): string | null {
     return this.driveErrors.get(runId) ?? null;
   }

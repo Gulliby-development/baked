@@ -14,6 +14,10 @@ export interface CommandContext {
   openSkills: () => void;
   openGitCommit: () => void;
   openSessions: () => void;
+  /** Saves the open session, then loads `sessionId` of this folder. */
+  resumeSession: (sessionId: string) => Promise<void>;
+  /** Saves the session and runs BAKED again in `folder`, resuming `sessionId` when given. */
+  switchProject: (folder: string, sessionId?: string) => void;
   newSession: () => void;
   openHelp: () => void;
   openErrorLog: () => void;

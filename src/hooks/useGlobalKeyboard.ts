@@ -10,6 +10,7 @@ interface GlobalKeyboardParams {
   shutdownPhase: number;
   handleExit: () => void;
   newSession: () => void;
+  openProjects: () => void;
   renderer: { getSelection: () => Selection | null; clearSelection: () => void };
   copySelection: () => boolean;
   activeChatRef: MutableRefObject<ChatInstance | null>;
@@ -21,6 +22,7 @@ export function useGlobalKeyboard({
   shutdownPhase,
   handleExit,
   newSession,
+  openProjects,
   renderer,
   copySelection,
   activeChatRef,
@@ -107,6 +109,7 @@ export function useGlobalKeyboard({
       return consume(() => useUIStore.getState().toggleModal("sessionPicker"));
     if (evt.meta && evt.name === "r")
       return consume(() => useUIStore.getState().toggleModal("errorLog"));
+    if ((evt.meta || evt.option) && !evt.ctrl && evt.name === "o") return consume(openProjects);
     if (evt.ctrl && evt.name === "w")
       return consume(() => {
         if (tabMgr.tabCount <= 1) return;

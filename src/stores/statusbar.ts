@@ -5,6 +5,7 @@ import type { CompactionStrategy } from "../core/compaction/types.js";
 import { getIntelligenceChildPids } from "../core/intelligence/index.js";
 import { matchPricing } from "../core/llm/pricing.js";
 import { IS_WIN } from "../core/platform/index.js";
+import type { WaitingElsewhere } from "../core/projects/switcher.js";
 
 export { isModelFree } from "../core/llm/pricing.js";
 
@@ -152,6 +153,11 @@ interface StatusBarState {
   browsingCheckpoint: boolean;
   /** Most recent dispatch (cleared/replaced on each new dispatch-start). */
   lastDispatch: LastDispatchSnapshot | null;
+  /** Display name of the folder this process works in; empty until the header reads it. */
+  projectName: string;
+  /** Requests and blocked runs waiting in other known projects. */
+  waitingElsewhere: WaitingElsewhere;
+  setProject: (name: string, waitingElsewhere?: WaitingElsewhere) => void;
   setTokenUsage: (usage: TokenUsage, modelId?: string) => void;
   resetTokenUsage: () => void;
   setContext: (contextTokens: number, chatChars: number) => void;
@@ -192,7 +198,11 @@ export const useStatusBarStore = create<StatusBarState>()(
     v2Slots: 0,
     browsingCheckpoint: false,
     lastDispatch: null,
+    projectName: "",
+    waitingElsewhere: { waiting: 0, projects: 0 },
 
+    setProject: (projectName, waitingElsewhere) =>
+      set(waitingElsewhere ? { projectName, waitingElsewhere } : { projectName }),
     setTokenUsage: (usage, modelId) =>
       set({ tokenUsage: usage, ...(modelId ? { activeModel: modelId } : {}) }),
     resetTokenUsage: () => set({ tokenUsage: { ...ZERO_USAGE } }),

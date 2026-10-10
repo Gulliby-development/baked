@@ -1,0 +1,194 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  addKnownProject,
+  type KnownProject,
+  listKnownProjects,
+  setProjectPinned,
+} from "../src/core/projects/known.js";
+import type { ProjectOverview } from "../src/core/projects/overview.js";
+import { realPath } from "../src/core/projects/paths.js";
+import {
+  badgeProjects,
+  overviewLine,
+  projectDetails,
+  resolveFolderInput,
+  waitingBadgeText,
+  waitingElsewhere,
+} from "../src/core/projects/switcher.js";
+import { getRestartSpec, projectSwitchArgs } from "../src/core/restart.js";
+
+describe("projectSwitchArgs", () => {
+  test("adds --cwd and keeps the other arguments", () => {
+    expect(projectSwitchArgs(["--verbose"], "/work/b")).toEqual(["--verbose", "--cwd", "/work/b"]);
+  });
+
+  test("replaces --cwd in both forms", () => {
+    expect(projectSwitchArgs(["--cwd", "/work/a", "-x"], "/work/b")).toEqual([
+      "-x",
+      "--cwd",
+      "/work/b",
+    ]);
+    expect(projectSwitchArgs(["--cwd=/work/a"], "/work/b")).toEqual(["--cwd", "/work/b"]);
+  });
+
+  test("drops sessions of the old folder and the one-shot wizard", () => {
+    for (const args of [
+      ["--resume", "abc"],
+      ["--session", "abc"],
+      ["-s", "abc"],
+      ["--resume=abc"],
+      ["--session=abc"],
+      ["--wizard"],
+    ])
+      expect(projectSwitchArgs(args, "/work/b")).toEqual(["--cwd", "/work/b"]);
+  });
+
+  test("resumes a session of the new folder when one was picked", () => {
+    expect(projectSwitchArgs(["-s", "old", "--cwd", "/a"], "/work/b", "new-id")).toEqual([
+      "--cwd",
+      "/work/b",
+      "--resume",
+      "new-id",
+    ]);
+  });
+
+  test("a trailing flag without a value is dropped", () => {
+    expect(projectSwitchArgs(["--resume"], "/b")).toEqual(["--cwd", "/b"]);
+  });
+
+  test("getRestartSpec uses the replacement arguments", () => {
+    const spec = getRestartSpec({
+      execPath: "/usr/bin/bun",
+      argv: ["/usr/bin/bun", "/app/src/boot.tsx", "--cwd", "/a"],
+      moduleUrl: "file:///app/src/core/restart.ts",
+      userArgs: ["--cwd", "/b"],
+    });
+    expect(spec).toEqual({ command: "/usr/bin/bun", args: ["/app/src/boot.tsx", "--cwd", "/b"] });
+  });
+});
+
+function known(path: string, over: Partial<KnownProject> = {}): KnownProject {
+  return {
+    path,
+    name: path.split("/").pop() ?? path,
+    projectId: null,
+    pinned: false,
+    addedAt: 0,
+    lastOpenedAt: 0,
+    exists: true,
+    ...over,
+  };
+}
+
+describe("badge aggregation", () => {
+  test("reads pinned projects and the most recent others, never the current or missing ones", () => {
+    const projects = [
+      known("/p/current", { lastOpenedAt: 100 }),
+      known("/p/pinned-old", { pinned: true, lastOpenedAt: 1 }),
+      known("/p/gone", { exists: false, lastOpenedAt: 99 }),
+      ...Array.from({ length: 12 }, (_, i) => known(`/p/r${i}`, { lastOpenedAt: 50 - i })),
+    ];
+    const picked = badgeProjects(projects, "/p/current", 10).map((p) => p.path);
+    expect(picked[0]).toBe("/p/pinned-old");
+    expect(picked).toHaveLength(11);
+    expect(picked).not.toContain("/p/current");
+    expect(picked).not.toContain("/p/gone");
+    expect(picked).toContain("/p/r9");
+    expect(picked).not.toContain("/p/r10");
+  });
+
+  test("badge text", () => {
+    expect(waitingBadgeText({ waiting: 0, projects: 0 })).toBeNull();
+    expect(waitingBadgeText({ waiting: 1, projects: 1 })).toBe("1 waiting in another project");
+    expect(waitingBadgeText({ waiting: 3, projects: 2 })).toBe("3 waiting in other projects");
+  });
+
+  test("overview line", () => {
+    const o: ProjectOverview = { sessions: 1, lastSessionAt: null, activeRuns: 2, attention: 0 };
+    expect(overviewLine(o)).toBe("1 session · 2 active runs");
+    expect(overviewLine({ ...o, attention: 4 })).toBe("1 session · 2 active runs · 4 waiting");
+  });
+});
+
+describe("with a temporary profile", () => {
+  let root: string;
+  let configDir: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    root = realPath(mkdtempSync(join(tmpdir(), "baked-switch-")));
+    configDir = join(root, "profile");
+    mkdirSync(configDir);
+    savedHome = process.env.HOME;
+    process.env.HOME = join(root, "home");
+    mkdirSync(process.env.HOME);
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function folder(name: string): string {
+    const path = join(root, name);
+    mkdirSync(path, { recursive: true });
+    return path;
+  }
+
+  test("waitingElsewhere sums other projects and survives a failing one", async () => {
+    const a = folder("a");
+    const b = folder("b");
+    const c = folder("c");
+    const broken = folder("broken");
+    for (const [i, path] of [a, b, c, broken].entries())
+      addKnownProject(path, { configDir, now: 1000 + i });
+    setProjectPinned(c, true, { configDir });
+    const attention: Record<string, number> = { [a]: 5, [b]: 2, [c]: 1 };
+    const result = await waitingElsewhere(a, {
+      configDir,
+      overview: (path) => {
+        if (path === broken) throw new Error("unreadable");
+        return { sessions: 0, lastSessionAt: null, activeRuns: 0, attention: attention[path] ?? 0 };
+      },
+    });
+    expect(result).toEqual({ waiting: 3, projects: 2 });
+  });
+
+  test("waitingElsewhere reads real empty folders as nothing waiting", async () => {
+    addKnownProject(folder("x"), { configDir });
+    addKnownProject(folder("y"), { configDir });
+    expect(await waitingElsewhere(join(root, "x"), { configDir })).toEqual({
+      waiting: 0,
+      projects: 0,
+    });
+  });
+
+  test("resolveFolderInput expands ~, resolves relative paths and rejects files", () => {
+    const target = folder("home/code/app");
+    expect(resolveFolderInput("~/code/app", "/")).toEqual({ path: target });
+    expect(resolveFolderInput("app", join(root, "home/code"))).toEqual({ path: target });
+    expect(resolveFolderInput(`"${target}"`, "/")).toEqual({ path: target });
+    writeFileSync(join(root, "file.txt"), "x");
+    expect(resolveFolderInput(join(root, "file.txt"), "/")).toHaveProperty("error");
+    expect(resolveFolderInput(join(root, "missing"), "/")).toHaveProperty("error");
+    expect(resolveFolderInput("  ", "/")).toHaveProperty("error");
+  });
+
+  test("projectDetails describes a plain folder", () => {
+    const path = folder("plain");
+    addKnownProject(path, { configDir });
+    const details = projectDetails(path, { configDir });
+    expect(details.name).toBe("plain");
+    expect(details.path).toBe(path);
+    expect(details.projectId).toBeNull();
+    expect(details.workingSet).toBeNull();
+    expect(details.sessions).toEqual([]);
+    expect(details.runs).toEqual([]);
+    expect(details.attention).toEqual([]);
+    expect(listKnownProjects({ configDir })).toHaveLength(1);
+  });
+});

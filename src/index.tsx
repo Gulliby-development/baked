@@ -46,7 +46,7 @@ function restoreTerminal(): void {
 
 let cleanedUp = false;
 
-function runCleanup(): void {
+function runCleanup(opts: { keepProcessGroup?: boolean } = {}): void {
   if (cleanedUp) return;
   cleanedUp = true;
   restoreTerminal();
@@ -67,9 +67,11 @@ function runCleanup(): void {
     killAllLspSync();
   } catch {}
   // Nuclear fallback: kill entire process group to catch any orphaned grandchildren
-  try {
-    killProcessGroup();
-  } catch {}
+  if (!opts.keepProcessGroup) {
+    try {
+      killProcessGroup();
+    } catch {}
+  }
 }
 
 let bannerPrinted = false;
@@ -113,27 +115,40 @@ export function restart(): void {
 }
 
 /**
- * Replace the current process with a fresh instance of the binary.
- * Used after an in-app upgrade so the new version's code is actually loaded.
- * Works on macOS and Linux — spawns the new binary with inherited stdio,
- * then exits the current process so the terminal seamlessly transfers.
+ * Run a fresh instance of the binary in this terminal, with the current arguments or `userArgs`.
+ * Used after an in-app upgrade so the new version's code is loaded, and to switch projects
+ * (one process = one cwd).
+ *
+ * This process stays as a parent that waits for the new one and exits with its code: when the
+ * process a shell started exits, the shell takes the terminal back, and a child left running
+ * would lose its input.
  */
-export function hardRestart(): void {
-  runCleanup();
+export function hardRestart(userArgs?: string[]): void {
+  // The process-group kill in runCleanup would also stop this process before it hands over.
+  runCleanup({ keepProcessGroup: true });
   renderer?.destroy();
+  // The new process prints its own exit banner.
+  bannerPrinted = true;
   // Clear screen and restore cursor before handing off
   process.stdout.write("\x1b[?25h\x1b[2J\x1b[H");
-  const restart = getRestartSpec();
-  // Spawn the (now-updated) binary with full terminal inheritance
+  const restart = getRestartSpec(userArgs ? { userArgs } : {});
   const child = Bun.spawn([restart.command, ...restart.args], {
     stdio: ["inherit", "inherit", "inherit"],
     env: process.env,
     windowsHide: false,
   });
-  // Detach: let the child own the terminal, then exit this process.
-  // unref() ensures our event loop doesn't wait for the child.
-  child.unref();
-  process.exit(0);
+  // Stop reading the terminal so every keystroke reaches the child.
+  process.stdin.removeAllListeners("data");
+  process.stdin.pause();
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.removeAllListeners(signal);
+    process.on(signal, () => {
+      try {
+        child.kill(signal);
+      } catch {}
+    });
+  }
+  void child.exited.then((code) => process.exit(code ?? 0));
 }
 
 process.on("exit", () => {
