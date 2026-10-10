@@ -94,7 +94,7 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
-| `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}]}]}`; `configured` is whether a key or login is available |
+| `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model` |
 
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
 
