@@ -67,6 +67,7 @@ const flags = new Set([
   "limit",
   "cursor",
   "status",
+  "stage",
   "after",
   "effect",
   "resolution",
@@ -141,7 +142,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
-  usage: [],
+  usage: ["stage"],
   extend: [
     "tokens",
     "calls",
@@ -298,7 +299,7 @@ gates confirm ID... | --all  confirm project gates (baked/gates) before a run ma
 profiles                  artifacts RUN_ID [--file ARTIFACT_ID]
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
-usage RUN_ID              per-stage and per-attempt token and step usage
+usage RUN_ID [--stage NAME]   per-stage and per-attempt token and step usage
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
