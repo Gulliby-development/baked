@@ -70,6 +70,9 @@ export const workflow = {
     call<RunSnapshot>(key, "POST", runPath(run.runId, "pause"), command(run)),
   cancel: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "cancel"), command(run)),
+  /** Undoes the run's uncommitted task edits; refused while the run is created or running. */
+  undo: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "undo"), command(run)),
   /** Raises the limits of a run that stopped on its budget; omitted limits take BAKED's proposal. */
   extend: (
     key: string,

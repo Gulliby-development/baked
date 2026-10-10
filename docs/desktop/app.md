@@ -87,7 +87,7 @@ The app uses the existing endpoints as they are:
 | All projects, sidebar | `baked projects list --json` before any backend; `GET /v1/projects` after |
 | Project home | `GET /v1/projects/current`, `GET /v1/workflow/runs`, `GET /v1/workflow/doctor` |
 | Needs you | `GET /v1/attention` (SSE) per project; decisions via `POST /v1/workflow/runs/:id/{approve,reject,answer}` then `resume` |
-| Runs, writers | `GET /v1/workflow/runs/:id`, `/events` (SSE), `/usage`, `/artifacts`; `POST …/{pause,resume,cancel,extend}` |
+| Runs, writers | `GET /v1/workflow/runs/:id`, `/events` (SSE), `/usage`, `/artifacts`; `POST …/{pause,resume,cancel,extend,undo}` |
 | New run, quick task | `GET /v1/workflow/{definitions,profiles,estimate}`, `POST /v1/workflow/runs` |
 | Acceptance | run artifacts and acceptance requests from attention |
 | Working set | `GET`/`POST /v1/projects/current/working-set` |
@@ -109,7 +109,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Project home | Task box with Quick, Full run and Ask in chat; recent sessions and runs; working set; doctor summary. |
 | Chat | One centered column (about 820 px): messages, collapsed tool lines, inline diffs, approval cards, suggestions; compact chips for context, changed files and working set, and New chat; the title opens the list of chats; composer with model, effort and approval mode. |
 | Quick task, New run | Workflow and budget preset choice (built-in presets), writers, model, checks, pre-run estimate. |
-| Run | Stage pipeline, approval card, tabs (overview, decision, tasks, changes, spec, plan, checks, criteria, findings), budget and activity. |
+| Run | Stage pipeline, approval card, tabs (overview, decision, tasks, changes, spec, plan, checks, criteria, findings), budget and activity. Pause, Resume, Cancel run, and Undo edits while the run is neither created nor running: after a confirmation it runs `baked workflow undo` and shows the `workspace-rollback` report (files restored, files left in place with the reason, or nothing to undo). |
 | Parallel writers | Writer columns with worktrees, integrator, task graph. |
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |
 | Initiatives, Usage | Initiative features and their runs; tokens by stage and model, cost. |
