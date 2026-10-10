@@ -345,7 +345,7 @@ export const DefinitionAutoApprovalSchema = z
   })
   .strict();
 
-export const PRESETS = ["quick-fix", "standard", "full", "spike", "review-only"] as const;
+export const PRESETS = ["quick", "quick-fix", "standard", "full", "spike", "review-only"] as const;
 export const WorkflowV2Schema = z
   .object({
     schemaVersion: z.literal(2),
@@ -365,6 +365,11 @@ export const WorkflowV2Schema = z
      * worktree on the branch `baked/wf/RUN_ID` (`worktree`). Frozen into the run policy.
      */
     execution: z.enum(["inline", "worktree"]).optional(),
+    /**
+     * Whether the run writes its spec, plan and task graph to `specs/<feature>/` in the project.
+     * Absent means yes; with false they stay run artifacts only.
+     */
+    publish: z.boolean().optional(),
   })
   .strict();
 export type WorkflowV2 = z.infer<typeof WorkflowV2Schema>;

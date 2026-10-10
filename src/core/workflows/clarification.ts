@@ -86,6 +86,15 @@ export function clarificationResumeIndex(
 /** Steps a research attempt gets per path the request names, on top of the base. */
 export const RESEARCH_STEPS_PER_PATH = 2;
 export const RESEARCH_BASE_STEPS = 4;
+/** Planner profiles that do their own research when a definition has no research stage. */
+export const SCOPING_PLANNERS: ReadonlySet<string> = new Set(["quick-planner"]);
+/** Steps a scoping planner gets on top of the research steps to write and submit the plan. */
+export const PLAN_SUBMIT_STEPS = 2;
+/**
+ * Tokens allowed per scoping-planner step. Its prompt also carries the spec and the profiles, and
+ * its answer is the whole plan and task graph, so a step costs more than a research step.
+ */
+export const PLAN_STEP_TOKENS = 20_000;
 /** Tokens allowed per research step: one replayed history (~12k) plus the answer. */
 export const RESEARCH_STEP_TOKENS = 14_000;
 const SOURCE_EXTENSIONS =
@@ -117,6 +126,32 @@ export function researchBudget(
     ? Math.min(ceiling, RESEARCH_BASE_STEPS + RESEARCH_STEPS_PER_PATH * paths.length)
     : ceiling;
   const scaled = maxSteps * RESEARCH_STEP_TOKENS;
+  return {
+    maxSteps,
+    maxTokens: paths.length ? Math.min(scaled, policy.maxAttemptTokens ?? scaled) : undefined,
+    namedPaths: paths,
+  };
+}
+
+/**
+ * The budget of a planner that finds the files itself because the definition has no research
+ * stage: the research steps for the request plus the steps to write the plan. A request that
+ * names no file keeps the profile limit.
+ */
+export function scopedPlanBudget(
+  prompt: string,
+  profile: Pick<AgentProfile, "maxSteps">,
+  policy: Pick<RunPolicy, "maxAgentSteps" | "maxAttemptTokens">,
+): { maxSteps: number; maxTokens: number | undefined; namedPaths: string[] } {
+  const paths = namedPaths(prompt);
+  const ceiling = Math.min(profile.maxSteps, policy.maxAgentSteps);
+  const maxSteps = paths.length
+    ? Math.min(
+        ceiling,
+        RESEARCH_BASE_STEPS + RESEARCH_STEPS_PER_PATH * paths.length + PLAN_SUBMIT_STEPS,
+      )
+    : ceiling;
+  const scaled = maxSteps * PLAN_STEP_TOKENS;
   return {
     maxSteps,
     maxTokens: paths.length ? Math.min(scaled, policy.maxAttemptTokens ?? scaled) : undefined,

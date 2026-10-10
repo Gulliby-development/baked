@@ -1,9 +1,11 @@
 import { reasonText } from "../../components/workflow/format.js";
+import { loadConfig, loadProjectConfig, mergeConfigs } from "../../config/index.js";
 import { parseWorkflowArgs, workflowHelp } from "../../headless/workflow-parse.js";
 import { workflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
 import type { RunSnapshot } from "../workflows/schemas.js";
+import { QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
 import type { CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -38,9 +40,17 @@ export function formatWorkflowResult(result: unknown): string {
 const SHORT_HELP = `
 /workflow            Open the workflow panel (runs, approvals, progress)
 /workflow new [text] Open the new-run form, optionally prefilled
+/workflow quick [text] The same form on the quick workflow for a small task
 /workflow gates      Add, edit, remove and try the checks every run uses
 /workflow edit ID    Edit a workflow definition: stages, transitions and their gates
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
+
+/** The definition a quick task starts with in this project. */
+function quickWorkflowId(cwd: string): string {
+  return (
+    mergeConfigs(loadConfig(), loadProjectConfig(cwd)).workflows?.quickWorkflow ?? QUICK_WORKFLOW_ID
+  );
+}
 
 export function register(map: Map<string, CommandHandler>): void {
   map.set("/workflow", async (input, ctx) => {
@@ -68,6 +78,12 @@ export function register(map: Map<string, CommandHandler>): void {
     }
     if (tokens[0] === "new") {
       ui.showNew(tokens.slice(1).join(" "));
+      useUIStore.getState().openModal("workflow");
+      return;
+    }
+    // A quick task opens the form on the quick workflow, so the plan is still started by a person.
+    if (tokens[0] === "quick" && !tokens.includes("--help")) {
+      ui.showNew(tokens.slice(1).join(" "), quickWorkflowId(ctx.cwd));
       useUIStore.getState().openModal("workflow");
       return;
     }

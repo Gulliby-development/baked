@@ -42,12 +42,14 @@ interface WorkflowUIState {
   projection: WorkflowProjection;
   screen: WorkflowScreen;
   draftPrompt: string;
+  /** The workflow the new-run form opens with; null keeps the project default. */
+  draftWorkflow: string | null;
   badge: WorkflowBadge | null;
   /** Runs whose terminal state the user has already seen in the panel. */
   acknowledged: Record<string, string>;
   select: (runId: string | null, tabId?: string) => void;
   showHome: () => void;
-  showNew: (prompt?: string) => void;
+  showNew: (prompt?: string, workflow?: string | null) => void;
   showGates: () => void;
   /** The definition the editor window shows, and the screen Esc returns to. */
   editorId: string | null;
@@ -73,6 +75,7 @@ export const useWorkflowStore = create<WorkflowUIState>((set) => ({
   projection: { snapshot: null, lastSeq: 0 },
   screen: "home",
   draftPrompt: "",
+  draftWorkflow: null,
   badge: null,
   acknowledged: {},
   select: (runId, tabId) =>
@@ -99,7 +102,8 @@ export const useWorkflowStore = create<WorkflowUIState>((set) => ({
       runsByTab: tabId ? { ...s.runsByTab, [tabId]: runId } : s.runsByTab,
     })),
   leaveRun: () => set((s) => ({ screen: s.runReturn === "initiatives" ? "initiatives" : "home" })),
-  showNew: (prompt) => set((s) => ({ screen: "new", draftPrompt: prompt ?? s.draftPrompt })),
+  showNew: (prompt, workflow = null) =>
+    set((s) => ({ screen: "new", draftPrompt: prompt ?? s.draftPrompt, draftWorkflow: workflow })),
   load: (snapshot) => set({ projection: { snapshot, lastSeq: snapshot.eventSeq } }),
   event: (event) => set((s) => ({ projection: applyWorkflowEvent(s.projection, event) })),
   setBadge: (badge) => set({ badge }),

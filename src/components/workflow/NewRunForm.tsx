@@ -39,6 +39,7 @@ export function NewRunForm({
   info,
   model,
   initialPrompt,
+  initialWorkflow = null,
   width,
   onStart,
   onCancel,
@@ -48,6 +49,8 @@ export function NewRunForm({
   info: WorkflowInfo | null;
   model: string | null;
   initialPrompt: string;
+  /** The workflow preselected in the form; null starts on the project default. */
+  initialWorkflow?: string | null;
   width: number;
   onStart: (input: StartRunInput) => Promise<void>;
   onCancel: () => void;
@@ -59,7 +62,7 @@ export function NewRunForm({
   const [prompt, setPrompt] = useState(initialPrompt);
   const [feature, setFeature] = useState(initialPrompt ? featureSlug(initialPrompt) : "");
   const [featureTouched, setFeatureTouched] = useState(false);
-  const [workflow, setWorkflow] = useState<string | null>(null);
+  const [workflow, setWorkflow] = useState<string | null>(initialWorkflow);
   const [budget, setBudget] = useState<BudgetPresetId>("standard");
   // Null follows the chosen workflow's own execution mode; a toggle overrides it.
   const [worktreeOverride, setWorktreeOverride] = useState<boolean | null>(null);

@@ -23,9 +23,10 @@ const cliArgs = process.argv.slice(2);
 // memory, all tools) inherits it for free via process.cwd().
 resolveCwdFromArgv(cliArgs);
 
-if (cliArgs[0] === "workflow") {
+if (cliArgs[0] === "workflow" || cliArgs[0] === "quick") {
   const { runWorkflowCli } = await import("./headless/workflow.js");
-  process.exit(await runWorkflowCli(cliArgs.slice(1)));
+  // `baked quick TEXT` is `baked workflow quick TEXT`.
+  process.exit(await runWorkflowCli(cliArgs[0] === "quick" ? cliArgs : cliArgs.slice(1)));
 }
 
 const hasCli =

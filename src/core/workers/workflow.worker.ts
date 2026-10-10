@@ -28,7 +28,7 @@ import {
 import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
 import { PRESETS } from "../workflows/v2/definition.js";
-import { listDefinitions } from "../workflows/v2/definitions.js";
+import { listDefinitions, QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
 import type { WorkflowInfo } from "../workflows/view.js";
 import {
   BudgetPreset,
@@ -132,6 +132,7 @@ const ctx = createWorkerHandler(
         estimate: estimateStart(readHistory(runtime.store)),
         enabled: runtime.config.workflows?.enabled === true,
         defaultWorkflow: runtime.config.workflows?.defaultWorkflow ?? "sdd",
+        quickWorkflow: runtime.config.workflows?.quickWorkflow ?? QUICK_WORKFLOW_ID,
         workflows: [...new Set(["sdd", ...PRESETS, ...custom])],
         definitions: definitionSummaries(runtime.workspace, policy),
         policy,

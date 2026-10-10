@@ -87,6 +87,7 @@ export function WorkflowPanel({
   const screen = useWorkflowStore((s) => s.screen);
   const runId = useWorkflowStore((s) => s.selectedRunId);
   const draftPrompt = useWorkflowStore((s) => s.draftPrompt);
+  const draftWorkflow = useWorkflowStore((s) => s.draftWorkflow);
   const editorId = useWorkflowStore((s) => s.editorId);
   const editorReturn = useWorkflowStore((s) => s.editorReturn);
   const initiativeId = useWorkflowStore((s) => s.initiativeId);
@@ -295,11 +296,12 @@ export function WorkflowPanel({
         flash={flash}
       >
         <NewRunForm
-          key={draftPrompt}
+          key={`${draftWorkflow ?? ""}:${draftPrompt}`}
           active
           info={info}
           model={activeModel}
           initialPrompt={draftPrompt}
+          initialWorkflow={draftWorkflow}
           width={contentW}
           onStart={start}
           onCancel={() => useWorkflowStore.getState().showHome()}
