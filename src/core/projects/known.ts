@@ -211,7 +211,7 @@ export function renameKnownProject(
   if (trimmed.length > 120) throw new Error("A project name has at most 120 characters.");
   return update(folder, opts, (entry) => {
     if (trimmed) entry.name = trimmed;
-    else delete entry.name;
+    else entry.name = undefined;
   });
 }
 

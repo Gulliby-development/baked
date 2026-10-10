@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ApiServer, faultStatus, startApiServer } from "../src/core/api/server.js";
+import { recordProjectOpen } from "../src/core/projects/known.js";
 import { ProjectService } from "../src/core/projects/service.js";
 import { parseServeArgs } from "../src/headless/serve.js";
 import type { RunSnapshot, WorkflowEvent } from "../src/core/workflows/schemas.js";
@@ -482,5 +483,22 @@ describe("project endpoints", () => {
       workingSet: { entries: string[] };
     };
     expect(removed.workingSet.entries).toEqual([]);
+  });
+
+  test("list every known folder with its overview and mark the served one", async () => {
+    const profile = mkdtempSync(join(tmpdir(), "baked-api-profile-"));
+    const other = mkdtempSync(join(tmpdir(), "baked-api-other-"));
+    cleanups.push(async () => removeTempDir(profile));
+    cleanups.push(async () => removeTempDir(other));
+    const { fixture, call } = await setup({ configDir: profile });
+    expect(await (await call("/v1/projects")).json()).toEqual({ projects: [] });
+    recordProjectOpen(other, { configDir: profile, now: 1 });
+    recordProjectOpen(fixture.root, { configDir: profile, now: 2 });
+    const body = (await (await call("/v1/projects")).json()) as {
+      projects: { name: string; current: boolean; projectId: string | null; overview: { sessions: number } }[];
+    };
+    expect(body.projects.map((p) => p.current)).toEqual([true, false]);
+    expect(body.projects[0]).toMatchObject({ projectId: null, overview: { sessions: 0, activeRuns: 0, attention: 0 } });
+    expect((await call("/v1/projects", { method: "POST" })).status).toBe(405);
   });
 });
