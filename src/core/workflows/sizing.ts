@@ -277,11 +277,15 @@ export function plannerSizing(
 
 const SOURCE = /\.[cm]?[jt]sx?$/i;
 
-/** The policy's typecheck check: the one named `typecheck`, else one that runs `typecheck` or `tsc`. */
+/**
+ * The policy's task-scope typecheck check: the one named `typecheck`, else one that runs
+ * `typecheck` or `tsc`. A feature-scope check does not run per task, so naming it would not help.
+ */
 export function typecheckCheckId(policy: RunPolicy): string | null {
+  const checks = policy.checks.filter((c) => c.scope === "task");
   const check =
-    policy.checks.find((c) => c.id === "typecheck") ??
-    policy.checks.find((c) => /\b(typecheck|tsc)\b/.test([c.executable, ...c.args].join(" ")));
+    checks.find((c) => c.id === "typecheck") ??
+    checks.find((c) => /\b(typecheck|tsc)\b/.test([c.executable, ...c.args].join(" ")));
   return check?.id ?? null;
 }
 

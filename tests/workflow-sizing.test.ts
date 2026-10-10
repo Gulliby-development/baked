@@ -78,7 +78,7 @@ describe("plan-time sizing", () => {
     const withTypecheck = {
       ...policy({}),
       checks: [
-        { id: "typecheck", executable: "bun", args: ["run", "typecheck"], cwd: ".", timeoutMs: 1000, required: true, scope: "feature" as const, envNames: [], writes: [] },
+        { id: "typecheck", executable: "bun", args: ["run", "typecheck"], cwd: ".", timeoutMs: 1000, required: true, scope: "task" as const, envNames: [], writes: [] },
       ],
     };
     const plan = graph(
@@ -92,6 +92,8 @@ describe("plan-time sizing", () => {
     expect(problems[0]).toContain("T001");
     expect(codeTaskCheckProblems(plan, { ...withTypecheck, sizing: undefined })).toEqual([]);
     expect(codeTaskCheckProblems(plan, policy({}))).toEqual([]);
+    const featureOnly = { ...withTypecheck, checks: withTypecheck.checks.map((c) => ({ ...c, scope: "feature" as const })) };
+    expect(codeTaskCheckProblems(plan, featureOnly)).toEqual([]);
   });
 
   test("files are tests or code by path", () => {
