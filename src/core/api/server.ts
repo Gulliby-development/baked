@@ -829,7 +829,9 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         200,
         usageSummary(service.store, {
           days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
-          groupBy: query.groupBy ?? "model",
+          groupBy: query.groupBy ?? ["model"],
+          ...(query.model !== undefined ? { model: query.model } : {}),
+          ...(query.stage !== undefined ? { stage: query.stage } : {}),
         }),
         origin,
       );

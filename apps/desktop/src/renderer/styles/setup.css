@@ -1,0 +1,373 @@
+/* Project setup (working set, gates, instructions) and Settings → All projects. */
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.setup-section,
+.setup-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.setup-h2 {
+  margin: 8px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  scroll-margin-top: 16px;
+}
+
+.setup-h {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.setup-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.setup-push {
+  margin-left: auto;
+}
+
+.setup-full {
+  flex-basis: 100%;
+}
+
+.table td.setup-cell {
+  white-space: normal;
+  min-width: 140px;
+}
+
+.setup-wrap,
+.table td.setup-wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.setup-note {
+  font-size: 12px;
+}
+
+.setup-warn {
+  color: var(--warn);
+}
+
+.setup-ok {
+  color: var(--ok);
+}
+
+.setup-plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-needs {
+  border-color: var(--warn);
+}
+
+.card.setup-flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.setup-scroll {
+  overflow-x: auto;
+}
+
+.setup-flush .table tr:last-child td {
+  border-bottom: none;
+}
+
+.setup-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card.setup-list:not(.setup-flush) {
+  padding: 0;
+}
+
+.setup-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.setup-list > li:last-child,
+.setup-list > li:last-child > .setup-gate {
+  border-bottom: none;
+}
+
+/* A selectable row of a list: gates, instruction files. */
+.setup-gate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.setup-gate:hover {
+  background: var(--bg-hover);
+}
+
+.setup-gate[aria-pressed="true"] {
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+
+.setup-mark {
+  width: 14px;
+  text-align: center;
+  color: var(--text-4);
+}
+
+.setup-mark.ok {
+  color: var(--ok);
+}
+
+.setup-mark.err {
+  color: var(--err);
+}
+
+.setup-mark.warn {
+  color: var(--warn);
+}
+
+.setup-gate-id {
+  color: var(--text);
+}
+
+.setup-tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--bg-hover);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.setup-tag.warn {
+  color: var(--warn);
+}
+
+.setup-tag.err {
+  color: var(--err);
+}
+
+.setup-callout {
+  border-color: var(--line-strong);
+}
+
+/* List on the left, editor on the right; stacked when narrow. */
+.setup-split {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.setup-split > :first-child {
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.setup-side {
+  flex: 1 1 340px;
+  min-width: 0;
+}
+
+.setup-side.setup-wide {
+  flex-basis: 480px;
+}
+
+.setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.setup-fl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.setup-fl > label,
+.setup-fl > span {
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+.setup-fl input,
+.setup-fl select,
+.setup-add input {
+  width: 100%;
+}
+
+.setup-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.setup-pair > .setup-fl {
+  flex: 1 1 140px;
+}
+
+.setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.setup-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.setup-add input {
+  flex: 1;
+  min-width: 0;
+}
+
+.setup input[type="password"],
+.setup input[type="text"] {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.setup input[type="password"] {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  font: inherit;
+}
+
+.setup input:disabled {
+  opacity: 0.7;
+}
+
+.setup-meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.setup-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.setup-budget {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setup-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.setup-dl dt {
+  color: var(--text-4);
+}
+
+.setup-dl dd {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.setup-text {
+  width: 100%;
+  min-height: 360px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-code);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.setup-link {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+a.setup-link:hover {
+  color: var(--text);
+}
+
+.setup-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.setup-toc-link {
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.setup-toc-link:hover {
+  color: var(--accent-soft);
+}
+
+.setup-wrap-line {
+  row-gap: 10px;
+}

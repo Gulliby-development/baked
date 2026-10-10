@@ -1,3 +1,4 @@
+import { findPricing } from "../llm/pricing.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
 
@@ -10,7 +11,15 @@ export interface AttemptUsageRow {
   usedTokens: number | null;
   steps: number | null;
   peakInputTokens: number | null;
+  /** Input tokens of every step, cache reads included; null without per-step usage. */
+  inputTokens: number | null;
+  outputTokens: number | null;
   cacheReadTokens: number | null;
+  /**
+   * Estimated USD cost from the price table: uncached input, cache reads and output (cache writes
+   * are not recorded). 0 for host attempts; null without per-step usage or a known price.
+   */
+  costUsd: number | null;
   compactedBytes: number | null;
   stopReason: AttemptUsageRecord["stopReason"] | null;
   finalizedBy: AttemptUsageRecord["finalizedBy"];
@@ -71,7 +80,10 @@ export function runUsage(
         peakInputTokens: usage
           ? Math.max(0, ...usage.steps.map((step) => step.inputTokens ?? 0))
           : null,
+        inputTokens: sum((step) => step.inputTokens),
+        outputTokens: sum((step) => step.outputTokens),
         cacheReadTokens: sum((step) => step.cacheReadTokens),
+        costUsd: attemptCost(attempt.model_id, usage),
         compactedBytes: sum((step) => step.compactedBytes),
         stopReason: usage?.stopReason ?? null,
         finalizedBy: usage?.finalizedBy ?? null,
@@ -130,65 +142,106 @@ export function runUsage(
   };
 }
 
-export interface UsageSummary {
+export const USAGE_DIMENSIONS = ["model", "stage", "day"] as const;
+export type UsageDimension = (typeof USAGE_DIMENSIONS)[number];
+
+interface UsageTotals {
+  attempts: number;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** Estimated cost of the priced attempts. */
+  costUsd: number;
+  /** Tokens of attempts without per-step usage or a known price, which `costUsd` leaves out. */
+  unpricedTokens: number;
+}
+
+export interface UsageSummary extends UsageTotals {
   days: number;
   since: number;
-  groupBy: "model" | "stage" | "day";
+  /** One or two dimensions; with two, each group is one combination. */
+  groupBy: UsageDimension[];
+  filters: { model?: string; stage?: string };
   runs: number;
-  attempts: number;
+  /** The same as `tokens`. */
   totalTokens: number;
-  cacheReadTokens: number;
-  /** Most tokens first; days in date order. Host attempts are grouped as `(host)`. */
-  groups: Array<{
-    key: string;
-    runs: number;
-    attempts: number;
-    tokens: number;
-    cacheReadTokens: number;
-  }>;
+  /** Most tokens first, or in date order when grouped by day first. Host attempts are `(host)`. */
+  groups: Array<
+    UsageTotals & {
+      /** The group's values joined with ` / `, in `groupBy` order. */
+      key: string;
+      keys: Partial<Record<UsageDimension, string>>;
+      runs: number;
+    }
+  >;
+}
+
+const emptyTotals = (): UsageTotals => ({
+  attempts: 0,
+  tokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  costUsd: 0,
+  unpricedTokens: 0,
+});
+
+function addAttempt(totals: UsageTotals, attempt: AttemptUsageRow): void {
+  totals.attempts++;
+  totals.tokens += attempt.usedTokens ?? 0;
+  totals.inputTokens += attempt.inputTokens ?? 0;
+  totals.outputTokens += attempt.outputTokens ?? 0;
+  totals.cacheReadTokens += attempt.cacheReadTokens ?? 0;
+  if (attempt.costUsd === null) totals.unpricedTokens += attempt.usedTokens ?? 0;
+  else totals.costUsd += attempt.costUsd;
 }
 
 /**
- * Usage of every attempt that started in the last `days` days, across runs, grouped by model,
- * stage, or UTC day of the attempt's start.
+ * Usage of every attempt that started in the last `days` days, across runs, optionally filtered
+ * by model (`(host)` for host attempts) and stage, grouped by one or two of model, stage and the
+ * UTC day of the attempt's start.
  */
 export function usageSummary(
   store: WorkflowStore,
-  options: { days: number; groupBy: UsageSummary["groupBy"]; now?: number },
+  options: {
+    days: number;
+    groupBy: UsageDimension[];
+    model?: string;
+    stage?: string;
+    now?: number;
+  },
 ): UsageSummary {
   const since = (options.now ?? Date.now()) - options.days * 86_400_000;
   const groups = new Map<string, UsageSummary["groups"][number] & { runIds: Set<string> }>();
-  const runIds = store.runIdsWithAttemptsSince(since);
-  let attempts = 0;
-  let totalTokens = 0;
-  let cacheReadTokens = 0;
-  for (const runId of runIds) {
+  const runIds = new Set<string>();
+  const totals = emptyTotals();
+  for (const runId of store.runIdsWithAttemptsSince(since)) {
     const started = new Map(store.attempts(runId).map((a) => [a.id, a.started_at]));
-    for (const attempt of runUsage(store, runId).attempts) {
+    for (const attempt of runUsage(store, runId, options.stage, undefined, options.model)
+      .attempts) {
       const at = started.get(attempt.attemptId) ?? 0;
       if (at < since) continue;
-      const key =
-        options.groupBy === "model"
-          ? (attempt.model ?? "(host)")
-          : options.groupBy === "stage"
-            ? attempt.stage
-            : new Date(at).toISOString().slice(0, 10);
+      const values: Record<UsageDimension, string> = {
+        model: attempt.model ?? "(host)",
+        stage: attempt.stage,
+        day: new Date(at).toISOString().slice(0, 10),
+      };
+      const keys: Partial<Record<UsageDimension, string>> = {};
+      for (const dimension of options.groupBy) keys[dimension] = values[dimension];
+      const key = options.groupBy.map((dimension) => values[dimension]).join(" / ");
       const entry = groups.get(key) ?? {
+        ...emptyTotals(),
         key,
+        keys,
         runs: 0,
-        attempts: 0,
-        tokens: 0,
-        cacheReadTokens: 0,
         runIds: new Set<string>(),
       };
       entry.runIds.add(runId);
-      entry.attempts++;
-      entry.tokens += attempt.usedTokens ?? 0;
-      entry.cacheReadTokens += attempt.cacheReadTokens ?? 0;
+      addAttempt(entry, attempt);
       groups.set(key, entry);
-      attempts++;
-      totalTokens += attempt.usedTokens ?? 0;
-      cacheReadTokens += attempt.cacheReadTokens ?? 0;
+      runIds.add(runId);
+      addAttempt(totals, attempt);
     }
   }
   const list = [...groups.values()].map(({ runIds: ids, ...entry }) => ({
@@ -196,7 +249,7 @@ export function usageSummary(
     runs: ids.size,
   }));
   list.sort((a, b) =>
-    options.groupBy === "day"
+    options.groupBy[0] === "day"
       ? a.key.localeCompare(b.key)
       : b.tokens - a.tokens || a.key.localeCompare(b.key),
   );
@@ -204,10 +257,31 @@ export function usageSummary(
     days: options.days,
     since,
     groupBy: options.groupBy,
-    runs: runIds.length,
-    attempts,
-    totalTokens,
-    cacheReadTokens,
+    filters: {
+      ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.stage !== undefined ? { stage: options.stage } : {}),
+    },
+    runs: runIds.size,
+    ...totals,
+    totalTokens: totals.tokens,
     groups: list,
   };
+}
+
+/** The estimated cost of one attempt; see `AttemptUsageRow.costUsd`. */
+function attemptCost(model: string | null, usage: AttemptUsageRecord | undefined): number | null {
+  if (model === null) return 0;
+  if (!usage) return null;
+  const pricing = findPricing(model)?.pricing;
+  if (!pricing) return null;
+  let cost = 0;
+  for (const step of usage.steps) {
+    const input = step.inputTokens ?? 0;
+    const cacheRead = Math.min(step.cacheReadTokens ?? 0, input);
+    cost +=
+      (input - cacheRead) * pricing.input +
+      cacheRead * pricing.cacheRead +
+      (step.outputTokens ?? 0) * pricing.output;
+  }
+  return cost / 1e6;
 }
