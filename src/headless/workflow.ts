@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
@@ -8,6 +8,7 @@ import type { BudgetLimits } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
+import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
@@ -24,6 +25,7 @@ import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
+import { formatDoctor, formatEstimate, preRunRequest } from "./workflow-pre-run.js";
 
 export function workflowExit(
   snapshot: RunSnapshot,
@@ -365,6 +367,14 @@ export async function executeWorkflowCommand(
       ).result;
     case "route":
       return explainRoute(service.workspace, service.config, routeRequest(args, service.config));
+    case "doctor":
+      return runDoctor(service.workspace, service.config, preRunRequest(args, service.workspace));
+    case "estimate":
+      return preRunEstimate(
+        service.workspace,
+        service.config,
+        preRunRequest(args, service.workspace),
+      );
   }
 }
 export async function runWorkflowCli(argv: string[]): Promise<number> {
@@ -389,7 +399,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   try {
     if (argv[0] === "initiative") {
       const cwd = getCwd();
-      const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+      const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
       return await runInitiativeCli(
         argv.slice(1),
         (readonly) => new NativeWorkflowService(cwd, config, undefined, readonly),
@@ -398,7 +408,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
-    const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
     const readonly = ["status", "list", "artifacts", "export", "export-progress", "usage"].includes(
       args.command,
     );
@@ -412,6 +422,21 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       const explained = explainRoute(cwd, config, routeRequest(args, config));
       process.stdout.write(
         args.flags.json ? `${JSON.stringify(explained, null, 2)}\n` : formatRoute(explained),
+      );
+      return 0;
+    }
+    // Pre-run checks read the workspace without opening the run database for writing.
+    if (args.command === "doctor") {
+      const report = await runDoctor(cwd, config, preRunRequest(args, cwd));
+      process.stdout.write(
+        args.flags.json ? `${JSON.stringify(report, null, 2)}\n` : formatDoctor(report),
+      );
+      return report.ready ? 0 : 1;
+    }
+    if (args.command === "estimate") {
+      const estimate = await preRunEstimate(cwd, config, preRunRequest(args, cwd));
+      process.stdout.write(
+        args.flags.json ? `${JSON.stringify(estimate, null, 2)}\n` : formatEstimate(estimate),
       );
       return 0;
     }

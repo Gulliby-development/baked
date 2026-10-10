@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { GatesApi } from "../components/workflow/GatesView.js";
 import type { InitiativesApi } from "../components/workflow/InitiativesView.js";
 import type { WorkflowEditorApi } from "../components/workflow/WorkflowEditor.js";
-import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
@@ -52,7 +52,7 @@ export function workflowSession(workspace: string): WorkflowClient {
   if (!service) {
     service = new WorkflowClient(
       workspace,
-      mergeConfigs(loadConfig(), loadProjectConfig(workspace)),
+      mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace)),
       [...(exitedOwners.get(workspace) ?? [])],
     );
     sessions.set(workspace, service);
@@ -153,7 +153,7 @@ export function useWorkflowRuns(workspace: string, visible: boolean) {
       inFlight = true;
       try {
         // Read configuration locally so a disabled project never starts a worker or creates a DB.
-        const config = mergeConfigs(loadConfig(), loadProjectConfig(workspace));
+        const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
         const on = config.workflows?.enabled === true;
         setEnabled(on);
         if (!on && !existingWorkflowSession(workspace)) return;
@@ -186,7 +186,8 @@ export function useWorkflowRuns(workspace: string, visible: boolean) {
  * demand goes through the workflow worker so the interface never waits for the command.
  */
 export function workflowGatesApi(workspace: string): GatesApi {
-  const inherited = () => mergeConfigs(loadConfig(), loadProjectConfig(workspace)).workflows;
+  const inherited = () =>
+    mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace)).workflows;
   return {
     load: () => readGates(workspace, inherited()),
     save: async (checks) => {
@@ -205,7 +206,7 @@ export function workflowGatesApi(workspace: string): GatesApi {
  * disabled project starts no worker.
  */
 export function workflowEditorApi(workspace: string): WorkflowEditorApi {
-  const config = () => mergeConfigs(loadConfig(), loadProjectConfig(workspace));
+  const config = () => mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
   return {
     open: (id) =>
       readEditorSource(
@@ -232,7 +233,7 @@ export function workflowEditorApi(workspace: string): WorkflowEditorApi {
 export function workflowInitiativesApi(workspace: string): InitiativesApi {
   return {
     load: async () => {
-      const config = mergeConfigs(loadConfig(), loadProjectConfig(workspace));
+      const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
       if (config.workflows?.enabled !== true && !existingWorkflowSession(workspace)) return null;
       return workflowSession(workspace).initiatives();
     },

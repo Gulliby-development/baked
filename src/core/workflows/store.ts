@@ -13,6 +13,7 @@ import { migration003 } from "./migrations/003.js";
 import { migration004 } from "./migrations/004.js";
 import { migration005 } from "./migrations/005.js";
 import { migration006 } from "./migrations/006.js";
+import { migration007 } from "./migrations/007.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -53,6 +54,8 @@ export interface RunRow {
   token_usage: number;
   active_ms: number;
   estimated_cost_microusd: number | null;
+  /** Absent in a database a read-only reader left on migration 006. */
+  project_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -168,6 +171,7 @@ const MIGRATIONS = [
   { version: 4, sql: migration004 },
   { version: 5, sql: migration005 },
   { version: 6, sql: migration006 },
+  { version: 7, sql: migration007 },
 ] as const;
 
 export class WorkflowStore {
@@ -358,7 +362,21 @@ export class WorkflowStore {
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
         .map((r) => r.id),
+      ...(row.project_id ? { projectId: row.project_id } : {}),
     };
+  }
+  /** The latest runs of a project, newest first; none in a database older than migration 007. */
+  projectRuns(projectId: string, limit = 20): RunSnapshot[] {
+    const columns = this.db
+      .query<{ name: string }, []>("SELECT name FROM pragma_table_info('runs')")
+      .all();
+    if (!columns.some((c) => c.name === "project_id")) return [];
+    return this.db
+      .query<{ id: string }, [string, number]>(
+        "SELECT id FROM runs WHERE project_id=? ORDER BY created_at DESC,id DESC LIMIT ?",
+      )
+      .all(projectId, limit)
+      .map((r) => this.snapshot(r.id));
   }
   list(
     limit: number,
@@ -455,6 +473,7 @@ export class WorkflowStore {
     policy: RunPolicy,
     state: RuntimeState,
     parent: string | null = null,
+    projectId: string | null = null,
   ): void {
     SafeId.parse(id);
     SafeId.parse(featureId);
@@ -464,11 +483,12 @@ export class WorkflowStore {
       Date.now(),
     ]);
     this.db.run(
-      "INSERT INTO runs (id,feature_id,parent_run_id,status,definition_json,profiles_json,policy_json,input_manifest_json,input_hash,created_at,updated_at) VALUES (?,?,?,'created',?,?,?,?,?,?,?)",
+      "INSERT INTO runs (id,feature_id,parent_run_id,project_id,status,definition_json,profiles_json,policy_json,input_manifest_json,input_hash,created_at,updated_at) VALUES (?,?,?,?,'created',?,?,?,?,?,?,?)",
       [
         id,
         featureId,
         parent,
+        projectId,
         canonical(definition),
         canonical(profiles),
         canonical(policy),
@@ -481,7 +501,11 @@ export class WorkflowStore {
     this.saveState(id, state);
     this.emit(id, {
       type: "run.created",
-      payload: { featureId, inputHash: hashJson(state.manifest) },
+      payload: {
+        featureId,
+        inputHash: hashJson(state.manifest),
+        ...(projectId ? { projectId } : {}),
+      },
     });
   }
   saveState(id: string, state: RuntimeState): void {

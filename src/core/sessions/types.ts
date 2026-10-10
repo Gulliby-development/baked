@@ -36,4 +36,6 @@ export interface SessionMeta {
   activeTabId: string;
   forgeMode: ForgeMode;
   tabs: TabMeta[];
+  /** The project (`baked/project.json`) of `cwd` when the session was saved. */
+  projectId?: string;
 }
