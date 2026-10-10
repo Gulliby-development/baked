@@ -117,6 +117,17 @@ export const RecoverBody = Command.extend({
   resolution: z.enum(["record-applied", "record-not-applied", "retry", "cancel"]),
   evidence: z.string().min(1).max(200_000),
 }).strict();
+export const ReviseBody = Command.extend({
+  candidate: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+/** A revision of a run's accepted inputs; with no field it adopts the current instructions. */
+export const CandidateBody = z.strictObject({
+  commandId: SafeId,
+  spec: z.record(z.string(), z.unknown()).optional(),
+  plan: z.string().min(1).max(1_000_000).optional(),
+  tasks: z.record(z.string(), z.unknown()).optional(),
+  policy: z.record(z.string(), z.unknown()).optional(),
+});
 export const UndoBody = Command.extend({ path: z.string().min(1).optional() }).strict();
 export const DeliverBody = z.strictObject({
   remote: z.string().min(1).optional(),
