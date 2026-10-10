@@ -222,7 +222,14 @@ test("an orphaned descendant of an exited command still blocks recovery and leas
   await child.exited;
   try {
     expect(grandchild).toBeGreaterThan(0);
-    expect(commandMayBeRunning(service.store, run.runId)).toBe(true);
+    // The grandchild reports its pid as soon as it is spawned; until its exec completes its
+    // environment, and so its scope marker, can read as empty.
+    let seen = false;
+    for (let i = 0; i < 50 && !seen; i++) {
+      seen = commandMayBeRunning(service.store, run.runId);
+      if (!seen) await Bun.sleep(20);
+    }
+    expect(seen).toBe(true);
   } finally {
     try { process.kill(grandchild, "SIGKILL"); } catch {}
   }
