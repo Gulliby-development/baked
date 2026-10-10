@@ -29,6 +29,16 @@ export function deriveTool<T extends object>(tool: T, overrides?: Partial<T>): T
   return derived;
 }
 /**
+ * The edit tools point TS/JS edits at ast_edit. Where ast_edit is not offered (workflow
+ * implementers), an agent that follows the hint refuses to edit the file (run 6bb3052f).
+ */
+export function withoutAstEditHint(description: string): string {
+  return description
+    .replace("non-TS/JS file", "file")
+    .replace(" (JSON, YAML, Markdown, config, raw text)", "")
+    .replace(/For [^—]*use ast_edit[^—]*— [^.]*\. /, "");
+}
+/**
  * Fast, stable content hash for change-detection / CAS preconditions.
  * Bun's native non-crypto hasher; hex string is the agent-facing `hash:` token.
  * Same input → same output across mac/linux/windows (no platform dependence).

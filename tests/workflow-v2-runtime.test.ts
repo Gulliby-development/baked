@@ -43,6 +43,8 @@ interface Behavior {
   broken?: number;
   /** Convergence rounds that report a new gap each before passing. */
   gaps?: number;
+  /** Implementations that stop at their token cap after a partial edit. */
+  capped?: number;
   /** Severity of the convergence gaps; high by default. */
   gapSeverity?: "high" | "medium";
   reviewVerdict?: "pass" | "changes_requested";
@@ -50,6 +52,9 @@ interface Behavior {
 
 class V2Executor implements AgentExecutor {
   calls: string[] = [];
+  /** Set by setup; a capped attempt records its usage the way the agent executor does. */
+  service?: NativeWorkflowService;
+  maxTokens: number[] = [];
   implementations = 0;
   convergences = 0;
   constructor(private root: string, private behavior: Behavior = {}) {}
@@ -83,6 +88,13 @@ class V2Executor implements AgentExecutor {
         break;
       case "implementation":
         this.implementations++;
+        this.maxTokens.push(request.attemptTokens ?? 0);
+        if (this.implementations <= (this.behavior.capped ?? 0)) {
+          writeFileSync(join(this.root, "value.txt"), "rea");
+          this.service?.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: request.task?.id ?? null, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
+          output = { schemaVersion: 1, taskId: request.task?.id, outcome: "blocked", summary: "Ran out of tokens", evidenceIds: [], unresolved: ["The value is only partly written"] };
+          break;
+        }
         writeFileSync(join(this.root, "value.txt"), this.implementations <= (this.behavior.broken ?? 0) ? "broken" : `ready${"\n".repeat(this.implementations)}`);
         output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
         break;
@@ -121,6 +133,7 @@ function setup(behavior: Behavior = {}, runPolicy: RunPolicy = policy) {
   const executor = new V2Executor(root, behavior);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: runPolicy } };
   const service = new NativeWorkflowService(root, config, executor);
+  executor.service = service;
   cleanups.push(() => service.close());
   const define = (definition: WorkflowV2) => {
     mkdirSync(join(root, "baked", "workflows"), { recursive: true });
@@ -272,6 +285,24 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+  }, 60000);
+
+  test("an attempt that stops at its cap after editing continues once with larger caps", async () => {
+    const { start, complete, service, executor } = setup({ capped: 1 });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.maxTokens[1]).toBe(1500);
+    expect(service.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
+  }, 60000);
+
+  test("a second capped attempt of the same task blocks the run", async () => {
+    const { start, complete, service } = setup({ capped: 2 });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(final.status).toBe("blocked");
+    expect(lastError(service, run.runId)).toContain("did not complete its implementation");
   }, 60000);
 
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {

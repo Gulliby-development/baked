@@ -14,6 +14,7 @@ import {
   type SizingSample,
   samplesFrom,
   sizePlan,
+  withTestDependencies,
 } from "../src/core/workflows/sizing.js";
 
 const cleanups: (() => void)[] = [];
@@ -188,5 +189,20 @@ describe("plan-time sizing", () => {
       { runId: "done", taskId: "T001", kind: "code", files: 1, tokens: 28_000 },
       { runId: "done", taskId: "T002", kind: "test", files: 1, tokens: 471_000 },
     ]);
+  });
+});
+
+describe("test task dependencies", () => {
+  const deps = (g: TaskGraph) => Object.fromEntries(g.tasks.map((t) => [t.id, t.dependsOn]));
+  test("a test task waits for the code tasks that share its criteria", () => {
+    const other = { ...task("T003", ["src/other.ts"]), criterionIds: ["AC-002"] };
+    const g = graph(task("T001", ["src/site.ts"]), task("T002", ["tests/build.test.ts"]), other);
+    expect(deps(withTestDependencies(g))).toEqual({ T001: [], T002: ["T001"], T003: [] });
+  });
+  test("existing order is kept and no cycle is added", () => {
+    const after = { ...task("T002", ["tests/a.test.ts"]), dependsOn: ["T001"] };
+    const before = { ...task("T003", ["src/b.ts"]), dependsOn: ["T002"] };
+    const g = graph(task("T001", ["src/a.ts"]), after, before);
+    expect(deps(withTestDependencies(g))).toEqual({ T001: [], T002: ["T001"], T003: ["T002"] });
   });
 });

@@ -23,6 +23,9 @@ import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import {
+  ASSUME_NOTE,
+  assumeProblems,
+  clarificationResumeIndex,
   deferredBlockingProblems,
   demoteDeferred,
   planOnlyFindings,
@@ -81,7 +84,9 @@ import {
   sizePlan,
   sizingHistory,
   splitNote,
+  withTestDependencies,
 } from "./sizing.js";
+import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
@@ -134,7 +139,11 @@ const repairSeverities = (run: { repair_rounds: number; convergence_rounds: numb
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph }): TaskGraph {
-  return { ...plan.taskGraph, specHash: hashJson(spec), planHash: hashBytes(plan.markdown) };
+  return withTestDependencies({
+    ...plan.taskGraph,
+    specHash: hashJson(spec),
+    planHash: hashBytes(plan.markdown),
+  });
 }
 
 /** A request for a person that the current step raised and has not made durable yet. */
@@ -317,12 +326,13 @@ export class WorkflowScheduler {
                   0,
                   (output) => {
                     const parsed = ResearchSchema.safeParse(output);
-                    return parsed.success
-                      ? deferredBlockingProblems(
-                          parsed.data.unknowns,
-                          (_, index) => parsed.data.unknowns[index]?.question ?? "",
-                        )
-                      : [];
+                    if (!parsed.success) return [];
+                    const question = (_: unknown, index: number) =>
+                      parsed.data.unknowns[index]?.question ?? "";
+                    return [
+                      ...deferredBlockingProblems(parsed.data.unknowns, question),
+                      ...assumeProblems(policy, parsed.data.unknowns, question),
+                    ];
                   },
                   { maxSteps: budget.maxSteps, maxTokens: budget.maxTokens },
                 ),
@@ -348,6 +358,18 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   { featureId: run.feature_id },
                   signal,
+                  undefined,
+                  0,
+                  (output) => {
+                    const parsed = SpecSchema.safeParse(output);
+                    if (!parsed.success) return [];
+                    const questions = parsed.data.openQuestions;
+                    return assumeProblems(
+                      policy,
+                      questions,
+                      (_, index) => questions[index]?.question ?? "",
+                    );
+                  },
                 ),
               );
               if (state.spec.featureId !== run.feature_id)
@@ -419,7 +441,8 @@ export class WorkflowScheduler {
                 ),
               );
               state.plan = plan.markdown;
-              state.graph = planGraph(spec, plan);
+              const graph = planGraph(spec, plan);
+              state.graph = graph;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
@@ -430,7 +453,7 @@ export class WorkflowScheduler {
               this.store.transaction(() => {
                 this.store.artifact(runId, "plan", "plan.md", state.plan ?? "");
                 this.store.artifact(runId, "tasks", "tasks.json", canonical(state.graph));
-                this.store.syncTasks(runId, plan.taskGraph);
+                this.store.syncTasks(runId, graph);
               });
               await this.publish(runId, stepId, state, policy, signal);
               break;
@@ -518,6 +541,25 @@ export class WorkflowScheduler {
                   advance = false;
                   break;
                 }
+              }
+              if (
+                !v2 &&
+                !state.analysisPassed &&
+                policy.clarification === "assume" &&
+                state.analysisReplans < 2
+              ) {
+                const stages = WorkflowSchema.parse(
+                  JSON.parse(this.store.run(runId).definition_json),
+                ).stages;
+                const blockingFindings = findings.filter((f) => f.blocking);
+                // Findings a default settles go back to the stage they refer to before a person.
+                state.analysisReplans = 2;
+                state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                state.stageIndex = clarificationResumeIndex(stages, state.stageIndex, {
+                  findings: blockingFindings,
+                });
+                advance = false;
+                break;
               }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
@@ -996,6 +1038,28 @@ export class WorkflowScheduler {
         this.leases.release();
       }
     }
+  }
+  /**
+   * Once per task, an attempt that stopped at its step or token cap after editing files gets
+   * another with both caps raised by half, instead of blocking the run for a manual resume. Test
+   * tasks stopped at the cap with the work nearly done (runs 7df4e666, b0d7484c, 8e117dfa).
+   */
+  private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
+    if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
+    const attempt = this.store
+      .attempts(runId)
+      .filter((a) => a.step_id === stepId)
+      .at(-1);
+    const usage = attempt
+      ? this.store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`)
+      : undefined;
+    if (!usage) return false;
+    const record = JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord;
+    if (record.finalizedBy === null) return false;
+    state.taskContinuations[task.id] = 1;
+    state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
+    state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
+    return true;
   }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
@@ -1682,6 +1746,15 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.unresolved.length > 0 ||
         (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
       ) {
+        if (changed.length > 0 && this.continueAtCap(runId, state, child, task)) {
+          // The task is ready again and the next pass of the task loop continues it.
+          this.store.transaction(() => {
+            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+          });
+          return;
+        }
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw new WorkflowFault(
           "OUTPUT_INVALID",
@@ -1835,10 +1908,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
               this.store.finishStep(runId, entry.child, "interrupted");
             });
           } else if (outcome.kind === "rejected") {
-            failure ??= outcome.error;
+            const again =
+              outcome.edited === true && this.continueAtCap(runId, state, entry.child, entry.task);
+            if (!again) failure ??= outcome.error;
             this.store.transaction(() => {
-              this.store.taskStatus(runId, entry.task.id, "blocked");
+              this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
               this.store.finishStep(runId, entry.child, "failed");
+              if (again) this.store.saveState(runId, state);
             });
           }
           await this.releaseTaskWorktree(runId, entry);
@@ -2011,6 +2087,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "rejected",
           entry,
+          edited: changed.length > 0,
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
@@ -3339,7 +3416,7 @@ type WorkerOutcome =
       checks: WorkerCheck[];
     }
   /** The task's result is refused: a change outside its writes, or no complete implementation. */
-  | { kind: "rejected"; entry: BatchEntry; error: unknown }
+  | { kind: "rejected"; entry: BatchEntry; error: unknown; edited?: boolean }
   /** The task's worker or worktree lease was lost; only this task stops. */
   | { kind: "interrupted"; entry: BatchEntry; reason: string }
   /** The whole run stops: it was aborted or its budget is used up. */

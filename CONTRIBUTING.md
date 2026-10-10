@@ -34,6 +34,8 @@ bun test
 bun run build
 ```
 
+`bun run typecheck` runs `bun check` (Bun 1.4.3 or newer, the version CI uses). On an older Bun, `bun run typecheck:tsc` runs the same check with `tsc` from `package.json`.
+
 Run the full test suite for shared behavior changes. Build after changes to startup, dependencies, or bundling. The generated application starts with `bun run dist/index.js`.
 
 Checkouts use LF line endings on every platform (`.gitattributes`). A Windows checkout made before that file existed still has CRLF files, which `bun run lint` reports as format errors. Convert it once with `git rm --cached -r -q . && git reset --hard` after committing or stashing your work.

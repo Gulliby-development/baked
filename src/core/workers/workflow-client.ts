@@ -4,6 +4,7 @@ import type { PastRun } from "../workflows/estimate.js";
 import type { GateRunResult } from "../workflows/gates.js";
 import type { InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction, InitiativeListView } from "../workflows/initiatives/view-model.js";
+import type { RollbackReport } from "../workflows/rollback.js";
 import type { RunFileDiff } from "../workflows/run-diff.js";
 import type { Decision, RunSnapshot } from "../workflows/schemas.js";
 import type { Check } from "../workflows/types.js";
@@ -12,6 +13,11 @@ import { workerPath } from "./path.js";
 import { WorkerClient } from "./rpc.js";
 
 export type WorkflowAction = "resume" | "pause" | "cancel" | "fork" | "extend" | Decision;
+/** The run after an undo, and the `workspace-rollback` report it wrote; null when nothing was undone. */
+export interface UndoResult {
+  snapshot: RunSnapshot;
+  report: RollbackReport | null;
+}
 
 export class WorkflowClient extends WorkerClient {
   private views = new Map<string, WorkflowView>();
@@ -173,6 +179,10 @@ export class WorkflowClient extends WorkerClient {
     } finally {
       if (drives) this.driving.delete(runId);
     }
+  }
+  /** Undoes the run's uncommitted task edits; the run must not be running. */
+  undo(runId: string): Promise<UndoResult> {
+    return this.callWithTimeout<UndoResult>(null, "undo", runId);
   }
   async shutdown(): Promise<void> {
     if (this.closed) return;
