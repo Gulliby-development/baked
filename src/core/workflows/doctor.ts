@@ -65,12 +65,18 @@ export interface DoctorDeps {
   git(args: string[], cwd: string): Promise<{ code: number; stdout: string }>;
 }
 
+const PROBE_TIMEOUT_MS = 5000;
+
 export const defaultDoctorDeps: DoctorDeps = {
   async providerReady(providerId) {
     const provider = getProvider(providerId);
     if (!provider) return { known: false, ready: false };
+    // A local provider's availability probe may hang; an unanswered probe counts as unavailable.
     const ready = provider.checkAvailability
-      ? await provider.checkAvailability()
+      ? await Promise.race([
+          provider.checkAvailability().catch(() => false),
+          new Promise<boolean>((done) => setTimeout(() => done(false), PROBE_TIMEOUT_MS).unref?.()),
+        ])
       : provider.envVar === "" || Boolean(getProviderApiKey(provider.envVar));
     return { known: true, ready, ...(provider.envVar ? { envVar: provider.envVar } : {}) };
   },
