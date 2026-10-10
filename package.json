@@ -75,7 +75,7 @@
     "@ai-sdk/openai": "^3.0.124",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "0.6.0",
-    "@opentui/react": "0.4.2",
+    "@opentui/react": "0.5.14",
     "ai": "^6.0.300",
     "ignore": "^7.0.12",
     "isbinaryfile": "6.0.0",
@@ -94,11 +94,11 @@
     "zustand": "5.0.15"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-arm64": "0.4.2",
-    "@opentui/core-darwin-x64": "0.4.2",
-    "@opentui/core-linux-arm64": "0.4.2",
-    "@opentui/core-linux-x64": "0.4.2",
-    "@opentui/core-win32-arm64": "0.4.2",
-    "@opentui/core-win32-x64": "0.4.2"
+    "@opentui/core-darwin-arm64": "0.5.14",
+    "@opentui/core-darwin-x64": "0.5.14",
+    "@opentui/core-linux-arm64": "0.5.14",
+    "@opentui/core-linux-x64": "0.5.14",
+    "@opentui/core-win32-arm64": "0.5.14",
+    "@opentui/core-win32-x64": "0.5.14"
   }
 }

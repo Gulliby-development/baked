@@ -200,15 +200,15 @@ cp node_modules/tree-sitter-wasms/out/*.wasm "${DEPS_DIR}/wasm/"
 cp -r node_modules/@opentui/core/assets "${DEPS_DIR}/opentui-assets"
 # Pre-bundle the worker with all deps (web-tree-sitter) into a single file
 bun build node_modules/@opentui/core/parser.worker.js --outdir "${DEPS_DIR}/opentui-assets" --target=bun --asset-naming="[name].[ext]"
-# Patch the worker to resolve tree-sitter.wasm from ~/.baked/wasm/ (absolute path)
-# instead of ./tree-sitter.wasm (relative to CWD which is the user's project)
-# Patch bare require() calls to use __require (bun's ESM-compatible CJS shim)
-# Use sed -i.bak + rm for GNU/BSD portability
-sed -i.bak 's|module2.exports = "./tree-sitter.wasm"|module2.exports = (__require("os").homedir() + "/.baked/wasm/tree-sitter.wasm")|' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-sed -i.bak 's|var fs = require("fs")|var fs = __require("fs")|g' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-sed -i.bak 's|var nodePath = require("path")|var nodePath = __require("path")|g' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-sed -i.bak 's|require("url")|__require("url")|g' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-rm -f "${DEPS_DIR}/opentui-assets/parser.worker.js.bak"
+# No post-build patching: since OpenTUI 0.5 the main thread resolves
+# tree-sitter.wasm and passes its path to the worker in the INIT message, and
+# the worker is plain ESM where Bun provides `require`. The 0.4.x patches that
+# rewrote require() to __require() now crash the worker (no __require shim).
+if grep -q '__require(' "${DEPS_DIR}/opentui-assets/parser.worker.js" \
+  && ! grep -q '__require =' "${DEPS_DIR}/opentui-assets/parser.worker.js"; then
+  echo "    ✘ parser.worker.js calls __require() without defining it"
+  exit 1
+fi
 
 
 # ── 3. Create install script ──
