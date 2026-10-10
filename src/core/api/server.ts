@@ -216,6 +216,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   const shutdown = new AbortController();
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
+  /** The latest background drive of each run. */
+  const runDrives = new Map<string, Promise<unknown>>();
   /** Close functions of open event streams. */
   const streams = new Set<() => void>();
   const encoder = new TextEncoder();
@@ -273,21 +275,38 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     const driving = new Promise<string>((resolve) => {
       onDrive = resolve;
     });
+    let driven: string | undefined;
     const execution = executeWorkflowCommand(service, args, shutdown.signal, (runId) => {
       started = true;
+      driven = runId;
+      // A second drive of a run this server is driving fails at once; keep waiting on the first.
+      if (!runDrives.has(runId)) runDrives.set(runId, tracked);
       onDrive(runId);
     });
-    const tracked = execution
+    const tracked: Promise<unknown> = execution
       .catch((error: unknown) => {
         if (!started) return;
         const { code, message } = errorOf(error);
         log(JSON.stringify({ event: "drive-error", code, message: redactSecrets(message) }));
       })
-      .finally(() => drives.delete(tracked));
+      .finally(() => {
+        drives.delete(tracked);
+        if (driven !== undefined && runDrives.get(driven) === tracked) runDrives.delete(driven);
+      });
     drives.add(tracked);
     const runId = await Promise.race([driving, execution.then(() => undefined)]);
     if (!runId) throw new ApiError(500, "INTERNAL", "The run did not start");
     return service.get(runId);
+  }
+
+  /**
+   * The runtime commits a run's waiting or stopped status before its drive has saved the last
+   * state, so a decision must wait for a drive that has already stopped to return. A drive that
+   * is still running is left alone: pause and cancel stop it themselves.
+   */
+  async function settle(runId: string): Promise<void> {
+    const drive = runDrives.get(runId);
+    if (drive && service.store.run(runId).status !== "running") await drive;
   }
 
   function eventStream(req: Request, runId: string, after: number, origin: string | null) {
@@ -408,6 +427,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if ((MUTATIONS as readonly string[]).includes(action)) {
       only("POST");
       const args = mutationArgs(action as Mutation, runId, await readJson(req));
+      if (action !== "pause" && action !== "cancel") await settle(runId);
       return json(200, action === "resume" ? await launch(args) : await execute(args), origin);
     }
     if (action === "usage" || action === "artifacts") {

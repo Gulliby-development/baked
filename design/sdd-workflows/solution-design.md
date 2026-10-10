@@ -383,6 +383,8 @@ baked workflow export RUN_ID --out .baked/workflow-runs/RUN_ID/exports/report.js
 baked workflow export-progress RUN_ID
 ```
 
+`baked serve` exposes these commands as a localhost HTTP API with a Server-Sent Events stream of the durable events; it builds the same parsed arguments and calls the same command function, so its behavior is the CLI's ([runtime guide](runtime-guide.md#local-api-baked-serve)).
+
 The mutation CLI generates a UUID commandId and accepts `--command-id` for idempotent automation. approve/answer do not start drive by themselves; the next resume command continues execution. In the TUI, drive may continue in the same tab after an accepted decision. `--json` and `--events` are mutually exclusive; stdout contains only machine data and diagnostics go to stderr. Run accepts a prompt or --prompt-file, exactly one source; secrets must not be passed through the example command line.
 
 Exit codes for workflow run/resume: 0 completed, 1 failed/validation error, 2 active deadline exhausted, 3 waiting, 4 blocked, 5 revision/lease/input conflict, 130 paused by Ctrl+C or cancelled during drive. Successful status/list/approve/pause/cancel management commands return 0 and the snapshot regardless of its terminal status. This does not change the exit codes of the legacy --headless. An unexpected EOF while waiting for a decision keeps waiting and code 3.
