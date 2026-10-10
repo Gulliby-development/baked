@@ -557,6 +557,8 @@ Exit codes of `start`, `approve`, `drive` and `resume`: 0 completed or still pro
 
 `baked serve` exposes the workflow commands to a desktop app or another local client over HTTP. It is a thin front end over the same code path as `baked workflow` (`src/core/api/server.ts` builds the CLI's `WorkflowArgs` and calls `executeWorkflowCommand`), so validation, the `workflows.enabled` opt-in, approval digests, expected revisions and command idempotency are identical. The chat endpoints (`/v1/sessions`, `/v1/models`) run conversations with the terminal UI's agent and store them with its sessions; they are specified in `design/desktop-api.md`.
 
+The desktop app's contract over this API, including the chat sessions and project setup endpoints, is [`design/desktop-api.md`](../desktop-api.md).
+
 ```sh
 baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR]
 ```
