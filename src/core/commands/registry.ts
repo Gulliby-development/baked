@@ -1,8 +1,10 @@
+import { getCwd } from "../cwd.js";
 import { matchCheckpointPrefix, register as registerCheckpoint } from "./checkpoint.js";
 import { matchClaimsPrefix, register as registerClaims } from "./claims.js";
 import { register as registerCodex } from "./codex.js";
 import { matchConfigPrefix, register as registerConfig } from "./config.js";
 import { matchContextPrefix, register as registerContext } from "./context.js";
+import { expandCustomCommandInput, getCachedCustomCommands, listCustomCommands } from "./custom.js";
 import { register as registerDebug } from "./debug.js";
 import { matchGitPrefix, register as registerGit } from "./git.js";
 import { register as registerHooks } from "./hooks.js";
@@ -27,6 +29,7 @@ registerCodex(commandMap);
 registerHooks(commandMap);
 registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
+commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
   matchContextPrefix,
@@ -50,6 +53,46 @@ function resolveHandler(cmd: string): CommandHandler | null {
   return null;
 }
 
+/**
+ * True when `name` (a lowercased first word such as `/fix-ci`) belongs to a
+ * built-in command, its first word or an alias. Built-ins win over custom commands.
+ */
+export function isBuiltinCommandName(name: string): boolean {
+  const needle = name.toLowerCase();
+  if (resolveHandler(needle)) return true;
+  for (const def of COMMAND_DEFS) {
+    if (def.cmd.split(" ")[0]?.toLowerCase() === needle) return true;
+    if (def.aliases?.some((a) => a.toLowerCase() === needle)) return true;
+  }
+  return false;
+}
+
+function handleListCustomCommands(_input: string, ctx: CommandContext): void {
+  const commands = listCustomCommands(ctx.cwd);
+  if (commands.length === 0) {
+    sysMsg(
+      ctx,
+      "No custom commands. Add Markdown files to .baked/commands/ (project) or ~/.baked/commands/ (global); fix-ci.md becomes /fix-ci.",
+    );
+    return;
+  }
+  const lines = commands.map((c) => {
+    const hint = c.argumentHint ? ` ${c.argumentHint}` : "";
+    const shadowed = isBuiltinCommandName(c.name) ? " (shadowed by a built-in command)" : "";
+    return `${c.name}${hint} [${c.scope}] ${c.description}${shadowed}\n  ${c.path}`;
+  });
+  sysMsg(ctx, `Custom commands:\n${lines.join("\n")}`);
+}
+
+/** Expand `input` when it invokes a runnable custom command from `.baked/commands`. */
+export function expandCustomSlashInput(input: string, cwd: string): string | null {
+  return expandCustomCommandInput(input, cwd, isBuiltinCommandName)?.prompt ?? null;
+}
+
+export function isCustomSlashInput(input: string, cwd: string): boolean {
+  return expandCustomSlashInput(input, cwd) !== null;
+}
+
 export async function handleCommand(input: string, ctx: CommandContext): Promise<void> {
   const trimmed = input.trim();
   const cmd = trimmed.split(" ")[0]?.toLowerCase() ?? "";
@@ -71,6 +114,12 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       const msg = err instanceof Error ? err.message : String(err);
       sysMsg(ctx, `Command error: ${msg}`);
     }
+    return;
+  }
+
+  if (isCustomSlashInput(trimmed, ctx.cwd)) {
+    // useChat.handleSubmit expands the template, so queued and direct runs share one path.
+    await ctx.chat.handleSubmit(trimmed);
     return;
   }
 
@@ -107,6 +156,7 @@ export const CATEGORIES = [
   "Editor",
   "Tabs",
   "System",
+  "Custom",
 ] as const;
 
 const COMMAND_DEFS: CommandDef[] = [
@@ -634,6 +684,13 @@ const COMMAND_DEFS: CommandDef[] = [
     suggested: true,
   },
   {
+    cmd: "/commands",
+    ic: "list",
+    desc: "List custom commands from .baked/commands",
+    category: "System",
+    tags: ["custom", "slash", "prompts", "templates"],
+  },
+  {
     cmd: "/hooks",
     ic: "cog",
     desc: "View active hooks (PreToolUse, PostToolUse, etc.)",
@@ -739,7 +796,19 @@ const COMMAND_DEFS: CommandDef[] = [
 ];
 
 export function getCommandDefs(): CommandDef[] {
-  return COMMAND_DEFS;
+  return [...COMMAND_DEFS, ...getCustomCommandDefs()];
+}
+
+function getCustomCommandDefs(): CommandDef[] {
+  return getCachedCustomCommands(getCwd())
+    .filter((c) => !isBuiltinCommandName(c.name))
+    .map((c) => ({
+      cmd: c.name,
+      ic: "pencil",
+      desc: c.argumentHint ? `${c.description} ${c.argumentHint}` : c.description,
+      category: "Custom",
+      tags: ["custom", c.scope],
+    }));
 }
 
 export type { CommandContext, CommandHandler };

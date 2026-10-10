@@ -128,6 +128,7 @@ icon: "list"
 
 | Command | Description |
 |---------|-------------|
+| `/commands` | List custom commands from `.baked/commands` |
 | `/errors` | Browse error log |
 | `/help` | Command palette (Ctrl+K) |
 | `/hooks` | View active hooks (PreToolUse, PostToolUse, etc.) |
@@ -138,3 +139,7 @@ icon: "list"
 | `/storage` | View & manage storage usage |
 | `/timeouts` | Set tool call timeout (shell, project, agents) |
 | `/wizard` | Re-run the first-run setup wizard |
+
+## Custom commands
+
+Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become slash commands: `fix-ci.md` runs as `/fix-ci`, and `frontend/component.md` as `/frontend:component`. The file body is sent as the prompt. `$ARGUMENTS` is replaced with the text after the command name and `$1` to `$9` with positional arguments; without a placeholder, arguments are appended. Optional frontmatter sets `description` and `argument-hint` for the palette. Project commands replace global ones with the same name, and built-in commands win over both. The headless CLI expands them too. See [design/custom-commands.md](https://github.com/Gulliby-development/baked/blob/main/design/custom-commands.md).

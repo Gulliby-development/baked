@@ -791,6 +791,21 @@ export class WorkflowStore {
       payload: { taskId: id, from: row.status, to: status, generation },
     });
   }
+  /** The stage of a step's top-level ancestor: the definition stage a child step belongs to. */
+  rootStage(runId: string, stepId: string): string | null {
+    let id: string | null = stepId;
+    for (let depth = 0; id && depth < 16; depth++) {
+      const row: { stage_id: string; parent_step_id: string | null } | null = this.db
+        .query<{ stage_id: string; parent_step_id: string | null }, [string, string]>(
+          "SELECT stage_id,parent_step_id FROM steps WHERE run_id=? AND id=?",
+        )
+        .get(runId, id);
+      if (!row) return null;
+      if (!row.parent_step_id) return row.stage_id;
+      id = row.parent_step_id;
+    }
+    return null;
+  }
   beginStep(runId: string, stageId: string, parent: string | null = null): string {
     const generation =
       (this.db

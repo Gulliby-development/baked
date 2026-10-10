@@ -1,3 +1,4 @@
+import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus } from "../core/workflows/schemas.js";
 
@@ -33,6 +34,7 @@ const commands = [
   "gates",
   "deliver",
   "discard-worktree",
+  "route",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 export interface WorkflowArgs {
@@ -67,6 +69,7 @@ const flags = new Set([
   "limit",
   "cursor",
   "status",
+  "stage",
   "after",
   "effect",
   "resolution",
@@ -89,6 +92,7 @@ const flags = new Set([
   "worktree",
   "writers",
   "exclude-user-changes",
+  "route",
   "resume",
 ]);
 const booleanFlags = new Set([
@@ -120,6 +124,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "confirm-auto-approval",
     "worktree",
     "writers",
+    "route",
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
@@ -133,7 +138,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   fork: ["expected-revision", "command-id"],
   revise: ["candidate", "expected-revision", "command-id", "resume", "events", "after"],
   candidate: ["spec", "plan", "tasks", "policy", "workflow", "confirm-auto-approval", "command-id"],
-  profiles: [],
+  profiles: ["model"],
   artifacts: ["file"],
   import: ["source", "path", "feature", "command-id"],
   export: ["destination"],
@@ -141,8 +146,17 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
-  usage: [],
-  extend: ["tokens", "calls", "time-ms", "expected-revision", "command-id"],
+  usage: ["stage"],
+  extend: [
+    "tokens",
+    "calls",
+    "time-ms",
+    "expected-revision",
+    "command-id",
+    "resume",
+    "events",
+    "after",
+  ],
   continue: ["request", "expected-revision", "command-id"],
   undo: ["path", "expected-revision", "command-id"],
   definitions: [],
@@ -151,6 +165,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gates: ["all"],
   deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
   "discard-worktree": ["expected-revision", "command-id"],
+  route: ["workflow", "model", "route", "json"],
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -193,7 +208,14 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires an integer`);
     }
   }
-  if (!result.flags.help && result.command !== "run" && result.command !== "gates") {
+  if (typeof result.flags.route === "string") parseRouteOverrides(result.flags.route);
+  if (!result.flags.help && result.command === "route") {
+    if (result.positional.length > 1 || (result.positional.length && result.flags.workflow))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "Specify at most one workflow ID, positional or --workflow",
+      );
+  } else if (!result.flags.help && result.command !== "run" && result.command !== "gates") {
     const count =
       ["list", "profiles", "import", "gc", "definitions"].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
@@ -206,7 +228,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
       );
   }
   if (
-    result.command === "revise" &&
+    (result.command === "revise" || result.command === "extend") &&
     !result.flags.resume &&
     ("events" in result.flags || "after" in result.flags)
   )
@@ -253,7 +275,8 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]]
+  --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
 status RUN_ID [--json]
@@ -270,7 +293,8 @@ reject RUN_ID --request ID --reason TEXT --expected-revision N
   written to the project and confirmed; reject discards it. Neither changes the run's state.
 pause|cancel|fork RUN_ID --expected-revision N
 continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
-extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the limits of a run blocked on its budget; resume continues it)
+extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
+  (raise the limits of a run blocked on its budget; resume continues it, or --resume in the same command)
 candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE] [--workflow FILE [--confirm-auto-approval HASH]]
   --workflow stages a revised schema 2 definition for a started v2 run; it is refused with the
   reasons when the current or a completed stage is gone or changed, or a contract the run needs
@@ -285,10 +309,12 @@ validate (ID | --file FILE)   check a definition against the gate library; exit 
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
 gates                     list the gate library with each gate's source and what it shadows
 gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
-profiles                  artifacts RUN_ID [--file ARTIFACT_ID]
+profiles [--model ID]     artifacts RUN_ID [--file ARTIFACT_ID]
+route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
+  show the model each stage and profile would use and where each choice comes from
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
-usage RUN_ID              per-stage and per-attempt token and step usage
+usage RUN_ID [--stage NAME]   per-stage and per-attempt token and step usage
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
