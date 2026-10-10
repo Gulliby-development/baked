@@ -63,6 +63,16 @@ describe("correction scope", () => {
     expect(correctionAuthorized(correction, root)).toBe(true);
   });
 
+  // Run 563e4f6c: a test task caught a bug in the code task's file. Its failing check is repaired
+  // from the test task, and that correction may write the code file.
+  test("a correction of the test task may write the code of tasks with the same criteria", () => {
+    expect(correctionWrites(tests, root, {}).map((w) => w.path)).toEqual([
+      "tests/usage.test.ts",
+      "src/parse.ts",
+      "src/usage.ts",
+    ]);
+  });
+
   test("files of unrelated tasks stay out of scope", () => {
     const widened = task("T004", ["src/parse.ts", "src/other.ts"], ["AC-001"], { origin: "repair" });
     expect(correctionAuthorized(widened, root)).toBe(false);
