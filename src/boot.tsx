@@ -28,6 +28,11 @@ if (cliArgs[0] === "workflow") {
   process.exit(await runWorkflowCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "self-check") {
+  const { runSelfCheck } = await import("./headless/self-check.js");
+  process.exit(await runSelfCheck());
+}
+
 const hasCli =
   cliArgs.includes("--headless") ||
   cliArgs.includes("--list-providers") ||

@@ -1394,8 +1394,10 @@ export class TreeSitterBackend implements IntelligenceBackend {
     }
     // Walk up from the bundle/source dir to find node_modules.
     // Covers npm global installs (cwd ≠ package root) and dev mode alike.
+    // Walk to the filesystem root: an installed package's dist/workers sits
+    // six levels below the node_modules that holds the hoisted grammars.
     let dir = import.meta.dir;
-    for (let i = 0; i < 5; i++) {
+    for (;;) {
       for (const sub of ["node_modules/web-tree-sitter", "node_modules/tree-sitter-wasms/out"]) {
         const p = join(dir, sub, basename);
         if (existsSync(p)) return p;
