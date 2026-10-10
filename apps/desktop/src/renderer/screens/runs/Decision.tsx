@@ -1,6 +1,12 @@
 import { useState } from "react";
 import type { RunSnapshot } from "../../../shared/api.js";
-import { errorText, GROUP_B_CAPABILITY, type RunRequest, runs } from "../../client/runs.js";
+import {
+  approveRequest,
+  errorText,
+  GROUP_B_CAPABILITY,
+  type RunRequest,
+  runs,
+} from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
 import { href } from "../../router.js";
 import type { RunData } from "./load.js";
@@ -59,7 +65,7 @@ export function Questions({
       onSubmit={(e) => {
         e.preventDefault();
         void decide(() =>
-          workflow.answer(projectKey, run, request.request_id, answersOf(questions, answers)),
+          workflow.answer(projectKey, run, request.id, answersOf(questions, answers)),
         );
       }}
     >
@@ -151,16 +157,7 @@ function Approval({
           type="button"
           className="btn-primary"
           disabled={busy || (scope.length > 0 && !exclude)}
-          onClick={() =>
-            void decide(() =>
-              workflow.approve(
-                projectKey,
-                { ...run, approvalDigest: run.approvalDigest ?? request.digest ?? null },
-                request.request_id,
-                exclude,
-              ),
-            )
-          }
+          onClick={() => void decide(() => approveRequest(projectKey, run, request, exclude))}
         >
           {tasks ? "Approve and implement" : "Approve"}
         </button>
@@ -169,7 +166,7 @@ function Approval({
           className="btn"
           disabled={busy || !note.trim()}
           onClick={() =>
-            void decide(() => workflow.reject(projectKey, run, request.request_id, note.trim()))
+            void decide(() => workflow.reject(projectKey, run, request.id, note.trim()))
           }
         >
           Reject with note
@@ -230,7 +227,7 @@ export function DecisionCard({
                 className="btn-primary"
                 disabled={busy}
                 onClick={() =>
-                  void decide(() => runs.continue(projectKey, data.status, request.request_id))
+                  void decide(() => runs.continue(projectKey, data.status, request.id))
                 }
               >
                 Continue
@@ -258,7 +255,7 @@ export function DecisionCard({
           <p>
             Resolve it in the terminal:{" "}
             <code className="mono">
-              baked workflow recover {data.status.runId} --request {request.request_id}
+              baked workflow recover {data.status.runId} --request {request.id}
             </code>
           </p>
         </div>

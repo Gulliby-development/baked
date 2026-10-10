@@ -362,7 +362,7 @@ function RunBody({
             <>
               {pending.map((r) => (
                 <DecisionCard
-                  key={r.request_id}
+                  key={r.id}
                   projectKey={projectKey}
                   data={data}
                   request={r}

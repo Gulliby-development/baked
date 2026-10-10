@@ -184,7 +184,7 @@ describe("helpers", () => {
 });
 
 const request = (id: string, kind: string, body: unknown, status = "pending"): RunRequest => ({
-  request_id: id,
+  id: id,
   kind,
   status,
   digest: "d",
@@ -205,7 +205,7 @@ describe("requests", () => {
       request("c", "clarification", { taskId: "T004", questions: [] }),
       request("d", "approval", {}, "accepted"),
     ];
-    expect(blockingRequests(list).map((r) => r.request_id)).toEqual(["a", "c"]);
+    expect(blockingRequests(list).map((r) => r.id)).toEqual(["a", "c"]);
     expect(clarificationTask(list[2] as RunRequest)).toBe("T004");
   });
 });

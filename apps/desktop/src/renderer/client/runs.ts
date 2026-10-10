@@ -1,6 +1,6 @@
 import type { RunList, RunSnapshot, RunState } from "../../shared/api.js";
 import { ApiError, call } from "./api.js";
-import type { RunStatus } from "./workflow.js";
+import { type RunStatus, workflow } from "./workflow.js";
 
 /**
  * Read access to workflow runs for the run screens: the run list, a run's artifacts, usage and
@@ -13,10 +13,10 @@ export interface RunRow extends RunSnapshot {
 }
 
 export interface RunRequest {
-  request_id: string;
+  id: string;
   kind: string;
   status: string;
-  digest?: string;
+  digest: string;
   body_json: string | null;
 }
 
@@ -164,6 +164,19 @@ export const runs = {
       requestId,
     }),
 };
+
+/**
+ * Approves a pending request with the request's own digest; the run's `approvalDigest` is null
+ * until something was approved. The only caller of `workflow.approve` in the run screens, so the
+ * shared signature `approve(key, run, {id, digest}, excludeUserChanges?)` lands in one place.
+ */
+export const approveRequest = (
+  key: string,
+  run: Pick<RunSnapshot, "runId" | "revision">,
+  request: { id: string; digest: string },
+  excludeUserChanges = false,
+) =>
+  workflow.approve(key, { ...run, approvalDigest: request.digest }, request.id, excludeUserChanges);
 
 /** The group of `design/desktop-api.md` that adds evidence, continue and recover. */
 export const GROUP_B_CAPABILITY = "setup";

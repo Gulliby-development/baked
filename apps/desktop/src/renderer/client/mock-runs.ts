@@ -243,7 +243,7 @@ function usageTotals(): MockRun {
     ],
     requests: [
       {
-        request_id: "req-usage-approval",
+        id: "req-usage-approval",
         kind: "approval",
         status: "pending",
         digest: DIGEST,
@@ -361,7 +361,7 @@ function headlessJson(): MockRun {
     ],
     requests: [
       {
-        request_id: "req-hj-exit",
+        id: "req-hj-exit",
         kind: "clarification",
         status: "pending",
         digest: DIGEST,
@@ -661,7 +661,7 @@ function settingsDarkMode(): MockRun {
     ],
     requests: [
       {
-        request_id: "req-sdm-test",
+        id: "req-sdm-test",
         kind: "approval",
         status: "pending",
         digest: DIGEST,
@@ -780,7 +780,7 @@ function themeContrast(): MockRun {
     ],
     requests: [
       {
-        request_id: "req-tc-manual",
+        id: "req-tc-manual",
         kind: "manual_evidence",
         status: "pending",
         digest: DIGEST,
@@ -856,11 +856,11 @@ function snapshot(run: MockRun) {
     revision: run.revision,
     eventSeq: run.events.at(-1)?.seq ?? 0,
     stageId: run.stageId,
-    approvalDigest: run.status === "waiting" && run.reason === "approval" ? DIGEST : null,
+    approvalDigest: null,
     tokenUsage: run.tokenUsage,
     activeMs: run.activeMs,
     estimatedCostUsd: run.tokenUsage / 330_000,
-    pendingRequestIds: run.requests.filter((r) => r.status === "pending").map((r) => r.request_id),
+    pendingRequestIds: run.requests.filter((r) => r.status === "pending").map((r) => r.id),
   };
 }
 
@@ -882,10 +882,10 @@ function setStatus(run: MockRun, to: RunState, reason = "none"): void {
 }
 
 function decide(run: MockRun, body: { requestId?: string }, status: string): void {
-  const request = run.requests.find((r) => r.request_id === body.requestId);
+  const request = run.requests.find((r) => r.id === body.requestId);
   if (!request) return;
   request.status = status;
-  append(run, "request.decided", { requestId: request.request_id, status, actor: "user" });
+  append(run, "request.decided", { requestId: request.id, status, actor: "user" });
   run.revision++;
   if (request.body_json?.includes('"acceptance"')) return;
   if (run.status === "waiting") setStatus(run, "paused", "none");

@@ -107,7 +107,7 @@ export function gateView(input: {
   const manual = new Map<string, string>();
   for (const request of pending.filter((r) => r.kind === "manual_evidence")) {
     const body = parse<{ criterionId?: string }>(request.body_json);
-    if (body?.criterionId) manual.set(body.criterionId, request.request_id);
+    if (body?.criterionId) manual.set(body.criterionId, request.id);
   }
   const explanations = new Map<string, string>();
   for (const review of reviews)
@@ -163,7 +163,7 @@ export function gateView(input: {
       request.body_json,
     );
     return body?.acceptance
-      ? [{ ...body.acceptance, requestId: request.request_id, digest: request.digest ?? "" }]
+      ? [{ ...body.acceptance, requestId: request.id, digest: request.digest }]
       : [];
   });
 

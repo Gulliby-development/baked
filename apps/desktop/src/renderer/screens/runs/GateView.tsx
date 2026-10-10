@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GROUP_B_CAPABILITY, runs } from "../../client/runs.js";
+import { approveRequest, GROUP_B_CAPABILITY, runs } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
 import {
   type AcceptanceDecision,
@@ -128,11 +128,10 @@ function TestDecision({
           onClick={() =>
             void decide(
               () =>
-                workflow.approve(
-                  projectKey,
-                  { ...run, approvalDigest: decision.digest },
-                  decision.requestId,
-                ),
+                approveRequest(projectKey, run, {
+                  id: decision.requestId,
+                  digest: decision.digest,
+                }),
               false,
             )
           }
