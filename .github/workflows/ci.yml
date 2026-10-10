@@ -18,7 +18,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.3"
 
       - run: bun install --frozen-lockfile
 
@@ -27,6 +27,15 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
+
+      # TODO: drop one of the two typecheck steps once they have agreed for a while.
+      # `tsc` (typescript 7.0.2 from package.json) stays authoritative: the SDD
+      # workflow gate and contributors run `bun run typecheck`. `bun check` is a
+      # port of typescript-go pinned to the Bun version, so a Bun upgrade can change
+      # the checker, and its release notes list rare mismatches with `tsc`. If this
+      # step stays in line with `tsc`, point `typecheck` at `bun check` and remove it.
+      - name: Typecheck (bun check, shadow)
+        run: bun run typecheck:bun
 
       - name: Test
         run: bun test
