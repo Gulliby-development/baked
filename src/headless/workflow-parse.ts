@@ -35,6 +35,8 @@ const commands = [
   "deliver",
   "discard-worktree",
   "route",
+  "doctor",
+  "estimate",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 export interface WorkflowArgs {
@@ -109,6 +111,17 @@ const booleanFlags = new Set([
   "exclude-user-changes",
   "resume",
 ]);
+/** `doctor` and `estimate` take the `run` options that change whether and how a run starts. */
+const preRunFlags = [
+  "workflow",
+  "model",
+  "route",
+  "policy",
+  "worktree",
+  "writers",
+  "confirm-auto-approval",
+  "json",
+];
 const commandFlags: Record<WorkflowCommand, string[]> = {
   run: [
     "feature",
@@ -166,6 +179,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
+  doctor: preRunFlags,
+  estimate: preRunFlags,
 };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
@@ -209,7 +224,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
     }
   }
   if (typeof result.flags.route === "string") parseRouteOverrides(result.flags.route);
-  if (!result.flags.help && result.command === "route") {
+  if (!result.flags.help && ["route", "doctor", "estimate"].includes(result.command)) {
     if (result.positional.length > 1 || (result.positional.length && result.flags.workflow))
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -260,6 +275,8 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         "INVALID_DEFINITION",
         "Specify exactly one of --prompt or --prompt-file",
       );
+  }
+  if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
       if (!/^\d+$/.test(writers) || Number(writers) < 1 || Number(writers) > MAX_CONCURRENT_WRITERS)
@@ -312,6 +329,11 @@ gates confirm ID... | --all  confirm project gates (baked/gates) before a run ma
 profiles [--model ID]     artifacts RUN_ID [--file ARTIFACT_ID]
 route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
   show the model each stage and profile would use and where each choice comes from
+doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--confirm-auto-approval HASH] [--json]
+  check before a run: start refusals, provider keys of every routed model, check commands, Git,
+  a busy workspace and the budget; exit 1 when something must be fixed (also: baked doctor)
+estimate [WORKFLOW] (same options as doctor)
+  tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
 usage RUN_ID [--stage NAME]   per-stage and per-attempt token and step usage
