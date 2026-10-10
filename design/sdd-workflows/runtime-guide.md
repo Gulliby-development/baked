@@ -170,6 +170,8 @@ An agent attempt records its spend as each model step finishes, not only when it
 
 Before each step the attempt reserves its spend so far plus an estimate of that step: the input tokens the provider reported for the previous step, adjusted by the bytes added or compacted since at three bytes per token, and an output of twice the largest output seen (at least 4096 tokens, at most the profile's output cap). Before any usage is known it counts the messages at three bytes per token plus 8192 tokens for the system prompt and tool definitions. A step is refused (`Next model step exceeds remaining token budget`, with the used, held and requested tokens) only when the spend plus this estimate would pass the run limit. The attempt cap is `maxAttemptTokens` or, when less, what the run limit still leaves after the other attempts, so an attempt that starts near the limit switches to its submit-only final step in time instead of failing mid-loop.
 
+A step that stops at the profile's output cap (finish reason `length`) usually carried a tool call that was cut off and did not run. The next step gets a notice once, naming the cap and asking for smaller edits; like the finalize notice, it stays at the position where it first appeared so the replayed prefix is unchanged. The implementer's output cap is 16384 tokens.
+
 ### Raising a budget limit
 
 A run blocked with `budget_exhausted` shows B (raise limits) next to fork and cancel. The confirmation names the new values: every limit that is used up, or at least 80% used, doubles, and the tokens double when nothing else explains the stop; calls stop at 1000, active time at 24 hours and tokens at 50 million. Y applies it and the run continues from the stage that stopped.
