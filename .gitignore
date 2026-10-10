@@ -29,6 +29,7 @@ roadmap_local
 app
 dist-app
 components.json
+!apps/desktop/components.json
 
 
 skills-lock.json 
