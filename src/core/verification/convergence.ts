@@ -127,8 +127,20 @@ export function appendCorrections(
   const run = store.run(runId);
   const round = (kind === "repair" ? run.repair_rounds : run.convergence_rounds) + 1;
   const limit = kind === "repair" ? policy.maxRepairRounds : policy.maxConvergenceRounds;
-  if (round > limit || run.corrective_tasks + findings.length > policy.maxCorrectiveTasks)
-    throw new WorkflowFault("BUDGET_EXHAUSTED", "Reflection round/task limit reached");
+  // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
+  if (round > limit || run.corrective_tasks + findings.length > policy.maxCorrectiveTasks) {
+    const setting =
+      round > limit
+        ? kind === "repair"
+          ? "maxRepairRounds"
+          : "maxConvergenceRounds"
+        : "maxCorrectiveTasks";
+    throw new WorkflowFault(
+      "RECOVERY_REQUIRED",
+      `no_progress: ${findings.length} finding(s) remain after the policy's ${setting} (${round > limit ? limit : policy.maxCorrectiveTasks}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
+      { reason: "no_progress", limit: setting },
+    );
+  }
   const findingSet = hashJson(
     findings
       .map((f) => ({ claim: f.claim, criteria: f.criterionIds }))

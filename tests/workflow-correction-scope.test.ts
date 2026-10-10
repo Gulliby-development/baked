@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  appendCorrections,
   correctionAuthorized,
   correctionBase,
   correctionChecks,
   correctionWrites,
 } from "../src/core/verification/convergence.js";
-import type { Spec, TaskGraph } from "../src/core/workflows/schemas.js";
-import type { Task } from "../src/core/workflows/types.js";
+import { WorkflowFault } from "../src/core/workflows/errors.js";
+import type { Review, RunPolicy, Spec, TaskGraph } from "../src/core/workflows/schemas.js";
+import type { WorkflowStore } from "../src/core/workflows/store.js";
+import type { RuntimeState, Task } from "../src/core/workflows/types.js";
 
 const task = (id: string, paths: string[], criteria: string[], extra: Partial<Task> = {}): Task => ({
   id,
@@ -110,5 +113,31 @@ describe("correction scope", () => {
     const spec = { criteria: [] } as unknown as Spec;
     const finding = { file: "src/unknown.ts", criterionIds: ["AC-001"], requirementIds: [] };
     expect(correctionBase(finding, root, spec)).toBeUndefined();
+  });
+
+  // Run de6cf1ab stopped as budget_exhausted after its second repair round, and `extend --tokens`
+  // could not help: the limit was maxRepairRounds.
+  test("the reflection round limit blocks as no progress and names the setting", () => {
+    const store = {
+      run: () => ({ repair_rounds: 2, convergence_rounds: 0, corrective_tasks: 2 }),
+    } as unknown as WorkflowStore;
+    const state = {
+      graph: root,
+      rootGraph: root,
+      spec: {},
+      approvalRoot: "a".repeat(64),
+    } as unknown as RuntimeState;
+    const policy = { maxRepairRounds: 2, maxConvergenceRounds: 2, maxCorrectiveTasks: 20 } as RunPolicy;
+    const findings = [{ id: "F1" }] as Review["findings"];
+    let fault: unknown;
+    try {
+      appendCorrections(store, "run", state, policy, findings, "repair");
+    } catch (error) {
+      fault = error;
+    }
+    expect(fault).toBeInstanceOf(WorkflowFault);
+    expect((fault as WorkflowFault).code).toBe("RECOVERY_REQUIRED");
+    expect((fault as WorkflowFault).details.reason).toBe("no_progress");
+    expect((fault as WorkflowFault).message).toContain("maxRepairRounds (2)");
   });
 });
