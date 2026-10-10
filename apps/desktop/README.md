@@ -2,7 +2,8 @@
 
 The desktop app for BAKED: an Electron shell whose main process runs one `baked serve` per open
 project and proxies the renderer's API calls to it. The design is in
-[`design/desktop-app.md`](../../design/desktop-app.md).
+[`docs/desktop/app.md`](../../docs/desktop/app.md); the API contract is
+[`docs/desktop/api.md`](../../docs/desktop/api.md).
 
 ## Development
 

@@ -1,7 +1,7 @@
 /**
- * The split of an initiative into features (design/sdd-workflows/next-implementation.md, section
- * 3): the typed `initiativePlan` contract the decomposer returns, its structural validation and
- * the edits a person may apply before approving the split. Nothing here runs a model or a command.
+ * The split of an initiative into features (docs/workflows/runtime.md, "Initiatives"): the typed
+ * `initiativePlan` contract the decomposer returns, its structural validation and the edits a
+ * person may apply before approving the split. Nothing here runs a model or a command.
  */
 import { z } from "zod";
 import { hashJson } from "../../specs/hash.js";

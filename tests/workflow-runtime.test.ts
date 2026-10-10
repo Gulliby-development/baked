@@ -604,7 +604,7 @@ describe("durable SDD runtime", () => {
     for (const status of RunStatus.options) expect(workflowHelp).toContain(status);
   });
   test("runtime guide documents the list status filter and its values (AC-006)", () => {
-    const guide = readFileSync(join(import.meta.dir, "../design/sdd-workflows/runtime-guide.md"), "utf8");
+    const guide = readFileSync(join(import.meta.dir, "../docs/workflows/runtime.md"), "utf8");
     const paragraph = guide.split(/\n\s*\n/).find((part) => part.includes("baked workflow list") && part.includes("--status STATUS"));
     expect(paragraph).toBeDefined();
     for (const status of RunStatus.options) expect(paragraph).toContain(`\`${status}\``);
