@@ -116,18 +116,32 @@ if [[ "$PLATFORM" == "darwin" ]]; then
 else
   NATIVE_PLATFORM="linux"
 fi
-# OpenTUI native lib
+# OpenTUI native lib. `bun install` only installs the host's platform
+# package, so a cross-bundle (darwin on Linux, arm64 on x64) fetches the
+# matching tarball from the npm registry into the download cache.
 if [[ "$PLATFORM" == "darwin" ]]; then
-  OPENTUI_LIB="node_modules/@opentui/core-${NATIVE_PLATFORM}-${BASE_ARCH}/libopentui.dylib"
+  OPENTUI_LIB_NAME="libopentui.dylib"
 else
-  OPENTUI_LIB="node_modules/@opentui/core-${NATIVE_PLATFORM}-${BASE_ARCH}/libopentui.so"
+  OPENTUI_LIB_NAME="libopentui.so"
+fi
+OPENTUI_PKG="core-${NATIVE_PLATFORM}-${BASE_ARCH}"
+OPENTUI_LIB="node_modules/@opentui/${OPENTUI_PKG}/${OPENTUI_LIB_NAME}"
+if [[ ! -f "$OPENTUI_LIB" ]]; then
+  OPENTUI_VERSION="$(bun -e "console.log(require('./node_modules/@opentui/core/package.json').version)")"
+  OPENTUI_TGZ="${CACHE_DIR}/opentui-${OPENTUI_PKG}-${OPENTUI_VERSION}.tgz"
+  download "https://registry.npmjs.org/@opentui/${OPENTUI_PKG}/-/${OPENTUI_PKG}-${OPENTUI_VERSION}.tgz" \
+    "$OPENTUI_TGZ" "@opentui/${OPENTUI_PKG} ${OPENTUI_VERSION}"
+  OPENTUI_TMP="${CACHE_DIR}/opentui-${OPENTUI_PKG}-${OPENTUI_VERSION}"
+  rm -rf "$OPENTUI_TMP"
+  mkdir -p "$OPENTUI_TMP"
+  tar xzf "$OPENTUI_TGZ" -C "$OPENTUI_TMP" --strip-components=1
+  OPENTUI_LIB="${OPENTUI_TMP}/${OPENTUI_LIB_NAME}"
 fi
 if [[ -f "$OPENTUI_LIB" ]]; then
   cp "$OPENTUI_LIB" "${NATIVE_DIR}/"
   echo "    ✓ $(basename "$OPENTUI_LIB")"
 else
   echo "    ✘ OpenTUI native lib not found: ${OPENTUI_LIB}"
-  echo "      Run: bun install on a ${PLATFORM}-${ARCH} machine first"
   exit 1
 fi
 

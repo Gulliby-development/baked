@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 2,
+  "id": "quick",
+  "version": "1.0.0",
+  "description": "A small task: one agent finds the files and plans, then approval, implementation, checks and one review. Nothing is written to specs/.",
+  "preset": "quick",
+  "inputs": ["request"],
+  "entry": "plan",
+  "publish": false,
+  "stages": [
+    {
+      "id": "plan",
+      "type": "agent",
+      "profileId": "quick-planner",
+      "consumes": [],
+      "produces": "plan",
+      "effects": "none"
+    },
+    {
+      "id": "approve",
+      "type": "approval",
+      "consumes": ["plan"],
+      "produces": "decision",
+      "effects": "none",
+      "decision": "human",
+      "covers": ["implement"]
+    },
+    {
+      "id": "implement",
+      "type": "tasks",
+      "consumes": ["plan", "decision"],
+      "produces": "implementation",
+      "effects": "workspace-write"
+    },
+    {
+      "id": "checks",
+      "type": "check",
+      "consumes": ["implementation"],
+      "produces": "gates",
+      "effects": "none",
+      "gates": [{ "gateId": "typecheck" }, { "gateId": "lint" }, { "gateId": "tests" }]
+    },
+    {
+      "id": "review",
+      "type": "review",
+      "consumes": ["implementation", "gates"],
+      "produces": "review",
+      "effects": "none",
+      "gates": [{ "gateId": "correctness-review" }]
+    }
+  ],
+  "transitions": [
+    { "id": "plan-approve", "from": "plan", "to": "approve", "on": "passed", "carries": "plan", "gates": [] },
+    { "id": "approve-implement", "from": "approve", "to": "implement", "on": "passed", "carries": "decision", "gates": [] },
+    {
+      "id": "implement-checks",
+      "from": "implement",
+      "to": "checks",
+      "on": "passed",
+      "carries": "implementation",
+      "gates": [{ "gateId": "task-tests" }]
+    },
+    { "id": "checks-review", "from": "checks", "to": "review", "on": "passed", "carries": "gates", "gates": [] },
+    {
+      "id": "checks-repair",
+      "from": "checks",
+      "to": "implement",
+      "on": "failed",
+      "carries": "gates",
+      "gates": [],
+      "loop": { "maxIterations": 2 }
+    },
+    { "id": "review-done", "from": "review", "to": "done", "on": "passed", "carries": "review", "gates": [] },
+    {
+      "id": "review-repair",
+      "from": "review",
+      "to": "implement",
+      "on": "changes_requested",
+      "carries": "review",
+      "gates": [],
+      "loop": { "maxIterations": 1 }
+    }
+  ],
+  "limits": { "maxStageVisits": 20 },
+  "autoApproval": null
+}

@@ -50,7 +50,7 @@ export function finalizeReason(input: {
 
 export function finalizeNotice(reason: FinalizeReason): string {
   const limit = reason === "steps" ? "step limit" : "token budget";
-  return `The ${limit} for this task is reached. Do not call any other tool. Call submit_result now with the complete result for the work already done; list anything unfinished as unresolved instead of continuing.`;
+  return `The ${limit} for this task is reached. Do not call any other tool. Call submit_result now with the complete result for the work already done; list anything unfinished as unresolved instead of continuing. The host runs the checks after you, so a check you did not run again is not unresolved.`;
 }
 
 /**

@@ -83,6 +83,8 @@ export interface WorkflowInfo {
   estimate: StartEstimate;
   enabled: boolean;
   defaultWorkflow: string;
+  /** The definition a quick task starts with: `workflows.quickWorkflow`, or the quick preset. */
+  quickWorkflow?: string;
   workflows: string[];
   /** Stages, whether files change and validation problems, by workflow ID. */
   definitions?: Record<
