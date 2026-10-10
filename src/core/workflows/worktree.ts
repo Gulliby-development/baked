@@ -188,9 +188,14 @@ export async function runContentCommit(
     const own = await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
     if (own.code === 0 && existsSync(own.stdout.trim())) copyFileSync(own.stdout.trim(), index);
     else await required(root, ["read-tree", "HEAD"], { env });
-    await required(root, ["add", "-A", "--", ".", ":(exclude).baked", ":(exclude)node_modules"], {
-      env,
-    });
+    // An exclude pathspec that names an ignored path fails the add ("paths are ignored"); the
+    // linked node_modules is a junction on Windows, which .gitignore already covers.
+    const ignored = (await git(root, ["check-ignore", "-q", "node_modules"])).code === 0;
+    await required(
+      root,
+      ["add", "-A", "--", ".", ":(exclude).baked", ...(ignored ? [] : [":(exclude)node_modules"])],
+      { env },
+    );
     const tree = await required(root, ["write-tree"], { env });
     const head = await required(root, ["rev-parse", "HEAD"]);
     if (tree === (await required(root, ["rev-parse", "HEAD^{tree}"]))) return head;
