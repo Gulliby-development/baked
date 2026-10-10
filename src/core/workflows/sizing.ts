@@ -33,6 +33,8 @@ export const DEFAULT_PER_FILE: Record<FileKind, TokenRange> = {
   code: { low: 30_000, high: 100_000 },
   test: { low: 150_000, high: 350_000 },
 };
+/** Steps of a test task attempt when the policy names none; test tasks ran out at 20. */
+export const DEFAULT_TEST_TASK_STEPS = 32;
 /** Without a configured ceiling, a task attempt may grow to this. */
 export const DEFAULT_MAX_SIZED_ATTEMPT = 600_000;
 /** A correction round of review and convergence on top of one pass. */
@@ -153,6 +155,8 @@ export interface TaskSize {
   estimate: TokenRange;
   /** Cap for one attempt of this task. */
   attemptTokens: number;
+  /** Step cap for one attempt; null keeps the profile's and the policy's. */
+  attemptSteps: number | null;
   /** Above one attempt and writes several files: the plan should split it. */
   oversized: boolean;
 }
@@ -199,6 +203,7 @@ export function sizePlan(input: {
   const maxAttemptTokens = input.policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxRunTokens = input.policy.sizing?.maxRunTokens ?? null;
   const floor = input.policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS;
+  const testSteps = input.policy.sizing?.testTaskSteps ?? DEFAULT_TEST_TASK_STEPS;
   const tasks = input.graph.tasks
     .filter((task) => writtenFiles(task).length > 0)
     .map((task): TaskSize => {
@@ -210,6 +215,7 @@ export function sizePlan(input: {
         files,
         estimate,
         attemptTokens: Math.min(maxAttemptTokens, Math.max(floor, Math.round(estimate.high))),
+        attemptSteps: taskKind(task) === "test" ? testSteps : null,
         oversized: files > 1 && estimate.high > maxAttemptTokens,
       };
     });
@@ -265,8 +271,41 @@ export function plannerSizing(
   const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / rates.code.perFile.high));
   return {
     maxCodeFilesPerTask,
-    note: `Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards.`,
   };
+}
+
+const SOURCE = /\.[cm]?[jt]sx?$/i;
+
+/**
+ * The policy's task-scope typecheck check: the one named `typecheck`, else one that runs
+ * `typecheck` or `tsc`. A feature-scope check does not run per task, so naming it would not help.
+ */
+export function typecheckCheckId(policy: RunPolicy): string | null {
+  const checks = policy.checks.filter((c) => c.scope === "task");
+  const check =
+    checks.find((c) => c.id === "typecheck") ??
+    checks.find((c) => /\b(typecheck|tsc)\b/.test([c.executable, ...c.args].join(" ")));
+  return check?.id ?? null;
+}
+
+/**
+ * Returned to the planner at submission when sizing is on: a task that writes source code and
+ * does not name the policy's typecheck check would show its type errors only in a later task.
+ */
+export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): string[] {
+  const id = policy.sizing ? typecheckCheckId(policy) : null;
+  if (!id) return [];
+  return graph.tasks
+    .filter(
+      (task) =>
+        writtenFiles(task).some((path) => fileKind(path) === "code" && SOURCE.test(path)) &&
+        !task.checkIds.includes(id),
+    )
+    .map(
+      (task) =>
+        `Task ${task.id} writes source code but its checkIds do not name the policy check ${id}; add it so its type errors show in that task.`,
+    );
 }
 
 /** The note that sends an oversized plan back to the planner once. */

@@ -60,6 +60,8 @@ export const RuntimeStateSchema = z
     repairPredecessors: z.record(z.string(), z.string()).default({}),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
+    /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
+    taskSteps: z.record(z.string(), z.number().int().positive()).default({}),
     /** Times plan-time sizing sent the plan back to be split; it does so once. */
     sizingReplans: z.number().int().nonnegative().default(0),
     taskGates: z
