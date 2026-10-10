@@ -975,6 +975,24 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
     case "pause":
       setStatus(run, "paused", "user_pause");
       break;
+    case "undo": {
+      if (run.status === "created" || run.status === "running")
+        return conflict("RUN_ACTIVE", "Undo needs a run that is not executing; pause it first");
+      // The first undo restores the sample edits; later ones find nothing left to undo.
+      if (run.artifacts.some((a) => a.entry.kind === "workspace-rollback")) break;
+      run.artifacts.push(
+        artifact(run.runId, run.artifacts.length + 1, "rollbacks/undo.json", "workspace-rollback", {
+          reason: "undo",
+          effectIds: ["eff-1", "eff-2", "eff-3"],
+          restored: [
+            { path: "src/core/workflows/usage.ts", from: DIGEST, to: DIGEST, keptAs: null },
+            { path: "tests/usage-totals.test.ts", from: DIGEST, to: null, keptAs: null },
+          ],
+          kept: [{ path: "src/headless/report.ts", reason: "changed after the run wrote it" }],
+        }),
+      );
+      break;
+    }
     case "cancel":
       setStatus(run, "cancelled");
       break;

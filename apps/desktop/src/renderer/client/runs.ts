@@ -190,3 +190,29 @@ export const errorText = (error: unknown): string =>
     : error instanceof Error
       ? error.message
       : String(error);
+
+/** The `workspace-rollback` report an undo writes (`RollbackReport` in src/core/workflows/rollback.ts). */
+export interface RollbackReport {
+  reason: string;
+  restored: { path: string; from: string | null; to: string | null; keptAs: string | null }[];
+  kept: { path: string; reason: string }[];
+}
+
+export const ROLLBACK_KIND = "workspace-rollback";
+
+/**
+ * Undoes a run's uncommitted task edits and returns the report the undo wrote, or null when the
+ * run had nothing left to undo (no new rollback artifact appeared).
+ */
+export async function undoRun(
+  key: string,
+  run: Pick<RunSnapshot, "runId" | "revision">,
+): Promise<RollbackReport | null> {
+  const rollbacks = async (): Promise<string[]> =>
+    (await runs.artifacts(key, run.runId)).filter((a) => a.kind === ROLLBACK_KIND).map((a) => a.id);
+  const before = new Set(await rollbacks());
+  await workflow.undo(key, run);
+  const after = (await rollbacks()).find((id) => !before.has(id));
+  if (!after) return null;
+  return JSON.parse(await runs.readArtifact(key, run.runId, after)) as RollbackReport;
+}
