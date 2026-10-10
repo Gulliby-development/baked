@@ -43,6 +43,7 @@ import { abortableDelay, isTransient, retryAfterMs, retryDelay } from "./retry.j
 import {
   capturePreImage,
   createdByRunLineage,
+  readKept,
   runWrittenHash,
   uncommittedEdits,
 } from "./rollback.js";
@@ -115,6 +116,34 @@ function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph })
 
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
+/** Characters of a task's unified diff kept in its diff evidence. */
+const MAX_PATCH_CHARS = 48_000;
+
+/** What one read evidence looked at: the tool, the paths or symbols it named and its size. */
+function readSummary(content: string): { tool: string; targets: string[]; bytes: number } {
+  const targets: string[] = [];
+  let tool = "read";
+  try {
+    const parsed = JSON.parse(content) as { tool?: unknown; input?: unknown };
+    if (typeof parsed.tool === "string") tool = parsed.tool;
+    const input = (parsed.input ?? {}) as Record<string, unknown>;
+    for (const key of ["path", "file", "symbol", "query", "target"])
+      if (typeof input[key] === "string") targets.push(input[key]);
+    if (Array.isArray(input.files))
+      for (const file of input.files)
+        if (typeof file === "string") targets.push(file);
+        else if (
+          file &&
+          typeof file === "object" &&
+          "path" in file &&
+          typeof file.path === "string"
+        )
+          targets.push(file.path);
+  } catch {
+    // A read artifact that is not JSON is summarized by its size only.
+  }
+  return { tool, targets, bytes: Buffer.byteLength(content) };
+}
 export class WorkflowScheduler {
   dispose(): void {
     this.executor.dispose?.();
@@ -1247,11 +1276,43 @@ export class WorkflowScheduler {
       .evidence(runId)
       .filter((e) => e.snapshot_id === state.snapshotId && e.validity === "current")
       .filter((e) => options.reads || e.kind !== "read")
-      .map((e) => ({
-        id: e.id,
-        kind: e.kind,
-        content: this.store.readArtifact(runId, e.artifact_id).slice(0, 16000),
-      }));
+      .map((e) => {
+        const content = this.store.readArtifact(runId, e.artifact_id);
+        // A read is replaced by what it read: its content is resent on every step of every later
+        // agent, and cut at the limit it showed no file whole, so agents read the files again.
+        if (e.kind === "read") return { id: e.id, kind: e.kind, read: readSummary(content) };
+        return {
+          id: e.id,
+          kind: e.kind,
+          content: content.slice(0, e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000),
+        };
+      });
+  }
+  /**
+   * The unified diff of a task's changes, from the content the run kept before each edit to the
+   * file now in the root. Reviewers and the auditor read the change from it instead of reading
+   * whole files. Files whose earlier content was not kept are listed without a diff.
+   */
+  private async taskPatch(
+    runId: string,
+    root: string,
+    beforeHashes: Record<string, string | null>,
+  ): Promise<string> {
+    const parts: string[] = [];
+    for (const [path, hash] of Object.entries(beforeHashes)) {
+      const earlier = hash === null ? null : readKept(this.store, runId, hash);
+      const absolute = workspacePath(root, path);
+      const now = existsSync(absolute) ? readFileSync(absolute) : null;
+      parts.push(
+        hash !== null && earlier === null
+          ? `--- ${path}: earlier content not kept, read the file`
+          : await unifiedDiff(path, earlier, now),
+      );
+    }
+    const text = parts.filter(Boolean).join("\n");
+    return text.length > MAX_PATCH_CHARS
+      ? `${text.slice(0, MAX_PATCH_CHARS)}\n... patch cut at ${MAX_PATCH_CHARS} characters; read the files for the rest`
+      : text;
   }
   private async implement(
     runId: string,
@@ -1394,6 +1455,10 @@ export class WorkflowScheduler {
       if (result.outcome === "already_satisfied")
         validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
       await this.snapshot(runId, state, policy, signal);
+      const beforeHashes = Object.fromEntries(
+        changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
+      );
+      const patch = await this.taskPatch(runId, root, beforeHashes);
       this.store.transaction(() => {
         const diff = this.store.artifact(
           runId,
@@ -1401,10 +1466,9 @@ export class WorkflowScheduler {
           `tasks/${task.id}/diff.json`,
           canonical({
             changed,
-            before: Object.fromEntries(
-              changed.map((p) => [p, earlier.has(p) ? earlier.get(p) : (before[p] ?? null)]),
-            ),
+            before: beforeHashes,
             after: Object.fromEntries(changed.map((p) => [p, after[p] ?? null])),
+            patch,
           }),
         );
         this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.id);

@@ -63,7 +63,8 @@ function keepContent(
   }
 }
 
-function readKept(store: WorkflowStore, runId: string, hash: string): Buffer | null {
+/** The content a run kept for a file hash before its edit overwrote it, or null when not kept. */
+export function readKept(store: WorkflowStore, runId: string, hash: string): Buffer | null {
   for (const suffix of ["", ".base64"]) {
     const row = store.latestArtifact(runId, `${PRE_IMAGES}/${hash}${suffix}`);
     if (!row) continue;

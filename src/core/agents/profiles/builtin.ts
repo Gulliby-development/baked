@@ -145,13 +145,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "reviewer",
-    version: "1.1.0",
+    version: "1.2.0",
     description: "Correctness review",
     role: "reviewer",
     model: "$review",
     context: "review",
     instructions:
-      "Compare requirements, code and evidence. Report only findings you can prove. Do not change files. Mark unknown outcomes as inconclusive.",
+      "Compare requirements, code and evidence. Report only findings you can prove. Do not change files. Mark unknown outcomes as inconclusive. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
     skills: [],
     allowedTools: ["read", "navigate", "submit_review", "submit_result"],
     output: "review",
@@ -161,13 +161,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "security-reviewer",
-    version: "1.1.0",
+    version: "1.2.0",
     description: "Access and data review",
     role: "reviewer",
     model: "$review",
     context: "review",
     instructions:
-      "Review changed access boundaries and the handling of paths and secrets. Give evidence and impact for every blocker. Do not change files.",
+      "Review changed access boundaries and the handling of paths and secrets. Give evidence and impact for every blocker. Do not change files. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
     skills: [],
     allowedTools: ["read", "navigate", "submit_review", "submit_result"],
     output: "review",
@@ -177,13 +177,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-auditor",
-    version: "1.1.0",
+    version: "1.2.0",
     description: "Specification coverage review",
     role: "spec-auditor",
     model: "$review",
     context: "convergence",
     instructions:
-      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion.",
+      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
     skills: [],
     allowedTools: ["read", "navigate", "bake_impact", "submit_review", "submit_result"],
     output: "convergence",
