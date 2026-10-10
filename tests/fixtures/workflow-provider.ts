@@ -44,7 +44,8 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     models.add(body.model); requests++;
     const context = body.messages.flatMap((m) => m.content).find((p) => p.type === "text" && p.text?.includes("Project content below"))?.text;
     assert(context, "Workflow context missing from provider request");
-    const data = JSON.parse(context.split("\n").at(-1)!) as { request: string; inputHash: string; snapshotHash: string; extra: { task?: { id: string }; evidence?: { id: string }[] } };
+    const [documents, attempt] = context.split("\n").slice(-2);
+    const data = { ...JSON.parse(documents!), ...JSON.parse(attempt!) } as { request: string; inputHash: string; snapshotHash: string; extra: { task?: { id: string }; evidence?: { id: string }[] } };
     // The model-selection run plans its own feature, so it does not collide with the
     // spec/plan/tasks files the first run published under specs/transport/.
     const featureSpec = data.request === followUpPrompt ? { ...spec, featureId: followUpFeature } : spec;

@@ -26,6 +26,7 @@ import { WorkflowFault } from "./errors.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { ProcessScope } from "./process-scope.js";
+import { outlineLargeReads } from "./read-outline.js";
 import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
@@ -166,9 +167,19 @@ export class NativeAgentExecutor implements AgentExecutor {
                     ? { ...f, path: workspacePath(root, guard.path(f.path)) }
                     : f,
               );
-            const result = await guard.execute(name, args, async () =>
-              execute(normalized, options),
-            );
+            const result = await guard.execute(name, args, async () => {
+              if (name !== "read" || !Array.isArray(normalized.files))
+                return execute(normalized, options);
+              const { files, outlines } = await outlineLargeReads(normalized.files);
+              if (outlines.length === 0) return execute(normalized, options);
+              const read = files.length
+                ? ((await execute({ ...normalized, files }, options)) as { output?: unknown })
+                : null;
+              const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
+                .filter(Boolean)
+                .join("\n\n");
+              return { ...(read ?? {}), success: true, output };
+            });
             if (!["edit_file", "multi_edit"].includes(name)) {
               const files = await sourceManifest(root, generatedPaths(policy), request.signal);
               const evidenceId = this.store.transaction(() => {

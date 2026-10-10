@@ -42,7 +42,8 @@ class FixtureExecutor implements AgentExecutor {
   constructor(private root: string) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
-    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+    const [documents, attempt] = request.prompt.split("\n").slice(-2);
+    const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as {
       snapshotHash: string;
       spec: { featureId: string } | null;
       extra: { evidence?: { id: string }[] };

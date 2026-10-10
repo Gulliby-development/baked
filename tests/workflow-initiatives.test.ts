@@ -74,7 +74,8 @@ class InitiativeExecutor implements AgentExecutor {
   constructor(private root: string, public split: unknown = threeFeatures, private tokens = 100) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
-    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+    const [documents, attempt] = request.prompt.split("\n").slice(-2);
+    const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as {
       inputHash: string; snapshotHash: string; spec: Spec | null;
       extra: { evidence?: { id: string }[]; featureId?: string };
     };

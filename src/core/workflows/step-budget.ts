@@ -102,7 +102,9 @@ export function compactToolHistory(
         input: callInputs.get(part.toolCallId) ?? null,
         evidenceIds: collectEvidenceIds(outputValue(part.output)),
         preview: original.slice(0, PREVIEW_CHARS),
-        note: `${String(Buffer.byteLength(original))} bytes elided from history; call the tool again if the full output is needed.`,
+        // The read tool answers a repeated whole-file read with "already in your context"
+        // unless asked for a fresh read.
+        note: `${String(Buffer.byteLength(original))} bytes elided from history; call the tool again${part.toolName === "read" ? " with fresh: true" : ""} if the full output is needed.`,
       };
       const replacement = { type: "json" as const, value: stub };
       savedBytes += Buffer.byteLength(original) - Buffer.byteLength(JSON.stringify(stub));
