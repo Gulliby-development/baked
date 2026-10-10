@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
@@ -17,11 +17,13 @@ afterEach(async () => {
 async function setup() {
   const fixture = workflowFixture();
   const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
-  const server = await startApiServer({ service: fixture.service, pollMs: 20, configDir, log: () => {} });
+  const homeDir = mkdtempSync(join(tmpdir(), "baked-api-home-"));
+  const server = await startApiServer({ service: fixture.service, pollMs: 20, configDir, homeDir, log: () => {} });
   cleanups.push(async () => {
     await server.stop();
     await fixture.dispose();
     await removeTempDir(configDir);
+    await removeTempDir(homeDir);
   });
   const call = (path: string, init: RequestInit = {}) =>
     fetch(`${server.url}${path}`, {
@@ -32,7 +34,7 @@ async function setup() {
     call(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const post = (path: string, body: unknown = {}) => send("POST", path, body);
   const get = async <T>(path: string) => (await (await call(path)).json()) as T;
-  return { fixture, configDir, server, call, send, post, get };
+  return { fixture, configDir, homeDir, server, call, send, post, get };
 }
 
 async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, timeoutMs = 30000): Promise<T> {
@@ -195,4 +197,92 @@ describe("local API setup and workflow additions", () => {
     expect((await send("PUT", "/v1/providers/nope/key", { key: "x" })).status).toBe(404);
     expect((await call("/v1/providers/openai/key")).status).toBe(405);
   });
+
+  test("checks are listed, saved to the project, suggested and run on demand", async () => {
+    const { get, send, post, fixture } = await setup();
+    type Check = { id: string; executable: string; lastResult?: { status: string; checkId: string; at: number } };
+    const listed = await get<{ checks: Check[]; workflowsEnabled: boolean }>("/v1/workflow/checks");
+    expect(listed.checks.map((c) => c.id)).toEqual(["check"]);
+    expect(listed.workflowsEnabled).toBe(true);
+
+    const run = await post("/v1/workflow/checks/check/run");
+    expect(run.status).toBe(200);
+    expect(await run.json()).toMatchObject({ checkId: "check", status: "failed", exitCode: 1 });
+    writeFileSync(join(fixture.root, "value.txt"), "ready");
+    expect(await (await post("/v1/workflow/checks/check/run")).json()).toMatchObject({ status: "passed" });
+    const after = await get<{ checks: Check[] }>("/v1/workflow/checks");
+    expect(after.checks[0]?.lastResult).toMatchObject({ checkId: "check", status: "passed" });
+    expect((await post("/v1/workflow/checks/missing/run")).status).toBe(404);
+    expect((await post("/v1/workflow/checks/check/run", { extra: 1 })).status).toBe(400);
+
+    writeFileSync(join(fixture.root, "package.json"), JSON.stringify({ scripts: { test: "bun test", lint: "biome check" } }));
+    const { suggestions } = await get<{ suggestions: { check: { id: string }; source: string; preselected: boolean }[] }>(
+      "/v1/workflow/checks/suggestions",
+    );
+    expect(suggestions.length).toBeGreaterThan(0);
+    expect(suggestions.every((suggestion) => suggestion.source.length > 0)).toBe(true);
+
+    const second = { id: "typecheck", executable: "bun", args: ["--version"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
+    const saved = await send("PUT", "/v1/workflow/checks", { checks: [...listed.checks.map(({ lastResult: _, ...c }) => c), second] });
+    expect(saved.status).toBe(200);
+    expect(((await saved.json()) as { checks: Check[] }).checks.map((c) => c.id)).toEqual(["check", "typecheck"]);
+    const stored = JSON.parse(readFileSync(join(fixture.root, ".baked", "config.json"), "utf8")) as { workflows: { policy: { checks: Check[] } } };
+    expect(stored.workflows.policy.checks.map((c) => c.id)).toEqual(["check", "typecheck"]);
+    expect(fixture.service.config.workflows?.policy.checks.map((c) => c.id)).toEqual(["check", "typecheck"]);
+    expect((await send("PUT", "/v1/workflow/checks", { checks: [second, second] })).status).toBe(400);
+    expect((await send("PUT", "/v1/workflow/checks", { checks: [{ id: "x" }] })).status).toBe(400);
+  }, 60000);
+
+  test("custom commands and installed skills are listed from the project and the home folder", async () => {
+    const { get, fixture, homeDir } = await setup();
+    mkdirSync(join(fixture.root, ".baked", "commands"), { recursive: true });
+    writeFileSync(join(fixture.root, ".baked", "commands", "fix-ci.md"), "---\ndescription: Fix the CI\n---\nFix it.");
+    mkdirSync(join(homeDir, ".baked", "commands"), { recursive: true });
+    writeFileSync(join(homeDir, ".baked", "commands", "standup.md"), "Write a standup.");
+    mkdirSync(join(fixture.root, ".claude", "skills", "review"), { recursive: true });
+    writeFileSync(join(fixture.root, ".claude", "skills", "review", "SKILL.md"), "---\nname: review\ndescription: \"Review a diff\"\n---\nSteps");
+    mkdirSync(join(homeDir, ".baked", "skills", "notes"), { recursive: true });
+    writeFileSync(join(homeDir, ".baked", "skills", "notes", "SKILL.md"), "No front matter");
+
+    const { commands } = await get<{ commands: { name: string; scope: string; description: string }[] }>("/v1/commands");
+    expect(commands.map((c) => [c.name, c.scope])).toEqual([
+      ["/fix-ci", "project"],
+      ["/standup", "global"],
+    ]);
+    expect(commands[0]?.description).toBe("Fix the CI");
+    const { skills } = await get<{ skills: { id: string; scope: string; description?: string }[] }>("/v1/skills");
+    expect(skills).toEqual([
+      expect.objectContaining({ id: "notes", scope: "global" }),
+      expect.objectContaining({ id: "review", scope: "project", description: "Review a diff" }),
+    ]);
+    expect(skills[0]?.description).toBeUndefined();
+  });
+
+  test("a waiting run adopts changed instructions through a candidate and a revision", async () => {
+    const { post, get, send, fixture } = await setup();
+    writeFileSync(join(fixture.root, "baked.md"), "# Rules\n");
+    const run = (await (await post("/v1/workflow/runs", { commandId: newId(), feature: "fixture", prompt: "Create ready value" })).json()) as RunSnapshot;
+    const waiting = await until(() => get<RunSnapshot>(`/v1/workflow/runs/${run.runId}`), (s) => s.status === "waiting");
+
+    type File = { path: string; scope: string; hash: string };
+    const file = (await get<{ files: File[] }>("/v1/projects/current/instructions")).files.find((f) => f.path === "baked.md");
+    if (!file) throw new Error("No instruction file");
+    const written = (await (
+      await send("PUT", "/v1/projects/current/instructions", { path: "baked.md", content: "# Rules\nUse Bun.\n", expectedHash: file.hash })
+    ).json()) as { affectedRuns: string[] };
+    expect(written.affectedRuns).toEqual([run.runId]);
+
+    const candidate = await post(`/v1/workflow/runs/${run.runId}/candidate`, { commandId: newId() });
+    expect(candidate.status).toBe(200);
+    const { candidateHash } = (await candidate.json()) as { candidateHash: string };
+    expect(candidateHash).toMatch(/^[0-9a-f]{64}$/);
+    const revised = await post(`/v1/workflow/runs/${run.runId}/revise`, {
+      commandId: newId(),
+      expectedRevision: waiting.revision,
+      candidate: candidateHash,
+    });
+    expect(revised.status).toBe(200);
+    expect((await post(`/v1/workflow/runs/${run.runId}/revise`, { commandId: newId(), expectedRevision: 0, candidate: "nope" })).status).toBe(400);
+    expect((await post(`/v1/workflow/runs/${run.runId}/candidate`, { commandId: newId(), workflow: "x" })).status).toBe(400);
+  }, 60000);
 });

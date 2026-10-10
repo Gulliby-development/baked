@@ -121,7 +121,11 @@ export async function installSkill(
 }
 
 /** Scan known directories for installed SKILL.md files */
-export function listInstalledSkills(): InstalledSkill[] {
+export function listInstalledSkills(
+  options: { cwd?: string; home?: string } = {},
+): InstalledSkill[] {
+  const home = options.home ?? homedir();
+  const cwd = options.cwd ?? getCwd();
   const byName = new Map<string, InstalledSkill>();
   const seenPaths = new Set<string>();
 
@@ -129,12 +133,12 @@ export function listInstalledSkills(): InstalledSkill[] {
   // ~/.agents/skills, ~/.claude/skills + project-local equivalents.
   // Do not broaden scope.
   const dirs: Array<{ path: string; scope: "global" | "project" }> = [
-    { path: join(homedir(), ".baked", "skills"), scope: "global" },
-    { path: join(homedir(), ".agents", "skills"), scope: "global" },
-    { path: join(homedir(), ".claude", "skills"), scope: "global" },
-    { path: join(getCwd(), ".baked", "skills"), scope: "project" },
-    { path: join(getCwd(), ".agents", "skills"), scope: "project" },
-    { path: join(getCwd(), ".claude", "skills"), scope: "project" },
+    { path: join(home, ".baked", "skills"), scope: "global" },
+    { path: join(home, ".agents", "skills"), scope: "global" },
+    { path: join(home, ".claude", "skills"), scope: "global" },
+    { path: join(cwd, ".baked", "skills"), scope: "project" },
+    { path: join(cwd, ".agents", "skills"), scope: "project" },
+    { path: join(cwd, ".claude", "skills"), scope: "project" },
   ];
 
   for (const dir of dirs) {

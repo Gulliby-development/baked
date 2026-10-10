@@ -24,7 +24,7 @@
  * must name the loopback address and port (DNS rebinding); requests with an Origin header are
  * refused unless that origin was allowed explicitly.
  */
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
@@ -58,11 +58,13 @@ import {
   writeTokenFile,
 } from "./auth.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
+import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
   AnswerBody,
   ApproveBody,
+  CandidateBody,
   CommandBody,
   ContinueBody,
   DeliverBody,
@@ -75,6 +77,7 @@ import {
   PreRunQuery,
   RecoverBody,
   RejectBody,
+  ReviseBody,
   RouteQuery,
   StartBody,
   UndoBody,
@@ -94,6 +97,8 @@ export const CAPABILITIES = [
   "sessions",
   "setup",
   "initiatives",
+  "checks",
+  "library",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -113,6 +118,8 @@ export interface ApiServerOptions {
   maxBodyBytes?: number;
   /** The user configuration directory that holds the project registry; tests point it elsewhere. */
   configDir?: string;
+  /** The home directory holding global commands and skills; tests point it elsewhere. */
+  homeDir?: string;
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -192,6 +199,7 @@ const MUTATIONS = [
   "fork",
   "undo",
   "discard-worktree",
+  "revise",
 ] as const;
 type Mutation = (typeof MUTATIONS)[number];
 
@@ -244,6 +252,10 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
         },
         { file: body.evidence },
       );
+    }
+    case "revise": {
+      const body = ReviseBody.parse(raw);
+      return args({ ...identity(body), candidate: body.candidate });
     }
     case "undo": {
       const body = UndoBody.parse(raw);
@@ -362,6 +374,22 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       host: new ForgeChatHost(service.workspace, service.config),
     });
   const initiatives = new InitiativeService(service);
+  /** The latest on-demand result of each check. */
+  const checkResults = new Map<string, CheckRunRecord>();
+
+  /** Runs that have not ended and froze `absolutePath` as an input. */
+  function runsFreezing(absolutePath: string): string[] {
+    const target = resolve(absolutePath);
+    return service.store
+      .list(100)
+      .items.filter((run) => !["completed", "failed", "cancelled"].includes(run.status))
+      .filter((run) =>
+        Object.keys(service.store.state(run.runId).frozenFiles).some(
+          (file) => resolve(file) === target,
+        ),
+      )
+      .map((run) => run.runId);
+  }
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
   /** The latest background drive of each run. */
@@ -709,11 +737,21 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     const routed =
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
+      (await checkRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        store: service.store,
+        results: checkResults,
+        signal: shutdown.signal,
+      })) ??
       (await setupRoute({
         ...ctx,
         workspace: service.workspace,
         config: service.config,
+        runsFreezing,
         ...(options.configDir ? { configDir: options.configDir } : {}),
+        ...(options.homeDir ? { homeDir: options.homeDir } : {}),
       }));
     if (routed) return routed;
     if (path === "/v1/projects") {
@@ -871,6 +909,24 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       return json(
         200,
         await execute(validateWorkflowArgs({ command: "deliver", positional: [runId], flags })),
+        origin,
+      );
+    }
+    if (action === "candidate") {
+      only("POST");
+      const body = CandidateBody.parse(await readJson(req));
+      const flags: WorkflowArgs["flags"] = { "command-id": body.commandId };
+      const inline: NonNullable<WorkflowArgs["inline"]> = {};
+      for (const key of ["spec", "plan", "tasks", "policy"] as const) {
+        if (body[key] === undefined) continue;
+        flags[key] = true;
+        inline[key] = body[key];
+      }
+      return json(
+        200,
+        await execute(
+          validateWorkflowArgs({ command: "candidate", positional: [runId], flags, inline }),
+        ),
         origin,
       );
     }
