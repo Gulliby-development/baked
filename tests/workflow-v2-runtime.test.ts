@@ -262,6 +262,24 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
   }, 30000);
 
+  test("a failed check is repaired even when a later required check is inconclusive", async () => {
+    // The slow check times out until the value is fixed, like a suite that cannot finish while
+    // another check is red; the run repairs the failure instead of stopping on the timeout.
+    const slow = { ...valueCheck, id: "slow", timeoutMs: 1000, args: ["-e", "if ((await Bun.file('value.txt').text()).trim() !== 'ready') await Bun.sleep(5000)"] };
+    const slowPolicy: RunPolicy = { ...policy, checks: [valueCheck, slow] };
+    const { start, complete, service, define } = setup({ broken: 1 }, slowPolicy);
+    const preset = builtinPresets.get("quick-fix");
+    if (!preset) throw new Error("quick-fix preset missing");
+    define({ ...instantiatePreset(preset, slowPolicy), id: "custom-fix", preset: "custom" });
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    const taken = ofType(events(service, run.runId), "transition.taken").map((e) => `${e.payload.transitionId}:${e.payload.outcome}`);
+    expect(taken).toContain("checks-repair:failed");
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:failed", "slow:inconclusive", "check:passed", "slow:passed"]);
+  }, 30000);
+
   test("V2-08 the visit cap stops a run that would loop on", async () => {
     const { start, complete, service, define } = setup({ broken: 5 });
     define(quickFix((d) => ({ ...d, limits: { maxStageVisits: 4 } })));

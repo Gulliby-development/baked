@@ -1325,6 +1325,7 @@ export class WorkflowScheduler {
     }
     const taskFailures: Review["findings"] = [];
     const checkEvidence: string[] = [];
+    let inconclusive: string | undefined;
     for (const check of taskChecks(policy, task)) {
       const checked = await this.runTaskCheck(
         runId,
@@ -1334,8 +1335,17 @@ export class WorkflowScheduler {
         signal,
         runRoot(this.store.workspace, state),
       );
-      this.applyTaskCheck(runId, state, task, check, checked, taskFailures, checkEvidence);
+      inconclusive ??= this.applyTaskCheck(
+        runId,
+        state,
+        task,
+        check,
+        checked,
+        taskFailures,
+        checkEvidence,
+      );
     }
+    this.inconclusiveTaskCheck(inconclusive, taskFailures);
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
   }
   /**
@@ -1621,7 +1631,6 @@ export class WorkflowScheduler {
           this.runTaskCheck(runId, entry.child, check, policy, signal, root),
         );
         results.push({ check, checked });
-        if (check.required && checked.status === "inconclusive") break;
       }
       return { kind: "done", entry, before, after, changed, checks: results };
     } catch (error) {
@@ -1751,8 +1760,10 @@ export class WorkflowScheduler {
       : outcome.checks;
     const failures: Review["findings"] = [];
     const evidence: string[] = [];
+    let inconclusive: string | undefined;
     for (const { check, checked } of results)
-      this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
+      inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
+    this.inconclusiveTaskCheck(inconclusive, failures);
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
   }
   private async recheck(
@@ -1766,7 +1777,6 @@ export class WorkflowScheduler {
     for (const check of taskChecks(policy, entry.task)) {
       const checked = await this.runTaskCheck(runId, entry.child, check, policy, signal, root);
       results.push({ check, checked });
-      if (check.required && checked.status === "inconclusive") break;
     }
     return results;
   }
@@ -1924,7 +1934,8 @@ export class WorkflowScheduler {
   }
   /**
    * Applies one task check result: a pass is gate evidence, a required failure blocks the task
-   * and becomes a finding, and a required inconclusive result stops the run.
+   * and becomes a finding, and a required inconclusive result blocks the task and returns the
+   * check's id: it stops the run unless another check failed (see `inconclusiveTaskCheck`).
    */
   private applyTaskCheck(
     runId: string,
@@ -1934,16 +1945,13 @@ export class WorkflowScheduler {
     checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string },
     taskFailures: Review["findings"],
     checkEvidence: string[],
-  ): void {
+  ): string | undefined {
     if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
-    if (!check.required || checked.status === "passed") return;
+    if (!check.required || checked.status === "passed") return undefined;
     this.store.transaction(() =>
       this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
     );
-    if (checked.status === "inconclusive")
-      throw new WorkflowFault("OUTPUT_INVALID", `Task check ${check.id} is inconclusive`, {
-        reason: "verification_failed",
-      });
+    if (checked.status === "inconclusive") return check.id;
     taskFailures.push({
       id: newId(),
       kind: "correctness",
@@ -1957,6 +1965,17 @@ export class WorkflowScheduler {
       impact: "Dependent tasks cannot run",
       suggestedFix: `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
+    return undefined;
+  }
+  /**
+   * A failed task check is repaired first, and the repaired task reruns all its checks; an
+   * inconclusive one with nothing to repair stops the run.
+   */
+  private inconclusiveTaskCheck(checkId: string | undefined, failures: Review["findings"]): void {
+    if (checkId && !failures.length)
+      throw new WorkflowFault("OUTPUT_INVALID", `Task check ${checkId} is inconclusive`, {
+        reason: "verification_failed",
+      });
   }
   /**
    * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
@@ -2063,6 +2082,8 @@ export class WorkflowScheduler {
   ): Promise<Review["findings"]> {
     await this.snapshot(runId, state, policy, signal);
     const failures: Review["findings"] = [];
+    // A failure is repaired first; the next pass reruns every check, the inconclusive one too.
+    let inconclusive: string | undefined;
     for (const check of policy.checks) {
       const attempt = this.store.reserve(runId, stepId, null, 0, policy);
       const result = await this.checks.run(
@@ -2073,10 +2094,7 @@ export class WorkflowScheduler {
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
-      if (result.status === "inconclusive" && check.required)
-        throw new WorkflowFault("OUTPUT_INVALID", `Required check ${check.id} is inconclusive`, {
-          reason: "verification_failed",
-        });
+      if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if (result.status === "failed" && check.required) {
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -2097,6 +2115,10 @@ export class WorkflowScheduler {
         });
       }
     }
+    if (!failures.length && inconclusive)
+      throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
+        reason: "verification_failed",
+      });
     if (failures.length)
       return this.recordFindings(runId, {
         schemaVersion: 1,
@@ -2398,8 +2420,9 @@ export class WorkflowScheduler {
   }
   /**
    * A v2 check stage: its command gates in the listed order, required ones first. A required
-   * failure becomes a finding for the failed outcome, an inconclusive required gate blocks, and an
-   * advisory gate is recorded and never blocks.
+   * failure becomes a finding for the failed outcome, an inconclusive required gate blocks unless
+   * another one failed (the repair comes first and the next pass reruns it), and an advisory gate
+   * is recorded and never blocks.
    */
   private async runCheckStage(
     runId: string,
@@ -2422,6 +2445,7 @@ export class WorkflowScheduler {
       ...bound.filter((b) => !b.check.required),
     ];
     const failures: Review["findings"] = [];
+    let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
       this.recordGate(runId, state, gate.id, null, {
@@ -2432,10 +2456,10 @@ export class WorkflowScheduler {
         flaky: result.flaky,
       });
       if (!check.required || result.status === "passed") continue;
-      if (result.status === "inconclusive")
-        throw new WorkflowFault("OUTPUT_INVALID", `Required check ${check.id} is inconclusive`, {
-          reason: "verification_failed",
-        });
+      if (result.status === "inconclusive") {
+        inconclusive ??= check.id;
+        continue;
+      }
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
       failures.push({
@@ -2454,6 +2478,10 @@ export class WorkflowScheduler {
           : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
       });
     }
+    if (!failures.length && inconclusive)
+      throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
+        reason: "verification_failed",
+      });
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.
