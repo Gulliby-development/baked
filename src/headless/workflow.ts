@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { ProfileRegistry } from "../core/agents/profiles/registry.js";
 import { getCwd } from "../core/cwd.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
@@ -327,7 +327,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   try {
     if (argv[0] === "initiative") {
       const cwd = getCwd();
-      const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+      const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
       return await runInitiativeCli(
         argv.slice(1),
         (readonly) => new NativeWorkflowService(cwd, config, undefined, readonly),
@@ -336,7 +336,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
-    const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
     const readonly = ["status", "list", "artifacts", "export", "export-progress", "usage"].includes(
       args.command,
     );

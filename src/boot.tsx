@@ -377,7 +377,7 @@ status("Loading Baked", "Preparing Baked");
 const appReady = import("./components/App.js");
 const [configMod, , installMod] = await earlyModules;
 
-const { loadConfig, loadProjectConfig } = configMod;
+const { loadConfig, loadEffectiveProjectConfig } = configMod;
 
 const { getVendoredPath, installRipgrep, installFd, installAstGrep } = installMod;
 
@@ -400,7 +400,7 @@ for (let i = 0; i < args.length; i++) {
 
 status("Reading the scrolls");
 const config = loadConfig();
-const projectConfig = loadProjectConfig(getCwd());
+const projectConfig = loadEffectiveProjectConfig(getCwd());
 
 {
   const priority = projectConfig?.keyPriority ?? config.keyPriority;
