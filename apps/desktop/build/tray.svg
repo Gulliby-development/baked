@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <defs>
+    <mask id="b">
+      <rect width="16" height="16" fill="#fff"/>
+      <path d="M5.5 3.8V12.2M5.5 3.8H8.6a2.1 2.1 0 0 1 0 4.2H5.5M5.5 8H9a2.1 2.1 0 0 1 0 4.2H5.5" fill="none" stroke="#000" stroke-width="1.7" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect x="1" y="1" width="14" height="14" rx="3.5" fill="#ff9d52" mask="url(#b)"/>
+</svg>

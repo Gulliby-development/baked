@@ -1,12 +1,12 @@
 import {
   type ApiResponse,
   type AppSettings,
-  type AttentionItem,
   DEFAULT_SETTINGS,
   type DesktopProject,
   type StreamEvent,
 } from "../../shared/api.js";
 import type { DesktopBridge, HttpMethod } from "../../shared/bridge.js";
+import { mockAttention } from "./mock-attention.js";
 import { MOCK_ROUTES, MOCK_STREAMS, response } from "./mock-routes.js";
 
 const HOUR = 3_600_000;
@@ -25,6 +25,7 @@ function project(
     path,
     projectId: null,
     pinned: false,
+    branch: "main",
     addedAt: now - 30 * 24 * HOUR,
     lastOpenedAt: now - HOUR,
     exists: true,
@@ -66,7 +67,7 @@ export function createMockBridge(): DesktopBridge {
       "site",
       "C:\\Work\\site",
       { sessions: 2, lastSessionAt: now - 2 * HOUR, activeRuns: 1, attention: 2 },
-      { open: true, backend: { kind: "running", version: "0.1.1" } },
+      { branch: "feature/pricing", open: true, backend: { kind: "running", version: "0.1.1" } },
     ),
     project("client", "client-api", "C:\\Work\\client-api", {
       sessions: 4,
@@ -74,14 +75,6 @@ export function createMockBridge(): DesktopBridge {
       activeRuns: 0,
       attention: 0,
     }),
-  ];
-  const attention: AttentionItem[] = [
-    item("baked", "BAKED", "usage-totals", "approval", true, 12),
-    item("baked", "BAKED", "headless-json", "clarification", true, 4),
-    item("baked", "BAKED", "locale-validation", "delivery", true, 20),
-    item("site", "site", "pricing-table", "approval", true, 31),
-    item("site", "site", "pricing-table", "clarification", true, 26),
-    item("baked", "BAKED", "settings-dark-mode", "acceptance", false, 40),
   ];
   let settings: AppSettings = { ...DEFAULT_SETTINGS, theme: "dark" };
   const projectListeners = new Set<(p: DesktopProject[]) => void>();
@@ -109,6 +102,14 @@ export function createMockBridge(): DesktopBridge {
     closeProject: async (key) => setOpen(key, false),
     restartProject: async (key) => setOpen(key, true),
     addFolder: async () => null,
+    manageProject: async (key, action) => {
+      projects =
+        action === "forget"
+          ? projects.filter((p) => p.key !== key)
+          : projects.map((p) => (p.key === key ? { ...p, pinned: action === "pin" } : p));
+      emitProjects();
+      return projects;
+    },
     onProjects: (listener) => {
       projectListeners.add(listener);
       return () => projectListeners.delete(listener);
@@ -158,8 +159,8 @@ export function createMockBridge(): DesktopBridge {
       }
       return () => {};
     },
-    attention: async () => attention,
-    onAttention: () => () => {},
+    attention: async () => mockAttention.items(),
+    onAttention: (listener) => mockAttention.subscribe(listener),
     settings: async () => settings,
     updateSettings: async (patch) => {
       settings = { ...settings, ...patch };
@@ -170,25 +171,4 @@ export function createMockBridge(): DesktopBridge {
     },
     onNavigate: () => () => {},
   };
-
-  function item(
-    projectKey: string,
-    projectName: string,
-    featureId: string,
-    kind: string,
-    blocking: boolean,
-    minutesAgo: number,
-  ): AttentionItem {
-    return {
-      runId: `run-${featureId}`,
-      featureId,
-      status: blocking ? "waiting" : "running",
-      requestId: `${featureId}-${kind}`,
-      kind,
-      blocking,
-      createdAt: now - minutesAgo * 60_000,
-      projectKey,
-      projectName,
-    };
-  }
 }

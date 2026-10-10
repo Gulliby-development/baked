@@ -1,6 +1,7 @@
 import "../../styles/start.css";
 import { useState } from "react";
 import type { AttentionItem, RunSnapshot, RunState } from "../../../shared/api.js";
+import { attentionHash, attentionId } from "../../../shared/attention.js";
 import { ApiError, api } from "../../client/api.js";
 import { type ProjectSummary, start } from "../../client/start.js";
 import { ago, tokens, usd } from "../../format.js";
@@ -85,7 +86,7 @@ function TaskBox({ projectKey }: { projectKey: string }) {
   );
 }
 
-function NeedsYou({ items, projectKey }: { items: AttentionItem[]; projectKey: string }) {
+function NeedsYou({ items }: { items: AttentionItem[] }) {
   if (items.length === 0) return null;
   return (
     <section aria-labelledby="home-needs" className="start-section">
@@ -99,7 +100,7 @@ function NeedsYou({ items, projectKey }: { items: AttentionItem[]; projectKey: s
         const [title, action] = ATTENTION_TEXT[item.kind] ?? [item.kind, "Open"];
         return (
           <div
-            key={`${item.runId}-${item.requestId ?? item.kind}`}
+            key={attentionId(item)}
             className={`card start-attention${item.blocking ? " blocking" : ""}`}
           >
             <span className="mono start-glyph warn" aria-hidden="true">
@@ -108,13 +109,11 @@ function NeedsYou({ items, projectKey }: { items: AttentionItem[]; projectKey: s
             <span className="stack start-grow">
               <span>{title}</span>
               <span className="start-hint">
-                {item.featureId} · {item.kind} · waiting {ago(item.createdAt).replace(" ago", "")}
+                {item.featureId ?? item.title ?? item.source} · {item.kind} · waiting{" "}
+                {ago(item.createdAt).replace(" ago", "")}
               </span>
             </span>
-            <a
-              className={item.blocking ? "btn-primary" : "btn"}
-              href={projectHref(projectKey, "runs", item.runId)}
-            >
+            <a className={item.blocking ? "btn-primary" : "btn"} href={attentionHash(item)}>
               {action}
             </a>
           </div>
@@ -324,7 +323,7 @@ export function ProjectHome({ project }: SectionProps) {
 
       <div className="start-columns">
         <div className="start-main-col">
-          <NeedsYou items={waiting} projectKey={key} />
+          <NeedsYou items={waiting} />
           <RunsCard projectKey={key} />
           {summary.value && <SessionsCard projectKey={key} summary={summary.value} />}
         </div>

@@ -17,14 +17,15 @@ export type SettingsSection = "app" | "global";
 
 export type Route =
   | { name: "projects" }
-  | { name: "attention" }
+  | { name: "attention"; key?: string; id?: string }
   | { name: "project"; key: string; section: ProjectSection; id: string | null }
   | { name: "settings"; section: SettingsSection };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   const [head, a, b, c] = parts;
-  if (head === "attention") return { name: "attention" };
+  if (head === "attention")
+    return a && b ? { name: "attention", key: a, id: b } : { name: "attention" };
   if (head === "settings") return { name: "settings", section: a === "global" ? "global" : "app" };
   if (head === "p" && a) {
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
@@ -40,7 +41,9 @@ export function href(route: Route): string {
     case "projects":
       return "#/projects";
     case "attention":
-      return "#/attention";
+      return route.key && route.id
+        ? `#/attention/${encodeURIComponent(route.key)}/${encodeURIComponent(route.id)}`
+        : "#/attention";
     case "settings":
       return `#/settings/${route.section}`;
     case "project":

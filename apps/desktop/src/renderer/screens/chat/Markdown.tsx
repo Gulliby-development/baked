@@ -1,6 +1,6 @@
 import { type ReactNode, useMemo } from "react";
 import { bridge } from "../../client/bridge.js";
-import { type Block, type Inline, parseMarkdown } from "./markdown.js";
+import { type Block, type Inline, parseMarkdown } from "./markdown-parse.js";
 
 function inlines(nodes: Inline[]): ReactNode[] {
   return nodes.map(inline);

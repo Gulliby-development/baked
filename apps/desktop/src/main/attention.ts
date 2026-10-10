@@ -1,12 +1,7 @@
 import type { AttentionItem, StreamEvent } from "../shared/api.js";
+import { attentionId } from "../shared/attention.js";
 
 type RawItem = Omit<AttentionItem, "projectKey" | "projectName">;
-
-export function attentionId(
-  item: Pick<AttentionItem, "projectKey" | "runId" | "requestId" | "kind">,
-): string {
-  return `${item.projectKey}:${item.runId}:${item.requestId ?? item.kind}`;
-}
 
 /**
  * Merges the attention lists of every open project into one "Needs you" list, newest first, and
