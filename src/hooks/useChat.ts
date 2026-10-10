@@ -17,6 +17,7 @@ import { createForgeAgent } from "../core/agents/index.js";
 import { AbnormalFinishError } from "../core/agents/stream-options.js";
 import { onAgentStats, onMultiAgentEvent, onSubagentStep } from "../core/agents/subagent-events.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
+import { expandCustomSlashInput } from "../core/commands/registry.js";
 import {
   buildV2Summary,
   DEFAULT_COMPACTION_CONFIG,
@@ -1555,12 +1556,15 @@ export function useChat({
   );
 
   const handleSubmit = useCallback(
-    async (input: string, images?: ImageAttachment[]) => {
+    async (rawInput: string, images?: ImageAttachment[]) => {
       // Read current config via ref — effectiveConfig object is NOT in deps
       // (new object every render would force constant callback recreation)
       const effectiveConfig = effectiveConfigRef.current;
       // Concurrency guard — prevent dual-stream corruption if called while streaming
       if (abortRef.current) return;
+
+      // Custom slash commands (.baked/commands/*.md) expand here, so direct and queued runs match.
+      const input = expandCustomSlashInput(rawInput, cwd) ?? rawInput;
 
       if (activeModelRef.current === "none") {
         const hint: ChatMessage = {
@@ -2598,7 +2602,7 @@ export function useChat({
                   const msg = warnings
                     .map((w) => `[${w.type}]${w.message ? ` ${w.message}` : ""}`)
                     .join("; ");
-                  if (process.env.baked_DEBUG_API) {
+                  if (process.env.BAKED_DEBUG_API) {
                     import("../core/tools/tee.js").then(({ saveTee }) =>
                       saveTee("provider-warnings", msg),
                     );
@@ -2879,7 +2883,7 @@ export function useChat({
                   stepNoCache > 0
                     ? stepNoCache
                     : Math.max(0, stepTotal - stepCache - stepCacheWrite);
-                if (process.env.baked_DEBUG_API) {
+                if (process.env.BAKED_DEBUG_API) {
                   const line = `[cache] step total=${String(stepTotal)} noCache=${String(stepNoCache)} cacheRead=${String(stepCache)} cacheWrite=${String(stepCacheWrite)} prompt=${String(stepIn)} output=${String(stepOut)}\n`;
                   try {
                     const g = globalThis as unknown as Record<string, string>;

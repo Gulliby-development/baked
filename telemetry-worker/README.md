@@ -21,11 +21,11 @@ secrets, org, or project names. No prompts, paths, keys, IPs, or PII.
 wrangler deploy
 ```
 
-Routes to the custom domain `t.baked.baked.com` (set in
-`wrangler.toml`); the public `*.workers.dev` URL is disabled so the account
-subdomain isn't exposed. The client default endpoint lives in
-`src/core/telemetry.ts` (`DEFAULT_ENDPOINT`); override at runtime with
-`baked_TELEMETRY_URL`.
+Uncomment the `routes` entry in `wrangler.toml` and set it to your custom
+domain first; the public `*.workers.dev` URL is disabled so the account
+subdomain isn't exposed. Clients record events locally and send nothing by
+default. Point them at the receiver with `"telemetryUrl"` in config or
+`BAKED_TELEMETRY_URL`.
 
 ## Query active users
 

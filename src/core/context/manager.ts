@@ -21,6 +21,8 @@ import {
 import { MemoryManager } from "../memory/manager.js";
 import { MemoryRecall } from "../memory/recall.js";
 import { describeRecallSignals, MEMORY_RECALL_ACK } from "../memory/types.js";
+import { activeProject } from "../projects/resolve.js";
+import { renderWorkingSet, resolveWorkingSet } from "../projects/working-set.js";
 import {
   buildBakeMapUserMessage as buildBakeMapContent,
   buildDirectoryTree,
@@ -79,7 +81,7 @@ export class ContextManager {
   private projectInfoCache: { info: string | null; at: number } | null = null;
   private repoMap: IntelligenceClient;
   private repoMapReady = false;
-  private repoMapEnabled = process.env.baked_NO_REPOMAP !== "1";
+  private repoMapEnabled = process.env.BAKED_NO_REPOMAP !== "1";
   private repoMapGeneration = 0;
   private editedFiles = new Set<string>();
   private mentionedFiles = new Set<string>();
@@ -112,6 +114,9 @@ export class ContextManager {
   private isChild = false;
   private projectInstructions = "";
   private projectInstructionsVersion = 0;
+  /** The project working set captured for this session; undefined until first needed. */
+  private workingSet: string | null | undefined = undefined;
+  private workingSetVersion = 0;
   private static readonly REPO_MAP_TTL = 5_000; // 5s — covers getContextBreakdown + buildSystemPrompt in same prompt
 
   private static readonly FILE_TREE_TTL = 30_000; // 30s
@@ -710,7 +715,7 @@ export class ContextManager {
     const skillNames = [...this.skills.keys()].sort().join(",");
     const memGen = this.memoryManager.generation;
     const mode = this.forgeMode;
-    return `${String(gen)}|${modelId}|${mode}|${String(skillCount)}:${skillNames}|m${String(memGen)}|pi${String(this.projectInstructionsVersion)}`;
+    return `${String(gen)}|${modelId}|${mode}|${String(skillCount)}:${skillNames}|m${String(memGen)}|pi${String(this.projectInstructionsVersion)}|ws${String(this.workingSetVersion)}`;
   }
 
   waitForRepoMap(timeoutMs = 120_000, signal?: AbortSignal): Promise<boolean> {
@@ -1228,6 +1233,9 @@ export class ContextManager {
       chars: skillChars,
       active: this.skills.size > 0,
     });
+    const workingSet = this.buildWorkingSetBlock();
+    if (workingSet)
+      sections.push({ section: "Project working set", chars: workingSet.length, active: true });
 
     return sections;
   }
@@ -1542,6 +1550,27 @@ export class ContextManager {
       this.postCompactionPending = false;
       this.foreignEditOrigins.clear();
     }
+  }
+
+  /**
+   * The project's working set, captured once per session so the prompt cache holds. Subagents
+   * never get it; refreshWorkingSet captures it again.
+   */
+  buildWorkingSetBlock(): string | null {
+    if (this.isChild) return null;
+    if (this.workingSet === undefined) {
+      const project = activeProject(this.cwd);
+      this.workingSet = project
+        ? (renderWorkingSet(project.id, resolveWorkingSet(project), { cwd: this.cwd })?.text ??
+          null)
+        : null;
+    }
+    return this.workingSet;
+  }
+
+  refreshWorkingSet(): void {
+    this.workingSet = undefined;
+    this.workingSetVersion++;
   }
 
   buildSkillsBlock(): string | null {

@@ -4,6 +4,8 @@ import type { WorkflowStore } from "./store.js";
 export interface AttemptUsageRow {
   attemptId: string;
   stage: string;
+  /** The model the attempt ran on; host attempts (checks, publication) have none. */
+  model: string | null;
   status: string;
   usedTokens: number | null;
   steps: number | null;
@@ -24,6 +26,8 @@ export interface RunUsageReport {
     compactedBytes: number | null;
   };
   stages: Array<{ stage: string; attempts: number; tokens: number; steps: number | null }>;
+  /** Usage per model, most tokens first; host attempts are grouped as `(host)`. */
+  models: Array<{ model: string; attempts: number; tokens: number; steps: number | null }>;
   attempts: AttemptUsageRow[];
 }
 
@@ -35,6 +39,7 @@ export function runUsage(
   store: WorkflowStore,
   runId: string,
   stageFilter?: string,
+  top?: number,
 ): RunUsageReport {
   const stages = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
   const attempts = store
@@ -54,6 +59,7 @@ export function runUsage(
       return {
         attemptId: attempt.id,
         stage: stages.get(attempt.step_id) ?? attempt.step_id,
+        model: attempt.model_id,
         status: attempt.status,
         usedTokens: attempt.used_tokens,
         steps: usage?.steps.length ?? null,
@@ -79,6 +85,15 @@ export function runUsage(
     if (attempt.steps !== null) entry.steps = (entry.steps ?? 0) + attempt.steps;
     byStage.set(attempt.stage, entry);
   }
+  const byModel = new Map<string, RunUsageReport["models"][number]>();
+  for (const attempt of attempts) {
+    const model = attempt.model ?? "(host)";
+    const entry = byModel.get(model) ?? { model, attempts: 0, tokens: 0, steps: null };
+    entry.attempts++;
+    entry.tokens += attempt.usedTokens ?? 0;
+    if (attempt.steps !== null) entry.steps = (entry.steps ?? 0) + attempt.steps;
+    byModel.set(model, entry);
+  }
   const sumReported = (pick: (attempt: AttemptUsageRow) => number | null): number | null => {
     let total = 0;
     let reported = false;
@@ -100,6 +115,12 @@ export function runUsage(
       compactedBytes: sumReported((attempt) => attempt.compactedBytes),
     },
     stages: [...byStage.values()],
-    attempts,
+    models: [...byModel.values()].sort(
+      (a, b) => b.tokens - a.tokens || a.model.localeCompare(b.model),
+    ),
+    attempts:
+      top === undefined
+        ? attempts
+        : [...attempts].sort((a, b) => (b.usedTokens ?? 0) - (a.usedTokens ?? 0)).slice(0, top),
   };
 }

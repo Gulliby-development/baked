@@ -14,7 +14,7 @@
  *      as boot.tsx — the user sees the brand BEFORE the binary is even
  *      installed.
  *   2. Resolves the latest GitHub Release (or version pinned via
- *      $env:baked_VERSION) and downloads baked-<ver>-windows-<arch>.zip.
+ *      $env:BAKED_VERSION) and downloads baked-<ver>-windows-<arch>.zip.
  *   3. Extracts into %LOCALAPPDATA%\\Programs\\baked.
  *   4. Adds the install dir to User PATH via setx (idempotent).
  *   5. Writes a "$INSTDIR\\sf.exe" companion copy so users get both
@@ -108,7 +108,7 @@ if (arch === "AMD64" || arch === "X64") {
 // ── Resolve version ───────────────────────────────────────────────
 const REPO = "Gulliby-development/baked";
 async function resolveVersion() {
-  if (process.env.baked_VERSION) return process.env.baked_VERSION.replace(/^v/, "");
+  if (process.env.BAKED_VERSION) return process.env.BAKED_VERSION.replace(/^v/, "");
   const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
     headers: { "User-Agent": "baked-installer" },
   });
@@ -124,7 +124,7 @@ async function downloadFile(url, dest) {
 }
 
 // ── Paths ─────────────────────────────────────────────────────────
-const INSTALL_DIR = process.env.baked_INSTALL_DIR
+const INSTALL_DIR = process.env.BAKED_INSTALL_DIR
   ?? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Programs", "baked");
 
 // ── Main ──────────────────────────────────────────────────────────

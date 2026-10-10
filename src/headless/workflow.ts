@@ -1,15 +1,17 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
-import { ProfileRegistry } from "../core/agents/profiles/registry.js";
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
+import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import type { BudgetLimits } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
+import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
+import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
 import {
   type Decision,
   PolicySchema,
@@ -19,9 +21,11 @@ import {
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
+import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
+import { formatDoctor, formatEstimate, preRunRequest } from "./workflow-pre-run.js";
 
 export function workflowExit(
   snapshot: RunSnapshot,
@@ -40,6 +44,49 @@ const stringFlag = (args: WorkflowArgs, name: string, fallback?: string): string
     throw new WorkflowFault("INVALID_DEFINITION", `--${name} is required`);
   return value;
 };
+const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
+  typeof args.flags.model === "string" ? args.flags.model : config.defaultModel;
+const routeRequest = (args: WorkflowArgs, config: AppConfig) => ({
+  workflowId:
+    (typeof args.flags.workflow === "string" ? args.flags.workflow : undefined) ??
+    args.positional[0] ??
+    config.workflows?.defaultWorkflow ??
+    "sdd",
+  model: typeof args.flags.model === "string" ? args.flags.model : undefined,
+  ...(typeof args.flags.route === "string"
+    ? { routes: parseRouteOverrides(args.flags.route) }
+    : {}),
+});
+/** A table of stages and profiles with their models and the source of each choice. */
+export function formatRoute(route: RouteExplanation): string {
+  const extras = (entry: { effort?: string | null; fallback?: string[] } | undefined): string[] => [
+    entry?.effort ?? "",
+    entry?.fallback?.length ? entry.fallback.join(", ") : "",
+  ];
+  const rows: string[][] = [["STAGE", "KIND", "MODEL", "SOURCE", "EFFORT", "FALLBACK"]];
+  for (const stage of route.stages) {
+    const own = stage.profileId ? route.profiles[stage.profileId] : undefined;
+    rows.push([
+      stage.stageId,
+      stage.kind,
+      stage.model ?? own?.model ?? "(per profile)",
+      stage.source ?? (own ? `${own.source} via ${stage.profileId}` : "-"),
+      ...extras(stage.model ? stage : own),
+    ]);
+  }
+  rows.push([], ["PROFILE", "", "MODEL", "SOURCE", "EFFORT", "FALLBACK"]);
+  for (const [id, entry] of Object.entries(route.profiles).sort(([a], [b]) => a.localeCompare(b)))
+    rows.push([id, "", entry.model, entry.source, ...extras(entry)]);
+  const columns = rows[0]?.length ?? 0;
+  const widths = Array.from({ length: columns }, (_, i) =>
+    Math.max(...rows.map((r) => r[i]?.length ?? 0)),
+  );
+  const lines = rows.map((r) => r.map((cell, i) => cell.padEnd(widths[i] ?? 0)).join("  "));
+  const warnings = route.warnings.length
+    ? `\n${route.warnings.map((w) => `warning: ${w}`).join("\n")}\n`
+    : "";
+  return `Workflow ${route.workflowId}, run model ${route.runModel}\n\n${lines.join("\n").replace(/ +$/gm, "")}\n${warnings}`;
+}
 export async function executeWorkflowCommand(
   service: NativeWorkflowService,
   args: WorkflowArgs,
@@ -57,7 +104,8 @@ export async function executeWorkflowCommand(
   };
   const readFlagFile = (flag: string): string =>
     readFileSync(resolve(service.store.workspace, stringFlag(args, flag)), "utf8");
-  const jsonFile = (flag: string): unknown => JSON.parse(readFlagFile(flag));
+  const jsonFile = (flag: string): unknown =>
+    args.inline && flag in args.inline ? args.inline[flag] : JSON.parse(readFlagFile(flag));
   switch (args.command) {
     case "run": {
       const policy = PolicySchema.parse(
@@ -83,6 +131,9 @@ export async function executeWorkflowCommand(
           ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
+        ...(typeof args.flags.route === "string"
+          ? { routes: parseRouteOverrides(args.flags.route) }
+          : {}),
         ...(typeof args.flags.writers === "string"
           ? { maxConcurrentWriters: Number(args.flags.writers) }
           : {}),
@@ -229,7 +280,11 @@ export async function executeWorkflowCommand(
       } as Decision);
     }
     case "profiles":
-      return new ProfileRegistry(service.workspace, { active: service.config.defaultModel }).list();
+      return routedProfiles(
+        service.workspace,
+        service.config,
+        modelFlag(args, service.config),
+      ).list();
     case "artifacts":
       return args.flags.file
         ? {
@@ -271,6 +326,7 @@ export async function executeWorkflowCommand(
         service.store,
         runId,
         typeof args.flags.stage === "string" ? args.flags.stage : undefined,
+        typeof args.flags.top === "string" ? Number(args.flags.top) : undefined,
       );
     case "gc":
       return artifacts.gc({
@@ -311,6 +367,16 @@ export async function executeWorkflowCommand(
         service.store.workspace,
         PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy),
       ).result;
+    case "route":
+      return explainRoute(service.workspace, service.config, routeRequest(args, service.config));
+    case "doctor":
+      return runDoctor(service.workspace, service.config, preRunRequest(args, service.workspace));
+    case "estimate":
+      return preRunEstimate(
+        service.workspace,
+        service.config,
+        preRunRequest(args, service.workspace),
+      );
   }
 }
 export async function runWorkflowCli(argv: string[]): Promise<number> {
@@ -335,7 +401,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   try {
     if (argv[0] === "initiative") {
       const cwd = getCwd();
-      const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+      const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
       return await runInitiativeCli(
         argv.slice(1),
         (readonly) => new NativeWorkflowService(cwd, config, undefined, readonly),
@@ -344,13 +410,35 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
-    const config = mergeConfigs(loadConfig(), loadProjectConfig(cwd));
+    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
     const readonly = ["status", "list", "artifacts", "export", "export-progress", "usage"].includes(
       args.command,
     );
     if (args.command === "profiles") {
       process.stdout.write(
-        `${JSON.stringify(new ProfileRegistry(cwd, { active: config.defaultModel }).list(), null, 2)}\n`,
+        `${JSON.stringify(routedProfiles(cwd, config, modelFlag(args, config)).list(), null, 2)}\n`,
+      );
+      return 0;
+    }
+    if (args.command === "route") {
+      const explained = explainRoute(cwd, config, routeRequest(args, config));
+      process.stdout.write(
+        args.flags.json ? `${JSON.stringify(explained, null, 2)}\n` : formatRoute(explained),
+      );
+      return 0;
+    }
+    // Pre-run checks read the workspace without opening the run database for writing.
+    if (args.command === "doctor") {
+      const report = await runDoctor(cwd, config, preRunRequest(args, cwd));
+      process.stdout.write(
+        args.flags.json ? `${JSON.stringify(report, null, 2)}\n` : formatDoctor(report),
+      );
+      return report.ready ? 0 : 1;
+    }
+    if (args.command === "estimate") {
+      const estimate = await preRunEstimate(cwd, config, preRunRequest(args, cwd));
+      process.stdout.write(
+        args.flags.json ? `${JSON.stringify(estimate, null, 2)}\n` : formatEstimate(estimate),
       );
       return 0;
     }

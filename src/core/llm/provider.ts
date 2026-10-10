@@ -156,3 +156,50 @@ export function onProviderSwitch(listener: ProviderSwitchListener): () => void {
     providerSwitchListeners.delete(listener);
   };
 }
+
+/**
+ * Why a model cannot be called right now, or null when it can: a malformed ID, an unknown
+ * provider, or a provider without credentials. `missingCredentials` marks the case that only the
+ * user can fix before a run. A provider's own availability check is given `timeoutMs`; one that
+ * does not answer in time counts as unavailable.
+ */
+export async function modelReadinessProblem(
+  modelId: string,
+  timeoutMs = 5000,
+): Promise<{ problem: string; missingCredentials: boolean } | null> {
+  const slash = modelId.indexOf("/");
+  if (slash <= 0 || slash === modelId.length - 1)
+    return { problem: `${modelId} is not a provider/model ID`, missingCredentials: false };
+  const provider = getProvider(modelId.slice(0, slash));
+  if (!provider)
+    return {
+      problem: `${modelId}: unknown provider ${modelId.slice(0, slash)}`,
+      missingCredentials: false,
+    };
+  let available: boolean;
+  if (provider.checkAvailability) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    let answer: boolean | "timeout";
+    try {
+      answer = await Promise.race([provider.checkAvailability().catch(() => false), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+    // A check that does not answer says nothing about credentials, so it must not refuse a start.
+    if (answer === "timeout")
+      return {
+        problem: `${modelId}: ${provider.name} did not answer the availability check within ${timeoutMs} ms`,
+        missingCredentials: false,
+      };
+    available = answer;
+  } else available = provider.envVar === "" || Boolean(getProviderApiKey(provider.envVar));
+  return available
+    ? null
+    : {
+        problem: `${modelId}: ${provider.name} is not available${provider.envVar ? ` (set ${provider.envVar} or add the key with /keys)` : ""}`,
+        missingCredentials: true,
+      };
+}

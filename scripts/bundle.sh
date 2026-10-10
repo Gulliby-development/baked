@@ -214,15 +214,15 @@ cp node_modules/tree-sitter-wasms/out/*.wasm "${DEPS_DIR}/wasm/"
 cp -r node_modules/@opentui/core/assets "${DEPS_DIR}/opentui-assets"
 # Pre-bundle the worker with all deps (web-tree-sitter) into a single file
 bun build node_modules/@opentui/core/parser.worker.js --outdir "${DEPS_DIR}/opentui-assets" --target=bun --asset-naming="[name].[ext]"
-# Patch the worker to resolve tree-sitter.wasm from ~/.baked/wasm/ (absolute path)
-# instead of ./tree-sitter.wasm (relative to CWD which is the user's project)
-# Patch bare require() calls to use __require (bun's ESM-compatible CJS shim)
-# Use sed -i.bak + rm for GNU/BSD portability
-sed -i.bak 's|module2.exports = "./tree-sitter.wasm"|module2.exports = (__require("os").homedir() + "/.baked/wasm/tree-sitter.wasm")|' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-sed -i.bak 's|var fs = require("fs")|var fs = __require("fs")|g' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-sed -i.bak 's|var nodePath = require("path")|var nodePath = __require("path")|g' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-sed -i.bak 's|require("url")|__require("url")|g' "${DEPS_DIR}/opentui-assets/parser.worker.js"
-rm -f "${DEPS_DIR}/opentui-assets/parser.worker.js.bak"
+# No post-build patching: since OpenTUI 0.5 the main thread resolves
+# tree-sitter.wasm and passes its path to the worker in the INIT message, and
+# the worker is plain ESM where Bun provides `require`. The 0.4.x patches that
+# rewrote require() to __require() now crash the worker (no __require shim).
+if grep -q '__require(' "${DEPS_DIR}/opentui-assets/parser.worker.js" \
+  && ! grep -q '__require =' "${DEPS_DIR}/opentui-assets/parser.worker.js"; then
+  echo "    ✘ parser.worker.js calls __require() without defining it"
+  exit 1
+fi
 
 
 # ── 3. Create install script ──
@@ -234,10 +234,10 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-baked_DIR="${HOME}/.baked"
-BIN_DIR="${baked_DIR}/bin"
+BAKED_DIR="${HOME}/.baked"
+BIN_DIR="${BAKED_DIR}/bin"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-QUIET="${baked_QUIET:-}"
+QUIET="${BAKED_QUIET:-}"
 
 # --quiet flag for non-interactive installs (Homebrew, CI)
 for arg in "$@"; do
@@ -333,8 +333,8 @@ else
 fi
 
 # Clean previous install (preserve config + sessions)
-if [[ -d "$baked_DIR" ]]; then
-  rm -rf "${baked_DIR}/bin" "${baked_DIR}/installs" "${baked_DIR}/wasm" "${baked_DIR}/workers" "${baked_DIR}/native" "${baked_DIR}/opentui-assets" 2>/dev/null
+if [[ -d "$BAKED_DIR" ]]; then
+  rm -rf "${BAKED_DIR}/bin" "${BAKED_DIR}/installs" "${BAKED_DIR}/wasm" "${BAKED_DIR}/workers" "${BAKED_DIR}/native" "${BAKED_DIR}/opentui-assets" 2>/dev/null
   dim "Cleaned previous install (config & sessions preserved)"
 fi
 
@@ -351,19 +351,19 @@ if [[ -n "$QUIET" ]]; then
   done
   step "Sharpening the search blades"
 
-  mkdir -p "${baked_DIR}/wasm" "${baked_DIR}/workers"
-  cp "${SCRIPT_DIR}/deps/wasm/"*.wasm "${baked_DIR}/wasm/"
-  cp "${SCRIPT_DIR}/deps/workers/"*.js "${baked_DIR}/workers/"
+  mkdir -p "${BAKED_DIR}/wasm" "${BAKED_DIR}/workers"
+  cp "${SCRIPT_DIR}/deps/wasm/"*.wasm "${BAKED_DIR}/wasm/"
+  cp "${SCRIPT_DIR}/deps/workers/"*.js "${BAKED_DIR}/workers/"
   if [[ -d "${SCRIPT_DIR}/deps/native" ]]; then
-    cp -r "${SCRIPT_DIR}/deps/native" "${baked_DIR}/native"
+    cp -r "${SCRIPT_DIR}/deps/native" "${BAKED_DIR}/native"
   fi
-  rm -rf "${baked_DIR}/opentui-assets"
-  cp -r "${SCRIPT_DIR}/deps/opentui-assets" "${baked_DIR}/opentui-assets"
+  rm -rf "${BAKED_DIR}/opentui-assets"
+  cp -r "${SCRIPT_DIR}/deps/opentui-assets" "${BAKED_DIR}/opentui-assets"
   step "Inscribing the tree-sitter runes"
 
 
   if [[ "$(uname)" == "Darwin" ]]; then
-    xattr -cr "${baked_DIR}" 2>/dev/null || true
+    xattr -cr "${BAKED_DIR}" 2>/dev/null || true
     step "Warding off Gatekeeper curses"
   fi
 else
@@ -377,20 +377,20 @@ else
   done) &
   spin "Sharpening the search blades" $!
 
-  (mkdir -p "${baked_DIR}/wasm" "${baked_DIR}/workers"
-  cp "${SCRIPT_DIR}/deps/wasm/"*.wasm "${baked_DIR}/wasm/"
-  cp "${SCRIPT_DIR}/deps/workers/"*.js "${baked_DIR}/workers/"
+  (mkdir -p "${BAKED_DIR}/wasm" "${BAKED_DIR}/workers"
+  cp "${SCRIPT_DIR}/deps/wasm/"*.wasm "${BAKED_DIR}/wasm/"
+  cp "${SCRIPT_DIR}/deps/workers/"*.js "${BAKED_DIR}/workers/"
   if [[ -d "${SCRIPT_DIR}/deps/native" ]]; then
-    cp -r "${SCRIPT_DIR}/deps/native" "${baked_DIR}/native"
+    cp -r "${SCRIPT_DIR}/deps/native" "${BAKED_DIR}/native"
   fi
-  rm -rf "${baked_DIR}/opentui-assets"
-  cp -r "${SCRIPT_DIR}/deps/opentui-assets" "${baked_DIR}/opentui-assets"
+  rm -rf "${BAKED_DIR}/opentui-assets"
+  cp -r "${SCRIPT_DIR}/deps/opentui-assets" "${BAKED_DIR}/opentui-assets"
 ) &
   spin "Inscribing the tree-sitter runes" $!
 
 
   if [[ "$(uname)" == "Darwin" ]]; then
-    (xattr -cr "${baked_DIR}" 2>/dev/null || true) &
+    (xattr -cr "${BAKED_DIR}" 2>/dev/null || true) &
     spin "Warding off Gatekeeper curses" $!
   fi
 fi
@@ -408,11 +408,11 @@ case "$(uname -m)" in
   *)             NATIVE_ARCH="$(uname -m)" ;;
 esac
 NATIVE_TRIPLET="${NATIVE_PLATFORM}-${NATIVE_ARCH}"
-NATIVE_LIB="${baked_DIR}/native/${NATIVE_TRIPLET}/libopentui.${LIB_EXT}"
+NATIVE_LIB="${BAKED_DIR}/native/${NATIVE_TRIPLET}/libopentui.${LIB_EXT}"
 
 REQUIRED_FILES=(
   "${BIN_DIR}/baked"
-  "${baked_DIR}/wasm/tree-sitter.wasm"
+  "${BAKED_DIR}/wasm/tree-sitter.wasm"
 
   "${NATIVE_LIB}"
 )
@@ -514,7 +514,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-baked_DIR="${HOME}/.baked"
+BAKED_DIR="${HOME}/.baked"
 
 P='\033[38;2;155;48;255m'
 R='\033[38;2;255;0;64m'
@@ -548,27 +548,27 @@ printf "  ${R}${B}UNINSTALLING${RST}  ${M}← ~/.baked/${RST}\n"
 printf "  ${M}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}\n"
 printf "\n"
 
-if [[ -d "$baked_DIR" ]]; then
-  (rm -rf "${baked_DIR}/bin") &
+if [[ -d "$BAKED_DIR" ]]; then
+  (rm -rf "${BAKED_DIR}/bin") &
   spin "Extinguishing the forge" $!
 
-  (rm -rf "${baked_DIR}/installs") &
+  (rm -rf "${BAKED_DIR}/installs") &
   spin "Removing tool installs" $!
 
-  (rm -rf "${baked_DIR}/wasm" "${baked_DIR}/workers" "${baked_DIR}/native" "${baked_DIR}/opentui-assets") &
+  (rm -rf "${BAKED_DIR}/wasm" "${BAKED_DIR}/workers" "${BAKED_DIR}/native" "${BAKED_DIR}/opentui-assets") &
   spin "Dissolving the runes" $!
 
-  (rm -rf "${baked_DIR}/sessions" "${baked_DIR}/memories") &
+  (rm -rf "${BAKED_DIR}/sessions" "${BAKED_DIR}/memories") &
   spin "Erasing the memories" $!
 
-  (rm -f "${baked_DIR}/config.json"
-  rmdir "$baked_DIR" 2>/dev/null || rm -rf "$baked_DIR") &
+  (rm -f "${BAKED_DIR}/config.json"
+  rmdir "$BAKED_DIR" 2>/dev/null || rm -rf "$BAKED_DIR") &
   spin "Scattering the ashes" $!
 
   (rm -rf "${HOME}/.local/share/baked" "${HOME}/.local/state/baked" "${HOME}/.cache/baked" "${HOME}/.config/baked") &
   spin "Purging the spirit realm" $!
 else
-  printf "  ${M}Nothing to remove at ${baked_DIR}${RST}\n"
+  printf "  ${M}Nothing to remove at ${BAKED_DIR}${RST}\n"
 fi
 
 for rc in "${HOME}/.zshrc" "${HOME}/.bashrc" "${HOME}/.bash_profile" "${HOME}/.profile" "${HOME}/.kshrc" "${HOME}/.config/fish/config.fish"; do

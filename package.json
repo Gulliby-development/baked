@@ -1,19 +1,16 @@
 {
   "name": "@baked/baked",
   "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
   "description": "Graph-powered code intelligence — multi-agent coding with codebase-aware AI",
   "repository": {
     "type": "git",
     "url": "https://github.com/Gulliby-development/baked.git"
   },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org",
-    "access": "public",
-    "provenance": true
-  },
   "module": "src/boot.tsx",
   "type": "module",
-  "author": "Baked",
+  "author": "Gulliby",
   "bin": {
     "baked": "./scripts/launcher.mjs",
     "bf": "./scripts/launcher.mjs"
@@ -54,8 +51,6 @@
     "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov --coverage-dir=coverage",
     "test:coverage:html": "bun run test:coverage && genhtml coverage/lcov.info --output-directory coverage/html --dark-mode && open coverage/html/index.html",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run lint && bun run typecheck && bun run build",
-    "release": "bun run build && npm publish",
     "release:patch": "bash scripts/release.sh patch",
     "release:minor": "bash scripts/release.sh minor",
     "release:major": "bash scripts/release.sh major",
@@ -63,50 +58,47 @@
     "postinstall": "bun scripts/postinstall.mjs"
   },
   "devDependencies": {
-    "@ast-grep/cli": "^0.43.0",
-    "@babel/core": "8.0.1",
-    "@biomejs/biome": "2.5.0",
+    "@ast-grep/cli": "^0.45.3",
+    "@babel/core": "8.0.6",
+    "@biomejs/biome": "2.5.15",
     "@types/babel__core": "7.20.5",
-    "@types/bun": "1.3.14",
-    "@types/linkify-it": "5.0.0",
-    "@types/node": "26.0.0",
-    "@types/react": "19.2.17",
+    "@types/bun": "1.4.2",
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
     "babel-plugin-react-compiler": "1.0.0",
-    "bun-types": "1.3.14",
-    "typescript": "6.0.3"
+    "bun-types": "1.4.2",
+    "typescript": "7.0.2"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.85",
-    "@ai-sdk/mcp": "^1.0.52",
-    "@ai-sdk/openai": "^3.0.73",
-    "@anthropic-ai/sdk": "0.105.0",
-    "@clack/prompts": "^1.6.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@ai-sdk/anthropic": "^3.0.127",
+    "@ai-sdk/mcp": "^1.0.90",
+    "@ai-sdk/openai": "^3.0.124",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "0.6.0",
-    "@opentui/react": "0.4.2",
-    "ai": "^6.0.208",
-    "ignore": "^7.0.5",
+    "@opentui/react": "0.5.14",
+    "ai": "^6.0.300",
+    "ignore": "^7.0.12",
     "isbinaryfile": "6.0.0",
-    "jsonrepair": "^3.14.0",
-    "linkedom": "0.18.12",
-    "linkify-it": "5.0.1",
-    "marked": "18.0.5",
+    "jsonrepair": "^3.15.0",
+    "linkedom": "0.18.13",
+    "linkify-it": "6.1.0",
+    "marked": "18.1.0",
     "react": "19.2.7",
-    "shiki": "4.2.0",
+    "shiki": "4.5.0",
     "strip-ansi": "7.2.0",
     "tree-sitter-wasms": "0.1.13",
     "ts-morph": "28.0.0",
-    "undici": "^8.5.0",
+    "undici": "^8.11.2",
     "web-tree-sitter": "0.25.10",
-    "zod": "4.4.3",
-    "zustand": "5.0.14"
+    "zod": "4.6.5",
+    "zustand": "5.0.15"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-arm64": "0.4.2",
-    "@opentui/core-darwin-x64": "0.4.2",
-    "@opentui/core-linux-arm64": "0.4.2",
-    "@opentui/core-linux-x64": "0.4.2",
-    "@opentui/core-win32-arm64": "0.4.2",
-    "@opentui/core-win32-x64": "0.4.2"
+    "@opentui/core-darwin-arm64": "0.5.14",
+    "@opentui/core-darwin-x64": "0.5.14",
+    "@opentui/core-linux-arm64": "0.5.14",
+    "@opentui/core-linux-x64": "0.5.14",
+    "@opentui/core-win32-arm64": "0.5.14",
+    "@opentui/core-win32-x64": "0.5.14"
   }
 }

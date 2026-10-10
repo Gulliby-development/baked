@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { builtinProfiles } from "../../agents/profiles/builtin.js";
 import { ProfileRegistry } from "../../agents/profiles/registry.js";
 import { writeViaTemp } from "../atomic-write.js";
+import { defaultWorkflowPolicy } from "../defaults.js";
 import {
   DEFAULT_STAGE_RANGES,
   type PastRun,
@@ -53,7 +54,7 @@ export const DEFAULT_AUTO_LIMITS: NonNullable<WorkflowV2["autoApproval"]> = {
   allowedPaths: ["src/**", "tests/**"],
   allowDelete: false,
   allowNewDependencies: false,
-  maxTotalTokens: 200000,
+  maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens,
 };
 
 export interface LibraryGateView {

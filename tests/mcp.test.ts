@@ -9,18 +9,17 @@ import type { MCPServerConfig, AppConfig } from "../src/types/index.js";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-mcp-test");
 const PROJECT_DIR = join(TEST_DIR, "project");
-const baked_DIR = join(PROJECT_DIR, ".baked");
-const CONFIG_FILE = join(baked_DIR, "config.json");
+const BAKED_DIR = join(PROJECT_DIR, ".baked");
+const CONFIG_FILE = join(BAKED_DIR, "config.json");
 
 function writeProjectConfig(data: unknown): void {
-  if (!existsSync(baked_DIR)) mkdirSync(baked_DIR, { recursive: true });
+  if (!existsSync(BAKED_DIR)) mkdirSync(BAKED_DIR, { recursive: true });
   writeFileSync(CONFIG_FILE, typeof data === "string" ? data : JSON.stringify(data, null, 2));
 }
 
 function makeGlobal(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
     defaultModel: "none",
-    routerRules: [],
     theme: { name: "dark" },
     ...overrides,
   };

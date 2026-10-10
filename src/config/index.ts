@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { mergeModelRouting } from "../core/llm/model-routing.js";
 import { configDir } from "../core/platform/index.js";
+import { activeProject } from "../core/projects/resolve.js";
 import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
 import { WorkflowConfigSchema } from "../core/workflows/schemas.js";
 import type { AppConfig, MCPServerConfig } from "../types";
@@ -27,7 +29,6 @@ function getConfigFile(): string {
 
 export const DEFAULT_CONFIG: AppConfig = {
   defaultModel: "none",
-  routerRules: [],
   theme: {
     name: "dark",
     transparent: false,
@@ -43,18 +44,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     llmExtraction: true,
   },
 };
-
-// Preset overlay precomputed at boot. Sync to keep loadConfig() sync for all
-// existing call sites. Set via setPresetOverlay() once presets are resolved.
-let _presetOverlay: Partial<AppConfig> | null = null;
-
-export function setPresetOverlay(overlay: Partial<AppConfig> | null): void {
-  _presetOverlay = overlay;
-}
-
-export function getPresetOverlay(): Partial<AppConfig> | null {
-  return _presetOverlay;
-}
 
 export function loadConfig(): AppConfig {
   const configDir = getConfigDir();
@@ -83,11 +72,9 @@ export function loadConfig(): AppConfig {
     }
   }
 
-  // Layer order: defaults → presets → user (user wins, but only on keys the user
-  // explicitly customized vs defaults — otherwise presets would never override
-  // the seeded DEFAULT_CONFIG values). Nested objects merge shallow via applyConfigPatch.
+  // Layer order: defaults → user, on keys the user customized vs defaults.
+  // Nested objects merge shallow via applyConfigPatch.
   let merged: AppConfig = { ...DEFAULT_CONFIG };
-  if (_presetOverlay) merged = applyConfigPatch(merged, _presetOverlay) as AppConfig;
   const userPatch = diffAgainstDefaults(userConfig);
   if (Object.keys(userPatch).length > 0) {
     merged = applyConfigPatch(merged, userPatch) as AppConfig;
@@ -113,7 +100,7 @@ function diffAgainstDefaults(userConfig: Partial<AppConfig>): Partial<AppConfig>
       !Array.isArray(def)
     ) {
       // For NESTED_KEYS, diff each subfield so user-untouched subfields
-      // do not shadow the preset's nested values.
+      // keep their defaults.
       const subPatch: Record<string, unknown> = {};
       const defRec = def as Record<string, unknown>;
       for (const [subKey, subValue] of Object.entries(value as Record<string, unknown>)) {
@@ -148,6 +135,18 @@ export function loadProjectConfig(cwd: string): Partial<AppConfig> | null {
     );
     return null;
   }
+}
+
+/**
+ * The project layer for reading settings: the active project's manifest defaults with
+ * `<cwd>/.baked/config.json` over them. Code that writes `.baked/config.json` back must keep using
+ * loadProjectConfig, or the manifest defaults would be copied into the checkout config.
+ */
+export function loadEffectiveProjectConfig(cwd: string): Partial<AppConfig> | null {
+  const file = loadProjectConfig(cwd);
+  const defaults = activeProject(cwd)?.manifest.defaults.config as Partial<AppConfig> | undefined;
+  if (!defaults || Object.keys(defaults).length === 0) return file;
+  return { ...defaults, ...file };
 }
 
 /**
@@ -187,6 +186,8 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       retry,
       mcpServers,
     };
+    const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
+    if (routing) merged.modelRouting = routing;
   }
   if (merged.workflows) merged.workflows = WorkflowConfigSchema.parse(merged.workflows);
   return merged;

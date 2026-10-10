@@ -479,7 +479,7 @@ function buildForgePrepareStep(
     }
 
     // [9] Debug API logging
-    if (process.env.baked_DEBUG_API) {
+    if (process.env.BAKED_DEBUG_API) {
       const msgs = result.messages ?? sanitized;
       const dump = msgs
         .map((m, i) => {
@@ -617,6 +617,8 @@ function buildInstructions(cm: ContextManager, modelId: string): string {
   if (snapshot) parts.push(snapshot);
   const skills = cm.buildSkillsBlock();
   if (skills) parts.push(skills);
+  const workingSet = cm.buildWorkingSetBlock();
+  if (workingSet) parts.push(workingSet);
   const text = parts.join("\n\n");
   cm.setInstructionsSize(text.length);
   if (snapshot) instructionsCache.set(cm, { text, key });
