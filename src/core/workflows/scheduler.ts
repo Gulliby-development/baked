@@ -11,7 +11,7 @@ import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
 import { CheckRunner } from "../verification/check-runner.js";
-import { appendCorrections } from "../verification/convergence.js";
+import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
 import { validateEvidence } from "../verification/evidence.js";
 import { fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import { validateReview } from "../verification/review.js";
@@ -2455,19 +2455,17 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
         if (!task)
           throw new WorkflowFault("OUTPUT_INVALID", "Check failed without an associated task");
-        failures.push({
-          id: newId(),
-          kind: "correctness",
-          severity: "high",
-          requirementIds: task.requirementIds,
-          criterionIds: task.criterionIds,
-          file: null,
-          symbol: null,
-          evidenceIds: [result.evidenceId],
-          claim: `Required check ${check.id} failed`,
-          impact: "Implementation cannot be accepted",
-          suggestedFix: `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
-        });
+        failures.push(
+          ...failedCheckFindings(
+            check,
+            result.evidenceId,
+            result.output,
+            (state.rootGraph ?? state.graph)?.tasks ?? [],
+            task,
+            `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+            newId,
+          ),
+        );
       }
     }
     if (!failures.length && inconclusive)
@@ -2732,6 +2730,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     flaky: boolean;
     /** Set when the host failed the gate without running it. */
     reason?: string;
+    output?: string;
   }> {
     let attempts = 0;
     let unstable = false;
@@ -2770,7 +2769,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.status === "failed" ? on === "failed" : on === "inconclusive" || on === "timeout",
       );
       if (!retryable || attempts > gate.retries.max)
-        return { status: result.status, evidenceId: result.evidenceId, attempts, flaky: false };
+        return {
+          status: result.status,
+          evidenceId: result.evidenceId,
+          attempts,
+          flaky: false,
+          output: result.output,
+        };
     }
   }
   /**
@@ -2817,21 +2822,24 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       }
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
-      failures.push({
-        id: newId(),
-        kind: "correctness",
-        severity: "high",
+      const fallback = {
         requirementIds: task?.requirementIds ?? state.spec?.requirements.map((r) => r.id) ?? [],
         criterionIds: task?.criterionIds ?? [],
-        file: null,
-        symbol: null,
-        evidenceIds: [result.evidenceId],
-        claim: `Required check ${check.id} failed`,
-        impact: "Implementation cannot be accepted",
-        suggestedFix: result.reason
-          ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
-          : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
-      });
+      };
+      failures.push(
+        ...failedCheckFindings(
+          check,
+          result.evidenceId,
+          // A refused gate names the test it pinned, not a defect; keep it on the fallback.
+          result.reason ? "" : (result.output ?? ""),
+          (state.rootGraph ?? state.graph)?.tasks ?? [],
+          fallback,
+          result.reason
+            ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
+            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+          newId,
+        ),
+      );
     }
     if (!failures.length && inconclusive)
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
