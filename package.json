@@ -1,6 +1,6 @@
 {
   "name": "@baked/baked",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "license": "MIT",
   "description": "Graph-powered code intelligence — multi-agent coding with codebase-aware AI",
