@@ -38,6 +38,7 @@ import { guardWorkspaceTools } from "../workflows/mutation-guard.js";
 import { isApiExportEnabled } from "./step-utils.js";
 import {
   AbnormalFinishError,
+  cleanStepMessages,
   describeAbnormalFinish,
   isAbnormalFinish,
   MAX_OUTPUT_TOKENS,
@@ -114,8 +115,9 @@ function buildForgePrepareStep(
    *  on steering. A mode change takes effect on the next turn's agent rebuild. */
   frozenMode: ForgeMode = "default",
 ) {
-  // Cache-stable inject tracking: the ToolLoopAgent discards prepareStep message
-  // modifications after each step (it rebuilds from initialMessages + responseMessages).
+  // Cache-stable inject tracking: each step starts from the clean history
+  // (initialMessages + responseMessages, see cleanStepMessages), without the
+  // injects returned by earlier steps.
   // To maintain prefix stability for Anthropic prompt caching, we re-insert previous
   // injects at their original positions so the API always sees an append-only history.
   const previousInjects: Array<{
@@ -158,14 +160,17 @@ function buildForgePrepareStep(
   };
   return async ({
     stepNumber,
-    messages,
     steps,
+    ...history
   }: {
     stepNumber: number;
     messages: ModelMessage[];
+    initialMessages?: ModelMessage[];
+    responseMessages?: ModelMessage[];
     steps: StepEntry[];
     // biome-ignore lint/suspicious/noExplicitAny: PrepareStepFunction generic is invariant
   }): Promise<any> => {
+    const messages = cleanStepMessages(history);
     let steeringImages: ImageAttachment[] | undefined;
     // Doppelganger: snapshot the current conversation for spark mirror mode.
     // Sparks receive this prefix so the API sees an identical cache-hit prefix.
@@ -175,8 +180,8 @@ function buildForgePrepareStep(
 
     const sanitized = sanitizeMessages(messages);
 
-    // Abnormal-finish detection: ToolLoopAgent calls `notify()` for `onStepFinish`
-    // which silently swallows thrown errors (ai/dist/index.mjs:519). prepareStep,
+    // Abnormal-finish detection: ToolLoopAgent runs `onStepEnd`
+    // which silently swallows thrown errors (callbacks run under Promise.allSettled). prepareStep,
     // by contrast, IS awaited inline and throws propagate. So we sniff the prior
     // step's finishReason here and surface the failure as a real stream rejection.
     // Without this, finishReason="length" silently exits the loop (vercel/ai #13075).
@@ -418,8 +423,8 @@ function buildForgePrepareStep(
     }
 
     // Re-insert previous injects + append new one for cache-stable prefix.
-    // The ToolLoopAgent rebuilds messages fresh each step (initialMessages + responseMessages),
-    // discarding our injected user messages. We re-insert them at their original positions
+    // Each step starts from the clean history (initialMessages + responseMessages) without
+    // our injected user messages. We re-insert them at their original positions
     // so Anthropic sees a byte-identical, append-only prefix → auto-cache hits.
     //
     // Position tracking uses cleanInsertAt — the index in the CLEAN message array
@@ -995,10 +1000,10 @@ export function createForgeAgent({
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     tools: allTools,
     stopWhen: () => false,
-    onStepFinish: (step) => {
+    onStepEnd: (step) => {
       if (isAbnormalFinish(step.finishReason)) {
         logBackgroundError("agent-error", `forge: ${describeAbnormalFinish(step.finishReason)}`);
-        // NOTE: throwing here is swallowed by the SDK's notify() (ai/dist/index.mjs:519).
+        // NOTE: throwing here is swallowed by the SDK (callbacks run under Promise.allSettled).
         // Actual surfacing happens in prepareStep — see buildForgePrepareStep above.
       }
       // Record tool failures into the delta channel so prepareStep can surface
@@ -1048,7 +1053,7 @@ export function createForgeAgent({
       cacheOpts,
       modelId,
     ),
-    experimental_repairToolCall: repairToolCall,
+    repairToolCall,
     providerOptions: wrappedProviderOptions,
     ...(subagentHeaders ? { headers: subagentHeaders } : {}),
   });

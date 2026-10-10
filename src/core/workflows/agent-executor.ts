@@ -1,8 +1,8 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import {
   generateText,
-  type StepResult,
-  stepCountIs,
+  isStepCount,
+  type LanguageModelUsage,
   type Tool,
   ToolChoiceViolationError,
   type ToolSet,
@@ -10,6 +10,7 @@ import {
 } from "ai";
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
+import { cleanStepMessages } from "../agents/stream-options.js";
 import { ContextManager } from "../context/manager.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { resolveModel } from "../llm/provider.js";
@@ -42,6 +43,7 @@ import {
   AttemptStepController,
   type AttemptUsageRecord,
   DEFAULT_MAX_ATTEMPT_TOKENS,
+  type StepLike,
   stepTokens,
 } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
@@ -64,6 +66,19 @@ export const outputSchemas: Record<string, z.ZodType> = {
   initiativePlan: InitiativePlanSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+
+/** Input and output tokens over steps; a side stays undefined when no step reported it. */
+function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
+  const add = (a: number | undefined, b: number | undefined) =>
+    a === undefined ? b : b === undefined ? a : a + b;
+  return steps.reduce<Partial<LanguageModelUsage>>(
+    (sum, step) => ({
+      inputTokens: add(sum.inputTokens, step.usage.inputTokens),
+      outputTokens: add(sum.outputTokens, step.usage.outputTokens),
+    }),
+    {},
+  );
+}
 
 export class NativeAgentExecutor implements AgentExecutor {
   private ownedContext: Promise<ContextManager> | undefined;
@@ -252,7 +267,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       if (!schema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
       let submitted: unknown;
       let rejected = 0;
-      available.submit_result = tool({
+      const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
         inputSchema: schema,
@@ -273,9 +288,10 @@ export class NativeAgentExecutor implements AgentExecutor {
           return { accepted: true };
         },
       });
+      available.submit_result = submitResult;
       for (const alias of ["submit_artifact", "submit_review"])
         if (request.profile.allowedTools.includes(alias) && policy.allowedTools.includes(alias))
-          available[alias] = available.submit_result;
+          available[alias] = submitResult;
       const submitTools = ["submit_result", "submit_artifact", "submit_review"].filter(
         (name) => name in available,
       );
@@ -304,21 +320,19 @@ export class NativeAgentExecutor implements AgentExecutor {
           ),
         );
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
-      const finished: StepResult<ToolSet>[] = [];
-      let result: {
-        text: string;
-        steps: StepResult<ToolSet>[];
-        totalUsage: { inputTokens?: number; outputTokens?: number };
-      };
+      const finished: StepLike[] = [];
+      // Usage of the latest model call, which a step rejected for its tool choice never reports.
+      let lastCallUsage: LanguageModelUsage | undefined;
+      let result: { steps: readonly StepLike[]; text: string; usage: Partial<LanguageModelUsage> };
       try {
         result = await generateText({
           model: resolveModel(request.profile.model),
-          system: request.profile.instructions,
+          instructions: request.profile.instructions,
           prompt: request.prompt,
           tools: available,
           stopWhen: [
             () => submitted !== undefined,
-            stepCountIs(request.maxSteps),
+            isStepCount(request.maxSteps),
             ({ steps: done }) => budget.overBudget(done),
           ],
           maxRetries: 0,
@@ -326,7 +340,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           abortSignal: request.signal,
           providerOptions: provider.providerOptions,
           headers: provider.headers,
-          onStepFinish: (step) => {
+          onStepEnd: (step) => {
             finished.push(step);
             this.store.recordAttemptUsage(
               request.runId,
@@ -334,8 +348,10 @@ export class NativeAgentExecutor implements AgentExecutor {
               budget.consumed(finished),
             );
           },
-          prepareStep: ({ stepNumber, steps: done, messages }) => {
+          prepareStep: ({ stepNumber, steps: done, ...history }) => {
             request.signal.throwIfAborted();
+            // Compaction and the finalize notice are recomputed from the clean history each step.
+            const messages = cleanStepMessages(history);
             const prepared = budget.prepare({ stepNumber, steps: done, messages });
             this.store.expandReservation(
               request.runId,
@@ -345,17 +361,26 @@ export class NativeAgentExecutor implements AgentExecutor {
             );
             return prepared;
           },
+          onLanguageModelCallEnd: ({ usage }) => {
+            lastCallUsage = usage;
+          },
         });
       } catch (error) {
-        // A forced submit step answered with text. Keep that text for the format correction below.
+        // A forced submit step answered with text. Keep that text for the format correction
+        // below, and record the rejected step's spend, which never reaches onStepEnd.
         if (ToolChoiceViolationError.isInstance(error) && !request.signal.aborted) {
+          if (lastCallUsage) {
+            finished.push({ usage: lastCallUsage, toolCalls: [] });
+            this.store.recordAttemptUsage(
+              request.runId,
+              request.attemptId,
+              budget.consumed(finished),
+            );
+          }
           result = {
-            text: error.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
             steps: finished,
-            totalUsage: {
-              inputTokens: sumUsage(finished, "inputTokens"),
-              outputTokens: sumUsage(finished, "outputTokens"),
-            },
+            text: error.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+            usage: sumUsage(finished),
           };
         } else {
           try {
@@ -402,22 +427,33 @@ export class NativeAgentExecutor implements AgentExecutor {
           // Zero until the single correction step reports its usage.
           let correctionTokens = 0;
           try {
-            const corrected = await generateText({
-              model: resolveModel(request.profile.model),
-              prompt: correctionPrompt,
-              tools: { submit_result: available.submit_result },
-              toolChoice: { type: "tool", toolName: "submit_result" },
-              stopWhen: stepCountIs(1),
-              maxRetries: 0,
-              maxOutputTokens: request.profile.maxOutputTokens,
-              abortSignal: request.signal,
-              providerOptions: provider.providerOptions,
-              headers: provider.headers,
-              onStepFinish: (step) => {
-                correctionTokens += stepTokens(step.usage, request.profile.maxOutputTokens);
-              },
-            });
-            submitted = schema.parse(submitted ?? JSON.parse(corrected.text));
+            let correctedText = "";
+            try {
+              const corrected = await generateText({
+                model: resolveModel(request.profile.model),
+                prompt: correctionPrompt,
+                tools: { submit_result: submitResult },
+                toolChoice: { type: "tool", toolName: "submit_result" },
+                stopWhen: isStepCount(1),
+                maxRetries: 0,
+                maxOutputTokens: request.profile.maxOutputTokens,
+                abortSignal: request.signal,
+                providerOptions: provider.providerOptions,
+                headers: provider.headers,
+                // Counted per model call so a response that skips the tool is still charged.
+                onLanguageModelCallEnd: ({ usage, content }) => {
+                  correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
+                  correctedText = content
+                    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                    .join("");
+                },
+              });
+              correctedText = corrected.text;
+            } catch (error) {
+              // A plain-text reply is still parsed as the result, as with AI SDK 6.
+              if (!ToolChoiceViolationError.isInstance(error)) throw error;
+            }
+            submitted = schema.parse(submitted ?? JSON.parse(correctedText));
             this.store.transaction(() =>
               this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
             );
@@ -441,8 +477,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       }
       return {
         output: submitted,
-        inputTokens: result.totalUsage.inputTokens ?? null,
-        outputTokens: result.totalUsage.outputTokens ?? null,
+        inputTokens: result.usage.inputTokens ?? null,
+        outputTokens: result.usage.outputTokens ?? null,
       };
     } finally {
       context.dispose({ preserveSharedIO: true });
@@ -456,8 +492,4 @@ export class NativeAgentExecutor implements AgentExecutor {
     this.ownedContext = undefined;
     return closed ?? Promise.resolve();
   }
-}
-
-function sumUsage(steps: StepResult<ToolSet>[], key: "inputTokens" | "outputTokens"): number {
-  return steps.reduce((total, step) => total + (step.usage[key] ?? 0), 0);
 }

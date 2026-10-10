@@ -306,7 +306,7 @@ async function streamTurn(
       abortSignal: signal,
     });
 
-    for await (const part of result.fullStream) {
+    for await (const part of result.stream) {
       if (reporting.maxSteps && steps >= reporting.maxSteps) {
         error = `Max steps reached (${String(reporting.maxSteps)})`;
         exitCode = EXIT_ERROR;

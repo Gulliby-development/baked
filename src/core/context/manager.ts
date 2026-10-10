@@ -1022,7 +1022,7 @@ export class ContextManager {
         model,
         ...(supportsTemperature(modelId) ? { temperature: 0 } : {}),
         providerOptions: EPHEMERAL_CACHE,
-        system: [
+        instructions: [
           "Summarize each code symbol in ONE line (max 80 chars). Focus on BEHAVIOR: what it does, key side effects, non-obvious logic.",
           "BAD: 'Checks if a server is available' (restates name)",
           "GOOD: 'Pings the server, returns false on timeout or socket error'",

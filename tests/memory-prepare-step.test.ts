@@ -103,4 +103,44 @@ describe("buildPrepareStep — memory recall inject", () => {
     await prepareStep({ stepNumber: 2, steps: [], messages: newTurn } as never);
     expect(tracker.count).toBe(2);
   });
+
+  it("rebuilds from the clean history when the SDK carries the previous override forward", async () => {
+    const tracker = { count: 0 };
+    const { prepareStep } = buildPrepareStep({
+      role: "code",
+      allTools: {},
+      contextManager: makeContextManager(
+        [
+          { role: "user", content: "<recalled_memories>\nx\n</recalled_memories>" },
+          { role: "assistant", content: "ack" },
+        ],
+        tracker,
+      ),
+    });
+    const initialMessages = [userMsg("first turn")];
+    const step0 = (await prepareStep({
+      stepNumber: 0,
+      steps: [],
+      messages: initialMessages,
+      initialMessages,
+      responseMessages: [],
+    } as never)) as { messages: ModelMessage[] };
+
+    // AI SDK 7 passes the step 0 override plus the step 0 response as `messages`.
+    const responseMessages = [assistantMsg("working...")];
+    const step1 = (await prepareStep({
+      stepNumber: 1,
+      steps: [],
+      messages: [...step0.messages, ...responseMessages],
+      initialMessages,
+      responseMessages,
+    } as never)) as { messages: ModelMessage[] };
+
+    expect(tracker.count).toBe(1);
+    const recalls = step1.messages.filter(
+      (m) => typeof m.content === "string" && m.content.includes("recalled_memories"),
+    );
+    expect(recalls).toHaveLength(1);
+    expect(step1.messages).toHaveLength(step0.messages.length + responseMessages.length);
+  });
 });

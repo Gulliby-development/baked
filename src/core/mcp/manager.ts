@@ -7,6 +7,38 @@ import type { MCPServerConfig } from "../../types/index.js";
 /** Max concurrent MCP server connections to avoid flooding the event loop */
 const MAX_CONCURRENT = 4;
 
+/**
+ * Fetch for remote MCP transports. Redirects stay rejected (the @ai-sdk/mcp default, which
+ * guards against a server steering requests and headers to another host), but the error names
+ * the server and the redirect target instead of a bare fetch failure.
+ */
+export function redirectRejectingFetch(serverName: string): typeof fetch {
+  const rejecting = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const response = await fetch(input, { ...init, redirect: "manual" });
+    const redirected =
+      response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
+    if (!redirected) return response;
+    await response.body?.cancel().catch(() => {});
+    const location = response.headers.get("location");
+    const base = input instanceof Request ? input.url : String(input);
+    let target = "";
+    if (location) {
+      try {
+        target = ` to ${new URL(location, base).href}`;
+      } catch {
+        target = ` to ${location}`;
+      }
+    }
+    throw new Error(
+      `MCP server "${serverName}" redirected (HTTP ${String(response.status)})${target}. Redirects are not followed; set the server url to the final address.`,
+    );
+  };
+  return rejecting as typeof fetch;
+}
+
 interface MCPConnection {
   client: MCPClient;
   config: MCPServerConfig;
@@ -143,7 +175,8 @@ export class MCPManager {
 
       const toolInfos: MCPToolInfo[] = Object.entries(toolSet).map(([toolName, t]) => ({
         name: toolName,
-        description: (t as Tool).description ?? "",
+        // MCP servers always send string descriptions; AI SDK 7 also allows functions.
+        description: typeof t.description === "string" ? t.description : "",
         serverName: name,
         inputSchema: {} as Record<string, unknown>,
       }));
@@ -225,13 +258,13 @@ export class MCPManager {
     // Streamable HTTP — modern remote transport (recommended)
     if (transport === "http") {
       if (!url) throw new Error(`MCP server "${config.name}": http transport requires a url`);
-      return { type: "http" as const, url, headers };
+      return { type: "http" as const, url, headers, fetch: redirectRejectingFetch(config.name) };
     }
 
     // SSE — legacy remote transport
     if (transport === "sse") {
       if (!url) throw new Error(`MCP server "${config.name}": sse transport requires a url`);
-      return { type: "sse" as const, url, headers };
+      return { type: "sse" as const, url, headers, fetch: redirectRejectingFetch(config.name) };
     }
 
     // stdio — local subprocess (uses raw SDK transport as custom MCPTransport)
@@ -271,6 +304,8 @@ export class MCPManager {
         toolCallId: `mcp-${Date.now()}`,
         messages: [],
         abortSignal: controller.signal,
+        // MCP tools declare no contextSchema; the SDK passes undefined for them too.
+        context: undefined,
       });
       if (typeof result === "string") return result;
       return JSON.stringify(result) || "(empty response)";

@@ -1,10 +1,10 @@
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import type { PrepareStepFunction, StopCondition } from "ai";
-import { stepCountIs } from "ai";
+import { isStepCount } from "ai";
 import { getCwd } from "../cwd.js";
 import { renderTaskList } from "../tools/task-list.js";
 import type { AgentBus } from "./agent-bus.js";
-import { AbnormalFinishError, isAbnormalFinish } from "./stream-options.js";
+import { AbnormalFinishError, cleanStepMessages, isAbnormalFinish } from "./stream-options.js";
 import { emitSubagentStep } from "./subagent-events.js";
 
 type SymbolLookup = (absPath: string) => Array<{ name: string; kind: string; isExported: boolean }>;
@@ -366,7 +366,7 @@ function compactOldToolResults(
 // }
 
 interface PrepareStepResult {
-  // biome-ignore lint/suspicious/noExplicitAny: TOOLS generic is invariant — tool-agnostic functions use <any> (same as SDK's stepCountIs/hasToolCall)
+  // biome-ignore lint/suspicious/noExplicitAny: TOOLS generic is invariant — tool-agnostic functions use <any> (same as SDK's isStepCount/hasToolCall)
   prepareStep: PrepareStepFunction<any>;
   // biome-ignore lint/suspicious/noExplicitAny: TOOLS generic is invariant
   stopConditions: StopCondition<any>[];
@@ -404,8 +404,9 @@ export function buildPrepareStep({
   }> = [];
   let lastUserTurnCount = 0;
 
-  // biome-ignore lint/suspicious/noExplicitAny: TOOLS generic is invariant — tool-agnostic functions use <any> (same as SDK's stepCountIs/hasToolCall)
-  const prepareStep: PrepareStepFunction<any> = async ({ stepNumber, steps, messages }) => {
+  // biome-ignore lint/suspicious/noExplicitAny: TOOLS generic is invariant — tool-agnostic functions use <any> (same as SDK's isStepCount/hasToolCall)
+  const prepareStep: PrepareStepFunction<any> = async ({ stepNumber, steps, ...history }) => {
+    const messages = cleanStepMessages(history);
     const result: {
       toolChoice?: "required" | "auto" | "none";
       activeTools?: string[];
@@ -414,7 +415,7 @@ export function buildPrepareStep({
     } = {};
 
     // Abnormal-finish detection: ToolLoopAgent's `notify()` swallows errors thrown
-    // from `onStepFinish` (ai/dist/index.mjs:519). prepareStep is awaited inline so
+    // from `onStepEnd` (callbacks run under Promise.allSettled). prepareStep is awaited inline so
     // throws propagate. Sniff the prior step's finishReason and surface as a real
     // stream rejection — fixes silent stop on finishReason=length (vercel/ai #13075).
     const prevStep = steps[steps.length - 1] as { finishReason?: string } | undefined;
@@ -738,7 +739,7 @@ export function buildPrepareStep({
     return ctx >= hardStop;
   };
 
-  return { prepareStep, stopConditions: [tokenStop, stepCountIs(maxSteps)] };
+  return { prepareStep, stopConditions: [tokenStop, isStepCount(maxSteps)] };
 }
 
 export function buildSymbolLookup(repoMap?: {

@@ -330,6 +330,37 @@ describe("MCPManager transport validation", () => {
 
   beforeEach(resetStore);
 
+  for (const transport of ["http", "sse"] as const) {
+    it(`reports a redirecting ${transport} server instead of following it`, async () => {
+      let followed = false;
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch(req) {
+          if (new URL(req.url).pathname === "/moved") {
+            followed = true;
+            return new Response("not found", { status: 404 });
+          }
+          return new Response(null, { status: 307, headers: { location: "/moved" } });
+        },
+      });
+      const { MCPManager } = await import("../src/core/mcp/manager.js");
+      const mgr = new MCPManager();
+      try {
+        const name = `redirect-${transport}`;
+        await mgr.connectAll([{ name, transport, url: `${server.url.href}mcp`, timeout: 5000 }]);
+        const srv = useMCPStore.getState().servers[name];
+        expect(srv.status).toBe("error");
+        expect(srv.error).toContain(`MCP server "${name}" redirected (HTTP 307)`);
+        expect(srv.error).toContain(`to ${server.url.href}moved`);
+        expect(followed).toBe(false);
+      } finally {
+        await mgr.dispose();
+        server.stop(true);
+      }
+    });
+  }
+
   it("rejects stdio config without command", async () => {
     const { MCPManager } = await import("../src/core/mcp/manager.js");
     const mgr = new MCPManager();

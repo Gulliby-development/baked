@@ -1,6 +1,29 @@
-import type { LanguageModelV3ToolCall } from "@ai-sdk/provider";
+import type { LanguageModelV4ToolCall } from "@ai-sdk/provider";
 import type { ModelMessage } from "ai";
 import { jsonrepair } from "jsonrepair";
+
+/**
+ * The history a prepareStep hook works from: the call's initial messages plus
+ * every response message so far, without any earlier prepareStep override.
+ *
+ * AI SDK 7 carries a `messages` override returned from prepareStep into later
+ * steps. The hooks here re-insert their injects on every step at fixed clean
+ * indices, so starting from the overridden history would duplicate them and
+ * miscount user turns. Direct callers (tests) that pass only `messages` get
+ * that array back.
+ */
+export function cleanStepMessages({
+  messages,
+  initialMessages,
+  responseMessages,
+}: {
+  messages: ModelMessage[];
+  initialMessages?: ModelMessage[];
+  responseMessages?: ModelMessage[];
+}): ModelMessage[] {
+  if (!initialMessages) return messages;
+  return [...initialMessages, ...(responseMessages ?? [])];
+}
 
 export function sanitizeMessages(messages: ModelMessage[]): ModelMessage[] {
   let dirty = false;
@@ -109,8 +132,8 @@ export function sanitizeMessages(messages: ModelMessage[]): ModelMessage[] {
 }
 
 /** prepareStep hook that sanitizes tool-call inputs and surfaces abnormal finishes
- *  from the previous step. ToolLoopAgent's `onStepFinish` callback swallows thrown
- *  errors (ai/dist/index.mjs:519 — `notify()` has a bare catch), so prepareStep is
+ *  from the previous step. ToolLoopAgent's `onStepEnd` callback swallows thrown
+ *  errors (its callbacks run under Promise.allSettled), so prepareStep is
  *  the only safe place to convert a length-truncation into a real stream rejection.
  */
 export function sanitizeToolInputsStep({
@@ -133,10 +156,10 @@ export async function repairToolCall({
   tools,
   error,
 }: {
-  toolCall: LanguageModelV3ToolCall;
+  toolCall: LanguageModelV4ToolCall;
   tools?: Record<string, unknown>;
   error?: { name?: string } | unknown;
-}): Promise<LanguageModelV3ToolCall | null> {
+}): Promise<LanguageModelV4ToolCall | null> {
   const trimmed = toolCall.input.trim();
   if (!trimmed) return null;
 
@@ -214,7 +237,7 @@ export function describeAbnormalFinish(reason: AbnormalFinishReason): string {
 }
 
 /**
- * Thrown from `onStepFinish` when a step finishes with an abnormal reason
+ * Thrown from `onStepEnd` when a step finishes with an abnormal reason
  * (length / content-filter / error). Surfaces as a stream rejection so the
  * UI can render it and useChat can decide whether to auto-continue.
  */

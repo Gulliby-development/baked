@@ -1,5 +1,5 @@
 import type { LanguageModel } from "ai";
-import { stepCountIs, ToolLoopAgent, tool } from "ai";
+import { isStepCount, ToolLoopAgent, tool } from "ai";
 import { z } from "zod";
 import { loadConfig } from "../../config/index.js";
 import { logBackgroundError } from "../../stores/errors.js";
@@ -43,13 +43,13 @@ export function createWebSearchAgent(
     maxRetries: retryMaxRetries,
     ...(supportsTemperature(getModelId(model)) ? { temperature: 0 } : {}),
     maxOutputTokens: MAX_OUTPUT_TOKENS,
-    onStepFinish: (step) => {
+    onStepEnd: (step) => {
       if (isAbnormalFinish(step.finishReason)) {
         logBackgroundError(
           "agent-error",
           `web-search: ${describeAbnormalFinish(step.finishReason)}`,
         );
-        // SDK swallows throws in onStepFinish; surfacing happens in prepareStep.
+        // SDK swallows throws in onStepEnd; surfacing happens in prepareStep.
       }
     },
     tools: {
@@ -78,8 +78,8 @@ export function createWebSearchAgent(
       }),
     },
     instructions: WEB_SEARCH_INSTRUCTIONS,
-    stopWhen: stepCountIs(15),
+    stopWhen: isStepCount(15),
     prepareStep: sanitizeToolInputsStep,
-    experimental_repairToolCall: repairToolCall,
+    repairToolCall,
   });
 }

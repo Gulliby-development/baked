@@ -129,8 +129,8 @@ export function resolveModel(modelId: string): LanguageModel {
   }
 
   // Some providers (e.g. Codex) return a v2 model spec while wrapLanguageModel is
-  // typed for v3; the reasoning middleware works on both at runtime. Bridge the
-  // version-spec gap with a cast — keep the public LanguageModel return type.
+  // typed for v4; it adapts older specs at runtime. Bridge the version-spec gap
+  // with a cast — keep the public LanguageModel return type.
   return wrapLanguageModel({
     model: base as Parameters<typeof wrapLanguageModel>[0]["model"],
     // Models that inline-emit thinking as <think>/<thinking> tags in their text
