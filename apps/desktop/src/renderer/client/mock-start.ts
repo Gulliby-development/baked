@@ -236,14 +236,14 @@ function summary(key: string, runs: RunSnapshot[]): ProjectSummary | null {
             entries: [
               "src/core/workflows/usage.ts",
               "src/headless/**/*.ts",
-              "design/projects-lite.md",
+              "docs/projects.md",
               ".env",
             ],
             files: [
               { path: "src/core/workflows/usage.ts", bytes: 9_200 },
               { path: "src/headless/workflow.ts", bytes: 21_400 },
               { path: "src/headless/workflow-parse.ts", bytes: 6_100 },
-              { path: "design/projects-lite.md", bytes: 12_300 },
+              { path: "docs/projects.md", bytes: 12_300 },
               { path: "../baked-docs/guide.md", bytes: 6_000 },
             ],
             skipped: [{ path: ".env", reason: "forbidden" }],

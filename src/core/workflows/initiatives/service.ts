@@ -1,5 +1,5 @@
 /**
- * Initiatives (design/sdd-workflows/next-implementation.md, section 3): a large request split
+ * Initiatives (docs/workflows/runtime.md, "Initiatives"): a large request split
  * into 3..12 features with contracts and a dependency DAG, one approval of the split, and feature
  * runs executed one at a time in dependency order on the existing workflow runtime. The
  * initiative owns no execution of its own: it starts, rebases and drives ordinary runs, and its

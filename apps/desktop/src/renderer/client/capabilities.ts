@@ -1,5 +1,5 @@
 /**
- * Capability groups of `GET /v1/health` (design/desktop-api.md, "Health and capabilities"). Kept
+ * Capability groups of `GET /v1/health` (docs/desktop/api.md, "Health and capabilities"). Kept
  * free of the bridge so tests can import it.
  */
 

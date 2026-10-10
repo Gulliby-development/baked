@@ -1,6 +1,6 @@
 /**
  * The chat endpoints of the local API: `/v1/sessions` and `/v1/models`. The contract is
- * `design/desktop-api.md`; the sessions themselves live in `ChatService`.
+ * `docs/desktop/api.md`; the sessions themselves live in `ChatService`.
  */
 import type { ChatError, ChatService } from "../chat/sessions.js";
 import { fetchProviderModels } from "../llm/models.js";

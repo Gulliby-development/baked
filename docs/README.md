@@ -1,0 +1,36 @@
+# BAKED documentation
+
+This folder describes BAKED as it works now. It is the only place for long-lived documentation: user guides, references, architecture and the design of features that shipped. Plans and one-off reports do not belong here.
+
+## Use BAKED
+
+- [Getting started](getting-started.md): install, first run, essential shortcuts.
+- [User guide](guide.md): the terminal UI, models and the task router, modes, plan mode, checkpoints, sessions, tabs, Git, context, memory and projects.
+- [Commands and keys](commands.md): every slash command and keyboard shortcut.
+- [Headless CLI](headless.md): `baked --headless` for scripts and CI.
+- [Configuration](configuration.md): config files, settings, key storage, instruction files and environment variables.
+- [Providers](providers.md): Claude, OpenAI, Codex, GitHub Copilot and GitHub Models, and model fallback.
+- [Tools and code intelligence](tools.md): what the agent can do and how it reads code.
+- [Extensions](extensions.md): MCP servers, hooks and skills.
+- [Custom commands](custom-commands.md): Markdown files that become slash commands.
+- [Projects](projects.md): the project manifest, working set and known-projects list.
+- [Privacy and telemetry](privacy.md): what is stored, what is sent, how to opt out.
+- [Troubleshooting](troubleshooting.md).
+
+## Spec-driven workflows
+
+- [Workflows](workflows/README.md): what `baked workflow` does and where each part is documented.
+
+## Desktop app
+
+- [Desktop app](desktop/app.md): the Electron app in `apps/desktop`, one `baked serve` per project.
+- [Desktop API](desktop/api.md): the contract between the desktop app and `baked serve`.
+
+## Internals
+
+- [Architecture](architecture.md): how the agent, the repository graph, tools and storage fit together.
+- [CONTRIBUTING.md](../CONTRIBUTING.md): development setup, checks, distributables and releases.
+
+## Keeping this folder current
+
+A change that adds or alters a user-visible feature, a command, a setting, the local API or a workflow updates the matching page here in the same branch (see [AGENTS.md](../AGENTS.md)). Pages describe current behavior; Git history keeps the earlier designs. `tests/docs.test.ts` checks that every relative link and every `docs/` path named in source comments resolves.

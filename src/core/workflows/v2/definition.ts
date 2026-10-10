@@ -1,5 +1,5 @@
 /**
- * Workflow definitions of schema version 2 (design/sdd-workflows/workflow-v2-design.md, sections
+ * Workflow definitions of schema version 2 (docs/workflows/v2-design.md, sections
  * 3 to 6): stages joined by transitions, typed contracts between them and gates on the
  * transitions. Definitions are data; nothing here runs a command or a model.
  */

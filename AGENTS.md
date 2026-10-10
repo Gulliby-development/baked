@@ -21,6 +21,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
   - new feature: `feature/<name>`;
   - bug fix: `bugfix/<name>`.
 - Commit intermediate working states on the task branch. Before each intermediate commit, run at least `bun run typecheck` (or `bun run build` for startup and bundling changes) so every commit is a state you can return to.
+- When a task adds or changes a user-visible feature, a command, a setting, the local API or a workflow, update the matching page in `docs/` in the same branch. Long-lived documentation (guides, references, architecture, the design of shipped features) goes only in `docs/` and describes current behavior; plans and one-off reports do not go in the repository.
 - When the task is complete and the checks in [Verification](#verification) pass, merge the task branch into `main` and push `main`.
 
 ## Working conventions
@@ -50,6 +51,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - `src/core/workflows/`, `src/core/specs/`, `src/core/verification/`: durable workflows, artifact validation and acceptance.
 - `src/components/`, `src/hooks/`, `src/stores/`: terminal UI.
 - `src/headless/`: CLI automation.
+- `docs/`: user and technical documentation; `docs/desktop/api.md` is the desktop API contract, `docs/workflows/runtime.md` the workflow runtime guide.
 - `tests/`: feature tests using `bun:test`.
 
 ## Verification
@@ -63,4 +65,4 @@ bun test
 bun run build
 ```
 
-While iterating, `bun test tests/<feature>.test.ts` runs one feature's tests. The suite is hermetic: tests must not depend on the developer's home directory, global hooks or configuration, or provider environment variables such as `ANTHROPIC_BASE_URL`. Point home-dependent code at a temporary profile instead of skipping the test. Documentation-only changes need link, path, and configuration checks rather than new unit tests. Report what was checked and any failures that remain.
+While iterating, `bun test tests/<feature>.test.ts` runs one feature's tests. The suite is hermetic: tests must not depend on the developer's home directory, global hooks or configuration, or provider environment variables such as `ANTHROPIC_BASE_URL`. Point home-dependent code at a temporary profile instead of skipping the test. Documentation-only changes need link, path, and configuration checks rather than new unit tests; `bun test tests/docs.test.ts` checks the links in `docs/` and the slash command list in `docs/commands.md`. Report what was checked and any failures that remain.

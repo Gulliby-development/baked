@@ -1,5 +1,5 @@
 /**
- * The workflow editor window (design/sdd-workflows/workflow-v2-design.md, section 7) as pure
+ * The workflow editor window (docs/workflows/v2-design.md, section 7) as pure
  * state transitions. The terminal UI renders an `EditorState` and dispatches the functions below;
  * every rule (validation, picker restrictions, effective modes, the estimate, the save review and
  * the auto approval confirmation) lives here, so the window holds no logic of its own. Reading and

@@ -89,7 +89,7 @@ import { setupRoute } from "./setup-routes.js";
 /** How long shutdown waits for the HTTP server to report its connections closed. */
 const STOP_WAIT_MS = 1000;
 export const API_VERSION = 1;
-/** The endpoint groups of `design/desktop-api.md` this server implements. */
+/** The endpoint groups of `docs/desktop/api.md` this server implements. */
 export const CAPABILITIES = [
   "workflow",
   "attention",

@@ -1,4 +1,4 @@
-/** Workflow v1 contracts. Kept compatible with design/sdd-workflows/contracts.ts. */
+/** Workflow v1 contracts. */
 import { z } from "zod";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
