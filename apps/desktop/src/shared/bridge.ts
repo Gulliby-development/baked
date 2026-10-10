@@ -6,7 +6,7 @@ import type {
   StreamEvent,
 } from "./api.js";
 
-export type HttpMethod = "GET" | "POST";
+export type HttpMethod = "GET" | "POST" | "PATCH";
 
 /**
  * What the preload script exposes as `window.baked`. Every call names a project by its key; the

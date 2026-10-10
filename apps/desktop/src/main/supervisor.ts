@@ -30,7 +30,7 @@ export interface Stream {
 
 /** Only the versioned API is reachable from the renderer, and only with GET or POST. */
 export function checkApiPath(method: string, path: string): void {
-  if (method !== "GET" && method !== "POST")
+  if (method !== "GET" && method !== "POST" && method !== "PATCH")
     throw new BackendError("INVALID_REQUEST", `Method ${method} is not allowed`);
   if (!/^\/v1\/[A-Za-z0-9._~%/-]*(\?[^#]*)?$/.test(path) || /(^|\/)\.\.?(\/|\?|$)/.test(path))
     throw new BackendError("INVALID_REQUEST", `Path ${path} is not an API path`);
