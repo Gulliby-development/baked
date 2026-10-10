@@ -18,6 +18,15 @@ export function putDraft(target: DraftTarget, projectKey: string, text: string):
   }
 }
 
+/** Returns the draft for a screen without forgetting it. */
+export function peekDraft(target: DraftTarget, projectKey: string): string {
+  try {
+    return sessionStorage.getItem(storageKey(target, projectKey)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** Returns the draft for a screen and forgets it. */
 export function takeDraft(target: DraftTarget, projectKey: string): string {
   try {

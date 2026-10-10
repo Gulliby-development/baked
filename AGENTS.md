@@ -33,13 +33,11 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 - Keep comments focused on non-obvious intent. Keep documentation technical: setup, behavior, architecture, troubleshooting, and development.
 - Preserve user changes already present in the working directory.
 - Provider names in runtime code (Claude, OpenAI, Codex, GitHub Copilot, GitHub Models) describe supported integrations. Do not rename them when editing these instructions or other contributor documentation.
-- `locales/en.json` is generated from source. When a key is removed from it, remove the same key from every other `locales/<language>.json`, or the `locales` CI check fails.
 
 ## Language
 
 - Write everything in English: code, comments, identifiers, test names, documentation, design documents, audit records and commit messages.
 - Workflow artifacts are English too: research, specifications, plans, task titles and descriptions, reviews, findings and summaries. Write them in English even when the request, project files or answers use another language; translate the meaning and keep identifiers, paths, commands and quoted source text unchanged.
-- The only exception is user-facing translations in `locales/<language>.json`, which keep their own language.
 - Tests that need non-ASCII text use Unicode escapes or non-Cyrillic scripts.
 
 ## Navigation
@@ -63,7 +61,6 @@ CI runs these on every pull request to `main`; run them before merging:
 ```sh
 bun run lint
 bun run typecheck
-bun scripts/validate-locales.ts
 bun test
 bun run build
 ```

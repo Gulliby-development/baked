@@ -1,5 +1,6 @@
 import type { ApiResponse, RunSnapshot, StreamEvent } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
+import { attentionRoutes } from "./mock-attention.js";
 import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
 import { activeRunIds, freezeInputChanged, RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
@@ -93,6 +94,7 @@ const instructionSave: MockRoute = async (request) => {
 };
 
 export const MOCK_ROUTES: MockRoute[] = [
+  attentionRoutes,
   ...RUN_ROUTES,
   workflowRuns,
   projectSummary,

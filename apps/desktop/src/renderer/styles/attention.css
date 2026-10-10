@@ -1,0 +1,227 @@
+/* "Needs you": the item list and the detail pane of the selected item. */
+.att-layout {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 100%;
+  min-width: 0;
+}
+
+.att-list-pane {
+  flex: 1 1 360px;
+  max-width: 480px;
+  border-right: 1px solid var(--line);
+  padding: 22px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.att-list-pane h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.att-detail-pane {
+  flex: 999 1 480px;
+  min-width: 0;
+  padding: 22px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 900px;
+}
+
+.att-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border: 0;
+  margin: 0 0 4px;
+  padding: 0;
+  min-width: 0;
+}
+
+.att-chip {
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.att-chip[aria-pressed="true"] {
+  background: var(--bg-selected);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.att-item {
+  text-decoration: none;
+}
+
+.att-item[aria-current="true"] {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.att-item-title {
+  color: var(--text);
+}
+
+.att-item-meta,
+.att-meta {
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+.att-meta {
+  margin: -10px 0 0;
+}
+
+.att-project {
+  color: var(--info);
+}
+
+.att-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.att-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.att-aside {
+  font-size: 12px;
+  color: var(--ok);
+}
+
+.att-lede {
+  margin: 0;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.att-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.att-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.att-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.att-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.att-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.att-row > :first-child {
+  overflow-wrap: anywhere;
+}
+
+.att-row > :last-child {
+  flex: none;
+}
+
+.att-message {
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+
+.att-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.att-btn {
+  min-height: 42px;
+  padding: 0 18px;
+  text-decoration: none;
+}
+
+.att-form,
+.att-reject {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.att-reject {
+  flex-basis: 100%;
+}
+
+.att-question {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.att-question-text {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.att-input {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  resize: vertical;
+}
+
+.att-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.att-option {
+  flex-direction: column;
+  align-items: flex-start;
+  min-height: 42px;
+  padding: 8px 14px;
+  text-align: left;
+}
+
+.att-notice {
+  border-color: var(--ok);
+}
