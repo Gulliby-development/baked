@@ -63,7 +63,6 @@ fi
 if [[ "$FLAG" != "--skip-checks" ]]; then
   bun run lint
   bun run typecheck
-  bun scripts/validate-locales.ts
   bun test
 fi
 

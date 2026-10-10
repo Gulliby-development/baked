@@ -63,7 +63,6 @@ Prompts and code go only to the model provider you configure. Anonymous usage ev
 - [SDD workflows](design/sdd-workflows/README.md): design and runtime guide for spec-driven workflows.
 - [Development guide](CONTRIBUTING.md): architecture and extension points.
 - [Agent instructions](AGENTS.md): conventions and checks for any coding agent working on this repository.
-- [Localization](locales/README.md): translation format and validation.
 - [Telemetry receiver](telemetry-worker/README.md): optional Cloudflare Worker that collects events.
 
 ## Development
@@ -71,7 +70,6 @@ Prompts and code go only to the model provider you configure. Anonymous usage ev
 ```sh
 bun run lint
 bun run typecheck
-bun scripts/validate-locales.ts
 bun test
 bun run build
 ```
