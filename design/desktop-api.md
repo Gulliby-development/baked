@@ -143,7 +143,7 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `GET /v1/workflow/gates` | | `gates`: gates with `required`, `scope`, `source`, `confirmed`, plus `problems` |
 | `POST /v1/workflow/gates/confirm` | `{ids?: string[], all?: true}` | `gates confirm` |
 | `GET /v1/workflow/route` | `?workflow=&model=&route=` | `route`: who runs each stage and why |
-| `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` | `{days, since, groupBy, runs, attempts, totalTokens, cacheReadTokens, groups: [{key, runs, attempts, tokens, cacheReadTokens}]}` over every attempt started in the window; stage keys are stage IDs (`plan`, `task-T001`, `checks`), days are UTC dates |
+| `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated: `stage,model`), `model?` (`(host)` for host attempts), `stage?` | `{days, since, groupBy: string[], filters, runs, attempts, tokens, totalTokens, inputTokens, outputTokens, cacheReadTokens, costUsd, unpricedTokens, groups: [{key, keys: {model?, stage?, day?}, runs, attempts, tokens, inputTokens, outputTokens, cacheReadTokens, costUsd, unpricedTokens}]}` over every attempt started in the window. `key` joins the group's values with ` / `. Stage keys are stage IDs (`plan`, `task-T001`, `checks`), days are UTC dates. `costUsd` is estimated from the price table (uncached input, cache reads and output; cache writes are not recorded); `unpricedTokens` are tokens of attempts it could not price (no per-step usage, or a model without a price) |
 
 ## Initiatives (B)
 

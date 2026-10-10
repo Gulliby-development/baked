@@ -597,7 +597,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/runs/RUN_ID/progress` | `export-progress` | |
 | `GET /v1/workflow/gates`, `POST /v1/workflow/gates/confirm` | `gates`, `gates confirm` | confirm takes `ids` or `all: true` |
 | `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
-| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day`: tokens of every attempt started in the window, grouped |
+| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads) and estimated cost of every attempt started in the window, grouped |
 | `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `design/desktop-api.md`; start, approve and resume drive the initiative in the background |
 | `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
 | `GET /v1/projects` | `projects list --json` | every folder BAKED was opened in (`~/.baked/known-projects.json`), pinned first: `path`, `name`, `projectId` (null without `baked/project.json`), `pinned`, `exists`, `current` and `overview` (`sessions`, `lastSessionAt`, `activeRuns`, `attention`). Each folder is served by its own `baked serve`. |
