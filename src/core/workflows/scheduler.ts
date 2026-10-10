@@ -1316,14 +1316,41 @@ export class WorkflowScheduler {
             this.store.recordedUsage(runId, attempt),
           ),
         );
+      const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const refusal = accountRefusal(error);
+      // Another model on the same provider shares the refused account; one elsewhere does not.
+      const provider = (model: string) => model.split("/")[0];
+      const elsewhere = refusal
+        ? route.models.findIndex(
+            (model, index) => index > fallbackIndex && provider(model) !== provider(profile.model),
+          )
+        : -1;
+      if (refusal && elsewhere > 0 && !signal.aborted && !wrote)
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          extra,
+          signal,
+          task,
+          0,
+          validate,
+          limits,
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            fallbackIndex: elsewhere,
+            primaryError: placement.primaryError ?? error,
+          },
+        );
       if (refusal && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
           `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}. ${error instanceof Error ? error.message : String(error)}`,
           { reason: "provider_account" },
         );
-      const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
       // and once the chain has already failed over, the run stops instead of blocking on it.

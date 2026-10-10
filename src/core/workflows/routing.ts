@@ -57,15 +57,31 @@ export function routingRecord(
   overrides: Record<string, string> | undefined,
 ): RoutingRecord {
   const stages = resolveStageRoutes(workflowId, stageIds, overrides, inputs(config, model));
+  const chained = withModelFallback(config);
   return {
     schemaVersion: 1,
     runModel: model,
     profiles: Object.fromEntries(
-      registry.list().map((entry: RegisteredProfile) => [entry.profile.id, entry.route]),
+      registry.list().map((entry: RegisteredProfile) => [entry.profile.id, chained(entry.route)]),
     ),
     stages: Object.fromEntries(
-      stages.map(({ stageId, ...route }) => [stageId, recordEntry(route)]),
+      stages.map(({ stageId, ...route }) => [stageId, chained(recordEntry(route))]),
     ),
+  };
+}
+
+/**
+ * A route without fallback models of its own takes the model's `modelFallback` chain, the same
+ * chain chat uses, so a run fails over to it too.
+ */
+function withModelFallback(config: AppConfig): (entry: RoutingEntry) => RoutingEntry {
+  const chains = config.modelFallback ?? {};
+  return (entry) => {
+    if (entry.fallback?.length) return entry;
+    const chain = [...new Set((chains[entry.model] ?? []).map((id) => id.trim()))]
+      .filter((id) => id && id !== entry.model)
+      .slice(0, 3);
+    return chain.length ? { ...entry, fallback: chain } : entry;
   };
 }
 
