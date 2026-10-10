@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { importEcc } from "../agents/profiles/importers/ecc.js";
+import { WORKING_SET_ARTIFACT } from "../projects/working-set.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { importSpecKit } from "../specs/importers/spec-kit.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -62,7 +63,11 @@ export class WorkflowArtifacts implements ArtifactService {
     }
     state.instructionText = instructions.text;
     state.frozenFiles = instructions.files;
-    state.manifest.instructionHashes = instructions.hashes;
+    // The working set stays the one the run captured at creation.
+    state.manifest.instructionHashes = [
+      ...instructions.hashes,
+      ...state.manifest.instructionHashes.filter((h) => h.source === WORKING_SET_ARTIFACT),
+    ];
     state.manifest.constitutionHash =
       instructions.files[join(store.workspace, "baked/constitution.md")] ?? null;
     for (const path of Object.keys(state.published)) {

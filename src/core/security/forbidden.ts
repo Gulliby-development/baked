@@ -217,6 +217,21 @@ export function getAllPatterns(tabId?: string): {
   };
 }
 
+/**
+ * The built-in pattern a path matches, or null. Unlike isForbidden it needs no initForbidden, for
+ * callers that read files outside a session, such as the project working set.
+ */
+export function builtinForbidden(filePath: string): string | null {
+  const normalized = resolve(filePath).replaceAll("\\", "/");
+  const name = basename(normalized);
+  return (
+    BUILTIN_PATTERNS.find((pattern) => {
+      const re = globToRegex(pattern);
+      return re.test(normalized) || re.test(name);
+    }) ?? null
+  );
+}
+
 /** Check if a file path is forbidden. Returns the matching pattern or null. */
 export function isForbidden(filePath: string, tabId?: string): string | null {
   if (!initialized) return null;

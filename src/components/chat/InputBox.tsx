@@ -2,7 +2,8 @@ import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@op
 import { decodePasteBytes, type PasteEvent, TextAttributes } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCommandDefs, isDefHidden } from "../../core/commands/registry.js";
+import { getCommandDefs, isCustomSlashInput, isDefHidden } from "../../core/commands/registry.js";
+import { getCwd } from "../../core/cwd.js";
 import { type FuzzyMatch, fuzzyFilter, fuzzyMatch } from "../../core/history/fuzzy.js";
 import {
   frecencyScore,
@@ -410,7 +411,11 @@ export const InputBox = memo(function InputBox({
           cursorLineRef.current = 0;
         } else {
           pushHistory(completed);
-          onSubmit(completed);
+          if ((isLoading || isCompacting) && isCustomSlashInput(completed, cwd ?? getCwd())) {
+            onQueue?.(completed);
+          } else {
+            onSubmit(completed);
+          }
           resetInput();
         }
         return;
@@ -438,7 +443,11 @@ export const InputBox = memo(function InputBox({
       }
 
       // During loading or compacting: slash commands execute immediately, messages queue
-      if ((isLoading || isCompacting) && !finalInput.trim().startsWith("/")) {
+      // Custom commands expand to prompts, so they queue like messages.
+      const runsNow =
+        finalInput.trim().startsWith("/") &&
+        !isCustomSlashInput(finalInput.trim(), cwd ?? getCwd());
+      if ((isLoading || isCompacting) && !runsNow) {
         const queued = finalInput.trim();
         const images = pendingImages.current.length > 0 ? [...pendingImages.current] : undefined;
         resetInput();
@@ -467,6 +476,7 @@ export const InputBox = memo(function InputBox({
       hasMatchesForNav,
       showAutocomplete,
       hasMatches,
+      cwd,
     ],
   );
 
