@@ -23,9 +23,15 @@ const cliArgs = process.argv.slice(2);
 // memory, all tools) inherits it for free via process.cwd().
 resolveCwdFromArgv(cliArgs);
 
-if (cliArgs[0] === "workflow") {
+if (cliArgs[0] === "workflow" || cliArgs[0] === "doctor") {
   const { runWorkflowCli } = await import("./headless/workflow.js");
-  process.exit(await runWorkflowCli(cliArgs.slice(1)));
+  // `baked doctor` is short for `baked workflow doctor`.
+  process.exit(await runWorkflowCli(cliArgs[0] === "doctor" ? cliArgs : cliArgs.slice(1)));
+}
+
+if (cliArgs[0] === "project") {
+  const { runProjectCli } = await import("./headless/project.js");
+  process.exit(await runProjectCli(cliArgs.slice(1)));
 }
 
 if (cliArgs[0] === "serve") {
@@ -382,7 +388,7 @@ status("Loading Baked", "Preparing Baked");
 const appReady = import("./components/App.js");
 const [configMod, , installMod] = await earlyModules;
 
-const { loadConfig, loadProjectConfig } = configMod;
+const { loadConfig, loadEffectiveProjectConfig } = configMod;
 
 const { getVendoredPath, installRipgrep, installFd, installAstGrep } = installMod;
 
@@ -405,7 +411,7 @@ for (let i = 0; i < args.length; i++) {
 
 status("Reading the scrolls");
 const config = loadConfig();
-const projectConfig = loadProjectConfig(getCwd());
+const projectConfig = loadEffectiveProjectConfig(getCwd());
 
 {
   const priority = projectConfig?.keyPriority ?? config.keyPriority;

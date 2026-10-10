@@ -36,7 +36,7 @@ describe("OpenAI model list", () => {
   });
 });
 
-const effortConfig = (): AppConfig => ({ defaultModel: "", routerRules: [], theme: { name: "default" }, performance: { openaiReasoningEffort: "high" } }) as unknown as AppConfig;
+const effortConfig = (): AppConfig => ({ defaultModel: "", theme: { name: "default" }, performance: { openaiReasoningEffort: "high" } }) as unknown as AppConfig;
 
 describe("reasoning options for later GPT generations", () => {
   for (const id of ["gpt-5", "gpt-5.6-luna", "gpt-6-astra", "gpt-6.1-sol"]) {

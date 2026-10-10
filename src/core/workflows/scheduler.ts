@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -131,6 +132,8 @@ export class WorkflowScheduler {
    * is not saved yet, and a later save never overwrites what the decision wrote.
    */
   private queued: QueuedRequest[] = [];
+  /** Frozen routing records by run; `null` for runs started before routing was recorded. */
+  private routing = new Map<string, RoutingRecord | null>();
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -905,6 +908,24 @@ export class WorkflowScheduler {
   private rootOf(runId: string): string {
     return runRoot(this.store.workspace, this.store.state(runId));
   }
+  /**
+   * The profile with the model its stage is routed to, if the run froze a stage route for the
+   * definition stage this step belongs to. Child steps (tasks, review dimensions, skeptics) follow
+   * their parent stage; transition gates have no stage and keep the profile's model.
+   */
+  private routed(runId: string, stepId: string, profile: AgentProfile): AgentProfile {
+    let routing = this.routing.get(runId);
+    if (routing === undefined) {
+      const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
+      routing = row
+        ? RoutingRecordSchema.parse(JSON.parse(this.store.readArtifact(runId, row.id)))
+        : null;
+      this.routing.set(runId, routing);
+    }
+    const stage = routing ? this.store.rootStage(runId, stepId) : null;
+    const route = stage ? routing?.stages[stage] : undefined;
+    return route && route.model !== profile.model ? { ...profile, model: route.model } : profile;
+  }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
     return profile;
@@ -968,7 +989,7 @@ export class WorkflowScheduler {
     stepId: string,
     state: RuntimeState,
     policy: RunPolicy,
-    profile: AgentProfile,
+    stageProfile: AgentProfile,
     extra: unknown,
     signal: AbortSignal,
     task?: Task,
@@ -978,6 +999,7 @@ export class WorkflowScheduler {
     hostTools?: (attemptId: string) => Record<string, HostTool>,
     placement: { root?: string; attemptId?: string } = {},
   ): Promise<unknown> {
+    const profile = this.routed(runId, stepId, stageProfile);
     const prompt = this.promptFor(runId, state, policy, profile, extra);
     const inputHash = this.store.run(runId).input_hash;
     // A batch of parallel tasks reserves its attempts before any of them starts.
@@ -1087,8 +1109,18 @@ export class WorkflowScheduler {
     profile: AgentProfile,
     extra: unknown,
   ): string {
+    // The agents that start a run see the project's working set; later ones get the research.
+    const workingSet =
+      state.workingSet &&
+      state.research === null &&
+      (profile.context === "research" ||
+        profile.context === "specification" ||
+        profile.context === "planning")
+        ? this.store.readArtifact(runId, state.workingSet.artifactId)
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
+      ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       executionContract: {
         checks: policy.checks,
         profiles: ProfileSchema.array()
@@ -1530,7 +1562,11 @@ export class WorkflowScheduler {
     const planned: { task: Task; profile: AgentProfile; extra: unknown; tokens: number }[] = [];
     let tokens = 0;
     for (const task of tasks) {
-      const profile = this.requireProfile(profiles.find((p) => p.id === task.profileId));
+      const profile = this.routed(
+        runId,
+        stepId,
+        this.requireProfile(profiles.find((p) => p.id === task.profileId)),
+      );
       const extra = {
         task,
         evidence: this.evidenceContext(runId, state, { reads: false }),

@@ -1,12 +1,3 @@
-interface RouterRule {
-  /** glob pattern or keyword to match against the user message */
-  match?: string;
-  /** model ID in "provider/model" format */
-  modelId: string;
-  /** priority — higher wins when multiple rules match */
-  priority?: number;
-}
-
 export interface TaskRouter {
   /** Model for ⚡ spark agents — explore/investigate. */
   spark: string | null;
@@ -281,8 +272,9 @@ export interface AppConfig {
    * Key = model ID, Value = ordered fallback model IDs.
    */
   modelFallback?: Record<string, string[]>;
-  routerRules: RouterRule[];
   taskRouter?: TaskRouter;
+  /** Models of workflow agents by class, role, profile and stage. See `src/core/llm/model-routing.ts`. */
+  modelRouting?: import("../core/llm/model-routing.js").ModelRouting;
   theme: {
     name: string;
     transparent?: boolean;

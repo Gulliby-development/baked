@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type ModelRouting, resolveProfileModel } from "../../llm/model-routing.js";
 import { hashJson } from "../../specs/hash.js";
 import { WorkflowFault } from "../../workflows/errors.js";
 import { builtinProfiles } from "./builtin.js";
@@ -10,12 +11,22 @@ export interface RegisteredProfile {
   profile: AgentProfile;
   source: string;
   hash: string;
+  /** Where the resolved model came from, for example `modelRouting.roles.planner`. */
+  modelSource: string;
+}
+export interface ProfileModels {
+  /** The run model. */
+  active: string;
+  /** Legacy router slots behind the `$coding` and `$review` classes. */
+  coding?: string | undefined;
+  review?: string | undefined;
+  routing?: ModelRouting | undefined;
 }
 export class ProfileRegistry {
   private entries = new Map<string, RegisteredProfile>();
   constructor(
     workspace: string,
-    models: { active: string; coding?: string; review?: string },
+    models: ProfileModels,
     globalDirectory = join(homedir(), ".baked", "agents"),
   ) {
     for (const profile of builtinProfiles) this.add(profile, "builtin", models);
@@ -32,17 +43,13 @@ export class ProfileRegistry {
       }
     }
   }
-  private add(
-    profile: AgentProfile,
-    source: string,
-    models: { active: string; coding?: string; review?: string },
-  ): void {
-    const slots: Record<string, string> = {
-      $active: models.active,
-      $coding: models.coding ?? models.active,
-      $review: models.review ?? models.active,
-    };
-    const resolved = { ...profile, model: slots[profile.model] ?? profile.model };
+  private add(profile: AgentProfile, source: string, models: ProfileModels): void {
+    const routed = resolveProfileModel(profile, {
+      runModel: models.active,
+      routing: models.routing,
+      legacy: { coding: models.coding, review: models.review },
+    });
+    const resolved = { ...profile, model: routed.model };
     const available = new Set([
       "read",
       "bake_find",
@@ -91,7 +98,12 @@ export class ProfileRegistry {
       (resolved.role === "acceptance-writer") !== (resolved.output === "acceptance-draft")
     )
       throw new WorkflowFault("INVALID_DEFINITION", `Incompatible role/output for ${profile.id}`);
-    this.entries.set(profile.id, { profile: resolved, source, hash: hashJson(resolved) });
+    this.entries.set(profile.id, {
+      profile: resolved,
+      source,
+      hash: hashJson(resolved),
+      modelSource: routed.source,
+    });
   }
   list(): RegisteredProfile[] {
     return [...this.entries.values()];

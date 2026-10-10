@@ -14,7 +14,6 @@ import { getCompatReasoningBody } from "../src/core/llm/compat-reasoning.js";
 function baseConfig(perf: Partial<AppConfig["performance"]> = {}): AppConfig {
   return {
     defaultModel: "",
-    routerRules: [],
     theme: { name: "default" },
     performance: perf,
   } as unknown as AppConfig;

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { logBackgroundError } from "../../stores/errors.js";
 import type { ChatMessage } from "../../types/index.js";
 import { safeRename } from "../platform/index.js";
+import { projectIdOf } from "../projects/resolve.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { getIOClient } from "../workers/io-client.js";
 import { rebuildCoreMessages, validateCoreMessages } from "./rebuild.js";
@@ -25,6 +26,11 @@ export interface SessionListEntry {
   startedAt: number;
   updatedAt: number;
   sizeBytes: number;
+  projectId?: string;
+}
+
+function withProjectId(projectId: string | null | undefined): { projectId?: string } {
+  return projectId ? { projectId } : {};
 }
 
 export class SessionManager {
@@ -287,6 +293,7 @@ export class SessionManager {
             startedAt: meta.startedAt,
             updatedAt: meta.updatedAt,
             sizeBytes: this.sessionDirSize(fullPath),
+            ...(meta.projectId ? { projectId: meta.projectId } : {}),
           });
         } catch {
           // Skip corrupted entries
@@ -617,6 +624,7 @@ export class SessionManager {
       activeTabId: fallback.activeTabId,
       forgeMode: fallback.forgeMode,
       tabs: updatedTabs,
+      ...withProjectId(existingMeta?.projectId ?? projectIdOf(fallback.cwd)),
     };
 
     const lines = allMessages.map((m) => JSON.stringify(m)).join("\n");

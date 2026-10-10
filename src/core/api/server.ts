@@ -15,6 +15,9 @@
  * The attention endpoint polls the store the same way for everything that waits for a person
  * across all runs and streams the whole list whenever it changes.
  *
+ * The project endpoints report the workspace's project (`baked/project.json`) with its working
+ * set, sessions and runs, and change the working set, as `baked project` does.
+ *
  * Security: binds 127.0.0.1 only; every request needs the per-start bearer token; the Host header
  * must name the loopback address and port (DNS rebinding); requests with an Origin header are
  * refused unless that origin was allowed explicitly.
@@ -24,6 +27,7 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import { ProjectService } from "../projects/service.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
 import { WorkflowFault } from "../workflows/errors.js";
@@ -53,8 +57,11 @@ import {
   ListQuery,
   RejectBody,
   StartBody,
+  WorkingSetBody,
 } from "./schemas.js";
 
+/** How long shutdown waits for the HTTP server to report its connections closed. */
+const STOP_WAIT_MS = 1000;
 export const API_VERSION = 1;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -72,6 +79,8 @@ export interface ApiServerOptions {
   pollMs?: number;
   heartbeatMs?: number;
   maxBodyBytes?: number;
+  /** The user configuration directory that holds the project registry; tests point it elsewhere. */
+  configDir?: string;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
 }
@@ -241,6 +250,18 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const token = generateApiToken();
   const shutdown = new AbortController();
+  const projects = new ProjectService(
+    service.workspace,
+    options.configDir ? { configDir: options.configDir } : {},
+  );
+  const requireProject = (): void => {
+    if (!projects.current())
+      throw new ApiError(
+        404,
+        "NOT_FOUND",
+        "No project here; run baked project init in the workspace",
+      );
+  };
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
   /** The latest background drive of each run. */
@@ -471,6 +492,27 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       server.timeout(req, 0);
       return attentionStream(req, origin);
     }
+    if (path === "/v1/projects/current") {
+      only("GET");
+      requireProject();
+      return json(200, projects.summary(), origin);
+    }
+    if (path === "/v1/projects/current/working-set") {
+      only("POST");
+      const body = WorkingSetBody.parse(await readJson(req));
+      requireProject();
+      try {
+        if (body.remove?.length) projects.removeFromWorkingSet(body.remove);
+        if (body.add?.length) projects.addToWorkingSet(body.add);
+      } catch (error) {
+        throw new ApiError(
+          400,
+          "INVALID_REQUEST",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return json(200, projects.summary(), origin);
+    }
     if (path === "/v1/workflow/definitions" || path === "/v1/workflow/profiles") {
       only("GET");
       const command = path.endsWith("definitions") ? "definitions" : "profiles";
@@ -597,7 +639,9 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       shutdown.abort(new Error("API server shutdown"));
       for (const close of [...streams]) close();
       try {
-        await server.stop(true);
+        // stop(true) closes every connection at once. On Bun 1.3.13 its promise can stay pending
+        // after a client cancelled an event stream, so the wait for it is bounded.
+        await Promise.race([server.stop(true), Bun.sleep(STOP_WAIT_MS)]);
         await Promise.allSettled([...drives]);
         await service.shutdown();
         if (options.ownsService) service.close();

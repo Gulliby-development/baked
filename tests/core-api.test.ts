@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ApiServer, faultStatus, startApiServer } from "../src/core/api/server.js";
+import { ProjectService } from "../src/core/projects/service.js";
 import { parseServeArgs } from "../src/headless/serve.js";
 import type { RunSnapshot, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -10,14 +11,11 @@ import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
-// Cleanup stops the server, which waits for its background drives to return, then removes the
-// workspace with removeTempDir's own retry window; together they can pass bun's 5 s hook default
-// on a loaded CI runner.
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-}, 30000);
+});
 
-async function setup(options: { allowOrigins?: string[]; maxBodyBytes?: number } = {}) {
+async function setup(options: { allowOrigins?: string[]; maxBodyBytes?: number; configDir?: string } = {}) {
   const fixture = workflowFixture();
   const logs: string[] = [];
   const server = await startApiServer({
@@ -431,5 +429,37 @@ describe("baked serve arguments", () => {
     cleanups.push(() => fixture.dispose());
     await expect(startApiServer({ service: fixture.service, allowOrigins: ["*"] })).rejects.toThrow("Invalid origin");
     await expect(startApiServer({ service: fixture.service, allowOrigins: ["http://a.test/path"] })).rejects.toThrow("Invalid origin");
+  });
+});
+
+describe("project endpoints", () => {
+  test("report the workspace's project and change its working set", async () => {
+    const profile = mkdtempSync(join(tmpdir(), "baked-api-profile-"));
+    cleanups.push(async () => removeTempDir(profile));
+    const { fixture, call, post } = await setup({ configDir: profile });
+    expect((await call("/v1/projects/current")).status).toBe(404);
+    expect((await post("/v1/projects/current/working-set", { add: ["a.ts"] })).status).toBe(404);
+
+    new ProjectService(fixture.root, { configDir: profile }).init({ id: "demo" });
+    writeFileSync(join(fixture.root, "notes.md"), "notes\n");
+    const current = (await (await call("/v1/projects/current")).json()) as { id: string; workingSet: { entries: string[] } };
+    expect(current).toMatchObject({ id: "demo", workingSet: { entries: [] } });
+
+    const added = (await (await post("/v1/projects/current/working-set", { add: ["notes.md"] })).json()) as {
+      workingSet: { entries: string[]; files: { path: string }[] };
+    };
+    expect(added.workingSet.entries).toEqual(["notes.md"]);
+    expect(added.workingSet.files.map((f) => f.path)).toContain("notes.md");
+
+    const outside = await post("/v1/projects/current/working-set", { add: ["../elsewhere.md"] });
+    expect(outside.status).toBe(400);
+    expect(((await outside.json()) as { error: { message: string } }).error.message).toContain("outside the project roots");
+    expect((await post("/v1/projects/current/working-set", {})).status).toBe(400);
+    expect((await call("/v1/projects/current/working-set")).status).toBe(405);
+
+    const removed = (await (await post("/v1/projects/current/working-set", { remove: ["notes.md"] })).json()) as {
+      workingSet: { entries: string[] };
+    };
+    expect(removed.workingSet.entries).toEqual([]);
   });
 });

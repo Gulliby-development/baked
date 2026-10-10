@@ -134,7 +134,7 @@ describe("estimates in a real run", () => {
     expect(readHistory(service.store, 0)[0]?.workflowId).toBe("sdd");
     const second = await complete();
     const saved = readWorkflowView(service, second).estimate.saved!;
-    expect(saved.basis).toBe("history");
+    expect(saved.basis).toBe("workflow-history");
     expect(saved.samples).toBe(1);
     // The first run really spent about 3000 tokens per model call, which the new range reflects.
     const actualFirst = firstView.snapshot.tokenUsage;

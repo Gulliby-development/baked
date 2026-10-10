@@ -51,3 +51,13 @@ export const EventsQuery = z.strictObject({
   after: z.string().regex(/^\d+$/).optional(),
   limit: z.string().regex(/^\d+$/).optional(),
 });
+
+/** Paths relative to the project root; removals apply before additions. */
+export const WorkingSetBody = z
+  .strictObject({
+    add: z.array(z.string().min(1)).max(200).optional(),
+    remove: z.array(z.string().min(1)).max(200).optional(),
+  })
+  .refine((body) => body.add?.length || body.remove?.length, {
+    message: "Name entries to add or remove",
+  });
