@@ -231,6 +231,10 @@ Every model step resends the whole conversation, so a stage that reads many file
 
 The evidence handed to later agents is shaped the same way. Each implemented task stores a unified diff of its changes in its `diff` evidence (`patch`, from the content kept before each edit, cut at 48,000 characters), so reviewers and the convergence auditor see the change without reading whole files. Earlier `read` evidence reaches them as its tool, the paths it named and its size, not its content; implementers get no reads at all.
 
+A workflow agent's `read` of a whole file larger than 20 KB returns the file's outline instead: its classes, functions, methods, types and top-level variables with their line spans, from tree-sitter ([read-outline](../../src/core/workflows/read-outline.ts)). The agent then reads the spans it needs with `ranges` or a symbol with `target`. A file with no outline (an unsupported language or a parse failure) is read whole, and reads with ranges or a target are unchanged. A compacted `read` stub asks for `fresh: true`, because the read tool answers a repeated whole-file read with "already in your context".
+
+The prompt of an agent attempt puts the run's documents (request, research, spec, plan and task graph) on one line before the attempt's own input (the snapshot hashes, the task and its evidence). Attempts of a run then share a byte-identical prefix, which providers serve from their prompt cache.
+
 ## Workflow definitions (v2)
 
 Definitions of schema version 2 describe stages, transitions, contracts and gates as data ([design](workflow-v2-design.md)). `baked workflow run --workflow ID` starts a run from `sdd`, a preset or `baked/workflows/ID.json`; the new-run form lists the same IDs. A run validates the definition against the gate library when it starts and freezes the definition and the gates it binds.
