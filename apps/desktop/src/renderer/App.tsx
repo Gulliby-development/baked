@@ -1,4 +1,6 @@
 import { isMock } from "./client/bridge.js";
+import { Rail } from "./components/Rail.js";
+import { useSidebarExpanded } from "./components/rail-state.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { useRoute } from "./router.js";
 import { AttentionScreen } from "./screens/AttentionScreen.js";
@@ -10,9 +12,14 @@ import { useDesktop } from "./store.js";
 export function App() {
   const route = useRoute();
   const { error } = useDesktop();
+  const expanded = useSidebarExpanded();
   return (
     <div className="shell">
-      <Sidebar route={route} />
+      {route.name === "project" && route.section === "chat" && !expanded ? (
+        <Rail route={route} />
+      ) : (
+        <Sidebar route={route} />
+      )}
       <main className="main">
         {isMock && (
           <div className="banner" style={{ borderRadius: 0, borderWidth: "0 0 1px" }}>

@@ -6,7 +6,7 @@ import type {
   StreamEvent,
 } from "./api.js";
 
-export type HttpMethod = "GET" | "POST";
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type ProjectAction = "pin" | "unpin" | "forget";
 

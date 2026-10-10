@@ -70,6 +70,12 @@ export const workflow = {
     call<RunSnapshot>(key, "POST", runPath(run.runId, "pause"), command(run)),
   cancel: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "cancel"), command(run)),
+  /** Raises the limits of a run that stopped on its budget; omitted limits take BAKED's proposal. */
+  extend: (
+    key: string,
+    run: Pick<RunSnapshot, "runId" | "revision">,
+    limits: { tokens?: number; calls?: number; timeMs?: number } = {},
+  ) => call<RunSnapshot>(key, "POST", runPath(run.runId, "extend"), { ...command(run), ...limits }),
   /** The SSE path of a run's durable event log; event IDs are sequence numbers. */
   eventsPath: (runId: string) => runPath(runId, "events"),
 };

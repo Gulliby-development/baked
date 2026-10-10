@@ -58,9 +58,10 @@ function supervisor(paths: string[], states: BackendState[] = []) {
 }
 
 describe("checkApiPath", () => {
-  test("allows only versioned API paths with GET or POST", () => {
+  test("allows only versioned API paths with the API's methods", () => {
     expect(() => checkApiPath("GET", "/v1/workflow/runs?limit=5")).not.toThrow();
-    expect(() => checkApiPath("DELETE", "/v1/health")).toThrow();
+    expect(() => checkApiPath("PATCH", "/v1/config")).not.toThrow();
+    expect(() => checkApiPath("TRACE", "/v1/health")).toThrow();
     expect(() => checkApiPath("GET", "/v2/health")).toThrow();
     expect(() => checkApiPath("GET", "/v1/../secret")).toThrow();
     expect(() => checkApiPath("GET", "http://evil/v1/health")).toThrow();

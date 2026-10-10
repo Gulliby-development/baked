@@ -1,0 +1,64 @@
+# Run through `bun run package -- --baked <path>` (scripts/package.ts), which builds the app,
+# stages the `baked` binary into dist/.stage/bin and picks the architecture. Targets list no
+# architecture here: one run packages one architecture, chosen by the --x64/--arm64 flag.
+# CI packages Windows x64 and arm64, macOS arm64 and x64, Linux x64.
+appId: dev.baked.desktop
+productName: BAKED
+copyright: Copyright © Gulliby
+artifactName: baked-desktop-${version}-${os}-${arch}.${ext}
+
+directories:
+  output: dist
+  buildResources: build
+
+# The main process and preload are bundled with everything they import, so the app needs no
+# node_modules.
+files:
+  - out/**
+  - "!out/**/*.map"
+  - package.json
+  # The tray icon is loaded from <appPath>/build at runtime.
+  - build/tray.png
+  - build/tray@2x.png
+asar: true
+# No native modules to rebuild for Electron.
+npmRebuild: false
+
+# `baked` (and its `deps/` folder when present) lands in resources/bin, where
+# src/main/backend-command.ts looks for it in a packaged build.
+extraResources:
+  - from: dist/.stage/bin
+    to: bin
+
+# Releases are uploaded by .github/workflows/release.yml, never by electron-builder.
+publish: null
+
+win:
+  # Unsigned until a code signing certificate is available.
+  target: [nsis]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target: [dmg, zip]
+  category: public.app-category.developer-tools
+  # Ad-hoc signature: no Developer ID yet, and Apple Silicon refuses to run an app whose
+  # signature was invalidated by packaging, which an unsigned (identity: null) build is.
+  identity: "-"
+  hardenedRuntime: false
+
+dmg:
+  writeUpdateInfo: false
+
+linux:
+  target: [AppImage, deb]
+  # The default comes from the scoped package name, which is not a valid file name.
+  executableName: baked-desktop
+  syncDesktopName: true
+  category: Development
+  maintainer: Gulliby
+  synopsis: BAKED coding agent
+
