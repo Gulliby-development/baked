@@ -3,6 +3,7 @@ import { backendLabel } from "../format.js";
 import type { ProjectSection } from "../router.js";
 import { useDesktop, useProject } from "../store.js";
 import { SECTION_VIEWS } from "./sections.js";
+import { START_ROUTES } from "./start/index.js";
 
 const TITLES: Record<ProjectSection, string> = {
   overview: "Overview",
@@ -51,7 +52,7 @@ export function ProjectScreen({
   id: string | null;
 }) {
   const project = useProject(projectKey);
-  const View = SECTION_VIEWS[section];
+  const View = START_ROUTES[`${section}/${id}`] ?? SECTION_VIEWS[section];
   if (!project)
     return (
       <div className="page">

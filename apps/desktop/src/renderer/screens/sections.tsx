@@ -4,6 +4,7 @@ import type { ProjectSection } from "../router.js";
 import { InitiativesSection } from "./insights/InitiativesSection.js";
 import { UsageSection } from "./insights/UsageSection.js";
 import { RunsSection } from "./project/RunsSection.js";
+import { ProjectHome } from "./start/index.js";
 
 export interface SectionProps {
   project: DesktopProject;
@@ -13,7 +14,7 @@ export interface SectionProps {
 
 /** The view of each project section; a section without one shows a placeholder. */
 export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<SectionProps>>> = {
-  overview: RunsSection,
+  overview: ProjectHome,
   runs: RunsSection,
   initiatives: InitiativesSection,
   usage: UsageSection,
