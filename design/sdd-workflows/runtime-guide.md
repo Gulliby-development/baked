@@ -17,7 +17,7 @@ Select a configured BAKED model. `defaultModel: "none"` does not allow starting 
       "maxConcurrentWriters": 1,
       "maxAgentSteps": 24,
       "maxAgentCalls": 80,
-      "maxTotalTokens": 400000,
+      "maxTotalTokens": 800000,
       "maxActiveMs": 3600000,
       "maxCostUsd": null,
       "maxRepairRounds": 2,
@@ -128,7 +128,7 @@ Auto approval is off by default. Enabling it is a human act: set `workflows.poli
 "autoApproval": {
   "renewal": true,
   "limits": { "maxTasks": 3, "maxFiles": 5, "allowedPaths": ["src/**", "tests/**"],
-              "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 200000 }
+              "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 800000 }
 }
 ```
 
@@ -185,7 +185,7 @@ Limits can only go up. The change is stored as the immutable artifact `policy-re
 
 ### Soft token checkpoints
 
-The budget preset `checkpoints` removes the hard token cap (the limit becomes 1,000,000,000) and sets `checkpointTokens`, by default half the configured token limit (200k with the default policy). Calls and time are doubled like the extended preset. A run never reserves tokens past the next multiple of the interval: when the next model step could pass it, the step does not start, the run moves to `waiting` with reason `checkpoint` and a durable request of kind `checkpoint` records the usage. The same guard applies to every step of one agent loop, so a runaway loop stops at the checkpoint and not after it.
+The budget preset `checkpoints` removes the hard token cap (the limit becomes 1,000,000,000) and sets `checkpointTokens`, by default half the configured token limit (400k with the default policy). Calls and time are doubled like the extended preset. A run never reserves tokens past the next multiple of the interval: when the next model step could pass it, the step does not start, the run moves to `waiting` with reason `checkpoint` and a durable request of kind `checkpoint` records the usage. The same guard applies to every step of one agent loop, so a runaway loop stops at the checkpoint and not after it.
 
 C (or Enter) continues up to the next checkpoint, one interval beyond the projected spend; X stops the run in `paused`, and resuming asks again instead of spending. From the CLI:
 
