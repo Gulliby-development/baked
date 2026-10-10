@@ -179,7 +179,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
-  usage: ["stage", "top"],
+  usage: ["model", "stage", "top"],
   extend: [
     "tokens",
     "calls",
@@ -384,7 +384,7 @@ estimate [WORKFLOW] (same options as doctor)
   tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
-usage RUN_ID [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
+usage RUN_ID [--model ID] [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new

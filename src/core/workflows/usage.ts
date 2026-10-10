@@ -40,14 +40,19 @@ export function runUsage(
   runId: string,
   stageFilter?: string,
   top?: number,
+  modelFilter?: string,
 ): RunUsageReport {
   const stages = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
   const attempts = store
     .attempts(runId)
     .filter(
       (attempt) =>
-        stageFilter === undefined ||
-        (stages.get(attempt.step_id) ?? attempt.step_id) === stageFilter,
+        (stageFilter === undefined ||
+          (stages.get(attempt.step_id) ?? attempt.step_id) === stageFilter) &&
+        (modelFilter === undefined ||
+          (modelFilter === "(host)"
+            ? attempt.model_id === null
+            : attempt.model_id === modelFilter)),
     )
     .map((attempt): AttemptUsageRow => {
       const row = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);

@@ -16,11 +16,15 @@ function expectInvalidDefinition(operation: () => unknown): void {
   throw new Error("Expected an INVALID_DEFINITION error");
 }
 
-function makeAttempt(id: string, usedTokens: number | null): AttemptRow {
+function makeAttempt(
+  id: string,
+  usedTokens: number | null,
+  modelId: string | null = "fixture/model",
+): AttemptRow {
   return {
     id,
     step_id: `step-${id}`,
-    model_id: "fixture/model",
+    model_id: modelId,
     status: "completed",
     reserved_tokens: 0,
     used_tokens: usedTokens,
@@ -88,13 +92,24 @@ function makeStore(
 
 describe("runUsage totals", () => {
   test("accepts stage and positive top values for usage arguments", () => {
-    expect(parseWorkflowArgs(["usage", runId, "--stage", "planning", "--top", "2"])).toMatchObject({
+    expect(
+      parseWorkflowArgs([
+          "usage",
+          runId,
+          "--model",
+          "fixture/model",
+          "--stage",
+        "planning",
+        "--top",
+        "2",
+      ]),
+      ).toMatchObject({
       command: "usage",
       positional: [runId],
-      flags: { stage: "planning", top: "2" },
-    });
-    expect(() => parseWorkflowArgs(["usage", runId, "--stage"])).toThrow();
-      expect(workflowHelp).toContain("usage RUN_ID [--stage NAME] [--top N]");
+      flags: { model: "fixture/model", stage: "planning", top: "2" },
+      });
+      expect(() => parseWorkflowArgs(["usage", runId, "--stage"])).toThrow();
+      expect(workflowHelp).toContain("usage RUN_ID [--model ID] [--stage NAME] [--top N]");
   });
 
   test("rejects missing or invalid top values and top on other commands", () => {
@@ -137,6 +152,94 @@ describe("runUsage totals", () => {
     expect(report.attempts.map(({ attemptId }) => attemptId)).toEqual(["high", "low"]);
     expect(report.stages[0]).toMatchObject({ attempts: 2, tokens: 20 });
     expect(report.totalTokens).toBe(20);
+  });
+
+  test("filters attempts and aggregates to an exact model", () => {
+    const attempts = [
+      makeAttempt("planning-a", 7, "model/a"),
+      makeAttempt("review-a", 11, "model/a"),
+      makeAttempt("planning-b", 100, "model/b"),
+    ];
+    const store = makeStore(
+      attempts,
+      new Map(),
+      new Map([
+        ["planning-a", "planning"],
+        ["review-a", "review"],
+        ["planning-b", "planning"],
+      ]),
+    );
+
+    const report = runUsage(store, runId, undefined, undefined, "model/a");
+
+    expect(report.attempts.map(({ attemptId }) => attemptId)).toEqual(["planning-a", "review-a"]);
+    expect(report.stages).toEqual([
+      { stage: "planning", attempts: 1, tokens: 7, steps: null },
+      { stage: "review", attempts: 1, tokens: 11, steps: null },
+    ]);
+    expect(report.models).toEqual([{ model: "model/a", attempts: 2, tokens: 18, steps: null }]);
+    expect(report.totalTokens).toBe(18);
+    expect(report.totals.tokens).toBe(18);
+  });
+
+  test("selects only attempts without a model for the host filter", () => {
+    const store = makeStore([
+      makeAttempt("host", 4, null),
+      makeAttempt("modelled", 9, "model/a"),
+    ]);
+
+    const report = runUsage(store, runId, undefined, undefined, "(host)");
+
+    expect(report.attempts.map(({ attemptId }) => attemptId)).toEqual(["host"]);
+    expect(report.stages).toEqual([
+      { stage: "implementation", attempts: 1, tokens: 4, steps: null },
+    ]);
+    expect(report.models).toEqual([{ model: "(host)", attempts: 1, tokens: 4, steps: null }]);
+    expect(report.totalTokens).toBe(4);
+    expect(report.totals.tokens).toBe(4);
+  });
+
+  test("combines model, stage, and top while aggregating all matching attempts", () => {
+    const store = makeStore(
+      [
+        makeAttempt("planning-small", 7, "model/a"),
+        makeAttempt("planning-large", 9, "model/a"),
+        makeAttempt("review", 11, "model/a"),
+        makeAttempt("other-model", 100, "model/b"),
+      ],
+      new Map(),
+      new Map([
+        ["planning-small", "planning"],
+        ["planning-large", "planning"],
+        ["review", "review"],
+        ["other-model", "planning"],
+      ]),
+    );
+
+    const report = runUsage(store, runId, "planning", 1, "model/a");
+
+    expect(report.attempts.map(({ attemptId }) => attemptId)).toEqual(["planning-large"]);
+    expect(report.stages).toEqual([
+      { stage: "planning", attempts: 2, tokens: 16, steps: null },
+    ]);
+    expect(report.models).toEqual([{ model: "model/a", attempts: 2, tokens: 16, steps: null }]);
+    expect(report.totalTokens).toBe(16);
+    expect(report.totals.tokens).toBe(16);
+  });
+
+  test("returns an empty report when no attempts match the model", () => {
+    const report = runUsage(makeStore([makeAttempt("first", 7)]), runId, undefined, undefined, "missing/model");
+
+    expect(report.stages).toEqual([]);
+    expect(report.models).toEqual([]);
+    expect(report.attempts).toEqual([]);
+    expect(report.totalTokens).toBe(0);
+    expect(report.totals).toEqual({
+      tokens: null,
+      steps: null,
+      cacheReadTokens: null,
+      compactedBytes: null,
+    });
   });
 
   test("filters attempts and totals to the selected stage", () => {
