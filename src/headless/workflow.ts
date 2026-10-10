@@ -314,6 +314,7 @@ export async function executeWorkflowCommand(
         service.store,
         runId,
         typeof args.flags.stage === "string" ? args.flags.stage : undefined,
+        typeof args.flags.top === "string" ? Number(args.flags.top) : undefined,
       );
     case "gc":
       return artifacts.gc({

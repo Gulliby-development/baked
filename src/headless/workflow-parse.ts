@@ -70,6 +70,7 @@ const flags = new Set([
   "cursor",
   "status",
   "stage",
+  "top",
   "after",
   "effect",
   "resolution",
@@ -146,7 +147,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
-  usage: ["stage"],
+  usage: ["stage", "top"],
   extend: [
     "tokens",
     "calls",
@@ -198,11 +199,14 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         "INVALID_DEFINITION",
         `Invalid --status value ${JSON.stringify(result.flags[name])}. Valid statuses: ${RunStatus.options.join(", ")}`,
       );
-    if (["expected-revision", "limit", "after", "tokens", "calls", "time-ms"].includes(name)) {
+    if (
+      ["expected-revision", "limit", "after", "tokens", "calls", "time-ms", "top"].includes(name)
+    ) {
       const value = Number(result.flags[name]);
       if (
         !Number.isSafeInteger(value) ||
-        value < (name === "limit" || ["tokens", "calls", "time-ms"].includes(name) ? 1 : 0) ||
+        value <
+          (name === "limit" || ["tokens", "calls", "time-ms", "top"].includes(name) ? 1 : 0) ||
         !/^\d+$/.test(String(result.flags[name]))
       )
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires an integer`);
@@ -314,7 +318,7 @@ route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
   show the model each stage and profile would use and where each choice comes from
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
-usage RUN_ID [--stage NAME]   per-stage and per-attempt token and step usage
+usage RUN_ID [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
