@@ -123,8 +123,13 @@ export async function executeWorkflowCommand(
         ...(number("time-ms") !== undefined ? { maxActiveMs: number("time-ms") } : {}),
       } as Partial<BudgetLimits>);
     }
-    case "revise":
-      return service.revise(runId, identity(), stringFlag(args, "candidate"));
+    case "revise": {
+      const revised = await service.revise(runId, identity(), stringFlag(args, "candidate"));
+      if (args.flags.resume !== true) return revised;
+      await service.resume(runId, { commandId: newId(), expectedRevision: revised.revision });
+      onDrive?.(runId);
+      return service.drive(runId, signal);
+    }
     case "undo": {
       const snapshot = await service.undo(
         runId,
@@ -369,7 +374,8 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     });
     await Promise.all(streams);
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
-    return ["run", "resume"].includes(args.command)
+    return ["run", "resume"].includes(args.command) ||
+      (args.command === "revise" && args.flags.resume === true)
       ? workflowExit(
           result as RunSnapshot,
           PolicySchema.parse(
