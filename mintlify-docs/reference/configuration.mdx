@@ -156,7 +156,7 @@ Keys go to your OS keychain when available, with a file fallback otherwise.
 | Linux | libsecret via `secret-tool` (GNOME Keyring, KWallet) |
 | Linux without `secret-tool` | `~/.baked/secrets.json`, mode `0600` |
 | Windows | DPAPI (`crypt32.dll`) — `%LOCALAPPDATA%\baked\secrets.dat`, user-scoped |
-| Windows without DPAPI | Plain JSON under same dir — set `baked_KEY_PRIORITY=env` to skip disk |
+| Windows without DPAPI | Plain JSON under same dir — set `BAKED_KEY_PRIORITY=env` to skip disk |
 | Windows (WSL) | Same as Linux above |
 
 `baked --set-key <provider> <key>` writes to whichever backend is active. Inspect with `baked --list-providers`.
@@ -216,12 +216,11 @@ Toggle in TUI with `/instructions`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `baked_NO_REPOMAP` | unset | Skip the repo-map scan at startup. |
-| `baked_MAX_OUTPUT_TOKENS` | `64000` | Per-step output cap for all agents (forge + subagents + web-search). Raise for reasoning models that hit `finish_reason=length`. |
-| `baked_PRESETS` | unset | Comma-separated preset specs to load on boot. Set automatically by `--plugin <spec>` flags. See [presets](#presets). |
-| `baked_KEY_PRIORITY` | `env` | Key lookup order. `env` = env→keychain→file, `app` = keychain→file→env. |
-| `baked_NO_PROMPT` | unset | Skip first-run addon wizard (set to `1`). Useful in CI. |
-| `baked_DEBUG_API` | unset | Dump per-step API requests to `~/.baked/api-export/`. |
+| `BAKED_NO_REPOMAP` | unset | Skip the repo-map scan at startup. |
+| `BAKED_MAX_OUTPUT_TOKENS` | `64000` | Per-step output cap for all agents (forge + subagents + web-search). Raise for reasoning models that hit `finish_reason=length`. |
+| `BAKED_KEY_PRIORITY` | `env` | Key lookup order. `env` = env→keychain→file, `app` = keychain→file→env. |
+| `BAKED_NO_PROMPT` | unset | Skip first-run addon wizard (set to `1`). Useful in CI. |
+| `BAKED_DEBUG_API` | unset | Dump per-step API requests to `~/.baked/api-export/`. |
 
 
 

@@ -227,7 +227,7 @@ export async function gitInit(cwd: string): Promise<boolean> {
   return ok;
 }
 
-const CO_AUTHOR_LINE = "Co-Authored-By: baked <baked@baked.com>";
+const CO_AUTHOR_LINE = "Co-Authored-By: BAKED <noreply@github.com>";
 let _coAuthorEnabled = true;
 
 export function setCoAuthorEnabled(enabled: boolean) {

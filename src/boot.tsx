@@ -2,6 +2,8 @@
 
 globalThis.AI_SDK_LOG_WARNINGS = false;
 
+// Map legacy `baked_*` environment variables before any module reads them.
+import "./core/legacy-env.js";
 // Reap orphaned LSP processes from previous sessions BEFORE anything else.
 // Synchronous so a crashed-during-boot run still cleans up its predecessors.
 import { reapOrphanedLspProcesses } from "./core/intelligence/backends/lsp/pid-tracker.js";
@@ -29,6 +31,11 @@ if (cliArgs[0] === "workflow" || cliArgs[0] === "doctor") {
   process.exit(await runWorkflowCli(cliArgs[0] === "doctor" ? cliArgs : cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "telemetry") {
+  const { runTelemetryCli } = await import("./core/telemetry.js");
+  process.exit(runTelemetryCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "project") {
   const { runProjectCli } = await import("./headless/project.js");
   process.exit(await runProjectCli(cliArgs.slice(1)));
@@ -49,42 +56,6 @@ if (hasCli) {
   const action = await parseHeadlessArgs(cliArgs);
   if (action) await runHeadless(action);
   process.exit(0);
-}
-
-// Interactive presets wizard — pre-TUI, uses @clack/prompts.
-if (cliArgs.includes("--presets") || cliArgs[0] === "presets") {
-  const { runPresetsWizard } = await import("./core/presets/index.js");
-  const code = await runPresetsWizard();
-  process.exit(code);
-}
-
-// Collect `--plugin <spec>` (stackable) and pass to the boot pipeline via env.
-// Resolution + merge happens once AppConfig is loaded.
-{
-  const plugins: string[] = [];
-  for (let i = 0; i < cliArgs.length; i++) {
-    if (cliArgs[i] === "--plugin" && i + 1 < cliArgs.length) {
-      const next = cliArgs[i + 1];
-      if (next) plugins.push(next);
-      i++;
-    }
-  }
-  if (plugins.length > 0) process.env.baked_PRESETS = plugins.join(",");
-}
-
-// Resolve presets (from config + --plugin env) into the AppConfig overlay
-// before any loadConfig() consumer reads. Network call; fail-open if offline.
-{
-  const { initPresetsFromEnv } = await import("./core/presets/index.js");
-  const verbose = cliArgs.includes("--verbose-presets");
-  const report = await initPresetsFromEnv({
-    onStatus: verbose ? (msg: string) => process.stderr.write(`[presets] ${msg}\n`) : undefined,
-  });
-  if (report.failed.length > 0 && !verbose) {
-    process.stderr.write(
-      `[presets] ${report.failed.length} failed (run with --verbose-presets for detail)\n`,
-    );
-  }
 }
 
 import { existsSync, readFileSync } from "node:fs";

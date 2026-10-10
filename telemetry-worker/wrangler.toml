@@ -5,11 +5,11 @@ compatibility_date = "2025-01-01"
 # exposed. The beacon is reached only via the custom domain below.
 workers_dev = false
 
-# Custom-domain route. Requires baked.com to be a zone in this Cloudflare
-# account; wrangler provisions the DNS record + cert automatically.
-routes = [
-  { pattern = "t.baked.baked.com", custom_domain = true }
-]
+# Custom-domain route. Set it to a domain that is a zone in your Cloudflare
+# account before deploying; wrangler provisions the DNS record + cert.
+# routes = [
+#   { pattern = "telemetry.example.com", custom_domain = true }
+# ]
 
 # Anonymous usage beacon sink. Write-only into Analytics Engine.
 # No KV, no D1, no secrets — nothing here is sensitive.

@@ -2602,7 +2602,7 @@ export function useChat({
                   const msg = warnings
                     .map((w) => `[${w.type}]${w.message ? ` ${w.message}` : ""}`)
                     .join("; ");
-                  if (process.env.baked_DEBUG_API) {
+                  if (process.env.BAKED_DEBUG_API) {
                     import("../core/tools/tee.js").then(({ saveTee }) =>
                       saveTee("provider-warnings", msg),
                     );
@@ -2883,7 +2883,7 @@ export function useChat({
                   stepNoCache > 0
                     ? stepNoCache
                     : Math.max(0, stepTotal - stepCache - stepCacheWrite);
-                if (process.env.baked_DEBUG_API) {
+                if (process.env.BAKED_DEBUG_API) {
                   const line = `[cache] step total=${String(stepTotal)} noCache=${String(stepNoCache)} cacheRead=${String(stepCache)} cacheWrite=${String(stepCacheWrite)} prompt=${String(stepIn)} output=${String(stepOut)}\n`;
                   try {
                     const g = globalThis as unknown as Record<string, string>;

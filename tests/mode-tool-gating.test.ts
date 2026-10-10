@@ -14,7 +14,7 @@ import { join } from "node:path";
 // No repo map needed — the gate is pure logic over the tool set. Disabling it
 // keeps the background AST-summary worker from spinning up on the tmp dir
 // (which logs disk-I/O noise on teardown). Must be set before ContextManager.
-process.env.baked_NO_REPOMAP = "1";
+process.env.BAKED_NO_REPOMAP = "1";
 
 import { createForgeAgent } from "../src/core/agents/forge.js";
 import { ContextManager } from "../src/core/context/manager.js";

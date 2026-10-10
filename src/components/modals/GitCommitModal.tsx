@@ -54,7 +54,7 @@ export function GitCommitModal({ visible, cwd, coAuthor, onClose, onCommitted, o
       if (files.length > 0) await gitAdd(cwd, files);
     }
     const commitMsg = coAuthor
-      ? `${message.trim()}\n\nCo-Authored-By: baked <noreply@baked.com>`
+      ? `${message.trim()}\n\nCo-Authored-By: BAKED <noreply@github.com>`
       : message.trim();
     const result = await gitCommit(cwd, commitMsg);
     if (result.ok) {
