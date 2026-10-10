@@ -1458,6 +1458,15 @@ export class WorkflowScheduler {
           fileHash(workspacePath(root, path)) === original ? [] : [path],
         );
       const inherited = stillEdited();
+      // The earlier attempt's own edits as a patch: a retry reads only the spans it still has
+      // to change instead of every written file again.
+      const earlierPatch = inherited.length
+        ? await this.taskPatch(
+            runId,
+            root,
+            Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
+          )
+        : "";
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -1473,7 +1482,8 @@ export class WorkflowScheduler {
               ? {
                   earlierEdits: {
                     paths: inherited,
-                    note: "These files already contain edits from an earlier attempt of this task in this run. Read their current content before editing; keep what is correct.",
+                    patch: earlierPatch,
+                    note: "These files already contain the edits in the patch, from an earlier attempt of this task in this run; keep what is correct. Read only the spans you still have to change.",
                   },
                 }
               : {}),

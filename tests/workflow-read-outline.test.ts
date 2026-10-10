@@ -1,8 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LARGE_READ_BYTES, outlineLargeReads } from "../src/core/workflows/read-outline.js";
+import {
+  LARGE_READ_BYTES,
+  outlineLargeReads,
+  WRITTEN_READ_BYTES,
+} from "../src/core/workflows/read-outline.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -50,11 +54,17 @@ test("a large file without an outline is read as asked", async () => {
   expect(result).toEqual({ files: [{ path: text }], outlines: [] });
 });
 
-test("a large file the task writes is read whole up to the written-file limit", async () => {
+test("a file the task writes is read whole up to the written-file limit, outlined above it", async () => {
   const dir = workspace();
   const large = join(dir, "large.ts");
-  expect(await outlineLargeReads([{ path: large }], [large])).toEqual({
-    files: [{ path: large }],
+  const content = readFileSync(large, "utf8");
+  const within = join(dir, "within.ts");
+  writeFileSync(within, content.slice(0, WRITTEN_READ_BYTES - 100));
+  expect(statSync(within).size).toBeGreaterThan(LARGE_READ_BYTES);
+  expect(await outlineLargeReads([{ path: within }], [within])).toEqual({
+    files: [{ path: within }],
     outlines: [],
   });
+  writeFileSync(large, `${content}${"// padding\n".repeat(WRITTEN_READ_BYTES / 10)}`);
+  expect((await outlineLargeReads([{ path: large }], [large])).outlines).toHaveLength(1);
 });

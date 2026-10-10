@@ -50,6 +50,7 @@ export async function autoFormatAfterEdit(filePath: string, cwd?: string): Promi
   try {
     const proc = Bun.spawn(bunShellArgs(command), {
       cwd: effectiveCwd,
+      windowsVerbatimArguments: IS_WIN,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

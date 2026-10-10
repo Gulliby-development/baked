@@ -3,7 +3,7 @@ import { access, readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
-import { bunShellArgs } from "../platform/index.js";
+import { bunShellArgs, IS_WIN } from "../platform/index.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
@@ -893,6 +893,7 @@ export const projectTool = {
       try {
         const result = await executeCheckCommand(scope, executable, argv, {
           cwd,
+          verbatim: true,
           env: { ...buildSafeEnv(), FORCE_COLOR: "0", NO_COLOR: "1", ...args.env },
           timeoutMs: args.timeout ?? getToolTimeoutMs(),
           signal: new AbortController().signal,
@@ -1078,6 +1079,7 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   try {
     const proc = Bun.spawn(bunShellArgs(command), {
       cwd: effectiveCwd,
+      windowsVerbatimArguments: IS_WIN,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

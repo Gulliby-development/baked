@@ -10,10 +10,11 @@ import type { SymbolInfo } from "../intelligence/types.js";
  */
 export const LARGE_READ_BYTES = 20_000;
 /**
- * A file the task writes is read whole up to this size: the edit needs its exact text, and an
- * outline of it turned into many range reads that cost more than the file.
+ * A file the task writes is read whole up to this size: the edit needs its exact text. Above it
+ * the outline and range reads cost less, since range reads stay in the history (run 8 read a
+ * 60 KB written file whole on every attempt, at 45-49k input tokens per step).
  */
-export const WRITTEN_READ_BYTES = 64_000;
+export const WRITTEN_READ_BYTES = 24_000;
 const MAX_OUTLINE_LINES = 200;
 const STRUCTURE = new Set(["class", "interface", "type", "enum", "function", "method"]);
 

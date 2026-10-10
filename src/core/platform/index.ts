@@ -273,9 +273,15 @@ export function safeRename(tmpPath: string, targetPath: string): void {
  * POSIX: `["sh", "-c", cmd]`. Win32: `["cmd.exe", "/d", "/s", "/c", cmd]`.
  * Mirrors `shellInvocation()` but returns the full argv ready for spawn.
  */
+/**
+ * argv that runs a command line through the platform shell. On Windows the line is wrapped in
+ * quotes for `cmd /s /c`, as Node does for `shell: true`, and the spawn must pass
+ * `windowsVerbatimArguments: IS_WIN`: otherwise the runtime escapes the quotes inside the line
+ * and a quoted path reaches the program with literal quotes.
+ */
 export function bunShellArgs(commandLine: string): string[] {
   if (IS_WIN) {
-    return [process.env.COMSPEC ?? "cmd.exe", "/d", "/s", "/c", commandLine];
+    return [process.env.COMSPEC ?? "cmd.exe", "/d", "/s", "/c", `"${commandLine}"`];
   }
   return ["sh", "-c", commandLine];
 }
