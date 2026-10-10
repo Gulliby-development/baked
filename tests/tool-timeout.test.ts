@@ -16,7 +16,6 @@ import type { AppConfig } from "../src/types/index.js";
 // Minimal valid AppConfig for merge testing
 const BASE_CONFIG: AppConfig = {
 	defaultModel: "none",
-	routerRules: [],
 	theme: { name: "dark", transparent: true },
 };
 

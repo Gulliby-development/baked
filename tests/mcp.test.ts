@@ -20,7 +20,6 @@ function writeProjectConfig(data: unknown): void {
 function makeGlobal(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
     defaultModel: "none",
-    routerRules: [],
     theme: { name: "dark" },
     ...overrides,
   };

@@ -203,7 +203,25 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 - The range is built from the runs already in this project: per stage the middle half of the samples (the full spread with two or three samples, minus 30% to plus 40% around a single one), a typical number of tasks and the cost of one task. Without history it uses generic ranges and says so.
 - The form compares the range with the chosen preset: it fits, the high end exceeds the budget, or even the low end does. The checkpoint preset has no cap, so it only reports the interval.
 - After the plan exists, the remaining cost is the open tasks times the typical task cost plus the later stages, less what the running stage already spent. The burn rate is tokens per active minute, and the forecast names the stage where the budget runs out at the typical cost and at the high end.
-- The range shown at creation is kept as `estimates/start.json`. A completed run shows it next to the actual usage.
+- The range shown at creation is kept as `estimates/start.json`, with the approximate cost and the workflow ID. A completed run shows it next to the actual usage.
+
+`baked workflow estimate [WORKFLOW]` prints the estimate before a run, stage by stage and model by model, with the options of `workflow run` that change it (`--model`, `--route`, `--policy`, `--worktree`, `--writers`, `--json`):
+
+- Only the definition's stages count. A stage uses earlier runs of the same workflow when they reached it, then runs of other workflows, then a generic range by stage type (tasks stages: task cost times task count; approval, check and learn stages without history: zero).
+- Each stage carries the models routing gives it: the stage route, else its profile's model; tasks stages use `implementer`, review stages their review profiles, and their tokens are split evenly.
+- The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. Cache writes are not recorded, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The cost is advice only: `maxCostUsd` stays disabled.
+
+### Doctor
+
+`baked doctor` (short for `baked workflow doctor [WORKFLOW]`, same options as `estimate`) checks a run before it starts and exits 1 when something must be fixed:
+
+- Start refusals: workflows disabled, then everything `workflow run` would refuse (policy, definition, routing, gates and their confirmation, auto approval confirmation, profiles, skills, worktree prerequisites, writers). The doctor calls the same validation as the start.
+- Credentials: every model the run can call (stage routes, stage profiles, review and skeptic profiles, and every profile that may implement a task) needs a known provider with a key.
+- Commands: every check command and AI walk-through start command resolves from its working directory. Missing required ones fail, optional ones warn. Nothing is executed.
+- Warnings that do not block: review on the implementer's model, uncommitted changes, stale run worktrees, no Git repository for an inline run, a run that exited without releasing the workspace, and an estimate above `maxTotalTokens`.
+- A live run holding the workspace, or one that stopped with a command of unknown outcome, fails.
+
+`--json` prints the report with every check's `id`, `status`, `title`, `detail` and `fix`, and the estimate.
 
 ### Context compaction
 
@@ -375,11 +393,38 @@ For import, enable `importsEnabled` separately and point to a local source direc
 
 To accept a schema-compatible imported package, pass its spec/plan/tasks to `candidate`; the import itself does not change accepted data. Profiles are loaded from the built-in definitions, `~/.baked/agents/*.json`, then `baked/agents/*.json`. The source and hash are visible in `workflow profiles`. A project workflow is stored in `baked/workflows/ID.json`; the mandatory SDD stages cannot be removed or reordered. Skills live in `baked/skills/ID/SKILL.md` and are frozen by hash.
 
-For a review by another model, save the full definition of `reviewer` or `security-reviewer` in `baked/agents/ID.json` and set its `model` to a specific configured `provider/model`. `workflow profiles` shows the format of the other fields. Correctness, security and skeptic profiles can use different models. Without such an assignment, the built-in `$review` uses an available review slot or the active model. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
+For a review by another model, route it with `modelRouting` (see [Model routing](#model-routing)) rather than copying a profile. A copied profile in `baked/agents/ID.json` can still name a specific `provider/model`, but a project file then carries one person's model choice. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
 
 Export creates a new directory inside the workspace. The host API allows a separate outside-path approval callback; the CLI does not provide one automatically. Raw provider messages and command output are not part of the portable report; known credentials are masked. Redaction removes the selected artifact content, keeps the original hash and a tombstone and invalidates evidence. It does not promise to remove every possible copy of a string from other artifacts.
 
 GC removes only terminal runs older than 30 days and the given cutoff when no child run needs them and they hold no lease. Active/waiting/blocked data and the shared `specs/` are kept. For a backup, stop the writers and save `.baked/workflows.sqlite` together with `.baked/workflow-runs/`. Copying a live SQLite database also needs the WAL/SHM files or an SQLite backup; an arbitrary copy of one file during writes is not a consistent backup.
+
+## Model routing
+
+Profiles name a model class: built-in ones use `$active` (the run model: the tab model or `--model`), `$coding` and `$review`. The `modelRouting` section of the global or project configuration turns classes, roles, profiles and workflow stages into concrete models:
+
+```jsonc
+"modelRouting": {
+  "classes": { "fast": "anthropic/claude-haiku-5-5", "review": "openai/gpt-5.1" },
+  "roles": { "researcher": "$fast", "reporter": "$fast" },
+  "profiles": { "security-reviewer": "anthropic/claude-opus-5-5" },
+  "workflows": { "sdd": { "stages": { "research": "$fast" } } }
+}
+```
+
+A value is a `provider/model` ID or `$class`. A class names a model, not another class. A project layer is merged over the global one section by section, and stage routes workflow by workflow.
+
+The model of an agent is chosen in this order, the first match winning:
+
+1. `--route STAGE=MODEL,...` on `workflow run`;
+2. `modelRouting.workflows.<workflow>.stages.<stage>`;
+3. `modelRouting.profiles.<profile>`;
+4. `modelRouting.roles.<role>`;
+5. the profile's class through `modelRouting.classes`; `$coding` and `$review` then fall back to the `/router` Code (`taskRouter.ember`) and Review (`taskRouter.verify`) slots, and every built-in class to the run model.
+
+A stage route applies to every agent of that stage, including its tasks, review dimensions and skeptics; gates on transitions use their profile's model. A route naming a stage the workflow does not have, or an unknown class, is refused when the run starts.
+
+A run freezes its routing at start in the `routing.json` artifact (each profile's and each routed stage's model with the source of the choice); resume, revise and fork use it, whatever the configuration says later. `baked workflow route [WORKFLOW] [--model ID] [--route ...] [--json]` prints the same table without starting a run, and `workflow profiles [--model ID]` shows each profile's resolved model and `modelSource`.
 
 ## Delivery
 

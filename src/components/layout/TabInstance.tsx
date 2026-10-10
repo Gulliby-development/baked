@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { type ScrollBoxRenderable, TextAttributes } from "@opentui/core";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { isCustomSlashInput } from "../../core/commands/registry.js";
 import { ContextManager, type SharedContextResources } from "../../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../../core/coordination/WorkspaceCoordinator.js";
 import { icon } from "../../core/icons.js";
@@ -530,7 +531,7 @@ export const TabInstance = memo(function TabInstance({
   const branchingRef = useRef(false);
   const handleInputSubmit = useCallback(
     async (input: string, images?: ImageAttachment[]) => {
-      if (input.startsWith("/")) {
+      if (input.startsWith("/") && !isCustomSlashInput(input, cwd)) {
         onCommand(input, chat);
         return;
       }

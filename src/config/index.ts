@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { mergeModelRouting } from "../core/llm/model-routing.js";
 import { configDir } from "../core/platform/index.js";
+import { activeProject } from "../core/projects/resolve.js";
 import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
 import { WorkflowConfigSchema } from "../core/workflows/schemas.js";
 import type { AppConfig, MCPServerConfig } from "../types";
@@ -27,7 +29,6 @@ function getConfigFile(): string {
 
 export const DEFAULT_CONFIG: AppConfig = {
   defaultModel: "none",
-  routerRules: [],
   theme: {
     name: "dark",
     transparent: false,
@@ -151,6 +152,18 @@ export function loadProjectConfig(cwd: string): Partial<AppConfig> | null {
 }
 
 /**
+ * The project layer for reading settings: the active project's manifest defaults with
+ * `<cwd>/.baked/config.json` over them. Code that writes `.baked/config.json` back must keep using
+ * loadProjectConfig, or the manifest defaults would be copied into the checkout config.
+ */
+export function loadEffectiveProjectConfig(cwd: string): Partial<AppConfig> | null {
+  const file = loadProjectConfig(cwd);
+  const defaults = activeProject(cwd)?.manifest.defaults.config as Partial<AppConfig> | undefined;
+  if (!defaults || Object.keys(defaults).length === 0) return file;
+  return { ...defaults, ...file };
+}
+
+/**
  * Merge configs with priority: project > global.
  * Nested settings objects are shallow-merged.
  */
@@ -187,6 +200,8 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       retry,
       mcpServers,
     };
+    const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
+    if (routing) merged.modelRouting = routing;
   }
   if (merged.workflows) merged.workflows = WorkflowConfigSchema.parse(merged.workflows);
   return merged;

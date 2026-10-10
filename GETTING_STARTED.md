@@ -113,6 +113,20 @@ Three tabs:
 - **Installed** — skills on your machine (`~/.agents/skills/`, `~/.claude/skills/`)
 - **Active** — skills loaded in the current session
 
+## Custom Commands
+
+Save repeatable prompts as Markdown files in `.baked/commands/` (project) or `~/.baked/commands/` (global). `.baked/commands/fix-ci.md` becomes `/fix-ci`:
+
+```markdown
+---
+description: Fix a failing CI job
+argument-hint: <job>
+---
+Find why the CI job $1 fails and fix it. Notes: $ARGUMENTS
+```
+
+`$ARGUMENTS` is everything after the command name; `$1` to `$9` are positional arguments (quote multi-word ones). Custom commands appear in the palette under **Custom**, and `/commands` lists them with their files. Built-in commands take precedence over a custom command with the same name. `baked --headless "/fix-ci lint"` expands them as well.
+
 ## Web Search
 
 Forge can search the web and read pages. Two search backends (Brave API → DuckDuckGo fallback) and two page fetchers (Jina Reader → Mozilla Readability fallback).
@@ -168,6 +182,23 @@ Every setting can be saved to one of three scopes:
 - **Global** — saved to `~/.baked/config.json` for all projects
 
 Project settings override global; session overrides both.
+
+## Projects
+
+A project groups the sessions and workflow runs of one piece of work, across one or more checkouts. It is described by `baked/project.json`, which can be committed:
+
+```sh
+baked project init --name "My app" --root ../my-app-docs
+baked project add "src/auth/**/*.ts" docs/auth.md
+baked project show
+```
+
+- **Working set**: the files and globs in `workingSet` go into the chat context at the start of each session (`/clear` captures them again) and into the first agents of each workflow run, so the agent does not search for them again. Files over the budget (64 KB in total, 16 KB per file) are listed by name. Secrets matching the forbidden-file patterns, `.git`, `.baked`, `node_modules`, Git-ignored files and binaries are never included.
+- **Roots**: `roots` names other checkouts of the project. A root outside the current checkout is used only after `baked project register`, which records it in `~/.baked/projects.json`; a root added to the manifest later needs registering again. Sessions started in a registered root belong to the project too. Roots do not change file access: tools still ask before touching files outside the working directory.
+- **Defaults**: `defaults.config` may set `defaultModel`, `taskRouter`, `modelRouting` and `modelFallback`; `.baked/config.json` overrides them. `defaults.instructions` lists markdown files added to the project instructions.
+- Sessions and workflow runs record the project's `id`, so `baked project show` lists them from every root.
+
+See [design/projects-lite.md](design/projects-lite.md) for the design.
 
 ## Storage
 

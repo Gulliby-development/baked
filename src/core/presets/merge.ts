@@ -4,7 +4,7 @@ import type { Preset } from "./loader.js";
 
 /**
  * Translate a preset's free-form keys into an AppConfig patch.
- * Presets may use either AppConfig keys directly (e.g. routerRules, theme, providers)
+ * Presets may use either AppConfig keys directly (e.g. modelRouting, theme, providers)
  * or grouped sections via `config: { ... }`. Both are merged.
  */
 function presetToPatch(preset: Preset): Partial<AppConfig> {
@@ -13,7 +13,7 @@ function presetToPatch(preset: Preset): Partial<AppConfig> {
   // Direct AppConfig-shaped fields
   for (const key of [
     "defaultModel",
-    "routerRules",
+    "modelRouting",
     "providers",
     "theme",
     "codeIntelligence",
