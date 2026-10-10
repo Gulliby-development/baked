@@ -83,6 +83,7 @@ export function Composer({
   model,
   mode,
   autoFocusKey,
+  initialText = "",
   onSend,
   onStop,
   onModel,
@@ -95,13 +96,15 @@ export function Composer({
   mode: ChatMode;
   /** Changing it moves the focus to the textarea, e.g. when another session opens. */
   autoFocusKey: string;
+  /** Text the composer starts with, e.g. a task typed on the project home. */
+  initialText?: string;
   onSend: (text: string) => Promise<boolean>;
   onStop: () => void;
   onModel: (model: string) => void;
   onMode: (mode: ChatMode) => void;
   loadModels: () => Promise<ModelProvider[]>;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refocus when the session changes
