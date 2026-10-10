@@ -1,5 +1,6 @@
 import type { ApiResponse, RunSnapshot, StreamEvent } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
+import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
 import { RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
 import { setupRoutes } from "./mock-setup.js";
@@ -84,8 +85,9 @@ export const MOCK_ROUTES: MockRoute[] = [
   projectSummary,
   startRoutes,
   setupRoutes,
+  ...MOCK_CHAT_ROUTES,
   ...INSIGHTS_ROUTES,
 ];
 
 /** Sample event streams per feature; screens add theirs here. */
-export const MOCK_STREAMS: MockStream[] = [...RUN_STREAMS];
+export const MOCK_STREAMS: MockStream[] = [...RUN_STREAMS, ...MOCK_CHAT_STREAMS];

@@ -60,6 +60,9 @@ export function ProjectScreen({
       </div>
     );
   const backend = backendLabel(project.backend);
+  const live = ["running", "starting", "restarting"].includes(project.backend.kind);
+  // Chat draws its own header and fills the window.
+  if (section === "chat" && View && live) return <View project={project} id={id} />;
   return (
     <div className="page">
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 12 }}>
