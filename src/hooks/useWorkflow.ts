@@ -16,6 +16,10 @@ const exitedOwners = new Map<string, Set<string>>();
 export function workflowIsRunning(runId: string): boolean {
   return [...sessions.values()].some((service) => service.isRunning(runId));
 }
+/** Runs this process executes in any workspace; they pause when the process exits. */
+export function drivingWorkflowRuns(): string[] {
+  return [...sessions.values()].flatMap((service) => service.drivingRuns());
+}
 export async function stopWorkflowSessions(): Promise<void> {
   const clients = [...sessions.values()];
   const results = await Promise.allSettled(

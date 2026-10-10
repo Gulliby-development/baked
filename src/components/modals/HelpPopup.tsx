@@ -35,6 +35,7 @@ function buildHelpLines(t: ReturnType<typeof useTheme>): InfoLineData[] {
     { type: "entry", label: "Ctrl+L", desc: "switch LLM model" },
     { type: "entry", label: "Ctrl+S", desc: "browse skills" },
     { type: "entry", label: "Ctrl+P", desc: "browse sessions" },
+    { type: "entry", label: "Alt+O", desc: "switch project" },
     { type: "entry", label: "Alt+S", desc: "stash current draft" },
     { type: "entry", label: "Alt+P", desc: "pop last stashed draft" },
     { type: "entry", label: "Alt+R", desc: "error log" },

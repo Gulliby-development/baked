@@ -9,6 +9,7 @@ import { register as registerDebug } from "./debug.js";
 import { matchGitPrefix, register as registerGit } from "./git.js";
 import { register as registerHooks } from "./hooks.js";
 import { matchNavPrefix, register as registerNavigation } from "./navigation.js";
+import { register as registerProjects } from "./projects.js";
 import { matchSessionPrefix, register as registerSession } from "./session.js";
 import { register as registerStorage } from "./storage.js";
 import type { CommandContext, CommandHandler } from "./types.js";
@@ -29,6 +30,7 @@ registerCodex(commandMap);
 registerHooks(commandMap);
 registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
+registerProjects(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -160,6 +162,20 @@ export const CATEGORIES = [
 ] as const;
 
 const COMMAND_DEFS: CommandDef[] = [
+  {
+    cmd: "/project",
+    ic: "folder",
+    desc: "This project: sessions, workflow runs, what waits for you",
+    category: "Session",
+    tags: ["folder", "workspace", "sessions", "runs", "working set"],
+  },
+  {
+    cmd: "/projects",
+    ic: "folder",
+    desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",
+    category: "Session",
+    tags: ["folder", "workspace", "switch", "cwd", "open"],
+  },
   {
     cmd: "/workflow",
     ic: "list",

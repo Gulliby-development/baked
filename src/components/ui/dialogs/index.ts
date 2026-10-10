@@ -15,3 +15,4 @@ export {
   type DialogSelectProps,
   openSelect,
 } from "./DialogSelect.js";
+export { PromptDialog, promptText } from "./PromptDialog.js";
