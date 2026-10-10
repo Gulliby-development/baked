@@ -47,7 +47,11 @@ function Card({
   const waiting = project.open ? items.length : overview.attention;
   const state = projectState(project, waiting);
   return (
-    <article className="card proj-card" data-open={project.open || undefined}>
+    <article
+      className="card proj-card"
+      aria-label={project.name}
+      data-open={project.open || undefined}
+    >
       <div className="proj-head">
         <span className="avatar proj-avatar">{initial(project.name)}</span>
         <div className="stack">
@@ -176,7 +180,7 @@ export function ProjectsScreen() {
   return (
     <div className="page">
       <header className="proj-header">
-        <h1>Projects</h1>
+        <h1>All projects</h1>
         <label htmlFor="proj-search" className="sr-only">
           Find a project
         </label>
