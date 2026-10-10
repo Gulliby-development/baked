@@ -19,8 +19,8 @@ import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
 import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
-import { CheckRunner } from "../verification/check-runner.js";
-import { sourceManifest } from "../verification/snapshot.js";
+import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
+import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
@@ -281,6 +281,64 @@ export class NativeAgentExecutor implements AgentExecutor {
                 request.signal,
                 root,
               );
+            } finally {
+              await scope.stop();
+            }
+          },
+        });
+      }
+      const fixable = policy.checks.filter((c) => c.fix);
+      if (
+        !request.hostTools &&
+        request.profile.role === "implementer" &&
+        request.profile.allowedTools.includes("edit_file") &&
+        policy.allowedTools.includes("edit_file") &&
+        fixable.length > 0
+      ) {
+        const task = request.task;
+        available.apply_fix = tool({
+          description: `Run the automatic fixer of a check (${fixable.map((c) => c.id).join(", ")}) on each file this task writes, then run the check and return its result. Use it first for lint or format findings the fixer can resolve, then edit by hand only what remains.`,
+          inputSchema: z.object({ checkId: z.string() }).strict(),
+          execute: async ({ checkId }) => {
+            const check = fixable.find((c) => c.id === checkId);
+            if (!check?.fix || !task)
+              throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
+            const fix = check.fix;
+            const paths = task.writes
+              .filter((w) => w.action !== "delete" && fileHash(workspacePath(root, w.path)))
+              .map((w) => w.path);
+            const generated = generatedPaths(policy);
+            const before = await sourceManifest(root, generated, request.signal);
+            const scope = new ProcessScope();
+            try {
+              const outputs: string[] = [];
+              // One run per file, each recorded like an edit, so undo and rollback see it.
+              for (const path of paths)
+                await guard.execute("edit_file", { path }, async () => {
+                  const executable = fix.executable === "bun" ? process.execPath : fix.executable;
+                  const result = await executeCheckCommand(scope, executable, [...fix.args, path], {
+                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                    env: buildCheckEnv(check),
+                    timeoutMs: check.timeoutMs,
+                    signal: request.signal,
+                  });
+                  outputs.push(`${path}: exit ${String(result.exitCode)}`);
+                });
+              const after = await sourceManifest(root, generated, request.signal);
+              const outside = changedPaths(before, after).filter((p) => !paths.includes(p));
+              if (outside.length)
+                throw new WorkflowFault(
+                  "CAPABILITY_DENIED",
+                  `The ${check.id} fixer changed files outside the task: ${outside.join(", ")}`,
+                );
+              const checked = await new CheckRunner(this.store, scope).run(
+                request.runId,
+                request.attemptId,
+                check,
+                request.signal,
+                root,
+              );
+              return { fixed: outputs, check: checked };
             } finally {
               await scope.stop();
             }
