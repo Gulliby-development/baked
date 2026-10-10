@@ -263,7 +263,11 @@ export async function executeWorkflowCommand(
       return artifacts.exportProgress(runId);
     case "usage":
       service.store.run(runId);
-      return runUsage(service.store, runId);
+      return runUsage(
+        service.store,
+        runId,
+        typeof args.flags.stage === "string" ? args.flags.stage : undefined,
+      );
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),
