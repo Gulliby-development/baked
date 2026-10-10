@@ -171,6 +171,33 @@
   color: var(--text);
 }
 
+.setup-result {
+  color: var(--text-3);
+}
+
+.setup-result.ok {
+  color: var(--ok);
+}
+
+.setup-result.err {
+  color: var(--err);
+}
+
+.setup-output {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-code);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .setup-tag {
   font-size: 11px;
   padding: 2px 7px;

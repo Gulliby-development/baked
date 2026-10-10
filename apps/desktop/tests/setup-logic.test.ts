@@ -1,11 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import type { Check, ConfigView } from "../src/renderer/client/setup.ts";
+import {
+  CHECKS_CAPABILITY,
+  LIBRARY_CAPABILITY,
+  offers,
+} from "../src/renderer/client/capabilities.ts";
+import type {
+  Check,
+  CheckEntry,
+  CheckRunResult,
+  ConfigView,
+} from "../src/renderer/client/setup.ts";
 import {
   checkDraft,
+  checkResultText,
   classRoute,
   classRows,
+  commandLabel,
   draftToCheck,
+  frozenRunState,
+  gateMark,
   joinCommand,
+  plainCheck,
   splitCommand,
   splitList,
   upsertCheck,
@@ -132,6 +147,80 @@ describe("workflowsWithChecks", () => {
 
   test("is undefined without a configured policy", () => {
     expect(workflowsWithChecks(view({}, {}), [lint])).toBeUndefined();
+  });
+});
+
+describe("checks over the API", () => {
+  const result: CheckRunResult = {
+    checkId: "tests",
+    at: 0,
+    status: "failed",
+    exitCode: 2,
+    durationMs: 112_000,
+    outputTail: "1 fail",
+    truncated: true,
+  };
+
+  test("plainCheck drops lastResult and other extra fields before a PUT", () => {
+    const entry: CheckEntry & { extra?: string } = { ...lint, lastResult: result, extra: "x" };
+    expect(plainCheck(entry)).toEqual(lint);
+  });
+
+  test("result lines name the status, a failing exit code and the duration", () => {
+    expect(checkResultText(result)).toBe("failed · exit 2 · 1m 52s");
+    expect(checkResultText({ ...result, status: "passed", exitCode: 0, durationMs: 6000 })).toBe(
+      "passed · 6s",
+    );
+    expect(checkResultText({ ...result, status: "timeout", exitCode: null })).toBe(
+      "timed out · 1m 52s",
+    );
+    expect(checkResultText({ ...result, status: "error", exitCode: null, durationMs: 0 })).toBe(
+      "could not start · 0s",
+    );
+  });
+
+  test("gate marks: unconfirmed project gates first, then the check's last result", () => {
+    const policy = { source: "policy" as const };
+    expect(gateMark({ source: "project", confirmed: false }, result).label).toBe("not confirmed");
+    expect(gateMark(policy, { status: "passed" })).toMatchObject({ text: "✓", tone: "ok" });
+    expect(gateMark(policy, { status: "timeout" })).toMatchObject({
+      tone: "err",
+      label: "timed out",
+    });
+    expect(gateMark(policy, { status: "cancelled" }).tone).toBe("");
+    expect(gateMark(policy, null).label).toBe("not run");
+  });
+
+  test("capabilities decide without probing; an unreadable health answer probes", () => {
+    expect(offers(["workflow", "checks"], CHECKS_CAPABILITY)).toBe(true);
+    expect(offers(["workflow"], LIBRARY_CAPABILITY)).toBe(false);
+    expect(offers(null, CHECKS_CAPABILITY)).toBeNull();
+  });
+
+  test("command names keep one slash", () => {
+    expect(commandLabel("/fix-ci")).toBe("/fix-ci");
+    expect(commandLabel("fix-ci")).toBe("/fix-ci");
+  });
+});
+
+describe("runs that froze a changed file", () => {
+  test("a driving run stops at its next step; stopped runs need a revised plan", () => {
+    expect(frozenRunState({ status: "running", reason: "none" })).toEqual({
+      text: "running; stops at its next step as blocked (input changed)",
+      canRevise: false,
+    });
+    expect(frozenRunState({ status: "blocked", reason: "input_changed" })).toEqual({
+      text: "blocked: input changed; revise the plan to continue",
+      canRevise: true,
+    });
+    expect(frozenRunState({ status: "waiting", reason: "approval" })).toEqual({
+      text: "waiting (approval); resuming needs a revised plan",
+      canRevise: true,
+    });
+    expect(frozenRunState({ status: "paused", reason: "none" }).text).toBe(
+      "paused; resuming needs a revised plan",
+    );
+    expect(frozenRunState({ status: "completed" }).canRevise).toBe(false);
   });
 });
 

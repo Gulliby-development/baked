@@ -1,7 +1,7 @@
 import type { ApiResponse, RunSnapshot, StreamEvent } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
-import { RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
+import { activeRunIds, freezeInputChanged, RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
 import { setupRoutes } from "./mock-setup.js";
 import { startRoutes } from "./mock-start.js";
 
@@ -78,10 +78,24 @@ const projectSummary: MockRoute = async (request) => {
   return response(200, { ...(home.body as object), workingSet, instructions });
 };
 
+/**
+ * Saving an instruction file reports the runs that froze it, and stops those runs the way the
+ * backend does. In the sample data every active run froze every instruction file.
+ */
+const instructionSave: MockRoute = async (request) => {
+  if (request.method !== "PUT" || request.path !== "/v1/projects/current/instructions")
+    return undefined;
+  const saved = await setupRoutes(request);
+  if (saved?.status !== 200) return saved;
+  const affectedRuns = freezeInputChanged(request.key, activeRunIds(request.key));
+  return response(200, { ...(saved.body as object), affectedRuns });
+};
+
 export const MOCK_ROUTES: MockRoute[] = [
   ...RUN_ROUTES,
   workflowRuns,
   projectSummary,
+  instructionSave,
   startRoutes,
   setupRoutes,
   ...INSIGHTS_ROUTES,

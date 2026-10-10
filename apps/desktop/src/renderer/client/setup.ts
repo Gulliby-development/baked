@@ -1,10 +1,13 @@
 /**
  * Project setup and "All projects" settings: working set, gates and checks, instruction files,
- * global and project config, providers and model routing. Paths and shapes follow
- * `design/desktop-api.md` (setup group). Functions marked "proposed" call endpoints the contract
- * does not have yet; the screens treat their 404 as "needs a newer BAKED".
+ * commands and skills, global and project config, providers and model routing. Paths and shapes
+ * follow `design/desktop-api.md`. Checks (`checks` capability) and commands and skills (`library`
+ * capability) came after the first desktop release: their calls check `GET /v1/health` first and
+ * fail like a missing endpoint (404) when the backend does not list the capability, so screens
+ * show "needs a newer BAKED" either way.
  */
 import { ApiError, call } from "./api.js";
+import { CHECKS_CAPABILITY, LIBRARY_CAPABILITY, offers } from "./capabilities.js";
 
 // --- Working set (exists) -----------------------------------------------------------------------
 
@@ -30,15 +33,6 @@ export type GateType = "command" | "human" | "ai-review" | "ai-acceptance";
 export type GateSource = "builtin" | "policy" | "user" | "project";
 export type GateScope = "task" | "feature" | "transition";
 
-/** The latest result of a gate. Proposed: the gates listing does not carry it yet. */
-export interface GateResult {
-  outcome: "passed" | "failed" | "error" | "skipped";
-  at: number;
-  durationMs: number;
-  exitCode?: number | null;
-  runId?: string | null;
-}
-
 /** One entry of `GET /v1/workflow/gates` (`baked workflow gates`). */
 export interface GateEntry {
   id: string;
@@ -52,7 +46,6 @@ export interface GateEntry {
   shadows: { source: GateSource; hash: string; path: string | null }[];
   /** Present on project gates only: whether this checkout's user confirmed the current definition. */
   confirmed?: boolean;
-  lastResult?: GateResult | null;
 }
 
 export interface GateList {
@@ -73,11 +66,35 @@ export interface Check {
   writes: string[];
 }
 
+export type CheckRunStatus = "passed" | "failed" | "timeout" | "cancelled" | "error";
+
+/** `POST /v1/workflow/checks/ID/run`, and a check's `lastResult` until the server stops. */
+export interface CheckRunResult {
+  checkId: string;
+  at: number;
+  status: CheckRunStatus;
+  exitCode: number | null;
+  durationMs: number;
+  /** The last lines of the combined output, ANSI codes removed and known secrets masked. */
+  outputTail: string;
+  /** True when the output was cut to its tail. */
+  truncated: boolean;
+}
+
+export type CheckEntry = Check & { lastResult?: CheckRunResult };
+
+/** `GET|PUT /v1/workflow/checks`. */
+export interface CheckList {
+  checks: CheckEntry[];
+  workflowsEnabled: boolean;
+}
+
 /** A check BAKED found in the project's own files (package.json scripts and the like). */
-export interface GateSuggestion {
+export interface CheckSuggestion {
   check: Check;
   source: string;
   reason: string;
+  /** Builds are offered but not preselected. */
   preselected: boolean;
 }
 
@@ -100,15 +117,23 @@ export interface InstructionList {
   promptBytes: number;
 }
 
-/** Proposed: custom slash commands from `.baked/commands` and `~/.baked/commands`. */
+/** `PUT /v1/projects/current/instructions`: the saved file. */
+export interface SavedInstruction extends InstructionFile {
+  /** Runs that have not ended and froze this file; absent on older backends. */
+  affectedRuns?: string[];
+}
+
+/** A custom slash command from `.baked/commands` of the project or the home folder. */
 export interface CommandEntry {
+  /** The slash name, like `/fix-ci` or `/frontend:component`. */
   name: string;
   scope: "project" | "global";
   path: string;
-  description?: string;
+  description: string;
+  argumentHint?: string;
 }
 
-/** Proposed: skills agents may load. */
+/** An installed skill (`SKILL.md` in `.baked/skills`, `.agents/skills` or `.claude/skills`). */
 export interface SkillEntry {
   id: string;
   scope: "project" | "global";
@@ -188,6 +213,30 @@ export interface RouteExplanation {
 
 const json = (value: string): string => encodeURIComponent(value);
 
+/** The backend's capability groups; null when its health answer cannot be read. */
+async function capabilities(key: string): Promise<string[] | null> {
+  try {
+    return (await call<{ capabilities?: string[] }>(key, "GET", "/v1/health")).capabilities ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calls `request` when the backend offers `capability`. A backend that does not list it fails
+ * with a 404 like a missing endpoint without being asked; when health cannot tell, the request
+ * is tried and its own 404 says the same.
+ */
+async function withCapability<T>(
+  key: string,
+  capability: string,
+  request: () => Promise<T>,
+): Promise<T> {
+  if (offers(await capabilities(key), capability) === false)
+    throw new ApiError(404, "NOT_FOUND", `This BAKED has no ${capability} endpoints`);
+  return request();
+}
+
 export const setup = {
   project: (key: string) => call<ProjectSummary>(key, "GET", "/v1/projects/current"),
   changeWorkingSet: (key: string, change: { add?: string[]; remove?: string[] }) =>
@@ -198,25 +247,42 @@ export const setup = {
     call<{ confirmed: { id: string; hash: string }[] }>(key, "POST", "/v1/workflow/gates/confirm", {
       ids,
     }),
-  /** Proposed: checks detected in the project's files, as `baked workflow init` offers them. */
-  gateSuggestions: (key: string) =>
-    call<{ suggestions: GateSuggestion[] }>(key, "GET", "/v1/workflow/gates/suggestions"),
-  /** Proposed: runs one gate outside a run and returns its result. */
-  runGate: (key: string, id: string) =>
-    call<GateResult>(key, "POST", `/v1/workflow/gates/${json(id)}/run`, {}),
+  /** The policy checks with their latest on-demand result. */
+  checks: (key: string) =>
+    withCapability(key, CHECKS_CAPABILITY, () =>
+      call<CheckList>(key, "GET", "/v1/workflow/checks"),
+    ),
+  /**
+   * Replaces the project's check list. Writes only `workflows.policy.checks` of the project's
+   * `.baked/config.json`; started runs keep the list they froze.
+   */
+  saveChecks: (key: string, checks: Check[]) =>
+    call<CheckList>(key, "PUT", "/v1/workflow/checks", { checks }),
+  /** Checks found in the project's own files, minus the configured ones. */
+  checkSuggestions: (key: string) =>
+    withCapability(key, CHECKS_CAPABILITY, () =>
+      call<{ suggestions: CheckSuggestion[] }>(key, "GET", "/v1/workflow/checks/suggestions"),
+    ),
+  /** Runs one check as a run would, without recording evidence; 409 WORKSPACE_BUSY during a run. */
+  runCheck: (key: string, id: string) =>
+    call<CheckRunResult>(key, "POST", `/v1/workflow/checks/${json(id)}/run`, {}),
 
   instructions: (key: string) =>
     call<InstructionList>(key, "GET", "/v1/projects/current/instructions"),
   saveInstruction: (key: string, path: string, content: string, expectedHash: string) =>
-    call<InstructionFile>(key, "PUT", "/v1/projects/current/instructions", {
+    call<SavedInstruction>(key, "PUT", "/v1/projects/current/instructions", {
       path,
       content,
       expectedHash,
     }),
-  /** Proposed. */
-  commands: (key: string) => call<{ commands: CommandEntry[] }>(key, "GET", "/v1/commands"),
-  /** Proposed. */
-  skills: (key: string) => call<{ skills: SkillEntry[] }>(key, "GET", "/v1/skills"),
+  commands: (key: string) =>
+    withCapability(key, LIBRARY_CAPABILITY, () =>
+      call<{ commands: CommandEntry[] }>(key, "GET", "/v1/commands"),
+    ),
+  skills: (key: string) =>
+    withCapability(key, LIBRARY_CAPABILITY, () =>
+      call<{ skills: SkillEntry[] }>(key, "GET", "/v1/skills"),
+    ),
 
   config: (key: string) => call<ConfigView>(key, "GET", "/v1/config"),
   patchConfig: (

@@ -65,6 +65,8 @@ export interface RunSnapshot {
   runId: string;
   featureId: string;
   status: RunState;
+  /** Why the run is in this state (`approval`, `input_changed`, `budget_exhausted`, ...). */
+  reason?: string;
   revision: number;
   eventSeq: number;
   stageId: string | null;

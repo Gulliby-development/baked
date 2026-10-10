@@ -127,7 +127,16 @@ export function createMockBridge(): DesktopBridge {
           apiVersion: 1,
           version: "0.1.1",
           workspace: found.path,
-          capabilities: ["workflow", "attention", "projects", "sessions", "setup", "initiatives"],
+          capabilities: [
+            "workflow",
+            "attention",
+            "projects",
+            "sessions",
+            "setup",
+            "initiatives",
+            "checks",
+            "library",
+          ],
         });
       const url = new URL(path, "http://mock");
       for (const route of MOCK_ROUTES) {

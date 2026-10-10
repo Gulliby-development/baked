@@ -10,7 +10,7 @@ import {
 } from "../../client/setup.js";
 import { useDesktop } from "../../store.js";
 import "../../styles/setup.css";
-import { type ClassRow, classRoute, classRows, splitList } from "./logic.js";
+import { type ClassRow, classRoute, classRows, commandLabel, splitList } from "./logic.js";
 import { errorText, LoadState, NeedsNewer, Tag, useLoad } from "./shared.js";
 
 /** Writes top-level keys of the global config; resolves to whether it worked. */
@@ -493,8 +493,11 @@ function GlobalCommands({ projectKey }: { projectKey: string }) {
         <ul className="card setup-list setup-flush">
           {global.map((c) => (
             <li key={c.path} className="setup-line">
-              <span className="mono">/{c.name}</span>
-              <span className="muted setup-grow">{c.description ?? ""}</span>
+              <span className="mono">
+                {commandLabel(c.name)}
+                {c.argumentHint ? <span className="muted"> {c.argumentHint}</span> : null}
+              </span>
+              <span className="muted setup-grow">{c.description}</span>
               <span className="mono muted setup-note">{c.path}</span>
             </li>
           ))}

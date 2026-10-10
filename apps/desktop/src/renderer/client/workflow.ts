@@ -69,6 +69,23 @@ export const workflow = {
     run: Pick<RunSnapshot, "runId" | "revision">,
     limits: { tokens?: number; calls?: number; timeMs?: number } = {},
   ) => call<RunSnapshot>(key, "POST", runPath(run.runId, "extend"), { ...command(run), ...limits }),
+  /**
+   * Stages a revision of the run's accepted inputs. With no field it adopts the current
+   * instruction files, which is how a run continues after one of them changed.
+   */
+  candidate: (key: string, runId: string) =>
+    call<{ candidateHash: string; reportArtifactId: string }>(
+      key,
+      "POST",
+      runPath(runId, "candidate"),
+      { commandId: commandId() },
+    ),
+  /** Applies a staged candidate; the plan then waits for approval again before the run resumes. */
+  revise: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, candidateHash: string) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "revise"), {
+      ...command(run),
+      candidate: candidateHash,
+    }),
   /** The SSE path of a run's durable event log; event IDs are sequence numbers. */
   eventsPath: (runId: string) => runPath(runId, "events"),
 };
