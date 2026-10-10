@@ -17,6 +17,9 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 
 ## Task workflow
 
+- Planned work is tracked as GitHub Issues in this repository (shown on the project board), not in markdown files. Before starting, find the issue for the task or open one; record a new idea, follow-up or deferred item as an issue instead of a document or a TODO list.
+  - Labels: `verification` (a check that needs a real model, device or account), `idea` (not yet decided), `needs-gulliby` (only the owner can do or decide it), `deferred` (agreed for later), and `area:workflow|tui|desktop|api|ci|release`. Use the issue type Task, Bug or Feature.
+  - A pull request that finishes an issue says `Closes #N` in its description so the merge closes the issue; reference it with `Refs #N` when the PR is only part of it.
 - Start every task on its own branch, created from an up-to-date `main`:
   - new feature: `feature/<name>`;
   - bug fix: `bugfix/<name>`.
