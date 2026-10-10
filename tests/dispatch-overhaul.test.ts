@@ -417,7 +417,7 @@ describe("normalizePath edge cases", () => {
 describe("FinalResponseView dispatch pairs", () => {
   test("module loads without errors", async () => {
     // FinalResponseView is a React component — verify the module loads
-    // and doesn't contain stale miniforge/fork terminology
+    // and doesn't contain stale minibake/fork terminology
     const mod = await import("../src/components/chat/FinalResponseView.js");
     // Module should have exports (component may be default or named)
     expect(Object.keys(mod).length).toBeGreaterThan(0);
