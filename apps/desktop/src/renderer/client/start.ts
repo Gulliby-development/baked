@@ -1,0 +1,155 @@
+import type { RunSnapshot } from "../../shared/api.js";
+import { preRunQuery } from "../screens/start/logic.js";
+import { ApiError, call } from "./api.js";
+
+/**
+ * The project home and the run start forms: the project summary, workflow definitions and
+ * profiles, the pre-run doctor and estimate, and starting a run. Shapes mirror
+ * `src/core/projects/service.ts` (`ProjectSummary`), `src/core/workflows/v2/definitions.ts`
+ * (`DefinitionSummary`) and `src/core/workflows/doctor.ts` / `estimate.ts`; only the fields the
+ * screens read are declared.
+ */
+
+export interface SessionEntry {
+  id: string;
+  title: string;
+  messageCount: number;
+  startedAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  root: string;
+  roots: string[];
+  ignoredRoots: string[];
+  /** Not in the API yet; shown when a backend reports it. */
+  branch?: string | null;
+  workingSet: {
+    entries: string[];
+    files: { path: string; bytes: number }[];
+    skipped: { path: string; reason: string }[];
+  };
+  instructions: { files: string[]; skipped: string[] };
+  sessions: SessionEntry[];
+  runs: RunSnapshot[];
+}
+
+export interface DefinitionSummary {
+  id: string;
+  source: "builtin" | "project";
+  preset: string | null;
+  description: string;
+  stages: string[];
+  writes: boolean;
+  problems: string[];
+  execution: "inline" | "worktree" | null;
+  worktreeRefusal: string | null;
+}
+
+export interface RoutedProfile {
+  profile: { id: string };
+  route: { model: string };
+}
+
+export interface TokenRange {
+  low: number;
+  high: number;
+}
+
+export type Fit = "yes" | "maybe" | "no";
+
+export interface PreRunEstimate {
+  workflowId: string;
+  tokens: TokenRange;
+  costUsd: TokenRange | null;
+  costComplete: boolean;
+  basis: "workflow-history" | "history" | "defaults";
+  samples: number;
+  notes: string[];
+  stages: {
+    stageId: string;
+    type: string;
+    models: string[];
+    tokens: TokenRange;
+    costUsd: TokenRange | null;
+  }[];
+  budget: { maxTotalTokens: number; fits: Fit };
+  label: string;
+}
+
+export type DoctorStatus = "ok" | "warn" | "fail" | "skip";
+
+export interface DoctorCheck {
+  id: string;
+  status: DoctorStatus;
+  title: string;
+  detail?: string;
+  fix?: string;
+  subject?: string;
+}
+
+export interface DoctorReport {
+  workflowId: string;
+  runModel: string | null;
+  ready: boolean;
+  checks: DoctorCheck[];
+  estimate: PreRunEstimate | null;
+}
+
+/** The run limits a budget preset scales; the rest of the policy is passed through unchanged. */
+export interface PolicyLimits {
+  maxTotalTokens: number;
+  maxAgentCalls: number;
+  maxActiveMs: number;
+  checkpointTokens?: number | null;
+}
+export type RunPolicy = PolicyLimits & Record<string, unknown>;
+
+/** The inputs of a start that change the doctor and the estimate (`PreRunQuery`). */
+export interface PreRunInput {
+  workflow?: string;
+  model?: string;
+  worktree?: boolean;
+  writers?: number;
+}
+
+/** `POST /v1/workflow/runs` (`StartBody` in `src/core/api/schemas.ts`). */
+export interface StartBody {
+  commandId: string;
+  feature: string;
+  prompt: string;
+  workflow?: string;
+  policy?: RunPolicy;
+  model?: string;
+  worktree?: boolean;
+  writers?: number;
+}
+
+/** The most tasks a run may implement at once (`MAX_CONCURRENT_WRITERS` in the core). */
+export const MAX_WRITERS = 4;
+
+/** True when the backend does not have the endpoint, so the screen asks for a newer BAKED. */
+export const isMissingEndpoint = (error: unknown): boolean =>
+  error instanceof ApiError && error.status === 404 && /^No endpoint/.test(error.message);
+
+export const start = {
+  summary: (key: string) => call<ProjectSummary>(key, "GET", "/v1/projects/current"),
+  definitions: (key: string) => call<DefinitionSummary[]>(key, "GET", "/v1/workflow/definitions"),
+  profiles: (key: string) => call<RoutedProfile[]>(key, "GET", "/v1/workflow/profiles"),
+  doctor: (key: string, input: PreRunInput = {}) =>
+    call<DoctorReport>(key, "GET", `/v1/workflow/doctor${preRunQuery(input)}`),
+  estimate: (key: string, input: PreRunInput) =>
+    call<PreRunEstimate>(key, "GET", `/v1/workflow/estimate${preRunQuery(input)}`),
+  /**
+   * The configured run policy, which budget presets other than `standard` scale: the effective
+   * config's `workflows.policy` from `GET /v1/config` (contract group B). Null when the config
+   * sets no policy, so the core's default applies and the app cannot scale it.
+   */
+  policy: (key: string) =>
+    call<{ effective: { workflows?: { policy?: RunPolicy } } }>(key, "GET", "/v1/config").then(
+      (config) => config.effective.workflows?.policy ?? null,
+    ),
+  run: (key: string, body: StartBody) => call<RunSnapshot>(key, "POST", "/v1/workflow/runs", body),
+};

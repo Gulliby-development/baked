@@ -45,8 +45,9 @@ export interface WorkflowArgs {
   positional: string[];
   flags: Record<string, string | true>;
   /**
-   * Values supplied in place of the JSON files named by file flags, keyed by flag name (the flag
-   * itself is then `true`). API clients send these in request bodies instead of file paths.
+   * Values supplied in place of the files named by file flags, keyed by flag name (the flag itself
+   * is then `true`): the parsed value of a JSON file, the text of a text file. API clients send
+   * these in request bodies instead of file paths.
    */
   inline?: Record<string, unknown>;
 }
