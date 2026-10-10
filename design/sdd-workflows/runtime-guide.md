@@ -597,6 +597,8 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/runs/RUN_ID/progress` | `export-progress` | |
 | `GET /v1/workflow/gates`, `POST /v1/workflow/gates/confirm` | `gates`, `gates confirm` | confirm takes `ids` or `all: true` |
 | `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
+| `POST /v1/workflow/runs/RUN_ID/candidate`, `/revise` | `candidate`, `revise` | candidate takes `commandId` and inline `spec`, `plan`, `tasks`, `policy`; revise takes `candidate` plus `commandId`, `expectedRevision` |
+| `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; `GET /v1/commands`, `GET /v1/skills` | | the terminal UI's gate editor, custom commands and skills; see `design/desktop-api.md` |
 | `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads) and estimated cost of every attempt started in the window, grouped |
 | `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `design/desktop-api.md`; start, approve and resume drive the initiative in the background |
 | `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
@@ -620,7 +622,7 @@ The event endpoint polls the durable event log by sequence every 250 ms and send
 
 With `Accept: application/json` the answer is `{"items":[...]}`. Otherwise it is an SSE stream that polls the store every 250 ms and sends the whole list as `event: attention` with `data: {"items":[...]}` once on connect and again whenever the list changes, with the same `: keep-alive` heartbeats; there is no event ID to resume from, since every frame is complete. The list is derived from the store, so runs driven by the CLI or the TUI appear as well, and no new durable event type exists for it.
 
-Limitations: event payloads and artifact contents are returned as `baked workflow status`, `--events` and `artifacts` return them, without the export redaction. `candidate`, `revise`, `import` and `export` are not exposed yet; use the CLI. A run driven by another process (the CLI or the TUI) can be watched through the event endpoint; the workspace leases decide which process may drive a run, as between two CLI processes.
+Limitations: event payloads and artifact contents are returned as `baked workflow status`, `--events` and `artifacts` return them, without the export redaction. `import` and `export` are not exposed yet; use the CLI. A run driven by another process (the CLI or the TUI) can be watched through the event endpoint; the workspace leases decide which process may drive a run, as between two CLI processes.
 
 ## Exit codes
 
