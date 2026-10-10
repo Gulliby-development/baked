@@ -2,6 +2,8 @@ import type { ComponentType } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { ProjectSection } from "../router.js";
 import { ChatSection } from "./chat/ChatSection.js";
+import { InitiativesSection } from "./insights/InitiativesSection.js";
+import { UsageSection } from "./insights/UsageSection.js";
 import { RunsSection } from "./project/RunsSection.js";
 
 export interface SectionProps {
@@ -15,4 +17,6 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   overview: RunsSection,
   chat: ChatSection,
   runs: RunsSection,
+  initiatives: InitiativesSection,
+  usage: UsageSection,
 };
