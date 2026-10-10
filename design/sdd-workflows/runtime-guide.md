@@ -555,7 +555,7 @@ Exit codes of `start`, `approve`, `drive` and `resume`: 0 completed or still pro
 
 ## Local API (`baked serve`)
 
-`baked serve` exposes the workflow commands to a desktop app or another local client over HTTP. It is a thin front end over the same code path as `baked workflow` (`src/core/api/server.ts` builds the CLI's `WorkflowArgs` and calls `executeWorkflowCommand`), so validation, the `workflows.enabled` opt-in, approval digests, expected revisions and command idempotency are identical.
+`baked serve` exposes the workflow commands to a desktop app or another local client over HTTP. It is a thin front end over the same code path as `baked workflow` (`src/core/api/server.ts` builds the CLI's `WorkflowArgs` and calls `executeWorkflowCommand`), so validation, the `workflows.enabled` opt-in, approval digests, expected revisions and command idempotency are identical. The chat endpoints (`/v1/sessions`, `/v1/models`) run conversations with the terminal UI's agent and store them with its sessions; they are specified in `design/desktop-api.md`.
 
 The desktop app's contract over this API, including the chat sessions and project setup endpoints, is [`design/desktop-api.md`](../desktop-api.md).
 
@@ -571,7 +571,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 
 | Method and path | CLI equivalent | Body or query |
 | --- | --- | --- |
-| `GET /v1/health` | | returns `apiVersion`, `version`, `workspace` |
+| `GET /v1/health` | | returns `apiVersion`, `version`, `workspace` and `capabilities` (the endpoint groups of `design/desktop-api.md` this server implements) |
 | `GET /v1/workflow/definitions` | `definitions` | |
 | `GET /v1/workflow/profiles` | `profiles` | |
 | `GET /v1/workflow/doctor` | `doctor` | `?workflow=&model=&route=STAGE=MODEL,...&worktree=true&writers=&confirmAutoApproval=`; uses the configured policy; 200 with the report, `ready` false when a check failed |
@@ -598,10 +598,11 @@ Every mutation requires a client-chosen `commandId` (letters, digits, `_` and `-
 
 The event endpoint polls the durable event log by sequence every 250 ms and sends each event as `id: SEQ` and `data: EVENT_JSON`, with a `: keep-alive` comment every 15 s. A reconnecting client sends `Last-Event-ID`, which takes precedence over `?after=`, and receives only later events. The stream stays open (also for waiting and terminal runs, which can still receive acceptance and delivery events) until the client disconnects or the server stops. Browsers' `EventSource` cannot send an `Authorization` header; read the stream with `fetch` instead.
 
-`GET /v1/attention` lists everything waiting for a person across all runs of the workspace, oldest first, from one store query. Each item is `{runId, featureId, status, requestId, kind, blocking, createdAt}`:
+`GET /v1/attention` lists everything waiting for a person across all runs and chat sessions of the workspace, oldest first. Each item is `{source, runId, featureId, sessionId, title, status, requestId, kind, blocking, createdAt}`; run items have `source: "run"` and null `sessionId` and `title`:
 
 - Every pending request of a run that is not `cancelled` or `failed`: `kind` is the request kind (`approval`, `clarification`, `manual_evidence`, `recovery`, `checkpoint`, `delivery`). An advisory acceptance-test request (an `approval` request carrying an acceptance walk-through) has `blocking: false`, because the run does not wait for it; every other request has `blocking: true`. `createdAt` is the time of the request's `request.created` event.
 - Every run with status `blocked`: `requestId` is `null`, `kind` is the run's reason (for example `input_changed` or `verification_failed`), `blocking` is `true` and `createdAt` is the run's last status change.
+- Every pending prompt of a chat session loaded by this server: `source` is `chat`, `sessionId` and `title` name the session, `runId` and `featureId` are `null`, `status` is `waiting`, `requestId` is the prompt id and `kind` the prompt kind (`outside-cwd`, `destructive`, `web-search`, `fetch-page`, `question`).
 
 With `Accept: application/json` the answer is `{"items":[...]}`. Otherwise it is an SSE stream that polls the store every 250 ms and sends the whole list as `event: attention` with `data: {"items":[...]}` once on connect and again whenever the list changes, with the same `: keep-alive` heartbeats; there is no event ID to resume from, since every frame is complete. The list is derived from the store, so runs driven by the CLI or the TUI appear as well, and no new durable event type exists for it.
 
