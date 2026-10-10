@@ -63,6 +63,7 @@ import {
   validateWorkflowV2,
   type WorkflowV2,
   WorkflowV2Schema,
+  worktreeRefusal,
 } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
 import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
@@ -202,11 +203,8 @@ export class NativeWorkflowService implements WorkflowService {
     const writers = writerPolicyProblem(policy);
     if (writers) throw new WorkflowFault("INVALID_DEFINITION", writers);
     if (mode === "worktree") {
-      if (loaded.schemaVersion === 2 && loaded.definition.inputs.includes("diff"))
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          "A definition that reviews the working copy's diff runs inline; a worktree would not contain that diff",
-        );
+      const refusal = loaded.schemaVersion === 2 ? worktreeRefusal(loaded.definition) : null;
+      if (refusal) throw new WorkflowFault("INVALID_DEFINITION", refusal);
       await worktreeBase(this.workspace);
     }
     for (const id of Object.values(policy.reviewProfiles))

@@ -331,6 +331,8 @@ describe("definitions on disk", () => {
     ]);
     expect(listed.filter((d) => d.problems.length).map((d) => d.id)).toEqual(["bad"]);
     expect(listed.find((d) => d.id === "spike")?.writes).toBe(false);
+    expect(listed.find((d) => d.id === "review-only")?.worktreeRefusal).toContain("runs inline");
+    expect(listed.find((d) => d.id === "standard")?.worktreeRefusal).toBeNull();
   });
 });
 

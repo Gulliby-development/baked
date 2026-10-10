@@ -369,6 +369,16 @@ export const WorkflowV2Schema = z
   .strict();
 export type WorkflowV2 = z.infer<typeof WorkflowV2Schema>;
 
+/**
+ * Why a definition cannot run in a worktree, or null. A definition that reviews the working
+ * copy's diff needs that diff, which a fresh worktree would not contain.
+ */
+export function worktreeRefusal(definition: Pick<WorkflowV2, "inputs">): string | null {
+  return definition.inputs.includes("diff")
+    ? "A definition that reviews the working copy's diff runs inline; a worktree would not contain that diff"
+    : null;
+}
+
 /** Outcomes each stage type can report. A rejected approval pauses the run and takes no transition. */
 export const STAGE_OUTCOMES: Record<Stage["type"], readonly Outcome[]> = {
   agent: ["passed"],

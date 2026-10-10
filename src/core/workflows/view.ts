@@ -12,7 +12,15 @@ import {
   type StageProgress,
   type StartEstimate,
 } from "./estimate.js";
-import type { RunPolicy, RunSnapshot, StageState, WorkflowEvent } from "./schemas.js";
+import {
+  type ExecutionMode,
+  executionModeOf,
+  MAX_CONCURRENT_WRITERS,
+  type RunPolicy,
+  type RunSnapshot,
+  type StageState,
+  type WorkflowEvent,
+} from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
 import { parseRunDefinition, stageKind } from "./v2/runtime.js";
@@ -30,6 +38,45 @@ export interface StartRunInput {
   prompt: string;
   model: string;
   budget: BudgetPresetId;
+  /** Requested execution mode, as `workflow run --worktree`; omitted, the definition's applies. */
+  executionMode?: ExecutionMode;
+  /** Requested concurrent writers, as `--writers N`; sent only with worktree execution. */
+  maxConcurrentWriters?: number;
+}
+
+/** The execution controls of the new-run form. */
+export interface ExecutionChoice {
+  worktree: boolean;
+  /** 1..MAX_CONCURRENT_WRITERS; applies only with worktree execution. */
+  writers: number;
+}
+export const clampWriters = (n: number): number =>
+  Math.max(1, Math.min(MAX_CONCURRENT_WRITERS, Math.trunc(n) || 1));
+
+/**
+ * What the form shows before the user changes it: the definition's execution mode, otherwise the
+ * policy's, which is also what the core picks when the request names no mode.
+ */
+export function initialExecution(info: WorkflowInfo | null, workflowId: string): ExecutionChoice {
+  const definition = info?.definitions?.[workflowId];
+  const policyMode = info ? executionModeOf(info.policy) : "inline";
+  return {
+    worktree: (definition?.execution ?? policyMode) === "worktree",
+    writers: clampWriters(info?.policy.maxConcurrentWriters ?? 1),
+  };
+}
+
+/**
+ * The start request fields for the form's execution controls, the same as
+ * `baked workflow run --worktree --writers N`: the writer count is sent only with a worktree, so
+ * an inline run keeps the policy's writers and the core reports a policy that needs a worktree.
+ */
+export function executionRequest(
+  choice: ExecutionChoice,
+): Pick<StartRunInput, "executionMode" | "maxConcurrentWriters"> {
+  return choice.worktree
+    ? { executionMode: "worktree", maxConcurrentWriters: clampWriters(choice.writers) }
+    : { executionMode: "inline" };
 }
 export interface WorkflowInfo {
   /** Range shown on the new-run form, from this project's finished runs or generic ranges. */
@@ -38,7 +85,18 @@ export interface WorkflowInfo {
   defaultWorkflow: string;
   workflows: string[];
   /** Stages, whether files change and validation problems, by workflow ID. */
-  definitions?: Record<string, { stages: string[]; writes: boolean; problems: string[] }>;
+  definitions?: Record<
+    string,
+    {
+      stages: string[];
+      writes: boolean;
+      problems: string[];
+      /** The definition's own execution mode, when it sets one. */
+      execution?: ExecutionMode | null;
+      /** The core's reason this definition refuses worktree execution, or null. */
+      worktreeRefusal?: string | null;
+    }
+  >;
   policy: RunPolicy;
   presets: Record<
     BudgetPresetId,
