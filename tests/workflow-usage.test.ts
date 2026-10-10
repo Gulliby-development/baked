@@ -10,6 +10,7 @@ function makeAttempt(id: string, usedTokens: number | null): AttemptRow {
   return {
     id,
     step_id: `step-${id}`,
+    model_id: "fixture/model",
     status: "completed",
     reserved_tokens: 0,
     used_tokens: usedTokens,

@@ -5,7 +5,7 @@ import type { AppConfig } from "../../types/index.js";
 import { ContextManager } from "../context/manager.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { resolveModel } from "../llm/provider.js";
-import { buildProviderOptions } from "../llm/provider-options.js";
+import { buildProviderOptions, withRouteEffort } from "../llm/provider-options.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
@@ -17,6 +17,7 @@ import { WorkflowFault } from "./errors.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { ProcessScope } from "./process-scope.js";
+import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
   generatedPaths,
@@ -82,7 +83,10 @@ export class NativeAgentExecutor implements AgentExecutor {
     if (!parent) throw new WorkflowFault("OUTPUT_INVALID", "Context initialization failed");
     const context = new ContextManager(root, parent.getSharedResources());
     try {
-      const provider = await buildProviderOptions(request.profile.model, this.config);
+      const provider = await buildProviderOptions(
+        request.profile.model,
+        withRouteEffort(request.profile.model, this.config, request.effort),
+      );
       if (
         provider.contextWindow > 0 &&
         Math.ceil(Buffer.byteLength(request.prompt) / 3) + request.profile.maxOutputTokens >
@@ -90,7 +94,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       )
         throw new WorkflowFault(
           "BUDGET_EXHAUSTED",
-          "Workflow context exceeds the selected model window",
+          `Workflow context exceeds the window of ${request.profile.model}`,
+          { reason: "context_window" },
         );
       const writer =
         request.profile.role === "implementer" || request.profile.role === "acceptance-writer";
@@ -392,7 +397,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             this.store.transaction(() =>
               this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
             );
-          } catch {
+          } catch (error) {
             this.store.transaction(() =>
               this.store.finishAttempt(
                 request.runId,
@@ -401,6 +406,8 @@ export class NativeAgentExecutor implements AgentExecutor {
                 correctionTokens,
               ),
             );
+            // A provider outage is not invalid output: the scheduler retries or falls back.
+            if (isTransient(error)) throw error;
             throw new WorkflowFault(
               "OUTPUT_INVALID",
               `Profile ${request.profile.id} returned invalid output after one format correction`,

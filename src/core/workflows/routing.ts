@@ -160,7 +160,7 @@ function boundSides(
   policy: RunPolicy,
   gates: ReadonlyMap<string, Gate>,
   profiles: readonly AgentProfile[],
-): { stageId: string | null; side: "implementation" | "review"; profileIds: string[] }[] {
+): { stageId: string | null; side: "implementation" | "review" | "other"; profileIds: string[] }[] {
   const implementation = profiles.filter((p) => p.output === "implementation").map((p) => p.id);
   const reviewers = (bindings: readonly { gateId: string }[]): string[] =>
     bindings.flatMap(({ gateId }) => {
@@ -188,6 +188,8 @@ function boundSides(
         });
       else if (stage.kind === "converge" && stage.profileId)
         sides.push({ stageId: stage.id, side: "review", profileIds: [stage.profileId] });
+      else if (stage.profileId)
+        sides.push({ stageId: stage.id, side: "other", profileIds: [stage.profileId] });
     }
     return sides;
   }
@@ -220,6 +222,7 @@ export function independenceWarnings(
     entry ? [entry.model, ...(entry.fallback ?? [])] : [];
   const models = { implementation: new Map<string, string>(), review: new Map<string, string>() };
   for (const { stageId, side, profileIds } of boundSides(definition, policy, gates, profiles)) {
+    if (side === "other") continue;
     const route = stageId ? record.stages[stageId] : undefined;
     if (route) {
       for (const model of chain(route)) models[side].set(model, `stage ${stageId}`);
@@ -241,4 +244,44 @@ export function independenceWarnings(
 export function independentReviewMode(config: AppConfig): "off" | "warn" | "require" {
   const routing = parseModelRouting(config.modelRouting);
   return routing?.independentReview ?? (routing ? "warn" : "off");
+}
+
+/**
+ * The models a run of this definition can call, each with what uses it: `required` models are
+ * primaries of bound profiles and stage routes, `optional` ones are fallback models and profiles
+ * the definition does not bind.
+ */
+export function reachableModels(
+  record: RoutingRecord,
+  definition: Definition,
+  policy: RunPolicy,
+  gates: ReadonlyMap<string, Gate>,
+  profiles: readonly AgentProfile[],
+): { required: Map<string, string[]>; optional: Map<string, string[]> } {
+  const required = new Map<string, string[]>();
+  const optional = new Map<string, string[]>();
+  const add = (into: Map<string, string[]>, model: string, user: string) => {
+    const users = into.get(model) ?? [];
+    if (!users.includes(user)) users.push(user);
+    into.set(model, users);
+  };
+  const bound = new Set<string>();
+  for (const { stageId, profileIds } of boundSides(definition, policy, gates, profiles)) {
+    const route = stageId ? record.stages[stageId] : undefined;
+    for (const id of profileIds) bound.add(id);
+    const entries = route
+      ? [[`stage ${stageId}`, route] as const]
+      : profileIds.flatMap((id) => {
+          const entry = record.profiles[id];
+          return entry ? [[`profile ${id}`, entry] as const] : [];
+        });
+    for (const [user, entry] of entries) {
+      add(required, entry.model, user);
+      for (const model of entry.fallback ?? []) add(optional, model, `${user} (fallback)`);
+    }
+  }
+  for (const [id, entry] of Object.entries(record.profiles))
+    if (!bound.has(id) && !required.has(entry.model)) add(optional, entry.model, `profile ${id}`);
+  for (const model of required.keys()) optional.delete(model);
+  return { required, optional };
 }
