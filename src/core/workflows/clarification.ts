@@ -14,19 +14,46 @@ export function deferredToChecks(text: string): boolean {
   return CHECK_TERMS.test(text) && NOT_RUN.test(text);
 }
 
+/**
+ * The policy's checks are the verification the operator chose for the run. A finding that the
+ * checks are narrower than the project's usual verification (one test file instead of the whole
+ * suite, no build) restates that choice; only the operator could answer it, and they already did.
+ */
+const WIDER_VERIFICATION =
+  /\b(full|whole|entire|complete)\b[^.;:]{0,20}\b(test[- ]?)?suite\b|\bbun (run )?(test|build)\b(?![\w./-]*\.(test|spec)\.)|\bbuild\b[^.;:]{0,40}\b(check|step|command)\b/i;
+const POLICY_SCOPE =
+  /\b(polic(y|ies)|executionContract|verification|checks?|AGENTS\.md|CONTRIBUTING|project instructions)\b/i;
+const NARROWER =
+  /\b(missing|lacks?|lacking|omits?|omitted|absent|narrow(er|ed|s)?|only|not (include|includ(ed|ing)|run|cover(ed)?|require[ds]?)|does(n't| not)|without|instead of|excludes?|scoped)\b/i;
+
+export function narrowsVerification(text: string): boolean {
+  return WIDER_VERIFICATION.test(text) && POLICY_SCOPE.test(text) && NARROWER.test(text);
+}
+
+const resolvedLater = (text: string): boolean =>
+  deferredToChecks(text) || narrowsVerification(text);
+
 const DEFERRED_PROBLEM =
   "is blocking, but check outcomes are produced by the checks stage after implementation and this stage cannot run commands. Set blocking to false (or move the check to constraints) and submit again.";
+
+const NARROWED_PROBLEM =
+  "is blocking, but the policy checks are the verification the operator chose for this run; narrower checks than the project's usual verification are deliberate. Set blocking to false and submit again.";
 
 /** Submission errors for blocking items that later stages resolve; returned to the agent. */
 export function deferredBlockingProblems(
   items: readonly { blocking: boolean }[],
   text: (item: { blocking: boolean }, index: number) => string,
 ): string[] {
-  return items.flatMap((item, index) =>
-    item.blocking && deferredToChecks(text(item, index))
-      ? [`Item ${String(index + 1)} ("${text(item, index).slice(0, 120)}") ${DEFERRED_PROBLEM}`]
-      : [],
-  );
+  return items.flatMap((item, index) => {
+    if (!item.blocking) return [];
+    const body = text(item, index);
+    const problem = narrowsVerification(body)
+      ? NARROWED_PROBLEM
+      : deferredToChecks(body)
+        ? DEFERRED_PROBLEM
+        : null;
+    return problem ? [`Item ${String(index + 1)} ("${body.slice(0, 120)}") ${problem}`] : [];
+  });
 }
 
 /** Keep deferred items as notes, never as a reason to stop the run for the user. */
@@ -35,7 +62,7 @@ export function demoteDeferred<T extends { blocking: boolean }>(
   text: (item: T) => string,
 ): T[] {
   return items.map((item) =>
-    item.blocking && deferredToChecks(text(item)) ? { ...item, blocking: false } : item,
+    item.blocking && resolvedLater(text(item)) ? { ...item, blocking: false } : item,
   );
 }
 
