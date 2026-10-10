@@ -1,18 +1,24 @@
 ---
 title: "Telemetry"
-description: "What anonymous usage data baked collects, and how to turn it off."
+description: "What anonymous usage data baked records locally, and how to turn it off."
 icon: "shield-check"
 ---
 
-baked sends a single, anonymous "I'm running" ping when a session starts so
-we can count active installs and see which versions and platforms are in use.
-That's the entire purpose — no profiling, no tracking, no content.
+baked records one anonymous event when a session starts, so you can see which
+versions, surfaces and providers are in use. Events are written to a local
+file, `~/.baked/telemetry/events.jsonl`, and **nothing is sent over the
+network**. Run `baked telemetry` (or `baked telemetry --json`) for a summary.
 
-The fields below describe the telemetry request. Model-provider requests and other network operations are documented separately in [file access and data flow](/reference/data-flow).
+The log keeps about 1 MB and one rotated file (`events.jsonl.1`). A network
+receiver is optional and off unless `"telemetryUrl"` in config or
+`BAKED_TELEMETRY_URL` is set (see
+[design notes](#design-notes)).
 
-## What we send
+The fields below describe one event. Model-provider requests and other network operations are documented separately in [file access and data flow](/reference/data-flow).
 
-One fire-and-forget HTTPS ping per session start, with only these fields:
+## What is recorded
+
+One event per session start, with only these fields:
 
 | Field | Example | Why |
 |-------|---------|-----|
@@ -26,14 +32,13 @@ One fire-and-forget HTTPS ping per session start, with only these fields:
 | `model` | `claude-sonnet-4-5` · `gpt-5` · `gemini-2.5-pro` | Public base model name — sent **only** when it matches a known public-model pattern under a built-in provider. Any free-form or custom model string (even under a real provider prefix) collapses to `other`, so it can never carry secrets, org, or project names |
 | `id` | random UUID | Counts *distinct installs*, not people (see below) |
 
-The receiving edge also records a coarse `country` (from the network edge, never
-your IP) for a rough geographic breakdown.
+When a receiver is configured, the receiving edge also records a coarse
+`country` (from the network edge, never your IP).
 
 ### The anonymous id
 
-`id` is a random UUID stored at `~/.baked/anon-id.json`. It exists so we can
-tell "1 install pinged 50 times" apart from "50 installs" — i.e. count active
-users, not raw requests. It is:
+`id` is a random UUID stored at `~/.baked/anon-id.json`. It exists so a
+receiver can tell "1 install pinged 50 times" apart from "50 installs". It is:
 
 - **Random** — not derived from your machine, account, or anything identifiable.
   It identifies an *install*, not a person.
@@ -42,7 +47,7 @@ users, not raw requests. It is:
 - **Local** — never linked to any other data. Delete the file (or reinstall)
   and you get a fresh id.
 
-## What we never send
+## What is never recorded
 
 Prompts · code · file contents · file paths · working directory · hostname ·
 username · API keys or tokens · custom model identifiers · custom provider URLs · your IP
@@ -68,17 +73,16 @@ export DO_NOT_TRACK=1
 ```
 </CodeGroup>
 
-When disabled, no network request is made and no id is created or read.
+When disabled, nothing is written, no network request is made, and no id is created or read.
 
 ## Design notes
 
-- **Fail-safe.** The ping is fire-and-forget with a 1.5s timeout. It never
-  blocks startup, never retries, and never surfaces an error — if you're offline
-  or the endpoint is down, baked behaves identically.
+- **Fail-safe.** Recording never blocks startup and never surfaces an error.
 - **First-run notice.** The first time telemetry runs, a one-line notice is
-  printed to stderr telling you it's on and how to turn it off.
-- **Self-hostable.** Point the beacon at your own endpoint with
-  `BAKED_TELEMETRY_URL`.
+  printed to stderr with the log path and how to turn it off.
+- **Optional receiver.** Set `"telemetryUrl"` in config (or `BAKED_TELEMETRY_URL`) to also send each event to
+  your own endpoint as a fire-and-forget GET with a 1.5s timeout. No receiver
+  is configured by default.
 - **No secrets shipped.** The client carries only a public, unauthenticated
   beacon URL — no API key, account id, or token. Reading the data requires a
   separate Cloudflare credential that never touches the client or the repo.
@@ -86,4 +90,4 @@ When disabled, no network request is made and no id is created or read.
   database to read back or corrupt), with strict field allow-lists, per-IP rate
   limiting, and query-time dedup on the anonymous id.
 - **Open.** The client lives in `src/core/telemetry.ts` and the receiving
-  Cloudflare Worker is in `telemetry-worker/` — both in the public repo.
+  Cloudflare Worker is in `telemetry-worker/`.

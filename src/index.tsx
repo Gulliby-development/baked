@@ -422,6 +422,7 @@ export async function start(opts: StartOptions): Promise<void> {
         repomap: process.env.BAKED_NO_REPOMAP === "1" ? "skipped" : "on",
       },
       cfg.telemetry,
+      cfg.telemetryUrl,
     );
   } catch {}
 

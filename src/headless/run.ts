@@ -118,6 +118,7 @@ async function setupAgent(
             : "on",
       },
       merged.telemetry,
+      merged.telemetryUrl,
     );
   } catch {}
 

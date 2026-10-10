@@ -358,12 +358,17 @@ export interface AppConfig {
    */
   configVersion?: number;
   /**
-   * Anonymous usage telemetry. Default: enabled. Set false to opt out
-   * (also honoured: env DO_NOT_TRACK=1, BAKED_TELEMETRY=0). Sends only a
-   * version/os/surface ping with a rotating random id — never prompts, paths,
-   * keys, or PII. See src/core/telemetry.ts.
+   * Anonymous usage telemetry, recorded locally. Default: enabled. Set false
+   * to opt out (also honoured: env DO_NOT_TRACK=1, BAKED_TELEMETRY=0). Records
+   * only a version/os/surface event with a random install id — never prompts,
+   * paths, keys, or PII. See src/core/telemetry.ts.
    */
   telemetry?: boolean;
+  /**
+   * Receiver for telemetry events, in addition to the local log. Unset by
+   * default: nothing is sent. BAKED_TELEMETRY_URL overrides it.
+   */
+  telemetryUrl?: string;
   /** Set once the one-time telemetry first-run notice has been shown. */
   telemetryNoticeShown?: boolean;
 }

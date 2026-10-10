@@ -1,19 +1,16 @@
 {
   "name": "@baked/baked",
   "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
   "description": "Graph-powered code intelligence — multi-agent coding with codebase-aware AI",
   "repository": {
     "type": "git",
     "url": "https://github.com/Gulliby-development/baked.git"
   },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org",
-    "access": "public",
-    "provenance": true
-  },
   "module": "src/boot.tsx",
   "type": "module",
-  "author": "Baked",
+  "author": "Gulliby",
   "bin": {
     "baked": "./scripts/launcher.mjs",
     "bf": "./scripts/launcher.mjs"
@@ -54,8 +51,6 @@
     "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov --coverage-dir=coverage",
     "test:coverage:html": "bun run test:coverage && genhtml coverage/lcov.info --output-directory coverage/html --dark-mode && open coverage/html/index.html",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run lint && bun run typecheck && bun run build",
-    "release": "bun run build && npm publish",
     "release:patch": "bash scripts/release.sh patch",
     "release:minor": "bash scripts/release.sh minor",
     "release:major": "bash scripts/release.sh major",
@@ -79,7 +74,6 @@
     "@ai-sdk/mcp": "^1.0.90",
     "@ai-sdk/openai": "^3.0.124",
     "@anthropic-ai/sdk": "0.105.0",
-    "@clack/prompts": "^1.8.1",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "0.6.0",
     "@opentui/react": "0.4.2",

@@ -218,7 +218,6 @@ Toggle in TUI with `/instructions`.
 |----------|---------|---------|
 | `BAKED_NO_REPOMAP` | unset | Skip the repo-map scan at startup. |
 | `BAKED_MAX_OUTPUT_TOKENS` | `64000` | Per-step output cap for all agents (forge + subagents + web-search). Raise for reasoning models that hit `finish_reason=length`. |
-| `BAKED_PRESETS` | unset | Comma-separated preset specs to load on boot. Set automatically by `--plugin <spec>` flags. See [presets](#presets). |
 | `BAKED_KEY_PRIORITY` | `env` | Key lookup order. `env` = env→keychain→file, `app` = keychain→file→env. |
 | `BAKED_NO_PROMPT` | unset | Skip first-run addon wizard (set to `1`). Useful in CI. |
 | `BAKED_DEBUG_API` | unset | Dump per-step API requests to `~/.baked/api-export/`. |

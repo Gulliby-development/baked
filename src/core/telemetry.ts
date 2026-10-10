@@ -1,11 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { configDir } from "./platform/index.js";
 
 export type TelemetrySurface = "tui" | "headless";
 
-const DEFAULT_ENDPOINT = "https://t.baked.baked.com/b";
+// Events are recorded locally. Nothing leaves the machine unless
+// BAKED_TELEMETRY_URL or config `telemetryUrl` names a receiver (see telemetry-worker/).
+const LOG_DIR = "telemetry";
+const LOG_FILE = "events.jsonl";
+const MAX_LOG_BYTES = 1024 * 1024;
 
 // Stable, install-scoped random id. Identifies an INSTALL, not a person —
 // no PII, no machine fingerprint. Stable so distinct-id counts give exact
@@ -29,8 +41,19 @@ export function telemetryDisabled(configEnabled?: boolean): boolean {
   return false;
 }
 
-function endpoint(): string {
-  return process.env.BAKED_TELEMETRY_URL || DEFAULT_ENDPOINT;
+/** Path of the local event log: one JSON object per line. */
+export function telemetryLogPath(): string {
+  return join(configDir(), LOG_DIR, LOG_FILE);
+}
+
+function appendLocal(event: Record<string, string>): void {
+  const file = telemetryLogPath();
+  mkdirSync(join(configDir(), LOG_DIR), { recursive: true, mode: 0o700 });
+  // Keep one previous file so the log stays bounded.
+  if (existsSync(file) && statSync(file).size > MAX_LOG_BYTES) renameSync(file, `${file}.1`);
+  appendFileSync(file, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, {
+    mode: 0o600,
+  });
 }
 
 /**
@@ -69,8 +92,8 @@ export function maybeShowTelemetryNotice(
   if (config.telemetryNoticeShown) return;
   try {
     process.stderr.write(
-      "\x1b[2mbaked collects anonymous usage stats (version, OS, surface — no prompts, paths, or keys).\n" +
-        'Opt out: set "telemetry": false in config, or DO_NOT_TRACK=1.\x1b[0m\n',
+      `\x1b[2mbaked records anonymous usage stats locally in ${telemetryLogPath()} (version, OS, surface — no prompts, paths, or keys). Nothing is sent.\n` +
+        'View them with `baked telemetry`. Opt out: set "telemetry": false in config, or DO_NOT_TRACK=1.\x1b[0m\n',
     );
     markShown();
   } catch {}
@@ -128,10 +151,15 @@ export function detectRuntime(): string {
 }
 
 /**
- * Fire the beacon. Resolves immediately; the network call runs in the
- * background and is abandoned after 1.5s. Any failure is swallowed.
+ * Record a usage event in the local log. When a receiver is configured
+ * (BAKED_TELEMETRY_URL or config `telemetryUrl`) the same fields also go to it in the background, abandoned after
+ * 1.5s. Any failure is swallowed.
  */
-export function sendBeacon(fields: BeaconFields, configEnabled?: boolean): void {
+export function sendBeacon(
+  fields: BeaconFields,
+  configEnabled?: boolean,
+  configUrl?: string,
+): void {
   if (telemetryDisabled(configEnabled)) return;
 
   try {
@@ -152,11 +180,16 @@ export function sendBeacon(fields: BeaconFields, configEnabled?: boolean): void 
     if (fields.runtime) params.set("rt", fields.runtime.slice(0, 16));
     if (fields.repomap) params.set("rm", fields.repomap.slice(0, 8));
 
-    const url = `${endpoint()}?${params.toString()}`;
+    try {
+      appendLocal(Object.fromEntries(params));
+    } catch {}
+
+    const endpoint = process.env.BAKED_TELEMETRY_URL || configUrl;
+    if (!endpoint) return;
     // Don't await — fire and forget. Abort quickly so it never lingers.
     // The "baked/<version>" UA is the marker the beacon's gate checks to
     // drop drive-by/browser noise — not a secret, just a cheap filter.
-    void fetch(url, {
+    void fetch(`${endpoint}?${params.toString()}`, {
       method: "GET",
       headers: { "user-agent": `baked/${fields.version.slice(0, 24)}` },
       signal: AbortSignal.timeout(1500),
@@ -165,4 +198,79 @@ export function sendBeacon(fields: BeaconFields, configEnabled?: boolean): void 
   } catch {
     // Never let telemetry affect the app.
   }
+}
+
+export interface TelemetrySummary {
+  path: string;
+  events: number;
+  /** Events per day (YYYY-MM-DD), oldest first. */
+  days: Array<{ day: string; events: number }>;
+  /** Event counts by key: surface, version, provider, model. */
+  by: Record<"sf" | "v" | "pv" | "md", Record<string, number>>;
+}
+
+/** Summarise the local event log, including the rotated previous file. */
+export function summarizeTelemetry(): TelemetrySummary {
+  const path = telemetryLogPath();
+  const summary: TelemetrySummary = {
+    path,
+    events: 0,
+    days: [],
+    by: { sf: {}, v: {}, pv: {}, md: {} },
+  };
+  const days = new Map<string, number>();
+  for (const file of [`${path}.1`, path]) {
+    if (!existsSync(file)) continue;
+    for (const line of readFileSync(file, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      let event: Record<string, string>;
+      try {
+        event = JSON.parse(line) as Record<string, string>;
+      } catch {
+        continue;
+      }
+      summary.events++;
+      const day = String(event.ts ?? "").slice(0, 10);
+      if (day) days.set(day, (days.get(day) ?? 0) + 1);
+      for (const key of ["sf", "v", "pv", "md"] as const) {
+        const value = event[key];
+        if (value) summary.by[key][value] = (summary.by[key][value] ?? 0) + 1;
+      }
+    }
+  }
+  summary.days = [...days]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, events]) => ({ day, events }));
+  return summary;
+}
+
+/** `baked telemetry [--json]`: print the local usage summary. */
+export function runTelemetryCli(args: string[]): number {
+  const summary = summarizeTelemetry();
+  if (args.includes("--json")) {
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+    return 0;
+  }
+  const lines = [`Local usage log: ${summary.path}`, `Events: ${String(summary.events)}`];
+  if (telemetryDisabled()) lines.push("Recording is disabled by DO_NOT_TRACK or BAKED_TELEMETRY.");
+  const top = (counts: Record<string, number>) =>
+    Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, n]) => `${name} (${String(n)})`)
+      .join(", ") || "-";
+  if (summary.events > 0) {
+    lines.push(
+      `Last 7 days: ${summary.days
+        .slice(-7)
+        .map((d) => `${d.day} ${String(d.events)}`)
+        .join(", ")}`,
+      `Surfaces: ${top(summary.by.sf)}`,
+      `Versions: ${top(summary.by.v)}`,
+      `Providers: ${top(summary.by.pv)}`,
+      `Models: ${top(summary.by.md)}`,
+    );
+  }
+  process.stdout.write(`${lines.join("\n")}\n`);
+  return 0;
 }
