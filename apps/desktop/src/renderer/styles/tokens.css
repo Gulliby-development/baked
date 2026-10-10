@@ -1,0 +1,69 @@
+/* Design tokens from the mockups, which take the terminal UI's palette (src/core/theme/tokens.ts). */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #191410;
+  --bg-sidebar: #201913;
+  --bg-panel: #201913;
+  --bg-sunken: #1d1712;
+  --bg-raised: #241c16;
+  --bg-hover: #2b211a;
+  --bg-selected: #4b3020;
+  --bg-code: #100c09;
+  --line: #3a2c21;
+  --line-strong: #68513f;
+  --text: #fff4e5;
+  --text-2: #e5d4c1;
+  --text-3: #c2ac96;
+  --text-4: #a88e77;
+  --accent: #ff9d52;
+  --accent-hover: #ffb070;
+  --accent-text: #191410;
+  --accent-soft: #ffd0a0;
+  --ok: #accd94;
+  --warn: #f2c575;
+  --err: #ff8e86;
+  --info: #eac8a3;
+  --diff-add: #24301c;
+  --diff-del: #3a1d1a;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #fffaf2;
+  --bg-sidebar: #fcf0df;
+  --bg-panel: #fff3e2;
+  --bg-sunken: #f6e6d1;
+  --bg-raised: #fff3e2;
+  --bg-hover: #f6e6d1;
+  --bg-selected: #f3d5b7;
+  --bg-code: #f1e3d0;
+  --line: #e2c9ad;
+  --line-strong: #aa825d;
+  --text: #302015;
+  --text-2: #57402d;
+  --text-3: #71563f;
+  --text-4: #7d624c;
+  --accent: #a7440b;
+  --accent-hover: #9b3d09;
+  --accent-text: #fffaf2;
+  --accent-soft: #78340f;
+  --ok: #426b2f;
+  --warn: #815007;
+  --err: #b02e25;
+  --info: #755039;
+  --diff-add: #e8efdb;
+  --diff-del: #fbe3dc;
+}
+
+:root {
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --radius: 8px;
+  --radius-lg: 10px;
+  --row: 36px;
+}
+
+:root[data-density="compact"] {
+  --row: 30px;
+}

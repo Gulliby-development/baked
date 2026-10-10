@@ -1,0 +1,6 @@
+[install]
+# Same supply-chain guard as the repository root: refuse package versions less than 3 days old.
+minimumReleaseAge = 259200
+
+[test]
+root = "tests"

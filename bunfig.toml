@@ -18,4 +18,6 @@ minimumReleaseAgeExcludes = [
 
 [test]
 coverageSkipTestFiles = true
+# apps/desktop is its own package with its own dependencies and test run.
+pathIgnorePatterns = ["apps/**"]
 preload = ["./tests/setup/isolate-home.ts"]
