@@ -1,3 +1,6 @@
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type createCliRenderer as CreateCliRenderer, TextAttributes } from "@opentui/core";
 import type { createRoot as CreateRoot } from "@opentui/react";
 import { startTransition, useCallback, useEffect, useState } from "react";
@@ -114,41 +117,81 @@ export function restart(): void {
   triggerRestart?.();
 }
 
+/** Set by the supervising parent: where a child writes the arguments of the next instance. */
+const RELAUNCH_FILE_ENV = "BAKED_RELAUNCH_FILE";
+/** The exit code a supervised child uses to ask its parent for the next instance. */
+const RELAUNCH_EXIT_CODE = 75;
+
 /**
  * Run a fresh instance of the binary in this terminal, with the current arguments or `userArgs`.
  * Used after an in-app upgrade so the new version's code is loaded, and to switch projects
  * (one process = one cwd).
  *
- * This process stays as a parent that waits for the new one and exits with its code: when the
- * process a shell started exits, the shell takes the terminal back, and a child left running
- * would lose its input.
+ * The first restart turns this process into a parent that runs instances one after another and
+ * exits with the last one's code: when the process a shell started exits, the shell takes the
+ * terminal back, and a child left running would lose its input. A supervised instance does not
+ * nest another parent; it hands its arguments to the existing one and exits, so any number of
+ * switches keeps at most one idle parent.
  */
 export function hardRestart(userArgs?: string[]): void {
-  // The process-group kill in runCleanup would also stop this process before it hands over.
+  // The process-group kill in runCleanup would also stop the supervising parent.
   runCleanup({ keepProcessGroup: true });
   renderer?.destroy();
-  // The new process prints its own exit banner.
+  // The next instance prints its own exit banner.
   bannerPrinted = true;
   // Clear screen and restore cursor before handing off
   process.stdout.write("\x1b[?25h\x1b[2J\x1b[H");
-  const restart = getRestartSpec(userArgs ? { userArgs } : {});
-  const child = Bun.spawn([restart.command, ...restart.args], {
-    stdio: ["inherit", "inherit", "inherit"],
-    env: process.env,
-    windowsHide: false,
-  });
+  const args = userArgs ?? process.argv.slice(2);
+  const handoff = process.env[RELAUNCH_FILE_ENV];
+  if (handoff) {
+    try {
+      writeFileSync(handoff, JSON.stringify(args));
+      process.exit(RELAUNCH_EXIT_CODE);
+    } catch {
+      // Without the hand-off the parent would exit, so run the next instance here instead.
+    }
+  }
+  void superviseInstances(args);
+}
+
+async function superviseInstances(first: string[]): Promise<void> {
+  const handoff = join(tmpdir(), `baked-relaunch-${process.pid}.json`);
   // Stop reading the terminal so every keystroke reaches the child.
   process.stdin.removeAllListeners("data");
   process.stdin.pause();
+  let child: ReturnType<typeof Bun.spawn> | null = null;
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.removeAllListeners(signal);
     process.on(signal, () => {
       try {
-        child.kill(signal);
+        child?.kill(signal);
       } catch {}
     });
   }
-  void child.exited.then((code) => process.exit(code ?? 0));
+  let args: string[] | null = first;
+  let code = 0;
+  while (args) {
+    const restart = getRestartSpec({ userArgs: args });
+    child = Bun.spawn([restart.command, ...restart.args], {
+      stdio: ["inherit", "inherit", "inherit"],
+      env: { ...process.env, [RELAUNCH_FILE_ENV]: handoff },
+      windowsHide: false,
+    });
+    code = await child.exited;
+    args = code === RELAUNCH_EXIT_CODE ? readHandoff(handoff) : null;
+  }
+  process.exit(code);
+}
+
+/** The arguments a child left for its successor, or null when there are none. */
+function readHandoff(path: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    rmSync(path, { force: true });
+    return Array.isArray(parsed) && parsed.every((a) => typeof a === "string") ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 process.on("exit", () => {
