@@ -417,10 +417,12 @@ export class NativeAgentExecutor implements AgentExecutor {
       context.dispose({ preserveSharedIO: true });
     }
   }
-  dispose(): void {
-    this.ownedContext
+  /** Resolves once the owned context has closed its databases, so its directory can be removed. */
+  dispose(): Promise<void> {
+    const closed = this.ownedContext
       ?.then((context) => context.dispose({ preserveSharedIO: true }))
       .catch(() => {});
     this.ownedContext = undefined;
+    return closed ?? Promise.resolve();
   }
 }

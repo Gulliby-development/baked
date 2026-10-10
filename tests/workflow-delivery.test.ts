@@ -23,9 +23,9 @@ import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 type Fixture = ReturnType<typeof workflowFixture>;
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 function git(cwd: string, ...args: string[]): string {
@@ -81,8 +81,8 @@ async function completedRun(
 ): Promise<Scenario> {
   const fx = workflowFixture();
   const remote = mkdtempSync(join(tmpdir(), "baked-delivery-remote-"));
-  cleanups.push(() => {
-    fx.dispose();
+  cleanups.push(async () => {
+    await fx.dispose();
     rmSync(remote, { recursive: true, force: true });
   });
   const root = fx.root;

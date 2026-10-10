@@ -14,8 +14,8 @@ import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const checkpointed = (interval: number) => ({ ...fixturePolicy, maxTotalTokens: UNCAPPED_TOKENS, checkpointTokens: interval });
 const signal = () => new AbortController().signal;
 

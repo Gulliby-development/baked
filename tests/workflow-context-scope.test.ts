@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const signal = () => new AbortController().signal;
 type Extra = { evidence?: { id: string; kind: string; content: string }[]; unresolvedMeans?: string };
 const extraOf = (prompt: string): Extra => (JSON.parse(prompt.split("\n").at(-1) ?? "{}") as { extra: Extra }).extra;

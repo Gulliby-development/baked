@@ -12,8 +12,8 @@ import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const signal = () => new AbortController().signal;
 type Fixture = ReturnType<typeof workflowFixture>;
 

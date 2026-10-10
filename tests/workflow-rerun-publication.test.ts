@@ -6,9 +6,9 @@ import { newId } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 /** A fixture whose planner can be switched to a revised plan, as a rerun with a new model would produce. */
