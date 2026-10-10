@@ -3,7 +3,8 @@ import type { DesktopProject } from "../../shared/api.js";
 import type { ProjectSection } from "../router.js";
 import { InitiativesSection } from "./insights/InitiativesSection.js";
 import { UsageSection } from "./insights/UsageSection.js";
-import { RunsSection } from "./project/RunsSection.js";
+import { AcceptanceSection } from "./runs/AcceptanceSection.js";
+import { RunsView } from "./runs/RunsView.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
 import { WorkingSetSection } from "./setup/WorkingSetSection.js";
@@ -18,10 +19,11 @@ export interface SectionProps {
 /** The view of each project section; a section without one shows a placeholder. */
 export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<SectionProps>>> = {
   overview: ProjectHome,
-  runs: RunsSection,
+  runs: RunsView,
   gates: GatesSection,
   instructions: InstructionsSection,
   "working-set": WorkingSetSection,
   initiatives: InitiativesSection,
+  acceptance: AcceptanceSection,
   usage: UsageSection,
 };
