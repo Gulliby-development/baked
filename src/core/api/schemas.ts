@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CHAT_MODES } from "../chat/sessions.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
+import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 
 /** Every mutation names a client-chosen command ID; a retry with the same ID returns the first result. */
 const Command = z.object({
@@ -142,5 +143,18 @@ export const RouteQuery = z.strictObject({
 });
 export const UsageQuery = z.strictObject({
   days: z.string().regex(/^\d+$/).optional(),
-  groupBy: z.enum(["model", "stage", "day"]).optional(),
+  /** One dimension, or two separated by a comma (`stage,model`). */
+  groupBy: z
+    .string()
+    .transform((value) => value.split(","))
+    .pipe(
+      z
+        .array(z.enum(USAGE_DIMENSIONS))
+        .min(1)
+        .max(2)
+        .refine((list) => new Set(list).size === list.length, "Name each dimension once"),
+    )
+    .optional(),
+  model: z.string().min(1).optional(),
+  stage: z.string().min(1).optional(),
 });

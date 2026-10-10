@@ -85,6 +85,23 @@ describe("local API setup and workflow additions", () => {
     const byDay = await get<{ groups: { key: string }[] }>("/v1/usage?groupBy=day");
     expect(byDay.groups.map((g) => g.key)).toEqual([new Date().toISOString().slice(0, 10)]);
     expect((await call("/v1/usage?groupBy=week")).status).toBe(400);
+    expect((await call("/v1/usage?groupBy=stage,stage")).status).toBe(400);
+    expect((await call("/v1/usage?groupBy=stage,model,day")).status).toBe(400);
+
+    type Group = { key: string; keys: Record<string, string>; tokens: number; inputTokens: number; outputTokens: number; costUsd: number; unpricedTokens: number };
+    const pairs = await get<{ tokens: number; costUsd: number; unpricedTokens: number; groups: Group[] }>("/v1/usage?groupBy=stage,model");
+    const plan = pairs.groups.find((g) => g.keys.stage === "plan");
+    expect(plan?.key).toBe(`plan / ${plan?.keys.model}`);
+    expect(pairs.groups.reduce((sum, g) => sum + g.tokens, 0)).toBe(pairs.tokens);
+    for (const group of pairs.groups) {
+      expect(group.inputTokens + group.outputTokens).toBeGreaterThanOrEqual(0);
+      expect(group.costUsd).toBeGreaterThanOrEqual(0);
+    }
+    const planOnly = await get<{ filters: { stage?: string }; groups: Group[] }>("/v1/usage?stage=plan&groupBy=model");
+    expect(planOnly.filters).toEqual({ stage: "plan" });
+    expect(planOnly.groups.reduce((sum, g) => sum + g.tokens, 0)).toBe(plan?.tokens ?? -1);
+    const host = await get<{ groups: Group[] }>("/v1/usage?model=(host)&groupBy=stage");
+    expect(host.groups.every((g) => g.costUsd === 0 && g.unpricedTokens === 0)).toBe(true);
 
     const forked = await post(`/v1/workflow/runs/${run.runId}/fork`, { commandId: newId(), expectedRevision: done.revision });
     expect(forked.status).toBe(200);
