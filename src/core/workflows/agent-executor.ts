@@ -321,7 +321,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         maxSteps: request.maxSteps,
         maxTokens: Math.min(
           request.maxTokens ?? Number.POSITIVE_INFINITY,
-          policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
+          request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
           this.store.remainingTokens(request.runId, policy, request.attemptId),
         ),
         submitTools,

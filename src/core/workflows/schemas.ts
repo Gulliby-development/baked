@@ -190,6 +190,21 @@ export const PolicySchema = z
      * through an integrator task. Absent means false, so stored policies keep their hash.
      */
     allowOverlappingWrites: z.boolean().optional(),
+    /**
+     * Plan-time sizing (see sizing.ts). Absent means off, so stored policies keep their hash.
+     * `maxAttemptTokens` caps a sized task attempt; `maxRunTokens` is the budget the run may grow
+     * to on its own once the plan is priced, and above it the feature must be split;
+     * `historyStores` are other workflow stores (a `.sqlite` path or a project directory) whose
+     * finished runs calibrate the price.
+     */
+    sizing: z
+      .object({
+        maxAttemptTokens: z.number().int().min(10_000).optional(),
+        maxRunTokens: z.number().int().min(10_000).nullable().optional(),
+        historyStores: z.array(z.string().min(1)).max(32).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type ExecutionMode = "inline" | "worktree";
