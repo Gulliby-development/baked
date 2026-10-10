@@ -10,9 +10,9 @@ import { runUsage } from "../src/core/workflows/usage.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 /** One provider step: a tool call (or plain text) with the usage the provider reports. */

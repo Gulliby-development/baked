@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../../src/config/index.js";
@@ -8,6 +8,7 @@ import type { RunPolicy, Spec } from "../../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../../src/core/workflows/service.js";
 import { newId } from "../../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../../src/core/workflows/types.js";
+import { removeTempDir } from "./temp-dir.js";
 
 /** A deterministic executor that completes the whole SDD flow for one tiny feature without a model. */
 export const fixtureSpec: Spec = {
@@ -66,7 +67,8 @@ export function workflowFixture(options: { policy?: RunPolicy; tokensPerCall?: n
   const service = new NativeWorkflowService(root, config, executor);
   return {
     root, executor, service, config, policy,
-    dispose: () => { service.close(); rmSync(root, { recursive: true, force: true }); },
+    /** Closes the service and removes the workspace, waiting out Windows handles still being released. */
+    dispose: async () => { service.close(); await removeTempDir(root); },
     async start(featureId = "fixture") {
       return service.start({ commandId: newId(), featureId, workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
     },

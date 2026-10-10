@@ -14,8 +14,8 @@ import { newId } from "../src/core/workflows/store.js";
 import { readWorkflowView } from "../src/core/workflows/view.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const past = (patch: Partial<PastRun> = {}): PastRun => ({
   runId: newId(), status: "completed", tokens: 200000, calls: 20, activeMs: 600000, taskCount: 4,
   stageTokens: { research: 40000, specify: 20000, plan: 30000, analyze: 10000, implement: 80000, review: 20000, converge: 0 },
