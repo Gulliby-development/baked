@@ -482,6 +482,45 @@ describe("durable SDD runtime", () => {
     expect(service.store.state(run.runId).correctionHashes).toHaveLength(1);
     expect(service.store.tasks(run.runId)).toHaveLength(2);
   });
+  test("plan-time sizing sends an oversized plan back to the planner once, then caps its tasks", async () => {
+    const sized: RunPolicy = { ...policy, sizing: { maxAttemptTokens: 10_000, maxRunTokens: 5_000_000 } };
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const executor = new FixtureExecutor(root);
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: sized } }, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: sized });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    expect(executor.calls.filter((call) => call === "plan")).toHaveLength(2);
+    const paths = service.store.artifacts(run.runId).map((a) => a.logical_path);
+    expect(paths).toContain("sizing/plan-0.json");
+    expect(paths).toContain("sizing/plan-1.json");
+    const state = service.store.state(run.runId);
+    expect(state.prompt).toContain("Sizing: the plan is too large");
+    expect(state.taskBudgets.T001).toBe(10_000);
+  });
+  test("plan-time sizing raises the run budget to the price and passes each task its cap", async () => {
+    const sized: RunPolicy = { ...policy, maxTotalTokens: 50_000, sizing: { maxRunTokens: 5_000_000 } };
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const caps: (number | undefined)[] = [];
+    const executor = new (class extends FixtureExecutor {
+      override async execute(request: ExecutionRequest) {
+        if (request.profile.output === "implementation") caps.push(request.attemptTokens);
+        return super.execute(request);
+      }
+    })(root);
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: sized } }, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: sized });
+    await service.drive(run.runId, new AbortController().signal);
+    const raised = JSON.parse(service.store.run(run.runId).policy_json) as RunPolicy;
+    expect(raised.maxTotalTokens).toBeGreaterThan(50_000);
+    expect(service.store.artifacts(run.runId).some((a) => a.logical_path === "policy-revisions/sizing-0.json")).toBe(true);
+    await approve(service, run.runId);
+    expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
+    expect(caps).toEqual([250_000]);
+  });
   test("failed checks against one task become one corrective task", async () => {
     const twoChecks: RunPolicy = { ...policy, checks: [policy.checks[0]!, { ...policy.checks[0]!, id: "check-again" }] };
     const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));

@@ -58,6 +58,10 @@ export const RuntimeStateSchema = z
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),
     repairPredecessors: z.record(z.string(), z.string()).default({}),
+    /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
+    taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
+    /** Times plan-time sizing sent the plan back to be split; it does so once. */
+    sizingReplans: z.number().int().nonnegative().default(0),
     taskGates: z
       .record(
         z.string(),
@@ -194,6 +198,8 @@ export interface ExecutionRequest {
   maxSteps: number;
   /** Token cap for this attempt when the stage sets one below the policy cap. */
   maxTokens?: number;
+  /** A sized task's attempt cap; replaces the policy cap, which may be smaller. */
+  attemptTokens?: number;
   /**
    * Semantic checks on a submitted result. Errors are returned to the agent so it can resubmit
    * a corrected result in the same conversation, a bounded number of times.

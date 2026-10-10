@@ -235,6 +235,19 @@ A workflow agent's `read` of a whole file larger than 20 KB (24 KB for a file it
 
 The prompt of an agent attempt puts the run's documents (request, research, spec, plan and task graph) on one line before the attempt's own input (the snapshot hashes, the task and its evidence). Attempts of a run then share a byte-identical prefix, which providers serve from their prompt cache.
 
+### Plan-time sizing
+
+A policy with `sizing` prices the plan before it is approved ([sizing](../../src/core/workflows/sizing.ts)):
+
+```json
+"sizing": { "maxAttemptTokens": 600000, "maxRunTokens": 4000000, "historyStores": ["../other-checkout"] }
+```
+
+- **Price.** A task costs a rate in tokens per KiB of the files it writes (their size before the run; created files count as zero), times 1.5 for corrections and retries. The rate is the middle half of `task tokens / KiB of planned writes` over the finished runs of this store and of `historyStores` (a `.sqlite` path or a project directory), and 3,000–6,000 tokens per KiB with fewer than two runs. The run price is what the run spent before approval, plus every task's upper estimate, plus the review and convergence ranges once more for a correction round. The report is stored as `sizing/plan-N.json`.
+- **Planner guidance.** The planner gets `extra.sizing`: the KiB of written files one attempt covers, and the instruction to split larger work into tasks with disjoint writes and no dependencies (they run in parallel with `--worktree --writers N`) and to give new tests their own task when the code task is large.
+- **Split.** A task whose estimate is above `maxAttemptTokens`, or a run price above `maxRunTokens`, sends the plan back to the planner once with a split note. A run price still above `maxRunTokens` after that waits for a clarification that suggests an initiative of smaller features; answering it lets the run go on within the ceiling.
+- **Caps and budget.** Each sized task's attempt cap is its upper estimate, at least the policy `maxAttemptTokens` (250,000 by default) and at most `sizing.maxAttemptTokens` (600,000 by default); a corrective task uses the cap of the task it corrects. A run price above `maxTotalTokens` raises the run budget to the price, at most `maxRunTokens`, with a `policy-revisions/sizing-N.json` record (`approvedBy: "sizing"`, not an operator decision). This happens before the approval request, so the approval and the auto-approval token bound see the sized budget. Without `maxRunTokens` the budget is never raised.
+
 ## Workflow definitions (v2)
 
 Definitions of schema version 2 describe stages, transitions, contracts and gates as data ([design](workflow-v2-design.md)). `baked workflow run --workflow ID` starts a run from `sdd`, a preset or `baked/workflows/ID.json`; the new-run form lists the same IDs. A run validates the definition against the gate library when it starts and freezes the definition and the gates it binds.

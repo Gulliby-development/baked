@@ -74,6 +74,7 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
+import { plannerSizing, sizePlan, sizingHistory, splitNote } from "./sizing.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
@@ -368,6 +369,14 @@ export class WorkflowScheduler {
                   {
                     checks: policy.checks,
                     profiles,
+                    ...(policy.sizing
+                      ? {
+                          sizing: plannerSizing(
+                            policy,
+                            sizingHistory(this.store.workspace, policy),
+                          ),
+                        }
+                      : {}),
                     ...(scope
                       ? {
                           researchScope: {
@@ -499,6 +508,14 @@ export class WorkflowScheduler {
                   "INVALID_DEFINITION",
                   "Automated criteria require at least one mandatory command check. Revise the policy before approval.",
                 );
+              if (
+                !state.approvalRoot &&
+                policy.sizing &&
+                this.sizePlan(runId, state, policy, v2 !== null) !== "continue"
+              ) {
+                advance = false;
+                break;
+              }
               if (!state.approvalRoot) {
                 const snapshot = await this.snapshot(runId, state, policy, signal);
                 const repository = await gitBaseline(runRoot(this.store.workspace, state));
@@ -1110,6 +1127,7 @@ export class WorkflowScheduler {
         root: placement.root ?? runRoot(this.store.workspace, state),
         maxSteps: limits?.maxSteps ?? Math.min(profile.maxSteps, policy.maxAgentSteps),
         ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
+        ...(task && taskBudget(state, task) ? { attemptTokens: taskBudget(state, task) } : {}),
         ...(validate ? { validate } : {}),
         ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
         ...(route.effort ? { effort: route.effort } : {}),
@@ -1242,6 +1260,94 @@ export class WorkflowScheduler {
         policy: { allowedTools: policy.allowedTools, network: policy.network },
       },
     });
+  }
+  /**
+   * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
+   * the planner once with a split note; a plan still above the run ceiling waits for the user,
+   * who can split the request into an initiative or answer to go on. Otherwise every sized task
+   * gets its attempt cap and the run budget grows to the price, up to the policy's ceiling.
+   */
+  private sizePlan(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    v2: boolean,
+  ): "continue" | "replan" | "wait" {
+    const graph = state.graph;
+    if (!graph) return "continue";
+    const samples = sizingHistory(this.store.workspace, policy);
+    const report = sizePlan({
+      graph,
+      root: runRoot(this.store.workspace, state),
+      policy,
+      samples,
+      spent: this.store.run(runId).token_usage,
+    });
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "sizing",
+        `sizing/plan-${String(state.sizingReplans)}.json`,
+        canonical(report),
+      ),
+    );
+    const split = report.decision === "split-tasks" || report.decision === "split-feature";
+    if (split && state.sizingReplans === 0 && !v2) {
+      const stages = WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
+      const plan = stages.findIndex((stage) => stage.kind === "plan");
+      if (plan >= 0) {
+        state.sizingReplans = 1;
+        state.prompt += `
+${splitNote(report, plannerSizing(policy, samples).maxTaskKb)}`;
+        state.analysisPassed = false;
+        state.stageIndex = plan;
+        this.store.transaction(() => this.store.saveState(runId, state));
+        return "replan";
+      }
+    }
+    if (report.decision === "split-feature" && state.sizingReplans < 2) {
+      // Asked once; an answer lets the run go on within the ceiling.
+      state.sizingReplans = 2;
+      this.wait("clarification", state, {
+        findings: [
+          {
+            id: "SIZING-1",
+            kind: "scope",
+            refs: ["tasks.json", "sizing/plan-1.json"],
+            description: `${report.reasons.join(". ")}. Split the request into an initiative of smaller features (baked workflow initiative), or answer to continue within ${String(report.maxRunTokens)} tokens.`,
+            blocking: true,
+          },
+        ],
+      });
+      return "wait";
+    }
+    state.taskBudgets = Object.fromEntries(
+      report.tasks.map((task) => [task.taskId, task.attemptTokens]),
+    );
+    if (report.budgetAfter > policy.maxTotalTokens) {
+      const before = hashJson(policy);
+      const after = PolicySchema.parse({ ...policy, maxTotalTokens: report.budgetAfter });
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "policy-revision",
+          `policy-revisions/sizing-${String(state.sizingReplans)}.json`,
+          canonical({
+            kind: "sizing",
+            approvedBy: "sizing",
+            previousPolicyHash: before,
+            policyHash: hashJson(after),
+            previous: { maxTotalTokens: policy.maxTotalTokens },
+            next: { maxTotalTokens: after.maxTotalTokens },
+          }),
+        );
+        this.store.setPolicy(runId, after);
+      });
+      // The drive keeps this policy object; the rest of the run sees the sized budget.
+      policy.maxTotalTokens = after.maxTotalTokens;
+      state.manifest.policyHash = hashJson(after);
+    }
+    return "continue";
   }
   /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   private wait(
@@ -3103,6 +3209,18 @@ export class WorkflowScheduler {
       this.store.transition(runId, "completed");
     });
   }
+}
+
+/** The sized attempt cap of a task; a correction uses the cap of the task it corrects. */
+function taskBudget(state: RuntimeState, task: Task): number | undefined {
+  const own = state.taskBudgets[task.id];
+  if (own) return own;
+  for (const findingId of task.findingIds) {
+    const base = state.repairPredecessors[findingId];
+    const inherited = base ? state.taskBudgets[base] : undefined;
+    if (inherited) return inherited;
+  }
+  return undefined;
 }
 
 /** The task-scope checks a task names, in policy order. */

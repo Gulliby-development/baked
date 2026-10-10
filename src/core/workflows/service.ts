@@ -217,6 +217,8 @@ export class NativeWorkflowService implements WorkflowService {
       instructionText: instructions.text,
       frozenFiles: instructions.files,
       repairPredecessors: {},
+      taskBudgets: {},
+      sizingReplans: 0,
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
       report: null,
