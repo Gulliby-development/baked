@@ -8,7 +8,7 @@ BAKED is one core with three front ends: the terminal UI (`src/components/`, `sr
 
 ## The agent loop
 
-The main agent, Forge (`src/core/agents/forge.ts`), assembles each turn's system prompt, context, tools, approval callbacks and mode, and runs the model loop through a provider from `src/core/llm/providers/`. For larger tasks it dispatches subagents (`src/core/agents/subagent-tools.ts`, `agent-runner.ts`): `spark` for read-only research and `ember` for edits, each on its router model. Dispatched agents share a bus (`agent-bus.ts`): a file and tool-result cache, serialized writes per file, and a findings channel that reaches the others at their next step.
+The main agent, Bake (`src/core/agents/bake.ts`), assembles each turn's system prompt, context, tools, approval callbacks and mode, and runs the model loop through a provider from `src/core/llm/providers/`. For larger tasks it dispatches subagents (`src/core/agents/subagent-tools.ts`, `agent-runner.ts`): `spark` for read-only research and `ember` for edits, each on its router model. Dispatched agents share a bus (`agent-bus.ts`): a file and tool-result cache, serialized writes per file, and a findings channel that reaches the others at their next step.
 
 ## Context
 

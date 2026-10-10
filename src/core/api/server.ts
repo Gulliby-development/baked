@@ -29,7 +29,7 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
-import { ForgeChatHost } from "../chat/host.js";
+import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
@@ -371,7 +371,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     new ChatService({
       workspace: service.workspace,
       config: service.config,
-      host: new ForgeChatHost(service.workspace, service.config),
+      host: new BakeChatHost(service.workspace, service.config),
     });
   const initiatives = new InitiativeService(service);
   /** The latest on-demand result of each check. */

@@ -69,7 +69,7 @@ describe("IgnoreMatcher", () => {
 
   test("does not ignore real source files", () => {
     const m = buildIgnoreMatcher("node_modules/\ndist/\n*.log\ncoverage/\n");
-    expect(m.ignores("src/core/agents/forge.ts", false)).toBe(false);
+    expect(m.ignores("src/core/agents/bake.ts", false)).toBe(false);
     expect(m.ignores("src/components/App.tsx", false)).toBe(false);
   });
 });

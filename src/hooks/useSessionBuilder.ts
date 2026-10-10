@@ -86,7 +86,7 @@ export function buildSessionMeta({
       planMode: tabState.planMode,
       planRequest: tabState.planRequest,
       coAuthorCommits: tabState.coAuthorCommits,
-      forgeMode: tabState.forgeMode,
+      bakeMode: tabState.bakeMode,
       tokenUsage: tabState.tokenUsage,
       messageRange: { startLine: 0, endLine: msgs.length },
       ...(checkpointTags.length > 0 ? { checkpointTags } : {}),
@@ -106,7 +106,7 @@ export function buildSessionMeta({
     startedAt,
     updatedAt: Date.now(),
     activeTabId: snapshot.activeTabId,
-    forgeMode: activeTabState?.forgeMode ?? "default",
+    bakeMode: activeTabState?.bakeMode ?? "default",
     tabs,
   };
   const projectId = projectIdOf(cwd);
@@ -127,7 +127,7 @@ export function buildTabMeta(args: {
   planMode: boolean;
   planRequest: string | null;
   coAuthorCommits: boolean;
-  forgeMode: import("../types/index.js").ForgeMode;
+  bakeMode: import("../types/index.js").BakeMode;
   tokenUsage: TabMeta["tokenUsage"];
   messages: ChatMessage[];
   coreMessages?: ModelMessage[];
@@ -173,7 +173,7 @@ export function buildTabMeta(args: {
     planMode: args.planMode,
     planRequest: args.planRequest,
     coAuthorCommits: args.coAuthorCommits,
-    forgeMode: args.forgeMode,
+    bakeMode: args.bakeMode,
     tokenUsage: args.tokenUsage,
     messageRange: { startLine: 0, endLine: msgs.length },
     ...(checkpointTags.length > 0 ? { checkpointTags } : {}),

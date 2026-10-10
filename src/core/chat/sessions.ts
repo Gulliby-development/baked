@@ -15,8 +15,8 @@
 import type { ModelMessage } from "ai";
 import type {
   AppConfig,
+  BakeMode,
   ChatMessage,
-  ForgeMode,
   ImageAttachment,
   InteractiveCallbacks,
   MessageSegment,
@@ -118,7 +118,7 @@ export type ChatEventBody =
   | { type: "session"; session: SessionSummary };
 export type ChatEvent = ChatEventBody & { seq: number; at: number };
 
-/** The part of an agent stream result a turn reads; `createForgeAgent` agents satisfy it. */
+/** The part of an agent stream result a turn reads; `createBakeAgent` agents satisfy it. */
 export interface TurnAgent {
   stream(args: {
     messages: ModelMessage[];
@@ -161,7 +161,7 @@ function emptyUsage(): Usage {
   return { input: 0, output: 0, cacheRead: 0 };
 }
 
-function toChatMode(mode: ForgeMode | undefined): ChatMode {
+function toChatMode(mode: BakeMode | undefined): ChatMode {
   return mode && (CHAT_MODES as readonly string[]).includes(mode) ? (mode as ChatMode) : "default";
 }
 
@@ -242,7 +242,7 @@ export class ChatSession {
     this.tabId = tab.id;
     this.model =
       tab.activeModel && tab.activeModel !== "none" ? tab.activeModel : owner.defaultModel;
-    this.mode = toChatMode(tab.forgeMode ?? meta.forgeMode);
+    this.mode = toChatMode(tab.bakeMode ?? meta.bakeMode);
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -697,7 +697,7 @@ export class ChatSession {
     const tab: TabMeta = {
       ...this.tab,
       activeModel: this.model ?? "none",
-      forgeMode: this.mode,
+      bakeMode: this.mode,
       tokenUsage: {
         ...this.tab.tokenUsage,
         prompt: this.usage.input,
@@ -711,7 +711,7 @@ export class ChatSession {
       ...this.meta,
       title: this.messages.length > 0 ? derived : this.meta.title,
       updatedAt: now,
-      forgeMode: this.mode,
+      bakeMode: this.mode,
       tabs: this.meta.tabs.map((t) => (t.id === this.tabId ? tab : t)),
     };
     return { meta: this.meta, tabMessages: this.tabMessages, tabCore: this.tabCore };
@@ -802,7 +802,7 @@ export class ChatService {
       startedAt: now,
       updatedAt: now,
       activeTabId: API_TAB,
-      forgeMode: input.mode ?? "default",
+      bakeMode: input.mode ?? "default",
       tabs: [
         {
           id: API_TAB,
@@ -812,7 +812,7 @@ export class ChatService {
           planMode: false,
           planRequest: null,
           coAuthorCommits: false,
-          forgeMode: input.mode ?? "default",
+          bakeMode: input.mode ?? "default",
           tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
           messageRange: { startLine: 0, endLine: messages.length },
         },

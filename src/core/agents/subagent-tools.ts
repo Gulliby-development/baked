@@ -58,15 +58,15 @@ export interface SubagentModels {
   skills?: Array<{ name: string; content: string }>;
   disablePruning?: boolean;
   tabId?: string;
-  forgeInstructions?: string;
+  bakeInstructions?: string;
   /** Baked tool definitions — shared with sparks for cache prefix hits. */
-  forgeTools?: Record<string, unknown>;
-  /** Mutable ref to the parent forge's conversation messages — used for doppelganger mode. */
+  bakeTools?: Record<string, unknown>;
+  /** Mutable ref to the parent bake's conversation messages — used for doppelganger mode. */
   parentMessagesRef?: { current: import("@ai-sdk/provider-utils").ModelMessage[] | null };
 }
 
 // Tools that explore/investigate sparks must not execute.
-// Definitions are still sent (same as forge) for cache prefix hits.
+// Definitions are still sent (same as bake) for cache prefix hits.
 const EXPLORE_BLOCKED = new Set([
   "edit_file",
   "multi_edit",
@@ -98,7 +98,7 @@ const EXPLORE_ALLOWED = new Set([
   "fetch_page",
 ]);
 
-/** Wrap forge tools with role-based execute guards for sparks.
+/** Wrap bake tools with role-based execute guards for sparks.
  *  Tool definitions (description + schema) stay byte-identical → same cache prefix.
  *  Blocked/unsupported tools keep their schema but execute rejects at runtime.
  *  When stripProgrammatic is true, programmatic-only tools (web_fetch, code_execution)
@@ -110,8 +110,8 @@ const PROGRAMMATIC_ONLY_TOOLS = new Set([
   "str_replace_based_edit_tool",
 ]);
 
-function guardForgeTools(
-  forgeTools: Record<string, unknown>,
+function guardBakeTools(
+  bakeTools: Record<string, unknown>,
   role: "explore" | "code",
   stripProgrammatic?: boolean,
 ): Record<string, unknown> {
@@ -120,7 +120,7 @@ function guardForgeTools(
   const rejectMsg = (name: string) =>
     `${name} is not available in ${role} mode. Use report_finding to suggest changes instead.`;
 
-  for (const [name, t] of Object.entries(forgeTools)) {
+  for (const [name, t] of Object.entries(bakeTools)) {
     if (
       blocked.has(name) ||
       (role === "explore" && !EXPLORE_ALLOWED.has(name)) ||
@@ -254,12 +254,12 @@ export async function createAgent(
   const modelId =
     typeof model === "object" && "modelId" in model ? String(model.modelId) : "unknown";
 
-  // Spark: same model as parent → share forge system prompt + tools for cache prefix hits.
+  // Spark: same model as parent → share bake system prompt + tools for cache prefix hits.
   // Ember: different model or code role → lean tools, lean prompt, no cache sharing overhead.
-  const useSpark = models.forgeInstructions != null && tier === "spark";
+  const useSpark = models.bakeInstructions != null && tier === "spark";
 
   // Rebuild provider options from scratch for the subagent's model — same path
-  // the main forge uses (buildProviderOptions). This guarantees per-model
+  // the main bake uses (buildProviderOptions). This guarantees per-model
   // capability gating (no effort on Haiku, no thinking on GPT, etc.) instead of
   // ad-hoc patching the parent's options.
   const subagentConfig = loadConfig();
@@ -274,10 +274,10 @@ export async function createAgent(
   const subagentProviderOptions = stripContextManagement(built.providerOptions);
 
   const contextWindow = await getModelContextWindow(modelId);
-  const forgeInstructions = useSpark ? models.forgeInstructions : undefined;
+  const bakeInstructions = useSpark ? models.bakeInstructions : undefined;
 
-  // Spark mode: use forge's tool definitions (guarded by role) for cache prefix hits.
-  // Tool definitions (description + schema) are byte-identical to the main forge →
+  // Spark mode: use bake's tool definitions (guarded by role) for cache prefix hits.
+  // Tool definitions (description + schema) are byte-identical to the main bake →
   // the [tools + system] prefix is a cache HIT on every spark's first step.
   const agentRole = useExplore ? ("explore" as const) : ("code" as const);
   // Strip programmatic tool calling (allowedCallers) for models that don't support it (e.g. Haiku)
@@ -285,14 +285,14 @@ export async function createAgent(
   // Wrap with bus cache so spark file reads/edits register with bus tracking
   // (recordFileRead / recordFileEdit). deriveTool preserves description, schema,
   // toModelOutput → cache prefix stays byte-identical.
-  let forgeToolsGuarded: Record<string, unknown> | undefined;
-  if (useSpark && models.forgeTools) {
-    const guarded = guardForgeTools(
-      models.forgeTools as Record<string, unknown>,
+  let bakeToolsGuarded: Record<string, unknown> | undefined;
+  if (useSpark && models.bakeTools) {
+    const guarded = guardBakeTools(
+      models.bakeTools as Record<string, unknown>,
       agentRole,
       stripProgrammatic,
     );
-    forgeToolsGuarded = wrapWithBusCache(
+    bakeToolsGuarded = wrapWithBusCache(
       guarded as Record<string, { execute?: (a: never, o: never) => unknown }>,
       bus,
       task.agentId,
@@ -319,15 +319,15 @@ export async function createAgent(
     // Embers run on a different model (separate cache namespace) — honor user's setting.
     disablePruning: useSpark ? true : models.disablePruning,
     tabId: models.tabId,
-    forgeInstructions,
-    forgeTools: forgeToolsGuarded,
+    bakeInstructions,
+    bakeTools: bakeToolsGuarded,
     skipBusTools: isSoloAgent,
   };
   const agent = useExplore ? createExploreAgent(model, opts) : createCodeAgent(model, opts);
 
   if (isApiExportEnabled() && task.agentId) {
-    const toolNames = forgeToolsGuarded
-      ? Object.keys(forgeToolsGuarded)
+    const toolNames = bakeToolsGuarded
+      ? Object.keys(bakeToolsGuarded)
       : useExplore
         ? ["(explore defaults)"]
         : ["(code defaults)"];
@@ -342,8 +342,8 @@ export async function createAgent(
       targetFiles: task.targetFiles,
       toolCount: toolNames.length,
       tools: toolNames,
-      systemPromptChars: forgeInstructions?.length ?? 0,
-      systemPromptTokens: forgeInstructions ? Math.ceil(forgeInstructions.length / 4) : 0,
+      systemPromptChars: bakeInstructions?.length ?? 0,
+      systemPromptTokens: bakeInstructions ? Math.ceil(bakeInstructions.length / 4) : 0,
       providerOptions: subagentProviderOptions
         ? Object.fromEntries(
             Object.entries(subagentProviderOptions).map(([k, v]) => [

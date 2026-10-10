@@ -31,7 +31,7 @@ function baseOpts(overrides?: Partial<PromptBuilderOptions>): PromptBuilderOptio
     modelId: "anthropic/claude-sonnet-4-6",
     hasRepoMap: false,
     hasSymbols: false,
-    forgeMode: "default",
+    bakeMode: "default",
     contextPercent: 50,
     projectInstructions: null,
     ...overrides,
@@ -47,12 +47,12 @@ describe("buildSystemPrompt assembly", () => {
   });
 
   test("mode overlay is NEVER baked into the cached system prompt (cache stability)", () => {
-    // Mode instructions moved to a cache-stable user-message inject in forge.ts
+    // Mode instructions moved to a cache-stable user-message inject in bake.ts
     // (discussion #85, source #1). The system prompt must be byte-identical
     // across modes so switching them never invalidates the cache breakpoint.
-    const def = buildSystemPrompt(baseOpts({ forgeMode: "default" }));
-    const arch = buildSystemPrompt(baseOpts({ forgeMode: "architect" }));
-    const plan = buildSystemPrompt(baseOpts({ forgeMode: "plan" }));
+    const def = buildSystemPrompt(baseOpts({ bakeMode: "default" }));
+    const arch = buildSystemPrompt(baseOpts({ bakeMode: "architect" }));
+    const plan = buildSystemPrompt(baseOpts({ bakeMode: "plan" }));
     expect(arch).not.toContain("ARCHITECT MODE");
     expect(plan).not.toContain("PLAN MODE");
     expect(arch).toBe(def);

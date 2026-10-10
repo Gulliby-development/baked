@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { StreamSegment } from "../components/chat/StreamSegmentList.js";
 import type { LiveToolCall } from "../components/chat/ToolCallDisplay.js";
 import { normalizePath } from "../core/agents/agent-bus.js";
-import { createForgeAgent } from "../core/agents/index.js";
+import { createBakeAgent } from "../core/agents/index.js";
 import { AbnormalFinishError } from "../core/agents/stream-options.js";
 import { onAgentStats, onMultiAgentEvent, onSubagentStep } from "../core/agents/subagent-events.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
@@ -88,8 +88,8 @@ import type {
 import { clampWatchdogTimeouts } from "../types/index.js";
 import { compressImageForApi } from "../utils/image-compress.js";
 import { reprimeContextFromMessages, safeParseArgs } from "./chat/message-processing.js";
+import { cycleBakeMode } from "./useBakeMode.js";
 import { buildAssistantMessage, hasRenderableAssistantContent } from "./useChat-content.js";
-import { cycleForgeMode } from "./useForgeMode.js";
 import { buildTabMeta } from "./useSessionBuilder.js";
 
 export interface TabState {
@@ -105,7 +105,7 @@ export interface TabState {
   sessionId: string;
   planMode: boolean;
   planRequest: string | null;
-  forgeMode: import("../types/index.js").ForgeMode;
+  bakeMode: import("../types/index.js").BakeMode;
 }
 
 interface TokenUsage {
@@ -250,9 +250,9 @@ export interface ChatInstance {
   setPendingPlanReview: React.Dispatch<React.SetStateAction<PendingPlanReview | null>>;
   snapshot: (label: string) => TabState;
   contextManager: ContextManager;
-  forgeMode: import("../types/index.js").ForgeMode;
-  setForgeMode: (mode: import("../types/index.js").ForgeMode) => void;
-  cycleMode: () => import("../types/index.js").ForgeMode;
+  bakeMode: import("../types/index.js").BakeMode;
+  setBakeMode: (mode: import("../types/index.js").BakeMode) => void;
+  cycleMode: () => import("../types/index.js").BakeMode;
   rotateRoutingSession: () => void;
 }
 
@@ -469,34 +469,34 @@ export function useChat({
   );
   const [coAuthorCommits, setCoAuthorCommits] = useState(initialState?.coAuthorCommits ?? true);
 
-  const [forgeMode, setForgeModeState] = useState<import("../types/index.js").ForgeMode>(
-    initialState?.forgeMode ?? effectiveConfig.defaultForgeMode ?? "default",
+  const [bakeMode, setBakeModeState] = useState<import("../types/index.js").BakeMode>(
+    initialState?.bakeMode ?? effectiveConfig.defaultBakeMode ?? "default",
   );
-  const forgeModeRef = useRef(forgeMode);
-  forgeModeRef.current = forgeMode;
+  const bakeModeRef = useRef(bakeMode);
+  bakeModeRef.current = bakeMode;
 
-  const setForgeMode = useCallback(
-    (mode: import("../types/index.js").ForgeMode) => {
-      setForgeModeState(mode);
-      forgeModeRef.current = mode;
-      contextManager.setForgeMode(mode);
+  const setBakeMode = useCallback(
+    (mode: import("../types/index.js").BakeMode) => {
+      setBakeModeState(mode);
+      bakeModeRef.current = mode;
+      contextManager.setBakeMode(mode);
     },
     [contextManager],
   );
 
-  const cycleModeFn = useCallback((): import("../types/index.js").ForgeMode => {
-    const next = cycleForgeMode(forgeModeRef.current);
-    setForgeMode(next);
+  const cycleModeFn = useCallback((): import("../types/index.js").BakeMode => {
+    const next = cycleBakeMode(bakeModeRef.current);
+    setBakeMode(next);
     return next;
-  }, [setForgeMode]);
+  }, [setBakeMode]);
 
-  // Sync forgeMode to contextManager on mount (covers session resume) and on
+  // Sync bakeMode to contextManager on mount (covers session resume) and on
   // every change. Each tab has its own contextManager (TabInstance.tsx), so
-  // syncing for inactive tabs is safe — the agent only reads forgeMode at
+  // syncing for inactive tabs is safe — the agent only reads bakeMode at
   // turn start, which only happens when the tab is active anyway.
   useEffect(() => {
-    contextManager.setForgeMode(forgeMode);
-  }, [forgeMode, contextManager]);
+    contextManager.setBakeMode(bakeMode);
+  }, [bakeMode, contextManager]);
 
   // Sync co-author flag with git module + shell interceptor
   useEffect(() => {
@@ -593,7 +593,7 @@ export function useChat({
           planMode: planModeRef.current,
           planRequest: planRequestRef.current,
           coAuthorCommits,
-          forgeMode: forgeModeRef.current,
+          bakeMode: bakeModeRef.current,
           tokenUsage: tokenUsageRef.current,
           messages: filtered,
           coreMessages: cores,
@@ -603,7 +603,7 @@ export function useChat({
             title: customTitleRef.current ?? SessionManager.deriveTitle(filtered),
             customTitle: customTitleRef.current,
             cwd,
-            forgeMode: forgeModeRef.current,
+            bakeMode: bakeModeRef.current,
             activeTabId: tabId,
           })
           .catch(() => {});
@@ -1039,7 +1039,7 @@ export function useChat({
               diaryParts.push(`DISCOVERIES:${ws.discoveries.join("|")}`);
             if (ws.failures.length > 0) diaryParts.push(`FAILURES:${ws.failures.join("|")}`);
             diaryParts.push(`FILES:${[...ws.files.keys()].slice(0, 10).join("|")}`);
-            writeDiary("forge", diaryParts.join("|"));
+            writeDiary("bake", diaryParts.join("|"));
           }
 
           wsm.reset();
@@ -2249,11 +2249,11 @@ export function useChat({
             contextManager.maybeReseedExpiredCache(idleMs);
           }
 
-          const agent = createForgeAgent({
+          const agent = createBakeAgent({
             model,
             fullModelId: modelId,
             contextManager,
-            forgeMode: contextManager.getForgeMode(),
+            bakeMode: contextManager.getBakeMode(),
             interactive: interactiveCallbacks,
             subagentModels,
             webSearchModel: effectiveWebSearchModel,
@@ -2291,11 +2291,11 @@ export function useChat({
                   ? agent
                   : (() => {
                       const degraded = degradeProviderOptions(activeModelRef.current, degradeLevel);
-                      return createForgeAgent({
+                      return createBakeAgent({
                         model,
                         fullModelId: modelId,
                         contextManager,
-                        forgeMode: contextManager.getForgeMode(),
+                        bakeMode: contextManager.getBakeMode(),
                         interactive: interactiveCallbacks,
                         subagentModels,
                         webSearchModel: effectiveWebSearchModel,
@@ -3765,7 +3765,7 @@ export function useChat({
             } else {
               planModeRef.current = false;
               planRequestRef.current = null;
-              setForgeMode("default");
+              setBakeMode("default");
 
               if (postAction.action === "cancel") {
                 clearTasks(tabId);
@@ -3878,7 +3878,7 @@ export function useChat({
       promptDestructive,
       tabId,
       tabLabel,
-      setForgeMode,
+      setBakeMode,
       onModelChange,
       setCoreMessagesEager,
       // setCoreMessagesEager updates the ref synchronously inside its
@@ -3963,7 +3963,7 @@ export function useChat({
       sessionId: sessionIdRef.current,
       planMode: planModeRef.current,
       planRequest: planRequestRef.current,
-      forgeMode,
+      bakeMode,
     }),
     [
       messages,
@@ -3973,7 +3973,7 @@ export function useChat({
       sidebarPlan,
       tokenUsage,
       coAuthorCommits,
-      forgeMode,
+      bakeMode,
     ],
   );
 
@@ -4030,8 +4030,8 @@ export function useChat({
     setPendingPlanReview,
     snapshot,
     contextManager,
-    forgeMode,
-    setForgeMode,
+    bakeMode,
+    setBakeMode,
     cycleMode: cycleModeFn,
   };
 }

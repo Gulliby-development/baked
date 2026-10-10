@@ -645,7 +645,7 @@ describe("IO Worker — Session Persistence", () => {
       startedAt: Date.now(),
       updatedAt: Date.now(),
       activeTabId: tabIds[0]!,
-      forgeMode: "default" as const,
+      bakeMode: "default" as const,
       tabs: tabIds.map((tid) => ({
         id: tid,
         label: "Tab",
@@ -1248,7 +1248,7 @@ describe("Cross-cutting robustness", () => {
       startedAt: Date.now(),
       updatedAt: Date.now(),
       activeTabId: "tab-1",
-      forgeMode: "default" as const,
+      bakeMode: "default" as const,
       tabs: [
         {
           id: "tab-1",

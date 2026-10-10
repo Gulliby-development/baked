@@ -55,7 +55,7 @@ interface TabInstanceProps {
   sessionManager: SessionManager;
   cwd: string;
   onCommand: (input: string, chat: ChatInstance) => void;
-  onModeChange?: (mode: import("../../types/index.js").ForgeMode) => void;
+  onModeChange?: (mode: import("../../types/index.js").BakeMode) => void;
   onModelChange?: (modelId: string) => void;
   onExit: () => void;
   registerChat: (id: string, chat: ChatInstance) => void;
@@ -186,8 +186,8 @@ export const TabInstance = memo(function TabInstance({
 
   // Sync Baked mode to header when it changes in the active tab
   useEffect(() => {
-    if (visible && onModeChange) onModeChange(chat.forgeMode);
-  }, [visible, chat.forgeMode, onModeChange]);
+    if (visible && onModeChange) onModeChange(chat.bakeMode);
+  }, [visible, chat.bakeMode, onModeChange]);
 
   // Sync status bar when this tab is active
   useEffect(() => {

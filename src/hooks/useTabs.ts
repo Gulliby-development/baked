@@ -351,7 +351,7 @@ export function useTabs(onTabClosed?: (survivingIds: Set<string>) => void): UseT
           sessionId: tm.sessionId,
           planMode: tm.planMode,
           planRequest: tm.planRequest,
-          forgeMode: tm.forgeMode ?? "default",
+          bakeMode: tm.bakeMode ?? "default",
         };
         initialStates.current.set(tm.id, state);
       }

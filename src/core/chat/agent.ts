@@ -3,18 +3,18 @@ import type { LanguageModel } from "ai";
 import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AppConfig,
-  ForgeMode,
+  BakeMode,
   ImageAttachment,
   InteractiveCallbacks,
 } from "../../types/index.js";
 import { normalizePath } from "../agents/agent-bus.js";
-import { createForgeAgent } from "../agents/index.js";
+import { createBakeAgent } from "../agents/index.js";
 import type { SharedCacheRef } from "../agents/subagent-tools.js";
 import type { ContextManager } from "../context/manager.js";
 import { resolveModel } from "../llm/provider.js";
 import { onFileEdited } from "../tools/file-events.js";
 
-export type ForgeAgent = ReturnType<typeof createForgeAgent>;
+export type BakeAgent = ReturnType<typeof createBakeAgent>;
 
 /**
  * A file cache shared by dispatch subagents and later turns of one conversation, so they see edits
@@ -56,7 +56,7 @@ export interface ChatAgentOptions {
   cwd: string;
   modelId: string;
   model: LanguageModel;
-  mode: ForgeMode;
+  mode: BakeMode;
   contextManager: ContextManager;
   providerOptions: ProviderOptions;
   headers: Record<string, string> | undefined;
@@ -71,9 +71,9 @@ export interface ChatAgentOptions {
 /**
  * The main agent of a chat turn outside the terminal UI, with the subagent and web search models
  * of the task router. Without approval hooks, destructive commands and writes outside the
- * workspace are denied unless the mode is auto, which bypasses them in `createForgeAgent`.
+ * workspace are denied unless the mode is auto, which bypasses them in `createBakeAgent`.
  */
-export function createChatAgent(options: ChatAgentOptions): ForgeAgent {
+export function createChatAgent(options: ChatAgentOptions): BakeAgent {
   const { config, mode, callbacks } = options;
   const tr = config.taskRouter;
   const sparkModelId = tr?.spark ?? tr?.exploration ?? tr?.trivial ?? undefined;
@@ -92,11 +92,11 @@ export function createChatAgent(options: ChatAgentOptions): ForgeAgent {
   const webSearchEnabled = config.webSearch !== false;
   const webSearchModel = webSearchEnabled ? tryResolve(tr?.webSearch ?? undefined) : undefined;
   const deny = async (): Promise<boolean> => false;
-  return createForgeAgent({
+  return createBakeAgent({
     model: options.model,
     fullModelId: options.modelId,
     contextManager: options.contextManager,
-    forgeMode: mode,
+    bakeMode: mode,
     interactive: callbacks,
     subagentModels,
     webSearchModel,

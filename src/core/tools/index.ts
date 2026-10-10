@@ -2036,7 +2036,7 @@ export function buildEmberExploreTools(opts?: {
   };
 }
 
-/** Lean code schemas use the same approval, hook and identity path as Forge. */
+/** Lean code schemas use the same approval, hook and identity path as Bake. */
 export function buildSubagentCodeTools(opts?: {
   webSearchModel?: import("ai").LanguageModel;
   onApproveWebSearch?: (query: string) => Promise<boolean>;

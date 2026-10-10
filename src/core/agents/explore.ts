@@ -81,9 +81,9 @@ interface ExploreAgentOptions {
   disablePruning?: boolean;
   role?: "explore" | "investigate";
   tabId?: string;
-  forgeInstructions?: string;
+  bakeInstructions?: string;
   /** Baked tool definitions with role guards — spark cache prefix hits. */
-  forgeTools?: Record<string, unknown>;
+  bakeTools?: Record<string, unknown>;
   /** Skip bus coordination tools (report_finding, check_findings) — for solo agents like verifier. */
   skipBusTools?: boolean;
 }
@@ -94,11 +94,11 @@ export function createExploreAgent(model: LanguageModel, options?: ExploreAgentO
   const hasBus = !!(bus && agentId);
   const busTools = hasBus && !options?.skipBusTools ? buildBusTools(bus, agentId, "explore") : {};
 
-  // Spark: forge's tool definitions (with role guards) for cache prefix hits.
+  // Spark: bake's tool definitions (with role guards) for cache prefix hits.
   // Ember: 7 read-only intelligence tools (different model, no cache sharing).
   let allTools: Record<string, unknown>;
-  if (options?.forgeTools) {
-    allTools = { ...options.forgeTools, ...busTools };
+  if (options?.bakeTools) {
+    allTools = { ...options.bakeTools, ...busTools };
   } else {
     let tools = buildEmberExploreTools({
       repoMap: options?.repoMap,
@@ -149,12 +149,12 @@ export function createExploreAgent(model: LanguageModel, options?: ExploreAgentO
         // SDK swallows throws in onStepEnd; surfacing happens in prepareStep (step-utils.ts).
       }
     },
-    // biome-ignore lint/suspicious/noExplicitAny: forgeTools come as Record<string, unknown> for cache sharing
+    // biome-ignore lint/suspicious/noExplicitAny: bakeTools come as Record<string, unknown> for cache sharing
     tools: allTools as any,
     instructions: {
       role: "system" as const,
-      content: options?.forgeInstructions
-        ? options.forgeInstructions
+      content: options?.bakeInstructions
+        ? options.bakeInstructions
         : (() => {
             const base = exploreBase();
             if (!hasBus || options?.skipBusTools) return base;
@@ -173,7 +173,7 @@ export function createExploreAgent(model: LanguageModel, options?: ExploreAgentO
           unknown
         >) ?? {}),
         cacheControl: { type: "ephemeral", ttl: cacheTtl },
-        // See forge.ts: gateways strip SDK-level maxOutputTokens; mirror to wire.
+        // See bake.ts: gateways strip SDK-level maxOutputTokens; mirror to wire.
         max_tokens: MAX_OUTPUT_TOKENS,
       },
     } as ProviderOptions,

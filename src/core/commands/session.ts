@@ -20,7 +20,7 @@ async function handleExportAll(ctx: CommandContext): Promise<void> {
   const coreMessages = ctx.chat.coreMessages;
   const chatMessages = ctx.chat.messages;
   const tokenUsage = ctx.chat.tokenUsage;
-  const forgeMode = ctx.chat.forgeMode;
+  const bakeMode = ctx.chat.bakeMode;
   const repoMapReady = ctx.contextManager.isRepoMapReady();
 
   const bakeMapBlock = ctx.contextManager.buildBakeMapSnapshot();
@@ -29,7 +29,7 @@ async function handleExportAll(ctx: CommandContext): Promise<void> {
   const payload = {
     exportedAt: new Date().toISOString(),
     model: activeModel,
-    mode: forgeMode,
+    mode: bakeMode,
     repoMapReady,
     tokenUsage,
     lastStep: {
@@ -144,13 +144,13 @@ function handlePlan(input: string, ctx: CommandContext): void {
   if (arg) {
     ctx.chat.setPlanMode(true);
     ctx.chat.setPlanRequest(arg);
-    ctx.setForgeMode("plan");
+    ctx.setBakeMode("plan");
     sysMsg(ctx, `Plan mode enabled. Task: ${arg}`);
   } else {
     const newState = !ctx.chat.planMode;
     ctx.chat.setPlanMode(newState);
     if (!newState) ctx.chat.setPlanRequest(null);
-    ctx.setForgeMode(newState ? "plan" : "default");
+    ctx.setBakeMode(newState ? "plan" : "default");
     sysMsg(ctx, `Plan mode ${newState ? "enabled" : "disabled"}.`);
   }
 }

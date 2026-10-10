@@ -6,7 +6,7 @@ import { loadConfig } from "../../config/index.js";
 import { logBackgroundError } from "../../stores/errors.js";
 import { recordModelCall } from "../../stores/model-events.js";
 import { useRepoMapStore } from "../../stores/repomap.js";
-import type { ForgeMode, TaskRouter } from "../../types/index.js";
+import type { BakeMode, TaskRouter } from "../../types/index.js";
 import { toErrorMessage } from "../../utils/errors.js";
 import { getIntelligenceClient, setIntelligenceClient } from "../intelligence/instance.js";
 import type { SymbolForSummary } from "../intelligence/repo-map.js";
@@ -76,7 +76,7 @@ export class ContextManager {
   private recallEditEpoch = 0;
   /** Memory ids surfaced earlier in this turn-stream — skipped on subsequent recall to avoid duplicate <recalled_memories> blocks. Cleared on cache reset (compaction, /clear, session restore). */
   private surfacedMemoryIds = new Set<string>();
-  private forgeMode: ForgeMode = "default";
+  private bakeMode: BakeMode = "default";
   private fileTreeCache: { tree: string; at: number } | null = null;
   private projectInfoCache: { info: string | null; at: number } | null = null;
   private repoMap: IntelligenceClient;
@@ -459,8 +459,8 @@ export class ContextManager {
     return this.memoryManager;
   }
 
-  getForgeMode(): ForgeMode {
-    return this.forgeMode;
+  getBakeMode(): BakeMode {
+    return this.bakeMode;
   }
 
   setProjectInstructions(content: string): void {
@@ -469,8 +469,8 @@ export class ContextManager {
     this.projectInstructionsVersion++;
   }
 
-  setForgeMode(mode: ForgeMode): void {
-    this.forgeMode = mode;
+  setBakeMode(mode: BakeMode): void {
+    this.bakeMode = mode;
   }
 
   setContextWindow(tokens: number): void {
@@ -483,8 +483,8 @@ export class ContextManager {
     return Math.round((this.conversationTokens / window) * 100);
   }
 
-  buildModeMessage(modeOverride?: ForgeMode): string | null {
-    const mode = modeOverride ?? this.forgeMode;
+  buildModeMessage(modeOverride?: BakeMode): string | null {
+    const mode = modeOverride ?? this.bakeMode;
     if (mode === "default") return null;
     const instructions = getModeInstructions(mode, {
       contextPercent: this.getContextPercent(),
@@ -714,7 +714,7 @@ export class ContextManager {
     const skillCount = this.skills.size;
     const skillNames = [...this.skills.keys()].sort().join(",");
     const memGen = this.memoryManager.generation;
-    const mode = this.forgeMode;
+    const mode = this.bakeMode;
     return `${String(gen)}|${modelId}|${mode}|${String(skillCount)}:${skillNames}|m${String(memGen)}|pi${String(this.projectInstructionsVersion)}|ws${String(this.workingSetVersion)}`;
   }
 
@@ -1175,7 +1175,7 @@ export class ContextManager {
   getContextBreakdown(): { section: string; chars: number; active: boolean }[] {
     const sections: { section: string; chars: number; active: boolean }[] = [];
 
-    // System prompt size — use actual cached size from forge if available, else estimate
+    // System prompt size — use actual cached size from bake if available, else estimate
     const cachedSize = this.getInstructionsSize();
     sections.push({
       section: "System prompt + tools",
@@ -1215,11 +1215,11 @@ export class ContextManager {
       active: memoryContext !== null,
     });
 
-    const modeInstructions = getModeInstructions(this.forgeMode, {
+    const modeInstructions = getModeInstructions(this.bakeMode, {
       contextPercent: this.getContextPercent(),
     });
     sections.push({
-      section: `Mode (${this.forgeMode})`,
+      section: `Mode (${this.bakeMode})`,
       chars: modeInstructions?.length ?? 0,
       active: modeInstructions !== null,
     });
@@ -1276,7 +1276,7 @@ export class ContextManager {
       modelId: modelIdOverride || this.lastActiveModel,
       hasRepoMap: this.isRepoMapReady(),
       hasSymbols: this.isRepoMapReady() && this.repoMap.getStatsCached().symbols > 0,
-      forgeMode: this.forgeMode,
+      bakeMode: this.bakeMode,
       projectInstructions: this.projectInstructions || null,
       cwd: this.cwd,
       hasGhCli: this.hasGhCli,

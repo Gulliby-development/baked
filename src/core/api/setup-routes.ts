@@ -12,6 +12,7 @@ import {
   loadConfig,
   loadEffectiveProjectConfig,
   mergeConfigs,
+  migrateLegacyConfigKeys,
 } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import { listCustomCommands } from "../commands/custom.js";
@@ -65,12 +66,13 @@ const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
 
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
+/** Reads a config file, with legacy keys under their current names. */
 function readJsonFile(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error(`${path} does not hold a JSON object`);
-  return parsed as Record<string, unknown>;
+  return migrateLegacyConfigKeys(parsed as Record<string, unknown>);
 }
 
 /** Answers a setup request, or returns null when the path is not a setup endpoint. */

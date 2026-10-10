@@ -9,7 +9,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 ## How BAKED works
 
 - `src/boot.tsx` parses the command line and starts either the terminal UI or the headless CLI.
-- The main agent (`src/core/agents/forge.ts`) assembles the system prompt, context, tools, approval callbacks and execution mode for a session, then runs the model loop through a provider from `src/core/llm/providers/`.
+- The main agent (`src/core/agents/bake.ts`) assembles the system prompt, context, tools, approval callbacks and execution mode for a session, then runs the model loop through a provider from `src/core/llm/providers/`.
 - Context comes from `src/core/context/` and the repository graph in `src/core/intelligence/` (language servers and tree-sitter), so the agent can reason about code structure rather than only raw files.
 - Tools in `src/core/tools/` (files, shell, Git, code analysis) execute through the registry. Writes and commands pass access checks and user approval before they run.
 - Sessions, memory and workflow state persist in SQLite (`src/core/sessions/`, `src/core/memory/`, `src/core/workflows/`). Durable workflow events are authoritative; the UI only renders them.
@@ -47,7 +47,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
 ## Navigation
 
 - `src/boot.tsx`: startup and CLI routing.
-- `src/core/agents/forge.ts`: main agent.
+- `src/core/agents/bake.ts`: main agent.
 - `src/core/context/manager.ts`, `src/core/prompts/`: context and prompt assembly.
 - `src/core/tools/`: tools and registry.
 - `src/core/intelligence/`: repository graph and analysis backends.
