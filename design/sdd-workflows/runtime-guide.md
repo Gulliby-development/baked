@@ -1,6 +1,6 @@
 # SDD runtime: running and operations
 
-The runtime is available through `baked workflow` and `/workflow` in the TUI. It is off by default. The release gate status is in the [report](implementation-status.md). Bun is required; SQLite and the existing BAKED providers are used. No separate server or daemon is needed.
+The runtime is available through `baked workflow` and `/workflow` in the TUI. It is off by default. The release gate status is in the [report](implementation-status.md). Bun is required; SQLite and the existing BAKED providers are used. No separate server or daemon is needed; `baked serve` optionally exposes the same commands to local clients ([Local API](#local-api-baked-serve)).
 
 ## Enabling
 
@@ -529,6 +529,45 @@ Initiative IDs and feature IDs are lower case slugs. A feature's runs use the wo
 **Pause, resume and re-planning.** `pause` stops the initiative and pauses a running feature run; `resume` continues it. While paused, the split can be edited again: approving the new revision keeps every feature whose boundary, contract, dependencies and mandatory flag are unchanged (a rename keeps its run), and supersedes and cancels the runs of removed or changed features, which then run again under the new revision. `replan --feature F` supersedes one feature's current run so the next drive starts it again; other features' results stay. Superseded runs and their artifacts remain linked to the initiative and are not collected by `gc`.
 
 Exit codes of `start`, `approve`, `drive` and `resume`: 0 completed or still progressing, 1 refused or error, 3 waiting for a decision, 4 blocked, 5 revision conflict, 130 paused. The workflow panel lists initiatives and approves, pauses, resumes, continues and re-plans them; see [Initiatives in the TUI](#initiatives-in-the-tui).
+
+## Local API (`baked serve`)
+
+`baked serve` exposes the workflow commands to a desktop app or another local client over HTTP. It is a thin front end over the same code path as `baked workflow` (`src/core/api/server.ts` builds the CLI's `WorkflowArgs` and calls `executeWorkflowCommand`), so validation, the `workflows.enabled` opt-in, approval digests, expected revisions and command idempotency are identical.
+
+```sh
+baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR]
+```
+
+- The server binds `127.0.0.1` only. `--port 0` (the default) picks a free port. When it is ready it prints one JSON line on stdout: `{"url":"http://127.0.0.1:PORT","port":PORT,"tokenFile":"..."}`.
+- Each start generates a random 32-byte bearer token (base64url) and writes it to `.baked/serve-PORT.token` in the workspace, or to `--token-file`, with mode 0600 (on Windows the file inherits the directory's ACL). Every request, `/v1/health` included, needs `Authorization: Bearer TOKEN`; the token is compared in constant time.
+- The `Host` header must be `127.0.0.1:PORT` or `localhost:PORT`, otherwise the answer is 421 (DNS-rebinding protection). A request with an `Origin` header is refused with 403 unless that exact origin was given with `--allow-origin` (repeatable; `*` and paths are refused). Allowed origins get `Access-Control-Allow-Origin` with that origin and preflight answers; there is no wildcard.
+- POST bodies are JSON (`Content-Type: application/json`), at most 1 MiB (413 above), validated with zod; unknown fields are refused.
+- SIGINT or SIGTERM stops accepting, closes event streams, aborts active drives through their abort signals like the CLI's Ctrl+C, waits for them and removes the token file. A second signal exits at once with 130.
+
+| Method and path | CLI equivalent | Body or query |
+| --- | --- | --- |
+| `GET /v1/health` | | returns `apiVersion`, `version`, `workspace` |
+| `GET /v1/workflow/definitions` | `definitions` | |
+| `GET /v1/workflow/profiles` | `profiles` | |
+| `GET /v1/workflow/runs` | `list` | `?feature=&status=&limit=&cursor=` |
+| `POST /v1/workflow/runs` | `run` | `commandId`, `feature`, `prompt`, optional `workflow`, `policy` (object), `model`, `owner` (default `API`), `confirmAutoApproval`, `worktree`, `writers` |
+| `GET /v1/workflow/runs/RUN_ID` | `status` | snapshot with `requests` |
+| `GET /v1/workflow/runs/RUN_ID/usage` | `usage` | |
+| `GET /v1/workflow/runs/RUN_ID/artifacts` | `artifacts` | `?file=ARTIFACT_ID` returns `{content}` |
+| `POST /v1/workflow/runs/RUN_ID/pause`, `/cancel`, `/resume` | `pause`, `cancel`, `resume` | `commandId`, `expectedRevision` |
+| `POST /v1/workflow/runs/RUN_ID/approve` | `approve` | plus `requestId`, `digest`, optional `excludeUserChanges` |
+| `POST /v1/workflow/runs/RUN_ID/reject` | `reject` | plus `requestId`, `reason` |
+| `POST /v1/workflow/runs/RUN_ID/answer` | `answer` | plus `requestId`, `answers` (object of strings) |
+| `POST /v1/workflow/runs/RUN_ID/extend` | `extend` | plus optional `tokens`, `calls`, `timeMs` |
+| `GET /v1/workflow/runs/RUN_ID/events` | `--events` | `?after=SEQ`; SSE, or JSON with `Accept: application/json` (`?limit=`, at most 1000) |
+
+Every mutation requires a client-chosen `commandId` (letters, digits, `_` and `-`): a retry with the same ID and body returns the stored result, the same ID with a different body is a conflict. Errors are `{"error":{"code","message"}}` with the workflow fault code: `NOT_FOUND` and `ARTIFACT_MISSING` 404; `INVALID_DEFINITION`, `INVALID_REFERENCE`, `CYCLE_DETECTED` and request validation (`INVALID_REQUEST`) 400; `CAPABILITY_DENIED` 403; `REVISION_CONFLICT`, `COMMAND_CONFLICT`, `STALE_DECISION`, `WORKSPACE_BUSY`, `INPUT_CHANGED` and `RUN_TERMINAL` 409; anything else 500. Messages pass through the export redaction (`redactSecrets`).
+
+`POST /v1/workflow/runs` (202) and `.../resume` (200) answer with the snapshot as soon as the run is driving; the drive continues in the server process, as it would in the foreground CLI, until the run waits for a person, stops, or the server shuts down. Like the CLI, `approve`, `answer` and `reject` only record the decision; the client then calls `resume`. A decision that arrives while a drive of that run is winding down after it stopped waits for that drive to return first.
+
+The event endpoint polls the durable event log by sequence every 250 ms and sends each event as `id: SEQ` and `data: EVENT_JSON`, with a `: keep-alive` comment every 15 s. A reconnecting client sends `Last-Event-ID`, which takes precedence over `?after=`, and receives only later events. The stream stays open (also for waiting and terminal runs, which can still receive acceptance and delivery events) until the client disconnects or the server stops. Browsers' `EventSource` cannot send an `Authorization` header; read the stream with `fetch` instead.
+
+Limitations: event payloads and artifact contents are returned as `baked workflow status`, `--events` and `artifacts` return them, without the export redaction. `evidence`, `recover`, `candidate`, `revise`, `fork`, `undo`, `import`, `export`, `deliver`, `gates` and initiatives are not exposed yet; use the CLI. A run driven by another process (the CLI or the TUI) can be watched through the event endpoint; the workspace leases decide which process may drive a run, as between two CLI processes.
 
 ## Exit codes
 

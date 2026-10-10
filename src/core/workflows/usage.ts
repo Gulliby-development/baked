@@ -39,6 +39,7 @@ export function runUsage(
   store: WorkflowStore,
   runId: string,
   stageFilter?: string,
+  top?: number,
 ): RunUsageReport {
   const stages = new Map(store.steps(runId).map((step) => [step.id, step.stage_id]));
   const attempts = store
@@ -117,6 +118,9 @@ export function runUsage(
     models: [...byModel.values()].sort(
       (a, b) => b.tokens - a.tokens || a.model.localeCompare(b.model),
     ),
-    attempts,
+    attempts:
+      top === undefined
+        ? attempts
+        : [...attempts].sort((a, b) => (b.usedTokens ?? 0) - (a.usedTokens ?? 0)).slice(0, top),
   };
 }

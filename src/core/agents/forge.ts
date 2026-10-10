@@ -479,7 +479,7 @@ function buildForgePrepareStep(
     }
 
     // [9] Debug API logging
-    if (process.env.baked_DEBUG_API) {
+    if (process.env.BAKED_DEBUG_API) {
       const msgs = result.messages ?? sanitized;
       const dump = msgs
         .map((m, i) => {

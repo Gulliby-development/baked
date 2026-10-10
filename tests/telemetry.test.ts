@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,8 +14,8 @@ beforeEach(() => {
   origHome = process.env.HOME;
   process.env.HOME = tmp;
   delete process.env.DO_NOT_TRACK;
-  delete process.env.baked_TELEMETRY;
-  delete process.env.baked_TELEMETRY_URL;
+  delete process.env.BAKED_TELEMETRY;
+  delete process.env.BAKED_TELEMETRY_URL;
 });
 
 afterEach(() => {
@@ -37,9 +37,9 @@ describe("telemetryDisabled", () => {
     expect(telemetryDisabled(true)).toBe(true);
   });
 
-  test("baked_TELEMETRY=0 disables", async () => {
+  test("BAKED_TELEMETRY=0 disables", async () => {
     const { telemetryDisabled } = await load();
-    process.env.baked_TELEMETRY = "0";
+    process.env.BAKED_TELEMETRY = "0";
     expect(telemetryDisabled(undefined)).toBe(true);
   });
 
@@ -55,7 +55,7 @@ describe("telemetryDisabled", () => {
 
   test("env enable overrides nothing harmful", async () => {
     const { telemetryDisabled } = await load();
-    process.env.baked_TELEMETRY = "1";
+    process.env.BAKED_TELEMETRY = "1";
     expect(telemetryDisabled(true)).toBe(false);
   });
 });
@@ -78,7 +78,7 @@ describe("sendBeacon", () => {
       calledInit = init as RequestInit;
       return Promise.resolve(new Response(null, { status: 204 }));
     });
-    process.env.baked_TELEMETRY_URL = "https://example.test/b";
+    process.env.BAKED_TELEMETRY_URL = "https://example.test/b";
 
     sendBeacon(
       {
@@ -121,6 +121,38 @@ describe("sendBeacon", () => {
       throw new Error("network down");
     });
     expect(() => sendBeacon({ surface: "tui", version: "1.0.0" }, true)).not.toThrow();
+  });
+
+  test("records locally and sends nothing without a receiver URL", async () => {
+    const { sendBeacon, summarizeTelemetry, telemetryLogPath } = await load();
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+    sendBeacon({ surface: "tui", version: "1.0.0", provider: "anthropic" }, undefined);
+    sendBeacon({ surface: "headless", version: "1.0.0" }, undefined);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(existsSync(telemetryLogPath())).toBe(true);
+    const summary = summarizeTelemetry();
+    expect(summary.events).toBe(2);
+    expect(summary.by.sf).toEqual({ tui: 1, headless: 1 });
+    expect(summary.by.pv).toEqual({ anthropic: 1 });
+    expect(summary.days).toHaveLength(1);
+  });
+
+  test("sends to the config receiver URL when set", async () => {
+    const { sendBeacon } = await load();
+    let calledUrl = "";
+    spyOn(globalThis, "fetch").mockImplementation((url) => {
+      calledUrl = String(url);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+    sendBeacon({ surface: "tui", version: "1.0.0" }, undefined, "https://config.test/b");
+    expect(new URL(calledUrl).origin).toBe("https://config.test");
+  });
+
+  test("records nothing when opted out", async () => {
+    const { sendBeacon, telemetryLogPath } = await load();
+    process.env.BAKED_TELEMETRY = "0";
+    sendBeacon({ surface: "tui", version: "1.0.0" }, undefined);
+    expect(existsSync(telemetryLogPath())).toBe(false);
   });
 });
 

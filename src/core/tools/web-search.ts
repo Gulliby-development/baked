@@ -1,6 +1,6 @@
 import type { LanguageModel } from "ai";
 import { tool } from "ai";
-import LinkifyIt from "linkify-it";
+import { LinkifyIt } from "linkify-it";
 import { z } from "zod";
 import { recordModelCall } from "../../stores/model-events.js";
 import { emitSubagentStep } from "../agents/subagent-events.js";
