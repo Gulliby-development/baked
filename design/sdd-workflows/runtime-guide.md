@@ -599,7 +599,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
 | `POST /v1/workflow/runs/RUN_ID/candidate`, `/revise` | `candidate`, `revise` | candidate takes `commandId` and inline `spec`, `plan`, `tasks`, `policy`; revise takes `candidate` plus `commandId`, `expectedRevision` |
 | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; `GET /v1/commands`, `GET /v1/skills` | | the terminal UI's gate editor, custom commands and skills; see `design/desktop-api.md` |
-| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day`: tokens of every attempt started in the window, grouped |
+| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads) and estimated cost of every attempt started in the window, grouped |
 | `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `design/desktop-api.md`; start, approve and resume drive the initiative in the background |
 | `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
 | `GET /v1/projects` | `projects list --json` | every folder BAKED was opened in (`~/.baked/known-projects.json`), pinned first: `path`, `name`, `projectId` (null without `baked/project.json`), `pinned`, `exists`, `current` and `overview` (`sessions`, `lastSessionAt`, `activeRuns`, `attention`). Each folder is served by its own `baked serve`. |

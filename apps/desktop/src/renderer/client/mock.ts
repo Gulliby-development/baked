@@ -123,7 +123,12 @@ export function createMockBridge(): DesktopBridge {
       if (!found?.open)
         return response(409, { error: { code: "PROJECT_CLOSED", message: "Not open" } });
       if (method === "GET" && path === "/v1/health")
-        return response(200, { apiVersion: 1, version: "0.1.1", workspace: found.path });
+        return response(200, {
+          apiVersion: 1,
+          version: "0.1.1",
+          workspace: found.path,
+          capabilities: ["workflow", "attention", "projects", "sessions", "setup", "initiatives"],
+        });
       const url = new URL(path, "http://mock");
       for (const route of MOCK_ROUTES) {
         const result = await route({

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { ArtifactRow, AttemptRow, StepRow, WorkflowStore } from "../src/core/workflows/store.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
-import { runUsage } from "../src/core/workflows/usage.js";
+import { findPricing } from "../src/core/llm/pricing.js";
+import { runUsage, usageSummary } from "../src/core/workflows/usage.js";
 import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.js";
 
 const runId = "run-1";
@@ -375,5 +376,68 @@ describe("runUsage totals", () => {
       compactedBytes: null,
     });
     expect(report.totalTokens).toBe(0);
+  });
+});
+
+describe("usage cost and input/output split", () => {
+  const step = (inputTokens: number, outputTokens: number, cacheReadTokens: number) => ({
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    toolCalls: 0,
+    compactedBytes: 0,
+  });
+
+  test("prices uncached input, cache reads and output; host attempts cost nothing", () => {
+    const store = makeStore(
+      [
+        makeAttempt("priced", 1_100_000, "anthropic/claude-sonnet-4-6"),
+        makeAttempt("unknown", 500, "local/unknown-thing"),
+        makeAttempt("host", null, null),
+        makeAttempt("legacy", 70, "anthropic/claude-sonnet-4-6"),
+      ],
+      new Map([
+        ["priced", makeUsage([step(600_000, 50_000, 200_000), step(400_000, 50_000, 200_000)])],
+        ["unknown", makeUsage([step(400, 100, 0)])],
+        ["host", makeUsage([])],
+      ]),
+    );
+    const pricing = findPricing("anthropic/claude-sonnet-4-6")?.pricing;
+    if (!pricing) throw new Error("No fixture price");
+    const expected = (600_000 * pricing.input + 400_000 * pricing.cacheRead + 100_000 * pricing.output) / 1e6;
+
+    const rows = new Map(runUsage(store, runId).attempts.map((row) => [row.attemptId, row]));
+
+    expect(rows.get("priced")).toMatchObject({ inputTokens: 1_000_000, outputTokens: 100_000 });
+    expect(rows.get("priced")?.costUsd).toBeCloseTo(expected, 9);
+    expect(findPricing("local/unknown-thing")).toBeNull();
+    expect(rows.get("unknown")).toMatchObject({ inputTokens: 400, outputTokens: 100, costUsd: null });
+    expect(rows.get("host")?.costUsd).toBe(0);
+    expect(rows.get("legacy")).toMatchObject({ inputTokens: null, outputTokens: null, costUsd: null });
+  });
+
+  test("summaries add cost and count unpriced tokens per group and in total", () => {
+    const attempts = [
+      { ...makeAttempt("a", 1_100, "anthropic/claude-sonnet-4-6"), started_at: 1_000 },
+      { ...makeAttempt("b", 70, "anthropic/claude-sonnet-4-6"), started_at: 2_000 },
+    ];
+    const store = Object.assign(makeStore(attempts, new Map([["a", makeUsage([step(1_000, 100, 0)])]])), {
+      runIdsWithAttemptsSince: () => [runId],
+    });
+
+    const summary = usageSummary(store, { days: 1, groupBy: ["model", "stage"], now: 10_000 });
+
+    expect(summary.tokens).toBe(1_170);
+    expect(summary.inputTokens).toBe(1_000);
+    expect(summary.outputTokens).toBe(100);
+    expect(summary.unpricedTokens).toBe(70);
+    expect(summary.costUsd).toBeGreaterThan(0);
+    expect(summary.groups).toHaveLength(1);
+    expect(summary.groups[0]).toMatchObject({
+      key: "anthropic/claude-sonnet-4-6 / implementation",
+      keys: { model: "anthropic/claude-sonnet-4-6", stage: "implementation" },
+      attempts: 2,
+      costUsd: summary.costUsd,
+    });
   });
 });
