@@ -81,11 +81,13 @@ describe("v2 definitions and presets (V2-01, V2-04)", () => {
     const types = (id: string) =>
       instantiatePreset(builtinPresets.get(id) as WorkflowV2, policy).stages.map((s) => s.type);
     expect([...builtinPresets.keys()].sort()).toEqual(
-      ["full", "quick-fix", "review-only", "spike", "standard"].sort(),
+      ["full", "quick", "quick-fix", "review-only", "spike", "standard"].sort(),
     );
     for (const preset of builtinPresets.values())
       expect(validateWorkflowV2(instantiatePreset(preset, policy), library)).toEqual([]);
     expect(types("quick-fix")).toEqual(["agent", "approval", "tasks", "check"]);
+    expect(types("quick")).toEqual(["agent", "approval", "tasks", "check", "review"]);
+    expect(builtinPresets.get("quick")?.publish).toBe(false);
     expect(builtinPresets.get("standard")?.stages.map((s) => s.id)).toEqual([
       "research",
       "specify",
@@ -327,7 +329,7 @@ describe("definitions on disk", () => {
     expect(() => loadDefinition(root, "missing", policy)).toThrow("Unknown workflow");
     const listed = listDefinitions(root, policy);
     expect(listed.map((d) => d.id)).toEqual([
-      "sdd", "quick-fix", "standard", "full", "spike", "review-only", "bad", "legacy", "mine",
+      "sdd", "quick", "quick-fix", "standard", "full", "spike", "review-only", "bad", "legacy", "mine",
     ]);
     expect(listed.filter((d) => d.problems.length).map((d) => d.id)).toEqual(["bad"]);
     expect(listed.find((d) => d.id === "spike")?.writes).toBe(false);

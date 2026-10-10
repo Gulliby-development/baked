@@ -269,7 +269,7 @@ describe("workflow editor", () => {
     expect(addTransition(state, "plan", { to: "done", on: "failed", loop: null }).error).toBe("A agent stage cannot end failed");
     state = ok(removeTransition(state, "review-checks"));
 
-    expect(changeStageField(state, "plan", "profile", 1).error).toBe("No other profile returns plan");
+    expect(ok(changeStageField(state, "plan", "profile", 1)).definition.stages.find((s) => s.id === "plan")).toMatchObject({ profileId: "quick-planner" });
     state = ok(changeStageField(state, "research", "profile", 1));
     expect(state.definition.stages[0]).toMatchObject({ profileId: "deep-researcher" });
     state = ok(changeStageField(state, "checks", "loop:checks-repair", 1));

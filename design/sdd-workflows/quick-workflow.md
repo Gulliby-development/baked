@@ -1,6 +1,6 @@
 # Quick workflow for small tasks
 
-Status: design, reviewed before implementation (2026-10-10). Item 1 of the router and features proposal.
+Status: implemented (2026-10-10). Item 1 of the router and features proposal. The design was reviewed against the code before implementation; the [review outcome](#review-outcome) lists what changed.
 
 ## Problem
 
@@ -34,7 +34,7 @@ A sixth shipped preset, `src/core/workflows/v2/presets/quick.json`:
 | `approve` | approval | human | Covers `implement` |
 | `implement` | tasks | implementer | Task checks on the transition to `checks` |
 | `checks` | check | the policy's feature checks | As every preset, via `instantiatePreset` |
-| `review` | review | `correctness-review` | Skeptic stays on: it runs only on a serious finding |
+| `review` | review | gate `correctness-review` (profile from `policy.reviewProfiles.correctness`) | Skeptic stays on: it runs only on a serious finding |
 
 Transitions: `plan → approve → implement → checks`; `checks → review` on passed; `checks → implement` on failed (loop, at most 2); `review → done` on passed; `review → implement` on changes_requested (loop, at most 1). `limits.maxStageVisits` is 20.
 
@@ -44,7 +44,7 @@ Why one scoping agent instead of research followed by implement: a tasks stage n
 
 ### 2. The `quick-planner` profile
 
-A built-in profile, role `planner`, output `plan`, model `$active`, tools `read`, `bake_find`, `bake_impact`, `navigate`, `submit_result`, `maxSteps` 12, `maxOutputTokens` 8192. Instructions, in short:
+A built-in profile, role `planner`, output `plan`, model `$active`, tools `read`, `bake_find`, `bake_impact`, `navigate`, `submit_result`, `maxSteps` 12, `maxOutputTokens` 16384 (the plan and task graph are one tool call). Instructions, in short:
 
 - There is no research stage: start from the paths the request names (`extra.researchScope.namedPaths`), read them in one call, and find only their direct callers and tests.
 - Plan the smallest change that does the request: one task, more only when files must change in order; never more than three.
@@ -53,18 +53,18 @@ A built-in profile, role `planner`, output `plan`, model `$active`, tools `read`
 
 The plan package validation (`validatePackage`) is not relaxed: the six sections, a `DEC-` reference to a requirement and the task graph rules apply as for every plan. They are cheap when short, and the approval screen and `workflow revise` keep working on the same shapes.
 
-### 3. Plan budget when there is no research
+### 3. Plan budget of a scoping planner
 
-In the scheduler's `plan` case, when the run has no research (`state.research === null`), the planner gets the research budget of the request plus two steps to write and submit the plan, and `extra.researchScope` with the named paths. This uses `researchBudget` from `clarification.ts`:
+In the scheduler's `plan` case, when the run has no research (`state.research === null`) and the planner is a scoping planner (`SCOPING_PLANNERS`, today only `quick-planner`), the planner gets `scopedPlanBudget` from `clarification.ts` and `extra.researchScope` with the named paths and the step limit:
 
-- a request naming n files: `min(profile.maxSteps, policy.maxAgentSteps, 4 + 2n + 2)` steps and 14k tokens per step;
-- a request naming no file: the profile limit (12 for `quick-planner`).
+- a request naming n files: `min(profile.maxSteps, policy.maxAgentSteps, 4 + 2n + 2)` steps, and a cumulative attempt cap of 20k tokens per step (more than research's 14k, because the prompt also carries the spec and profiles and the answer is the whole plan), within `maxAttemptTokens`;
+- a request naming no file: the profile limit (12) and the default attempt cap.
 
-This applies to every definition whose plan stage runs without research, so `quick-fix` runs get the scoped budget too. Runs with research keep the current planner limits.
+The generic `planner` keeps its limits everywhere, so `quick-fix` and custom definitions are unchanged.
 
 ### 4. No publication to `specs/`
 
-`WorkflowV2Schema` gets an optional field `publish: boolean`. Absent or `true` keeps today's behavior. With `false`, the scheduler's `publish()` returns without writing `specs/<feature>/*`; the spec, plan and task graph remain run artifacts (`baked workflow artifacts RUN_ID`, export, delivery). The field is optional with no default, so the hash of every existing definition is unchanged. `quick` sets `"publish": false`. The definition editor keeps unknown fields as it keeps `execution`.
+`WorkflowV2Schema` gets an optional field `publish: boolean`. Absent or `true` keeps today's behavior. With `false`, the scheduler's `publish()` writes nothing to `specs/<feature>/*` and only takes the source snapshot; the spec, plan and task graph remain run artifacts (`baked workflow artifacts RUN_ID`, export, delivery). The field is optional with no default, so the hash of every existing definition is unchanged. `quick` sets `"publish": false`. The definition editor keeps unknown fields as it keeps `execution`.
 
 ### 5. Feature ID
 
@@ -72,20 +72,21 @@ This applies to every definition whose plan stage runs without research, so `qui
 
 ### 6. Entry points
 
-- CLI: `baked quick TEXT... [--feature ID] [--model ID] [--events] [--worktree] [--confirm-auto-approval HASH] [--policy FILE]`, also `--prompt-file FILE` instead of TEXT. `src/boot.tsx` routes `quick` to `runWorkflowCli(["quick", ...])`. In the workflow CLI, `quick` is a command that resolves the feature ID and runs `run` with `--workflow quick` (or the project's `workflows.quickWorkflow`, see below), so exit codes, events and the printed snapshot are those of `run`.
+- `quick` is added to `PRESETS` and `builtinPresets`, so `workflow definitions`, the editor and the new-run form list it.
+- CLI: `baked quick TEXT... [--feature ID] [--model ID] [--events] [--worktree] [--confirm-auto-approval HASH] [--policy FILE]`, also `--prompt-file FILE` instead of TEXT. `src/boot.tsx` routes `quick` to `runWorkflowCli(["quick", ...])`. In the workflow CLI, `quick` is a command that resolves the feature ID and runs `run` with `--workflow quick` (or the project's `workflows.quickWorkflow`, see below), so exit codes, events and the printed snapshot are those of `run`. It refuses to start when the policy has no feature check, with a message that names `workflows.policy.checks`, instead of the schema error an empty check stage would give.
 - `baked workflow quick ...` is the same command.
 - TUI: `/workflow quick [text]` opens the new-run form with the text and the `quick` workflow preselected. The form already lists presets, so `quick` is also selectable there.
 - Config: `workflows.quickWorkflow` (optional, a definition ID) lets a project point `baked quick` at its own copy, for example one with auto approval.
 
 ## Expected effect
 
-On the trial feature the run drops research (140k), specify, analyze (part of 28k) and converge (127k), and replaces the planner with a scoped quick planner. Implementation and review are unchanged in this design; their cost is the router's and the implementer budget's job. The expected total for the same feature is roughly 400k against 664k. This is an estimate; a measured run with `baked quick` on a small task is the acceptance for the cost goal.
+On the trial feature the run drops research (140k), specify, analyze (part of 28k) and converge (127k), and replaces the planner with a scoped quick planner. Implementation and review are unchanged in this design; their cost is the router's and the implementer budget's job. The trial ran the v1 `sdd` flow, which has converge; `standard` does not. The expected total for the same feature is roughly 400k against 664k, which is the default `maxTotalTokens`, so a run on the default policy may stop on its budget and need `extend`. This is an estimate; a measured run with `baked quick` on a small task is the acceptance for the cost goal.
 
 ## Tests
 
 - Preset: `quick` loads, validates against the gate library, appears in `baked workflow definitions`, and is instantiated with the policy checks.
-- Golden run with a scripted executor: plan, approval wait, implement, checks, review, completed; no file under `specs/`; a failed review loops once to implement.
-- Plan budget: with no research, a request naming one path gives the planner `min(12, 4 + 2 + 2) = 8` steps and `researchScope` in its prompt; with research the limits are unchanged.
+- Golden run with a scripted executor: plan, approval wait, implement, checks, review, completed; no file under `specs/`; `quick-fix` still publishes.
+- Plan budget: a request naming one path gives `quick-planner` `min(12, 4 + 2 + 2) = 8` steps, 160k tokens and `researchScope` in its prompt; the generic planner of `quick-fix` keeps 24 steps and no scope.
 - `publish: false` writes nothing to `specs/`, and a definition without the field still publishes.
 - CLI: `baked quick fix the parser` parses, derives `fix-the-parser`, appends `-2` for an existing feature, rejects TEXT with `--prompt-file`, and passes `--feature` through.
 - Feature ID: `featureSlug` behavior unchanged (existing tests move with it).
@@ -93,4 +94,15 @@ On the trial feature the run drops research (140k), specify, analyze (part of 28
 ## Risks
 
 - A one-attempt planner on a vague request ("make it faster") may plan the wrong files. Mitigation: the human approval shows the files, and `quick` is documented for small, located changes; the full flow stays the default.
-- The scoped plan budget also changes `quick-fix`. Its planner had 24 steps without research; a request that names no file keeps the profile limit, so only requests that name files get fewer steps.
+- AC-001 is automated only when a required check exists. With only advisory checks it is manual, and acceptance waits for evidence from a person.
+- The workflow `quick` and the budget preset `quick` of the new-run form share a name; the runtime guide says they are different things.
+
+## Review outcome
+
+An independent review of this design against the code found no blockers and confirmed that a definition without research, specify, analyze and converge runs end to end (approval skips analysis when none is produced, acceptance needs convergence only with a reflection stage, delivery and revise do not depend on published files). Changes made from it:
+
+- The scoped plan budget applies only to scoping planners instead of every plan stage without research, so `quick-fix` keeps its planner limits.
+- The step formula adds the submit steps before the cap, the token cap is recomputed from the final step count, and a plan step is budgeted at 20k tokens.
+- `quick-planner` has `maxOutputTokens` 16384, like `planner`.
+- `baked quick` refuses a policy without feature checks with a clear message.
+- `quick` is registered in `PRESETS`, the new-run form gets an initial-workflow prop for `/workflow quick`, and the docs name the six presets and the clash with the budget preset.
