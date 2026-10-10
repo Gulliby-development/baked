@@ -330,13 +330,6 @@ function startRun(body: unknown): ReturnType<typeof response> {
 export const startRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (method === "GET" && path === "/v1/workflow/definitions") return response(200, DEFINITIONS);
   if (method === "GET" && path === "/v1/workflow/profiles") return response(200, PROFILES);
-  if (method === "GET" && path === "/v1/config")
-    return response(200, {
-      global: {},
-      project: {},
-      effective: { workflows: { enabled: true, policy: POLICY } },
-      paths: { global: "~/.baked/config.json", project: null },
-    });
   if (method === "GET" && (path === "/v1/workflow/estimate" || path === "/v1/workflow/doctor")) {
     const workflow = query.get("workflow") ?? "sdd";
     const model = query.get("model");

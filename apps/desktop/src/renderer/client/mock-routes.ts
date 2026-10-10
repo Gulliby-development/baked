@@ -2,6 +2,7 @@ import type { ApiResponse, RunSnapshot, StreamEvent } from "../../shared/api.js"
 import type { HttpMethod } from "../../shared/bridge.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
 import { RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
+import { setupRoutes } from "./mock-setup.js";
 import { startRoutes } from "./mock-start.js";
 
 export interface MockRequest {
@@ -65,10 +66,24 @@ const workflowRuns: MockRoute = ({ key, method, path }) =>
     : undefined;
 
 /** Sample answers per feature; screens add theirs here. */
+/**
+ * The project home and the setup screens both mock the project summary: the home's carries
+ * sessions and runs, the setup screens' the working set and instructions they change.
+ */
+const projectSummary: MockRoute = async (request) => {
+  if (request.method !== "GET" || request.path !== "/v1/projects/current") return undefined;
+  const [home, setup] = await Promise.all([startRoutes(request), setupRoutes(request)]);
+  if (home?.status !== 200 || setup?.status !== 200) return home ?? setup;
+  const { workingSet, instructions } = setup.body as Record<string, unknown>;
+  return response(200, { ...(home.body as object), workingSet, instructions });
+};
+
 export const MOCK_ROUTES: MockRoute[] = [
   ...RUN_ROUTES,
   workflowRuns,
+  projectSummary,
   startRoutes,
+  setupRoutes,
   ...INSIGHTS_ROUTES,
 ];
 
