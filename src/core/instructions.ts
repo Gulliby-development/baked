@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { projectInstructionFiles } from "./projects/defaults.js";
+import { activeProject } from "./projects/resolve.js";
 import { marked } from "marked";
 
 interface InstructionSource {
@@ -195,6 +197,17 @@ export function loadInstructions(
     if (projectMatch) results.push(projectMatch);
     if (globalMatch && !sameInstructionFile) results.push(globalMatch);
   }
+
+  // The project manifest's own instruction files come after the checkout's, always enabled.
+  const project = activeProject(projectRoot);
+  if (project)
+    for (const file of projectInstructionFiles(project).files)
+      results.push({
+        source: "project",
+        file: relative(projectRoot, file.path).replaceAll("\\", "/"),
+        content: file.content,
+        scope: "project",
+      });
 
   return results;
 }

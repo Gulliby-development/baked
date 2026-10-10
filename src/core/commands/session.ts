@@ -174,6 +174,7 @@ async function handleClear(_input: string, ctx: CommandContext): Promise<void> {
   if (!ok) return;
   ctx.chat.setMessages([]);
   ctx.chat.setCoreMessages([]);
+  ctx.contextManager.refreshWorkingSet();
   ctx.chat.setTokenUsage({
     prompt: 0,
     completion: 0,

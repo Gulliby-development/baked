@@ -100,3 +100,20 @@ export function activeProject(
     return null;
   }
 }
+
+const idCache = new Map<string, { id: string | null; at: number }>();
+
+/** The active project's ID for a directory, cached briefly because session autosave calls it often. */
+export function projectIdOf(cwd: string, opts: ResolveOptions = {}): string | null {
+  const key = `${opts.configDir ?? ""}\0${cwd}`;
+  const cached = idCache.get(key);
+  if (cached && Date.now() - cached.at < 5_000) return cached.id;
+  const id = activeProject(cwd, opts)?.id ?? null;
+  idCache.set(key, { id, at: Date.now() });
+  return id;
+}
+
+/** Forgets cached project IDs, after the manifest or the registry changed. */
+export function clearProjectCache(): void {
+  idCache.clear();
+}
