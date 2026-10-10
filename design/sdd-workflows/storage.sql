@@ -43,10 +43,13 @@ CREATE TABLE runs (
   active_ms INTEGER NOT NULL DEFAULT 0 CHECK(active_ms >= 0),
   estimated_cost_microusd INTEGER CHECK(estimated_cost_microusd IS NULL OR estimated_cost_microusd >= 0),
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  -- The project (baked/project.json) of the run's workspace at creation (migration 007).
+  project_id TEXT
 ) STRICT;
 CREATE INDEX runs_status ON runs(status, updated_at DESC);
 CREATE INDEX runs_feature ON runs(feature_id, created_at DESC);
+CREATE INDEX runs_project ON runs(project_id, created_at);
 
 CREATE TABLE artifacts (
   run_id TEXT NOT NULL REFERENCES runs(id),

@@ -3,6 +3,13 @@ import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import { ProfileRegistry } from "../agents/profiles/registry.js";
 import type { ContextManager } from "../context/manager.js";
+import { displayPath } from "../projects/paths.js";
+import { activeProject } from "../projects/resolve.js";
+import {
+  renderWorkingSet,
+  resolveWorkingSet,
+  WORKING_SET_ARTIFACT,
+} from "../projects/working-set.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
 import { hostDiff } from "../verification/snapshot.js";
@@ -230,7 +237,7 @@ export class NativeWorkflowService implements WorkflowService {
     Object.assign(instructions.files, gateFiles);
     const instructionHashes = gates.length
       ? [...instructions.hashes, { source: GATES_ARTIFACT, hash: hashJson(gates) }]
-      : instructions.hashes;
+      : [...instructions.hashes];
     const v2 = loaded.schemaVersion === 2 ? loaded.definition : null;
     // A definition without a spec stage works on the request stated as one requirement.
     const hostDependencies = request.dependencies
@@ -253,6 +260,12 @@ export class NativeWorkflowService implements WorkflowService {
     for (const entry of registry.list())
       if (entry.source !== "builtin")
         instructions.files[entry.source] = hashBytes(readFileSync(entry.source));
+    // The working set is captured once; its hash joins the inputs before the run is created.
+    const project = activeProject(this.workspace);
+    const workingSet = project
+      ? renderWorkingSet(project.id, resolveWorkingSet(project), { cwd: this.workspace })
+      : null;
+    if (workingSet) instructionHashes.push({ source: WORKING_SET_ARTIFACT, hash: workingSet.hash });
     const state: RuntimeState = {
       prompt: request.prompt,
       ownerLabel: request.ownerLabel,
@@ -302,6 +315,7 @@ export class NativeWorkflowService implements WorkflowService {
       initiativePlan: null,
       hostDependencies,
       diff: null,
+      workingSet: null,
       worktree: null,
       gateResults: {},
       acceptance: {},
@@ -310,8 +324,26 @@ export class NativeWorkflowService implements WorkflowService {
       const duplicate = this.store.previousCommand(request.commandId, request);
       if (duplicate) return duplicate;
       const id = newId();
-      this.store.create(id, request.featureId, workflow, profiles, policy, state);
+      this.store.create(
+        id,
+        request.featureId,
+        workflow,
+        profiles,
+        policy,
+        state,
+        null,
+        project?.id ?? null,
+      );
       if (gates.length) this.store.artifact(id, "gates", GATES_ARTIFACT, canonical(gates));
+      if (workingSet) {
+        const artifact = this.store.artifact(id, "context", WORKING_SET_ARTIFACT, workingSet.text);
+        state.workingSet = {
+          artifactId: artifact.id,
+          hash: artifact.content_hash,
+          files: workingSet.included.map((path) => displayPath(this.workspace, path)),
+        };
+        this.store.saveState(id, state);
+      }
       if (diff) {
         const artifact = this.store.artifact(id, "diff", "diff/input.patch", diff.text);
         state.diff = { artifactId: artifact.id, hash: artifact.content_hash, files: diff.files };
@@ -1063,6 +1095,7 @@ export class NativeWorkflowService implements WorkflowService {
         policy,
         state,
         runId,
+        run.project_id ?? null,
       );
       // Dependents find a feature's accepted contract through this artifact.
       if (state.spec) this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
@@ -1078,6 +1111,16 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.readArtifact(runId, state.diff.artifactId),
         );
         state.diff = { ...state.diff, artifactId: diff.id };
+        this.store.saveState(id, state);
+      }
+      if (state.workingSet) {
+        const copy = this.store.artifact(
+          id,
+          "context",
+          WORKING_SET_ARTIFACT,
+          this.store.readArtifact(runId, state.workingSet.artifactId),
+        );
+        state.workingSet = { ...state.workingSet, artifactId: copy.id };
         this.store.saveState(id, state);
       }
       const result = this.store.snapshot(id);

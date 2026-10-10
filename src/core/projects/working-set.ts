@@ -6,6 +6,8 @@ import { hashBytes } from "../specs/hash.js";
 import { displayPath, isInside, realPath } from "./paths.js";
 import type { ResolvedProject } from "./resolve.js";
 
+/** Logical path of the working set a workflow run captured, and its input-manifest source. */
+export const WORKING_SET_ARTIFACT = "project/working-set.md";
 export const DEFAULT_WORKING_SET_MAX_BYTES = 64 * 1024;
 export const DEFAULT_WORKING_SET_FILE_MAX_BYTES = 16 * 1024;
 /** Files one entry may expand to, so a broad glob cannot walk a whole disk. */

@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
+import { marked } from "marked";
 import { projectInstructionFiles } from "./projects/defaults.js";
 import { activeProject } from "./projects/resolve.js";
-import { marked } from "marked";
 
 interface InstructionSource {
   id: string;
