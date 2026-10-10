@@ -41,7 +41,7 @@ function TaskBox({ projectKey }: { projectKey: string }) {
     putDraft(target, projectKey, text);
     window.location.hash =
       target === "chat"
-        ? projectHref(projectKey, "chat")
+        ? projectHref(projectKey, "chat", "new")
         : projectHref(projectKey, "runs", target === "quick" ? "new-quick" : "new");
   };
   return (

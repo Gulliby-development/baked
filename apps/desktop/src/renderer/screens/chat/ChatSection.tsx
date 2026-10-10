@@ -13,6 +13,7 @@ import { ApiError } from "../../client/api.js";
 import { type ChatMode, chat, isMissingChatApi } from "../../client/chat.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
+import { peekDraft, takeDraft } from "../start/drafts.js";
 import { Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
 import { ChatHeader } from "./Header.js";
@@ -117,6 +118,11 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [draftMode, setDraftMode] = useState<ChatMode>("default");
+  // A task typed on the project home ("Ask in chat") starts the new session's composer.
+  const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
+  useEffect(() => {
+    if (draft) takeDraft("chat", key);
+  }, [draft, key]);
 
   // Load the session and follow its events; a `reset` bumps the generation to start over.
   // biome-ignore lint/correctness/useExhaustiveDependencies: generation restarts the subscription
@@ -297,6 +303,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           model={draft ? draftModel : (session?.model ?? null)}
           mode={draft ? draftMode : (session?.mode ?? "default")}
           autoFocusKey={sessionId}
+          initialText={initialText}
           onSend={send}
           onStop={interrupt}
           onModel={(model) => update({ model })}
