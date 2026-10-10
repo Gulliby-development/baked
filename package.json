@@ -70,7 +70,7 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.71",
+    "@ai-sdk/anthropic": "^4.0.74",
     "@ai-sdk/mcp": "^2.0.66",
     "@ai-sdk/openai": "^4.0.83",
     "@modelcontextprotocol/sdk": "^1.32.1",
