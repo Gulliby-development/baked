@@ -539,7 +539,7 @@ baked workflow initiative replan ID --feature F --expected-revision N
 baked workflow initiative extend ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]
 ```
 
-Initiative IDs and feature IDs are lower case slugs. A feature's runs use the workflow feature ID `INITIATIVE_FEATURE`, so its accepted spec is `specs/INITIATIVE_FEATURE/spec.json`.
+Initiative IDs and feature IDs are lower case slugs. A feature's runs use the workflow feature ID `INITIATIVE_FEATURE`, so its accepted spec is `specs/INITIATIVE_FEATURE/spec.json`. A run owns its feature ID: a spec whose `featureId` names another feature is stored with the run's ID instead of failing the specify stage.
 
 **Split.** Without `--plan`, `start` runs the built-in `initiative-decompose` workflow: one agent stage with the `decomposer` profile, which reads the code and returns an `initiativePlan` (title, goals, completion criteria, and features with `id`, `title`, `boundary.scope`, `boundary.paths`, `contract`, `dependsOn` and `mandatory`). It changes no file. Duplicate IDs, unknown or repeated dependencies and cycles go back to the decomposer for correction. A split of more than 12 features is not corrected: the initiative becomes `refused` with the message to split the request into stages and start one initiative per stage. With `--plan FILE` the split is given by the user and validated the same way, including the bound.
 

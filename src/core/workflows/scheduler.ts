@@ -372,8 +372,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
+              // The run owns the feature ID; a spec author that renames it changes nothing.
               if (state.spec.featureId !== run.feature_id)
-                throw new WorkflowFault("OUTPUT_INVALID", "Spec feature ID differs from the run");
+                state.spec = { ...state.spec, featureId: run.feature_id };
               // An initiative decides which contracts a feature depends on, not the spec author.
               if (state.hostDependencies)
                 state.spec = { ...state.spec, dependencies: state.hostDependencies };
