@@ -17,6 +17,8 @@ export interface SupervisorOptions {
     key: string,
     onState: (state: BackendState) => void,
   ) => Backend;
+  /** The checked-out branch of a folder, read when the list is refreshed. */
+  readBranch?: (folder: string) => string | null;
   fetch?: typeof fetch;
   onChange?: (projects: DesktopProject[]) => void;
   reconnectDelayMs?: number;
@@ -44,6 +46,7 @@ export class ProjectSupervisor {
   private known: KnownProject[] = [];
   private readonly backends = new Map<string, Backend>();
   private readonly states = new Map<string, BackendState>();
+  private branches = new Map<string, string | null>();
 
   constructor(private readonly options: SupervisorOptions) {}
 
@@ -55,12 +58,15 @@ export class ProjectSupervisor {
         key,
         open: this.backends.has(key),
         backend: this.states.get(key) ?? { kind: "stopped" },
+        ...(this.branches.has(project.path) ? { branch: this.branches.get(project.path) } : {}),
       };
     });
   }
 
   async refresh(): Promise<DesktopProject[]> {
     this.known = await this.options.listProjects();
+    const read = this.options.readBranch;
+    if (read) this.branches = new Map(this.known.map((p) => [p.path, read(p.path)]));
     this.changed();
     return this.projects();
   }

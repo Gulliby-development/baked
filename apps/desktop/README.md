@@ -34,9 +34,14 @@ Electron, and the root checks do not cover this folder.
 - `src/main/`: the Electron main process. `supervisor.ts` keeps the project list and one
   `Backend` (`backend.ts`) per open project, adds the bearer token to every request and streams
   Server-Sent Events with reconnects. `attention.ts` merges the attention lists of all open
-  projects for "Needs you" and system notifications.
+  projects for "Needs you" and system notifications; a notification click opens its item at
+  `#/attention/PROJECT_KEY/ITEM_ID`. `tray.ts` hides the window to a tray icon on close while
+  "keep running in tray" is on and a run is active, and keeps the dock or taskbar badge at the
+  number of blocking items. `project-actions.ts` pins, unpins and forgets folders through any
+  running backend, or through `baked projects` when none runs.
 - `src/preload/`: the `window.baked` bridge (`src/shared/bridge.ts`), the only way the sandboxed
   renderer reaches the main process.
 - `src/renderer/`: the React app. `client/mock.ts` replaces the bridge with fixtures outside
   Electron.
+- `build/`: app icons. `tray.png` and `tray@2x.png` are rendered from `tray.svg`.
 - `tests/`: `bun:test` tests; `tests/fixtures/fake-serve.ts` stands in for `baked serve`.

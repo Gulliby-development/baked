@@ -46,12 +46,25 @@ export interface DesktopProject extends KnownProject {
   key: string;
   open: boolean;
   backend: BackendState;
+  /** The checked-out Git branch, when the folder is a repository on a branch. */
+  branch?: string | null;
 }
 
-/** `GET /v1/attention` item, tagged with the project it came from. */
+export type AttentionSource = "run" | "chat" | "initiative";
+
+/**
+ * `GET /v1/attention` item, tagged with the project it came from. Run items carry `runId` and
+ * `featureId`; chat items the session (`requestId` is the prompt); initiative items
+ * `initiativeId`. Backends older than the chat API send no `source`: those items are runs.
+ */
 export interface AttentionItem {
-  runId: string;
-  featureId: string;
+  source?: AttentionSource;
+  runId: string | null;
+  featureId: string | null;
+  sessionId?: string | null;
+  initiativeId?: string;
+  /** The session or initiative title; null for run items. */
+  title?: string | null;
   status: RunState;
   requestId: string | null;
   kind: string;

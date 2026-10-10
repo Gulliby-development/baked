@@ -25,7 +25,7 @@ export function App() {
           </div>
         )}
         {route.name === "projects" && <ProjectsScreen />}
-        {route.name === "attention" && <AttentionScreen />}
+        {route.name === "attention" && <AttentionScreen projectKey={route.key} itemId={route.id} />}
         {route.name === "project" && (
           <ProjectScreen projectKey={route.key} section={route.section} id={route.id} />
         )}
