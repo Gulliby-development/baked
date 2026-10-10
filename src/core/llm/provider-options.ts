@@ -688,6 +688,39 @@ function buildOpenAIOptions(
   return { opts };
 }
 
+/** Effort levels from most to least reasoning, for clamping a requested level. */
+const EFFORT_ORDER = ["max", "xhigh", "high", "medium", "low"] as const;
+
+/**
+ * The configuration one call runs with when its workflow route sets a reasoning effort: the
+ * Anthropic and OpenAI knobs are replaced for that call. `default` sends neither. An OpenAI level
+ * the model does not support walks down to the next supported one. OpenAI-compatible providers
+ * read their effort when the model is created, so the global setting still applies to them.
+ */
+export function withRouteEffort(
+  modelId: string,
+  config: AppConfig,
+  effort: EffortLevel | "default" | undefined,
+): AppConfig {
+  if (!effort) return config;
+  if (effort === "default")
+    return {
+      ...config,
+      performance: { ...config.performance, effort: "off", openaiReasoningEffort: "off" },
+    };
+  const supported = getSupportedEfforts(modelId) ?? [];
+  const start = EFFORT_ORDER.indexOf(effort);
+  const openai = EFFORT_ORDER.slice(start).find((level) => supported.includes(level));
+  return {
+    ...config,
+    performance: {
+      ...config.performance,
+      effort,
+      openaiReasoningEffort: (openai as "low" | "medium" | "high" | undefined) ?? "off",
+    },
+  };
+}
+
 export async function buildProviderOptions(
   modelId: string,
   config: AppConfig,

@@ -150,6 +150,8 @@ export interface StepRow {
 export interface AttemptRow {
   id: string;
   step_id: string;
+  /** The model the attempt ran on; null for host attempts. */
+  model_id: string | null;
   status: string;
   reserved_tokens: number;
   used_tokens: number | null;
