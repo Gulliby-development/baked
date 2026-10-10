@@ -16,7 +16,9 @@
  * across all runs and streams the whole list whenever it changes.
  *
  * The project endpoints report the workspace's project (`baked/project.json`) with its working
- * set, sessions and runs, and change the working set, as `baked project` does.
+ * set, sessions and runs, and change the working set, as `baked project` does. `GET /v1/projects`
+ * lists every folder BAKED was opened in with its session and run counts, as `baked projects`
+ * does; each folder is served by its own `baked serve`.
  *
  * Security: binds 127.0.0.1 only; every request needs the per-start bearer token; the Host header
  * must name the loopback address and port (DNS rebinding); requests with an Origin header are
@@ -27,6 +29,9 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import { listKnownProjects } from "../projects/known.js";
+import { projectOverview } from "../projects/overview.js";
+import { realPath } from "../projects/paths.js";
 import { ProjectService } from "../projects/service.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
@@ -492,6 +497,22 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       // Streams outlive the server's idle timeout; heartbeats keep intermediaries open.
       server.timeout(req, 0);
       return attentionStream(req, origin);
+    }
+    if (path === "/v1/projects") {
+      only("GET");
+      const here = realPath(service.workspace);
+      const known = listKnownProjects(options.configDir ? { configDir: options.configDir } : {});
+      return json(
+        200,
+        {
+          projects: known.map((project) => ({
+            ...project,
+            current: project.path === here,
+            overview: projectOverview(project.path),
+          })),
+        },
+        origin,
+      );
     }
     if (path === "/v1/projects/current") {
       only("GET");
