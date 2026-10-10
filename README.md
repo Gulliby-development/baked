@@ -39,6 +39,7 @@ bun run build
 | `src/core/llm/`, `src/core/prompts/` | Providers and prompt assembly |
 | `src/core/memory/`, `src/core/sessions/` | Persistent context and conversations |
 | `src/headless/` | CLI automation |
+| `src/core/api/` | Local workflow API (`baked serve`) |
 | `tests/` | Bun tests |
 | `scripts/`, `packaging/` | Build and installer tooling |
 

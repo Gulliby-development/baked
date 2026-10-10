@@ -16,7 +16,7 @@ import {
   IS_WIN,
 } from "../../../platform/index.js";
 
-const baked_LSP_DIR = join(dataDir(), "lsp-servers");
+const BAKED_LSP_DIR = join(dataDir(), "lsp-servers");
 const VERSIONS_FILE = join(configDir(), "lsp-versions.json");
 
 const MASON_REGISTRY_RELEASE_URL =
@@ -301,13 +301,13 @@ export function checkPackageStatus(pkg: MasonPackage): PackageStatus {
       break;
     }
     // baked npm bin
-    if (probe(join(baked_LSP_DIR, "node_modules", ".bin"), bin)) {
+    if (probe(join(BAKED_LSP_DIR, "node_modules", ".bin"), bin)) {
       installed = true;
       source = "baked";
       break;
     }
     // baked direct bin
-    if (probe(join(baked_LSP_DIR, "bin"), bin)) {
+    if (probe(join(BAKED_LSP_DIR, "bin"), bin)) {
       installed = true;
       source = "baked";
       break;
@@ -450,7 +450,7 @@ export async function installPackage(
   const purl = parsePurl(pkg.source.id);
   if (!purl) return { success: false, error: "Cannot parse package source" };
 
-  mkdirSync(baked_LSP_DIR, { recursive: true });
+  mkdirSync(BAKED_LSP_DIR, { recursive: true });
   const log = (msg: string) => onProgress?.(msg);
 
   try {
@@ -467,7 +467,7 @@ export async function installPackage(
           if (existsSync(sfBin)) return sfBin;
           return "bun";
         })();
-        await runCommand(bunBin, ["add", "--cwd", baked_LSP_DIR, fullName, ...extras], log, {
+        await runCommand(bunBin, ["add", "--cwd", BAKED_LSP_DIR, fullName, ...extras], log, {
           BUN_BE_BUN: "1",
         });
         break;
@@ -475,8 +475,8 @@ export async function installPackage(
 
       case "pypi": {
         log(`Installing ${purl.name} via pip3...`);
-        const binDir = join(baked_LSP_DIR, "bin");
-        const pipDir = join(baked_LSP_DIR, "pip-packages");
+        const binDir = join(BAKED_LSP_DIR, "bin");
+        const pipDir = join(BAKED_LSP_DIR, "pip-packages");
         mkdirSync(binDir, { recursive: true });
         mkdirSync(pipDir, { recursive: true });
         await runCommand(
@@ -511,7 +511,7 @@ export async function installPackage(
 
       case "golang": {
         log(`Installing ${purl.namespace}/${purl.name} via go install...`);
-        const binDir = join(baked_LSP_DIR, "bin");
+        const binDir = join(BAKED_LSP_DIR, "bin");
         mkdirSync(binDir, { recursive: true });
         const fullPkg = `${purl.namespace}/${purl.name}@${purl.version}`;
         await runCommand("go", ["install", fullPkg], log, { GOBIN: binDir });
@@ -520,10 +520,10 @@ export async function installPackage(
 
       case "cargo": {
         log(`Installing ${purl.name} via cargo...`);
-        mkdirSync(join(baked_LSP_DIR, "bin"), { recursive: true });
+        mkdirSync(join(BAKED_LSP_DIR, "bin"), { recursive: true });
         await runCommand(
           "cargo",
-          ["install", purl.name, "--version", purl.version, "--root", baked_LSP_DIR],
+          ["install", purl.name, "--version", purl.version, "--root", BAKED_LSP_DIR],
           log,
         );
         break;
@@ -531,7 +531,7 @@ export async function installPackage(
 
       case "github": {
         log(`Downloading ${purl.namespace}/${purl.name} from GitHub...`);
-        const binDir = join(baked_LSP_DIR, "bin");
+        const binDir = join(BAKED_LSP_DIR, "bin");
         mkdirSync(binDir, { recursive: true });
 
         // Find the right asset for this platform
@@ -549,7 +549,7 @@ export async function installPackage(
 
         const version = purl.version;
         const fileUrl = `https://github.com/${purl.namespace}/${purl.name}/releases/download/${version}/${resolveAssetTemplate(asset.file, version)}`;
-        const tmpDir = join(baked_LSP_DIR, ".tmp");
+        const tmpDir = join(BAKED_LSP_DIR, ".tmp");
         mkdirSync(tmpDir, { recursive: true });
 
         log(`Downloading ${fileUrl}...`);
@@ -672,13 +672,13 @@ export async function uninstallPackage(
           if (existsSync(sfBin)) return sfBin;
           return "bun";
         })();
-        const removeResult = spawnSync(bunBin, ["remove", "--cwd", baked_LSP_DIR, fullName], {
+        const removeResult = spawnSync(bunBin, ["remove", "--cwd", BAKED_LSP_DIR, fullName], {
           stdio: "pipe",
           windowsHide: true,
         });
         if (removeResult.status !== 0) {
           for (const bin of binaries) {
-            removeBin(join(baked_LSP_DIR, "node_modules", ".bin"), bin);
+            removeBin(join(BAKED_LSP_DIR, "node_modules", ".bin"), bin);
           }
         }
         break;
@@ -687,13 +687,13 @@ export async function uninstallPackage(
       case "pypi": {
         log(`Removing ${purl.name}...`);
         const { rmSync } = await import("node:fs");
-        const pipDir = join(baked_LSP_DIR, "pip-packages");
+        const pipDir = join(BAKED_LSP_DIR, "pip-packages");
         const pkgDir = join(pipDir, purl.name.replace(/-/g, "_"));
         try {
           rmSync(pkgDir, { recursive: true, force: true });
         } catch {}
         for (const bin of binaries) {
-          removeBin(join(baked_LSP_DIR, "bin"), bin);
+          removeBin(join(BAKED_LSP_DIR, "bin"), bin);
         }
         break;
       }
@@ -702,7 +702,7 @@ export async function uninstallPackage(
       case "cargo": {
         log(`Removing ${purl.name} binaries...`);
         for (const bin of binaries) {
-          removeBin(join(baked_LSP_DIR, "bin"), bin);
+          removeBin(join(BAKED_LSP_DIR, "bin"), bin);
         }
         break;
       }
@@ -710,7 +710,7 @@ export async function uninstallPackage(
       case "github": {
         log(`Removing ${purl.name} binaries...`);
         for (const bin of binaries) {
-          removeBin(join(baked_LSP_DIR, "bin"), bin);
+          removeBin(join(BAKED_LSP_DIR, "bin"), bin);
         }
         break;
       }

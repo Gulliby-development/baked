@@ -1,6 +1,6 @@
 # Implementation and verification plan
 
-This is the original plan with its acceptance criteria. The actual state of the code and checks is described in [implementation-status.md](implementation-status.md). Work after P06 (closing v1, usability on v1, presets with configurable gates, initiatives, Git delivery, worktrees and the AI acceptance gate) is planned in [next-implementation.md](next-implementation.md). Each package is a separate reviewable delivery. A package is ready when its acceptance passes, not when a number of modules is written.
+Historical: this is the original v1 plan with its acceptance criteria. The actual state of the code and checks is described in [implementation-status.md](implementation-status.md). Work after P06 (closing v1, usability on v1, presets with configurable gates, initiatives, Git delivery, worktrees and the AI acceptance gate) is planned in [next-implementation.md](next-implementation.md). Each package is a separate reviewable delivery. A package is ready when its acceptance passes, not when a number of modules is written.
 
 ## Order
 

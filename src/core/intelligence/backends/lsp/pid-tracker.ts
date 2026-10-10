@@ -36,16 +36,16 @@ import {
   userDataDir,
 } from "../../../platform/index.js";
 
-const baked_DIR = configDir();
-const PID_LOG = join(baked_DIR, "lsp-pids.log");
+const BAKED_DIR = configDir();
+const PID_LOG = join(BAKED_DIR, "lsp-pids.log");
 
 /** In-memory set of PIDs this thread has spawned */
 const activePids = new Set<number>();
 
 function ensureDir(): void {
-  if (!existsSync(baked_DIR)) {
+  if (!existsSync(BAKED_DIR)) {
     try {
-      mkdirSync(baked_DIR, { recursive: true });
+      mkdirSync(BAKED_DIR, { recursive: true });
     } catch {}
   }
 }
@@ -92,7 +92,7 @@ function readLoggedPids(): Set<number> {
 const LSP_COMMAND_REGEX =
   /\b(?:biome[^/\s]*(?:\s+lsp-proxy|\s+__run_server)|typescript-language-server|tsserver\.js|vtsls|pyright|pylsp|gopls|rust-analyzer|clangd|lua-language-server|taplo|solargraph|intelephense|zls|jdtls|metals|sourcekit-lsp|dart\s+language-server|elixir-ls|ocamllsp|yaml-language-server|bash-language-server|vscode-eslint-language-server|vscode-json-language-server|vscode-css-language-server|vscode-html-language-server|tailwindcss-language-server|emmet-language-server|deno\s+lsp|vue-language-server|csharp-ls|OmniSharp|kotlin-language-server|docker-langserver|expert)\b/i;
 
-const baked_PATH_MARKERS = [
+const BAKED_PATH_MARKERS = [
   // POSIX layout
   join(userDataDir(), "mason"),
   join(configDir(), "lsp-servers"),
@@ -193,7 +193,7 @@ function scanProcessTree(): PsRow[] {
 
 function isbakedLspCommand(cmd: string): boolean {
   if (!LSP_COMMAND_REGEX.test(cmd)) return false;
-  for (const marker of baked_PATH_MARKERS) {
+  for (const marker of BAKED_PATH_MARKERS) {
     if (cmd.includes(marker)) return true;
   }
   return false;

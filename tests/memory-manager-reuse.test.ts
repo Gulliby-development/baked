@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env.baked_NO_REPOMAP = "1";
+process.env.BAKED_NO_REPOMAP = "1";
 
 import { ContextManager } from "../src/core/context/manager.js";
 import { resolveMemoryManager } from "../src/core/tools/index.js";

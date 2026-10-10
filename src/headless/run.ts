@@ -113,16 +113,17 @@ async function setupAgent(
         mode: opts.mode,
         runtime: detectRuntime(),
         repomap:
-          merged.repoMap === false || opts.noRepomap || process.env.baked_NO_REPOMAP === "1"
+          merged.repoMap === false || opts.noRepomap || process.env.BAKED_NO_REPOMAP === "1"
             ? "skipped"
             : "on",
       },
       merged.telemetry,
+      merged.telemetryUrl,
     );
   } catch {}
 
   const repoMapDisabled =
-    merged.repoMap === false || opts.noRepomap || process.env.baked_NO_REPOMAP === "1";
+    merged.repoMap === false || opts.noRepomap || process.env.BAKED_NO_REPOMAP === "1";
   const contextManager = await ContextManager.createAsync(
     cwd,
     (step) => {

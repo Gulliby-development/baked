@@ -7,9 +7,9 @@
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #
 # Or with options (set env vars first):
-#   $env:baked_VERSION = "2.16.0"
-#   $env:baked_INSTALL_DIR = "C:\Tools\baked\bin"
-#   $env:baked_NO_PATH = "1"
+#   $env:BAKED_VERSION = "2.16.0"
+#   $env:BAKED_INSTALL_DIR = "C:\Tools\baked\bin"
+#   $env:BAKED_NO_PATH = "1"
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #
 # Pattern follows Bun's install.ps1 (https://bun.sh/install.ps1) and
@@ -26,9 +26,9 @@
 $ErrorActionPreference = "Stop"
 
 # -- Read configuration from environment -----------------------------
-$Version       = $env:baked_VERSION
-$InstallDir    = $env:baked_INSTALL_DIR
-$NoPathUpdate  = $env:baked_NO_PATH -eq "1"
+$Version       = $env:BAKED_VERSION
+$InstallDir    = $env:BAKED_INSTALL_DIR
+$NoPathUpdate  = $env:BAKED_NO_PATH -eq "1"
 
 # -- PowerShell version check ----------------------------------------
 # 5.1 is the floor � it ships with Windows 10 1607+ and is required for the
@@ -117,7 +117,7 @@ Write-Host ""
 # Asset is a zip bundle: baked.exe + deps/ tree (native dll, workers, wasm).
 # A raw .exe would launch and immediately fail with "native runtime missing"
 # because bun --compile cannot embed .dll / .node addons.
-# Built AFTER $Version resolves � otherwise unset baked_VERSION > stale name.
+# Built AFTER $Version resolves � otherwise unset BAKED_VERSION > stale name.
 $assetName = "baked-$Version-windows-$assetArch.zip"
 $downloadUrl = "https://github.com/$repo/releases/download/v$Version/$assetName"
 
@@ -223,7 +223,7 @@ if (-not $NoPathUpdate) {
         Write-Host "  PATH already contains $InstallDir" -ForegroundColor Gray
     }
 } else {
-    Write-Host "  (skipped PATH update � \$env:baked_NO_PATH=1)" -ForegroundColor Gray
+    Write-Host "  (skipped PATH update � \$env:BAKED_NO_PATH=1)" -ForegroundColor Gray
 }
 
 # -- Bun detection ---------------------------------------------------

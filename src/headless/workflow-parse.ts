@@ -43,6 +43,11 @@ export interface WorkflowArgs {
   command: WorkflowCommand;
   positional: string[];
   flags: Record<string, string | true>;
+  /**
+   * Values supplied in place of the JSON files named by file flags, keyed by flag name (the flag
+   * itself is then `true`). API clients send these in request bodies instead of file paths.
+   */
+  inline?: Record<string, unknown>;
 }
 const flags = new Set([
   "feature",
@@ -72,6 +77,7 @@ const flags = new Set([
   "cursor",
   "status",
   "stage",
+  "top",
   "after",
   "effect",
   "resolution",
@@ -159,7 +165,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
-  usage: ["stage"],
+  usage: ["stage", "top"],
   extend: [
     "tokens",
     "calls",
@@ -205,6 +211,10 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
       result.flags[name] = value;
     }
   }
+  return validateWorkflowArgs(result);
+}
+/** Checks option combinations and values of parsed or programmatically built workflow arguments. */
+export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   for (const name of Object.keys(result.flags)) {
     if (!["json", "cwd", "help", ...commandFlags[result.command]].includes(name))
       throw new WorkflowFault("INVALID_DEFINITION", `--${name} is not valid for ${result.command}`);
@@ -213,14 +223,20 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         "INVALID_DEFINITION",
         `Invalid --status value ${JSON.stringify(result.flags[name])}. Valid statuses: ${RunStatus.options.join(", ")}`,
       );
-    if (["expected-revision", "limit", "after", "tokens", "calls", "time-ms"].includes(name)) {
+    if (
+      ["expected-revision", "limit", "after", "tokens", "calls", "time-ms", "top"].includes(name)
+    ) {
       const value = Number(result.flags[name]);
+      const minimum = ["limit", "tokens", "calls", "time-ms", "top"].includes(name) ? 1 : 0;
       if (
         !Number.isSafeInteger(value) ||
-        value < (name === "limit" || ["tokens", "calls", "time-ms"].includes(name) ? 1 : 0) ||
+        value < minimum ||
         !/^\d+$/.test(String(result.flags[name]))
       )
-        throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires an integer`);
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `--${name} requires a ${minimum ? "positive" : "non-negative"} integer`,
+        );
     }
   }
   if (typeof result.flags.route === "string") parseRouteOverrides(result.flags.route);
@@ -336,7 +352,7 @@ estimate [WORKFLOW] (same options as doctor)
   tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
-usage RUN_ID [--stage NAME]   per-stage and per-attempt token and step usage
+usage RUN_ID [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new

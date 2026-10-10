@@ -45,18 +45,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
 };
 
-// Preset overlay precomputed at boot. Sync to keep loadConfig() sync for all
-// existing call sites. Set via setPresetOverlay() once presets are resolved.
-let _presetOverlay: Partial<AppConfig> | null = null;
-
-export function setPresetOverlay(overlay: Partial<AppConfig> | null): void {
-  _presetOverlay = overlay;
-}
-
-export function getPresetOverlay(): Partial<AppConfig> | null {
-  return _presetOverlay;
-}
-
 export function loadConfig(): AppConfig {
   const configDir = getConfigDir();
   const configFile = getConfigFile();
@@ -84,11 +72,9 @@ export function loadConfig(): AppConfig {
     }
   }
 
-  // Layer order: defaults → presets → user (user wins, but only on keys the user
-  // explicitly customized vs defaults — otherwise presets would never override
-  // the seeded DEFAULT_CONFIG values). Nested objects merge shallow via applyConfigPatch.
+  // Layer order: defaults → user, on keys the user customized vs defaults.
+  // Nested objects merge shallow via applyConfigPatch.
   let merged: AppConfig = { ...DEFAULT_CONFIG };
-  if (_presetOverlay) merged = applyConfigPatch(merged, _presetOverlay) as AppConfig;
   const userPatch = diffAgainstDefaults(userConfig);
   if (Object.keys(userPatch).length > 0) {
     merged = applyConfigPatch(merged, userPatch) as AppConfig;
@@ -114,7 +100,7 @@ function diffAgainstDefaults(userConfig: Partial<AppConfig>): Partial<AppConfig>
       !Array.isArray(def)
     ) {
       // For NESTED_KEYS, diff each subfield so user-untouched subfields
-      // do not shadow the preset's nested values.
+      // keep their defaults.
       const subPatch: Record<string, unknown> = {};
       const defRec = def as Record<string, unknown>;
       for (const [subKey, subValue] of Object.entries(value as Record<string, unknown>)) {

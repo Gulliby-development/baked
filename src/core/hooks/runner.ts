@@ -216,7 +216,7 @@ function runCommandHook(
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...buildSafeEnv(),
-          baked_PROJECT_DIR: cwd,
+          BAKED_PROJECT_DIR: cwd,
           CLAUDE_PROJECT_DIR: cwd, // Claude Code compat
         },
       });

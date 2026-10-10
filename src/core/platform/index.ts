@@ -10,7 +10,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
-declare const __baked_COMPILED__: boolean | undefined;
+declare const __BAKED_COMPILED__: boolean | undefined;
 
 export const IS_WIN = process.platform === "win32";
 export const IS_DARWIN = process.platform === "darwin";
@@ -318,7 +318,7 @@ export function findOnPath(bin: string): string | null {
  * True when the current process is a Bun-compiled single-file executable.
  *
  * Implementation: a build-time constant injected by `scripts/build.ts` via
- * `Bun.build({ define: { __baked_COMPILED__: "true" } })`. The compiled
+ * `Bun.build({ define: { __BAKED_COMPILED__: "true" } })`. The compiled
  * .exe sees the literal `true`; dev mode and `bun run dist/index.js` see
  * `undefined` → `false`. Zero runtime detection, zero ambiguity, survives
  * any future change to `import.meta.url` or `process.execPath` formatting.
@@ -328,7 +328,7 @@ export function findOnPath(bin: string): string | null {
  * unused. New callers should pass an empty string.
  */
 export function isCompiledBinary(_moduleUrl?: string): boolean {
-  return typeof __baked_COMPILED__ !== "undefined" && __baked_COMPILED__ === true;
+  return typeof __BAKED_COMPILED__ !== "undefined" && __BAKED_COMPILED__ === true;
 }
 /**
  * Per-user data dir for baked runtime state (LSP cache, mason installs,

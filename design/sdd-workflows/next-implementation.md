@@ -1,6 +1,6 @@
 # Next workflow implementation
 
-Date: 2026-10-08, updated 2026-10-09. This is a plan of future work, not a completion report. The technical design for sections 2 and 5 is in [workflow-v2-design.md](workflow-v2-design.md); the local implementation of section 1a is recorded in the [status report](implementation-status.md).
+Date: 2026-10-08, updated 2026-10-09. Historical: the plan was implemented by 2026-10-10; [implementation-status.md](implementation-status.md) records what shipped and which acceptance items remain open. The technical design for sections 2 and 5 is in [workflow-v2-design.md](workflow-v2-design.md); the local implementation of section 1a is recorded in the [status report](implementation-status.md).
 
 The user agreed on the order: finish v1 first, then implement only custom workflows, management of a large initiative and Git delivery of the result. v2 must not start before v1 is closed unless the user changes this decision separately.
 

@@ -419,9 +419,10 @@ export async function start(opts: StartOptions): Promise<void> {
         mode: cfg.defaultForgeMode ?? "default",
         terminal: detectTerminalBucket(),
         runtime: detectRuntime(),
-        repomap: process.env.baked_NO_REPOMAP === "1" ? "skipped" : "on",
+        repomap: process.env.BAKED_NO_REPOMAP === "1" ? "skipped" : "on",
       },
       cfg.telemetry,
+      cfg.telemetryUrl,
     );
   } catch {}
 
