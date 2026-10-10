@@ -95,7 +95,12 @@ function check(id: string, executable: string, args: string[], extra: Partial<Ch
 const POLICY_BASE = {
   maxConcurrentReadAgents: 3,
   maxConcurrentWriters: 1,
+  maxAgentSteps: 40,
+  maxAgentCalls: 200,
   maxTotalTokens: 800000,
+  maxActiveMs: 7_200_000,
+  maxCostUsd: null,
+  checkpointTokens: null,
   scopeApproval: "required",
   network: "deny",
 };

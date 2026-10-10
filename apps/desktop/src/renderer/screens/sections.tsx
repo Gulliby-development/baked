@@ -7,6 +7,7 @@ import { RunsSection } from "./project/RunsSection.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
 import { WorkingSetSection } from "./setup/WorkingSetSection.js";
+import { ProjectHome } from "./start/index.js";
 
 export interface SectionProps {
   project: DesktopProject;
@@ -16,7 +17,7 @@ export interface SectionProps {
 
 /** The view of each project section; a section without one shows a placeholder. */
 export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<SectionProps>>> = {
-  overview: RunsSection,
+  overview: ProjectHome,
   runs: RunsSection,
   gates: GatesSection,
   instructions: InstructionsSection,
