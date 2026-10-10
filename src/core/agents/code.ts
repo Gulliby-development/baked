@@ -119,13 +119,13 @@ export function createCodeAgent(model: LanguageModel, options?: CodeAgentOptions
     maxRetries: retryMaxRetries,
     ...(supportsTemperature(getModelId(model)) ? { temperature: 0 } : {}),
     maxOutputTokens: MAX_OUTPUT_TOKENS,
-    onStepFinish: (step) => {
+    onStepEnd: (step) => {
       if (isAbnormalFinish(step.finishReason)) {
         logBackgroundError(
           "agent-error",
           `${options?.agentId ?? "code"}: ${describeAbnormalFinish(step.finishReason)}`,
         );
-        // SDK swallows throws in onStepFinish; surfacing happens in prepareStep (step-utils.ts).
+        // SDK swallows throws in onStepEnd; surfacing happens in prepareStep (step-utils.ts).
       }
     },
     // biome-ignore lint/suspicious/noExplicitAny: forgeTools come as Record<string, unknown> for cache sharing
@@ -143,7 +143,7 @@ export function createCodeAgent(model: LanguageModel, options?: CodeAgentOptions
     },
     stopWhen: stopConditions,
     prepareStep,
-    experimental_repairToolCall: repairToolCall,
+    repairToolCall,
     providerOptions: {
       ...options?.providerOptions,
       anthropic: {

@@ -1,5 +1,5 @@
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import type { LanguageModel } from "ai";
+import type { LanguageModel, ToolExecutionEndEvent, ToolExecutionStartEvent } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import { loadConfig } from "../../config/index.js";
@@ -168,9 +168,8 @@ export function buildStepCallbacks(parentToolCallId: string, agentId?: string, m
   const steps: any[] = [];
 
   return {
-    experimental_onToolCallStart: (event: { toolCall?: { toolName: string; input?: unknown } }) => {
+    onToolExecutionStart: (event: ToolExecutionStartEvent) => {
       const tc = event.toolCall;
-      if (!tc) return;
       emitSubagentStep({
         parentToolCallId,
         toolName: tc.toolName,
@@ -179,16 +178,11 @@ export function buildStepCallbacks(parentToolCallId: string, agentId?: string, m
         agentId,
       });
     },
-    experimental_onToolCallFinish: (event: {
-      toolCall?: { toolName: string; input?: unknown };
-      output?: unknown;
-      result?: unknown;
-      success?: boolean;
-    }) => {
+    onToolExecutionEnd: (event: ToolExecutionEndEvent) => {
       const tc = event.toolCall;
-      if (!tc) return;
+      const ok = event.toolOutput.type === "tool-result";
       let backend: string | undefined;
-      const res = event.output ?? event.result;
+      const res = ok ? event.toolOutput.output : undefined;
       if (res && typeof res === "object") {
         const b = (res as Record<string, unknown>).backend;
         if (typeof b === "string") backend = b;
@@ -197,12 +191,12 @@ export function buildStepCallbacks(parentToolCallId: string, agentId?: string, m
         parentToolCallId,
         toolName: tc.toolName,
         args: formatToolArgs(tc),
-        state: event.success ? "done" : "error",
+        state: ok ? "done" : "error",
         agentId,
         backend,
       });
     },
-    onStepFinish: (step: {
+    onStepEnd: (step: {
       toolCalls?: unknown[];
       toolResults?: unknown[];
       finishReason?: string;

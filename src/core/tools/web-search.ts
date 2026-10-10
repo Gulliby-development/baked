@@ -128,16 +128,11 @@ export function buildWebSearchTool(opts?: {
           const combinedSignal = abortSignal
             ? AbortSignal.any([abortSignal, AbortSignal.timeout(120_000)])
             : AbortSignal.timeout(120_000);
-          // The agent's generate() forwards extra options to generateText() via
-          // spread, but AgentCallParameters doesn't type the experimental callbacks.
           const result = await agent.generate({
             prompt: args.query,
             abortSignal: combinedSignal,
-            experimental_onToolCallStart: (event: {
-              toolCall?: { toolName: string; args: unknown };
-            }) => {
+            onToolExecutionStart: (event) => {
               const tc = event.toolCall;
-              if (!tc) return;
               const stepArgs = formatSearchArgs(tc);
               runningSteps.add(`${tc.toolName}:::${stepArgs}`);
               emitSubagentStep({
@@ -147,19 +142,12 @@ export function buildWebSearchTool(opts?: {
                 state: "running",
               });
             },
-            experimental_onToolCallFinish: (event: {
-              toolCall?: { toolName: string; args: unknown };
-              success?: boolean;
-              output?: unknown;
-              result?: unknown;
-            }) => {
+            onToolExecutionEnd: (event) => {
               const tc = event.toolCall;
-              if (!tc) return;
               const stepArgs = formatSearchArgs(tc);
               runningSteps.delete(`${tc.toolName}:::${stepArgs}`);
-              const ev = event as Record<string, unknown>;
-              const ok = ev.success !== false;
-              const raw = ev.output ?? ev.result;
+              const ok = event.toolOutput.type === "tool-result";
+              const raw = ok ? event.toolOutput.output : undefined;
               const toolResult =
                 raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
               const stepBackend =
@@ -172,7 +160,7 @@ export function buildWebSearchTool(opts?: {
                 backend: stepBackend,
               });
             },
-          } as Parameters<typeof agent.generate>[0]);
+          });
           agentSearchCache.set(cacheKey, { output: result.text, ts: Date.now() });
           recordModelCall({
             modelId: mid,

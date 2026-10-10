@@ -667,6 +667,10 @@ function buildOpenAIOptions(
     const summary = config.performance?.openaiReasoningSummary;
     if (summary && summary !== "off") {
       opts.reasoningSummary = summary;
+    } else if (opts.reasoningEffort) {
+      // @ai-sdk/openai 4 defaults the Responses API summary to "detailed" whenever an
+      // effort is set; null keeps summaries off unless configured.
+      opts.reasoningSummary = null;
     }
     const verbosity = config.performance?.openaiVerbosity;
     if (verbosity && verbosity !== "off") {
@@ -774,7 +778,7 @@ export function degradeProviderOptions(modelId: string, level: number): Provider
   }
 
   if (caps.openaiOptions && caps.openaiReasoning) {
-    providerOptions.openai = { reasoningEffort: "low" };
+    providerOptions.openai = { reasoningEffort: "low", reasoningSummary: null };
   }
 
   return {

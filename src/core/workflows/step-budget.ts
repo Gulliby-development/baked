@@ -167,7 +167,7 @@ export interface AttemptUsageRecord {
   steps: AttemptStepUsage[];
 }
 
-interface StepLike {
+export interface StepLike {
   usage: StepUsageLike;
   finishReason?: string;
   toolCalls: readonly unknown[];

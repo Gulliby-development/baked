@@ -45,7 +45,7 @@ function baseConfig(perf: Partial<AppConfig["performance"]> = {}): AppConfig {
 
       test("openai degrades to low effort", () => {
         const { providerOptions } = degradeProviderOptions("openai/gpt-5", 1);
-        expect(providerOptions.openai).toEqual({ reasoningEffort: "low" });
+        expect(providerOptions.openai).toEqual({ reasoningEffort: "low", reasoningSummary: null });
       });
 
   test("level 2 wipes all options", () => {
@@ -66,6 +66,12 @@ describe("buildProviderOptions — regression: existing behaviour preserved", ()
     const cfg = baseConfig({ openaiReasoningEffort: "high" });
     const { providerOptions } = await buildProviderOptions("openai/gpt-5", cfg);
     expect(providerOptions.openai).toMatchObject({ reasoningEffort: "high" });
+  });
+
+  test("openai reasoning summary stays off unless configured", async () => {
+    const cfg = baseConfig({ openaiReasoningEffort: "high", openaiReasoningSummary: "off" });
+    const { providerOptions } = await buildProviderOptions("openai/gpt-5", cfg);
+    expect(providerOptions.openai).toMatchObject({ reasoningEffort: "high", reasoningSummary: null });
   });
 });
 

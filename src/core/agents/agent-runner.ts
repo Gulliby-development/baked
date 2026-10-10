@@ -404,7 +404,7 @@ export async function runAgentTask(
         generationError = genErr;
         // Recover steps from error or callback accumulator so we can
         // synthesize results even when the agent errors mid-run.
-        const errWithSteps = genErr as { steps?: unknown[]; text?: string; totalUsage?: unknown };
+        const errWithSteps = genErr as { steps?: unknown[]; text?: string };
         const recoveredSteps =
           errWithSteps.steps && Array.isArray(errWithSteps.steps)
             ? errWithSteps.steps
@@ -420,7 +420,7 @@ export async function runAgentTask(
           result = {
             text: errObj.text ?? "",
             steps: recoveredSteps,
-            totalUsage: {
+            usage: {
               inputTokens: errObj.usage?.inputTokens ?? callbacks._acc.input,
               outputTokens: errObj.usage?.outputTokens ?? callbacks._acc.output,
             },
@@ -440,10 +440,10 @@ export async function runAgentTask(
           (sum: number, s: { toolCalls?: unknown[] }) => sum + (s.toolCalls?.length ?? 0),
           0,
         );
-      let input = callbacks._acc.input || (result.totalUsage.inputTokens ?? 0);
-      let output = callbacks._acc.output || (result.totalUsage.outputTokens ?? 0);
+      let input = callbacks._acc.input || (result.usage.inputTokens ?? 0);
+      let output = callbacks._acc.output || (result.usage.outputTokens ?? 0);
       let cacheRead =
-        callbacks._acc.cacheRead || (result.totalUsage.inputTokenDetails?.cacheReadTokens ?? 0);
+        callbacks._acc.cacheRead || (result.usage.inputTokenDetails?.cacheReadTokens ?? 0);
 
       const agentFindings = bus.getFindings().filter((f) => f.agentId === task.agentId);
       let doneResult: DoneToolResult | null = null;
@@ -538,7 +538,7 @@ export async function runAgentTask(
                   retryResult = {
                     text: errWithSteps.text ?? "",
                     steps: recoveredSteps,
-                    totalUsage: {
+                    usage: {
                       inputTokens: retryCallbacks._acc.input,
                       outputTokens: retryCallbacks._acc.output,
                     },
@@ -566,11 +566,11 @@ export async function runAgentTask(
                 succeeded = true;
 
                 // Accumulate token usage from retry
-                input += retryCallbacks._acc.input || (retryResult.totalUsage?.inputTokens ?? 0);
-                output += retryCallbacks._acc.output || (retryResult.totalUsage?.outputTokens ?? 0);
+                input += retryCallbacks._acc.input || (retryResult.usage?.inputTokens ?? 0);
+                output += retryCallbacks._acc.output || (retryResult.usage?.outputTokens ?? 0);
                 cacheRead +=
                   retryCallbacks._acc.cacheRead ||
-                  (retryResult.totalUsage?.inputTokenDetails?.cacheReadTokens ?? 0);
+                  (retryResult.usage?.inputTokenDetails?.cacheReadTokens ?? 0);
                 toolUses +=
                   retryCallbacks._acc.toolUses ||
                   retryResult.steps.reduce(

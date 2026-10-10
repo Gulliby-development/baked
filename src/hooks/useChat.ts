@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Context } from "@ai-sdk/provider-utils";
 import type {
   ImagePart,
   ModelMessage,
@@ -2281,7 +2282,7 @@ export function useChat({
             tabId,
             tabLabel,
           });
-          let result: StreamTextResult<ToolSet, never> | undefined;
+          let result: StreamTextResult<ToolSet, Context, never> | undefined;
           for (let degradeLevel = 0; degradeLevel <= 2; degradeLevel++) {
             if (abortController.signal.aborted) break;
             try {
@@ -2334,7 +2335,7 @@ export function useChat({
                     abortSignal: abortController.signal,
                     options: { userMessage: input },
                   }),
-              )) as unknown as StreamTextResult<ToolSet, never>;
+              )) as unknown as StreamTextResult<ToolSet, Context, never>;
               break;
             } catch (err: unknown) {
               if (!isProviderOptionsError(err) || degradeLevel === 2) throw err;
@@ -2581,8 +2582,8 @@ export function useChat({
           // instance the loop holds. Calling [Symbol.asyncIterator]() again would
           // try getReader() on an already-locked ReadableStream and throw.
           const streamIterator = (
-            result.fullStream as AsyncIterable<
-              typeof result.fullStream extends AsyncIterable<infer T> ? T : never
+            result.stream as AsyncIterable<
+              typeof result.stream extends AsyncIterable<infer T> ? T : never
             >
           )[Symbol.asyncIterator]();
           for await (const part of { [Symbol.asyncIterator]: () => streamIterator }) {
@@ -3050,8 +3051,8 @@ export function useChat({
             const timeout = new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error("response timeout")), 10_000),
             );
-            const responseData = await Promise.race([result.response, timeout]);
-            responseMessages = responseData.messages;
+            // All steps' messages; AI SDK 7 limits `response.messages` to the final step.
+            responseMessages = await Promise.race([result.responseMessages, timeout]);
           } catch {
             responseMessages =
               fullText.length > 0 ? [{ role: "assistant" as const, content: fullText }] : [];

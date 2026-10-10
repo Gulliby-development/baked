@@ -4,7 +4,6 @@ import { type AgentBus, normalizePath } from "../agents/agent-bus.js";
 import { deriveTool } from "./tool-utils.js";
 
 interface WrappableTool {
-  description?: string;
   inputSchema?: unknown;
   execute?: (args: never, opts: never) => unknown;
 }
