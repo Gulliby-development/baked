@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   correctionAuthorized,
+  correctionBase,
   correctionChecks,
   correctionWrites,
 } from "../src/core/verification/convergence.js";
-import type { TaskGraph } from "../src/core/workflows/schemas.js";
+import type { Spec, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { Task } from "../src/core/workflows/types.js";
 
 const task = (id: string, paths: string[], criteria: string[], extra: Partial<Task> = {}): Task => ({
@@ -72,5 +73,42 @@ describe("correction scope", () => {
     });
     const graph = { ...root, tasks: [created] };
     expect(correctionWrites(created, graph, { "src/new.ts": "hash" })[0]?.action).toBe("modify");
+  });
+
+  // Run 1185f909: a review finding on src/store.ts broke AC-004, which the plan gave to the CLI and
+  // test tasks, while the store task covered AC-007 only; no task had both and the run blocked.
+  test("a finding whose file and criterion belong to different tasks is corrected from the file's task", () => {
+    const store = task("T001", ["src/store.ts"], ["AC-007"], { requirementIds: ["FR-002"] });
+    const cli = task("T002", ["src/cli.ts"], ["AC-004"]);
+    const suite = task("T003", ["tests/todo.test.ts"], ["AC-004", "AC-007"], {
+      requirementIds: ["FR-001", "FR-002"],
+    });
+    const graph: TaskGraph = { ...root, tasks: [store, cli, suite] };
+    const spec = {
+      criteria: [
+        { id: "AC-004", requirementIds: ["FR-001"] },
+        { id: "AC-007", requirementIds: ["FR-002"] },
+      ],
+    } as unknown as Spec;
+    const finding = { file: "src/store.ts", criterionIds: ["AC-004"], requirementIds: [] };
+    const base = correctionBase(finding, graph, spec);
+    expect(base?.id).toBe("T001");
+    expect(base?.criterionIds).toEqual(["AC-007", "AC-004"]);
+    expect(base?.requirementIds).toEqual(["FR-002", "FR-001"]);
+    if (!base) throw new Error("no base");
+    const writes = correctionWrites(base, graph, {}).map((w) => w.path);
+    expect(writes).toEqual(["src/store.ts", "src/cli.ts", "tests/todo.test.ts"]);
+    const correction = task("T004", writes, base.criterionIds, {
+      origin: "repair",
+      requirementIds: base.requirementIds,
+      checkIds: correctionChecks(base, graph),
+    });
+    expect(correctionAuthorized(correction, graph)).toBe(true);
+  });
+
+  test("a finding on a file no planned task writes has no base", () => {
+    const spec = { criteria: [] } as unknown as Spec;
+    const finding = { file: "src/unknown.ts", criterionIds: ["AC-001"], requirementIds: [] };
+    expect(correctionBase(finding, root, spec)).toBeUndefined();
   });
 });
