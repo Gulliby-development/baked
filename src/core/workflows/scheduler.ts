@@ -3263,9 +3263,13 @@ export const GATES_ARTIFACT = "definition/gates.json";
 const gateToRequired = (binding: { gateId: string; mode?: "required" | "advisory" }, gate: Gate) =>
   effectiveMode(binding, gate) === "required";
 
-/** Told to the implementer with every task: unresolved blocks the task, so it must not carry other tasks' work. */
+/**
+ * Told to the implementer with every task: unresolved blocks the task, so it must not carry other
+ * tasks' work. Run 563e4f6c: a test task that caught a bug in src/site.ts listed the fix as
+ * unresolved and blocked; resume repeated it. A failing task check is repaired instead.
+ */
 const UNRESOLVED_MEANING =
-  "unresolved lists only parts of THIS task that you could not finish. Work that belongs to other tasks of the plan, to checks run later, or to documentation tasks is not unresolved: leave it out. Any entry blocks this task.";
+  "unresolved lists only parts of THIS task that you could not finish. Work that belongs to other tasks of the plan, to checks run later, or to documentation tasks is not unresolved: leave it out. A defect you found in a file outside your write scope is not unresolved either: finish your own files (a test that exposes the defect stays as written), name the file and the defect in summary, and report implemented; the failing check becomes a corrective task that may edit that file. Any entry blocks this task.";
 
 /** One task of a batch: its reserved attempt and, once created, its worktree. */
 interface BatchEntry {
