@@ -1,4 +1,5 @@
-/* Design tokens from the mockups, which take the terminal UI's palette (src/core/theme/tokens.ts). */
+/* Design tokens: the terminal UI's palette (src/core/theme/tokens.ts) plus the neobrutalist ink,
+   fill and shadow tokens. `--fill-*` are colour blocks that always carry `--on-fill` text. */
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -26,6 +27,13 @@
   --info: #eac8a3;
   --diff-add: #24301c;
   --diff-del: #3a1d1a;
+  --ink: #000000;
+  --on-fill: #191410;
+  --fill-accent: #ff9d52;
+  --fill-ok: #accd94;
+  --fill-warn: #f2c575;
+  --fill-err: #ff8e86;
+  --fill-info: #eac8a3;
 }
 
 :root[data-theme="light"] {
@@ -54,14 +62,27 @@
   --info: #755039;
   --diff-add: #e8efdb;
   --diff-del: #fbe3dc;
+  --ink: #302015;
+  --on-fill: #302015;
+  --fill-accent: #ff9d52;
+  --fill-ok: #b9dca0;
+  --fill-warn: #f7d38a;
+  --fill-err: #ffa69f;
+  --fill-info: #f0d4b4;
 }
 
 :root {
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --radius: 8px;
-  --radius-lg: 10px;
+  --radius: 6px;
+  --radius-lg: 6px;
   --row: 36px;
+  /* Neobrutalist outline and hard offset shadow, in the ink colour. */
+  --border-w: 2px;
+  --shadow-x: 4px;
+  --shadow-y: 4px;
+  --shadow: var(--shadow-x) var(--shadow-y) 0 0 var(--ink);
+  --shadow-sm: 2px 2px 0 0 var(--ink);
 }
 
 :root[data-density="compact"] {

@@ -1,3 +1,4 @@
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
@@ -5,7 +6,7 @@ export default defineConfig({
   root: "src/renderer",
   // Relative asset paths: the packaged app loads index.html from disk.
   base: "./",
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: "../../out/renderer",
     emptyOutDir: true,

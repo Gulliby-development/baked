@@ -1,0 +1,49 @@
+/* Entry stylesheet. Tailwind supplies its theme and utilities without preflight, and the app's own
+   CSS sits in the `legacy` layer below the utilities, so shadcn components in components/ui win
+   over the older per-screen rules while screens move over one by one. */
+@layer theme, legacy, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "./tokens.css" layer(legacy);
+@import "./app.css" layer(legacy);
+
+/* Class names the older screens use for their own rules; never generate utilities for them. */
+@source not inline("table ring bg-accent bg-ok bg-warn bg-err");
+
+/* The neobrutalism.dev token names, mapped onto BAKED's palette (tokens.css). */
+@theme inline {
+  --color-main: var(--fill-accent);
+  --color-main-foreground: var(--on-fill);
+  --color-background: var(--bg-panel);
+  --color-secondary-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-muted-foreground: var(--text-3);
+  --color-soft-foreground: var(--text-2);
+  --color-dim-foreground: var(--text-4);
+  --color-sidebar: var(--bg-sidebar);
+  --color-raised: var(--bg-raised);
+  --color-hover: var(--bg-hover);
+  --color-selected: var(--bg-selected);
+  --color-border: var(--ink);
+  --color-ring: var(--accent);
+  --color-overlay: rgb(0 0 0 / 0.6);
+  --color-fill-ok: var(--fill-ok);
+  --color-fill-warn: var(--fill-warn);
+  --color-fill-err: var(--fill-err);
+  --color-fill-info: var(--fill-info);
+
+  --spacing-boxShadowX: var(--shadow-x);
+  --spacing-boxShadowY: var(--shadow-y);
+  --spacing-reverseBoxShadowX: calc(var(--shadow-x) * -1);
+  --spacing-reverseBoxShadowY: calc(var(--shadow-y) * -1);
+
+  --radius-base: var(--radius);
+  --shadow-shadow: var(--shadow);
+  --shadow-sm-hard: var(--shadow-sm);
+
+  --font-weight-base: 500;
+  --font-weight-heading: 700;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
