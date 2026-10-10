@@ -90,15 +90,9 @@ The app uses the existing endpoints as they are:
 | Acceptance | run artifacts and acceptance requests from attention |
 | Working set | `GET`/`POST /v1/projects/current/working-set` |
 
-Chat is not in the API yet. The thread "Desktop app: API для чата и сессий" owns `src/core/api` and adds it; the desktop does not change the API. The desktop's proposal sent to that thread:
+Chat, prompts (tool approvals), setup, usage and initiatives are specified in [`desktop-api.md`](desktop-api.md), owned by the API work; the desktop does not change the API. Session prompts appear in `/v1/attention` with source `chat`, so "Needs you" and notifications cover them.
 
-- `GET /v1/sessions`, `POST /v1/sessions`, `GET /v1/sessions/:id` (transcript with text, reasoning summaries and tool calls with diffs).
-- `POST /v1/sessions/:id/messages` returns 202; the reply arrives on `GET /v1/sessions/:id/events`, an SSE stream with sequence IDs and `Last-Event-ID` resume, carrying turn start and finish, text and reasoning deltas, tool start and finish, approval requests and results, usage (context fill, cost) and errors.
-- `POST /v1/sessions/:id/approvals/:approvalId` (allow, allow for the session, deny), `POST /v1/sessions/:id/interrupt`.
-- Pending tool approvals of a chat appear in `/v1/attention`, so "Needs you" and notifications cover them.
-- Later: compact, slash commands, models, usage by model and stage, and reading and writing gates, instructions and global versus project config.
-
-`MockClient` follows that thread's contract once it is fixed; until then it follows this proposal. Screens whose endpoints do not exist yet render from the mock in development and show "needs BAKED x.y" in a real build.
+`MockClient` follows that contract. Screens whose endpoints a backend does not have yet (an older `baked`) show "needs a newer BAKED" instead of failing.
 
 ## Screens
 
