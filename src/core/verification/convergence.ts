@@ -47,6 +47,15 @@ export function correctionWrites(
   }));
 }
 
+/**
+ * The task checks a correction of `base` runs: its own and those of the related planned tasks. A
+ * correction that may edit the test file must also run the test check, or it cannot see that its
+ * fix is incomplete and the same failure comes back as no progress.
+ */
+export function correctionChecks(base: Task, root: TaskGraph): string[] {
+  return [...new Set([base, ...relatedRootTasks(base, root)].flatMap((task) => task.checkIds))];
+}
+
 export function correctionAuthorized(task: Task, root: TaskGraph): boolean {
   const related = relatedRootTasks(task, root);
   return (
@@ -125,6 +134,7 @@ export function appendCorrections(
     return {
       ...base,
       writes: correctionWrites(base, root, state.expectedFiles),
+      checkIds: correctionChecks(base, root),
       id: `T${String(next++).padStart(3, "0")}`,
       title: `Correct ${ids.join(", ")}`,
       description: grouped
