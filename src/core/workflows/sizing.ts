@@ -1,63 +1,61 @@
 import { Database } from "bun:sqlite";
-import { existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { workspacePath } from "../specs/validate.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { DEFAULT_STAGE_RANGES, rangeOf, type TokenRange } from "./estimate.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { Task } from "./types.js";
 
 /**
- * Plan-time sizing. Once the plan names the tasks and the files they write, the cost of the
- * implementation is priced from what earlier runs spent per kilobyte of written files. The price
- * sets each task's attempt cap, raises the run budget up to the ceiling the policy allows, and
- * decides when a plan is too large and must be split.
+ * Plan-time sizing. Once the plan names the tasks and the files they write, each task is priced
+ * per written file by the kind of file: tests cost far more than code, and the size of a file says
+ * little about the size of its change. The rates are the tokens earlier tasks of the same kind
+ * spent per file to get done, their corrective tasks included. The price sets each task's attempt
+ * cap, raises the run budget up to the ceiling the policy allows, and decides when a plan is too
+ * large and must be split.
  */
 
-/** One finished run of history: what its tasks spent and how much code they wrote to. */
+export type FileKind = "code" | "test";
+export type TaskKind = FileKind | "mixed";
+
+/** One finished task of history: what it took to get done and what kind of files it wrote. */
 export interface SizingSample {
   runId: string;
-  taskTokens: number;
-  writeBytes: number;
+  taskId: string;
+  kind: TaskKind;
+  files: number;
+  /** Tokens of the task's attempts and of the corrective tasks that wrote the same files. */
+  tokens: number;
 }
 
-/** Tokens per KiB of written files when no history exists; measured on this project's runs. */
-export const DEFAULT_TOKENS_PER_KB: TokenRange = { low: 3_000, high: 6_000 };
-/** Below this, a task keeps the default attempt cap. */
-const MIN_TASK_TOKENS = 60_000;
+/** Tokens per written file when history has no task of the kind; measured on this project. */
+export const DEFAULT_PER_FILE: Record<FileKind, TokenRange> = {
+  code: { low: 30_000, high: 100_000 },
+  test: { low: 150_000, high: 350_000 },
+};
 /** Without a configured ceiling, a task attempt may grow to this. */
 export const DEFAULT_MAX_SIZED_ATTEMPT = 600_000;
-/** Corrective rounds and retries on top of the first implementation, as observed. */
-const REPAIR_FACTOR = 1.5;
-/** Fewer finished runs than this give no rate; the defaults apply. */
-const MIN_SAMPLES = 2;
+/** A correction round of review and convergence on top of one pass. */
+const VERIFICATION_FACTOR = 1.5;
 
-const kb = (bytes: number): number => Math.max(1, bytes / 1024);
+const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/i;
+export const fileKind = (path: string): FileKind => (TEST_PATH.test(path) ? "test" : "code");
 
-function fileBytes(root: string, path: string): number {
-  try {
-    const absolute = workspacePath(root, path);
-    return existsSync(absolute) ? statSync(absolute).size : 0;
-  } catch {
-    return 0;
-  }
+function writtenFiles(task: Pick<Task, "writes">): string[] {
+  return task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
 }
-
-/** Bytes of the files a task writes, as they are in the root now; created files count as zero. */
-export function writeBytes(root: string, task: Pick<Task, "writes">): number {
-  return task.writes
-    .filter((w) => w.action !== "delete")
-    .reduce((total, w) => total + fileBytes(root, w.path), 0);
+export function taskKind(task: Pick<Task, "writes">): TaskKind {
+  const kinds = new Set(writtenFiles(task).map(fileKind));
+  return kinds.size === 1 ? ([...kinds][0] as FileKind) : "mixed";
 }
 
 /**
- * Finished runs of a workflow store, read-only: the tokens of all their task attempts and the
- * current size of the distinct files their planned tasks write. The workspace of a store is the
- * directory that holds its `.baked` folder.
+ * Finished tasks of a workflow store, read-only. A corrective task is not a sample of its own: its
+ * tokens join the planned task of the same run that writes the same files, because getting that
+ * task done took both.
  */
 export function samplesFrom(databasePath: string): SizingSample[] {
   if (!existsSync(databasePath)) return [];
-  const root = dirname(dirname(databasePath));
   let db: Database | null = null;
   try {
     db = new Database(databasePath, { readonly: true });
@@ -66,26 +64,43 @@ export function samplesFrom(databasePath: string): SizingSample[] {
     for (const { id } of runs) {
       const tasks = db
         .query<{ id: string; definition_json: string }, [string]>(
-          "SELECT id, definition_json FROM tasks WHERE run_id=? AND status<>'invalidated' AND status<>'cancelled'",
+          "SELECT id, definition_json FROM tasks WHERE run_id=? AND status='verified'",
         )
-        .all(id);
-      const tokens =
+        .all(id)
+        .map((row) => ({
+          id: row.id,
+          ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin">),
+        }));
+      const spent = new Map(
         db
-          .query<{ tokens: number | null }, [string]>(
-            `SELECT SUM(COALESCE(a.used_tokens,0)) AS tokens FROM attempts a
+          .query<{ stage: string; tokens: number | null }, [string]>(
+            `SELECT s.stage_id AS stage, SUM(COALESCE(a.used_tokens,0)) AS tokens FROM attempts a
              JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id
-             WHERE a.run_id=? AND s.stage_id LIKE 'task-%' AND a.model_id IS NOT NULL`,
+             WHERE a.run_id=? AND s.stage_id LIKE 'task-%' AND a.model_id IS NOT NULL
+             GROUP BY s.stage_id`,
           )
-          .get(id)?.tokens ?? 0;
-      const paths = new Set<string>();
-      for (const task of tasks) {
-        const definition = JSON.parse(task.definition_json) as Pick<Task, "writes" | "origin">;
-        if (definition.origin !== "planned") continue;
-        for (const write of definition.writes) if (write.action !== "delete") paths.add(write.path);
+          .all(id)
+          .map((row) => [row.stage, row.tokens ?? 0]),
+      );
+      const planned = tasks.filter((task) => task.origin === "planned");
+      const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
+      for (const correction of tasks.filter((task) => task.origin !== "planned")) {
+        const files = writtenFiles(correction);
+        const base = planned.find((task) =>
+          files.every((path) => writtenFiles(task).includes(path)),
+        );
+        if (base)
+          totals.set(
+            base.id,
+            (totals.get(base.id) ?? 0) + (spent.get(`task-${correction.id}`) ?? 0),
+          );
       }
-      const bytes = [...paths].reduce((total, path) => total + fileBytes(root, path), 0);
-      if (tokens > 0 && bytes > 0)
-        samples.push({ runId: id, taskTokens: tokens, writeBytes: bytes });
+      for (const task of planned) {
+        const files = writtenFiles(task).length;
+        const tokens = totals.get(task.id) ?? 0;
+        if (files > 0 && tokens > 0)
+          samples.push({ runId: id, taskId: task.id, kind: taskKind(task), files, tokens });
+      }
     }
     return samples;
   } catch {
@@ -106,25 +121,45 @@ export function sizingHistory(workspace: string, policy: RunPolicy): SizingSampl
   const seen = new Set<string>();
   return stores
     .flatMap((path) => samplesFrom(path))
-    .filter((sample) => !seen.has(sample.runId) && seen.add(sample.runId));
+    .filter((sample) => {
+      const key = `${sample.runId}/${sample.taskId}`;
+      return !seen.has(key) && seen.add(key);
+    });
+}
+
+export interface KindRate {
+  perFile: TokenRange;
+  samples: number;
+  basis: "history" | "defaults";
+}
+
+/** Tokens per written file of each kind, from tasks that wrote only files of that kind. */
+export function perFileRates(samples: SizingSample[]): Record<FileKind, KindRate> {
+  const rate = (kind: FileKind): KindRate => {
+    const own = samples.filter((sample) => sample.kind === kind);
+    const range = rangeOf(own.map((sample) => sample.tokens / sample.files));
+    return range
+      ? { perFile: range, samples: own.length, basis: "history" }
+      : { perFile: DEFAULT_PER_FILE[kind], samples: 0, basis: "defaults" };
+  };
+  return { code: rate("code"), test: rate("test") };
 }
 
 export interface TaskSize {
   taskId: string;
-  writeBytes: number;
-  /** Tokens the task's attempts are expected to spend, including its corrections. */
+  kind: TaskKind;
+  files: number;
+  /** Tokens the task is expected to need to get done, its corrections included. */
   estimate: TokenRange;
   /** Cap for one attempt of this task. */
   attemptTokens: number;
-  /** Larger than one attempt may grow to: the plan should split it. */
+  /** Above one attempt and writes several files: the plan should split it. */
   oversized: boolean;
 }
 
 export interface SizingReport {
-  schemaVersion: 1;
-  basis: "history" | "defaults";
-  samples: number;
-  tokensPerKb: TokenRange;
+  schemaVersion: 2;
+  rates: Record<FileKind, KindRate>;
   tasks: TaskSize[];
   /** Tokens the run is expected to need in total, from what it spent so far. */
   runTokens: number;
@@ -136,52 +171,51 @@ export interface SizingReport {
   reasons: string[];
 }
 
-/** Tokens per KiB of written files, from history where there is enough of it. */
-export function tokensPerKb(samples: SizingSample[]): {
-  rate: TokenRange;
-  basis: SizingReport["basis"];
-} {
-  const rates = samples.map((s) => s.taskTokens / kb(s.writeBytes));
-  const range = samples.length >= MIN_SAMPLES ? rangeOf(rates) : null;
-  return range
-    ? { rate: range, basis: "history" }
-    : { rate: DEFAULT_TOKENS_PER_KB, basis: "defaults" };
+/** One task's price: the per-file rate of each file it writes, summed. */
+export function priceTask(
+  task: Pick<Task, "writes">,
+  rates: Record<FileKind, KindRate>,
+): TokenRange {
+  return writtenFiles(task).reduce(
+    (total, path) => {
+      const rate = rates[fileKind(path)].perFile;
+      return { low: total.low + rate.low, high: total.high + rate.high };
+    },
+    { low: 0, high: 0 },
+  );
 }
 
 /**
  * Prices a planned graph. `spent` is what the run used before implementation; the review and
- * convergence stages are priced at their generic upper range, once more for a correction round.
+ * convergence stages are priced at their generic upper range plus a correction round.
  */
 export function sizePlan(input: {
   graph: TaskGraph;
-  root: string;
   policy: RunPolicy;
   samples: SizingSample[];
   spent: number;
 }): SizingReport {
-  const { rate, basis } = tokensPerKb(input.samples);
+  const rates = perFileRates(input.samples);
   const maxAttemptTokens = input.policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
   const maxRunTokens = input.policy.sizing?.maxRunTokens ?? null;
   const floor = input.policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS;
   const tasks = input.graph.tasks
-    .filter((task) => task.writes.length > 0)
+    .filter((task) => writtenFiles(task).length > 0)
     .map((task): TaskSize => {
-      const bytes = writeBytes(input.root, task);
-      const estimate = {
-        low: Math.max(MIN_TASK_TOKENS, Math.round(rate.low * kb(bytes))),
-        high: Math.max(MIN_TASK_TOKENS, Math.round(rate.high * kb(bytes) * REPAIR_FACTOR)),
-      };
+      const estimate = priceTask(task, rates);
+      const files = writtenFiles(task).length;
       return {
         taskId: task.id,
-        writeBytes: bytes,
+        kind: taskKind(task),
+        files,
         estimate,
-        attemptTokens: Math.min(maxAttemptTokens, Math.max(floor, estimate.high)),
-        oversized: estimate.high > maxAttemptTokens,
+        attemptTokens: Math.min(maxAttemptTokens, Math.max(floor, Math.round(estimate.high))),
+        oversized: files > 1 && estimate.high > maxAttemptTokens,
       };
     });
   const verification =
     ((DEFAULT_STAGE_RANGES.review?.high ?? 0) + (DEFAULT_STAGE_RANGES.converge?.high ?? 0)) *
-    REPAIR_FACTOR;
+    VERIFICATION_FACTOR;
   const runTokens = Math.round(
     input.spent + tasks.reduce((total, task) => total + task.estimate.high, 0) + verification,
   );
@@ -199,7 +233,7 @@ export function sizePlan(input: {
     decision = "split-tasks";
     for (const task of oversized)
       reasons.push(
-        `${task.taskId} needs about ${task.estimate.high} tokens, above one attempt's ${maxAttemptTokens}`,
+        `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
   if (runTokens > budgetBefore && maxRunTokens !== null) {
@@ -208,10 +242,8 @@ export function sizePlan(input: {
     reasons.push(`The run budget grows from ${budgetBefore} to ${budgetAfter} tokens`);
   }
   return {
-    schemaVersion: 1,
-    basis,
-    samples: input.samples.length,
-    tokensPerKb: rate,
+    schemaVersion: 2,
+    rates,
     tasks,
     runTokens,
     budgetBefore,
@@ -223,24 +255,21 @@ export function sizePlan(input: {
   };
 }
 
-/** What the planner is told about task size before it plans. */
+/** How many code files one attempt covers, and what the planner is told before it plans. */
 export function plannerSizing(
   policy: RunPolicy,
   samples: SizingSample[],
-): {
-  maxTaskKb: number;
-  note: string;
-} {
-  const { rate } = tokensPerKb(samples);
+): { maxCodeFilesPerTask: number; note: string } {
+  const rates = perFileRates(samples);
   const maxAttemptTokens = policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
-  const maxTaskKb = Math.max(8, Math.floor(maxAttemptTokens / (rate.high * REPAIR_FACTOR)));
+  const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / rates.code.perFile.high));
   return {
-    maxTaskKb,
-    note: `Keep each task to about ${maxTaskKb} KiB of files to write (existing size). Split larger work into tasks with disjoint writes and no dependency between them where the code allows: such tasks run in parallel and are merged afterwards. Put new tests in a task of their own when the code task is large.`,
+    maxCodeFilesPerTask,
+    note: `Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards.`,
   };
 }
 
 /** The note that sends an oversized plan back to the planner once. */
-export function splitNote(report: SizingReport, maxTaskKb: number): string {
-  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: about ${maxTaskKb} KiB of files to write per task, disjoint writes and no dependency between tasks where possible, so they run in parallel; put tests in their own task.`;
+export function splitNote(report: SizingReport, maxCodeFilesPerTask: number): string {
+  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel.`;
 }

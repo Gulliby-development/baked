@@ -1278,7 +1278,6 @@ export class WorkflowScheduler {
     const samples = sizingHistory(this.store.workspace, policy);
     const report = sizePlan({
       graph,
-      root: runRoot(this.store.workspace, state),
       policy,
       samples,
       spent: this.store.run(runId).token_usage,
@@ -1298,7 +1297,7 @@ export class WorkflowScheduler {
       if (plan >= 0) {
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples).maxTaskKb)}`;
+${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));

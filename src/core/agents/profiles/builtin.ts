@@ -99,13 +99,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "planner",
-    version: "1.3.0",
+    version: "1.4.0",
     description: "Plan and task dependencies",
     role: "planner",
     model: "$active",
     context: "planning",
     instructions:
-      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: keep each task within extra.sizing.maxTaskKb of files to write, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel.",
+      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel.",
     skills: [],
     allowedTools: [
       "read",
