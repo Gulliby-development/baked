@@ -14,6 +14,7 @@ import {
   type SizingSample,
   samplesFrom,
   sizePlan,
+  splitTestTasks,
   withTestDependencies,
 } from "../src/core/workflows/sizing.js";
 
@@ -204,5 +205,30 @@ describe("test task dependencies", () => {
     const before = { ...task("T003", ["src/b.ts"]), dependsOn: ["T002"] };
     const g = graph(task("T001", ["src/a.ts"]), after, before);
     expect(deps(withTestDependencies(g))).toEqual({ T001: [], T002: ["T001"], T003: ["T002"] });
+  });
+});
+
+describe("runtime split of test tasks", () => {
+  const samples = [sample("test", 500_000), sample("test", 500_000)];
+  const sized = (g: TaskGraph) =>
+    sizePlan({ graph: g, policy: policy({ maxAttemptTokens: 600_000 }), samples, spent: 0 });
+  test("an oversized test task becomes one task per file and its dependents wait for every part", () => {
+    const tests = { ...task("T002", ["tests/test_parser.py", "tests/test_report.py"]), dependsOn: ["T001"] };
+    const docs = { ...task("T009", ["README.md"]), dependsOn: ["T002"] };
+    const g = graph(task("T001", ["src/report.py"]), tests, docs);
+    const split = splitTestTasks(g, sized(g));
+    expect(split?.tasks.map((t) => [t.id, t.writes.map((w) => w.path), t.dependsOn])).toEqual([
+      ["T001", ["src/report.py"], []],
+      ["T002", ["tests/test_parser.py"], ["T001"]],
+      ["T010", ["tests/test_report.py"], ["T001"]],
+      ["T009", ["README.md"], ["T002", "T010"]],
+    ]);
+    expect(split?.tasks[2]?.criterionIds).toEqual(["AC-001"]);
+    expect(split?.tasks[2]?.description).toContain("write only tests/test_report.py");
+    expect(split && sized(split).decision).not.toBe("split-tasks");
+  });
+  test("code tasks and test tasks within one attempt are left to the planner", () => {
+    const g = graph(task("T001", ["src/a.ts", "src/b.ts"]), task("T002", ["tests/a.test.ts"]));
+    expect(splitTestTasks(g, sized(g))).toBeNull();
   });
 });
