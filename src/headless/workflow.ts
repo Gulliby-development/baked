@@ -130,8 +130,12 @@ export async function executeWorkflowCommand(
       throw new WorkflowFault("INVALID_DEFINITION", "Expected a nonnegative integer revision");
     return { commandId: stringFlag(args, "command-id", newId()), expectedRevision: revision };
   };
-  const readFlagFile = (flag: string): string =>
-    readFileSync(resolve(service.store.workspace, stringFlag(args, flag)), "utf8");
+  const readFlagFile = (flag: string): string => {
+    const inline = args.inline?.[flag];
+    return typeof inline === "string"
+      ? inline
+      : readFileSync(resolve(service.store.workspace, stringFlag(args, flag)), "utf8");
+  };
   const jsonFile = (flag: string): unknown =>
     args.inline && flag in args.inline ? args.inline[flag] : JSON.parse(readFlagFile(flag));
   switch (args.command) {

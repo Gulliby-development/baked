@@ -1,6 +1,8 @@
 import type { ComponentType } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { ProjectSection } from "../router.js";
+import { InitiativesSection } from "./insights/InitiativesSection.js";
+import { UsageSection } from "./insights/UsageSection.js";
 import { RunsSection } from "./project/RunsSection.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
@@ -19,4 +21,6 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   gates: GatesSection,
   instructions: InstructionsSection,
   "working-set": WorkingSetSection,
+  initiatives: InitiativesSection,
+  usage: UsageSection,
 };
