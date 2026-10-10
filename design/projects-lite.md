@@ -96,11 +96,11 @@ Skipped: .env (forbidden)
 </working_set>
 ```
 
-Paths are relative to the session's working directory (`../baked-docs/guide.md` from the primary root). The budget defaults to 64 KB of content and 16 KB per file; a file over its share is listed, not truncated, because a partial file misleads more than an absent one. Both limits are `projects.workingSetMaxBytes` and `projects.workingSetFileMaxBytes` in the config.
+Paths are relative to the session's working directory (`../baked-docs/guide.md` from the primary root). The budget defaults to 64 KB of content and 16 KB per file; a file over its share is listed, not truncated, because a partial file misleads more than an absent one. The limits are constants for now; a config key comes when someone needs another value.
 
 ### Chat
 
-`ContextManager` captures the block once per session, at the first system prompt build, and adds it to the instructions after the bake map and skills (`buildInstructions` in `forge.ts`). Child context managers (subagents) never capture it. The block is frozen so prompt caching keeps working; `refreshWorkingSet()` re-captures it and is called by `/clear` and by the CLI or API when the working set changes. `getInstructionsCacheKey` includes the block's hash. Editing the manifest by hand takes effect at the next `/clear` or session.
+`ContextManager` captures the block once per session, at the first system prompt build, and adds it to the instructions after the bake map and skills (`buildInstructions` in `forge.ts`). Child context managers (subagents) never capture it. The block is frozen so prompt caching keeps working; `refreshWorkingSet()` re-captures it and is called by `/clear`; the API will call it after it changes the working set. `getInstructionsCacheKey` includes the block's hash. Editing the manifest by hand takes effect at the next `/clear` or session.
 
 ### Workflow runs
 
@@ -122,7 +122,7 @@ A worktree run renders the working set from the project root before the worktree
 
 ## projectId on sessions and runs
 
-- `SessionMeta.projectId?: string`, set when the session is created (`useSessionBuilder`). Old sessions have none. Every path that rebuilds `SessionMeta` on save keeps it, and both list builders (`SessionManager` and the IO worker) return it in `SessionListEntry` so list views can filter without reading messages.
+- `SessionMeta.projectId?: string`, the project of the session's directory, recorded when the session is saved (`useSessionBuilder`, and the per-tab save, which keeps a value already on disk). Old sessions have none until they are saved again. Every path that rebuilds `SessionMeta` on save keeps it, and both list builders (`SessionManager` and the IO worker) return it in `SessionListEntry` so list views can filter without reading messages.
 - Workflow runs: migration `007` adds `runs.project_id TEXT` (nullable) and an index `(project_id, created_at)`. `WorkflowService.start` sets it from the resolved project of the workspace; the request does not carry it, so a run cannot claim a project its workspace is not in. Derived runs keep their parent's. The strict `run.created` payload gains an optional `projectId`. Initiatives are reached through their runs and get no column now.
 - A read-only reader of a database still on migration 006 (an older checkout listed by `summary()`) has no column: the listing checks for it and reports such runs without a project. A missing database is an empty list.
 

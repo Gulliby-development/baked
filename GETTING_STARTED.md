@@ -169,6 +169,23 @@ Every setting can be saved to one of three scopes:
 
 Project settings override global; session overrides both.
 
+## Projects
+
+A project groups the sessions and workflow runs of one piece of work, across one or more checkouts. It is described by `baked/project.json`, which can be committed:
+
+```sh
+baked project init --name "My app" --root ../my-app-docs
+baked project add "src/auth/**/*.ts" docs/auth.md
+baked project show
+```
+
+- **Working set**: the files and globs in `workingSet` go into the chat context at the start of each session (`/clear` captures them again) and into the first agents of each workflow run, so the agent does not search for them again. Files over the budget (64 KB in total, 16 KB per file) are listed by name. Secrets matching the forbidden-file patterns, `.git`, `.baked`, `node_modules`, Git-ignored files and binaries are never included.
+- **Roots**: `roots` names other checkouts of the project. A root outside the current checkout is used only after `baked project register`, which records it in `~/.baked/projects.json`; a root added to the manifest later needs registering again. Sessions started in a registered root belong to the project too. Roots do not change file access: tools still ask before touching files outside the working directory.
+- **Defaults**: `defaults.config` may set `defaultModel`, `taskRouter`, `modelRouting` and `modelFallback`; `.baked/config.json` overrides them. `defaults.instructions` lists markdown files added to the project instructions.
+- Sessions and workflow runs record the project's `id`, so `baked project show` lists them from every root.
+
+See [design/projects-lite.md](design/projects-lite.md) for the design.
+
 ## Storage
 
 `/storage` shows per-component disk usage across project and global storage — repo map index, sessions, plans, memory, history, config, binaries. One-click cleanup for each component.
