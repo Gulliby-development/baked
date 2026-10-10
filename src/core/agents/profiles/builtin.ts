@@ -138,7 +138,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "implementer",
-    version: "1.2.0",
+    version: "1.3.0",
     description: "Implement one task",
     role: "implementer",
     model: "$coding",
@@ -155,7 +155,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
       "submit_result",
     ],
     output: "implementation",
-    maxSteps: 14,
+    maxSteps: 20,
     maxOutputTokens: 4096,
   },
   {
