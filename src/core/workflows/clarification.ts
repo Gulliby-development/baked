@@ -14,28 +14,52 @@ export function deferredToChecks(text: string): boolean {
   return CHECK_TERMS.test(text) && NOT_RUN.test(text);
 }
 
+/**
+ * The checks of a run are the policy's, which only the operator changes (`workflow revise
+ * --policy`); the plan cannot add one. A finding that asks to add, extend or replace checks
+ * because project instructions name others (a full test suite, a build) therefore stops the run
+ * for a decision the operator already made.
+ */
+const ASKS_FOR =
+  /\b(add|adds|adding|include|including|extend|extending|schedule|replace|replacing)\b[^.;:]{0,140}\b(suites?|full-suite|builds?|bun test|bun run build)\b/i;
+const POLICY_SOURCE =
+  /\b(execution ?contract|executionContract|policy|AGENTS\.md|project instructions?)\b/i;
+
+export function asksForPolicyChecks(text: string): boolean {
+  return CHECK_TERMS.test(text) && ASKS_FOR.test(text) && POLICY_SOURCE.test(text);
+}
+
 const DEFERRED_PROBLEM =
   "is blocking, but check outcomes are produced by the checks stage after implementation and this stage cannot run commands. Set blocking to false (or move the check to constraints) and submit again.";
+const POLICY_CHECKS_PROBLEM =
+  "is blocking, but it asks for checks the run policy does not have. The policy's checks are the operator's choice for this run and the plan cannot add checks. Set blocking to false and submit again.";
 
 /** Submission errors for blocking items that later stages resolve; returned to the agent. */
 export function deferredBlockingProblems(
   items: readonly { blocking: boolean }[],
   text: (item: { blocking: boolean }, index: number) => string,
 ): string[] {
-  return items.flatMap((item, index) =>
-    item.blocking && deferredToChecks(text(item, index))
-      ? [`Item ${String(index + 1)} ("${text(item, index).slice(0, 120)}") ${DEFERRED_PROBLEM}`]
-      : [],
-  );
+  return items.flatMap((item, index) => {
+    if (!item.blocking) return [];
+    const content = text(item, index);
+    const problem = deferredToChecks(content)
+      ? DEFERRED_PROBLEM
+      : asksForPolicyChecks(content)
+        ? POLICY_CHECKS_PROBLEM
+        : null;
+    return problem ? [`Item ${String(index + 1)} ("${content.slice(0, 120)}") ${problem}`] : [];
+  });
 }
 
-/** Keep deferred items as notes, never as a reason to stop the run for the user. */
+/** Keep deferred items and requests for other checks as notes, never as a reason to stop the run. */
 export function demoteDeferred<T extends { blocking: boolean }>(
   items: readonly T[],
   text: (item: T) => string,
 ): T[] {
   return items.map((item) =>
-    item.blocking && deferredToChecks(text(item)) ? { ...item, blocking: false } : item,
+    item.blocking && (deferredToChecks(text(item)) || asksForPolicyChecks(text(item)))
+      ? { ...item, blocking: false }
+      : item,
   );
 }
 

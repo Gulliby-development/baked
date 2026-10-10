@@ -19,13 +19,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-reviewer",
-    version: "1.2.0",
+    version: "1.3.0",
     description: "Check document consistency",
     role: "planner",
     model: "$review",
     context: "planning",
     instructions:
-      "Find ambiguities and contradictions between the spec, plan and task graph. Reference the artifacts for every finding: spec.json or requirement and criterion IDs for the spec, plan.md or tasks.json for the plan. Mark a finding blocking only when the spec or plan must change before implementation can be approved. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. Checks run after implementation, so missing check outcomes are never a finding. Return AnalysisSchema.",
+      "Find ambiguities and contradictions between the spec, plan and task graph. Reference the artifacts for every finding: spec.json or requirement and criterion IDs for the spec, plan.md or tasks.json for the plan. Mark a finding blocking only when the spec or plan must change before implementation can be approved. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. Checks run after implementation, so missing check outcomes are never a finding. The checks are the run policy's, chosen by the operator; the plan cannot add checks, so checks that project instructions name but the policy lacks (a full test suite, a build) are a non-blocking note at most. Return AnalysisSchema.",
     skills: [],
     allowedTools: ["read", "submit_result"],
     output: "analysis",

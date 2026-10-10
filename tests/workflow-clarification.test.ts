@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import {
+  asksForPolicyChecks,
   clarificationResumeIndex,
   deferredBlockingProblems,
   deferredToChecks,
@@ -30,6 +31,20 @@ const PROMPT =
   "Add a `totals` object to runUsage in src/core/workflows/usage.ts plus tests in tests/workflow-usage.test.ts";
 
 describe("blocking items that later stages resolve", () => {
+  test("requests for checks the policy lacks are notes, not a stop", () => {
+    // Findings the analysis stage raised in runs 9ba9d2ba, 3b849f7f and 15d01e66.
+    const seen = [
+      "The plan's Verification section and T001 select only typecheck, lint, and the focused usage test. AGENTS.md requires both before merging. Add the full suite and build to the planned execution checks (the full suite can replace the focused test check).",
+      "AGENTS.md also requires the full `bun test` suite and `bun run build` before merging, but neither is included in the execution contract. Extend the planned verification and execution contract to include the full suite and build.",
+      "AGENTS.md requires `bun test` and `bun run build`; neither is covered by the configured commands. Add the full-suite and build checks to the execution contract and reflect them in the plan.",
+    ];
+    for (const text of seen) expect(asksForPolicyChecks(text)).toBe(true);
+    expect(asksForPolicyChecks("T002 writes code but does not list the policy check lint; add the existing lint check to its checkIds.")).toBe(false);
+    expect(asksForPolicyChecks("Should totals include cache-read tokens?")).toBe(false);
+    const [note] = demoteDeferred([{ blocking: true, description: seen[2] ?? "" }], (f) => f.description);
+    expect(note?.blocking).toBe(false);
+    expect(deferredBlockingProblems([{ blocking: true }], () => seen[1] ?? "")[0]).toContain("run policy does not have");
+  });
   test("check outcomes that were not run are deferred to the checks stage", () => {
     expect(deferredToChecks(NOT_RUN)).toBe(true);
     expect(deferredToChecks("Lint and typecheck results are unknown until checks execute")).toBe(true);
