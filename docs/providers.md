@@ -28,6 +28,12 @@ The Copilot connection uses your Copilot subscription through the same API as th
 
 A 401 means the token was rotated; copy it again.
 
+## OpenAI Codex
+
+The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation: while a conversation only grows, each step sends just the new messages, so Codex reuses the same prompt cache key and the cached prefix. A compacted, edited or retried conversation starts a new thread. Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off, because BAKED sends its own.
+
+Output still appears when each step finishes. If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec`. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
+
 ## Model fallback
 
 When a model fails with a transient error, BAKED retries it, then moves to the next model of that model's fallback chain, and announces the switch in the chat:

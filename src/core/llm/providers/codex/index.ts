@@ -13,6 +13,7 @@ import {
   parseCodexResponse,
   serializeCodexPrompt,
 } from "./runner.js";
+import { getDefaultCodexRunner } from "./session.js";
 
 const GPT_55_INPUT_CONTEXT = 272_000;
 
@@ -50,7 +51,7 @@ export const codex: ProviderDefinition = {
   },
   createModel(modelId: string) {
     assertCodexReady();
-    return createCodexLanguageModel(modelId);
+    return createCodexLanguageModel(modelId, getDefaultCodexRunner());
   },
   async fetchModels() {
     const status = getCodexLoginStatus();
