@@ -395,6 +395,11 @@ export class NativeWorkflowService implements WorkflowService {
           return;
         }
       }
+      // Resuming is the operator's decision to try again: a task whose implementation did not
+      // complete (no snapshot) goes back to pending and continues on the edits already in place.
+      for (const task of this.store.tasks(runId))
+        if (task.status === "blocked" && task.snapshot_id === null)
+          this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
   }

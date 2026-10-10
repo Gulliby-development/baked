@@ -129,6 +129,9 @@ interface QueuedRequest {
 
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
+/** The implementer's own list of what it left unfinished, for the blocked task's message. */
+const incompleteReason = (unresolved: string[]): string =>
+  unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Characters of a task's unified diff kept in its diff evidence. */
 const MAX_PATCH_CHARS = 48_000;
 
@@ -1510,7 +1513,7 @@ export class WorkflowScheduler {
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `Task ${task.id} did not complete its implementation`,
+          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
         );
       }
       if (result.outcome === "already_satisfied")
@@ -1838,7 +1841,7 @@ export class WorkflowScheduler {
           entry,
           error: new WorkflowFault(
             "OUTPUT_INVALID",
-            `Task ${task.id} did not complete its implementation`,
+            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
           ),
         };
       if (result.outcome === "already_satisfied")
