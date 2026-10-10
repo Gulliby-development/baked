@@ -74,7 +74,13 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
-import { plannerSizing, sizePlan, sizingHistory, splitNote } from "./sizing.js";
+import {
+  codeTaskCheckProblems,
+  plannerSizing,
+  sizePlan,
+  sizingHistory,
+  splitNote,
+} from "./sizing.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
@@ -393,7 +399,10 @@ export class WorkflowScheduler {
                   (output) => {
                     const parsed = PlanSchema.safeParse(output);
                     return parsed.success
-                      ? this.planProblems(runId, spec, parsed.data, policy, profiles)
+                      ? [
+                          ...this.planProblems(runId, spec, parsed.data, policy, profiles),
+                          ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
+                        ]
                       : [parsed.error.message];
                   },
                   scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
@@ -1125,9 +1134,14 @@ export class WorkflowScheduler {
         task,
         signal,
         root: placement.root ?? runRoot(this.store.workspace, state),
-        maxSteps: limits?.maxSteps ?? Math.min(profile.maxSteps, policy.maxAgentSteps),
+        maxSteps:
+          limits?.maxSteps ??
+          (task ? taskSize(state, task, "taskSteps") : undefined) ??
+          Math.min(profile.maxSteps, policy.maxAgentSteps),
         ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
-        ...(task && taskBudget(state, task) ? { attemptTokens: taskBudget(state, task) } : {}),
+        ...(task && taskSize(state, task, "taskBudgets")
+          ? { attemptTokens: taskSize(state, task, "taskBudgets") }
+          : {}),
         ...(validate ? { validate } : {}),
         ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
         ...(route.effort ? { effort: route.effort } : {}),
@@ -1320,6 +1334,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       });
       return "wait";
     }
+    state.taskSteps = Object.fromEntries(
+      report.tasks.flatMap((task) =>
+        task.attemptSteps ? [[task.taskId, task.attemptSteps] as const] : [],
+      ),
+    );
     state.taskBudgets = Object.fromEntries(
       report.tasks.map((task) => [task.taskId, task.attemptTokens]),
     );
@@ -3211,12 +3230,16 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
 }
 
 /** The sized attempt cap of a task; a correction uses the cap of the task it corrects. */
-function taskBudget(state: RuntimeState, task: Task): number | undefined {
-  const own = state.taskBudgets[task.id];
+function taskSize(
+  state: RuntimeState,
+  task: Task,
+  field: "taskBudgets" | "taskSteps",
+): number | undefined {
+  const own = state[field][task.id];
   if (own) return own;
   for (const findingId of task.findingIds) {
     const base = state.repairPredecessors[findingId];
-    const inherited = base ? state.taskBudgets[base] : undefined;
+    const inherited = base ? state[field][base] : undefined;
     if (inherited) return inherited;
   }
   return undefined;

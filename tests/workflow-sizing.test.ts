@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import {
+  codeTaskCheckProblems,
   DEFAULT_PER_FILE,
   fileKind,
   perFileRates,
@@ -56,6 +57,43 @@ const sample = (kind: SizingSample["kind"], tokens: number, files = 1): SizingSa
 });
 
 describe("plan-time sizing", () => {
+  test("a test task gets the test step cap; code tasks keep the profile's", () => {
+    const report = sizePlan({
+      graph: graph(task("T001", ["src/a.ts"]), task("T002", ["tests/a.test.ts"])),
+      policy: policy({}),
+      samples: [],
+      spent: 0,
+    });
+    expect(report.tasks.map((t) => t.attemptSteps)).toEqual([null, 32]);
+    const custom = sizePlan({
+      graph: graph(task("T002", ["tests/a.test.ts"])),
+      policy: policy({ testTaskSteps: 40 }),
+      samples: [],
+      spent: 0,
+    });
+    expect(custom.tasks[0]?.attemptSteps).toBe(40);
+  });
+
+  test("with sizing on, a task that writes source code must name the policy's typecheck check", () => {
+    const withTypecheck = {
+      ...policy({}),
+      checks: [
+        { id: "typecheck", executable: "bun", args: ["run", "typecheck"], cwd: ".", timeoutMs: 1000, required: true, scope: "feature" as const, envNames: [], writes: [] },
+      ],
+    };
+    const plan = graph(
+      task("T001", ["src/a.ts"]),
+      { ...task("T002", ["src/b.ts"]), checkIds: ["typecheck"] },
+      task("T003", ["tests/a.test.ts"]),
+      task("T004", ["docs/notes.md"]),
+    );
+    const problems = codeTaskCheckProblems(plan, withTypecheck);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("T001");
+    expect(codeTaskCheckProblems(plan, { ...withTypecheck, sizing: undefined })).toEqual([]);
+    expect(codeTaskCheckProblems(plan, policy({}))).toEqual([]);
+  });
+
   test("files are tests or code by path", () => {
     expect(fileKind("tests/workflow-usage.test.ts")).toBe("test");
     expect(fileKind("src/a.spec.tsx")).toBe("test");

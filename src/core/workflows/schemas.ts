@@ -195,13 +195,16 @@ export const PolicySchema = z
      * `maxAttemptTokens` caps a sized task attempt; `maxRunTokens` is the budget the run may grow
      * to on its own once the plan is priced, and above it the feature must be split;
      * `historyStores` are other workflow stores (a `.sqlite` path or a project directory) whose
-     * finished runs calibrate the price.
+     * finished runs calibrate the price. `testTaskSteps` is the step cap of a task that writes only
+     * tests (32 by default), above the profile's and `maxAgentSteps`: tests need more steps than
+     * code for the same number of files.
      */
     sizing: z
       .object({
         maxAttemptTokens: z.number().int().min(10_000).optional(),
         maxRunTokens: z.number().int().min(10_000).nullable().optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
+        testTaskSteps: z.number().int().min(1).max(100).optional(),
       })
       .strict()
       .optional(),
