@@ -58,7 +58,7 @@ describe("gitCommit message formatting", () => {
 		const { ok } = await gitCommit(dir, "feat: test");
 		expect(ok).toBe(true);
 		const msg = getCommitMessage(dir);
-		expect(msg).toContain("Co-Authored-By: baked");
+		expect(msg).toContain("Co-Authored-By: BAKED <noreply@github.com>");
 	});
 
 	it("omits co-author trailer when disabled", async () => {

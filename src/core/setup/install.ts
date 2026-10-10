@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { extractArchive } from "../platform/archive.js";
 import { dataDir, EXE, IS_WIN } from "../platform/index.js";
 
-const baked_DIR = dataDir();
-const BIN_DIR = join(baked_DIR, "bin");
-const INSTALLS_DIR = join(baked_DIR, "installs");
+const BAKED_DIR = dataDir();
+const BIN_DIR = join(BAKED_DIR, "bin");
+const INSTALLS_DIR = join(BAKED_DIR, "installs");
 const RG_VERSION = "14.1.1";
 const FD_VERSION = "10.2.0";
 const AST_GREP_VERSION = "0.40.0";

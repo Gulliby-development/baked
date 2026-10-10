@@ -2,14 +2,25 @@ import { describe, expect, test } from "bun:test";
 import type { ArtifactRow, AttemptRow, StepRow, WorkflowStore } from "../src/core/workflows/store.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import { runUsage } from "../src/core/workflows/usage.js";
-import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
+import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.js";
 
 const runId = "run-1";
+
+function expectInvalidDefinition(operation: () => unknown): void {
+  try {
+    operation();
+  } catch (error) {
+    expect(error).toMatchObject({ code: "INVALID_DEFINITION" });
+    return;
+  }
+  throw new Error("Expected an INVALID_DEFINITION error");
+}
 
 function makeAttempt(id: string, usedTokens: number | null): AttemptRow {
   return {
     id,
     step_id: `step-${id}`,
+    model_id: "fixture/model",
     status: "completed",
     reserved_tokens: 0,
     used_tokens: usedTokens,
@@ -76,13 +87,56 @@ function makeStore(
 }
 
 describe("runUsage totals", () => {
-  test("accepts a required stage value for usage arguments", () => {
-    expect(parseWorkflowArgs(["usage", runId, "--stage", "planning"])).toMatchObject({
+  test("accepts stage and positive top values for usage arguments", () => {
+    expect(parseWorkflowArgs(["usage", runId, "--stage", "planning", "--top", "2"])).toMatchObject({
       command: "usage",
       positional: [runId],
-      flags: { stage: "planning" },
+      flags: { stage: "planning", top: "2" },
     });
     expect(() => parseWorkflowArgs(["usage", runId, "--stage"])).toThrow();
+      expect(workflowHelp).toContain("usage RUN_ID [--stage NAME] [--top N]");
+  });
+
+  test("rejects missing or invalid top values and top on other commands", () => {
+    for (const argv of [
+      ["usage", runId, "--top"],
+      ["usage", runId, "--top", "1.5"],
+      ["usage", runId, "--top", "0"],
+      ["usage", runId, "--top", "-1"],
+    ])
+      expectInvalidDefinition(() => parseWorkflowArgs(argv));
+    expectInvalidDefinition(() => parseWorkflowArgs(["status", runId, "--top", "2"]));
+    expect(() => parseWorkflowArgs(["usage", runId, "--top", "0"])).toThrow(
+      "--top requires a positive integer",
+    );
+  });
+
+  test("limits only attempts and preserves full-run aggregates", () => {
+    const store = makeStore([
+      makeAttempt("low", 5),
+      makeAttempt("high", 15),
+      makeAttempt("middle", 7),
+    ]);
+
+    const report = runUsage(store, runId, undefined, 2);
+
+    expect(report.attempts.map(({ attemptId, usedTokens }) => ({ attemptId, usedTokens }))).toEqual([
+      { attemptId: "high", usedTokens: 15 },
+      { attemptId: "middle", usedTokens: 7 },
+    ]);
+    expect(report.stages).toEqual([{ stage: "implementation", attempts: 3, tokens: 27, steps: null }]);
+    expect(report.totalTokens).toBe(27);
+    expect(report.totals.tokens).toBe(27);
+  });
+
+  test("returns all attempts in descending order when top exceeds the count", () => {
+    const store = makeStore([makeAttempt("low", 5), makeAttempt("high", 15)]);
+
+    const report = runUsage(store, runId, undefined, 5);
+
+    expect(report.attempts.map(({ attemptId }) => attemptId)).toEqual(["high", "low"]);
+    expect(report.stages[0]).toMatchObject({ attempts: 2, tokens: 20 });
+    expect(report.totalTokens).toBe(20);
   });
 
   test("filters attempts and totals to the selected stage", () => {

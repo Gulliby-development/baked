@@ -1,6 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
+import {
+  ROUTING_ARTIFACT,
+  type RouteEffort,
+  type RoutingRecord,
+  RoutingRecordSchema,
+} from "../llm/model-routing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -34,7 +39,7 @@ import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from ".
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { recoverRun } from "./recovery.js";
-import { abortableDelay, retryDelay } from "./retry.js";
+import { abortableDelay, isTransient, retryAfterMs, retryDelay } from "./retry.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -115,6 +120,8 @@ interface QueuedRequest {
   body: unknown;
 }
 
+/** A provider asking to wait longer than this is not waited for once a route has fallback models. */
+const LONG_RETRY_AFTER_MS = 30_000;
 export class WorkflowScheduler {
   dispose(): void {
     this.executor.dispose?.();
@@ -909,11 +916,16 @@ export class WorkflowScheduler {
     return runRoot(this.store.workspace, this.store.state(runId));
   }
   /**
-   * The profile with the model its stage is routed to, if the run froze a stage route for the
-   * definition stage this step belongs to. Child steps (tasks, review dimensions, skeptics) follow
-   * their parent stage; transition gates have no stage and keep the profile's model.
+   * The models and effort of an agent call from the run's frozen routing: the route of the
+   * definition stage this step belongs to, else the profile's own route. Child steps (tasks,
+   * review dimensions, skeptics) follow their parent stage; transition gates have no stage and
+   * keep the profile's route. The first model is the primary; the rest are its fallback chain.
    */
-  private routed(runId: string, stepId: string, profile: AgentProfile): AgentProfile {
+  private route(
+    runId: string,
+    stepId: string,
+    profile: AgentProfile,
+  ): { models: string[]; effort?: RouteEffort } {
     let routing = this.routing.get(runId);
     if (routing === undefined) {
       const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
@@ -922,9 +934,19 @@ export class WorkflowScheduler {
         : null;
       this.routing.set(runId, routing);
     }
-    const stage = routing ? this.store.rootStage(runId, stepId) : null;
-    const route = stage ? routing?.stages[stage] : undefined;
-    return route && route.model !== profile.model ? { ...profile, model: route.model } : profile;
+    if (!routing) return { models: [profile.model] };
+    const stage = this.store.rootStage(runId, stepId);
+    const staged = stage ? routing.stages[stage] : undefined;
+    const entry = staged ?? routing.profiles[profile.id];
+    return {
+      models: [staged?.model ?? profile.model, ...(entry?.fallback ?? [])],
+      ...(entry?.effort ? { effort: entry.effort } : {}),
+    };
+  }
+  /** The profile running on the model at `index` of its route's chain. */
+  private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
+    const model = this.route(runId, stepId, profile).models[index] ?? profile.model;
+    return model === profile.model ? profile : { ...profile, model };
   }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
@@ -997,9 +1019,18 @@ export class WorkflowScheduler {
     validate?: (output: unknown) => string[],
     limits?: { maxSteps: number; maxTokens: number | undefined },
     hostTools?: (attemptId: string) => Record<string, HostTool>,
-    placement: { root?: string; attemptId?: string } = {},
+    placement: {
+      root?: string;
+      attemptId?: string;
+      /** Position in the route's model chain: 0 is the primary model, then its fallbacks. */
+      fallbackIndex?: number;
+      /** The primary model's failure, reported if every fallback model fails too. */
+      primaryError?: unknown;
+    } = {},
   ): Promise<unknown> {
-    const profile = this.routed(runId, stepId, stageProfile);
+    const route = this.route(runId, stepId, stageProfile);
+    const fallbackIndex = placement.fallbackIndex ?? 0;
+    const profile = this.routed(runId, stepId, stageProfile, fallbackIndex);
     const prompt = this.promptFor(runId, state, policy, profile, extra);
     const inputHash = this.store.run(runId).input_hash;
     // A batch of parallel tasks reserves its attempts before any of them starts.
@@ -1025,6 +1056,7 @@ export class WorkflowScheduler {
         ...(limits?.maxTokens !== undefined ? { maxTokens: limits.maxTokens } : {}),
         ...(validate ? { validate } : {}),
         ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
+        ...(route.effort ? { effort: route.effort } : {}),
       });
       const parsed = outputSchemas[profile.output]?.safeParse(result.output);
       if (!parsed?.success)
@@ -1069,27 +1101,52 @@ export class WorkflowScheduler {
             this.store.recordedUsage(runId, attempt),
           ),
         );
-      const delay = retryDelay(error, retry);
-      if (
-        delay !== null &&
-        !signal.aborted &&
-        !this.store.effects(runId).some((effect) => effect.attempt_id === attempt)
-      ) {
-        await abortableDelay(delay, signal);
-        return this.call(
+      const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
+      const next = route.models[fallbackIndex + 1];
+      // Each fallback model gets one retry. A long retry-after is better spent on the next model,
+      // and once the chain has already failed over, the run stops instead of blocking on it.
+      const delay =
+        (next !== undefined || fallbackIndex > 0) && retryAfterMs(error) > LONG_RETRY_AFTER_MS
+          ? null
+          : retryDelay(error, retry, fallbackIndex === 0 ? 2 : 1);
+      const again = (retryNumber: number, index: number, primaryError?: unknown) =>
+        this.call(
           runId,
           stepId,
           state,
           policy,
-          profile,
+          stageProfile,
           extra,
           signal,
           task,
-          retry + 1,
+          retryNumber,
           validate,
           limits,
           hostTools,
-          { ...(placement.root ? { root: placement.root } : {}) },
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            ...(index ? { fallbackIndex: index } : {}),
+            ...(primaryError !== undefined ? { primaryError } : {}),
+          },
+        );
+      if (delay !== null && !signal.aborted && !wrote) {
+        await abortableDelay(delay, signal);
+        return again(retry + 1, fallbackIndex, placement.primaryError);
+      }
+      // A model that keeps failing, or whose window cannot hold the prompt, hands the step to the
+      // next model of its route. Nothing is handed over once the attempt has changed files.
+      const windowTooSmall =
+        error instanceof WorkflowFault &&
+        error.code === "BUDGET_EXHAUSTED" &&
+        error.details.reason === "context_window";
+      if (next !== undefined && !signal.aborted && !wrote && (isTransient(error) || windowTooSmall))
+        return again(0, fallbackIndex + 1, placement.primaryError ?? error);
+      if (placement.primaryError !== undefined && !signal.aborted) {
+        const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          `${route.models[0]} failed: ${message(placement.primaryError)}; last fallback ${profile.model} failed: ${message(error)}`,
+          { reason: "provider_unavailable" },
         );
       }
       if (!(error instanceof WorkflowFault) && !signal.aborted)

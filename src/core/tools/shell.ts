@@ -17,7 +17,7 @@ import { getToolTimeoutMs } from "./tool-timeout.js";
 // 1. Auto-run lint/typecheck on staged files before committing
 // 2. Append co-author trailer when enabled
 
-const CO_AUTHOR_LINE = "Co-Authored-By: baked <baked@baked.com>";
+const CO_AUTHOR_LINE = "Co-Authored-By: BAKED <noreply@github.com>";
 let _shellCoAuthorEnabled = true;
 
 export function setShellCoAuthorEnabled(enabled: boolean) {

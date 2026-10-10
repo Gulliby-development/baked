@@ -11,7 +11,7 @@ interface ConfigSyncParams {
 }
 
 export function useConfigSync({ effectiveConfig, contextManager, cwd }: ConfigSyncParams): void {
-  // repoMap config is deprecated — always enabled (baked_NO_REPOMAP=1 env var for debug)
+  // repoMap config is deprecated — always enabled (BAKED_NO_REPOMAP=1 env var for debug)
 
   useEffect(() => {
     contextManager.setTaskRouter(effectiveConfig.taskRouter);

@@ -230,7 +230,7 @@ export const gitTool = {
           });
         } else if (args.action === "commit") {
           hint = memoryHintComposite({
-            topics: ["git", "commit", "conventional-commits"],
+            topics: ["git", "commit", "commit-style"],
             context: "git_commit",
             tabId,
           });

@@ -160,7 +160,7 @@ Auto approval exists for users who want a small fix to proceed without waiting. 
 
 ```json
 "autoApproval": { "enabled": true, "maxTasks": 3, "maxFiles": 5, "allowedPaths": ["src/**", "tests/**"],
-                  "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 200000 }
+                  "allowDelete": false, "allowNewDependencies": false, "maxTotalTokens": 800000 }
 ```
 
 - The approval stage is marked `"decision": "auto"`. The validator rejects an auto approval without limits.

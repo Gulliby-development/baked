@@ -271,7 +271,8 @@ export const fetchPageTool = {
 
       const res = await fetch(args.url, {
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; baked/1.0; +https://github.com/baked)",
+          "User-Agent":
+            "Mozilla/5.0 (compatible; baked/1.0; +https://github.com/Gulliby-development/baked)",
           Accept: "text/html,application/xhtml+xml,application/json,text/plain",
         },
         signal: AbortSignal.timeout(15_000),

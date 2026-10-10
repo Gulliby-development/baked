@@ -7,7 +7,12 @@ import { hashBytes, hashJson } from "../specs/hash.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
-import { routedProfiles, routingRecord } from "./routing.js";
+import {
+  independenceWarnings,
+  independentReviewMode,
+  routedProfiles,
+  routingRecord,
+} from "./routing.js";
 import { GATES_ARTIFACT } from "./scheduler.js";
 import {
   type ExecutionMode,
@@ -170,6 +175,22 @@ export async function prepareStart(
       );
   if (registry.get(policy.skepticProfileId).output !== "refutation")
     throw new WorkflowFault("INVALID_DEFINITION", "Skeptic must return RefutationSchema");
+  const independence = independentReviewMode(config);
+  if (independence !== "off") {
+    const warnings = independenceWarnings(
+      routing,
+      loaded.definition,
+      policy,
+      loadGateLibrary(workspace, policy).gates,
+      profiles,
+    );
+    if (warnings.length && independence === "require")
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `${warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
+      );
+    if (warnings.length) routing.warnings = warnings;
+  }
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};
   for (const profile of profiles)
