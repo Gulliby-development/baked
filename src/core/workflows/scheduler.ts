@@ -81,6 +81,7 @@ import {
   sizePlan,
   sizingHistory,
   splitNote,
+  withTestDependencies,
 } from "./sizing.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
@@ -134,7 +135,11 @@ const repairSeverities = (run: { repair_rounds: number; convergence_rounds: numb
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph }): TaskGraph {
-  return { ...plan.taskGraph, specHash: hashJson(spec), planHash: hashBytes(plan.markdown) };
+  return withTestDependencies({
+    ...plan.taskGraph,
+    specHash: hashJson(spec),
+    planHash: hashBytes(plan.markdown),
+  });
 }
 
 /** A request for a person that the current step raised and has not made durable yet. */
@@ -419,7 +424,8 @@ export class WorkflowScheduler {
                 ),
               );
               state.plan = plan.markdown;
-              state.graph = planGraph(spec, plan);
+              const graph = planGraph(spec, plan);
+              state.graph = graph;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
@@ -430,7 +436,7 @@ export class WorkflowScheduler {
               this.store.transaction(() => {
                 this.store.artifact(runId, "plan", "plan.md", state.plan ?? "");
                 this.store.artifact(runId, "tasks", "tasks.json", canonical(state.graph));
-                this.store.syncTasks(runId, plan.taskGraph);
+                this.store.syncTasks(runId, graph);
               });
               await this.publish(runId, stepId, state, policy, signal);
               break;

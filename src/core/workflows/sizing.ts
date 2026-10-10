@@ -271,7 +271,7 @@ export function plannerSizing(
   const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / rates.code.perFile.high));
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers.`,
   };
 }
 
@@ -287,6 +287,36 @@ export function typecheckCheckId(policy: RunPolicy): string | null {
     checks.find((c) => c.id === "typecheck") ??
     checks.find((c) => /\b(typecheck|tsc)\b/.test([c.executable, ...c.args].join(" ")));
   return check?.id ?? null;
+}
+
+/**
+ * A test task waits for the code tasks whose criteria it covers. Planners told to keep
+ * independent tasks free of dependencies also left tests without them, and a test task that ran
+ * beside its code spent 398k before the code existed (run 6bb3052f).
+ */
+export function withTestDependencies(graph: TaskGraph): TaskGraph {
+  const byId = new Map(graph.tasks.map((task) => [task.id, task]));
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (byId.get(from)?.dependsOn ?? []).some((id) => reaches(id, to, seen));
+  };
+  const tasks = graph.tasks.map((task) => {
+    if (taskKind(task) !== "test") return task;
+    const added = graph.tasks
+      .filter(
+        (code) =>
+          code.id !== task.id &&
+          taskKind(code) !== "test" &&
+          code.criterionIds.some((id) => task.criterionIds.includes(id)) &&
+          !reaches(task.id, code.id) &&
+          !reaches(code.id, task.id),
+      )
+      .map((code) => code.id);
+    return added.length ? { ...task, dependsOn: [...task.dependsOn, ...added] } : task;
+  });
+  return { ...graph, tasks };
 }
 
 /**
