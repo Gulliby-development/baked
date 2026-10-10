@@ -14,6 +14,7 @@ import {
   mergeConfigs,
 } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
+import { listCustomCommands } from "../commands/custom.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
@@ -27,6 +28,7 @@ import {
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
 import { deleteSecret, hasSecret, type SecretKey, setSecret } from "../secrets.js";
+import { listInstalledSkills } from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import type { RouteContext } from "./route-context.js";
 
@@ -36,6 +38,10 @@ export interface SetupRouteContext extends RouteContext {
   config: AppConfig;
   /** The user configuration directory; tests point it elsewhere. */
   configDir?: string;
+  /** The home directory holding global commands and skills; tests point it elsewhere. */
+  homeDir?: string;
+  /** Runs that froze `absolutePath` as an input and have not ended. */
+  runsFreezing(absolutePath: string): string[];
 }
 
 const PathBody = z.strictObject({ path: z.string().min(1) });
@@ -132,9 +138,46 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
       ctx.fail(404, "NOT_FOUND", `${body.path} is not one of the instruction files agents read`);
     if (entry.hash !== body.expectedHash)
       ctx.fail(409, "INPUT_CHANGED", `${body.path} changed since it was read; read it again`);
+    const affectedRuns = ctx.runsFreezing(entry.absolutePath);
     writeFileSync(entry.absolutePath, body.content);
     const updated = files().find((f) => f.absolutePath === entry.absolutePath);
-    return ctx.json(200, updated ?? { ...entry, content: body.content });
+    return ctx.json(200, { ...(updated ?? { ...entry, content: body.content }), affectedRuns });
+  }
+
+  if (path === "/v1/commands") {
+    ctx.only("GET");
+    return ctx.json(200, {
+      commands: listCustomCommands(workspace, ctx.homeDir ? { home: ctx.homeDir } : {}).map(
+        (command) => ({
+          name: command.name,
+          scope: command.scope,
+          path: command.path,
+          description: command.description,
+          ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+        }),
+      ),
+    });
+  }
+
+  if (path === "/v1/skills") {
+    ctx.only("GET");
+    const skills = listInstalledSkills({
+      cwd: workspace,
+      ...(ctx.homeDir ? { home: ctx.homeDir } : {}),
+    });
+    return ctx.json(200, {
+      skills: skills
+        .map((skill) => {
+          const description = skillDescription(skill.path);
+          return {
+            id: skill.name,
+            scope: skill.scope,
+            path: skill.path,
+            ...(description ? { description } : {}),
+          };
+        })
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    });
   }
 
   if (path === "/v1/config") {
@@ -199,6 +242,23 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     return ctx.json(200, { configured: result.success, storage: result.storage });
   }
   return null;
+}
+
+/** The `description` of a SKILL.md front matter, if it has one. */
+function skillDescription(path: string): string | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8").slice(0, 8192);
+  } catch {
+    return undefined;
+  }
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
+  const line = front?.split(/\r?\n/).find((l) => /^description\s*:/.test(l));
+  const value = line
+    ?.replace(/^description\s*:\s*/, "")
+    .trim()
+    .replace(/^(["'])(.*)\1$/, "$2");
+  return value ? value : undefined;
 }
 
 /** Makes `target` equal `source` while keeping the object every reader holds. */

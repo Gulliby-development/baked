@@ -312,6 +312,16 @@
   background: var(--accent-soft);
 }
 
+.use-unsplit {
+  background: var(--line-strong);
+}
+
+.use-partial {
+  font-size: 11px;
+  color: var(--warn);
+  text-decoration: none;
+}
+
 .use-bars {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr) 70px;

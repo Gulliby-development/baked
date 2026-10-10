@@ -1,13 +1,27 @@
 import { useState } from "react";
+import type { RunSnapshot } from "../../../shared/api.js";
 import { ApiError, api } from "../../client/api.js";
-import { type InstructionFile, setup } from "../../client/setup.js";
+import {
+  type InstructionFile,
+  isMissingEndpoint,
+  type SavedInstruction,
+  setup,
+} from "../../client/setup.js";
+import { workflow } from "../../client/workflow.js";
 import "../../styles/setup.css";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
-import { instructionOrigin, kb } from "./logic.js";
+import { frozenRunState, instructionOrigin, kb } from "./logic.js";
 import { errorText, type Loaded, LoadState, NeedsNewer, Tag, useLoad } from "./shared.js";
 
 const ACTIVE = new Set(["created", "running", "waiting", "paused", "blocked"]);
+
+function saveNote(activeRuns: number): string {
+  if (activeRuns === 0)
+    return "A run freezes these files when it starts. If one changes later, the run stops at its next step and needs its plan revised before it resumes.";
+  const them = activeRuns === 1 ? "it" : "them";
+  return `${activeRuns} active run${activeRuns === 1 ? "" : "s"} may have frozen this file. Saving does not pause ${them}: a run that is driving stops at its next step as blocked (input changed), and a waiting or paused run cannot resume until its plan is revised.`;
+}
 
 function Editor({
   projectKey,
@@ -18,7 +32,7 @@ function Editor({
   projectKey: string;
   file: InstructionFile;
   activeRuns: number;
-  onSaved: (file: InstructionFile) => void;
+  onSaved: (file: SavedInstruction) => void;
 }) {
   const [text, setText] = useState(file.content);
   const [busy, setBusy] = useState(false);
@@ -82,33 +96,138 @@ function Editor({
         }}
       />
       {error && <div className="banner error">{error}</div>}
-      <span className={activeRuns > 0 ? "setup-warn setup-note" : "muted setup-note"}>
-        {activeRuns > 0
-          ? `Used by ${activeRuns} active run${activeRuns === 1 ? "" : "s"}. Saving pauses ${activeRuns === 1 ? "it" : "them"} until you approve the new version.`
-          : "A run freezes these files when it starts; a later change asks you to approve the run again."}
+      <span className={activeRuns > 0 && dirty ? "setup-warn setup-note" : "muted setup-note"}>
+        {saveNote(activeRuns)}
         {saved && !dirty ? " Saved." : ""}
       </span>
     </section>
   );
 }
 
-function countText(value: Loaded<number>): string {
-  if (value.state === "ready") return String(value.data);
+type Revision = { kind: "busy" } | { kind: "done" } | { kind: "error"; message: string };
+
+/**
+ * Runs that froze an instruction file that has since changed: the ones the last saves reported,
+ * and any run blocked with `input_changed`. Each can get a revised plan that adopts the current
+ * files (`candidate`, then `revise`); the plan then waits for approval like a new one.
+ */
+function FrozenRuns({
+  projectKey,
+  runs,
+  affected,
+  unreported,
+  onChanged,
+}: {
+  projectKey: string;
+  runs: RunSnapshot[];
+  affected: string[];
+  /** True when a save went to a backend that does not report the runs that froze the file. */
+  unreported: boolean;
+  onChanged: () => void;
+}) {
+  const [revisions, setRevisions] = useState<Record<string, Revision>>({});
+  const blocked = runs
+    .filter((r) => r.status === "blocked" && r.reason === "input_changed")
+    .map((r) => r.runId);
+  const ids = [...new Set([...affected, ...blocked])];
+  if (ids.length === 0 && !unreported) return null;
+
+  const revise = async (runId: string): Promise<void> => {
+    setRevisions((r) => ({ ...r, [runId]: { kind: "busy" } }));
+    try {
+      const current = await workflow.status(projectKey, runId);
+      const { candidateHash } = await workflow.candidate(projectKey, runId);
+      await workflow.revise(projectKey, current, candidateHash);
+      setRevisions((r) => ({ ...r, [runId]: { kind: "done" } }));
+      onChanged();
+    } catch (e) {
+      const message = isMissingEndpoint(e)
+        ? `Revising a plan from the app needs a newer BAKED. Run baked workflow candidate ${runId}, then baked workflow revise ${runId} --candidate HASH.`
+        : errorText(e);
+      setRevisions((r) => ({ ...r, [runId]: { kind: "error", message } }));
+    }
+  };
+
+  return (
+    <section className="card setup-stack" aria-labelledby="frozen-runs">
+      <div className="setup-row">
+        <h2 id="frozen-runs" className="label setup-grow">
+          Runs that froze an earlier version
+        </h2>
+        <button type="button" className="btn" onClick={onChanged}>
+          Refresh
+        </button>
+      </div>
+      {unreported && (
+        <span className="muted setup-note">
+          This BAKED does not report which runs froze a saved file; check your active runs.
+        </span>
+      )}
+      {ids.length > 0 && (
+        <ul className="setup-list">
+          {ids.map((runId) => {
+            const run = runs.find((r) => r.runId === runId);
+            const state = run
+              ? frozenRunState(run)
+              : { text: "not among the recent runs", canRevise: false };
+            const revision = revisions[runId];
+            return (
+              <li key={runId} className="setup-stack">
+                <div className="setup-line">
+                  <a className="mono" href={projectHref(projectKey, "runs", runId)}>
+                    {runId}
+                  </a>
+                  <span className="muted setup-grow">
+                    {revision?.kind === "done" ? "plan revised; waiting for approval" : state.text}
+                  </span>
+                  {state.canRevise && revision?.kind !== "done" && (
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={revision?.kind === "busy"}
+                      onClick={() => void revise(runId)}
+                    >
+                      Revise plan
+                    </button>
+                  )}
+                </div>
+                {revision?.kind === "done" && (
+                  <span className="setup-note setup-ok">
+                    Plan revised to the current files. Approve it under Needs you or on the run
+                    page; the run resumes after that.
+                  </span>
+                )}
+                {revision?.kind === "error" && (
+                  <div className="banner error">{revision.message}</div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function countText(value: Loaded<string>): string {
+  if (value.state === "ready") return value.data;
   if (value.state === "missing") return "needs a newer BAKED";
   return value.state === "error" ? "unavailable" : "…";
+}
+
+function scopeCounts(items: { scope: "project" | "global" }[]): string {
+  const project = items.filter((i) => i.scope === "project").length;
+  return `${project} in this project · ${items.length - project} global`;
 }
 
 function AlsoGiven({ projectKey }: { projectKey: string }) {
   const [summary] = useLoad(() => setup.project(projectKey), [projectKey]);
   const [skills] = useLoad(
-    () => setup.skills(projectKey).then((d) => d.skills.length),
+    () => setup.skills(projectKey).then((d) => scopeCounts(d.skills)),
     [projectKey],
   );
   const [commands] = useLoad(
-    () =>
-      setup
-        .commands(projectKey)
-        .then((d) => d.commands.filter((c) => c.scope === "project").length),
+    () => setup.commands(projectKey).then((d) => scopeCounts(d.commands)),
     [projectKey],
   );
   const files = summary.state === "ready" ? summary.data.workingSet.files : null;
@@ -125,7 +244,8 @@ function AlsoGiven({ projectKey }: { projectKey: string }) {
       </a>
       <div className="setup-link">
         <span>
-          Skills in <span className="mono">baked/skills</span>
+          Skills in <span className="mono">.baked</span>, <span className="mono">.agents</span>,{" "}
+          <span className="mono">.claude</span>
         </span>
         <span className="mono muted">{countText(skills)}</span>
       </div>
@@ -165,15 +285,17 @@ function FromSummary({ projectKey }: { projectKey: string }) {
 export function InstructionsSection({ project }: SectionProps) {
   const key = project.key;
   const [list, , setList] = useLoad(() => setup.instructions(key), [key]);
-  const [runs] = useLoad(() => api.runs(key, 50), [key]);
+  const [runs, reloadRuns] = useLoad(() => api.runs(key, 50), [key]);
   const [selected, setSelected] = useState<string | null>(null);
-  const activeRuns =
-    runs.state === "ready" ? runs.data.items.filter((r) => ACTIVE.has(r.status)).length : 0;
+  const [affected, setAffected] = useState<string[]>([]);
+  const [unreported, setUnreported] = useState(false);
+  const runItems = runs.state === "ready" ? runs.data.items : [];
+  const activeRuns = runItems.filter((r) => ACTIVE.has(r.status)).length;
 
   const intro = (
     <p className="lede">
       Every chat and every workflow agent in this project reads these, in this order. A run freezes
-      them at start; editing one later asks you to approve the run again.
+      them when it starts; after a change it stops at its next step until its plan is revised.
     </p>
   );
   if (list.state === "missing")
@@ -194,6 +316,13 @@ export function InstructionsSection({ project }: SectionProps) {
   return (
     <div className="setup">
       {intro}
+      <FrozenRuns
+        projectKey={key}
+        runs={runItems}
+        affected={affected}
+        unreported={unreported}
+        onChanged={reloadRuns}
+      />
       <div className="setup-split">
         <div className="setup-section">
           {files.length === 0 ? (
@@ -237,12 +366,15 @@ export function InstructionsSection({ project }: SectionProps) {
               projectKey={key}
               file={current}
               activeRuns={activeRuns}
-              onSaved={(saved) =>
+              onSaved={({ affectedRuns, ...saved }) => {
                 setList({
                   ...list.data,
                   files: files.map((f) => (f.absolutePath === saved.absolutePath ? saved : f)),
-                })
-              }
+                });
+                if (affectedRuns) setAffected((ids) => [...new Set([...ids, ...affectedRuns])]);
+                else if (activeRuns > 0) setUnreported(true);
+                reloadRuns();
+              }}
             />
           )}
         </div>
