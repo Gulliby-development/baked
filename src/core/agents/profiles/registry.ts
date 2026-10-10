@@ -1,7 +1,12 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type ModelRouting, resolveProfileModel } from "../../llm/model-routing.js";
+import {
+  type ModelRouting,
+  type RoutingEntry,
+  recordEntry,
+  resolveProfileModel,
+} from "../../llm/model-routing.js";
 import { hashJson } from "../../specs/hash.js";
 import { WorkflowFault } from "../../workflows/errors.js";
 import { builtinProfiles } from "./builtin.js";
@@ -13,6 +18,8 @@ export interface RegisteredProfile {
   hash: string;
   /** Where the resolved model came from, for example `modelRouting.roles.planner`. */
   modelSource: string;
+  /** The resolved route: model, source, and the route's effort and fallback models if any. */
+  route: RoutingEntry;
 }
 export interface ProfileModels {
   /** The run model. */
@@ -103,6 +110,7 @@ export class ProfileRegistry {
       source,
       hash: hashJson(resolved),
       modelSource: routed.source,
+      route: recordEntry(routed),
     });
   }
   list(): RegisteredProfile[] {

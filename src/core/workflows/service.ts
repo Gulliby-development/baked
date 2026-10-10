@@ -31,7 +31,12 @@ import {
   WorkspaceLeases,
 } from "./leases.js";
 import { undoRunEdits } from "./rollback.js";
-import { routedProfiles, routingRecord } from "./routing.js";
+import {
+  independenceWarnings,
+  independentReviewMode,
+  routedProfiles,
+  routingRecord,
+} from "./routing.js";
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
@@ -221,6 +226,22 @@ export class NativeWorkflowService implements WorkflowService {
         );
     if (registry.get(policy.skepticProfileId).output !== "refutation")
       throw new WorkflowFault("INVALID_DEFINITION", "Skeptic must return RefutationSchema");
+    const independence = independentReviewMode(this.config);
+    if (independence !== "off") {
+      const warnings = independenceWarnings(
+        routing,
+        loaded.definition,
+        policy,
+        loadGateLibrary(this.workspace, policy).gates,
+        profiles,
+      );
+      if (warnings.length && independence === "require")
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `${warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
+        );
+      if (warnings.length) routing.warnings = warnings;
+    }
     const instructions = frozenInstructions(this.workspace, this.config.instructionFiles);
     const skillHashes: Record<string, string> = {};
     for (const profile of profiles)

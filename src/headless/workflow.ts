@@ -57,7 +57,11 @@ const routeRequest = (args: WorkflowArgs, config: AppConfig) => ({
 });
 /** A table of stages and profiles with their models and the source of each choice. */
 export function formatRoute(route: RouteExplanation): string {
-  const rows: string[][] = [["STAGE", "KIND", "MODEL", "SOURCE"]];
+  const extras = (entry: { effort?: string | null; fallback?: string[] } | undefined): string[] => [
+    entry?.effort ?? "",
+    entry?.fallback?.length ? entry.fallback.join(", ") : "",
+  ];
+  const rows: string[][] = [["STAGE", "KIND", "MODEL", "SOURCE", "EFFORT", "FALLBACK"]];
   for (const stage of route.stages) {
     const own = stage.profileId ? route.profiles[stage.profileId] : undefined;
     rows.push([
@@ -65,16 +69,21 @@ export function formatRoute(route: RouteExplanation): string {
       stage.kind,
       stage.model ?? own?.model ?? "(per profile)",
       stage.source ?? (own ? `${own.source} via ${stage.profileId}` : "-"),
+      ...extras(stage.model ? stage : own),
     ]);
   }
-  rows.push([], ["PROFILE", "", "MODEL", "SOURCE"]);
+  rows.push([], ["PROFILE", "", "MODEL", "SOURCE", "EFFORT", "FALLBACK"]);
   for (const [id, entry] of Object.entries(route.profiles).sort(([a], [b]) => a.localeCompare(b)))
-    rows.push([id, "", entry.model, entry.source]);
-  const widths = [0, 1, 2].map((i) => Math.max(...rows.map((r) => r[i]?.length ?? 0)));
-  const lines = rows.map((r) =>
-    r.length ? r.map((cell, i) => (i < 3 ? cell.padEnd(widths[i] ?? 0) : cell)).join("  ") : "",
+    rows.push([id, "", entry.model, entry.source, ...extras(entry)]);
+  const columns = rows[0]?.length ?? 0;
+  const widths = Array.from({ length: columns }, (_, i) =>
+    Math.max(...rows.map((r) => r[i]?.length ?? 0)),
   );
-  return `Workflow ${route.workflowId}, run model ${route.runModel}\n\n${lines.join("\n").replace(/ +$/gm, "")}\n`;
+  const lines = rows.map((r) => r.map((cell, i) => cell.padEnd(widths[i] ?? 0)).join("  "));
+  const warnings = route.warnings.length
+    ? `\n${route.warnings.map((w) => `warning: ${w}`).join("\n")}\n`
+    : "";
+  return `Workflow ${route.workflowId}, run model ${route.runModel}\n\n${lines.join("\n").replace(/ +$/gm, "")}\n${warnings}`;
 }
 export async function executeWorkflowCommand(
   service: NativeWorkflowService,
