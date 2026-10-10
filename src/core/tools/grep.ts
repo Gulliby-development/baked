@@ -50,6 +50,7 @@ export const grepTool = {
         timeout: 10_000,
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        windowsHide: true,
       });
 
       const chunks: string[] = [];
@@ -80,6 +81,7 @@ export const grepTool = {
             timeout: 10_000,
             stdio: ["ignore", "pipe", "pipe"],
             detached: true,
+            windowsHide: true,
           });
 
           const grepChunks: string[] = [];
