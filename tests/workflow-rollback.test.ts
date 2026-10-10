@@ -12,8 +12,8 @@ import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const signal = () => new AbortController().signal;
 type Fixture = ReturnType<typeof workflowFixture>;
 
@@ -68,9 +68,13 @@ function rollbacks(fixture: Fixture, runId: string): RollbackReport[] {
     .map((a) => JSON.parse(fixture.service.store.readArtifact(runId, a.id)) as RollbackReport);
 }
 
+/** Revises T001's definition, so the revision invalidates its edits; an unchanged task keeps them. */
 async function revise(fixture: Fixture, runId: string) {
   const { service } = fixture;
-  const candidate = await new WorkflowArtifacts(service).stageRevision(runId, { commandId: newId(), expectedInputHash: (await service.get(runId)).inputHash });
+  const graph = service.store.state(runId).graph;
+  if (!graph) throw new Error("No task graph");
+  const revised = { ...graph, tasks: graph.tasks.map((t) => (t.id === "T001" ? { ...t, description: `${t.description}, revised` } : t)) };
+  const candidate = await new WorkflowArtifacts(service).stageRevision(runId, { commandId: newId(), expectedInputHash: (await service.get(runId)).inputHash, graph: revised });
   await service.revise(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, candidate.candidateHash);
 }
 

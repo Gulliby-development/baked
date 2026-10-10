@@ -5,8 +5,8 @@ import { fileHash } from "../src/core/workflows/effects.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const signal = () => new AbortController().signal;
 
 test("a task that edits a git-ignored file counts as having changed it, through the effect journal", async () => {

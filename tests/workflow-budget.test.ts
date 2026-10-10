@@ -8,8 +8,8 @@ import { newId } from "../src/core/workflows/store.js";
 import { type BudgetView, readWorkflowView } from "../src/core/workflows/view.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const usage = { tokens: 0, heldTokens: 0, inFlightTokens: 0, calls: 0, activeMs: 0 };
 const limits: BudgetLimits = { maxTotalTokens: 400000, maxAgentCalls: 80, maxActiveMs: 3600000 };
 

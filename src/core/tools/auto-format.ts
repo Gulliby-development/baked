@@ -5,7 +5,9 @@
 
 import { bunShellArgs, IS_WIN } from "../platform/index.js";
 
-let cachedFormatCmd: string | null | undefined; // undefined = not yet detected
+// Format command per checkout root; `null` from setFormatCache disables formatting everywhere.
+const formatCommands = new Map<string, string | null>();
+let formatOverride: string | null | undefined;
 
 function shellQuote(s: string): string {
   // POSIX: single-quote wrap; Windows cmd.exe: double-quote wrap (no special chars allowed in path-only args).
@@ -14,16 +16,24 @@ function shellQuote(s: string): string {
 }
 
 async function getFormatCommand(cwd: string): Promise<string | null> {
-  if (cachedFormatCmd !== undefined) return cachedFormatCmd;
+  if (formatOverride !== undefined) return formatOverride;
+  const cached = formatCommands.get(cwd);
+  if (cached !== undefined) return cached;
   const { detectProfile } = await import("./project.js");
   const profile = await detectProfile(cwd);
-  cachedFormatCmd = profile.formatFile;
-  return cachedFormatCmd;
+  formatCommands.set(cwd, profile.formatFile);
+  return profile.formatFile;
 }
 
 /** Override cached format command (e.g. set to null in tests to skip formatting). */
 export function setFormatCache(cmd: string | null): void {
-  cachedFormatCmd = cmd;
+  formatOverride = cmd;
+}
+
+/** Drops the override and the detected commands, so the next edit detects the formatter again. */
+export function resetFormatCache(): void {
+  formatOverride = undefined;
+  formatCommands.clear();
 }
 
 /**
@@ -31,7 +41,8 @@ export function setFormatCache(cmd: string | null): void {
  * Uses cached format command to avoid re-detecting project profile on every edit.
  */
 export async function autoFormatAfterEdit(filePath: string, cwd?: string): Promise<boolean> {
-  const effectiveCwd = cwd ?? process.cwd();
+  const { formatRoot } = await import("./project.js");
+  const effectiveCwd = cwd ?? formatRoot(filePath) ?? process.cwd();
   const cmd = await getFormatCommand(effectiveCwd);
   if (!cmd) return false;
 

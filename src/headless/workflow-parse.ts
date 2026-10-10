@@ -90,6 +90,7 @@ const flags = new Set([
   "worktree",
   "writers",
   "exclude-user-changes",
+  "resume",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -103,6 +104,7 @@ const booleanFlags = new Set([
   "execute",
   "worktree",
   "exclude-user-changes",
+  "resume",
 ]);
 const commandFlags: Record<WorkflowCommand, string[]> = {
   run: [
@@ -130,7 +132,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   pause: ["expected-revision", "command-id"],
   cancel: ["expected-revision", "command-id"],
   fork: ["expected-revision", "command-id"],
-  revise: ["candidate", "expected-revision", "command-id"],
+  revise: ["candidate", "expected-revision", "command-id", "resume", "events", "after"],
   candidate: ["spec", "plan", "tasks", "policy", "workflow", "confirm-auto-approval", "command-id"],
   profiles: [],
   artifacts: ["file"],
@@ -204,6 +206,12 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         `${result.command} expects ${count} positional argument(s)`,
       );
   }
+  if (
+    result.command === "revise" &&
+    !result.flags.resume &&
+    ("events" in result.flags || "after" in result.flags)
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
   if (!result.flags.help && result.command === "deliver") {
     const planning = ["remote", "branch", "draft", "no-pr"].filter((name) => name in result.flags);
     if (result.flags.execute) {
@@ -268,7 +276,9 @@ candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE] [--w
   --workflow stages a revised schema 2 definition for a started v2 run; it is refused with the
   reasons when the current or a completed stage is gone or changed, or a contract the run needs
   is no longer produced
-revise RUN_ID --candidate SHA256 --expected-revision N   (applies the candidate; the plan is approved again)
+revise RUN_ID --candidate SHA256 --expected-revision N [--resume [--events]]   (applies the candidate; the plan is approved again)
+  Implemented tasks the revision leaves unchanged keep their implementation; their checks run again.
+  --resume resumes and drives the revised run in the same command (exit codes as resume)
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json

@@ -237,8 +237,8 @@ describe("renewal after operator policy decisions", () => {
 });
 
 describe("renewal in a run", () => {
-  const cleanups: (() => void)[] = [];
-  afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+  const cleanups: (() => void | Promise<void>)[] = [];
+  afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
   const policy: RunPolicy = { ...fixturePolicy, autoApproval: { renewal: true, limits: null } };
 
   async function driveToRest(fixture: ReturnType<typeof workflowFixture>, runId: string) {

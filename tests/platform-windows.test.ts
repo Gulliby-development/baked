@@ -247,7 +247,8 @@ describe("platform shim: cross-OS parity helpers", () => {
     const { expandHome } = await import("../src/core/platform/index.js");
     const r = expandHome("~/foo");
     expect(r.endsWith("foo") || r.endsWith("foo".replace("/", "\\"))).toBe(true);
-    expect(r.includes("~")).toBe(false);
+    // The isolated HOME is a temp dir, which on Windows can contain an 8.3 short name (USER~1).
+    expect(r.startsWith("~")).toBe(false);
   });
 
   test("expandHome leaves unrelated paths unchanged", async () => {
@@ -261,7 +262,7 @@ describe("platform shim: cross-OS parity helpers", () => {
     if (!IS_WIN) return;
     const { expandHome } = await import("../src/core/platform/index.js");
     const r = expandHome("~\\foo");
-    expect(r.includes("~")).toBe(false);
+    expect(r.startsWith("~")).toBe(false);
     expect(r.endsWith("foo")).toBe(true);
   });
 
