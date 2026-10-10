@@ -113,6 +113,20 @@ Three tabs:
 - **Installed** — skills on your machine (`~/.agents/skills/`, `~/.claude/skills/`)
 - **Active** — skills loaded in the current session
 
+## Custom Commands
+
+Save repeatable prompts as Markdown files in `.baked/commands/` (project) or `~/.baked/commands/` (global). `.baked/commands/fix-ci.md` becomes `/fix-ci`:
+
+```markdown
+---
+description: Fix a failing CI job
+argument-hint: <job>
+---
+Find why the CI job $1 fails and fix it. Notes: $ARGUMENTS
+```
+
+`$ARGUMENTS` is everything after the command name; `$1` to `$9` are positional arguments (quote multi-word ones). Custom commands appear in the palette under **Custom**, and `/commands` lists them with their files. Built-in commands take precedence over a custom command with the same name. `baked --headless "/fix-ci lint"` expands them as well.
+
 ## Web Search
 
 Forge can search the web and read pages. Two search backends (Brave API → DuckDuckGo fallback) and two page fetchers (Jina Reader → Mozilla Readability fallback).
