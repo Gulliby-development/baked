@@ -3,9 +3,12 @@ import type { DesktopProject } from "../../shared/api.js";
 import type { SessionState } from "../client/chat.js";
 import { useChatSessions } from "../client/chat-sessions.js";
 import { backendLabel, initial, projectLine } from "../format.js";
+import { cn } from "../lib/cn.js";
 import { href, type ProjectSection, projectHref, type Route } from "../router.js";
 import { useDesktop } from "../store.js";
 import { Icon, type IconName } from "./Icon.js";
+import { Badge } from "./ui/badge.js";
+import { buttonVariants } from "./ui/button.js";
 
 /** How many projects the sidebar lists before "All projects" takes over. */
 const SIDEBAR_PROJECTS = 8;
@@ -35,23 +38,35 @@ function current(active: boolean): "page" | undefined {
   return active ? "page" : undefined;
 }
 
+/** A sidebar row: outlined on hover, a raised block with a hard shadow when it is the current page. */
+const NAV =
+  "flex min-h-(--row) w-full cursor-pointer [font-family:inherit] items-center gap-2.5 rounded-base border-2 border-transparent bg-transparent px-2.5 py-1.5 text-left text-sm text-soft-foreground no-underline hover:border-border hover:bg-hover hover:text-foreground aria-[current=page]:border-border aria-[current=page]:bg-selected aria-[current=page]:font-heading aria-[current=page]:text-foreground aria-[current=page]:shadow-sm-hard";
+
+const AVATAR =
+  "flex size-6 flex-none items-center justify-center rounded-[4px] border-2 border-border bg-fill-info font-mono text-xs font-heading text-main-foreground";
+
+const SUB_LINE = "truncate font-mono text-xs text-dim-foreground";
+
+const COUNT = "ml-auto font-mono text-xs text-dim-foreground";
+
+const GROUP_LABEL = "label px-2.5 pb-1.5";
+
 function ProjectEntry({ project, route }: { project: DesktopProject; route: Route }) {
   const selected = route.name === "project" && route.key === project.key;
   if (!selected)
     return (
-      <a className="nav" href={projectHref(project.key)}>
-        <span className="avatar">{initial(project.name)}</span>
-        <span className="stack">
+      <a className={NAV} href={projectHref(project.key)}>
+        <span className={AVATAR}>{initial(project.name)}</span>
+        <span className="flex min-w-0 flex-col">
           <span>{project.name}</span>
-          <span className="sub-line">{projectLine(project)}</span>
+          <span className={SUB_LINE}>{projectLine(project)}</span>
         </span>
         {project.overview.attention > 0 ? (
-          <span className="badge">{project.overview.attention}</span>
+          <Badge tone="warn" className="ml-auto">
+            {project.overview.attention}
+          </Badge>
         ) : project.open ? (
-          <span
-            className={`dot ${backendLabel(project.backend).tone}`}
-            style={{ marginLeft: "auto" }}
-          />
+          <span className={`dot ${backendLabel(project.backend).tone} ml-auto`} />
         ) : null}
       </a>
     );
@@ -72,46 +87,52 @@ function SelectedProject({
   const chatCount = chats ? chats.length : project.overview.sessions;
   const chatId = section === "chat" ? routeId : null;
   return (
-    <div className="project-box">
-      <a className="nav" href={projectHref(project.key)} style={{ background: "var(--bg-hover)" }}>
-        <span className="avatar current">{initial(project.name)}</span>
-        <span className="stack">
-          <span style={{ fontWeight: 600, color: "var(--text)" }}>{project.name}</span>
-          <span className="sub-line" title={project.path}>
+    <div className="flex flex-col gap-0.5 rounded-base border-2 border-border bg-secondary-background p-1.5 shadow-shadow">
+      <a className={cn(NAV, "bg-hover")} href={projectHref(project.key)}>
+        <span className={cn(AVATAR, "bg-main")}>{initial(project.name)}</span>
+        <span className="flex min-w-0 flex-col">
+          <span className="font-heading text-foreground">{project.name}</span>
+          <span className={SUB_LINE} title={project.path}>
             {project.path}
           </span>
         </span>
       </a>
-      <div className="project-actions">
-        <a className="btn-primary" href={projectHref(project.key, "runs", "new-quick")}>
+      <div className="flex gap-2 px-1 pt-1 pb-2">
+        <a
+          className={cn(buttonVariants({ size: "sm" }), "flex-1 no-underline")}
+          href={projectHref(project.key, "runs", "new-quick")}
+        >
           Quick task
         </a>
-        <a className="btn" href={projectHref(project.key, "runs", "new")}>
+        <a
+          className={cn(buttonVariants({ variant: "neutral", size: "sm" }), "flex-1 no-underline")}
+          href={projectHref(project.key, "runs", "new")}
+        >
           New run
         </a>
       </div>
       {WORK.map(([id, label, icon]) => (
         <Fragment key={id}>
           <a
-            className="nav sub"
+            className={cn(NAV, "pl-5")}
             href={projectHref(project.key, id)}
             aria-current={current(section === id && (id !== "chat" || chatId === null))}
           >
             <Icon name={icon} />
             {label}
             {id === "chat" && chatCount > 0 && (
-              <span className="count">
+              <span className={COUNT}>
                 {chatCount >= COUNTED_CHATS ? `${COUNTED_CHATS}+` : chatCount}
               </span>
             )}
             {id === "runs" && project.overview.activeRuns > 0 && (
-              <span className="count">{project.overview.activeRuns} active</span>
+              <span className={COUNT}>{project.overview.activeRuns} active</span>
             )}
           </a>
           {id === "chat" && (
-            <div className="chat-links">
+            <div className="ml-7 flex flex-col gap-0.5 border-l-2 border-border pl-1.5">
               <a
-                className="nav chat-link new"
+                className={cn(NAV, "min-h-7 py-1 text-[13px] font-heading text-foreground")}
                 href={projectHref(project.key, "chat", "new")}
                 aria-current={current(chatId === "new")}
               >
@@ -121,26 +142,24 @@ function SelectedProject({
               {chats?.slice(0, SIDEBAR_CHATS).map((session) => (
                 <a
                   key={session.id}
-                  className="nav chat-link"
+                  className={cn(NAV, "min-h-7 py-1 text-[13px]")}
                   href={projectHref(project.key, "chat", session.id)}
                   aria-current={current(chatId === session.id)}
                   title={session.title}
                 >
                   <span className={`dot ${STATE_TONE[session.state]}`} />
-                  <span className="chat-link-title">{session.title}</span>
+                  <span className="min-w-0 truncate">{session.title}</span>
                 </a>
               ))}
             </div>
           )}
         </Fragment>
       ))}
-      <p className="label" style={{ padding: "8px 10px 4px 22px", fontSize: 11 }}>
-        Setup
-      </p>
+      <p className="label pt-2 pr-2.5 pb-1 pl-5 text-[11px]">Setup</p>
       {SETUP.map(([id, label, icon]) => (
         <a
           key={id}
-          className="nav sub"
+          className={cn(NAV, "pl-5")}
           href={projectHref(project.key, id)}
           aria-current={current(section === id)}
         >
@@ -164,19 +183,26 @@ export function Sidebar({ route }: { route: Route }) {
     if (selected) shown.unshift(selected);
   }
   return (
-    <nav className="sidebar" aria-label="Main">
-      <div className="nav-group">
+    <nav
+      className="flex w-62 flex-none flex-col gap-4 overflow-y-auto border-r-[3px] border-border bg-sidebar px-3 py-3.5"
+      aria-label="Main"
+    >
+      <div className="flex flex-col gap-0.5">
         <a
-          className="nav"
+          className={NAV}
           href={href({ name: "attention" })}
           aria-current={current(route.name === "attention")}
         >
           <Icon name="bell" />
           Needs you
-          {blocking > 0 && <span className="badge">{blocking}</span>}
+          {blocking > 0 && (
+            <Badge tone="err" className="ml-auto">
+              {blocking}
+            </Badge>
+          )}
         </a>
         <a
-          className="nav"
+          className={NAV}
           href={href({ name: "projects" })}
           aria-current={current(route.name === "projects")}
         >
@@ -184,28 +210,26 @@ export function Sidebar({ route }: { route: Route }) {
           All projects
         </a>
       </div>
-      <div className="nav-group">
-        <p className="label" style={{ padding: "0 10px 6px" }}>
-          Projects
-        </p>
+      <div className="flex flex-col gap-0.5">
+        <p className={GROUP_LABEL}>Projects</p>
         {shown.map((project) => (
           <ProjectEntry key={project.key} project={project} route={route} />
         ))}
-        <button type="button" className="nav" onClick={() => void addFolder()}>
+        <button type="button" className={NAV} onClick={() => void addFolder()}>
           <Icon name="plus" />
           Open folder…
         </button>
       </div>
-      <div className="sidebar-foot">
+      <div className="mt-auto flex flex-col gap-0.5 border-t-2 border-border pt-2.5">
         <a
-          className="nav"
+          className={NAV}
           href={href({ name: "settings", section: "app" })}
           aria-current={current(route.name === "settings")}
         >
           <Icon name="gear" />
           Settings
         </a>
-        <div className="status-line">
+        <div className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-dim-foreground">
           <span className={`dot ${failed > 0 ? "err" : running > 0 ? "ok" : ""}`} />
           {failed > 0
             ? `${failed} project${failed === 1 ? "" : "s"} stopped`

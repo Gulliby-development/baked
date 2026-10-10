@@ -18,7 +18,7 @@ import { buildProviderOptions, withRouteEffort } from "../llm/provider-options.j
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
-import { deriveTool } from "../tools/tool-utils.js";
+import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { CheckRunner } from "../verification/check-runner.js";
 import { sourceManifest } from "../verification/snapshot.js";
 import { fileHash } from "./effects.js";
@@ -155,6 +155,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         if (!original.execute) continue;
         const execute = original.execute;
         available[name] = deriveTool(original, {
+          ...(typeof original.description === "string"
+            ? { description: withoutAstEditHint(original.description) }
+            : {}),
           execute: async (input, options) => {
             const args = input as Record<string, unknown>;
             const normalized = { ...args };

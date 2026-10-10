@@ -25,6 +25,7 @@ BAKED is a TypeScript coding agent with an OpenTUI/React terminal UI and a headl
   - new feature: `feature/<name>`;
   - bug fix: `bugfix/<name>`.
 - Commit intermediate working states on the task branch. Before each intermediate commit, run at least `bun run typecheck` (or `bun run build` for startup and bundling changes) so every commit is a state you can return to.
+- Ship major features on every surface of the app: the terminal app (TUI and headless CLI), the desktop app (`apps/desktop`, through the `baked serve` local API), and every supported operating system (Windows, macOS, Linux). Core logic stays in `src/core/` so each front end only renders it. If a surface cannot be done in the same branch, open a follow-up issue for it on the project board and reference it from the pull request.
 - When a task adds or changes a user-visible feature, a command, a setting, the local API or a workflow, update the matching page in `docs/` in the same branch. Long-lived documentation (guides, references, architecture, the design of shipped features) goes only in `docs/` and describes current behavior; plans and one-off reports do not go in the repository.
 - When the task is complete and the checks in [Verification](#verification) pass, merge the task branch into `main` and push `main`.
 
@@ -69,4 +70,4 @@ bun test
 bun run build
 ```
 
-While iterating, `bun test tests/<feature>.test.ts` runs one feature's tests. The suite is hermetic: tests must not depend on the developer's home directory, global hooks or configuration, or provider environment variables such as `ANTHROPIC_BASE_URL`. Point home-dependent code at a temporary profile instead of skipping the test. Documentation-only changes need link, path, and configuration checks rather than new unit tests; `bun test tests/docs.test.ts` checks the links in `docs/` and the slash command list in `docs/commands.md`. Report what was checked and any failures that remain.
+`bun run typecheck` runs `bun check`, which needs Bun 1.4.3 or newer; on an older Bun use `bun run typecheck:tsc`. While iterating, `bun test tests/<feature>.test.ts` runs one feature's tests. The suite is hermetic: tests must not depend on the developer's home directory, global hooks or configuration, or provider environment variables such as `ANTHROPIC_BASE_URL`. Point home-dependent code at a temporary profile instead of skipping the test. Documentation-only changes need link, path, and configuration checks rather than new unit tests; `bun test tests/docs.test.ts` checks the links in `docs/` and the slash command list in `docs/commands.md`. Report what was checked and any failures that remain.
