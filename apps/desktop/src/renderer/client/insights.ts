@@ -69,6 +69,9 @@ export interface InitiativeFeature {
   blockers: string[];
   pendingRequests: PendingDecision[];
   usage: UsageTotals;
+  /** What the feature owns and the contract it provides; absent on older backends. */
+  boundary?: { scope: string; paths: string[] };
+  contract?: string;
 }
 
 /** `GET /v1/initiatives/:id`, as `baked workflow initiative show` prints it. */
@@ -79,6 +82,12 @@ export interface InitiativeView {
   reason: string;
   revision: number;
   planRevision: number;
+  /** The plan revision the split approval accepted; null before it. Absent on older backends. */
+  approvedPlanRevision?: number | null;
+  /** The workflow each feature run uses; absent on older backends. */
+  workflowId?: string;
+  /** Tiered approval of feature runs; null when every run waits for a person. */
+  featureAutoApproval?: TieredApproval | null;
   /** The model feature runs start with; null uses the default model. Absent on older backends. */
   model?: string | null;
   goals: string[];
@@ -87,8 +96,43 @@ export interface InitiativeView {
   budget: {
     limits: { maxTotalTokens: number; maxAgentCalls: number; maxActiveMs: number };
     used: UsageTotals;
+    /** What later feature runs can still get; absent on older backends. */
+    remaining?: UsageTotals;
   };
   next: InitiativeNext;
+}
+
+/** Feature runs within these limits are approved without a person. */
+export interface TieredApproval {
+  maxTasks: number;
+  maxFiles: number;
+}
+
+/** `POST /v1/initiatives`: a request the core splits into features for one approval. */
+export interface StartInitiativeBody {
+  initiativeId: string;
+  prompt: string;
+  workflow?: string;
+  model?: string;
+  /** The shared budget; all three limits or none (then it follows from the policy). */
+  budget?: { tokens: number; calls: number; timeMs: number };
+  tieredApproval?: TieredApproval;
+}
+
+/** One new feature of a split (`POST /v1/initiatives/:id/split`). */
+export interface SplitPart {
+  id: string;
+  title: string;
+  scope?: string;
+  paths?: string[];
+  contract?: string;
+}
+
+/** Raised limits of the shared budget (`POST /v1/initiatives/:id/extend`). */
+export interface BudgetExtension {
+  tokens?: number;
+  calls?: number;
+  timeMs?: number;
 }
 
 export type UsageDimension = "model" | "stage" | "day";
@@ -194,6 +238,13 @@ const command = (view: Pick<InitiativeView, "revision">) => ({
   expectedRevision: view.revision,
 });
 
+type Ref = Pick<InitiativeView, "initiativeId" | "revision">;
+const post = (key: string, view: Ref, action: string, body: object = {}) =>
+  call<InitiativeView>(key, "POST", initiativePath(view.initiativeId, action), {
+    ...command(view),
+    ...body,
+  });
+
 export const insights = {
   initiatives: async (key: string): Promise<InitiativeListItem[]> =>
     (await call<{ initiatives: InitiativeListItem[] }>(key, "GET", "/v1/initiatives")).initiatives,
@@ -226,6 +277,37 @@ export const insights = {
       model,
       resume: true,
     }),
+  /** Starts an initiative; the core splits the request in the background (202). */
+  startInitiative: (key: string, body: StartInitiativeBody) =>
+    call<InitiativeView>(key, "POST", "/v1/initiatives", {
+      commandId: crypto.randomUUID(),
+      ...body,
+    }),
+  /** Merges two or more features of an editable split into one. */
+  mergeFeatures: (
+    key: string,
+    view: Ref,
+    features: readonly string[],
+    into: { id?: string; title?: string } = {},
+  ) => post(key, view, "merge", { features, ...into }),
+  splitFeature: (key: string, view: Ref, feature: string, parts: readonly SplitPart[]) =>
+    post(key, view, "split", { feature, parts }),
+  removeFeature: (key: string, view: Ref, feature: string) =>
+    post(key, view, "remove", { feature }),
+  renameFeature: (key: string, view: Ref, feature: string, title: string) =>
+    post(key, view, "rename", { feature, title }),
+  /** Supersedes a feature's run with a new one under the approved plan. */
+  replanFeature: (key: string, view: Ref, feature: string) =>
+    post(key, view, "replan", { feature }),
+  rejectSplit: (
+    key: string,
+    view: Ref,
+    decision: Pick<PendingDecision, "requestId">,
+    reason: string,
+  ) => post(key, view, "reject", { requestId: decision.requestId, reason }),
+  /** Raises limits of the shared budget; a limit can only go up. */
+  extendBudget: (key: string, view: Ref, limits: BudgetExtension) =>
+    post(key, view, "extend", { ...limits }),
   usage: (key: string, query: UsageQuery) =>
     call<UsageSummary>(key, "GET", `/v1/usage?${usageQuery(query)}`),
   runUsage: (key: string, runId: string) =>

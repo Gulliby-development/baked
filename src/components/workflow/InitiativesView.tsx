@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import type { InitiativeStartInput } from "../../core/workflows/initiatives/forms.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
 import {
   type InitiativeAction,
@@ -12,16 +13,22 @@ import {
   pendingSplitApproval,
   summarizeInitiative,
 } from "../../core/workflows/initiatives/view-model.js";
+import type { WorkflowInfo } from "../../core/workflows/view.js";
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, PremiumPopup, Section } from "../ui/index.js";
 import { errorHint, formatDuration, formatTokens } from "./format.js";
+import { InitiativeStartForm } from "./InitiativeStartForm.js";
 
 /** Everything the initiative screen needs from the outside, so it renders the same in tests. */
 export interface InitiativesApi {
   /** Every initiative with what the worker drives; null when workflows are off for the project. */
   load(): Promise<InitiativeListView | null>;
   act(initiativeId: string, action: InitiativeAction): Promise<InitiativeView>;
+  /** Starts an initiative from the form; absent, the screen offers no start. */
+  start?(input: InitiativeStartInput): Promise<InitiativeView>;
+  /** Workflows the start form offers. */
+  info?(): Promise<Pick<WorkflowInfo, "workflows" | "defaultWorkflow">>;
 }
 
 type Color = (t: ReturnType<typeof useTheme>) => string;
@@ -70,10 +77,22 @@ const clip = (text: string, width: number): string =>
 
 /** Footer keys for the list, the detail with its available commands, and a confirmation. */
 export function initiativeHints(
-  mode: "list" | "detail" | "confirm",
+  mode: "list" | "detail" | "confirm" | "input" | "start",
   actions: InitiativeActionOption[] = [],
   canOpenRun = false,
+  canStart = false,
 ): { key: string; label: string }[] {
+  if (mode === "input")
+    return [
+      { key: "Enter", label: "submit" },
+      { key: "Esc", label: "cancel" },
+    ];
+  if (mode === "start")
+    return [
+      { key: "Tab", label: "next field" },
+      { key: "Ctrl+S", label: "start" },
+      { key: "Esc", label: "cancel" },
+    ];
   if (mode === "confirm")
     return [
       { key: "Y", label: "confirm" },
@@ -84,6 +103,7 @@ export function initiativeHints(
     return [
       { key: "↑↓", label: "select" },
       { key: "Enter", label: "open" },
+      ...(canStart ? [{ key: "N", label: "new initiative" }] : []),
       { key: "Esc", label: "back to runs" },
     ];
   return [
@@ -121,6 +141,15 @@ export function InitiativesPopup({
   const [cursor, setCursor] = useState(0);
   const [featureCursor, setFeatureCursor] = useState(0);
   const [confirm, setConfirm] = useState<InitiativeActionOption | null>(null);
+  // The action waiting for text, such as a reject reason or a new title, and the text so far.
+  const [typing, setTyping] = useState<{ option: InitiativeActionOption; text: string } | null>(
+    null,
+  );
+  const [starting, setStarting] = useState(false);
+  const [workflowInfo, setWorkflowInfo] = useState<Pick<
+    WorkflowInfo,
+    "workflows" | "defaultWorkflow"
+  > | null>(null);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<{ kind: "ok" | "err" | "info"; message: string } | null>(null);
   const [epoch, setEpoch] = useState(0);
@@ -169,11 +198,11 @@ export function InitiativesPopup({
   }, [ordered.length, cursor]);
 
   const run = useCallback(
-    async (option: InitiativeActionOption, id: string): Promise<void> => {
+    async (label: string, action: InitiativeAction, id: string): Promise<void> => {
       setBusy(true);
       try {
-        await api.act(id, option.action);
-        setFlash({ kind: "ok", message: `${option.label}: done` });
+        await api.act(id, action);
+        setFlash({ kind: "ok", message: `${label}: done` });
       } catch (err) {
         setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
       } finally {
@@ -184,15 +213,39 @@ export function InitiativesPopup({
     [api],
   );
 
+  const openStart = (): void => {
+    setStarting(true);
+    if (!workflowInfo && api.info)
+      void api.info().then(setWorkflowInfo, () => setWorkflowInfo(null));
+  };
+  const submitTyped = (): void => {
+    if (!typing?.option.input || !selected) return;
+    try {
+      const action = typing.option.input.build(typing.text);
+      const label = typing.option.label;
+      setTyping(null);
+      void run(label, action, selected.initiativeId);
+    } catch (err) {
+      setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
   useKeyboard((event) => {
-    if (event.defaultPrevented) return;
+    if (event.defaultPrevented || starting) return;
     const key = event.name.toLowerCase();
+    if (typing) {
+      if (key === "escape") {
+        event.preventDefault();
+        setTyping(null);
+      }
+      return;
+    }
     if (confirm) {
       event.preventDefault();
       if (key === "y" && selected) {
         const option = confirm;
         setConfirm(null);
-        void run(option, selected.initiativeId);
+        void run(option.label, option.action, selected.initiativeId);
       } else if (key === "n" || key === "escape") setConfirm(null);
       return;
     }
@@ -210,6 +263,9 @@ export function InitiativesPopup({
         event.preventDefault();
         setFeatureCursor(0);
         onSelect(ordered[cursor].initiativeId);
+      } else if (key === "n" && api.start && data) {
+        event.preventDefault();
+        openStart();
       }
       return;
     }
@@ -237,20 +293,25 @@ export function InitiativesPopup({
     const option = actions.find((a) => a.key.toLowerCase() === key);
     if (!option || busy) return;
     event.preventDefault();
-    if (option.confirm) setConfirm(option);
-    else void run(option, selected.initiativeId);
+    if (option.input) setTyping({ option, text: option.input.initial });
+    else if (option.confirm) setConfirm(option);
+    else void run(option.label, option.action, selected.initiativeId);
   });
 
   const contentW = width - 6;
   const needsYou = ordered.filter((v) => summarizeInitiative(v).needsYou).length;
-  const hints = confirm
-    ? initiativeHints("confirm")
-    : selected
-      ? [
-          ...initiativeHints("detail", actions, !!feature?.runId),
-          ...(selected.decompose ? [{ key: "O", label: "split run" }] : []),
-        ]
-      : initiativeHints("list");
+  const hints = starting
+    ? initiativeHints("start")
+    : typing
+      ? initiativeHints("input")
+      : confirm
+        ? initiativeHints("confirm")
+        : selected
+          ? [
+              ...initiativeHints("detail", actions, !!feature?.runId),
+              ...(selected.decompose ? [{ key: "O", label: "split run" }] : []),
+            ]
+          : initiativeHints("list", [], false, !!api.start && !!data);
   return (
     <PremiumPopup
       visible
@@ -274,7 +335,48 @@ export function InitiativesPopup({
             {errorHint(error) ? <Hint kind="warn">{errorHint(error)}</Hint> : null}
           </>
         ) : null}
-        {confirm ? (
+        {starting && api.start && data ? (
+          <InitiativeStartForm
+            active
+            model={model}
+            workflows={workflowInfo?.workflows ?? []}
+            defaultWorkflow={workflowInfo?.defaultWorkflow ?? "sdd"}
+            taken={data.initiatives.map((v) => v.initiativeId)}
+            width={contentW}
+            onCancel={() => setStarting(false)}
+            onStart={async (input) => {
+              const start = api.start;
+              if (!start) return;
+              const view = await start(input);
+              setStarting(false);
+              setFlash({ kind: "ok", message: `Initiative ${view.initiativeId} started` });
+              setFeatureCursor(0);
+              onSelect(view.initiativeId);
+              setEpoch((e) => e + 1);
+            }}
+          />
+        ) : typing?.option.input ? (
+          <box flexDirection="column">
+            <text fg={t.warning}>{typing.option.input.question}</text>
+            <box
+              border
+              borderStyle="rounded"
+              borderColor={t.brand}
+              paddingX={1}
+              width={Math.max(20, contentW - 2)}
+              backgroundColor={t.bgPopup}
+            >
+              <input
+                value={typing.text}
+                onInput={(text: string) => setTyping((cur) => (cur ? { ...cur, text } : cur))}
+                onSubmit={submitTyped}
+                placeholder={typing.option.input.placeholder}
+                focused
+                backgroundColor={t.bgPopup}
+              />
+            </box>
+          </box>
+        ) : confirm ? (
           <text fg={t.warning}>{confirm.confirm}</text>
         ) : data === undefined ? (
           <text fg={t.textMuted}>Loading initiatives…</text>
@@ -295,7 +397,7 @@ export function InitiativesPopup({
         ) : selectedId ? (
           <text fg={t.textMuted}>{`Initiative ${selectedId} is not in this project.`}</text>
         ) : (
-          <InitiativeList views={ordered} cursor={cursor} width={contentW} />
+          <InitiativeList views={ordered} cursor={cursor} width={contentW} canStart={!!api.start} />
         )}
       </box>
     </PremiumPopup>
@@ -306,10 +408,13 @@ export function InitiativeList({
   views,
   cursor,
   width,
+  canStart = false,
 }: {
   views: InitiativeView[];
   cursor: number;
   width: number;
+  /** Whether N opens the start form here. */
+  canStart?: boolean;
 }) {
   const t = useTheme();
   if (views.length === 0)
@@ -319,7 +424,12 @@ export function InitiativeList({
         description="An initiative splits a large request into 3 to 12 features with contracts, run one at a time in dependency order."
       >
         <text fg={t.textPrimary}>
-          {clip('Start one with: baked workflow initiative start ID --prompt "..."', width)}
+          {clip(
+            canStart
+              ? "Press N to start one."
+              : 'Start one with: baked workflow initiative start ID --prompt "..."',
+            width,
+          )}
         </text>
         <Hint>You approve the split once; each feature run asks for its own approvals.</Hint>
       </Section>
@@ -444,7 +554,7 @@ export function InitiativeDetail({
       </text>
       {split ? (
         <Hint kind="warn">
-          {`Split approval pending for plan revision ${view.planRevision} (digest ${split.digest.slice(0, 12)}). A approves it; edit the split with baked workflow initiative merge, split, remove or rename.`}
+          {`Split approval pending for plan revision ${view.planRevision} (digest ${split.digest.slice(0, 12)}). A approves it, N rejects it; on the selected feature E renames, S splits, G merges and D removes.`}
         </Hint>
       ) : null}
       {driveError ? <text fg={t.error}>{clip(`✗ ${driveError}`, width)}</text> : null}
