@@ -85,7 +85,9 @@ const backends: Record<CliLoginProvider, CliLoginBackend> = {
       return {
         installed: s.installed,
         loggedIn: s.loggedIn,
-        message: s.message,
+        message: s.installed
+          ? s.message
+          : `Codex CLI not found (${s.message}). Install Codex first.`,
         command: "codex login",
       };
     },

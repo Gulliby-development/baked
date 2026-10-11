@@ -114,7 +114,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |
 | Initiatives, Usage | Initiative features and their runs, and the initiative's model with a switch to another one (features started later use it, stopped runs move to it, and the initiative continues; offered while no feature run executes); tokens by stage and model, cost. |
 | Project setup | Gates and checks, Instructions, Working set. In a folder without `baked/project.json`, Working set and the project panels say to run `baked project init` instead of showing an error. |
-| Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, run notifications, telemetry). |
+| Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, run notifications, telemetry). Under Providers and keys, Claude Code and Codex have Sign in and Sign out: Sign in runs the CLI's own login, which opens the browser, shows its progress, and offers Open sign-in page and Cancel until it ends. The CLI keeps the credentials, as when you sign in from a terminal. A CLI that is not installed shows the command to run once it is. GitHub Copilot has no sign-in of its own: paste the OAuth token of a signed-in IDE with Set key ([providers](../providers.md#github-copilot)). |
 
 ## Repository layout and builds
 

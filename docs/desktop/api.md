@@ -191,7 +191,11 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 Changing a file a run froze (an instruction file, a gate or a skill) does not pause the run at once. A run that is driving stops at its next step as `blocked` with reason `input_changed`, which `/v1/attention` shows; resuming a waiting or paused run is refused with 409 `INPUT_CHANGED`. To continue with the new text, stage a candidate (`POST /v1/workflow/runs/RUN_ID/candidate` with only `commandId`) and apply it with `revise`; the plan is approved again before the run resumes. `cancel` or `fork` are the other ways out.
 | `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`: both files as stored and the merged config the server runs with. Provider keys live in the secret store, not here, but values the user put in these files themselves (an MCP server's `env`) are returned as written |
 | `PATCH /v1/config` | `{scope: "global" \| "project", set?: object, remove?: string[]}` | as `GET`; `set` replaces top-level keys, `remove` deletes them; the running server uses the new config at once. Model routing, fallbacks, workflow policy (checks, budget presets), default model and mode live here |
-| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| null, keyUrl?}]}`; `acceptsKey` is false for providers signed in another way (Copilot, Codex, Claude Code) |
+| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| null, keyUrl?, signIn?}]}`; `acceptsKey` is false for providers signed in another way (Copilot, Codex, Claude Code). `signIn` is present for providers that sign in through their own CLI (`claude-code`, `codex`): `{installed, loggedIn, message, command, login: Login \| null}`, where `command` is the terminal command that does the same and `login` the current or last sign-in this server started |
+| `POST /v1/providers/ID/login` | | 202 `{login: Login}`: starts the CLI's own login (`claude auth login`, or Codex's ChatGPT browser login), which opens the browser on this computer; while one runs, returns it instead of starting another. A CLI that is missing fails at once, one that is already signed in succeeds at once. `Login` is `{provider, state: "running" \| "succeeded" \| "failed" \| "cancelled", lines: string[], url?, error?, startedAt, endedAt?}`: `lines` are the CLI's progress lines (the last 200), `url` the sign-in page it printed or returned. 404 for a provider that does not sign in through a CLI |
+| `GET /v1/providers/ID/login` | | `{login: Login \| null}`; poll it while `state` is `running` |
+| `DELETE /v1/providers/ID/login` | | `{login: Login \| null}`; stops a running sign-in (`state: "cancelled"`) |
+| `POST /v1/providers/ID/logout` | | `{ok, message}`: runs the CLI's own logout (`claude auth logout`, `codex logout`) |
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
 
@@ -210,7 +214,7 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
-| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET /v1/workflow/route`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET /v1/models` |
+| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET /v1/workflow/route`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions` |
