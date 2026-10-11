@@ -1,0 +1,16 @@
+{
+  "app": "envguard",
+  "round": 1,
+  "pass": true,
+  "checks": [
+    { "name": "clean clone install", "command": "bun install", "exit": 0, "excerpt": "" },
+    { "name": "tests", "command": "bun test", "exit": 0, "excerpt": "15 pass 0 fail" },
+    { "name": "smoke: README example 1", "command": "envguard --json", "exit": 1, "expected": "exit 1 and JSON with missing keys", "ok": true }
+  ],
+  "briefCoverage": { "missing": [], "partial": [] },
+  "readme": { "ok": true, "issues": [] },
+  "hygiene": { "ok": true, "issues": [], "fixableAtPublish": [] },
+  "crossPlatformNotes": [],
+  "screenshot": null,
+  "topProblems": []
+}

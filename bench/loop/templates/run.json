@@ -1,0 +1,23 @@
+{
+  "app": "envguard",
+  "round": 1,
+  "group": "new | control | experiment",
+  "variant": "A | B",
+  "runIds": ["1185f909"],
+  "bakedCommit": "4604198c",
+  "workflow": "sdd",
+  "settings": { "worktree": true, "writers": 3, "clarification": "assume", "sizing": true, "settingsHash": "sha256:..." },
+  "models": { "default": "provider/model", "byStage": { "review": "provider/model" } },
+  "outcome": "completed | blocked | failed | budget_cap | cancelled | skipped",
+  "blockReason": null,
+  "tokens": { "total": 1050000, "byStage": { "research": 0, "specify": 0, "plan": 0, "analyze": 0, "implement": 0, "checks": 0, "review": 0, "converge": 0 } },
+  "estimate": { "low": 0, "high": 0, "source": "workflow estimate" },
+  "steps": 92,
+  "activeSeconds": 634,
+  "wallSeconds": 0,
+  "interventions": { "total": 2, "byCategory": { "resume": 1, "extend": 1 } },
+  "corrections": 2,
+  "budgetRaises": [{ "to": 2000000, "by": "sizing | implementer" }],
+  "checks": { "tests": "pass 10/10", "typecheck": "pass", "lint": "pass" },
+  "notes": "one or two sentences"
+}
