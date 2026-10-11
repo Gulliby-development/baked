@@ -49,8 +49,8 @@ bun test tests/feature-parity.test.ts
 | Chat with the agent | `key Enter`, `/session`, `/session new` +2 | `--headless`, `--chat` | `/v1/sessions`, `/v1/sessions/:id`, `/v1/sessions/:id/messages` +3 | `project/chat` |
 | Run custom slash commands (.baked/commands) in chat | `key /` | `--headless` | `/v1/sessions/:id/messages` | `project/chat` |
 | List custom commands | `/commands` | Not needed: scripts read .baked/commands directly | `/v1/commands` | `settings/commands` |
-| Session list, resume and rename | `/session history`, `/session rename` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): resume by ID, no list | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
-| Delete a session | `/session history` | **Gap** [#407](https://github.com/Gulliby-development/baked/issues/407) | `/v1/sessions/:id` | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) |
+| Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
+| Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `--json` | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) |
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
@@ -70,8 +70,8 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Provider API keys | `/keys` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): no key removal | `/v1/providers`, `/v1/providers/:id/key` | `settings/providers` |
-| Sign in through the Codex or Claude Code CLI | `/codex`, `/codex login`, `/codex logout` +5 | **Gap** [#407](https://github.com/Gulliby-development/baked/issues/407) | `/v1/providers/:id/login`, `/v1/providers/:id/logout` | `settings/providers` |
+| Provider API keys | `/keys` | `--set-key`, `--remove-key`, `--list-providers` | `/v1/providers`, `/v1/providers/:id/key` | `settings/providers` |
+| Sign in through the Codex or Claude Code CLI | `/codex`, `/codex login`, `/codex logout` +5 | `baked login`, `baked logout` | `/v1/providers/:id/login`, `/v1/providers/:id/logout` | `settings/providers` |
 | Switch Codex accounts | `/codex switch` | Not needed: scripts sign in once | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
 | Pick a model from the list | `/models`, `/providers` | `baked workflow models`, `--list-models`, `--model` | `/v1/models` | `project/chat` |
 | Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | `settings/chat` |
@@ -116,7 +116,7 @@ bun test tests/feature-parity.test.ts
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): read-only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
-| Usage across runs: days, by stage and model | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): no totals over days | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): per run | `/v1/usage` | `project/usage` |
+| Usage across runs: days, by stage and model | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): no totals over days | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): export-progress only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 
 ### Initiatives
@@ -132,9 +132,9 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Projects: list, add, pin, forget, this project | `/projects`, `/project` | `baked projects`, `baked project` | `/v1/projects`, `/v1/projects/pin`, `/v1/projects/unpin` +2 | `projects`, `project/overview` |
-| Rename a project | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | `baked projects rename` | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
+| Rename a project | `/project rename` | `baked projects rename` | `/v1/projects/rename` | `projects` |
 | Working set | `/project` | `baked project` | `/v1/projects/current/working-set` | `project/working-set` |
-| What waits for me across projects | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): this project only | **Gap** [#407](https://github.com/Gulliby-development/baked/issues/407) | `/v1/attention` | `attention` |
+| What waits for me across projects | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): this project only | `baked attention` | `/v1/attention` | `attention` |
 | Local API server, health and capabilities | Not needed: the TUI runs the core in process | `baked serve` | `/v1/health` | `projects` |
 | Prerequisite check and first-run wizard | `/setup`, `/wizard` | `baked self-check`, `--wizard` | `/v1/workflow/doctor` | `project/overview` |
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
@@ -162,8 +162,8 @@ bun test tests/feature-parity.test.ts
 - [#403](https://github.com/Gulliby-development/baked/issues/403): Long-term chat memory: browse, pin, hide, cleanup, scopes
 - [#405](https://github.com/Gulliby-development/baked/issues/405): Delete a session; Export a chat (Markdown, JSON, clipboard)
 - [#406](https://github.com/Gulliby-development/baked/issues/406): Instruction files: view and edit content; Instruction files: switch on or off
-- [#407](https://github.com/Gulliby-development/baked/issues/407): Session list, resume and rename; Delete a session; Provider API keys; Sign in through the Codex or Claude Code CLI; Workflow model routing; Usage across runs: days, by stage and model; What waits for me across projects
-- [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Rename a project; Git menu: status, diff, commit, push, pull, branch, stash; Storage cleanup, model events and the error log; Telemetry switch; Notifications: system and webhook
+- [#407](https://github.com/Gulliby-development/baked/issues/407): Workflow model routing
+- [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Git menu: status, diff, commit, push, pull, branch, stash; Storage cleanup, model events and the error log; Telemetry switch; Notifications: system and webhook
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 
