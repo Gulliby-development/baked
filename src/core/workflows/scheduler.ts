@@ -187,6 +187,12 @@ interface QueuedRequest {
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
+/** A SQLite failure is a host fault, never a model's invalid output. */
+function isStoreError(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof WorkflowFault) return false;
+  const code = (error as { code?: unknown }).code;
+  return error.name === "SQLiteError" || (typeof code === "string" && code.startsWith("SQLITE_"));
+}
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Characters of a task's unified diff kept in its diff evidence. */
@@ -1126,7 +1132,9 @@ export class WorkflowScheduler {
                   ? "tool_denied"
                   : code === "RECOVERY_REQUIRED"
                     ? "no_progress"
-                    : "invalid_output";
+                    : isStoreError(fault)
+                      ? "storage_failure"
+                      : "invalid_output";
         this.store.artifact(
           runId,
           "diagnostic",

@@ -256,6 +256,19 @@ describe("durable SDD runtime", () => {
     expect(service.store.findings(run.runId)[0]?.status).toBe("open");
     expect(service.store.events(run.runId).filter((e) => e.type === "finding.recorded")).toHaveLength(2);
   });
+  test("a later review repeating a finding id for a new finding gets a host id", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    const base = { id: "F1", kind: "correctness" as const, severity: "high" as const, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: ["evidence"], claim: "Round one", impact: "Breaks contract", suggestedFix: "Fix value" };
+    const a = service.store.artifact(run.runId, "review", "a.json", "{}");
+    const second = { ...base, claim: "Round two" };
+    const third = { ...base, claim: "Round three" };
+    expect(service.store.addFinding(run.runId, base, fingerprint(base), a.id)).toBe("F1");
+    service.store.findingStatus(run.runId, "F1", "resolved");
+    expect(service.store.addFinding(run.runId, second, fingerprint(second), a.id)).toBe("F1-2");
+    expect(service.store.addFinding(run.runId, third, fingerprint(third), a.id)).toBe("F1-3");
+    expect(service.store.findings(run.runId).map((f) => f.id)).toEqual(["F1", "F1-2", "F1-3"]);
+    expect(service.store.findings(run.runId).map((f) => JSON.parse(f.body_json).id)).toEqual(["F1", "F1-2", "F1-3"]);
+  });
   test("manual criteria wait for a trusted snapshot-bound decision", async () => {
     const { service, executor } = setup();
     const original = executor.execute.bind(executor);
