@@ -41,11 +41,21 @@ const cp = (index: number, anchor: string, gitTag: string, filesEdited: string[]
   undone: false,
 });
 
-const msg = (id: string, role: "user" | "assistant"): ChatMessage => ({
+const msg = (id: string, role: "user" | "assistant", edited: string[] = []): ChatMessage => ({
   id,
   role,
   content: id,
   timestamp: 0,
+  ...(edited.length > 0
+    ? {
+        toolCalls: edited.map((path, i) => ({
+          id: `${id}-${String(i)}`,
+          name: "edit_file",
+          args: { path },
+          result: { success: true, output: "ok" },
+        })),
+      }
+    : {}),
 });
 
 test("/redo restores what /undo rolled back, including new folders, and keeps ignored files", async () => {
@@ -81,11 +91,18 @@ test("/redo restores what /undo rolled back, including new folders, and keeps ig
       },
     },
   }));
-  const live = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
+  const live = [
+    msg("u1", "user"),
+    msg("a1", "assistant", [join(dir, "a.txt")]),
+    msg("u2", "user"),
+    msg("a2", "assistant", files2),
+  ];
   const store = useCheckpointStore.getState();
 
   const undone = await store.undoToCheckpoint("tab-redo", 1, dir, live);
-  expect(undone?.messages.map((m) => m.id)).toEqual(["u1"]);
+  expect(undone?.messages.map((m) => m.id)).toEqual(["u1", "a1"]);
+  expect(undone?.rollback.skipped.map((s) => s.path)).toEqual([join(dir, "local.env")]);
+  expect(undone?.rollback.backupTag).toMatch(/^baked\/undo-backup-/);
   expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("v1");
   expect(existsSync(join(dir, "src", "new", "b.txt"))).toBe(false);
   expect(readFileSync(join(dir, "local.env"), "utf8")).toBe("SECRET=1");
@@ -94,7 +111,7 @@ test("/redo restores what /undo rolled back, including new folders, and keeps ig
   // Simulate the undo also removing the folder the turn created.
   rmSync(join(dir, "src"), { recursive: true, force: true });
   const redone = await store.redo("tab-redo", dir, undone?.messages ?? []);
-  expect(redone?.messages.map((m) => m.id)).toEqual(["u1", "u2", "a2"]);
+  expect(redone?.messages.map((m) => m.id)).toEqual(["u1", "a1", "u2", "a2"]);
   expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("v2");
   expect(readFileSync(join(dir, "src", "new", "b.txt"), "utf8")).toBe("new");
   expect(readFileSync(join(dir, "local.env"), "utf8")).toBe("SECRET=1");

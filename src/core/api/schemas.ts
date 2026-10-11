@@ -121,6 +121,11 @@ export const ForkSessionBody = z.strictObject({
   rollbackFiles: z.boolean().optional(),
   force: z.boolean().optional(),
 });
+export const UndoSessionBody = z.strictObject({
+  toCheckpoint: z.number().int().min(0).optional(),
+  force: z.boolean().optional(),
+});
+export const RedoSessionBody = z.strictObject({ force: z.boolean().optional() });
 export const MessageBody = z.strictObject({ text: Text });
 export const CompactBody = z.strictObject({});
 export const PromptAnswerBody = z.union([

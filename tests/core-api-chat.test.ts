@@ -378,6 +378,43 @@ describe("local API chat sessions", () => {
     expect(host.released).toContain(fork.id);
   });
 
+  test("undo and redo rewind the conversation over the API", async () => {
+    const { host, call, post, detail } = await setup();
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("chat-undo");
+    const session = (await (await post("/v1/sessions", { text: "One" })).json()) as SessionDetail;
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Two" });
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
+
+    const stream = call(`/v1/sessions/${session.id}/events?after=${(await detail(session.id)).lastSeq}`);
+    const undone = await post(`/v1/sessions/${session.id}/undo`);
+    expect(undone.status).toBe(200);
+    const body = (await undone.json()) as SessionDetail & { rollback: { checkpoint: number } };
+    expect(body.messages.map((m) => m.content)).toEqual(["One", "ok"]);
+    expect(body.redo).toEqual([{ index: 2, prompt: "Two" }]);
+    expect(body.rollback.checkpoint).toBe(1);
+    const seen = await events(await stream, (e) => e.type === "rewind");
+    expect(seen.at(-1)).toMatchObject({ type: "rewind", action: "undo", checkpoint: 1, messageCount: 2 });
+
+    expect((await post(`/v1/sessions/${session.id}/undo`, { toCheckpoint: 5 })).status).toBe(400);
+    const redone = (await (await post(`/v1/sessions/${session.id}/redo`)).json()) as SessionDetail;
+    expect(redone.messages.map((m) => m.content)).toEqual(["One", "ok", "Two", "ok"]);
+    const nothing = await post(`/v1/sessions/${session.id}/redo`);
+    expect(nothing.status).toBe(409);
+    expect(((await nothing.json()) as { error: { code: string } }).error.code).toBe("NOTHING_TO_REDO");
+
+    host.scripts.push(async function* ({ signal }) {
+      await untilAborted(signal);
+    });
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Hold" });
+    await until(() => detail(session.id), (d) => d.state === "working");
+    const busy = await post(`/v1/sessions/${session.id}/undo`);
+    expect(busy.status).toBe(409);
+    expect(((await busy.json()) as { error: { code: string } }).error.code).toBe("SESSION_BUSY");
+    await post(`/v1/sessions/${session.id}/interrupt`);
+  });
+
   test("errors: unknown sessions and prompts, bad bodies, busy deletes and a stale event cursor", async () => {
     const { host, call, post, detail } = await setup();
     expect((await call("/v1/sessions/nope")).status).toBe(404);

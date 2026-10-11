@@ -1,3 +1,4 @@
+import type { SessionDiffStats } from "../core/chat/diff-stats.js";
 import type { BakeMode, InputContextItem, InteractiveCallbacks } from "../types/index.js";
 
 export interface HeadlessRunOptions {
@@ -56,6 +57,8 @@ export type HeadlessEvent =
       tokens: TokenUsage;
       toolCalls: string[];
       filesEdited: string[];
+      /** Lines the files the session edited add and remove against HEAD. */
+      diffStats: SessionDiffStats;
       duration: number;
       error?: string;
     }
@@ -67,6 +70,8 @@ export type HeadlessEvent =
       tokens: TokenUsage;
       toolCalls: string[];
       filesEdited: string[];
+      /** Lines the files the session edited add and remove against HEAD. */
+      diffStats: SessionDiffStats;
       duration: number;
       error?: string;
     }

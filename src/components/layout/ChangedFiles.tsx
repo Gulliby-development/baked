@@ -1,5 +1,6 @@
 import { basename, relative } from "node:path";
 import { useMemo } from "react";
+import { findFileDiffStat, type SessionDiffStats } from "../../core/chat/diff-stats.js";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { ChatMessage } from "../../types/index.js";
@@ -49,9 +50,11 @@ function useChangedFiles(messages: ChatMessage[]) {
 
 interface BarProps {
   messages: ChatMessage[];
+  /** Lines the session adds and removes against HEAD, when measured. */
+  stats?: SessionDiffStats | null;
 }
 
-export function ChangedFilesBar({ messages }: BarProps) {
+export function ChangedFilesBar({ messages, stats }: BarProps) {
   const t = useTheme();
   const files = useChangedFiles(messages);
   if (files.length === 0) return null;
@@ -67,6 +70,13 @@ export function ChangedFilesBar({ messages }: BarProps) {
         <span fg={t.textMuted}>{icon("changes")} </span>
         {created > 0 && <span fg={t.success}>+{String(created)} </span>}
         {modified > 0 && <span fg={t.amber}>~{String(modified)} </span>}
+        {stats && stats.totals.files > 0 && (
+          <>
+            <span fg={t.textFaint}>│ </span>
+            <span fg={t.success}>+{String(stats.totals.added)}</span>
+            <span fg={t.error}> −{String(stats.totals.removed)} </span>
+          </>
+        )}
         <span fg={t.textFaint}>│ </span>
         {preview.map((f, i) => (
           <span key={f.path}>
@@ -174,9 +184,11 @@ export function buildPrefix(row: FlatRow): string {
 interface PanelProps {
   messages: ChatMessage[];
   cwd: string;
+  /** Lines the session adds and removes against HEAD, when measured. */
+  stats?: SessionDiffStats | null;
 }
 
-function ChangesSection({ messages, cwd }: PanelProps) {
+function ChangesSection({ messages, cwd, stats }: PanelProps) {
   const t = useTheme();
   const files = useChangedFiles(messages);
 
@@ -198,6 +210,12 @@ function ChangesSection({ messages, cwd }: PanelProps) {
           {created > 0 && <span fg={t.success}>+{String(created)}</span>}
           {created > 0 && modified > 0 && <span fg={t.textDim}> </span>}
           {modified > 0 && <span fg={t.amber}>~{String(modified)}</span>}
+          {stats && stats.totals.files > 0 && (
+            <>
+              <span fg={t.success}> +{String(stats.totals.added)}</span>
+              <span fg={t.error}> −{String(stats.totals.removed)}</span>
+            </>
+          )}
         </text>
       </box>
       {files.length === 0 ? (
@@ -224,6 +242,7 @@ function ChangesSection({ messages, cwd }: PanelProps) {
             const statusIcon = isNew ? "A" : "M";
             const statusColor = isNew ? t.success : t.amber;
             const nameColor = isNew ? t.info : t.textSecondary;
+            const lines = f && stats ? findFileDiffStat(stats, cwd, f.path) : undefined;
             return (
               <box key={f?.path ?? `f-${String(i)}`} paddingLeft={1} height={1}>
                 <text truncate>
@@ -231,6 +250,13 @@ function ChangesSection({ messages, cwd }: PanelProps) {
                   <span fg={statusColor}>{statusIcon} </span>
                   <span fg={nameColor}>{row.name}</span>
                   {f && f.editCount > 1 && <span fg={t.textMuted}> ×{String(f.editCount)}</span>}
+                  {lines?.binary && <span fg={t.textDim}> binary</span>}
+                  {lines && !lines.binary && (lines.added > 0 || lines.removed > 0) && (
+                    <>
+                      <span fg={t.success}> +{String(lines.added)}</span>
+                      <span fg={t.error}> −{String(lines.removed)}</span>
+                    </>
+                  )}
                 </text>
               </box>
             );
@@ -241,7 +267,7 @@ function ChangesSection({ messages, cwd }: PanelProps) {
   );
 }
 
-export function ChangesPanel({ messages, cwd }: PanelProps) {
+export function ChangesPanel({ messages, cwd, stats }: PanelProps) {
   const t = useTheme();
 
   return (
@@ -254,7 +280,7 @@ export function ChangesPanel({ messages, cwd }: PanelProps) {
       border={true}
       borderColor={t.textFaint}
     >
-      <ChangesSection messages={messages} cwd={cwd} />
+      <ChangesSection messages={messages} cwd={cwd} stats={stats} />
     </box>
   );
 }

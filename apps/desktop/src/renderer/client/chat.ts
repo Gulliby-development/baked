@@ -130,8 +130,16 @@ export interface SessionDetail extends SessionSummary {
   filesEdited: string[];
   /** The plan being reviewed or carried out; older servers leave it out. */
   plan?: ChatPlan | null;
+  /** Turns an undo dropped that Redo puts back, oldest first; older servers leave it out. */
+  redo?: RedoTurn[];
   /** Subscribe to events after this sequence to miss nothing. */
   lastSeq: number;
+}
+
+/** A turn an undo dropped: its number and the first line of its prompt. */
+export interface RedoTurn {
+  index: number;
+  prompt: string;
 }
 
 export type CompactionStatus = "compacted" | "skipped" | "failed" | "interrupted";
@@ -171,6 +179,7 @@ export type ChatEventBody =
       filesEdited?: string[];
     }
   | { type: "steering"; turnId: string; message: ChatMessage }
+  | { type: "rewind"; action: "undo" | "redo"; checkpoint: number; messageCount: number }
   | { type: "prompt"; prompt: ChatPrompt }
   | { type: "prompt-resolved"; promptId: string; outcome: PromptOutcome; action?: PlanAction }
   | { type: "plan"; plan: ChatPlan | null }
@@ -208,7 +217,7 @@ export interface ModelProvider {
   error?: string;
 }
 
-/** What `POST /v1/sessions/ID/fork` with `rollbackFiles` did to the workspace files. */
+/** What a fork with `rollbackFiles`, an undo or a redo did to the workspace files. */
 export interface RollbackReport {
   checkpoint: number;
   snapshot: string | null;
@@ -247,6 +256,12 @@ export const chat = {
     body: { atMessageId?: string; rollbackFiles?: boolean; force?: boolean },
   ) =>
     call<SessionDetail & { rollback?: RollbackReport }>(key, "POST", sessionPath(id, "fork"), body),
+  /** Drops the last turn (or every turn after `toCheckpoint`) and restores the files it edited. */
+  undo: (key: string, id: string, body: { toCheckpoint?: number; force?: boolean } = {}) =>
+    call<SessionDetail & { rollback: RollbackReport }>(key, "POST", sessionPath(id, "undo"), body),
+  /** Puts back the oldest undone turn and the files it edited. */
+  redo: (key: string, id: string, body: { force?: boolean } = {}) =>
+    call<SessionDetail & { rollback: RollbackReport }>(key, "POST", sessionPath(id, "redo"), body),
   send: (key: string, id: string, text: string) =>
     call<{ turnId: string; queued: boolean }>(key, "POST", sessionPath(id, "messages"), {
       text,

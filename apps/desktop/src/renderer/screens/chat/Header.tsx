@@ -129,6 +129,46 @@ export interface CompactControl {
   disabled: string | null;
 }
 
+/** Undo and Redo in the header; each `disabled` says why the action cannot run, if it cannot. */
+export interface RewindControl {
+  undo: () => void;
+  redo: () => void;
+  undoDisabled: string | null;
+  redoDisabled: string | null;
+  /** The prompt of the turn Redo puts back. */
+  redoPrompt: string | null;
+}
+
+function RewindChips({ rewind }: { rewind: RewindControl }) {
+  return (
+    <>
+      <button
+        type="button"
+        className="chip"
+        disabled={rewind.undoDisabled !== null}
+        title={rewind.undoDisabled ?? "Undo the last turn: drop it and restore the files it edited"}
+        onClick={rewind.undo}
+      >
+        <Icon name="undo" size={13} />
+        Undo
+      </button>
+      <button
+        type="button"
+        className="chip"
+        disabled={rewind.redoDisabled !== null}
+        title={
+          rewind.redoDisabled ??
+          `Redo${rewind.redoPrompt ? ` "${rewind.redoPrompt}"` : " the undone turn"} and its file edits`
+        }
+        onClick={rewind.redo}
+      >
+        <Icon name="redo" size={13} />
+        Redo
+      </button>
+    </>
+  );
+}
+
 /** Context fill; expands on hover or focus with the breakdown the API gives. */
 function ContextChip({
   context,
@@ -361,6 +401,7 @@ export function ChatHeader({
   filesEdited,
   diff,
   compact,
+  rewind,
 }: {
   project: DesktopProject;
   title: string;
@@ -372,6 +413,7 @@ export function ChatHeader({
   /** Line counts when the server offers them; the edited file names are shown otherwise. */
   diff?: SessionDiffStats | null;
   compact?: CompactControl;
+  rewind?: RewindControl;
 }) {
   return (
     <header className="chat-head">
@@ -393,6 +435,7 @@ export function ChatHeader({
         )}
         {diff ? <DiffChip diff={diff} /> : filesEdited && <FilesChip files={filesEdited} />}
         <WorkingSetChip project={project} />
+        {rewind && <RewindChips rewind={rewind} />}
         {sessionId !== null && (
           <a className="chip" href={projectHref(project.key, "chat", "new")}>
             <Icon name="plus" size={13} />

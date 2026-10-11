@@ -8,6 +8,7 @@ import type {
   MessageSegment,
   PlanAction,
   PromptOutcome,
+  RedoTurn,
   SessionDetail,
   SessionSummary,
   ToolCall,
@@ -54,6 +55,8 @@ export interface Transcript {
   compacting: boolean;
   /** The plan being reviewed or carried out, with its step statuses. */
   plan: ChatPlan | null;
+  /** Turns an undo dropped that Redo puts back, oldest first. */
+  redo: RedoTurn[];
 }
 
 export type TranscriptAction =
@@ -69,6 +72,7 @@ const EVENT_TYPES = new Set([
   "tool-call",
   "tool-result",
   "steering",
+  "rewind",
   "prompt",
   "prompt-resolved",
   "plan",
@@ -121,12 +125,23 @@ export function emptyTranscript(): Transcript {
     thinkingSince: null,
     compacting: false,
     plan: null,
+    redo: [],
   };
 }
 
 export function fromDetail(detail: SessionDetail, previous?: Transcript): Transcript {
-  const { messages, prompts, queued, usage, context, filesEdited, lastSeq, plan, ...session } =
-    detail;
+  const {
+    messages,
+    prompts,
+    queued,
+    usage,
+    context,
+    filesEdited,
+    lastSeq,
+    plan,
+    redo,
+    ...session
+  } = detail;
   const compacting = session.compacting === true;
   const working = session.state !== "idle" && !compacting;
   return {
@@ -142,6 +157,7 @@ export function fromDetail(detail: SessionDetail, previous?: Transcript): Transc
     // A turn that runs while the page loads: its finished message arrives with `turn-done`.
     turnId: working ? "running" : null,
     compacting,
+    redo: redo ?? [],
     ...(previous?.session?.id === session.id
       ? { pending: previous.pending, thoughtMs: previous.thoughtMs, notice: previous.notice }
       : {}),
@@ -320,6 +336,9 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
         pending: removeFirst(state.pending, event.message.content),
       };
     }
+    case "rewind":
+      // The screen refetches the session, which carries the rewound messages.
+      return state;
     case "prompt":
       if (state.prompts.some((p) => p.prompt.id === event.prompt.id)) return state;
       return { ...state, prompts: [...state.prompts, { prompt: event.prompt }] };
@@ -421,6 +440,11 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
     default:
       return applyChatEvent(state, action);
   }
+}
+
+/** The number of turns in the transcript: user messages that are not steering. */
+export function turnCount(state: Transcript): number {
+  return state.messages.filter((m) => m.role === "user" && !m.isSteering).length;
 }
 
 /** True while a turn runs, waits for a prompt answer, or the session is being compacted. */

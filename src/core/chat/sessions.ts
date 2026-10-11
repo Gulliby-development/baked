@@ -17,6 +17,10 @@
  * turn that carries out the plan, revising sends the feedback back to the agent, and cancelling
  * leaves plan mode.
  *
+ * Undo drops the last turns and restores the files they edited, redo puts the oldest undone turn
+ * back (see `src/core/checkpoints/undo.ts`); the undone turns are saved with the session until a
+ * new turn starts.
+ *
  * Compacting a session ("Compact now") replaces its older model messages with a summary, as the
  * terminal UI's `/compact` does; the transcript keeps every message and gains a note. Messages sent
  * while it runs wait and start the next turn when it ends.
@@ -49,6 +53,13 @@ import {
 } from "../checkpoints/fork.js";
 import { snapshotWorkspace } from "../checkpoints/snapshot.js";
 import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
+import {
+  dropRedoTags,
+  type RedoTurn,
+  redoTurn,
+  TurnUndoError,
+  undoTurns,
+} from "../checkpoints/undo.js";
 import { type CompactResult, compactionBlocker, messageChars } from "../compaction/manual.js";
 import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
 import { SessionManager } from "../sessions/manager.js";
@@ -133,7 +144,16 @@ export interface SessionDetail extends SessionSummary {
   filesEdited: string[];
   /** The plan the agent proposed or is carrying out, with its step statuses. */
   plan: Plan | null;
+  /** Turns an undo dropped that a redo can put back, oldest first. */
+  redo: { index: number; prompt: string }[];
   lastSeq: number;
+}
+
+/** What an undo or redo did: the turn count left and the file rollback report. */
+export interface RewindResult {
+  action: "undo" | "redo";
+  checkpoint: number;
+  rollback: RollbackReport;
 }
 
 export type ChatEventBody =
@@ -152,6 +172,7 @@ export type ChatEventBody =
       filesEdited?: string[];
     }
   | { type: "steering"; turnId: string; message: ChatMessage }
+  | { type: "rewind"; action: "undo" | "redo"; checkpoint: number; messageCount: number }
   | { type: "prompt"; prompt: ChatPrompt }
   | {
       type: "prompt-resolved";
@@ -259,6 +280,8 @@ export class ChatError extends Error {
       | "INVALID_REQUEST"
       | "ROLLBACK_UNAVAILABLE"
       | "NOTHING_TO_COMPACT"
+      | "NOTHING_TO_UNDO"
+      | "NOTHING_TO_REDO"
       | "NOT_SUPPORTED",
     message: string,
   ) {
@@ -371,6 +394,8 @@ export class ChatSession {
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
+  /** True while an undo or redo rewrites the conversation and the files. */
+  private rewinding = false;
   private compaction: TurnState | null = null;
   private turnDone: Promise<void> = Promise.resolve();
   private readonly prompts = new Map<string, Pending>();
@@ -431,11 +456,18 @@ export class ChatSession {
 
   addCheckpointTag(tag: CheckpointTag): void {
     const tags = [...this.checkpointTags.filter((t) => t.index !== tag.index), tag];
+    this.setTab({ checkpointTags: tags.sort((a, b) => a.index - b.index) });
+  }
+
+  /** The turns an undo dropped, oldest first. */
+  get redoTurns(): RedoTurn[] {
+    return this.tab.redoTurns ?? [];
+  }
+
+  private setTab(changes: Partial<TabMeta>): void {
     this.meta = {
       ...this.meta,
-      tabs: this.meta.tabs.map((t) =>
-        t.id === this.tabId ? { ...t, checkpointTags: tags.sort((a, b) => a.index - b.index) } : t,
-      ),
+      tabs: this.meta.tabs.map((t) => (t.id === this.tabId ? { ...t, ...changes } : t)),
     };
   }
 
@@ -452,7 +484,7 @@ export class ChatSession {
   }
 
   get busy(): boolean {
-    return this.turn !== null || this.compaction !== null;
+    return this.turn !== null || this.compaction !== null || this.rewinding;
   }
 
   get state(): SessionState {
@@ -493,6 +525,10 @@ export class ChatSession {
       context: this.context,
       filesEdited: editedFiles(this.messages),
       plan: this.plan,
+      redo: this.redoTurns.map((t) => ({
+        index: t.index,
+        prompt: t.messages[0]?.content.split("\n")[0]?.slice(0, 120) ?? "",
+      })),
       lastSeq: this.seq,
     };
   }
@@ -538,6 +574,7 @@ export class ChatSession {
 
   /** Starts a turn, or steers the text into the running one. */
   send(text: string): { turnId: string; queued: boolean } {
+    if (this.rewinding) throw new ChatError("SESSION_BUSY", "Wait for the undo or redo to finish");
     const running = this.turn ?? this.compaction;
     if (running) {
       this.queue.push(text);
@@ -563,6 +600,78 @@ export class ChatSession {
     this.turn.abort.abort();
     this.denyPrompts();
     return true;
+  }
+
+  /**
+   * Drops the turns after checkpoint `toCheckpoint` (the last turn by default) and restores the
+   * files they edited. Refused while a turn or compaction runs.
+   */
+  undo(options: { toCheckpoint?: number; force?: boolean } = {}): Promise<RewindResult> {
+    return this.rewind("undo", (common) =>
+      undoTurns({
+        ...common,
+        messages: this.messages,
+        redo: this.redoTurns,
+        ...(options.toCheckpoint !== undefined ? { toCheckpoint: options.toCheckpoint } : {}),
+        ...(options.force ? { force: true } : {}),
+      }),
+    );
+  }
+
+  /** Puts back the oldest undone turn and restores the files it edited. */
+  redo(options: { force?: boolean } = {}): Promise<RewindResult> {
+    return this.rewind("redo", (common) =>
+      redoTurn({
+        ...common,
+        messages: this.messages,
+        redo: this.redoTurns,
+        ...(options.force ? { force: true } : {}),
+      }).then((r) => ({ ...r, checkpoint: r.turn })),
+    );
+  }
+
+  private async rewind(
+    action: "undo" | "redo",
+    run: (common: { cwd: string; tags: CheckpointTag[]; backupTag: string }) => Promise<{
+      checkpoint: number;
+      messages: ChatMessage[];
+      redo: RedoTurn[];
+      rollback: RollbackReport;
+    }>,
+  ): Promise<RewindResult> {
+    if (this.busy) throw new ChatError("SESSION_BUSY", "Wait for the running turn to finish");
+    this.owner.assertIdleWorkspace();
+    this.rewinding = true;
+    try {
+      const result = await run({
+        cwd: this.owner.workspace,
+        tags: this.checkpointTags,
+        backupTag: `baked/${action}-backup-${crypto.randomUUID().slice(0, 8)}`,
+      });
+      this.messages = result.messages;
+      this.core = rebuildCore(result.messages);
+      this.context = null;
+      this.setTab({ redoTurns: result.redo });
+      await this.owner.persist(this);
+      this.emit({
+        type: "rewind",
+        action,
+        checkpoint: result.checkpoint,
+        messageCount: result.messages.length,
+      });
+      return { action, checkpoint: result.checkpoint, rollback: result.rollback };
+    } catch (err) {
+      if (err instanceof TurnUndoError)
+        throw new ChatError(
+          err.code === "INVALID_CHECKPOINT" ? "INVALID_REQUEST" : err.code,
+          err.message,
+        );
+      if (err instanceof RollbackError) throw new ChatError("ROLLBACK_UNAVAILABLE", err.message);
+      throw err;
+    } finally {
+      this.rewinding = false;
+      this.emitSession();
+    }
   }
 
   /** Line counts of the files this session edited, against the repository's last commit. */
@@ -844,6 +953,9 @@ export class ChatSession {
     const executing = this.executingPlan;
     const planExecution = executing !== null;
     this.executingPlan = null;
+    // A new turn makes the undone turns unreachable: forget them and their snapshots.
+    const staleRedo = this.redoTurns.length > 0;
+    if (staleRedo) this.setTab({ redoTurns: [] });
     let modelText = text;
     let inputContext: InputContextItem[] | undefined;
     let send = true;
@@ -907,6 +1019,10 @@ export class ChatSession {
     };
 
     try {
+      if (staleRedo)
+        this.setTab({
+          checkpointTags: await dropRedoTags(this.owner.workspace, before, this.checkpointTags),
+        });
       const base = await ensureBaseSnapshot(
         this.owner.workspace,
         this.tagOwner,
@@ -1198,6 +1314,12 @@ export class ChatService {
     return this.options.workspace;
   }
 
+  /** Refuses a file rollback while any loaded session runs a turn that may be editing files. */
+  assertIdleWorkspace(): void {
+    if ([...this.live.values()].some((s) => s.busy))
+      throw new ChatError("SESSION_BUSY", "Wait for running turns to finish before rolling back");
+  }
+
   /** Model messages a compaction keeps verbatim. */
   get keepRecent(): number {
     return this.options.config.compaction?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
@@ -1308,8 +1430,7 @@ export class ChatService {
     const all = source.messages;
     const point = forkPoint(all, atMessageId);
     if (!point) throw new ChatError("NOT_FOUND", `Message ${atMessageId} not found`);
-    if (options.rollbackFiles && [...this.live.values()].some((s) => s.busy))
-      throw new ChatError("SESSION_BUSY", "Wait for running turns to finish before rolling back");
+    if (options.rollbackFiles) this.assertIdleWorkspace();
     const summary = source.summary();
     const session = await this.create({
       title: `${summary.title} (fork)`,

@@ -32,6 +32,8 @@ interface MockSession {
   listeners: Set<(event: ChatEvent) => void>;
   turn: MockTurn | null;
   queue: string[];
+  /** Turns an undo dropped, oldest first, with their messages. */
+  undone?: ChatMessage[][];
 }
 
 interface MockTurn {
@@ -317,8 +319,61 @@ function detail(session: MockSession): SessionDetail {
     context: t.context,
     filesEdited: t.filesEdited,
     plan: t.plan,
+    redo: (session.undone ?? []).map((messages, i) => ({
+      index: turnStarts(t.messages).length + i + 1,
+      prompt: messages[0]?.content.split("\n")[0] ?? "",
+    })),
     lastSeq: t.lastSeq,
   };
+}
+
+/** Positions of the user messages that start turns. */
+function turnStarts(messages: ChatMessage[]): number[] {
+  return messages.flatMap((m, i) => (m.role === "user" && !m.isSteering ? [i] : []));
+}
+
+/** Undo drops the last turn, redo puts the oldest undone one back; files are left alone. */
+function rewind(session: MockSession, action: "undo" | "redo") {
+  if (session.turn || session.transcript.compacting)
+    return response(409, { error: { code: "SESSION_BUSY", message: "Busy" } });
+  const messages = session.transcript.messages;
+  const starts = turnStarts(messages);
+  const undone = session.undone ?? [];
+  let checkpoint: number;
+  if (action === "undo") {
+    const cut = starts.at(-1);
+    if (cut === undefined)
+      return response(409, { error: { code: "NOTHING_TO_UNDO", message: "Nothing to undo" } });
+    session.undone = [messages.slice(cut), ...undone];
+    session.transcript = { ...session.transcript, messages: messages.slice(0, cut) };
+    checkpoint = starts.length - 1;
+  } else {
+    const [next, ...rest] = undone;
+    if (!next)
+      return response(409, { error: { code: "NOTHING_TO_REDO", message: "Nothing to redo" } });
+    session.undone = rest;
+    session.transcript = { ...session.transcript, messages: [...messages, ...next] };
+    checkpoint = starts.length + 1;
+  }
+  emit(session, {
+    type: "rewind",
+    action,
+    checkpoint,
+    messageCount: session.transcript.messages.length,
+  });
+  emitSession(session);
+  const files = session.transcript.filesEdited.slice(0, 1);
+  return response(200, {
+    ...detail(session),
+    rollback: {
+      checkpoint,
+      snapshot: "baked/cp-mock",
+      backupTag: `baked/${action}-backup-mock`,
+      restored: files,
+      removed: [],
+      skipped: [],
+    },
+  });
 }
 
 function emit(session: MockSession, body: ChatEventBody): void {
@@ -746,7 +801,7 @@ function diffStats(session: MockSession): SessionDiffStats {
 }
 
 const SESSION_PATH =
-  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork|compact|diff)(?:\/([A-Za-z0-9-]+))?)?$/;
+  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork|compact|diff|undo|redo)(?:\/([A-Za-z0-9-]+))?)?$/;
 
 const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (path === "/v1/models" && method === "GET")
@@ -824,6 +879,7 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     return response(200, session.summary);
   }
   if (action === "messages") {
+    session.undone = [];
     const text = String((body as { text?: unknown } | null)?.text ?? "").trim();
     if (!text) return response(400, { error: { code: "INVALID_REQUEST", message: "Empty text" } });
     if (session.turn) {
@@ -852,6 +908,7 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     return response(201, { ...detail(forked), ...(rollback ? { rollback } : {}) });
   }
   if (action === "compact") return compact(session);
+  if (action === "undo" || action === "redo") return rewind(session, action);
   if (action === "diff") return response(200, diffStats(session));
   const resolve = sub ? session.turn?.waiters.get(sub) : undefined;
   if (!sub || !resolve)
