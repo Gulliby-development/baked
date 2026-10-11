@@ -11,6 +11,10 @@ import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
 import { type ChatMode, chat, isMissingChatApi } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
+import { Alert } from "../../components/ui/alert.js";
+import { buttonVariants } from "../../components/ui/button.js";
+import { emptyClass } from "../../components/ui/empty.js";
+import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
@@ -24,7 +28,8 @@ const NEW = "new";
 const CHAT = "flex-1 min-h-0 flex flex-col";
 const SCROLL = "flex-1 min-h-0 overflow-y-auto flex justify-center px-6 pt-[18px] pb-2";
 const COLUMN = "w-full max-w-[820px] flex flex-col gap-[18px] pb-3";
-const EMPTY = "empty mt-12 flex flex-col items-center gap-[10px]";
+const EMPTY = cn(emptyClass, "mt-12 flex flex-col items-center gap-[10px]");
+const LINK_BTN = buttonVariants({ variant: "secondary", size: "md" });
 const EMPTY_TITLE = "text-[18px] font-bold text-foreground";
 const EMPTY_P = "m-0 max-w-[480px]";
 
@@ -38,12 +43,12 @@ function NeedsNewer({ project }: { project: DesktopProject }) {
       <div className={SCROLL}>
         <div className={COLUMN}>
           <div className={EMPTY}>
-            <p className={`${EMPTY_P} ${EMPTY_TITLE}`}>Chat needs a newer BAKED</p>
+            <p className={cn(EMPTY_P, EMPTY_TITLE)}>Chat needs a newer BAKED</p>
             <p className={EMPTY_P}>
               The BAKED that serves {project.name} has no chat API yet. Update BAKED, or point
               Settings → BAKED executable at a newer one, then restart the project.
             </p>
-            <a className="btn" href={projectHref(project.key, "runs")}>
+            <a className={LINK_BTN} href={projectHref(project.key, "runs")}>
               Open runs instead
             </a>
           </div>
@@ -87,9 +92,9 @@ function LatestSession({ project }: { project: DesktopProject }) {
   return (
     <Centered project={project}>
       {state === "loading" ? (
-        <p className="muted">Loading sessions…</p>
+        <p className="text-dim-foreground">Loading sessions…</p>
       ) : (
-        <div className="banner error">{state}</div>
+        <Alert tone="error">{state}</Alert>
       )}
     </Centered>
   );
@@ -256,8 +261,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     return (
       <Centered project={project}>
         <div className={EMPTY}>
-          <p className={`${EMPTY_P} ${EMPTY_TITLE}`}>This chat no longer exists</p>
-          <a className="btn" href={projectHref(key, "chat", NEW)}>
+          <p className={cn(EMPTY_P, EMPTY_TITLE)}>This chat no longer exists</p>
+          <a className={LINK_BTN} href={projectHref(key, "chat", NEW)}>
             Start a new chat
           </a>
         </div>
@@ -283,12 +288,12 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       />
       <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
         <div className={COLUMN} aria-live="off">
-          {load === "loading" && <p className="muted">Loading the session…</p>}
-          {load !== "loading" && load !== "ready" && <div className="banner error">{load}</div>}
+          {load === "loading" && <p className="text-dim-foreground">Loading the session…</p>}
+          {load !== "loading" && load !== "ready" && <Alert tone="error">{load}</Alert>}
           {(draft || empty) && transcript.pending.length === 0 && (
             <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">
-              <p className={`m-0 ${EMPTY_TITLE}`}>What should BAKED do in {project.name}?</p>
-              <p className="muted m-0">
+              <p className={cn("m-0", EMPTY_TITLE)}>What should BAKED do in {project.name}?</p>
+              <p className="m-0 text-dim-foreground">
                 Describe a change, ask about the code, or paste an error. Tool approvals show up
                 here and in Needs you.
               </p>

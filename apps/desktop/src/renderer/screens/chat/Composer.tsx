@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMode, ModelProvider } from "../../client/chat.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
 import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
 
 const ROUND_BUTTON =
@@ -56,7 +58,7 @@ function ModelMenu({
     <div className={MENU_LIST}>
       {usable.map((provider) => (
         <fieldset key={provider.id} className="border-0 m-[0_0_6px] p-0 flex flex-col gap-[2px]">
-          <legend className="label p-[4px_4px_2px]">{provider.name}</legend>
+          <legend className={cn(LABEL, "p-[4px_4px_2px]")}>{provider.name}</legend>
           {provider.models.map((m) => (
             <button
               key={m.id}
@@ -70,7 +72,7 @@ function ModelMenu({
             >
               {m.name}
               {m.contextWindow ? (
-                <span className="mono muted ml-auto text-[12px]">
+                <span className="ml-auto font-mono text-[12px] text-dim-foreground">
                   {Math.round(m.contextWindow / 1000)}k
                 </span>
               ) : null}
@@ -163,7 +165,7 @@ export function Composer({
           label="Model"
           up
           buttonLabel={`Model: ${shortModel(model)}`}
-          button={<span className="mono">{shortModel(model)}</span>}
+          button={<span className="font-mono">{shortModel(model)}</span>}
         >
           {(close) => (
             <ModelMenu model={model} loadModels={loadModels} onModel={onModel} close={close} />
@@ -189,14 +191,14 @@ export function Composer({
                   }}
                 >
                   <span>{MODE_LABELS[m].name}</span>
-                  <span className="muted">{MODE_LABELS[m].detail}</span>
+                  <span className="text-dim-foreground">{MODE_LABELS[m].detail}</span>
                 </button>
               ))}
               <p className={MENU_NOTE}>Applies from the next turn.</p>
             </div>
           )}
         </Popover>
-        <span className="muted ml-auto text-[12px] [@media(max-width:720px)]:hidden">
+        <span className="ml-auto text-[12px] text-dim-foreground [@media(max-width:720px)]:hidden">
           {busy ? "Esc stops · Enter adds to the turn" : "Enter sends · Shift+Enter new line"}
         </span>
         {canStop && (

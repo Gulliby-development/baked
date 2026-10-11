@@ -8,7 +8,10 @@ import {
   type Usage,
 } from "../../client/chat.js";
 import { Icon } from "../../components/Icon.js";
+import { buttonVariants } from "../../components/ui/button.js";
+import { Dot, type DotTone } from "../../components/ui/dot.js";
 import { ago, tokens } from "../../format.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { shortModel } from "./Composer.js";
 import {
@@ -25,7 +28,7 @@ const SESSION_TITLE =
   "inline-flex items-center gap-[6px] min-h-[30px] max-w-[420px] px-2 py-0 border-2 border-transparent rounded-base bg-transparent text-foreground font-[inherit] text-[length:inherit] leading-[inherit] cursor-pointer hover:border-border hover:bg-hover aria-expanded:border-border aria-expanded:bg-hover";
 const KV = "flex justify-between gap-3";
 
-const STATE_TONE: Record<SessionState, string> = { idle: "", working: "busy", waiting: "warn" };
+const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };
 
 function SessionMenu({
   project,
@@ -86,10 +89,14 @@ function SessionList({
   }, [project.key]);
   return (
     <div className={`${MENU_LIST} w-[320px]`}>
-      <a className="btn-primary" href={projectHref(project.key, "chat", "new")} onClick={close}>
+      <a
+        className={buttonVariants({ variant: "primary", size: "md" })}
+        href={projectHref(project.key, "chat", "new")}
+        onClick={close}
+      >
         New chat
       </a>
-      <p className="label" style={{ padding: "6px 4px 2px" }}>
+      <p className={LABEL} style={{ padding: "6px 4px 2px" }}>
         Recent
       </p>
       {error && <p className={MENU_NOTE}>{error}</p>}
@@ -103,9 +110,9 @@ function SessionList({
           aria-current={s.id === currentId ? "page" : undefined}
           onClick={close}
         >
-          <span className={`dot ${STATE_TONE[s.state]}`} />
+          <Dot tone={STATE_TONE[s.state]} />
           <span className="flex-1 min-w-0 truncate">{s.title}</span>
-          <span className="muted flex-none text-[12px]">{ago(s.updatedAt)}</span>
+          <span className="flex-none text-[12px] text-dim-foreground">{ago(s.updatedAt)}</span>
         </a>
       ))}
     </div>
@@ -192,33 +199,33 @@ function ContextChip({
           onMouseEnter={show}
           onMouseLeave={hide}
         >
-          <p className="label">Context</p>
+          <p className={LABEL}>Context</p>
           {context ? (
             <div className={KV}>
               <span>Used</span>
-              <span className="mono">
+              <span className="font-mono">
                 {tokens(context.usedTokens)} of {tokens(context.windowTokens)}
               </span>
             </div>
           ) : (
             <p className={MENU_NOTE}>Known after the next turn.</p>
           )}
-          <p className="label">Session tokens</p>
+          <p className={LABEL}>Session tokens</p>
           <div className={KV}>
             <span>Input</span>
-            <span className="mono">{tokens(usage.input)}</span>
+            <span className="font-mono">{tokens(usage.input)}</span>
           </div>
           <div className={KV}>
             <span>Cache read</span>
-            <span className="mono">{tokens(usage.cacheRead)}</span>
+            <span className="font-mono">{tokens(usage.cacheRead)}</span>
           </div>
           <div className={KV}>
             <span>Output</span>
-            <span className="mono">{tokens(usage.output)}</span>
+            <span className="font-mono">{tokens(usage.output)}</span>
           </div>
           <div className={`${KV} border-t-2 border-t-border pt-2 font-bold`}>
             <span>Model</span>
-            <span className="mono">{shortModel(model)}</span>
+            <span className="font-mono">{shortModel(model)}</span>
           </div>
         </div>
       )}
@@ -237,7 +244,7 @@ function FilesChip({ files }: { files: string[] }) {
       {() => (
         <ul className="m-0 p-0 list-none flex flex-col gap-1 text-[12px]">
           {files.map((file) => (
-            <li key={file} className="mono">
+            <li key={file} className="font-mono">
               {file}
             </li>
           ))}
