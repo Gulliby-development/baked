@@ -936,6 +936,8 @@ export interface StartRequest {
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
    */
   routes?: Record<string, string>;
+  /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
+  issue?: { repository: string; number: number; url: string; title: string };
 }
 export type Decision =
   | {

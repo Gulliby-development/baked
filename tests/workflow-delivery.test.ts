@@ -556,3 +556,15 @@ describe("delivery building blocks", () => {
     expect(existsSync(join(root, ".baked", "workflows.sqlite"))).toBe(true);
   });
 });
+
+describe("Delivery of a run started from an issue", () => {
+  test("the pull request body opens with the line that closes the issue", async () => {
+    const s = await completedRun();
+    const store = s.fx.service.store;
+    const issue = { repository: "acme/widget", number: 7, url: "https://github.com/acme/widget/issues/7", title: "Ready value" };
+    store.saveState(s.runId, { ...store.state(s.runId), issue });
+    expect((await prepare(s)).plan.pullRequest?.body.startsWith("Closes #7\n\n")).toBe(true);
+    store.saveState(s.runId, { ...store.state(s.runId), issue: { ...issue, repository: "acme/tracker" } });
+    expect((await prepare(s)).plan.pullRequest?.body.startsWith("Closes acme/tracker#7\n\n")).toBe(true);
+  });
+});

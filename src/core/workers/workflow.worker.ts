@@ -18,6 +18,7 @@ import {
   applyInitiativeAction,
   type InitiativeListView,
 } from "../workflows/initiatives/view-model.js";
+import { issueStart } from "../workflows/issue-source.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
 import { ROLLBACK_ARTIFACT_KIND, type RollbackReport } from "../workflows/rollback.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
@@ -94,8 +95,10 @@ function driveInitiative(id: string): void {
 const StartInput = z
   .object({
     workflowId: SafeId,
-    featureId: SafeId,
-    prompt: z.string().min(1),
+    // Empty with an issue: the core names the feature after it.
+    featureId: z.union([SafeId, z.literal("")]),
+    prompt: z.string(),
+    issue: z.string().min(1).max(500).optional(),
     model: z.string().min(1),
     budget: BudgetPreset,
     executionMode: z.enum(["inline", "worktree"]).optional(),
@@ -171,11 +174,19 @@ const ctx = createWorkerHandler(
       const id = SafeId.parse(requestId);
       const request = StartInput.parse(input);
       const runtime = current();
+      const fromIssue = request.issue
+        ? await issueStart(runtime.workspace, runtime.config, {
+            reference: request.issue,
+            ...(request.prompt ? { prompt: request.prompt } : {}),
+            ...(request.featureId ? { featureId: request.featureId } : {}),
+          })
+        : null;
       const run = await runtime.start({
         commandId: id,
         workflowId: request.workflowId,
-        featureId: request.featureId,
-        prompt: request.prompt,
+        featureId: fromIssue?.featureId ?? SafeId.parse(request.featureId),
+        prompt: fromIssue?.prompt ?? request.prompt ?? "",
+        ...(fromIssue ? { issue: fromIssue.issue } : {}),
         policy: scaledPolicy(
           runtime.config.workflows?.policy ?? defaultWorkflowPolicy,
           request.budget,

@@ -160,6 +160,8 @@ for (const [width, height] of [[120, 40], [80, 24], [50, 20]]) {
     assert((await frame("gates-back")).includes("finished-feature"), "Esc leaves the gate window for the run list");
     // E on the workflow field of the new-run form opens the editor; Esc returns to the form.
     await act(async () => view.mockInput.pressKey("n"));
+    // Description, GitHub issue and feature ID come before the workflow field.
+    await act(async () => view.mockInput.pressTab());
     await act(async () => view.mockInput.pressTab());
     await act(async () => view.mockInput.pressTab());
     await act(async () => view.mockInput.pressKey("e"));

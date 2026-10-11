@@ -27,6 +27,7 @@ import {
 } from "./delivery-provider.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { closingReference, type IssueSource } from "./issue-source.js";
 import { mutationLeaseFor, WorkspaceLeases } from "./leases.js";
 import { PULL_REQUEST_BODY_LIMIT, runReport } from "./run-report.js";
 import {
@@ -313,6 +314,11 @@ function pullRequestBody(
     `Run \`${plan.runId}\`, snapshot \`${plan.snapshotId}\`, base \`${plan.base.commit}\`.`,
   ].join("\n");
   return runReport(store, plan.runId, { maxChars: PULL_REQUEST_BODY_LIMIT, appendix });
+}
+
+/** The body of a run started from an issue opens with the line that closes it on merge. */
+function closingIssue(issue: IssueSource | null, repository: string, body: string): string {
+  return issue ? `${closingReference(issue, repository)}\n\n${body}` : body;
 }
 
 export interface PrepareDeliveryOptions {
@@ -605,7 +611,7 @@ export async function prepareDelivery(
             provider: pullRequestTarget.provider.name,
             repository: pullRequestTarget.repository,
             title,
-            body,
+            body: closingIssue(state.issue, pullRequestTarget.repository, body),
             base: core.base.branch,
             draft: options.draft === true,
           }
