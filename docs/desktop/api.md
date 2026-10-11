@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) and `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) and `settings` (`GET|PATCH /v1/settings`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -275,6 +275,39 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
 
+## Chat settings
+
+The chat settings the terminal UI edits in its pickers (`/provider-settings`, `/router`, `/model-scope`, `/tools`, `/web-search`, `/agent-features`, `/repo-map`, `/compaction`, `/timeouts`, `/context-window`) are described once in `src/core/settings/schema.ts`. The server validates changes against that schema and the desktop draws its settings pages from it, so a setting added there shows up on every surface. Unlike `PATCH /v1/config`, these routes check every value and write nested keys without replacing their neighbours.
+
+| Method and path | Body | Result |
+| --- | --- | --- |
+| `GET /v1/settings` | | `SettingsView` below |
+| `PATCH /v1/settings` | `{scope: "global" \| "project", set?: {[id]: value}, reset?: id[]}` | `SettingsView` after the change; the running server uses it at once. A `null` model or number unsets it. `reset` removes the setting from that scope's file, so the other scope or the default applies. A `secret` setting takes the key itself in `set` and is stored in the secret store (keychain or `secrets.json`) whatever the scope; `reset` deletes it. 400 `INVALID_SETTING` names the setting for an unknown ID, a value the schema refuses, or a scope the setting is not saved in |
+
+```ts
+interface SettingsView {
+  pages: { id; title; description; command }[];         // command: the terminal command for the same settings
+  settings: SettingDefinition[];                           // in display order
+  values: { [id]: { id; value; source: "project" | "global" | "default" | "env" | "keychain" | "file"; global?; project? } };
+  catalogs: { tools: { name; description }[] };            // choices of string-list settings
+}
+interface SettingDefinition {
+  id: string;            // dotted config path, e.g. "performance.effort"; a secret's store key, e.g. "brave-api-key"
+  page; section; label; help: string;
+  scopes: ("global" | "project")[];
+  enabledWhen?: { id; values: (string | boolean)[] };   // only meaningful while that setting has one of these values
+  type: "boolean" | "enum" | "number" | "model" | "string-list" | "model-list-map" | "model-number-map" | "secret";
+  default: unknown;
+  options?: { value; label; help? }[];                     // enum
+  min?; max?; step?; integer?; nullable?;                  // number; model-number-map has min and max
+  display?: { unit; factor };                              // number shown as value / factor, e.g. ms as s
+  catalog?: "tools";                                       // string-list
+  envVar?: string;                                         // secret: the environment variable that also supplies it
+}
+```
+
+A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`.
+
 ## Code graph
 
 The graph the repository map builds (`.baked/repomap.db`), grouped for drawing. The server reads the database read-only, so a scan in progress never waits on it, and rebuilds its grouped copy when the database changes. The first request starts indexing when no chat or run has started it yet. The grouping is in `src/core/intelligence/code-graph-model.ts`; the terminal `/graph` view uses the same.
@@ -315,6 +348,7 @@ interface GraphView {
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
+| Settings: chat settings pages | `GET|PATCH /v1/settings`, `GET /v1/models` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Run memory | `GET\|POST /v1/workflow/memory` |
 | Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
