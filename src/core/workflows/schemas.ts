@@ -1116,10 +1116,12 @@ export interface ArtifactService {
   redact(runId: string, artifactId: string, reason: string): Promise<void>;
 }
 
-/** Semantic validation supplements schema validation. Runtime must also validate paths against realpath. */
-export function validateTaskGraph(spec: Spec, graph: TaskGraph): string[] {
+/**
+ * The defects of a spec that no task graph can fix: duplicate IDs, criteria that name unknown
+ * requirements, requirements without a criterion or deferred past release. The spec author owns them.
+ */
+export function validateSpecCoverage(spec: Spec): string[] {
   const errors: string[] = [];
-  if (spec.featureId !== graph.featureId) errors.push("feature mismatch");
   const requirements = new Set(spec.requirements.map((r) => r.id));
   const criteria = new Set(spec.criteria.map((c) => c.id));
   if (requirements.size !== spec.requirements.length || criteria.size !== spec.criteria.length)
@@ -1133,6 +1135,25 @@ export function validateTaskGraph(spec: Spec, graph: TaskGraph): string[] {
     if (r.verification !== "post-release" && linked.every((c) => c.method === "post-release"))
       errors.push(`engineering requirement deferred ${r.id}`);
   }
+  return errors;
+}
+
+/** The spec defects as corrections for the spec author, who can add or relink criteria. */
+export function specCoverageProblems(spec: Spec): string[] {
+  return validateSpecCoverage(spec).map((error) =>
+    /^(requirement without criterion|engineering requirement deferred) /.test(error)
+      ? `${error}: add an acceptance criterion with a non-post-release method that lists this requirement in requirementIds, or mark the requirement post-release.`
+      : error,
+  );
+}
+
+/** Semantic validation supplements schema validation. Runtime must also validate paths against realpath. */
+export function validateTaskGraph(spec: Spec, graph: TaskGraph): string[] {
+  const errors: string[] = [];
+  if (spec.featureId !== graph.featureId) errors.push("feature mismatch");
+  const requirements = new Set(spec.requirements.map((r) => r.id));
+  const criteria = new Set(spec.criteria.map((c) => c.id));
+  errors.push(...validateSpecCoverage(spec));
   const tasks = new Map(graph.tasks.map((t) => [t.id, t]));
   if (tasks.size !== graph.tasks.length) errors.push("duplicate task ID");
   for (const task of graph.tasks) {
