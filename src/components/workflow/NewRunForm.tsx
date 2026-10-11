@@ -28,6 +28,7 @@ import {
 
 const FIELDS = [
   "prompt",
+  "issue",
   "feature",
   "workflow",
   "budget",
@@ -65,6 +66,7 @@ export function NewRunForm({
   const t = useTheme();
   const [focus, setFocus] = useState<FieldId>(initialPrompt ? "feature" : "prompt");
   const [prompt, setPrompt] = useState(initialPrompt);
+  const [issue, setIssue] = useState("");
   const [feature, setFeature] = useState(initialPrompt ? featureSlug(initialPrompt) : "");
   const [featureTouched, setFeatureTouched] = useState(false);
   const [workflow, setWorkflow] = useState<string | null>(initialWorkflow);
@@ -89,9 +91,14 @@ export function NewRunForm({
   };
   // The core's own refusal text; the start request would be refused with the same words.
   const worktreeRefusal = execution.worktree ? (definition?.worktreeRefusal ?? null) : null;
+  const fromIssue = issue.trim() !== "";
+  // With an issue and no feature typed, the core names the feature after the issue.
+  const sentFeature = fromIssue && !featureTouched ? "" : feature;
   const problems = [
-    !prompt.trim() && "Describe the feature",
-    !isFeatureId(feature) && "Feature ID: letters, digits, - and _ only",
+    !prompt.trim() && !fromIssue && "Describe the feature or give a GitHub issue",
+    (sentFeature || !fromIssue) &&
+      !isFeatureId(sentFeature) &&
+      "Feature ID: letters, digits, - and _ only",
     modelMissing && "Select a model (Esc, then Ctrl+L)",
     worktreeRefusal,
   ].filter((p): p is string => typeof p === "string");
@@ -113,8 +120,9 @@ export function NewRunForm({
     try {
       await onStart({
         workflowId,
-        featureId: feature,
+        featureId: sentFeature,
         prompt: prompt.trim(),
+        ...(fromIssue ? { issue: issue.trim() } : {}),
         model: model ?? "",
         budget,
         ...executionRequest(execution),
@@ -215,18 +223,33 @@ export function NewRunForm({
             backgroundColor={t.bgPopup}
           />
         </box>
+        <text fg={focus === "issue" ? t.brand : t.textMuted}>
+          {"GitHub issue (optional; the delivered PR closes it)"}
+        </text>
+        <box {...box(focus === "issue")}>
+          <input
+            value={issue}
+            onInput={setIssue}
+            onSubmit={() => move(1)}
+            placeholder="issue URL, owner/name#N or #N; the description above adds to it"
+            focused={active && focus === "issue"}
+            backgroundColor={t.bgPopup}
+          />
+        </box>
         <text fg={focus === "feature" ? t.brand : t.textMuted}>
           {"Feature ID (artifacts go to specs/<id>)"}
         </text>
         <box {...box(focus === "feature")}>
           <input
-            value={feature}
+            value={sentFeature}
             onInput={(value: string) => {
               setFeature(value);
               setFeatureTouched(true);
             }}
             onSubmit={() => move(1)}
-            placeholder="filled from the description"
+            placeholder={
+              fromIssue ? "issue-N-title, from the issue" : "filled from the description"
+            }
             focused={active && focus === "feature"}
             backgroundColor={t.bgPopup}
           />

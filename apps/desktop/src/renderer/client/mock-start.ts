@@ -294,12 +294,15 @@ const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/;
 
 function startRun(body: unknown): ReturnType<typeof response> {
   const input = (body ?? {}) as Record<string, unknown>;
-  const { commandId, feature, prompt, workflow } = input;
+  const { commandId, prompt, workflow, issue } = input;
+  const fromIssue = typeof issue === "string" && issue.trim() !== "";
+  const number = fromIssue ? /(\d+)\/?$/.exec(issue.trim())?.[1] : undefined;
+  const feature = input.feature ?? (fromIssue ? `issue-${number ?? "1"}` : undefined);
   if (typeof commandId !== "string" || !SAFE_ID.test(commandId))
     return response(400, { error: { code: "INVALID_REQUEST", message: "commandId: invalid id" } });
   if (typeof feature !== "string" || !SAFE_ID.test(feature))
     return response(400, { error: { code: "INVALID_REQUEST", message: "feature: invalid id" } });
-  if (typeof prompt !== "string" || !prompt)
+  if (!fromIssue && (typeof prompt !== "string" || !prompt))
     return response(400, { error: { code: "INVALID_REQUEST", message: "prompt: required" } });
   if (input.writers !== undefined && Number(input.writers) > 1 && input.worktree !== true)
     return response(400, {
