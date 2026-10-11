@@ -85,6 +85,8 @@ export class ProfileRegistry {
     ];
     if (resolved.role === "acceptance-walker") for (const name of walkTools) available.add(name);
     if (resolved.role === "acceptance-writer") available.add("write_test");
+    // Reviewers try a finding's repro with the runtime's own runner (#155).
+    if (resolved.role === "reviewer") available.add("run_repro");
     if (resolved.allowedTools.some((t) => !available.has(t)))
       throw new WorkflowFault("CAPABILITY_DENIED", `Unsupported tool in profile ${profile.id}`);
     if (
