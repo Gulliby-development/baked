@@ -40,18 +40,13 @@ import { ProjectService } from "../projects/service.js";
 import type { SkillCatalog } from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
+import { type AttentionItem, attentionItems } from "../workflows/attention.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import { redactSecrets } from "../workflows/redaction.js";
-import {
-  type RunSnapshot,
-  type RunState,
-  SafeId,
-  type WorkflowErrorCode,
-} from "../workflows/schemas.js";
+import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
-import { isAcceptanceRequest } from "../workflows/v2/acceptance.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -101,6 +96,7 @@ export const CAPABILITIES = [
   "workflow",
   "attention",
   "projects",
+  "project-rename",
   "sessions",
   "setup",
   "initiatives",
@@ -358,25 +354,7 @@ function wantsJson(req: Request): boolean {
   return /application\/json/i.test(accept) && !/text\/event-stream/i.test(accept);
 }
 
-/** One thing waiting for a person: a pending request, or a blocked run (`requestId` null). */
-export interface AttentionItem {
-  /** A run's request or blocked run, a chat session's pending prompt, or an initiative's request. */
-  source: "run" | "chat" | "initiative";
-  /** Set on initiative items only. */
-  initiativeId?: string;
-  runId: string | null;
-  featureId: string | null;
-  sessionId: string | null;
-  /** The session title of a chat prompt, or the initiative title. */
-  title: string | null;
-  status: RunState;
-  requestId: string | null;
-  /** The request kind, or the reason of a blocked run. */
-  kind: string;
-  /** False for an advisory acceptance request, which the run does not wait for. */
-  blocking: boolean;
-  createdAt: number;
-}
+export type { AttentionItem } from "../workflows/attention.js";
 
 function queryOf<T extends z.ZodType>(url: URL, schema: T): z.infer<T> {
   return schema.parse(Object.fromEntries(url.searchParams));
@@ -675,54 +653,17 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
 
   /** Everything waiting for a person, as `GET /v1/attention` returns it. */
   function attention(): AttentionItem[] {
-    const runs: AttentionItem[] = service.store.attention().map((row) => ({
-      source: "run",
-      sessionId: null,
-      title: null,
-      runId: row.run_id,
-      featureId: row.feature_id,
-      status: row.status,
-      requestId: row.request_id,
-      kind: row.kind,
-      // An acceptance test's decision is advisory: the run goes on without it.
-      blocking:
-        row.body_json === null ||
-        !isAcceptanceRequest({ kind: row.kind, body_json: row.body_json }),
-      createdAt: row.created_at,
-    }));
-    const prompts: AttentionItem[] = chat.attention().map(({ session, prompt }) => ({
-      source: "chat",
-      sessionId: session.id,
-      title: session.title,
-      runId: null,
-      featureId: null,
-      status: "waiting",
-      requestId: prompt.id,
-      kind: prompt.kind,
-      blocking: true,
-      createdAt: prompt.createdAt,
-    }));
-    const decisions: AttentionItem[] = initiatives.store.list().flatMap((row) =>
-      initiatives.store
-        .requests(row.id)
-        .filter((request) => request.status === "pending")
-        .map(
-          (request): AttentionItem => ({
-            source: "initiative",
-            initiativeId: row.id,
-            sessionId: null,
-            title: row.title,
-            runId: null,
-            featureId: null,
-            status: "waiting",
-            requestId: request.id,
-            kind: request.kind,
-            blocking: true,
-            createdAt: request.created_at,
-          }),
-        ),
+    return attentionItems(
+      service.store,
+      initiatives.store,
+      chat.attention().map(({ session, prompt }) => ({
+        sessionId: session.id,
+        title: session.title,
+        promptId: prompt.id,
+        kind: prompt.kind,
+        createdAt: prompt.createdAt,
+      })),
     );
-    return [...runs, ...prompts, ...decisions].sort((a, b) => a.createdAt - b.createdAt);
   }
 
   /** Streams the whole attention list once at the start and again whenever it changes. */

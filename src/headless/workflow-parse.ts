@@ -58,6 +58,7 @@ export interface WorkflowArgs {
   inline?: Record<string, unknown>;
 }
 const flags = new Set([
+  "model-strict",
   "feature",
   "workflow",
   "prompt",
@@ -241,6 +242,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   doctor: preRunFlags,
   estimate: preRunFlags,
 };
+/** The flag tables the argv parser checks, exposed so tests can assert they agree. */
+export const workflowFlagTables = { flags, booleanFlags, commandFlags };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
   if (!commands.includes(command as WorkflowCommand))
