@@ -17,6 +17,7 @@ const TITLES: Record<ProjectSection, string> = {
   initiatives: "Initiatives",
   acceptance: "Acceptance",
   usage: "Usage",
+  graph: "Code graph",
   gates: "Gates and checks",
   instructions: "Instructions",
   "working-set": "Working set",

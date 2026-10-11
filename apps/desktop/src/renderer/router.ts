@@ -7,6 +7,7 @@ export const PROJECT_SECTIONS = [
   "initiatives",
   "acceptance",
   "usage",
+  "graph",
   "gates",
   "instructions",
   "working-set",

@@ -31,6 +31,8 @@ import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
 import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
+import type { ContextManager } from "../context/manager.js";
+import { CodeGraphCache } from "../intelligence/code-graph.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
@@ -58,6 +60,7 @@ import {
   writeTokenFile,
 } from "./auth.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
+import { graphRoute } from "./graph-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { memoryRoute } from "./memory-routes.js";
@@ -108,6 +111,7 @@ export const CAPABILITIES = [
   "chat-undo",
   "run-memory",
   "images",
+  "code-graph",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -397,6 +401,24 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       host: new BakeChatHost(service.workspace, service.config, service.rootContext),
     });
   const initiatives = new InitiativeService(service);
+  const graphCache = new CodeGraphCache(service.workspace);
+  let graphRoot: ContextManager | null = null;
+  let graphRootStarted = false;
+  /** Starts the shared repository map on first use; true until its scan is ready. */
+  const graphIndexing = (): boolean => {
+    if (!graphRootStarted) {
+      graphRootStarted = true;
+      service.rootContext.get().then(
+        (root) => {
+          graphRoot = root;
+        },
+        () => {
+          graphRootStarted = false;
+        },
+      );
+    }
+    return !graphRoot?.isRepoMapReady();
+  };
   /** The latest on-demand result of each check. */
   const checkResults = new Map<string, CheckRunRecord>();
 
@@ -762,6 +784,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
+      (await graphRoute({
+        ...ctx,
+        workspace: service.workspace,
+        cache: graphCache,
+        enabled: service.config.repoMap !== false && process.env.BAKED_NO_REPOMAP !== "1",
+        indexing: graphIndexing,
+      })) ??
       (await checkRoute({
         ...ctx,
         workspace: service.workspace,

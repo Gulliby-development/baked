@@ -26,6 +26,7 @@ const WORK: [ProjectSection, string, IconName][] = [
   ["initiatives", "Initiatives", "initiatives"],
   ["acceptance", "Acceptance", "acceptance"],
   ["usage", "Usage", "usage"],
+  ["graph", "Code graph", "graph"],
 ];
 
 const SETUP: [ProjectSection, string, IconName][] = [

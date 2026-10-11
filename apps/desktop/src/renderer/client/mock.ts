@@ -144,6 +144,7 @@ export function createMockBridge(): DesktopBridge {
             "chat-undo",
             "run-memory",
             "images",
+            "code-graph",
           ],
         });
       const url = new URL(path, "http://mock");
