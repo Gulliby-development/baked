@@ -1,6 +1,6 @@
 import { checkProviders } from "../core/llm/provider.js";
 import { getAllProviders } from "../core/llm/providers/index.js";
-import { getProviderApiKey, setSecret } from "../core/secrets.js";
+import { deleteSecret, getProviderApiKey, setSecret } from "../core/secrets.js";
 import { BOLD, DIM, EXIT_ERROR, GREEN, PURPLE, RED, RST } from "./constants.js";
 
 export async function listProviders(): Promise<void> {
@@ -50,7 +50,8 @@ export async function listModels(providerId?: string): Promise<void> {
   }
 }
 
-export function setKey(providerId: string, key: string): void {
+/** The secret a provider's API key is saved under; exits when the provider takes no key. */
+function keySecret(providerId: string): { secretId: string; envVar: string } {
   const provider = getAllProviders().find((p) => p.id === providerId);
   if (!provider) {
     const allIds = getAllProviders().map((p) => p.id);
@@ -58,12 +59,16 @@ export function setKey(providerId: string, key: string): void {
     process.stderr.write(`Available: ${allIds.join(", ")}\n`);
     process.exit(EXIT_ERROR);
   }
-
   const secretId = provider.secretKey ?? provider.envVar;
   if (!secretId) {
     process.stderr.write(`${RED()}Error:${RST} Provider "${providerId}" does not use an API key\n`);
     process.exit(EXIT_ERROR);
   }
+  return { secretId, envVar: provider.envVar };
+}
+
+export function setKey(providerId: string, key: string): void {
+  const { secretId } = keySecret(providerId);
 
   const result = setSecret(secretId, key);
   if (result.success) {
@@ -73,4 +78,16 @@ export function setKey(providerId: string, key: string): void {
     process.stderr.write(`${RED()}Error:${RST} Failed to save key\n`);
     process.exit(EXIT_ERROR);
   }
+}
+
+export function removeKey(providerId: string): void {
+  const { secretId, envVar } = keySecret(providerId);
+  const result = deleteSecret(secretId);
+  process.stdout.write(
+    result.success
+      ? `${GREEN()}Removed${RST} the saved ${providerId} key\n`
+      : `No saved ${providerId} key\n`,
+  );
+  if (envVar && process.env[envVar])
+    process.stderr.write(`${DIM}${envVar} is still set in the environment${RST}\n`);
 }
