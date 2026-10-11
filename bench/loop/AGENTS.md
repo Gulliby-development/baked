@@ -4,6 +4,17 @@ This file is the operating spec for the **bench loop orchestrator**: a long-runn
 
 The loop runs on the owner's PC (Windows today; nothing here may assume one OS), inside a Remote Control session started from a project thread, with the model providers already configured in BAKED there. It can also be started by hand in any agent harness that reads `AGENTS.md`.
 
+## Objective
+
+The loop exists to make BAKED a better harness. The apps, the updates and the published repositories are the test bench, not the product. The owner's words (2026-10-11, translated): the goal is not to deliver or update as many apps as possible; the most important thing is to tune and upgrade BAKED so that it is as good a harness as possible.
+
+Rules that follow:
+
+1. **Spend scarce resources on BAKED.** When budget, time or attention is short, spend it on analysis and BAKED fixes (prefer broad structural fixes over parameter tuning), not on getting more apps through.
+2. **Never rescue a run.** Never hand-fix an app, edit app files to make a run pass, or work around a BAKED defect just to make a run or a verification pass. A stuck run is recorded as `blocked` and becomes a finding (see rule 5 in `roles/implementer.md`). The same holds for the publisher: it may correct README text to match real behavior and fix hygiene items (license, logo, topics, description), never app logic.
+3. **Success metrics are BAKED-side.** A round is judged by interventions per run, stop reasons (counts by reason), tokens per verified app, runs completed without intervention, and fixes merged together with whether last round's fixes moved the metric they targeted. App counts (published, updated) are secondary and are reported after these.
+4. **Rounds may shrink.** A round may be shortened or skipped for apps (for example to retest fixes on the control apps only) when analysis and fixing need the time.
+
 ## Purpose
 
 1. Measure BAKED on varied, realistic greenfield work, with numbers that stay comparable from round to round.
@@ -11,7 +22,7 @@ The loop runs on the owner's PC (Windows today; nothing here may assume one OS),
 3. Ship each new app that passes verification as a public MIT repository in `Gulliby-development` right after verification, so BAKED gains a public portfolio ("Built with BAKED").
 4. Work on existing code too: from round 3 each round also adds a small feature to three public repositories of `Gulliby-development` (brownfield updates), shipped as pull requests to those repositories.
 
-Success is measured on the control apps across rounds: fewer interventions, fewer blocked runs, fewer tokens per completed app, and the share of new apps and updates that pass verification.
+Success is measured on BAKED, not on app counts (see [Objective](#objective)): fewer interventions per run, fewer blocked runs and stop reasons, fewer tokens per verified app, more runs completed without intervention, and last round's fixes moving the metric they targeted, read mainly from the control apps across rounds. The share of new apps and updates that pass verification and the number published come after these.
 
 ## The loop at a glance
 
@@ -285,7 +296,7 @@ In `approve-per-round` mode the publish gate never blocks the loop: a batch wait
 The owner reads one message per round, in Russian, at most 15 lines, plus a message for each gate or blocker. Files stay in English. In a Remote Control session started from a thread, "tell the owner" means a message to the controlling thread session, which posts it; standalone, it means printing it and writing `rounds/RNN/report.md`.
 
 Messages:
-- **Round result** (phase 10): the Published list with repo links, completed/blocked counts for new and control apps, tokens per completed app vs last round, interventions vs last round, the 3 most important findings with issue links, PRs merged, what the next round changes, a link to `report.md`.
+- **Round result** (phase 10): BAKED-side metrics first (interventions per run and stop reasons by count vs last round, tokens per verified app, runs completed without intervention, whether last round's fixes worked), then the 3 most important findings with issue links, fixes merged, what the next round changes, then completed/blocked counts for new and control apps and the Published list with repo links, and a link to `report.md`.
 - **Published** (phase 9, `auto`): not a separate message. A list inside the round report and the round message, one line per app: name, one-sentence description, repo link, CI result. Apps left private (`ci-failed`) are listed with the reason.
 - **Publish batch** (phase 9, only in `approve-per-round`): one line per app (name, one-sentence description, repo name), links to the prepared README and logo, and the question whether to publish (yes / no / edits).
 - **Blocker**: what stopped, what was checked, what the owner must do, in one or two sentences.
@@ -294,7 +305,7 @@ No other messages. Progress goes into `state.json` and the round folder.
 
 ## Phase 10: report
 
-1. Fill `rounds/RNN/report.md` from `templates/round-report.md`: tables per group (control, new, update, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
+1. Fill `rounds/RNN/report.md` from `templates/round-report.md`, BAKED-side metrics and the check of last round's fixes before the app tables: tables per group (control, new, update, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
 2. Append one row per run to `ledger/metrics.csv`.
 3. Send the round result message.
 4. Set `state.round += 1`, `state.phase = "prepare"`.
