@@ -3,13 +3,17 @@ import {
   type ModelRouting,
   ModelRoutingSchema,
   mergeModelRouting,
+  ROUTED_ROLES,
   type Route,
   type RoutedRole,
   RouteEffort,
+  type RoutingInputs,
+  resolveRef,
 } from "../llm/model-routing.js";
+import type { RouteExplanation } from "./routing.js";
 
 /**
- * Editing `modelRouting` one route at a time, for the TUI routing screen. The functions are pure:
+ * Editing `modelRouting` one route at a time, for the TUI routing screen and the local API. The functions are pure:
  * they take the routing of one configuration layer and return the next one, so a front end only
  * renders the rows and writes the result.
  */
@@ -222,8 +226,9 @@ export function routingProblems(
   other: ModelRouting | undefined,
   layer: "global" | "project",
 ): string[] {
-  if (!routing) return [];
-  const parsed = ModelRoutingSchema.safeParse(routing);
+  // An empty layer still counts: removing its last class can leave the other layer's references
+  // without a definition.
+  const parsed = ModelRoutingSchema.safeParse(routing ?? {});
   if (!parsed.success)
     return parsed.error.issues.map((i) => `${i.path.join(".") || "modelRouting"}: ${i.message}`);
   const merged =
@@ -241,4 +246,174 @@ export function routingClasses(...layers: (ModelRouting | undefined)[]): string[
     for (const name of Object.keys(layer?.classes ?? {})) configured.add(name);
   const builtin = BUILTIN_CLASSES as readonly string[];
   return [...builtin, ...[...configured].filter((name) => !builtin.includes(name)).sort()];
+}
+
+export type RoutingScope = "global" | "project";
+export type IndependentReviewMode = NonNullable<ModelRouting["independentReview"]>;
+
+/** `modelRouting` of each configuration layer, as written in its own file. */
+export interface RoutingLayers {
+  global: ModelRouting | undefined;
+  project: ModelRouting | undefined;
+}
+
+/**
+ * One edit of a layer: a route set from a draft or cleared with `null`, or the independent-review
+ * mode. `create` marks a new class, which must not exist yet.
+ */
+export type RoutingChange =
+  | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
+  | { independentReview: IndependentReviewMode | null };
+
+/**
+ * Applies a change to one layer and lists what would stop it: the draft's own problems, then what
+ * would make a run refuse to start with the result (such as removing a class still in use). The
+ * layer is only written when `problems` is empty.
+ */
+export function applyRoutingChange(
+  layers: RoutingLayers,
+  scope: RoutingScope,
+  change: RoutingChange,
+): { routing: ModelRouting | undefined; problems: string[] } {
+  const current = layers[scope];
+  const other = layers[scope === "global" ? "project" : "global"];
+  if ("independentReview" in change)
+    return { routing: setIndependentReview(current, change.independentReview), problems: [] };
+  const { target, route } = change;
+  if (route === null) {
+    const routing = setRoute(current, target, null);
+    return { routing, problems: routingProblems(routing, other, scope) };
+  }
+  const problems = draftProblems(target, route);
+  if (
+    change.create &&
+    target.kind === "class" &&
+    routingClasses(layers.global, layers.project).includes(target.name)
+  )
+    problems.push(`Class $${target.name} already exists; select it to edit`);
+  if (problems.length) return { routing: current, problems };
+  const routing = setRoute(current, target, routeOf(route));
+  return { routing, problems: routingProblems(routing, other, scope) };
+}
+
+/** What a route resolves to for a run: its model, the setting that chose it, effort, fallback. */
+export interface ResolvedRoute {
+  model: string;
+  source: string;
+  effort?: string | null | undefined;
+  fallback?: string[] | undefined;
+}
+
+/**
+ * What a target resolves to with both layers merged. Stages and profiles come from the workflow's
+ * route explanation; classes and roles resolve against the run model.
+ */
+export function resolveTarget(
+  target: RoutingTarget,
+  inputs: {
+    routing: ModelRouting | undefined;
+    runModel: string | null;
+    legacy?: RoutingInputs["legacy"];
+    explanation: RouteExplanation | null;
+  },
+): ResolvedRoute | null {
+  if (target.kind === "stage") {
+    const stage = inputs.explanation?.stages.find((s) => s.stageId === target.stageId);
+    return stage?.model ? { ...stage, model: stage.model, source: stage.source ?? "" } : null;
+  }
+  if (target.kind === "profile") return inputs.explanation?.profiles[target.id] ?? null;
+  if (!inputs.runModel) return null;
+  const resolving: RoutingInputs = {
+    runModel: inputs.runModel,
+    routing: inputs.routing,
+    legacy: inputs.legacy,
+  };
+  try {
+    if (target.kind === "class")
+      return resolveRef(`$${target.name}`, targetPath(target), resolving);
+    const route = inputs.routing?.roles?.[target.role];
+    return route ? resolveRef(route, `modelRouting.roles.${target.role}`, resolving) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One editable route as a routing screen lists it. */
+export interface RoutingRow {
+  target: RoutingTarget;
+  /** The key under `modelRouting`, such as `roles.reviewer`. */
+  path: string;
+  label: string;
+  global: Route | null;
+  project: Route | null;
+  resolved: ResolvedRoute | null;
+}
+
+/** Every route a routing screen edits, with each layer's value and what a run resolves. */
+export interface RoutingOverview {
+  layers: RoutingLayers;
+  workflows: string[];
+  workflowId: string | null;
+  runModel: string | null;
+  classes: RoutingRow[];
+  roles: RoutingRow[];
+  stages: RoutingRow[];
+  profiles: RoutingRow[];
+  independentReview: {
+    global: IndependentReviewMode | null;
+    project: IndependentReviewMode | null;
+    effective: IndependentReviewMode;
+  };
+  /** Reviews that would share a model with the implementation. */
+  warnings: string[];
+  /** Why the workflow's stages and profiles could not be explained, such as no run model. */
+  error: string | null;
+}
+
+export function routingOverview(input: {
+  layers: RoutingLayers;
+  workflows: string[];
+  workflowId: string | null;
+  runModel: string | null;
+  legacy?: RoutingInputs["legacy"];
+  explanation: RouteExplanation | null;
+  error?: string | null;
+}): RoutingOverview {
+  const { layers, explanation } = input;
+  const routing = mergeModelRouting(layers.global, layers.project);
+  const runModel = explanation?.runModel ?? input.runModel;
+  const row = (target: RoutingTarget, label: string): RoutingRow => ({
+    target,
+    path: targetPath(target),
+    label,
+    global: routeAt(layers.global, target) ?? null,
+    project: routeAt(layers.project, target) ?? null,
+    resolved: resolveTarget(target, { routing, runModel, legacy: input.legacy, explanation }),
+  });
+  const workflowId = input.workflowId;
+  return {
+    layers,
+    workflows: input.workflows,
+    workflowId,
+    runModel,
+    classes: routingClasses(layers.global, layers.project).map((name) =>
+      row({ kind: "class", name }, `$${name}`),
+    ),
+    roles: ROUTED_ROLES.map((role) => row({ kind: "role", role }, role)),
+    stages: workflowId
+      ? (explanation?.stages ?? []).map((stage) =>
+          row({ kind: "stage", workflowId, stageId: stage.stageId }, stage.stageId),
+        )
+      : [],
+    profiles: Object.keys(explanation?.profiles ?? {})
+      .sort()
+      .map((id) => row({ kind: "profile", id }, id)),
+    independentReview: {
+      global: layers.global?.independentReview ?? null,
+      project: layers.project?.independentReview ?? null,
+      effective: routing?.independentReview ?? (routing ? "warn" : "off"),
+    },
+    warnings: explanation?.warnings ?? [],
+    error: input.error ?? null,
+  };
 }

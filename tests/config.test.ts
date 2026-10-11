@@ -159,6 +159,18 @@ describe("config retry deep-merge", () => {
   });
 });
 
+describe("config modelRouting merge", () => {
+  test("a project layer adds to the global routing instead of replacing it", () => {
+    const base = { defaultModel: "a/b", modelRouting: { classes: { deep: "a/deep" }, independentReview: "warn" } } as AppConfig;
+    const layer = { modelRouting: { roles: { reviewer: "$deep" } } } as Partial<AppConfig>;
+    expect(mergeConfigs(base, layer).modelRouting).toMatchObject({
+      classes: { deep: "a/deep" },
+      roles: { reviewer: "$deep" },
+      independentReview: "warn",
+    });
+  });
+});
+
 describe("invalid config.json exits with error", () => {
   test("loadConfig exits with code 1 on malformed JSON", () => {
     const sandbox = join(tmpdir(), `sf-invalid-cfg-${process.pid}-${Date.now()}`);

@@ -114,7 +114,11 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |
 | Initiatives, Usage | Initiative features and their runs, and the initiative's model with a switch to another one (features started later use it, stopped runs move to it, and the initiative continues; offered while no feature run executes); tokens by stage and model, cost. |
 | Project setup | Gates and checks, Instructions, Working set. In a folder without `baked/project.json`, Working set and the project panels say to run `baked project init` instead of showing an error. |
+<<<<<<< HEAD
 | Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, run notifications, telemetry). Under Providers and keys, Claude Code and Codex have Sign in and Sign out: Sign in runs the CLI's own login, which opens the browser, shows its progress, and offers Open sign-in page and Cancel until it ends. The CLI keeps the credentials, as when you sign in from a terminal. A CLI that is not installed shows the command to run once it is. GitHub Copilot has no sign-in of its own: paste the OAuth token of a signed-in IDE with Set key ([providers](../providers.md#github-copilot)). |
+=======
+| Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, run notifications, telemetry). Model routing lists the same entries as the TUI [routing screen](../workflows/runtime.md#routing-screen): classes, roles, the stages of a chosen workflow, profiles and independent review, each with the route All projects sets, the route the project's `.baked/config.json` sets, and what a run resolves (model, effort, fallback models and the setting that chose it). The Layer switch picks which file Edit, Clear and Add class change; with several open projects, a Project choice picks whose config is shown and resolved. The backend refuses what a run start would refuse and the form lists the reasons; nothing is written then. |
+>>>>>>> ea37da5 (Document the routing endpoint and the desktop routing section)
 
 ## Repository layout and builds
 

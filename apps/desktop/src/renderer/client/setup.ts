@@ -7,7 +7,12 @@
  * show "needs a newer BAKED" either way.
  */
 import { ApiError, call } from "./api.js";
-import { CHECKS_CAPABILITY, LIBRARY_CAPABILITY, offers } from "./capabilities.js";
+import {
+  CHECKS_CAPABILITY,
+  LIBRARY_CAPABILITY,
+  offers,
+  ROUTING_CAPABILITY,
+} from "./capabilities.js";
 
 // --- Working set (exists) -----------------------------------------------------------------------
 
@@ -234,6 +239,64 @@ export interface RouteExplanation {
   warnings: string[];
 }
 
+// --- Model routing (`routing` capability) -----------------------------------------------------
+
+export type RoutingScope = ConfigScope;
+
+/** One place in `modelRouting` that holds a route. */
+export type RoutingTarget =
+  | { kind: "class"; name: string }
+  | { kind: "role"; role: string }
+  | { kind: "profile"; id: string }
+  | { kind: "stage"; workflowId: string; stageId: string };
+
+export interface ResolvedRoute {
+  model: string;
+  source: string;
+  effort?: string | null;
+  fallback?: string[];
+}
+
+export interface RoutingRow {
+  target: RoutingTarget;
+  /** The key under `modelRouting`, such as `roles.reviewer`. */
+  path: string;
+  label: string;
+  global: Route | null;
+  project: Route | null;
+  resolved: ResolvedRoute | null;
+}
+
+/** `GET /v1/workflow/routing`: every editable route with both layers and what a run resolves. */
+export interface RoutingOverview {
+  layers: { global?: ModelRouting; project?: ModelRouting };
+  workflows: string[];
+  workflowId: string | null;
+  runModel: string | null;
+  classes: RoutingRow[];
+  roles: RoutingRow[];
+  stages: RoutingRow[];
+  profiles: RoutingRow[];
+  independentReview: {
+    global: IndependentReview | null;
+    project: IndependentReview | null;
+    effective: IndependentReview;
+  };
+  warnings: string[];
+  error: string | null;
+}
+
+/** A route as the form edits it; `effort: null` leaves it unset. */
+export interface RouteDraft {
+  model: string;
+  effort: Effort | null;
+  fallback: string[];
+}
+
+export type RoutingChange =
+  | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
+  | { independentReview: IndependentReview | null };
+
 // --- Calls --------------------------------------------------------------------------------------
 
 const json = (value: string): string => encodeURIComponent(value);
@@ -336,6 +399,30 @@ export const setup = {
   definitions: (key: string) => call<WorkflowDefinition[]>(key, "GET", "/v1/workflow/definitions"),
   route: (key: string, workflow: string) =>
     call<RouteExplanation>(key, "GET", `/v1/workflow/route?workflow=${json(workflow)}`),
+  routing: (key: string, workflow: string | null) =>
+    withCapability(key, ROUTING_CAPABILITY, () =>
+      call<RoutingOverview>(
+        key,
+        "GET",
+        `/v1/workflow/routing${workflow ? `?workflow=${json(workflow)}` : ""}`,
+      ),
+    ),
+  /**
+   * Changes one route of a layer. A refused change (an unknown class, a class naming a class, bad
+   * fallback models) fails with 422 `ROUTING_REFUSED` and every problem in `problems`; nothing is
+   * written then.
+   */
+  changeRouting: (
+    key: string,
+    scope: RoutingScope,
+    workflow: string | null,
+    change: RoutingChange,
+  ) =>
+    call<RoutingOverview>(key, "PATCH", "/v1/workflow/routing", {
+      scope,
+      ...(workflow ? { workflow } : {}),
+      ...change,
+    }),
 };
 
 /**

@@ -12,13 +12,19 @@ import type {
   CommandEntry,
   ConfigFile,
   ConfigView,
+  Effort,
   GateEntry,
+  IndependentReview,
   InstructionFile,
   ModelRouting,
   ProjectSummary,
   ProviderStatus,
   Route,
+  RouteDraft,
   RouteExplanation,
+  RoutingOverview,
+  RoutingRow,
+  RoutingTarget,
   SkillEntry,
 } from "./setup.js";
 
@@ -661,6 +667,171 @@ function explain(s: SetupState, workflowId: string): RouteExplanation {
   return { workflowId, runModel, stages, profiles: {}, warnings };
 }
 
+const MOCK_ROLES = [
+  "researcher",
+  "spec-author",
+  "planner",
+  "implementer",
+  "reviewer",
+  "spec-auditor",
+  "reporter",
+  "acceptance-walker",
+  "acceptance-writer",
+];
+const MOCK_BUILTIN = ["active", "fast", "coding", "review"];
+
+function routeAt(routing: ModelRouting | undefined, target: RoutingTarget): Route | undefined {
+  if (target.kind === "class") return routing?.classes?.[target.name];
+  if (target.kind === "role") return routing?.roles?.[target.role];
+  if (target.kind === "profile") return routing?.profiles?.[target.id];
+  return routing?.workflows?.[target.workflowId]?.stages?.[target.stageId];
+}
+
+const pathOf = (target: RoutingTarget): string =>
+  target.kind === "class"
+    ? `classes.${target.name}`
+    : target.kind === "role"
+      ? `roles.${target.role}`
+      : target.kind === "profile"
+        ? `profiles.${target.id}`
+        : `workflows.${target.workflowId}.stages.${target.stageId}`;
+
+/** A sample `GET /v1/workflow/routing` from the mock config; the real one is the backend's. */
+function routingOverview(s: SetupState, workflow: string | null): RoutingOverview {
+  const workflowId = workflow ?? "sdd";
+  const route = explain(s, workflowId);
+  const global = globalConfig.modelRouting;
+  const project = s.project.modelRouting;
+  const effective = mergeRouting(global, project);
+  const row = (target: RoutingTarget, label: string, resolved: RoutingRow["resolved"]) => ({
+    target,
+    path: pathOf(target),
+    label,
+    global: routeAt(global, target) ?? null,
+    project: routeAt(project, target) ?? null,
+    resolved,
+  });
+  const resolve = (ref: Route | undefined, source: string) => {
+    if (!ref) return null;
+    const model = typeof ref === "string" ? ref : ref.model;
+    const r = resolveRef(effective, model, route.runModel);
+    const own: { effort?: Effort; fallback?: string[] } = typeof ref === "string" ? {} : ref;
+    return {
+      model: r.model,
+      source,
+      effort: own.effort ?? r.effort,
+      fallback: own.fallback ?? r.fallback,
+    };
+  };
+  const names = new Set([...MOCK_BUILTIN, ...Object.keys(effective?.classes ?? {}).sort()]);
+  return {
+    layers: { ...(global ? { global } : {}), ...(project ? { project } : {}) },
+    workflows: Object.keys(WORKFLOW_STAGES),
+    workflowId,
+    runModel: route.runModel,
+    classes: [...names].map((name) =>
+      row(
+        { kind: "class", name },
+        `$${name}`,
+        resolve(`$${name}`, effective?.classes?.[name] ? `classes.${name}` : "run model"),
+      ),
+    ),
+    roles: MOCK_ROLES.map((role) =>
+      row(
+        { kind: "role", role },
+        role,
+        resolve(effective?.roles?.[role], `modelRouting.roles.${role}`),
+      ),
+    ),
+    stages: route.stages.map((stage) =>
+      row(
+        { kind: "stage", workflowId, stageId: stage.stageId },
+        stage.stageId,
+        stage.model
+          ? {
+              model: stage.model,
+              source: stage.source ?? "",
+              effort: stage.effort,
+              fallback: stage.fallback,
+            }
+          : null,
+      ),
+    ),
+    profiles: [],
+    independentReview: {
+      global: global?.independentReview ?? null,
+      project: project?.independentReview ?? null,
+      effective: effective?.independentReview ?? (effective ? "warn" : "off"),
+    },
+    warnings: route.warnings,
+    error: null,
+  };
+}
+
+/** The refusals of `applyRoutingChange` in src/core/workflows/routing-edit.ts, for sample data. */
+function routingProblems(
+  layers: { global: ModelRouting | undefined; project: ModelRouting | undefined },
+  target: RoutingTarget,
+  draft: RouteDraft | null,
+): string[] {
+  const problems: string[] = [];
+  if (draft) {
+    const model = draft.model.trim();
+    if (!model) problems.push("Name a model (provider/model) or a class ($name)");
+    else if (model.startsWith("$") && target.kind === "class")
+      problems.push("A class names a model, not another class");
+    if (draft.fallback.length > 3) problems.push("At most three fallback models");
+    if (draft.fallback.some((id) => id.startsWith("$")))
+      problems.push("Fallbacks name models, not classes");
+    if (draft.fallback.includes(model)) problems.push("A fallback repeats the primary model");
+    if (problems.length) return problems;
+  }
+  const merged = mergeRouting(layers.global, layers.project) ?? {};
+  const known = new Set([...MOCK_BUILTIN, ...Object.keys(merged.classes ?? {})]);
+  const check = (route: Route, at: string) => {
+    const model = typeof route === "string" ? route : route.model;
+    if (model.startsWith("$") && !known.has(model.slice(1)))
+      problems.push(`${at} uses ${model}, which no class defines`);
+  };
+  for (const [role, route] of Object.entries(merged.roles ?? {})) check(route, `roles.${role}`);
+  for (const [id, route] of Object.entries(merged.profiles ?? {})) check(route, `profiles.${id}`);
+  for (const [wf, entry] of Object.entries(merged.workflows ?? {}))
+    for (const [stage, route] of Object.entries(entry.stages ?? {}))
+      check(route, `workflows.${wf}.stages.${stage}`);
+  return problems;
+}
+
+function setMockRoute(
+  routing: ModelRouting | undefined,
+  target: RoutingTarget,
+  route: Route | null,
+): ModelRouting {
+  const next: ModelRouting = structuredClone(routing ?? {});
+  const put = (record: Record<string, Route> | undefined): Record<string, Route> => {
+    const out = { ...record };
+    const key =
+      target.kind === "class"
+        ? target.name
+        : target.kind === "role"
+          ? target.role
+          : target.kind === "profile"
+            ? target.id
+            : target.stageId;
+    if (route === null) delete out[key];
+    else out[key] = route;
+    return out;
+  };
+  if (target.kind === "class") next.classes = put(next.classes);
+  else if (target.kind === "role") next.roles = put(next.roles);
+  else if (target.kind === "profile") next.profiles = put(next.profiles);
+  else
+    next.workflows = {
+      ...next.workflows,
+      [target.workflowId]: { stages: put(next.workflows?.[target.workflowId]?.stages) },
+    };
+  return next;
+}
+
 function body<T>(request: MockRequest): Partial<T> {
   return (request.body ?? {}) as Partial<T>;
 }
@@ -779,6 +950,61 @@ export const setupRoutes: MockRoute = (request) => {
       );
     case "GET /v1/workflow/route":
       return response(200, explain(s, request.query.get("workflow") ?? "sdd"));
+    case "GET /v1/workflow/routing":
+      return response(200, routingOverview(s, request.query.get("workflow")));
+    case "PATCH /v1/workflow/routing": {
+      const edit = body<
+        { scope: "global" | "project"; workflow: string } & {
+          target: RoutingTarget;
+          route: RouteDraft | null;
+          create: boolean;
+          independentReview: IndependentReview | null;
+        }
+      >(request);
+      const scope = edit.scope === "global" ? "global" : "project";
+      const current = scope === "global" ? globalConfig.modelRouting : s.project.modelRouting;
+      const other = scope === "global" ? s.project.modelRouting : globalConfig.modelRouting;
+      let next: ModelRouting;
+      if (edit.independentReview !== undefined) {
+        const { independentReview: _previous, ...rest } = current ?? {};
+        next = edit.independentReview
+          ? { ...rest, independentReview: edit.independentReview }
+          : rest;
+      } else if (edit.target) {
+        const draft = edit.route ?? null;
+        const route: Route | null = draft
+          ? draft.effort || draft.fallback.length
+            ? {
+                model: draft.model.trim(),
+                ...(draft.effort ? { effort: draft.effort } : {}),
+                ...(draft.fallback.length ? { fallback: draft.fallback } : {}),
+              }
+            : draft.model.trim()
+          : null;
+        next = setMockRoute(current, edit.target, route);
+        const problems =
+          edit.create &&
+          edit.target.kind === "class" &&
+          (MOCK_BUILTIN.includes(edit.target.name) ||
+            mergeRouting(current, other)?.classes?.[edit.target.name])
+            ? [`Class $${edit.target.name} already exists; select it to edit`]
+            : routingProblems(
+                scope === "global"
+                  ? { global: next, project: other }
+                  : { global: other, project: next },
+                edit.target,
+                draft,
+              );
+        if (problems.length)
+          return response(422, {
+            error: { code: "ROUTING_REFUSED", message: problems.join("; ") },
+            problems,
+          });
+      } else return error(400, "INVALID_REQUEST", "Name a target or independentReview");
+      if (scope === "global") globalConfig = { ...globalConfig, modelRouting: next };
+      else s.project = { ...s.project, modelRouting: next };
+      return response(200, routingOverview(s, edit.workflow ?? null));
+    }
   }
   const providerSignIn = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/.exec(path);
   if (providerSignIn) {
