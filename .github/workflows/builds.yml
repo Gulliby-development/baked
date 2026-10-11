@@ -44,7 +44,7 @@ jobs:
     outputs:
       native: ${{ steps.decide.outputs.native }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -82,7 +82,7 @@ jobs:
       - name: Skip
         if: matrix.os != 'ubuntu-latest' && needs.scope.outputs.native != 'true'
         run: echo "Packaging files unchanged; this platform runs nightly."
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: matrix.os == 'ubuntu-latest' || needs.scope.outputs.native == 'true'
         with:
           persist-credentials: false
@@ -131,7 +131,7 @@ jobs:
       - name: Skip
         if: env.RUN != 'true'
         run: echo "Packaging files unchanged; this platform runs nightly."
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.RUN == 'true'
         with:
           persist-credentials: false
@@ -191,7 +191,7 @@ jobs:
       - name: Skip
         if: needs.scope.outputs.native != 'true'
         run: echo "Packaging files unchanged; this platform runs nightly."
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.scope.outputs.native == 'true'
         with:
           persist-credentials: false
@@ -307,7 +307,7 @@ jobs:
       - name: Skip
         if: env.RUN != 'true'
         run: echo "Packaging files unchanged; this platform runs nightly."
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.RUN == 'true'
         with:
           persist-credentials: false
