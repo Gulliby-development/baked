@@ -191,6 +191,27 @@ describe("local API setup and workflow additions", () => {
     expect((await post("/v1/projects/pin", { path: "relative/dir" })).status).toBe(400);
   });
 
+  test("a known project can be renamed and an empty name restores the default", async () => {
+    const { get, post, configDir } = await setup();
+    const health = await get<{ capabilities: string[] }>("/v1/health");
+    expect(health.capabilities).toContain("project-rename");
+    const folder = mkdtempSync(join(tmpdir(), "baked-api-rename-"));
+    cleanups.push(() => removeTempDir(folder));
+    recordProjectOpen(folder, { configDir });
+    type Listed = { projects: { path: string; name: string }[] };
+    const base = folder.split("/").at(-1) ?? "";
+    const renamed = (await (await post("/v1/projects/rename", { path: folder, name: "  Shop  " })).json()) as Listed;
+    expect(renamed.projects.find((p) => p.path.endsWith(base))?.name).toBe("Shop");
+    const restored = (await (await post("/v1/projects/rename", { path: folder, name: "" })).json()) as Listed;
+    expect(restored.projects.find((p) => p.path.endsWith(base))?.name).toBe(base);
+    expect((await post("/v1/projects/rename", { path: folder })).status).toBe(400);
+    expect((await post("/v1/projects/rename", { path: folder, name: "x".repeat(121) })).status).toBe(400);
+    expect((await post("/v1/projects/rename", { path: "relative/dir", name: "a" })).status).toBe(400);
+    const unknown = mkdtempSync(join(tmpdir(), "baked-api-unknown-"));
+    cleanups.push(() => removeTempDir(unknown));
+    expect((await post("/v1/projects/rename", { path: unknown, name: "a" })).status).toBe(404);
+  });
+
   test("instruction files are read and written only with the hash that was read", async () => {
     const { get, send, fixture } = await setup();
     writeFileSync(join(fixture.root, "baked.md"), "# Rules\nUse Bun.\n");
@@ -207,6 +228,34 @@ describe("local API setup and workflow additions", () => {
     expect(await errorCode(stale)).toBe("INPUT_CHANGED");
     const other = await send("PUT", "/v1/projects/current/instructions", { path: "src/index.ts", content: "x", expectedHash: file.hash });
     expect(other.status).toBe(404);
+  });
+
+  test("instruction sources switch on and off, and a new file can be created", async () => {
+    const { get, send, fixture } = await setup();
+    writeFileSync(join(fixture.root, "CLAUDE.md"), "Claude rules\n");
+    type File = { path: string; enabled: boolean; order: number | null; hash: string; sourceLabel: string };
+    type Source = { id: string; enabled: boolean };
+    type List = { files: File[]; sources: Source[]; sourcesScope: string; promptBytes: number };
+    const before = await get<List>("/v1/projects/current/instructions");
+    expect(before.files.find((f) => f.path === "CLAUDE.md")).toMatchObject({ enabled: false, order: null, sourceLabel: "CLAUDE.md" });
+    expect(before.sources.find((s) => s.id === "claude")?.enabled).toBe(false);
+    expect(before.sourcesScope).toBe("project");
+
+    const on = (await (await send("PUT", "/v1/projects/current/instructions/sources", { source: "claude", enabled: true })).json()) as List;
+    expect(on.files.find((f) => f.path === "CLAUDE.md")?.enabled).toBe(true);
+    expect(on.sources.find((s) => s.id === "claude")?.enabled).toBe(true);
+    expect(on.promptBytes).toBeGreaterThan(before.promptBytes);
+    const saved = JSON.parse(readFileSync(join(fixture.root, ".baked", "config.json"), "utf8")) as { instructionFiles: string[] };
+    expect(saved.instructionFiles).toContain("claude");
+    expect((await send("PUT", "/v1/projects/current/instructions/sources", { source: "nope", enabled: true })).status).toBe(404);
+
+    const created = await send("PUT", "/v1/projects/current/instructions", { path: "AGENTS.md", content: "# Agents\n", expectedHash: null });
+    expect(created.status).toBe(200);
+    expect((await created.json()) as File).toMatchObject({ path: "AGENTS.md", enabled: false, affectedRuns: [] });
+    const again = await send("PUT", "/v1/projects/current/instructions", { path: "AGENTS.md", content: "x", expectedHash: null });
+    expect(await errorCode(again)).toBe("INPUT_CHANGED");
+    const unknown = await send("PUT", "/v1/projects/current/instructions", { path: "notes.md", content: "x", expectedHash: null });
+    expect(unknown.status).toBe(404);
   });
 
   test("config changes are written to the chosen file and reach the running server", async () => {

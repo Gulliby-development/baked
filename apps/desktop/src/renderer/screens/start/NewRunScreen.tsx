@@ -35,7 +35,17 @@ import {
   rangeText,
   stageLabel,
 } from "./logic.js";
-import { DoctorPanel, doctorLine, EstimatePanel, message, useLoad, usePreRun } from "./panels.js";
+import {
+  DoctorPanel,
+  doctorLine,
+  EstimatePanel,
+  message,
+  RoutePanel,
+  useLoad,
+  usePreRun,
+  useRoute,
+} from "./panels.js";
+import { routeModels, routeRows } from "./route-logic.js";
 
 /** The workflows offered first, with the line each card gives. */
 const MAIN_WORKFLOWS: [string, string][] = [
@@ -102,7 +112,7 @@ function RecipeCard({
   );
 }
 
-function RecipeChoice({
+export function RecipeChoice({
   definitions,
   value,
   onChange,
@@ -192,6 +202,7 @@ export function NewRunScreen({ project }: SectionProps) {
     policy.policy,
     preRun.estimate ?? preRun.doctor?.estimate ?? null,
   );
+  const route = useRoute(key, workflow, model);
   const launcher = useStartRun(key);
   const assume = assumeOverride ?? policy.policy?.clarification === "assume";
 
@@ -247,6 +258,7 @@ export function NewRunScreen({ project }: SectionProps) {
 
   const ready = preRun.doctor?.ready;
   const fit = preRun.estimate ? fitOf(preRun.estimate.tokens, limits.cap) : null;
+  const stageModels = route.route ? routeModels(routeRows(route.route)) : [];
   const settingsLine = [
     `${budget} budget`,
     writers > 1 ? `${writers} writers` : worktree ? "in a worktree" : "in place",
@@ -336,6 +348,7 @@ export function NewRunScreen({ project }: SectionProps) {
               {fit ? `, ${limits.cap === null ? "no token cap" : FIT_TEXT[fit]}` : ""}
             </span>
           )}
+          {stageModels.length > 1 && <span>{stageModels.length} models across the stages</span>}
           <Button
             variant="secondary"
             size="md"
@@ -364,6 +377,7 @@ export function NewRunScreen({ project }: SectionProps) {
               cap={limits.cap}
               checkpoint={limits.checkpoint}
             />
+            <RoutePanel state={route} />
           </div>
         )}
 

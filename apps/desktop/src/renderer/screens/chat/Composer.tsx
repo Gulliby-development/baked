@@ -1,8 +1,10 @@
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from "react";
 import type { ChatMode, ImageUpload, MentionSuggestion, ModelProvider } from "../../client/chat.js";
+import type { CommandEntry } from "../../client/setup.js";
 import { Icon } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
+import { matchCommands, slashAtCaret } from "./commands.js";
 import { type Attachment, dataUrl, MAX_IMAGES, pickImages, readAttachment } from "./images.js";
 import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
 
@@ -121,6 +123,7 @@ export function Composer({
   modes = BASE_MODES,
   loadModels,
   loadMentions,
+  loadCommands,
   acceptsImages = false,
 }: {
   busy: boolean;
@@ -140,6 +143,8 @@ export function Composer({
   loadModels: () => Promise<ModelProvider[]>;
   /** `@` completions; without it the composer offers none. */
   loadMentions?: (query: string) => Promise<MentionSuggestion[]>;
+  /** Custom slash commands offered when a message starts with `/`; without it the composer offers none. */
+  loadCommands?: () => Promise<CommandEntry[]>;
   /** Paste and drop of images; only when the backend lists the `images` capability. */
   acceptsImages?: boolean;
 }) {
@@ -171,7 +176,39 @@ export function Composer({
       clearTimeout(timer);
     };
   }, [query, loadMentions]);
-  const showMentions = token !== null && mentions.length > 0 && dismissed !== text;
+  const slash = loadCommands ? slashAtCaret(text, caret) : null;
+  const [commands, setCommands] = useState<CommandEntry[] | null>(null);
+  const typingSlash = slash !== null;
+  // Read once a message starts with `/`, and again for the next one, so new files show up.
+  useEffect(() => {
+    if (!typingSlash || !loadCommands) return;
+    let live = true;
+    loadCommands().then(
+      (list) => live && setCommands(list),
+      () => live && setCommands([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [typingSlash, loadCommands]);
+  const commandMatches = slash && commands ? matchCommands(commands, slash.query) : [];
+  const showCommands = commandMatches.length > 0 && dismissed !== text;
+  const [commandIdx, setCommandIdx] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restart the selection as the name changes
+  useEffect(() => setCommandIdx(0), [slash?.query]);
+  const acceptCommand = (pick: CommandEntry | undefined): void => {
+    if (!pick) return;
+    const insert = `${pick.name} `;
+    const next = insert + text.slice(caret).replace(/^\S*\s?/, "");
+    const at = insert.length;
+    setText(next);
+    setCaret(at);
+    requestAnimationFrame(() => {
+      area.current?.focus();
+      area.current?.setSelectionRange(at, at);
+    });
+  };
+  const showMentions = !showCommands && token !== null && mentions.length > 0 && dismissed !== text;
   const acceptMention = (pick: MentionSuggestion | undefined): void => {
     if (!pick || !token) return;
     const target = /\s/.test(pick.insert) ? `"${pick.insert}"` : pick.insert;
@@ -263,6 +300,36 @@ export function Composer({
           }
         : {})}
     >
+      {showCommands && (
+        <div
+          id="chat-commands"
+          className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-20 max-h-[280px] overflow-y-auto flex flex-col gap-[2px] p-[6px] border-2 border-border rounded-base bg-background shadow-shadow"
+          role="listbox"
+          aria-label="Custom commands"
+        >
+          {commandMatches.map((c, i) => (
+            <button
+              key={c.name}
+              type="button"
+              role="option"
+              aria-selected={i === commandIdx}
+              className={`${MENU_ITEM} aria-selected:border-border aria-selected:bg-hover aria-selected:text-foreground`}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => acceptCommand(c)}
+              title={c.path}
+            >
+              <span className="font-mono text-[13px]">
+                {c.name}
+                {c.argumentHint && <span className="text-dim-foreground"> {c.argumentHint}</span>}
+              </span>
+              <span className="ml-auto text-[12px] text-dim-foreground truncate">
+                {c.description}
+                {c.scope === "global" ? " · global" : ""}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       {showMentions && (
         <div
           id="chat-mentions"
@@ -343,12 +410,12 @@ export function Composer({
         placeholder={
           busy
             ? "Add to the running turn…"
-            : `Ask BAKED to do something · @ adds a file or symbol · ! runs a command${
+            : `Ask BAKED to do something${loadCommands ? " · / runs a custom command" : ""} · @ adds a file or symbol · ! runs a command${
                 acceptsImages ? " · paste or drop images" : ""
               }`
         }
         aria-autocomplete="list"
-        aria-controls={showMentions ? "chat-mentions" : undefined}
+        aria-controls={showCommands ? "chat-commands" : showMentions ? "chat-mentions" : undefined}
         onChange={(event) => {
           setText(event.target.value);
           setCaret(event.target.selectionStart);
@@ -362,6 +429,30 @@ export function Composer({
             }
           : {})}
         onKeyDown={(event) => {
+          if (showCommands) {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              const step = event.key === "ArrowDown" ? 1 : -1;
+              setCommandIdx((i) => (i + step + commandMatches.length) % commandMatches.length);
+              return;
+            }
+            const picked = commandMatches[commandIdx];
+            // Enter on a name typed in full sends it; Tab or Enter on a partial name completes it.
+            if (
+              event.key === "Tab" ||
+              (event.key === "Enter" && !event.shiftKey && picked && picked.name !== text.trim())
+            ) {
+              event.preventDefault();
+              acceptCommand(picked);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setDismissed(text);
+              return;
+            }
+          }
           if (showMentions) {
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
               event.preventDefault();

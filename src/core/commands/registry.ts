@@ -174,6 +174,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["folder", "workspace", "sessions", "runs", "working set"],
   },
   {
+    cmd: "/project rename",
+    ic: "folder",
+    desc: "Rename this project in every app; no name restores the default",
+    category: "Session",
+    tags: ["folder", "workspace", "name", "title"],
+  },
+  {
     cmd: "/projects",
     ic: "folder",
     desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",
@@ -620,6 +627,27 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["prompt", "config"],
   },
   {
+    cmd: "/instructions files",
+    ic: "system",
+    desc: "List instruction files in prompt order; Enter edits one in $EDITOR",
+    category: "Settings",
+    tags: ["prompt", "agents", "claude"],
+  },
+  {
+    cmd: "/instructions show",
+    ic: "system",
+    desc: "Show an instruction file's content",
+    category: "Settings",
+    tags: ["prompt", "view"],
+  },
+  {
+    cmd: "/instructions edit",
+    ic: "system",
+    desc: "Edit or create an instruction file in $EDITOR",
+    category: "Settings",
+    tags: ["prompt", "agents.md", "create"],
+  },
+  {
     cmd: "/mode",
     ic: "cog",
     desc: "Switch Baked mode",
@@ -635,6 +663,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["animation", "reduced motion", "accessibility"],
   },
   {
+    cmd: "/notifications",
+    ic: "info",
+    desc: "System notifications and the webhook for runs that wait for you",
+    category: "Settings",
+    tags: ["webhook", "alerts", "notify", "attention"],
+  },
+  {
     cmd: "/reasoning",
     ic: "brain",
     desc: "Show or hide reasoning content",
@@ -647,6 +682,13 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Settings hub — all options in one place",
     category: "Settings",
     tags: ["config", "preferences", "hub"],
+  },
+  {
+    cmd: "/telemetry",
+    ic: "info",
+    desc: "Turn anonymous usage telemetry on or off",
+    category: "Settings",
+    tags: ["privacy", "usage", "opt out", "tracking"],
   },
   {
     cmd: "/theme",

@@ -13,11 +13,13 @@ import {
   type StageProgress,
   type StartEstimate,
 } from "./estimate.js";
+import { type RoutingSummary, routingSummary } from "./routing.js";
 import {
   type ClarificationMode,
   type ExecutionMode,
   executionModeOf,
   MAX_CONCURRENT_WRITERS,
+  ProfileSchema,
   type RunPolicy,
   type RunSnapshot,
   type StageState,
@@ -26,7 +28,7 @@ import {
 import type { NativeWorkflowService } from "./service.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
 import { parseRunDefinition, stageKind } from "./v2/runtime.js";
-import { runRoot } from "./worktree.js";
+import { runRoot, worktreeView } from "./worktree.js";
 
 const RECENT_EVENTS = 40;
 const OUTPUT_TAIL_LINES = 40;
@@ -402,6 +404,19 @@ function runModelOf(store: WorkflowStore, runId: string): string | null {
   }
 }
 
+/** The effective models of a run by role and stage, from its latest routing record. */
+export function readRoutingSummary(store: WorkflowStore, runId: string): RoutingSummary | null {
+  const row = store.latestArtifact(runId, ROUTING_ARTIFACT);
+  if (!row) return null;
+  try {
+    const record = RoutingRecordSchema.parse(JSON.parse(store.readArtifact(runId, row.id)));
+    const profiles = ProfileSchema.array().parse(JSON.parse(store.run(runId).profiles_json));
+    return routingSummary(record, profiles);
+  } catch {
+    return null;
+  }
+}
+
 export function readWorkflowView(service: NativeWorkflowService, runId: string) {
   const store = service.store;
   return store.readTransaction(() => {
@@ -423,6 +438,8 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       requests: store.requests(runId),
       events: recentEvents(store, row),
       runModel: runModelOf(store, runId),
+      worktree: worktreeView(service.workspace, store.state(runId)),
+      routing: readRoutingSummary(store, runId),
     };
   });
 }

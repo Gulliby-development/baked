@@ -18,10 +18,12 @@ const TITLES: Record<ProjectSection, string> = {
   acceptance: "Acceptance",
   usage: "Usage",
   graph: "Code graph",
+  git: "Git",
   gates: "Gates and checks",
   instructions: "Instructions",
   "working-set": "Working set",
   "run-memory": "Run memory",
+  "chat-memory": "Chat memory",
   skills: "Skills",
 };
 

@@ -24,7 +24,21 @@ export interface RunRequest {
 export interface RunDetailStatus extends Omit<RunStatus, "requests"> {
   reason?: string;
   requests: RunRequest[];
+  /**
+   * The run's worktree (`worktreeView` in src/core/workflows/worktree.ts); `present` is false once
+   * delivery or a discard removed it. Null for runs in the working copy; absent from older backends.
+   */
+  worktree?: RunWorktree | null;
 }
+
+export interface RunWorktree {
+  path: string;
+  branch: string;
+  present: boolean;
+}
+
+/** The outcomes `baked workflow recover` records for an effect of unknown outcome. */
+export type RecoveryResolution = "record-applied" | "record-not-applied" | "retry" | "cancel";
 
 /** One entry of `GET /v1/workflow/runs/:id/artifacts`. */
 export interface ArtifactEntry {
@@ -166,6 +180,34 @@ export const runs = {
       requestId,
       evidence,
       accepted,
+    }),
+  /** Settles an interrupted effect (API group B, capability `setup`). */
+  recover: (
+    key: string,
+    run: Pick<RunSnapshot, "runId" | "revision">,
+    decision: {
+      requestId: string;
+      effectId: string;
+      resolution: RecoveryResolution;
+      evidence: string;
+    },
+  ) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "recover"), {
+      commandId: crypto.randomUUID(),
+      expectedRevision: run.revision,
+      ...decision,
+    }),
+  /** A new run from this one's spec and plan; it waits for a new approval. Returns the new run. */
+  fork: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "fork"), {
+      commandId: crypto.randomUUID(),
+      expectedRevision: run.revision,
+    }),
+  /** Removes an ended run's worktree and deletes its branch. */
+  discardWorktree: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "discard-worktree"), {
+      commandId: crypto.randomUUID(),
+      expectedRevision: run.revision,
     }),
   /** Continues a run past a soft checkpoint (API group B, capability `setup`). */
   continue: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, requestId: string) =>

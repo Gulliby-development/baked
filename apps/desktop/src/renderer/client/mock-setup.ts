@@ -6,6 +6,11 @@ import type { ApiResponse } from "../../shared/api.js";
 import type { MockRequest, MockRoute } from "./mock-routes.js";
 import type {
   CatalogSkill,
+  ChatMemoryCleanupAction,
+  ChatMemoryEdit,
+  ChatMemoryEntry,
+  ChatMemorySettings,
+  ChatMemoryView,
   Check,
   CheckList,
   CheckRunResult,
@@ -73,6 +78,64 @@ const STYLE_MD = `# Documentation style
 Technical and short: setup, behavior, architecture, troubleshooting.
 `;
 
+const CLAUDE_MD = `See AGENTS.md. Run bun run typecheck before every commit.
+`;
+
+/** The instruction sources the backend knows (INSTRUCTION_SOURCES in src/core/instructions.ts). */
+const SOURCES = [
+  {
+    id: "baked",
+    label: "baked.md",
+    files: ["baked.md", ".baked/baked.md", ".baked/instructions.md"],
+    defaultEnabled: true,
+  },
+  {
+    id: "claude",
+    label: "CLAUDE.md",
+    files: ["CLAUDE.md", ".claude/instructions.md"],
+    defaultEnabled: false,
+  },
+  {
+    id: "cursorrules",
+    label: ".cursorrules",
+    files: [".cursorrules", ".cursor/rules", ".cursor/rules.md"],
+    defaultEnabled: false,
+  },
+  {
+    id: "github-copilot",
+    label: "Copilot Instructions",
+    files: [".github/copilot-instructions.md"],
+    defaultEnabled: false,
+  },
+  {
+    id: "codex",
+    label: "AGENTS.md",
+    files: ["AGENTS.md", ".agents/instructions.md"],
+    defaultEnabled: false,
+  },
+];
+
+/** The instruction list as the backend answers it: files of switched-off sources unnumbered. */
+function instructionList(s: SetupState) {
+  const on = new Set(s.sourcesOn);
+  let order = 0;
+  const files = s.instructions.map((f) => {
+    const enabled = f.source === "project" || on.has(f.source);
+    return {
+      ...f,
+      order: enabled ? ++order : null,
+      enabled,
+      sourceLabel: SOURCES.find((src) => src.id === f.source)?.label ?? "baked/project.json",
+    };
+  });
+  return {
+    files,
+    sources: SOURCES.map((src) => ({ ...src, enabled: on.has(src.id) })),
+    sourcesScope: "project" as const,
+    promptBytes: files.filter((f) => f.enabled).reduce((sum, f) => sum + f.bytes + 40, 60),
+  };
+}
+
 const BAKED_MD = `Prefer small, reviewable changes. Explain trade-offs in one line.
 `;
 
@@ -122,6 +185,8 @@ interface ProjectGate {
 interface SetupState {
   summary: ProjectSummary;
   instructions: InstructionFile[];
+  /** The instruction sources switched on (`instructionFiles`). */
+  sourcesOn: string[];
   project: ConfigFile;
   projectGates: ProjectGate[];
   /** The latest on-demand result of each check, as the backend keeps it until it stops. */
@@ -213,26 +278,32 @@ function initialState(key: string): SetupState {
       },
       instructions: { files: ["docs/agent-notes.md", "../baked-docs/style.md"], skipped: [] },
     },
-    instructions: [
-      instruction(1, "AGENTS.md", `${root}\\AGENTS.md`, "codex", "project", AGENTS_MD),
-      instruction(2, "baked.md", "C:\\Users\\you\\baked.md", "baked", "global", BAKED_MD),
-      instruction(
-        3,
-        "docs/agent-notes.md",
-        `${root}\\docs\\agent-notes.md`,
-        "project",
-        "project",
-        NOTES_MD,
-      ),
-      instruction(
-        4,
-        "../baked-docs/style.md",
-        "C:\\Project\\baked-docs\\style.md",
-        "project",
-        "project",
-        STYLE_MD,
-      ),
-    ],
+    sourcesOn: ["baked", "codex"],
+    // The "client" sample project has no instruction files, to show the empty state.
+    instructions:
+      key === "client"
+        ? []
+        : [
+            instruction(1, "AGENTS.md", `${root}\\AGENTS.md`, "codex", "project", AGENTS_MD),
+            instruction(2, "baked.md", "C:\\Users\\you\\baked.md", "baked", "global", BAKED_MD),
+            instruction(
+              3,
+              "docs/agent-notes.md",
+              `${root}\\docs\\agent-notes.md`,
+              "project",
+              "project",
+              NOTES_MD,
+            ),
+            instruction(
+              4,
+              "../baked-docs/style.md",
+              "C:\\Project\\baked-docs\\style.md",
+              "project",
+              "project",
+              STYLE_MD,
+            ),
+            instruction(0, "CLAUDE.md", `${root}\\CLAUDE.md`, "claude", "project", CLAUDE_MD),
+          ],
     project: {
       workflows: {
         enabled: true,
@@ -688,10 +759,10 @@ function resolveRef(routing: ModelRouting | undefined, ref: string, runModel: st
     : { model: route.model, effort: route.effort ?? null, fallback: route.fallback ?? [] };
 }
 
-function explain(s: SetupState, workflowId: string): RouteExplanation {
+function explain(s: SetupState, workflowId: string, model?: string | null): RouteExplanation {
   const view = configView(s);
   const routing = view.effective.modelRouting;
-  const runModel = view.effective.defaultModel ?? "anthropic/claude-sonnet-5-5";
+  const runModel = model || view.effective.defaultModel || "anthropic/claude-sonnet-5-5";
   const roleOf: Record<string, string> = {
     research: "researcher",
     plan: "planner",
@@ -730,7 +801,11 @@ function explain(s: SetupState, workflowId: string): RouteExplanation {
       (st) => (st.stageId === "review" || st.stageId === "converge") && st.model === implement,
     )
     .map((st) => `${st.stageId} uses ${implement}, the model of the implementation`);
-  return { workflowId, runModel, stages, profiles: {}, warnings };
+  // Profiles without a route of their own keep the run model.
+  const profiles: RouteExplanation["profiles"] = Object.fromEntries(
+    [...new Set(Object.values(roleOf))].map((id) => [id, { model: runModel, source: "run model" }]),
+  );
+  return { workflowId, runModel, stages, profiles, warnings };
 }
 
 const MOCK_ROLES = [
@@ -1011,6 +1086,155 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
   return response(200, { id: edit.id, ...memoryState(key) });
 }
 
+const chatMemories = new Map<string, { settings: ChatMemorySettings; all: ChatMemoryEntry[] }>();
+function chatMemoryState(key: string) {
+  let found = chatMemories.get(key);
+  if (!found) {
+    const at = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    const memory = (
+      id: string,
+      scope: ChatMemoryEntry["scope"],
+      category: ChatMemoryEntry["category"],
+      summary: string,
+      extra: Partial<ChatMemoryEntry> = {},
+    ): ChatMemoryEntry => ({
+      id,
+      scope,
+      category,
+      summary,
+      details: "",
+      topics: [],
+      source: "agent",
+      createdAt: at(40),
+      lastUsedAt: at(2),
+      useCount: 3,
+      pinned: false,
+      hidden: false,
+      ...extra,
+    });
+    found = {
+      settings: { writeScope: "project", readScope: "all", settingsScope: "project" },
+      all: [
+        memory(
+          "6f2a9c41-0d1e-4b7a-9a55-1c2d3e4f5a60",
+          "project",
+          "pref",
+          "Use bun for scripts and tests, never npm.",
+          {
+            source: "user",
+            pinned: true,
+            useCount: 14,
+            topics: ["tooling"],
+          },
+        ),
+        memory(
+          "b81e0f3d-77aa-4c19-8e02-5d6c7b8a9f10",
+          "project",
+          "gotcha",
+          "Desktop tests run outside a browser and get the mock bridge.",
+          {
+            details: "Set window = {} before importing the client so it picks the mock.",
+            topics: ["desktop", "tests"],
+          },
+        ),
+        memory(
+          "0c4d5e6f-1a2b-4c3d-8e9f-a0b1c2d3e4f5",
+          "global",
+          "pref",
+          "Keep commit subjects under 60 characters.",
+          { useCount: 9 },
+        ),
+        memory(
+          "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "project",
+          "context",
+          "The parser lived in src/old-parser.ts.",
+          {
+            lastUsedAt: at(120),
+            useCount: 0,
+          },
+        ),
+        memory(
+          "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+          "global",
+          "decision",
+          "Answers stay short.",
+          {
+            hidden: true,
+          },
+        ),
+      ],
+    };
+    chatMemories.set(key, found);
+  }
+  return found;
+}
+function chatMemoryView(key: string): ChatMemoryView {
+  const m = chatMemoryState(key);
+  return {
+    settings: { ...m.settings },
+    entries: m.all.filter((e) => !e.hidden),
+    hidden: m.all.filter((e) => e.hidden),
+    cleanupHint: null,
+  };
+}
+function editChatMemory(key: string, edit: Partial<ChatMemoryEdit>) {
+  const m = chatMemoryState(key);
+  if (edit.action === "purge") {
+    const before = m.all.length;
+    m.all = m.all.filter((e) => edit.scope !== "all" && e.scope !== edit.scope);
+    return response(200, { cleared: before - m.all.length, ...chatMemoryView(key) });
+  }
+  const target = edit as Partial<Extract<ChatMemoryEdit, { id: string }>>;
+  const entry = m.all.find((e) => e.id === target.id && e.scope === target.scope);
+  if (!entry) return error(404, "NOT_FOUND", `No ${target.scope ?? ""} memory ${target.id ?? ""}`);
+  if (target.action === "pin") entry.pinned = true;
+  else if (target.action === "unpin") entry.pinned = false;
+  else if (target.action === "hide") entry.hidden = true;
+  else if (target.action === "restore") entry.hidden = false;
+  else if (target.action === "edit") {
+    const summary = (target.summary ?? "").trim();
+    if (!summary) return error(400, "INVALID_REQUEST", "summary: Too small");
+    entry.summary = summary;
+    if (target.details !== undefined) entry.details = target.details;
+    if (target.category !== undefined) entry.category = target.category;
+    entry.hidden = false;
+  }
+  return response(200, chatMemoryView(key));
+}
+function chatMemoryCleanup(key: string) {
+  const stale = chatMemoryState(key).all.find((e) => !e.hidden && !e.pinned && e.useCount === 0);
+  return response(200, {
+    candidates: stale
+      ? [
+          {
+            id: stale.id,
+            scope: stale.scope,
+            kind: "dead",
+            summary: stale.summary,
+            detail: "src/old-parser.ts",
+          },
+        ]
+      : [],
+  });
+}
+function applyChatMemoryCleanup(key: string, actions: ChatMemoryCleanupAction[]) {
+  const m = chatMemoryState(key);
+  const applied = { hidden: 0, pinned: 0 };
+  for (const a of actions) {
+    const entry = m.all.find((e) => e.id === a.id && e.scope === a.scope);
+    if (!entry) continue;
+    if (a.action === "hide") {
+      entry.hidden = true;
+      applied.hidden++;
+    } else {
+      entry.pinned = true;
+      applied.pinned++;
+    }
+  }
+  return response(200, { applied, ...chatMemoryView(key) });
+}
+
 export const setupRoutes: MockRoute = (request) => {
   const { key, method, path } = request;
   const skill = skillRoutes(request);
@@ -1041,6 +1265,25 @@ export const setupRoutes: MockRoute = (request) => {
       return response(200, memoryState(key));
     case "POST /v1/workflow/memory":
       return editMemory(key, body<RunMemoryEdit & { id: string; text: string }>(request));
+    case "GET /v1/memory":
+      return response(200, chatMemoryView(key));
+    case "POST /v1/memory":
+      return editChatMemory(key, body<ChatMemoryEdit>(request));
+    case "PUT /v1/memory/settings": {
+      const m = chatMemoryState(key);
+      const change = body<ChatMemorySettings>(request);
+      if (!Object.keys(change).length)
+        return error(400, "INVALID_REQUEST", "body: Name at least one setting");
+      m.settings = { ...m.settings, ...change };
+      return response(200, chatMemoryView(key));
+    }
+    case "GET /v1/memory/cleanup":
+      return chatMemoryCleanup(key);
+    case "POST /v1/memory/cleanup":
+      return applyChatMemoryCleanup(
+        key,
+        body<{ actions: ChatMemoryCleanupAction[] }>(request).actions ?? [],
+      );
     case "GET /v1/workflow/gates":
       return response(200, gates(s));
     case "POST /v1/workflow/gates/confirm": {
@@ -1077,27 +1320,51 @@ export const setupRoutes: MockRoute = (request) => {
       });
     }
     case "GET /v1/projects/current/instructions":
-      return response(200, {
-        files: s.instructions,
-        promptBytes: s.instructions.reduce((sum, f) => sum + f.bytes + 40, 60),
-      });
+      return response(200, instructionList(s));
+    case "PUT /v1/projects/current/instructions/sources": {
+      const put = body<{ source: string; enabled: boolean }>(request);
+      const id = put.source ?? "";
+      if (!SOURCES.some((src) => src.id === id))
+        return error(404, "NOT_FOUND", `${id} is not an instruction source`);
+      s.sourcesOn = put.enabled
+        ? [...new Set([...s.sourcesOn, id])]
+        : s.sourcesOn.filter((on) => on !== id);
+      return response(200, instructionList(s));
+    }
     case "PUT /v1/projects/current/instructions": {
-      const put = body<{ path: string; content: string; expectedHash: string }>(request);
-      const at = s.instructions.findIndex((f) => f.path === put.path);
+      const put = body<{ path: string; content: string; expectedHash: string | null }>(request);
+      const path = put.path ?? "";
+      const at = s.instructions.findIndex((f) => f.path === path);
       const found = s.instructions[at];
-      if (!found) return error(404, "NOT_FOUND", `${put.path} is not an instruction file`);
-      if (found.hash !== put.expectedHash)
-        return error(409, "INPUT_CHANGED", `${put.path} changed since it was read`);
-      const updated = instruction(
-        found.order,
-        found.path,
-        found.absolutePath,
-        found.source,
-        found.scope,
-        put.content ?? "",
-      );
-      s.instructions[at] = updated;
-      return response(200, updated);
+      if (put.expectedHash === null) {
+        const source = SOURCES.find((src) => src.files.includes(path));
+        if (!source) return error(404, "NOT_FOUND", `${path} is not an instruction file name`);
+        if (found) return error(409, "INPUT_CHANGED", `${path} already exists`);
+        s.instructions.unshift(
+          instruction(
+            0,
+            path,
+            `${s.summary.root}\\${path}`,
+            source.id,
+            "project",
+            put.content ?? "",
+          ),
+        );
+      } else {
+        if (!found) return error(404, "NOT_FOUND", `${path} is not an instruction file`);
+        if (found.hash !== put.expectedHash)
+          return error(409, "INPUT_CHANGED", `${path} changed since it was read`);
+        s.instructions[at] = instruction(
+          0,
+          found.path,
+          found.absolutePath,
+          found.source,
+          found.scope,
+          put.content ?? "",
+        );
+      }
+      const saved = instructionList(s).files.find((f) => f.path === path);
+      return response(200, saved);
     }
     case "GET /v1/commands":
       return response(200, { commands: COMMANDS });
@@ -1127,7 +1394,10 @@ export const setupRoutes: MockRoute = (request) => {
         Object.entries(WORKFLOW_STAGES).map(([id, stages]) => ({ id, stages })),
       );
     case "GET /v1/workflow/route":
-      return response(200, explain(s, request.query.get("workflow") ?? "sdd"));
+      return response(
+        200,
+        explain(s, request.query.get("workflow") ?? "sdd", request.query.get("model")),
+      );
     case "GET /v1/workflow/routing":
       return response(200, routingOverview(s, request.query.get("workflow")));
     case "PATCH /v1/workflow/routing": {

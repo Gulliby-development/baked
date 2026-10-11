@@ -110,6 +110,15 @@ export function createMockBridge(): DesktopBridge {
       emitProjects();
       return projects;
     },
+    renameProject: async (key, name) => {
+      const trimmed = name.trim();
+      if (trimmed.length > 120) throw new Error("A project name has at most 120 characters.");
+      projects = projects.map((p) =>
+        p.key === key ? { ...p, name: trimmed || (p.path.split("/").at(-1) ?? p.path) } : p,
+      );
+      emitProjects();
+      return projects;
+    },
     onProjects: (listener) => {
       projectListeners.add(listener);
       return () => projectListeners.delete(listener);
@@ -143,9 +152,13 @@ export function createMockBridge(): DesktopBridge {
             "plan-mode",
             "chat-undo",
             "run-memory",
+            "chat-memory",
             "images",
             "code-graph",
             "skills-install",
+            "custom-commands",
+            "settings",
+            "git",
           ],
         });
       const url = new URL(path, "http://mock");

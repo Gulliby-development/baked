@@ -24,7 +24,7 @@
  * must name the loopback address and port (DNS rebinding); requests with an Origin header are
  * refused unless that origin was allowed explicitly.
  */
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
@@ -32,7 +32,9 @@ import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow
 import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
+import { runsFreezingFile } from "../instruction-files.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
+import { MemoryManager } from "../memory/manager.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
@@ -40,18 +42,13 @@ import { ProjectService } from "../projects/service.js";
 import type { SkillCatalog } from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
+import { type AttentionItem, attentionItems } from "../workflows/attention.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import { redactSecrets } from "../workflows/redaction.js";
-import {
-  type RunSnapshot,
-  type RunState,
-  SafeId,
-  type WorkflowErrorCode,
-} from "../workflows/schemas.js";
+import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
-import { isAcceptanceRequest } from "../workflows/v2/acceptance.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -60,8 +57,10 @@ import {
   removeTokenFile,
   writeTokenFile,
 } from "./auth.js";
+import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
+import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { memoryRoute } from "./memory-routes.js";
@@ -90,6 +89,7 @@ import {
   UsageQuery,
   WorkingSetBody,
 } from "./schemas.js";
+import { type SettingsSecretStore, settingsRoute } from "./settings-routes.js";
 import { setupRoute } from "./setup-routes.js";
 
 /** How long shutdown waits for the HTTP server to report its connections closed. */
@@ -100,6 +100,7 @@ export const CAPABILITIES = [
   "workflow",
   "attention",
   "projects",
+  "project-rename",
   "sessions",
   "setup",
   "initiatives",
@@ -111,9 +112,13 @@ export const CAPABILITIES = [
   "plan-mode",
   "chat-undo",
   "run-memory",
+  "chat-memory",
   "images",
   "code-graph",
   "skills-install",
+  "custom-commands",
+  "settings",
+  "git",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -137,6 +142,8 @@ export interface ApiServerOptions {
   homeDir?: string;
   /** The skills.sh catalog and installer; tests pass a fake one. */
   skillCatalog?: SkillCatalog;
+  /** Where secret settings such as web search keys live; tests pass an in-memory one. */
+  settingsSecrets?: SettingsSecretStore;
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -337,6 +344,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.worktree) flags.worktree = true;
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
+  if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   return validateWorkflowArgs({
     command: "run",
@@ -352,25 +360,7 @@ function wantsJson(req: Request): boolean {
   return /application\/json/i.test(accept) && !/text\/event-stream/i.test(accept);
 }
 
-/** One thing waiting for a person: a pending request, or a blocked run (`requestId` null). */
-export interface AttentionItem {
-  /** A run's request or blocked run, a chat session's pending prompt, or an initiative's request. */
-  source: "run" | "chat" | "initiative";
-  /** Set on initiative items only. */
-  initiativeId?: string;
-  runId: string | null;
-  featureId: string | null;
-  sessionId: string | null;
-  /** The session title of a chat prompt, or the initiative title. */
-  title: string | null;
-  status: RunState;
-  requestId: string | null;
-  /** The request kind, or the reason of a blocked run. */
-  kind: string;
-  /** False for an advisory acceptance request, which the run does not wait for. */
-  blocking: boolean;
-  createdAt: number;
-}
+export type { AttentionItem } from "../workflows/attention.js";
 
 function queryOf<T extends z.ZodType>(url: URL, schema: T): z.infer<T> {
   return schema.parse(Object.fromEntries(url.searchParams));
@@ -403,6 +393,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       workspace: service.workspace,
       config: service.config,
       host: new BakeChatHost(service.workspace, service.config, service.rootContext),
+      ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);
   const graphCache = new CodeGraphCache(service.workspace);
@@ -425,19 +416,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   };
   /** The latest on-demand result of each check. */
   const checkResults = new Map<string, CheckRunRecord>();
+  const gitQueue: { tail: Promise<unknown> } = { tail: Promise.resolve() };
 
   /** Runs that have not ended and froze `absolutePath` as an input. */
   function runsFreezing(absolutePath: string): string[] {
-    const target = resolve(absolutePath);
-    return service.store
-      .list(100)
-      .items.filter((run) => !["completed", "failed", "cancelled"].includes(run.status))
-      .filter((run) =>
-        Object.keys(service.store.state(run.runId).frozenFiles).some(
-          (file) => resolve(file) === target,
-        ),
-      )
-      .map((run) => run.runId);
+    return runsFreezingFile(service.store, absolutePath);
   }
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
@@ -668,54 +651,17 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
 
   /** Everything waiting for a person, as `GET /v1/attention` returns it. */
   function attention(): AttentionItem[] {
-    const runs: AttentionItem[] = service.store.attention().map((row) => ({
-      source: "run",
-      sessionId: null,
-      title: null,
-      runId: row.run_id,
-      featureId: row.feature_id,
-      status: row.status,
-      requestId: row.request_id,
-      kind: row.kind,
-      // An acceptance test's decision is advisory: the run goes on without it.
-      blocking:
-        row.body_json === null ||
-        !isAcceptanceRequest({ kind: row.kind, body_json: row.body_json }),
-      createdAt: row.created_at,
-    }));
-    const prompts: AttentionItem[] = chat.attention().map(({ session, prompt }) => ({
-      source: "chat",
-      sessionId: session.id,
-      title: session.title,
-      runId: null,
-      featureId: null,
-      status: "waiting",
-      requestId: prompt.id,
-      kind: prompt.kind,
-      blocking: true,
-      createdAt: prompt.createdAt,
-    }));
-    const decisions: AttentionItem[] = initiatives.store.list().flatMap((row) =>
-      initiatives.store
-        .requests(row.id)
-        .filter((request) => request.status === "pending")
-        .map(
-          (request): AttentionItem => ({
-            source: "initiative",
-            initiativeId: row.id,
-            sessionId: null,
-            title: row.title,
-            runId: null,
-            featureId: null,
-            status: "waiting",
-            requestId: request.id,
-            kind: request.kind,
-            blocking: true,
-            createdAt: request.created_at,
-          }),
-        ),
+    return attentionItems(
+      service.store,
+      initiatives.store,
+      chat.attention().map(({ session, prompt }) => ({
+        sessionId: session.id,
+        title: session.title,
+        promptId: prompt.id,
+        kind: prompt.kind,
+        createdAt: prompt.createdAt,
+      })),
     );
-    return [...runs, ...prompts, ...decisions].sort((a, b) => a.createdAt - b.createdAt);
   }
 
   /** Streams the whole attention list once at the start and again whenever it changes. */
@@ -788,6 +734,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
+      (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
       (await graphRoute({
         ...ctx,
         workspace: service.workspace,
@@ -803,6 +750,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         results: checkResults,
         signal: shutdown.signal,
       })) ??
+      (await gitRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        store: service.store,
+        queue: gitQueue,
+      })) ??
       (await setupRoute({
         ...ctx,
         workspace: service.workspace,
@@ -811,6 +765,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         ...(options.configDir ? { configDir: options.configDir } : {}),
         ...(options.homeDir ? { homeDir: options.homeDir } : {}),
         ...(options.skillCatalog ? { skillCatalog: options.skillCatalog } : {}),
+      })) ??
+      (await settingsRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
+        ...(options.settingsSecrets ? { secrets: options.settingsSecrets } : {}),
       }));
     if (routed) return routed;
     if (path === "/v1/projects") {
@@ -862,6 +823,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (query.workflow) flags.workflow = query.workflow;
       if (query.model) flags.model = query.model;
       if (query.route) flags.route = query.route;
+      if (query.modelStrict === "true") flags["model-strict"] = true;
       if (query.worktree === "true") flags.worktree = true;
       if (query.writers) flags.writers = query.writers;
       if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
@@ -1082,6 +1044,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   }
 
   let stopping: Promise<void> | undefined;
+  let ownMemory: MemoryManager | null = null;
+  /**
+   * The memory store chat sessions use: the shared root's once chat started it, so scope changes
+   * reach running sessions; until then one of the API's own, which reads and writes the same files.
+   */
+  const chatMemory = async (): Promise<MemoryManager> => {
+    if (service.rootContext.started && !options.configDir) {
+      const root = await service.rootContext.get().catch(() => null);
+      if (root) return root.getMemoryManager();
+    }
+    ownMemory ??= new MemoryManager(service.workspace, options.configDir);
+    return ownMemory;
+  };
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
       shutdown.abort(new Error("API server shutdown"));
@@ -1092,6 +1067,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         await Promise.race([server.stop(true), Bun.sleep(STOP_WAIT_MS)]);
         await Promise.allSettled([...drives]);
         await chat.shutdown();
+        ownMemory?.close();
         await service.shutdown();
         if (options.ownsService) {
           // Waits for the shared code-intelligence worker to stop its language servers.

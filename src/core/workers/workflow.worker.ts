@@ -12,6 +12,10 @@ import { scaledPolicy } from "../workflows/budget.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { estimateStart, readHistory } from "../workflows/estimate.js";
 import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
+import {
+  InitiativeStartInputSchema,
+  initiativeStartRequest,
+} from "../workflows/initiatives/forms.js";
 import { InitiativeId } from "../workflows/initiatives/plan.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import {
@@ -134,6 +138,18 @@ const ctx = createWorkerHandler(
       if (result.drive) driveInitiative(id);
       return result.view;
     },
+    // Starts an initiative from the TUI form, then splits and drives it in the background.
+    async startInitiative(input) {
+      const service = currentInitiatives();
+      const view = await service.start(
+        initiativeStartRequest(InitiativeStartInputSchema.parse(input), service.workflows.config, {
+          commandId: newId(),
+          ownerLabel: "TUI",
+        }),
+      );
+      driveInitiative(view.initiativeId);
+      return view;
+    },
     // Past runs with their spend, for the editor's estimate of a definition.
     history: () => readHistory(current().store),
     info: () => {
@@ -242,6 +258,7 @@ const ctx = createWorkerHandler(
       if (input === "pause") return runtime.pause(id, command);
       if (input === "cancel") return runtime.cancel(id, command);
       if (input === "fork") return runtime.fork(id, command);
+      if (input === "discard-worktree") return runtime.discardWorktree(id, command);
       if (typeof input === "object" && input !== null && "reroute" in input) {
         // One user decision: switch the run model, then continue from where the run stopped.
         const model = z

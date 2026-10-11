@@ -5,7 +5,7 @@ import { registerProviderSecrets } from "../core/secrets.js";
 import { applyCwd } from "../core/utils/resolve-cwd.js";
 import type { AppConfig } from "../types/index.js";
 import { VERSION } from "./constants.js";
-import { listModels, listProviders, setKey } from "./providers.js";
+import { listModels, listProviders, removeKey, setKey } from "./providers.js";
 import { runChat, runPrompt } from "./run.js";
 import type { HeadlessAction } from "./types.js";
 
@@ -45,6 +45,9 @@ export async function runHeadless(action: HeadlessAction): Promise<void> {
       break;
     case "set-key":
       setKey(action.provider, action.key);
+      break;
+    case "remove-key":
+      removeKey(action.provider);
       break;
     case "run":
       await runPrompt(action.opts, config);

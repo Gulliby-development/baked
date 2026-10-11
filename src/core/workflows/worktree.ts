@@ -31,6 +31,25 @@ export const taskWorktreePath = (runId: string, taskId: string): string =>
 /** The branch that carries a worktree run's accepted changes. */
 export const runBranch = (runId: string): string => `baked/wf/${runId}`;
 
+/** A run's worktree as the run screens show it; `present` turns false once delivery or a discard removed it. */
+export interface RunWorktreeView {
+  path: string;
+  branch: string;
+  present: boolean;
+}
+export function worktreeView(
+  workspace: string,
+  state: Pick<RuntimeState, "worktree">,
+): RunWorktreeView | null {
+  const worktree = state.worktree;
+  if (!worktree) return null;
+  return {
+    path: worktree.path,
+    branch: worktree.branch,
+    present: existsSync(join(workspace, worktree.path)),
+  };
+}
+
 /** The directory a run reads, edits and checks in: its worktree once it exists, else the project. */
 export function runRoot(workspace: string, state: Pick<RuntimeState, "worktree">): string {
   return state.worktree ? join(workspace, state.worktree.path) : workspace;

@@ -63,5 +63,53 @@ export function supersedeResearch(
 /** Whether a blocking finding may be settled by a recorded assumption instead of a person. */
 export function assumable(finding: { kind: string; blocking: boolean }): boolean {
   // A scope finding says the spec drops what the request asked for; only the person decides that.
-  return finding.kind !== "scope";
+  // An inconsistency is a concrete defect in the artifacts (two things that cannot both hold, often
+  // with a reproduction), not an open decision: assuming it away only moves it to review, where it
+  // returned as a repair loop (md-site: a path collision between two generated files).
+  return finding.kind !== "scope" && finding.kind !== "inconsistency";
+}
+
+/** Whether a blocking finding is a defect the analysis must see fixed rather than assumed. */
+export function persistentDefect(finding: { kind: string; blocking: boolean }): boolean {
+  return finding.blocking && finding.kind === "inconsistency";
+}
+
+/** What the host tells the spec author when a defect survived the assumption reroute. */
+export const DEFECT_NOTE =
+  "These findings are concrete inconsistencies that already survived one correction. Do not assume them away and do not weaken the spec to hide them: change the artifacts so that both statements hold (rename, split or reorder), or state in the spec which side is wrong and remove it.";
+
+/**
+ * The assumptions the analysis recorded, as known risks for the agents that review the result: an
+ * assumption nobody verified is where a defect that analysis could not settle is most likely to be.
+ */
+export function knownRisks(artifact: string | null): {
+  note: string;
+  assumed: { id: string; kind: string; refs: string[]; description: string }[];
+} | null {
+  if (!artifact) return null;
+  try {
+    const parsed = JSON.parse(artifact) as {
+      assumed?: { id?: unknown; kind?: unknown; refs?: unknown; description?: unknown }[];
+    };
+    const assumed = (parsed.assumed ?? []).flatMap((item) =>
+      typeof item.description === "string"
+        ? [
+            {
+              id: String(item.id ?? ""),
+              kind: String(item.kind ?? ""),
+              refs: Array.isArray(item.refs) ? item.refs.map(String) : [],
+              description: item.description.slice(0, 600),
+            },
+          ]
+        : [],
+    );
+    return assumed.length
+      ? {
+          note: "The analysis could not settle these findings and recorded them as assumptions. Check the result against each of them first; a failure here is a finding, not an accepted risk.",
+          assumed,
+        }
+      : null;
+  } catch {
+    return null;
+  }
 }

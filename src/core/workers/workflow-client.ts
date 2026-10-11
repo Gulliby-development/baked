@@ -2,6 +2,7 @@ import { randomUUID as newId } from "node:crypto";
 import type { AppConfig } from "../../types/index.js";
 import type { PastRun } from "../workflows/estimate.js";
 import type { GateRunResult } from "../workflows/gates.js";
+import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
 import type { InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction, InitiativeListView } from "../workflows/initiatives/view-model.js";
 import type { RollbackReport } from "../workflows/rollback.js";
@@ -24,6 +25,7 @@ export type WorkflowAction =
   | "pause"
   | "cancel"
   | "fork"
+  | "discard-worktree"
   | "extend"
   | { reroute: string }
   | Decision;
@@ -140,6 +142,10 @@ export class WorkflowClient extends WorkerClient {
   initiativeAction(initiativeId: string, action: InitiativeAction): Promise<InitiativeView> {
     return this.callWithTimeout<InitiativeView>(null, "initiativeAction", initiativeId, action);
   }
+  /** Starts an initiative; the worker splits and drives it in the background. */
+  startInitiative(input: InitiativeStartInput): Promise<InitiativeView> {
+    return this.callWithTimeout<InitiativeView>(null, "startInitiative", input);
+  }
   info(): Promise<WorkflowInfo> {
     return this.call<WorkflowInfo>("info");
   }
@@ -181,6 +187,8 @@ export class WorkflowClient extends WorkerClient {
     findings: (id: string) => this.views.get(id)?.findings ?? [],
     requests: (id: string) => this.views.get(id)?.requests ?? [],
     runModel: (id: string) => this.views.get(id)?.runModel ?? null,
+    worktree: (id: string) => this.views.get(id)?.worktree ?? null,
+    routing: (id: string) => this.views.get(id)?.routing ?? null,
   };
   async command(
     argv: string[],

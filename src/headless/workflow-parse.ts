@@ -58,6 +58,7 @@ export interface WorkflowArgs {
   inline?: Record<string, unknown>;
 }
 const flags = new Set([
+  "model-strict",
   "feature",
   "workflow",
   "prompt",
@@ -119,6 +120,7 @@ const flags = new Set([
 ]);
 const booleanFlags = new Set([
   "all",
+  "model-strict",
   "json",
   "events",
   "accept",
@@ -136,6 +138,7 @@ const booleanFlags = new Set([
 const preRunFlags = [
   "workflow",
   "model",
+  "model-strict",
   "route",
   "policy",
   "worktree",
@@ -160,6 +163,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "worktree",
     "writers",
     "route",
+    "model-strict",
     "clarification",
     "issue",
   ],
@@ -175,6 +179,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "confirm-auto-approval",
     "worktree",
     "route",
+    "model-strict",
   ],
   status: [],
   list: ["feature", "limit", "cursor", "status"],
@@ -237,6 +242,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   doctor: preRunFlags,
   estimate: preRunFlags,
 };
+/** The flag tables the argv parser checks, exposed so tests can assert they agree. */
+export const workflowFlagTables = { flags, booleanFlags, commandFlags };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
   if (!commands.includes(command as WorkflowCommand))
@@ -414,12 +421,15 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
   Closes #N, so merging it closes the issue. #N reads the origin remote's repository
   --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
+  --model applies to the active class only: a configured modelRouting class, role or stage route
+  still wins, and the start warns which agents run on another model. --model-strict makes the
+  model serve every class, role and stage of this run (only --route still overrides it)
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
@@ -473,6 +483,8 @@ gates confirm ID... | --all  confirm project gates (baked/gates) before a run ma
 profiles [--model ID]     artifacts RUN_ID [--file ARTIFACT_ID]
 route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
   show the model each stage and profile would use and where each choice comes from
+routing [show] | set TARGET MODEL | clear TARGET | review MODE   [--scope project|global]
+  change modelRouting with the routing screen's checks (see baked workflow routing --help)
 models [--model ID] [--provider ID] [--json]
   list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
   ...) with the model each resolves to, then the models of each provider; providers without a key

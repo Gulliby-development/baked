@@ -258,6 +258,8 @@ export const RoutingRecordSchema = z
     profiles: z.record(z.string(), RecordEntry),
     stages: z.record(z.string(), RecordEntry),
     warnings: z.array(z.string()).optional(),
+    /** The run model overrides the configured routes (`--model-strict`); a reroute keeps it. */
+    strict: z.boolean().optional(),
   })
   .strict();
 export type RoutingRecord = z.infer<typeof RoutingRecordSchema>;

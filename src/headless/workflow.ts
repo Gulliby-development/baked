@@ -32,6 +32,8 @@ import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
+import { readRoutingSummary } from "../core/workflows/view.js";
+import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
@@ -43,6 +45,7 @@ import {
   workflowHelp,
 } from "./workflow-parse.js";
 import { formatDoctor, formatEstimate, preRunRequest } from "./workflow-pre-run.js";
+import { runRoutingCli } from "./workflow-routing.js";
 
 export function workflowExit(
   snapshot: RunSnapshot,
@@ -238,6 +241,7 @@ export async function executeWorkflowCommand(
           ? { autoApprovalConfirmation: args.flags["confirm-auto-approval"] }
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
+        ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
         ...(typeof args.flags.route === "string"
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),
@@ -248,11 +252,20 @@ export async function executeWorkflowCommand(
           ? { clarification: args.flags.clarification }
           : {}),
       });
+      // The run's record keeps these warnings; the operator sees them before the run goes on.
+      for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])
+        process.stderr.write(`warning: ${warning}
+`);
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
     }
     case "status":
-      return { ...(await service.get(runId)), requests: service.store.requests(runId) };
+      return {
+        ...(await service.get(runId)),
+        requests: service.store.requests(runId),
+        worktree: worktreeView(service.workspace, service.store.state(runId)),
+        routing: readRoutingSummary(service.store, runId),
+      };
     case "list":
       return service.list({
         featureId: typeof args.flags.feature === "string" ? args.flags.feature : undefined,
@@ -537,7 +550,9 @@ export async function executeWorkflowCommand(
 export async function runWorkflowCli(argv: string[]): Promise<number> {
   if (
     argv.length === 0 ||
-    (argv[0] !== "initiative" && (argv.includes("--help") || argv.includes("-h")))
+    (argv[0] !== "initiative" &&
+      argv[0] !== "routing" &&
+      (argv.includes("--help") || argv.includes("-h")))
   ) {
     process.stdout.write(workflowHelp);
     return 0;
@@ -563,6 +578,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
         controller.signal,
       );
     }
+    if (argv[0] === "routing") return runRoutingCli(argv.slice(1));
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
     const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
