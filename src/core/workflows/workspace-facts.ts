@@ -1,0 +1,131 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+/**
+ * Workspace Facts: what the host knows about the files a run starts from. Stages used to get a
+ * single `greenfield` label, which hid scaffold files (package.json, tsconfig, a README) from the
+ * researcher and the planner, so research stated "no project files" and plans created files that
+ * existed. The inventory is built by the host before research and handed to every stage that
+ * reads the workspace; it outranks what a model wrote about the same files.
+ */
+export const SOURCE_FILE =
+  /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|c|h|cpp|hpp|swift|sql|sh|css|scss|html|vue|svelte)$/i;
+const SKIPPED = new Set([".git", "node_modules", ".baked", "baked", ".venv", "dist", "target"]);
+const SCAN_LIMIT = 2000;
+const LISTED_LIMIT = 80;
+const MANIFEST =
+  /^(package\.json|tsconfig[^/]*\.json|biome\.jsonc?|pyproject\.toml|requirements[^/]*\.txt|setup\.(py|cfg)|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|Gemfile|composer\.json|deno\.jsonc?|bunfig\.toml|Makefile)$/i;
+
+export type WorkspaceKind =
+  /** No file at all (besides skipped folders). */
+  | "empty"
+  /** Files exist but none is source code: manifests, configs, a README. */
+  | "scaffold"
+  /** At least one source file. */
+  | "source";
+
+export interface WorkspaceFacts {
+  schemaVersion: 1;
+  kind: WorkspaceKind;
+  /** Tracked files (first three directory levels), with sizes in bytes; capped. */
+  files: { path: string; bytes: number }[];
+  totalFiles: number;
+  sourceFiles: number;
+  /** Build and tool manifests among the files. */
+  manifests: string[];
+  /** Scripts of the root package.json, name to command. */
+  scripts: Record<string, string>;
+  /** One sentence stages can quote. */
+  summary: string;
+}
+
+export function workspaceFacts(root: string): WorkspaceFacts {
+  const files: { path: string; bytes: number }[] = [];
+  let seen = 0;
+  let total = 0;
+  let sources = 0;
+  const walk = (dir: string, prefix: string, depth: number): void => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+        a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+      );
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (++seen > SCAN_LIMIT) return;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!SKIPPED.has(entry.name) && depth < 3) walk(join(dir, entry.name), rel, depth + 1);
+        continue;
+      }
+      total += 1;
+      if (SOURCE_FILE.test(entry.name)) sources += 1;
+      if (files.length < LISTED_LIMIT) {
+        let bytes = 0;
+        try {
+          bytes = statSync(join(dir, entry.name)).size;
+        } catch {
+          // A file that vanished while scanning is listed with size 0.
+        }
+        files.push({ path: rel, bytes });
+      }
+    }
+  };
+  walk(root, "", 0);
+  const manifests = files
+    .filter((f) => MANIFEST.test(f.path.split("/").pop() ?? ""))
+    .map((f) => f.path);
+  let scripts: Record<string, string> = {};
+  if (files.some((f) => f.path === "package.json")) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+      const raw = (parsed as { scripts?: unknown }).scripts;
+      if (raw && typeof raw === "object")
+        scripts = Object.fromEntries(
+          Object.entries(raw).filter((e): e is [string, string] => typeof e[1] === "string"),
+        );
+    } catch {
+      // An unreadable manifest is still listed as a file.
+    }
+  }
+  const kind: WorkspaceKind = sources > 0 ? "source" : total > 0 ? "scaffold" : "empty";
+  const names = files
+    .slice(0, 12)
+    .map((f) => f.path)
+    .join(", ");
+  const summary =
+    kind === "empty"
+      ? "The workspace holds no files; everything the request describes is to be created."
+      : kind === "scaffold"
+        ? `The workspace holds ${String(total)} scaffold file(s) and no source code: ${names}. These files exist: modify them, never create them again; the program the request describes is still to be built.`
+        : `The workspace holds ${String(total)} file(s), ${String(sources)} of them source code: ${names}.`;
+  return {
+    schemaVersion: 1,
+    kind,
+    files,
+    totalFiles: total,
+    sourceFiles: sources,
+    manifests,
+    scripts,
+    summary,
+  };
+}
+
+/** The workspace has no source code (empty or scaffold only): the program is yet to be built. */
+export function hasNoSource(facts: Pick<WorkspaceFacts, "kind">): boolean {
+  return facts.kind !== "source";
+}
+
+const ABSENCE =
+  /\b(does not|doesn't|do not|don't|did not) exist|\bnonexistent\b|\bno such file\b|\b(is|are) (absent|missing|not present)\b/i;
+
+/**
+ * An analysis finding that says a listed file does not exist contradicts the host inventory; the
+ * inventory wins, so the finding is a note rather than a reason to revise the spec.
+ */
+export function contradictsFacts(description: string, facts: WorkspaceFacts): boolean {
+  if (!ABSENCE.test(description)) return false;
+  return facts.files.some((f) => description.includes(f.path));
+}
