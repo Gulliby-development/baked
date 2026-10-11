@@ -93,7 +93,7 @@ export function maybeShowTelemetryNotice(
   try {
     process.stderr.write(
       `\x1b[2mbaked records anonymous usage stats locally in ${telemetryLogPath()} (version, OS, surface — no prompts, paths, or keys). Nothing is sent.\n` +
-        'View them with `baked telemetry`. Opt out: set "telemetry": false in config, or DO_NOT_TRACK=1.\x1b[0m\n',
+        "View them with `baked telemetry`. Opt out: `baked telemetry off`, /telemetry off, or DO_NOT_TRACK=1.\x1b[0m\n",
     );
     markShown();
   } catch {}
@@ -245,14 +245,36 @@ export function summarizeTelemetry(): TelemetrySummary {
 }
 
 /** `baked telemetry [--json]`: print the local usage summary. */
-export function runTelemetryCli(args: string[]): number {
+/** Whether events are recorded, and why not, for the config value `telemetry`. */
+export function telemetryStatus(configEnabled?: boolean): string {
+  if (telemetryDisabled()) return "Recording is off: DO_NOT_TRACK or BAKED_TELEMETRY disables it.";
+  if (configEnabled === false) return "Recording is off (config telemetry: false).";
+  return "Recording is on.";
+}
+
+/** `baked telemetry [on|off] [--json]`: switches recording in the global config, or summarizes the log. */
+export async function runTelemetryCli(args: string[]): Promise<number> {
+  const { loadConfig, saveGlobalConfig } = await import("../config/index.js");
+  const word = args.find((a) => !a.startsWith("-"));
+  if (word !== undefined) {
+    if (word !== "on" && word !== "off") {
+      process.stderr.write("Usage: baked telemetry [on|off] [--json]\n");
+      return 2;
+    }
+    saveGlobalConfig({ telemetry: word === "on" });
+    process.stdout.write(`Telemetry ${word} (global config). ${telemetryStatus(word === "on")}\n`);
+    return 0;
+  }
   const summary = summarizeTelemetry();
   if (args.includes("--json")) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
     return 0;
   }
-  const lines = [`Local usage log: ${summary.path}`, `Events: ${String(summary.events)}`];
-  if (telemetryDisabled()) lines.push("Recording is disabled by DO_NOT_TRACK or BAKED_TELEMETRY.");
+  const lines = [
+    `Local usage log: ${summary.path}`,
+    `Events: ${String(summary.events)}`,
+    telemetryStatus(loadConfig().telemetry),
+  ];
   const top = (counts: Record<string, number>) =>
     Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
