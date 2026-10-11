@@ -931,6 +931,7 @@ export class WorkflowScheduler {
                 profiles,
                 signal,
                 v2 ? this.v2Reviewers(runId, state, v2) : this.v1Reviewers(state, policy),
+                !v2 || v2.definition.stages.some((s) => s.type === "reflection"),
               );
               if (failures.length) {
                 repairFindings = { findings: failures, kind: "repair" };
@@ -1001,7 +1002,17 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  { evidence: this.evidenceContext(runId, state) },
+                  {
+                    evidence: this.evidenceContext(runId, state),
+                    ...(Object.keys(state.reviewGaps).length
+                      ? {
+                          evidenceGaps: {
+                            note: "A required reviewer could not establish these criteria from the code and the evidence. For each automated one, name the test or declared check that would establish it so a convergence task adds it; do not pass a criterion without evidence.",
+                            byReviewer: state.reviewGaps,
+                          },
+                        }
+                      : {}),
+                  },
                   signal,
                   undefined,
                   0,
@@ -1238,7 +1249,9 @@ export class WorkflowScheduler {
                     ? "no_progress"
                     : isStoreError(fault)
                       ? "storage_failure"
-                      : "invalid_output";
+                      : code === "STALE_DECISION" || code === "ARTIFACT_MISSING"
+                        ? "host_state"
+                        : "invalid_output";
         this.store.artifact(
           runId,
           "diagnostic",
@@ -3502,6 +3515,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     profiles: AgentProfile[],
     signal: AbortSignal,
     reviewers: Reviewer[],
+    routeGaps = false,
   ): Promise<Review["findings"]> {
     if (!state.spec || !state.snapshotId || !state.workspaceHash)
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
@@ -3514,7 +3528,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const executables = reproExecutables(policy.checks);
     const repro = (r: Repro) =>
       runRepro(this.processes, r, {
-        root: this.store.workspace,
+        root: runRoot(this.store.workspace, state),
         executables,
         generated: generatedPaths(policy),
         signal,
@@ -3528,37 +3542,61 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
       const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
-      const result = ReviewSchema.parse(
-        await this.call(
-          runId,
-          child,
-          state,
-          policy,
-          profile,
-          { dimension: reviewer.dimension, evidence: this.evidenceContext(runId, state) },
-          signal,
-          undefined,
-          0,
-          (output) =>
-            ReviewSchema.safeParse(output).success
-              ? reviewProblems(
-                  this.store,
-                  runId,
-                  reviewSnapshotId,
-                  reviewSnapshotHash,
-                  reviewSpec,
-                  output as Review,
-                )
-              : [],
-          undefined,
-          executables.length && profile.allowedTools.includes("run_repro")
-            ? () => ({ run_repro: reproTool(executables, repro) })
-            : undefined,
-        ),
-      );
-      // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
-      // inconclusive, and the converge stage settles coverage.
-      completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, result);
+      const ask = async (extra: Record<string, unknown>): Promise<Review> => {
+        const answer = ReviewSchema.parse(
+          await this.call(
+            runId,
+            child,
+            state,
+            policy,
+            profile,
+            {
+              dimension: reviewer.dimension,
+              evidence: this.evidenceContext(runId, state),
+              ...extra,
+            },
+            signal,
+            undefined,
+            0,
+            (output) =>
+              ReviewSchema.safeParse(output).success
+                ? reviewProblems(
+                    this.store,
+                    runId,
+                    reviewSnapshotId,
+                    reviewSnapshotHash,
+                    reviewSpec,
+                    output as Review,
+                  )
+                : [],
+            undefined,
+            executables.length && profile.allowedTools.includes("run_repro")
+              ? () => ({ run_repro: reproTool(executables, repro) })
+              : undefined,
+          ),
+        );
+        // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
+        // inconclusive, and the converge stage settles coverage.
+        completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, answer);
+        return answer;
+      };
+      let result = await ask({});
+      if (result.verdict === "inconclusive" && reviewer.required) {
+        // One more question with the criteria it left open: a reviewer that sees the list often
+        // settles them, or says what evidence would (endfix 2295dbbd, AC-001 and AC-005).
+        const open = result.coverage.filter((c) => c.verdict === "inconclusive");
+        if (open.length) {
+          result = await ask({
+            inconclusiveCriteria: {
+              note: "Your review was inconclusive on these criteria. Settle each from the code and the evidence, using run_repro where it helps, or say in the explanation which test or check would establish it. Do not leave a criterion inconclusive without a reason.",
+              criteria: open.map((c) => ({
+                criterionId: c.criterionId,
+                explanation: c.explanation,
+              })),
+            },
+          });
+        }
+      }
       validateReview(
         this.store,
         runId,
@@ -3568,8 +3606,19 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result,
         false,
       );
-      if (result.verdict === "inconclusive" && reviewer.required)
-        throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
+      if (result.verdict === "inconclusive" && reviewer.required) {
+        // Criteria no review can establish go to the converge stage as evidence gaps, which adds
+        // a test or declared check as a convergence task; without such a stage, or when the
+        // verdict has no criterion behind it, the run blocks as before.
+        const gaps = result.coverage.filter((c) => c.verdict === "inconclusive");
+        if (!routeGaps || !gaps.length)
+          throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
+        state.reviewGaps[reviewer.key] = gaps.map((c) => ({
+          criterionId: c.criterionId,
+          explanation: c.explanation,
+        }));
+        result.verdict = result.findings.length ? "changes_requested" : "pass";
+      } else delete state.reviewGaps[reviewer.key];
       this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
       return { reviewer, result };
     };

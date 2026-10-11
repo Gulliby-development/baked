@@ -28,7 +28,7 @@ import {
 import type { NativeWorkflowService } from "./service.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
 import { parseRunDefinition, stageKind } from "./v2/runtime.js";
-import { runRoot } from "./worktree.js";
+import { runRoot, worktreeView } from "./worktree.js";
 
 const RECENT_EVENTS = 40;
 const OUTPUT_TAIL_LINES = 40;
@@ -438,6 +438,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       requests: store.requests(runId),
       events: recentEvents(store, row),
       runModel: runModelOf(store, runId),
+      worktree: worktreeView(service.workspace, store.state(runId)),
       routing: readRoutingSummary(store, runId),
     };
   });

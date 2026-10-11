@@ -91,6 +91,7 @@ import {
   UsageQuery,
   WorkingSetBody,
 } from "./schemas.js";
+import { type SettingsSecretStore, settingsRoute } from "./settings-routes.js";
 import { setupRoute } from "./setup-routes.js";
 
 /** How long shutdown waits for the HTTP server to report its connections closed. */
@@ -117,6 +118,7 @@ export const CAPABILITIES = [
   "skills-install",
   "mcp",
   "custom-commands",
+  "settings",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -140,6 +142,8 @@ export interface ApiServerOptions {
   homeDir?: string;
   /** The skills.sh catalog and installer; tests pass a fake one. */
   skillCatalog?: SkillCatalog;
+  /** Where secret settings such as web search keys live; tests pass an in-memory one. */
+  settingsSecrets?: SettingsSecretStore;
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -822,6 +826,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         ...(options.configDir ? { configDir: options.configDir } : {}),
         ...(options.homeDir ? { homeDir: options.homeDir } : {}),
         ...(options.skillCatalog ? { skillCatalog: options.skillCatalog } : {}),
+      })) ??
+      (await settingsRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
+        ...(options.settingsSecrets ? { secrets: options.settingsSecrets } : {}),
       }));
     if (routed) return routed;
     if (path === "/v1/projects") {

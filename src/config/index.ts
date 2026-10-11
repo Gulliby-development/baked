@@ -5,7 +5,7 @@ import { configDir } from "../core/platform/index.js";
 import { activeProject } from "../core/projects/resolve.js";
 import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
 import { WorkflowConfigSchema } from "../core/workflows/schemas.js";
-import type { AppConfig, MCPServerConfig } from "../types";
+import type { AppConfig, MCPServerConfig, TaskRouter } from "../types";
 
 export function mergeMCPServers(
   base?: MCPServerConfig[],
@@ -191,6 +191,18 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       ? { ...merged.compaction, ...layer.compaction }
       : merged.compaction;
     const retry = layer.retry ? { ...merged.retry, ...layer.retry } : merged.retry;
+    // Settings are saved per key (`src/core/settings/`), so a project layer may hold only some
+    // fields of these objects; the rest come from the global layer.
+    const taskRouter = layer.taskRouter
+      ? ({ ...merged.taskRouter, ...layer.taskRouter } as TaskRouter)
+      : merged.taskRouter;
+    const agentFeatures = layer.agentFeatures
+      ? { ...merged.agentFeatures, ...layer.agentFeatures }
+      : merged.agentFeatures;
+    const cache = layer.cache ? { ...merged.cache, ...layer.cache } : merged.cache;
+    const watchdogTimeouts = layer.watchdogTimeouts
+      ? { ...merged.watchdogTimeouts, ...layer.watchdogTimeouts }
+      : merged.watchdogTimeouts;
     const mcpServers = mergeMCPServers(merged.mcpServers, layer.mcpServers);
     // Merged before the spread below replaces merged.modelRouting with the layer's own.
     const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
@@ -204,6 +216,10 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       contextManagement: cm,
       compaction: comp,
       retry,
+      taskRouter,
+      agentFeatures,
+      cache,
+      watchdogTimeouts,
       mcpServers,
     };
     if (routing) merged.modelRouting = routing;

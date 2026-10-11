@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import type { RunSnapshot } from "../../../shared/api.js";
 import { chat } from "../../client/chat.js";
-import { errorText, type RollbackReport, undoRun } from "../../client/runs.js";
+import {
+  errorText,
+  GROUP_B_CAPABILITY,
+  type RollbackReport,
+  runs,
+  undoRun,
+} from "../../client/runs.js";
 import type { LineLoop } from "../../client/start.js";
 import { workflow } from "../../client/workflow.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
@@ -50,24 +56,29 @@ const SMALL_SUB = "text-[12px] text-muted-foreground";
 const WARN_NOTE = "text-[12px] text-[var(--warn)]";
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
+type Confirm = "undo" | "cancel" | "fork" | "discard";
+
 function Controls({
   projectKey,
-  run,
+  data,
   onDone,
   onUndone,
 }: {
   projectKey: string;
-  run: RunSnapshot;
+  data: RunData;
   onDone: () => Promise<void>;
   onUndone: (report: RollbackReport | null) => void;
 }) {
+  const run = data.status;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
   const act = async (work: () => Promise<unknown>): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
       await work();
+      setConfirm(null);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -75,32 +86,43 @@ function Controls({
       await onDone();
     }
   };
+  const ask = (which: Confirm): void => {
+    setError(null);
+    setConfirm(which);
+  };
   const ended = TERMINAL.has(run.status);
+  const groupB = data.capabilities.includes(GROUP_B_CAPABILITY);
   // Undo needs the run's leases, so it is offered only while nothing executes the run.
   const canUndo = run.status !== "created" && run.status !== "running";
-  if (ended && !canUndo) return null;
+  const canFork = groupB && (run.status === "blocked" || ended);
+  const worktree = run.worktree?.present ? run.worktree : null;
+  const canDiscard = groupB && ended && worktree !== null;
+  const dialog = (which: Confirm) => ({
+    open: confirm === which,
+    busy,
+    error: confirm === which ? error : null,
+    onClose: () => setConfirm(null),
+  });
   return (
     <div className="ml-auto flex flex-wrap items-center gap-2">
-      {error && (
+      {error && confirm === null && (
         <span className="text-[12px] text-[var(--err)]" role="alert">
           {error}
         </span>
       )}
       {canUndo && (
-        <Button
-          variant="secondary"
-          size="md"
-          disabled={busy}
-          onClick={() => {
-            if (
-              window.confirm(
-                "Undo this run's uncommitted task edits? Files changed since the run wrote them stay as they are.",
-              )
-            )
-              void act(async () => onUndone(await undoRun(projectKey, run)));
-          }}
-        >
+        <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("undo")}>
           Undo edits
+        </Button>
+      )}
+      {canFork && (
+        <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("fork")}>
+          Fork run
+        </Button>
+      )}
+      {canDiscard && (
+        <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("discard")}>
+          Discard worktree
         </Button>
       )}
       {run.status === "running" && (
@@ -124,18 +146,52 @@ function Controls({
         </Button>
       )}
       {!ended && (
-        <Button
-          variant="secondary"
-          size="md"
-          disabled={busy}
-          onClick={() => {
-            if (window.confirm(`Cancel ${run.featureId}? A cancelled run cannot continue.`))
-              void act(() => workflow.cancel(projectKey, run));
-          }}
-        >
+        <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("cancel")}>
           Cancel run
         </Button>
       )}
+      <ConfirmDialog
+        {...dialog("undo")}
+        title="Undo this run's edits?"
+        confirmLabel="Undo edits"
+        onConfirm={() => void act(async () => onUndone(await undoRun(projectKey, run)))}
+      >
+        Restores the files the run changed and has not committed. Files changed since the run wrote
+        them stay as they are.
+      </ConfirmDialog>
+      <ConfirmDialog
+        {...dialog("fork")}
+        title={`Fork ${run.featureId}?`}
+        confirmLabel="Fork run"
+        onConfirm={() =>
+          void act(async () => {
+            const forked = await runs.fork(projectKey, run);
+            window.location.hash = projectHref(projectKey, "runs", forked.runId);
+          })
+        }
+      >
+        Starts a new run with this run's spec and plan. It needs a new approval and runs its checks
+        again; nothing executes until you resume it. This run stays as it is.
+      </ConfirmDialog>
+      <ConfirmDialog
+        {...dialog("discard")}
+        title="Discard the worktree?"
+        confirmLabel="Discard worktree"
+        danger
+        onConfirm={() => void act(() => runs.discardWorktree(projectKey, run))}
+      >
+        Removes <span className="font-mono">{worktree?.path}</span> and deletes the branch{" "}
+        <span className="font-mono">{worktree?.branch}</span>. Work that was not delivered is lost.
+      </ConfirmDialog>
+      <ConfirmDialog
+        {...dialog("cancel")}
+        title={`Cancel ${run.featureId}?`}
+        confirmLabel="Cancel run"
+        danger
+        onConfirm={() => void act(() => workflow.cancel(projectKey, run))}
+      >
+        A cancelled run cannot continue. You can fork it later.
+      </ConfirmDialog>
     </div>
   );
 }
@@ -651,7 +707,7 @@ function RunBody({
           )}
           <Controls
             projectKey={projectKey}
-            run={run}
+            data={data}
             onDone={refresh}
             onUndone={(report) => setUndone({ report })}
           />
