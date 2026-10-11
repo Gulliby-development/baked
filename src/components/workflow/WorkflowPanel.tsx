@@ -107,6 +107,7 @@ export function WorkflowPanel({
   const [cursor, setCursor] = useState(0);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmExtend, setConfirmExtend] = useState(false);
+  const [confirmReroute, setConfirmReroute] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
   // The last undo of the open run, shown until Esc or another run.
   const [undone, setUndone] = useState<{ runId: string; report: UndoResult["report"] } | null>(
@@ -125,6 +126,12 @@ export function WorkflowPanel({
       : undefined;
   const driving = !!(service && runId && service.isDriving(runId));
   const driveError = service && runId ? service.driveError(runId) : null;
+  const runModel = service && runId ? service.store.runModel(runId) : null;
+  // A stopped run can continue on the tab's model, picked with Ctrl+L.
+  const switchTo =
+    activeModel && activeModel !== "none" && runModel && activeModel !== runModel
+      ? activeModel
+      : null;
 
   // Bring the user to the decision as soon as a new request appears.
   const lastPending = useRef<string | null>(null);
@@ -249,6 +256,14 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setConfirmExtend(false);
       return;
     }
+    if (confirmReroute) {
+      event.preventDefault();
+      if (key === "y" && switchTo) {
+        setConfirmReroute(false);
+        void act({ reroute: switchTo });
+      } else if (key === "escape" || key === "n") setConfirmReroute(false);
+      return;
+    }
     if (confirmUndo) {
       event.preventDefault();
       if (key === "y") {
@@ -281,12 +296,15 @@ export function WorkflowPanel({
       setTab("decision");
       return;
     }
-    const action = runActions(snapshot, service?.store.budget(snapshot.runId) ?? null).find(
-      (a) => a.key.toLowerCase() === key,
-    );
+    const action = runActions(
+      snapshot,
+      service?.store.budget(snapshot.runId) ?? null,
+      switchTo,
+    ).find((a) => a.key.toLowerCase() === key);
     if (!action || action.action === "decide") return;
     event.preventDefault();
     if (action.action === "extend") setConfirmExtend(true);
+    else if (action.action === "reroute") setConfirmReroute(true);
     else if (action.action === "cancel") setConfirmCancel(true);
     else if (action.action === "undo") {
       if (!driving) setConfirmUndo(true);
@@ -468,7 +486,7 @@ export function WorkflowPanel({
   });
   const budgetView = service ? service.store.budget(runId) : null;
   const actions = snapshot
-    ? runActions(snapshot, budgetView).filter((a) => !(a.action === "undo" && driving))
+    ? runActions(snapshot, budgetView, switchTo).filter((a) => !(a.action === "undo" && driving))
     : [];
   const hints =
     tab === "decision" && pending
@@ -528,6 +546,11 @@ export function WorkflowPanel({
         {confirmExtend && budgetView ? (
           <text fg={t.warning}>
             {`Raise the limits (${extensionText(budgetView)}) and continue from this stage? The approved plan, scope and checks stay as they are. Y confirms; N keeps the run blocked.`}
+          </text>
+        ) : null}
+        {confirmReroute && switchTo ? (
+          <text fg={t.warning}>
+            {`Switch this run from ${runModel} to ${switchTo} and continue? Completed stages and tasks stay; routes follow modelRouting with the new run model. Y confirms; N keeps the current model.`}
           </text>
         ) : null}
         {confirmUndo ? (

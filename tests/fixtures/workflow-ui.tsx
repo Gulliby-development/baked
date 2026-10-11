@@ -51,6 +51,7 @@ const service = {
     checks: () => [{ check_id: "tests", status: "passed", validity: "current", snapshot_id: "snapshot", evidence_id: "host-evidence" }],
     checkDetails: () => [{ checkId: "tests", status: "failed", validity: "current", exitCode: 1, reason: "exit", durationMs: 1500, runs: 2, outputTail: "expect(received).toBe(expected)" }],
     configuredChecks: () => ["tests", "lint"],
+    runModel: () => "fixture/model",
     changes: () => [{ path: "src/example.ts", source: "code", action: "modified", edits: 2, status: "applied", drifted: false }, { path: "specs/x/spec.md", source: "spec", action: "created", edits: 1, status: "applied", drifted: false }],
   },
 };

@@ -189,10 +189,25 @@ export async function checkStartModels(
   prepared: PreparedStart,
   providerReady: DoctorDeps["providerReady"],
 ): Promise<DoctorCheck[]> {
-  const { routing, loaded, policy, profiles } = prepared;
+  return checkRoutingModels(
+    workspace,
+    { ...prepared, definition: prepared.loaded.definition },
+    providerReady,
+  );
+}
+
+/** The model checks of a routing record for a run of `definition`, as `checkStartModels`. */
+export async function checkRoutingModels(
+  workspace: string,
+  run: Pick<PreparedStart, "routing" | "policy" | "profiles"> & {
+    definition: PreparedStart["loaded"]["definition"];
+  },
+  providerReady: DoctorDeps["providerReady"],
+): Promise<DoctorCheck[]> {
+  const { routing, definition, policy, profiles } = run;
   const { required, optional } = reachableModels(
     routing,
-    loaded.definition,
+    definition,
     policy,
     loadGateLibrary(workspace, policy).gates,
     profiles,

@@ -27,6 +27,7 @@ const commands = [
   "candidate",
   "usage",
   "extend",
+  "reroute",
   "continue",
   "undo",
   "definitions",
@@ -193,6 +194,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "events",
     "after",
   ],
+  reroute: ["model", "route", "expected-revision", "command-id", "resume", "events", "after"],
   continue: ["request", "expected-revision", "command-id"],
   undo: ["path", "expected-revision", "command-id"],
   definitions: [],
@@ -281,7 +283,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       );
   }
   if (
-    (result.command === "revise" || result.command === "extend") &&
+    ["revise", "extend", "reroute"].includes(result.command) &&
     !result.flags.resume &&
     ("events" in result.flags || "after" in result.flags)
   )
@@ -372,6 +374,10 @@ pause|cancel|fork RUN_ID --expected-revision N
 continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
   (raise the limits of a run blocked on its budget; resume continues it, or --resume in the same command)
+reroute RUN_ID --expected-revision N [--model ID] [--route STAGE=MODEL,...] [--resume [--events]]
+  (move a stopped run to other models: completed stages and tasks stay, the next agent calls use
+  the new models; routes resolve again through modelRouting with the new run model, the start
+  model checks and independentReview apply, and the change is recorded in routing.json)
 candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE] [--workflow FILE [--confirm-auto-approval HASH]]
   --workflow stages a revised schema 2 definition for a started v2 run; it is refused with the
   reasons when the current or a completed stage is gone or changed, or a contract the run needs

@@ -188,6 +188,16 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
       case "run.created":
         line("Run created");
         break;
+      case "run.rerouted": {
+        const { runModel, changes } = event.payload;
+        line(
+          runModel.from === runModel.to
+            ? `Routes changed (${changes.length})`
+            : `Switched to ${runModel.to} (was ${runModel.from})`,
+          "info",
+        );
+        break;
+      }
       case "run.state_changed": {
         const { to, reason } = event.payload;
         const text = STATE_TEXT[to];
@@ -460,6 +470,7 @@ const ARTIFACT_KINDS = new Set([
   "plan",
   "tasks",
   "estimate",
+  "routing",
   "acceptance",
   "gates",
   "report",
@@ -470,6 +481,7 @@ export function refetchFor(events: readonly WorkflowEvent[]): Refetch {
   for (const event of events) {
     switch (event.type) {
       case "run.state_changed":
+      case "run.rerouted":
       case "request.created":
       case "request.decided":
       case "budget.updated":

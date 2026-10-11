@@ -569,6 +569,7 @@ export const InputManifestSchema = z
 export const EventType = z.enum([
   "run.created",
   "run.state_changed",
+  "run.rerouted",
   "stage.started",
   "stage.finished",
   "attempt.started",
@@ -614,6 +615,22 @@ export const EventSchema = z.discriminatedUnion("type", [
           to: RunStatus,
           reason: ReasonCode,
           revision: z.number().int().nonnegative(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A stopped run continues on other models; the routing artifact holds the full record.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("run.rerouted"),
+      payload: z
+        .object({
+          artifactId: SafeId,
+          runModel: z.object({ from: z.string(), to: z.string() }).strict(),
+          changes: z
+            .array(z.object({ target: z.string(), from: z.string(), to: z.string() }).strict())
+            .max(500),
         })
         .strict(),
     })
@@ -1001,6 +1018,12 @@ export interface WorkflowService {
     runId: string,
     command: CommandIdentity,
     limits?: Partial<import("./budget.js").BudgetLimits>,
+  ): Promise<RunSnapshot>;
+  /** Moves a stopped run to other models from where it stopped; the run keeps its status. */
+  reroute(
+    runId: string,
+    command: CommandIdentity,
+    request: import("./routing.js").RerouteRequest,
   ): Promise<RunSnapshot>;
   events(runId: string, afterSeq: number, signal: AbortSignal): AsyncIterable<WorkflowEvent>;
 }

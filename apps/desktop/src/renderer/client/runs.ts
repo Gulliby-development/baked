@@ -69,6 +69,11 @@ export interface EventPayloads {
   "request.created": { requestId: string; kind: string; digest: string };
   "request.decided": { requestId: string; status: string; actor: string };
   "effect.reconciled": { effectId: string; status: string };
+  "run.rerouted": {
+    artifactId: string;
+    runModel: { from: string; to: string };
+    changes: { target: string; from: string; to: string }[];
+  };
   "budget.updated": {
     usedTokens: number;
     reservedTokens: number;

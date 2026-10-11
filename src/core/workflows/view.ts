@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ROUTING_ARTIFACT, RoutingRecordSchema } from "../llm/model-routing.js";
 import { renderSpec } from "../specs/render.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
@@ -378,6 +379,17 @@ function recentEvents(store: WorkflowStore, row: RunRow): WorkflowEvent[] {
   return store.events(row.id, Math.max(0, row.event_seq - RECENT_EVENTS), RECENT_EVENTS);
 }
 
+/** The run model of the run's latest routing record; null for runs started before routing. */
+function runModelOf(store: WorkflowStore, runId: string): string | null {
+  const row = store.latestArtifact(runId, ROUTING_ARTIFACT);
+  if (!row) return null;
+  try {
+    return RoutingRecordSchema.parse(JSON.parse(store.readArtifact(runId, row.id))).runModel;
+  } catch {
+    return null;
+  }
+}
+
 export function readWorkflowView(service: NativeWorkflowService, runId: string) {
   const store = service.store;
   return store.readTransaction(() => {
@@ -398,6 +410,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       findings: store.findings(runId),
       requests: store.requests(runId),
       events: recentEvents(store, row),
+      runModel: runModelOf(store, runId),
     };
   });
 }

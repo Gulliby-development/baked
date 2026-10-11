@@ -219,7 +219,16 @@ const ctx = createWorkerHandler(
       if (input === "pause") return runtime.pause(id, command);
       if (input === "cancel") return runtime.cancel(id, command);
       if (input === "fork") return runtime.fork(id, command);
-      if (input === "extend") {
+      if (typeof input === "object" && input !== null && "reroute" in input) {
+        // One user decision: switch the run model, then continue from where the run stopped.
+        const model = z
+          .string()
+          .min(1)
+          .parse((input as { reroute: unknown }).reroute);
+        const rerouted = await runtime.reroute(id, command, { model });
+        if (rerouted.status === "blocked" || rerouted.status === "paused")
+          await runtime.resume(id, { commandId: newId(), expectedRevision: rerouted.revision });
+      } else if (input === "extend") {
         // One user decision: raise the limits, then continue from the stopped stage.
         await runtime.extendBudget(id, command);
         const paused = await runtime.get(id);
@@ -230,7 +239,9 @@ const ctx = createWorkerHandler(
       if (
         state.pendingRequestIds.length === 0 &&
         !["cancelled", "completed", "failed"].includes(state.status) &&
-        (typeof input === "string" || DecisionSchema.parse(input).kind !== "reject")
+        (typeof input === "string" ||
+          "reroute" in (input as object) ||
+          DecisionSchema.parse(input).kind !== "reject")
       )
         return runtime.drive(id, new AbortController().signal);
       return state;

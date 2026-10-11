@@ -77,6 +77,7 @@ import {
   PreRunQuery,
   RecoverBody,
   RejectBody,
+  RerouteBody,
   ReviseBody,
   RouteQuery,
   StartBody,
@@ -193,6 +194,7 @@ const MUTATIONS = [
   "reject",
   "answer",
   "extend",
+  "reroute",
   "continue",
   "evidence",
   "recover",
@@ -280,6 +282,17 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
         { ...identity(body), request: body.requestId, "answers-file": true },
         { "answers-file": body.answers },
       );
+    }
+    case "reroute": {
+      const body = RerouteBody.parse(raw);
+      const routes = Object.entries(body.routes ?? {});
+      return args({
+        ...identity(body),
+        ...(body.model ? { model: body.model } : {}),
+        ...(routes.length
+          ? { route: routes.map(([stage, model]) => `${stage}=${model}`).join(",") }
+          : {}),
+      });
     }
     case "extend": {
       const body = ExtendBody.parse(raw);

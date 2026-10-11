@@ -82,6 +82,13 @@ describe("workflow panel formatting", () => {
     expect(keys(snapshot({ status: "completed" }))).toEqual(["fork", "undo"]);
     expect(keys(snapshot({ status: "created" }))).toEqual(["resume", "cancel"]);
   });
+  test("a stopped run offers a switch to the tab's model", () => {
+    const blocked = snapshot({ status: "blocked", reason: "provider_account" });
+    expect(runActions(blocked, null, "codex/gpt-6-luna").find((a) => a.action === "reroute")?.key).toBe("M");
+    expect(runActions(blocked).some((a) => a.action === "reroute")).toBe(false);
+    expect(runActions(snapshot({ status: "running" }), null, "codex/gpt-6-luna").some((a) => a.action === "reroute")).toBe(false);
+    expect(headline(blocked, stages, false).next).toContain("M to continue");
+  });
   test("headline explains state and next step", () => {
     expect(headline(snapshot(), stages, true).now).toBe("Working on Plan.");
     const waiting = headline(

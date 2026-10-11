@@ -80,6 +80,16 @@ export const workflow = {
     limits: { tokens?: number; calls?: number; timeMs?: number } = {},
   ) => call<RunSnapshot>(key, "POST", runPath(run.runId, "extend"), { ...command(run), ...limits }),
   /**
+   * Moves a stopped run to another run model and/or stage routes (stage ID to model). Completed
+   * work stays; the run keeps its status, so a blocked or paused run is resumed after it.
+   */
+  reroute: (
+    key: string,
+    run: Pick<RunSnapshot, "runId" | "revision">,
+    change: { model?: string; routes?: Record<string, string> },
+  ) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "reroute"), { ...command(run), ...change }),
+  /**
    * Stages a revision of the run's accepted inputs. With no field it adopts the current
    * instruction files, which is how a run continues after one of them changed.
    */

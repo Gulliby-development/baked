@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import type { ContextManager } from "../context/manager.js";
-import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
+import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
 import {
@@ -27,7 +27,13 @@ import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
-import { checkLine, checkStartModels, type DoctorDeps, defaultDoctorDeps } from "./doctor.js";
+import {
+  checkLine,
+  checkRoutingModels,
+  checkStartModels,
+  type DoctorDeps,
+  defaultDoctorDeps,
+} from "./doctor.js";
 import { WorkflowFault } from "./errors.js";
 import { readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -40,6 +46,13 @@ import {
 } from "./leases.js";
 import { estimatePrepared } from "./pre-run.js";
 import { undoRunEdits } from "./rollback.js";
+import {
+  independenceWarnings,
+  independentReviewMode,
+  type RerouteRequest,
+  rerouteRecord,
+  routeChanges,
+} from "./routing.js";
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
@@ -72,6 +85,7 @@ import {
   type WorkflowV2,
   WorkflowV2Schema,
 } from "./v2/definition.js";
+import { loadGateLibrary } from "./v2/library.js";
 import { definitionRevisionProblems } from "./v2/revision.js";
 import {
   autoApprovalHash,
@@ -934,6 +948,108 @@ export class NativeWorkflowService implements WorkflowService {
         this.store.transition(runId, "paused", "none");
       },
     );
+  }
+  /**
+   * Moves a run that is not executing to other models: a new revision of its routing record, so
+   * completed stages and tasks stay and the next agent calls use the new models. The new models
+   * pass the start's model checks and the `independentReview` rule first; the run keeps its
+   * status, and resume continues it from where it stopped.
+   */
+  async reroute(
+    runId: string,
+    command: CommandIdentity,
+    request: RerouteRequest,
+  ): Promise<RunSnapshot> {
+    this.enabled();
+    const model = request.model?.trim() || undefined;
+    const routes = request.routes ?? {};
+    const body = { runId, ...command, action: "reroute", model: model ?? null, routes };
+    const previous = this.store.previousCommand(command.commandId, body);
+    if (previous) return previous;
+    const assertStopped = (): void => {
+      const status = this.store.run(runId).status;
+      assertMutable(status);
+      if (status === "running" || this.active.has(runId))
+        throw new WorkflowFault(
+          "WORKSPACE_BUSY",
+          "The run is executing; pause it before switching its models",
+        );
+    };
+    assertStopped();
+    if (!model && !Object.keys(routes).length)
+      throw new WorkflowFault("INVALID_DEFINITION", "Name a model (--model ID) or stage routes");
+    if (model === "none")
+      throw new WorkflowFault("INVALID_DEFINITION", "Select a model to switch the run to");
+    const row = this.store.run(runId);
+    const saved = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
+    if (!saved)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "This run started before routing was recorded; fork it to choose other models",
+      );
+    const before: RoutingRecord = RoutingRecordSchema.parse(
+      JSON.parse(this.store.readArtifact(runId, saved.id)),
+    );
+    const { definition } = parseRunDefinition(row.definition_json);
+    const policy = PolicySchema.parse(JSON.parse(row.policy_json));
+    const profiles = ProfileSchema.array().parse(JSON.parse(row.profiles_json));
+    const after = rerouteRecord(
+      this.workspace,
+      this.config,
+      before,
+      definition.id,
+      definition.stages.map((stage) => stage.id),
+      profiles.map((profile) => profile.id),
+      { model, routes },
+    );
+    const changes = routeChanges(before, after);
+    if (!changes.length && after.runModel === before.runModel)
+      throw new WorkflowFault("INVALID_DEFINITION", "The run already uses these models");
+    const warnings: string[] = [];
+    const independence = independentReviewMode(this.config);
+    if (independence !== "off") {
+      const found = independenceWarnings(
+        after,
+        definition,
+        policy,
+        loadGateLibrary(this.workspace, policy).gates,
+        profiles,
+      );
+      if (found.length && independence === "require")
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `${found.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
+        );
+      warnings.push(...found);
+    }
+    if (this.providerReady) {
+      const checks = await checkRoutingModels(
+        this.workspace,
+        { routing: after, definition, policy, profiles },
+        this.providerReady,
+      );
+      const refusals = checks.filter((check) => check.status === "fail").map(checkLine);
+      if (refusals.length)
+        throw new WorkflowFault(
+          "CAPABILITY_DENIED",
+          `These models cannot be called:\n${refusals.join("\n")}`,
+          { reason: "model_unavailable", problems: refusals },
+        );
+      warnings.push(...checks.filter((check) => check.status === "warn").map(checkLine));
+    }
+    if (warnings.length) after.warnings = warnings;
+    return this.store.command(runId, command, body, () => {
+      assertStopped();
+      const artifact = this.store.artifact(runId, "routing", ROUTING_ARTIFACT, canonical(after));
+      this.store.emit(runId, {
+        type: "run.rerouted",
+        payload: {
+          artifactId: artifact.id,
+          runModel: { from: before.runModel, to: after.runModel },
+          changes,
+        },
+      });
+    });
   }
   async fork(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
     this.enabled();
