@@ -114,6 +114,7 @@ export const CAPABILITIES = [
   "images",
   "code-graph",
   "skills-install",
+  "custom-commands",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -403,6 +404,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       workspace: service.workspace,
       config: service.config,
       host: new BakeChatHost(service.workspace, service.config, service.rootContext),
+      ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);
   const graphCache = new CodeGraphCache(service.workspace);
