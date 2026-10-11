@@ -126,6 +126,16 @@ Candidate fields are optional: missing ones are taken from the current package. 
 
 The terminal states completed/cancelled/failed are immutable; `fork RUN_ID --expected-revision N` creates a new run with the parent's artifacts, a new approval and no passing evidence. It does not start the model before resume. There is no automatic rollback of user changes.
 
+### Project memory
+
+A run starts with what earlier runs of the same workspace learned, so it does not ask the same question or rediscover the same facts again. At creation the run reads the 30 newest runs in `.baked/workflows.sqlite` ([project-memory](../../src/core/workflows/project-memory.ts)) and collects:
+
+- the answers people gave to research and spec questions, from any run; the newest answer to a question wins (at most 12);
+- the assumptions of the specifications that completed runs had approved, such as those recorded under `clarification: "assume"` (at most 12);
+- the check commands that passed in completed runs, except the new run's own checks, which its execution contract already lists (at most 8).
+
+Answers to analysis findings are left out, since they are about one run's plan. The result is stored as the run's `project/run-memory.md` artifact, its hash joins the run's inputs, and a fork keeps it; a candidate revision keeps the memory the run captured. The researcher, the spec author and the planner receive it as `projectMemory` in their input, framed as background that the request, the answers in it and the run's policy override; implementers, reviewers and the auditor do not. A workspace with nothing to remember adds nothing. The policy field `projectMemory: false` turns it off (absent means on, so stored policies keep their hash), and runs removed by `baked workflow gc` drop out of it.
+
 ### The run's own edits and undo
 
 A run keeps the edits it executed. A revision, a failed or interrupted task attempt and a fork leave the files as they are, and the runtime recognises content the run itself wrote by the effect journal:

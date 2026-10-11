@@ -307,6 +307,14 @@ export class WorkflowStore {
     }
     return [...byRun.values()];
   }
+  /** Runs past creation, newest first, with their policy; the input of project memory. */
+  pastRuns(limit = 30): { id: string; status: string; policy_json: string }[] {
+    return this.db
+      .query<{ id: string; status: string; policy_json: string }, [number]>(
+        "SELECT id,status,policy_json FROM runs WHERE status<>'created' ORDER BY created_at DESC, rowid DESC LIMIT ?",
+      )
+      .all(limit);
+  }
   private applyMigrations(from: number): void {
     for (const migration of MIGRATIONS.slice(from)) {
       this.db.exec(migration.sql);
