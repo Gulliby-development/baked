@@ -303,8 +303,8 @@ export const FEATURES: readonly Feature[] = [
     title: "Switch Codex accounts",
     tui: ["/codex switch"],
     cli: notNeeded("scripts sign in once"),
-    api: gap(408),
-    desktop: gap(408),
+    api: ["/v1/providers/:id/switch"],
+    desktop: ["settings/providers"],
   },
   {
     id: "model-picker",
@@ -431,8 +431,8 @@ export const FEATURES: readonly Feature[] = [
     title: "Hooks: view and switch off",
     tui: ["/hooks"],
     cli: notNeeded("hooks are files scripts edit directly"),
-    api: gap(408),
-    desktop: gap(408),
+    api: ["/v1/hooks", "/v1/hooks/session"],
+    desktop: ["project/hooks"],
   },
   {
     id: "skills",

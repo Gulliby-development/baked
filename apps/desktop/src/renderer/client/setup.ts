@@ -10,8 +10,10 @@ import { ApiError, call } from "./api.js";
 import {
   CHAT_MEMORY_CAPABILITY,
   CHECKS_CAPABILITY,
+  HOOKS_CAPABILITY,
   LIBRARY_CAPABILITY,
   offers,
+  PROVIDER_SWITCH_CAPABILITY,
   ROUTING_CAPABILITY,
   RUN_MEMORY_CAPABILITY,
   SKILLS_INSTALL_CAPABILITY,
@@ -442,7 +444,58 @@ export interface ChatMemoryCleanupAction {
   action: "hide" | "pin";
 }
 
+// --- Hooks (`hooks` capability) -----------------------------------------------------------------
+
+export type HookScope = "user" | "project" | "local";
+/** One hook command (`HookCommandView` in src/core/hooks/overview.ts). */
+export interface HookCommand {
+  source: string;
+  scope: HookScope;
+  matcher: string | null;
+  command: string;
+  async: boolean;
+  once: boolean;
+  timeout: number | null;
+  if: string | null;
+}
+export interface HookEvent {
+  event: string;
+  known: boolean;
+  /** Switched off for this backend process only. */
+  disabled: boolean;
+  blocking: boolean;
+  hooks: HookCommand[];
+}
+/** `GET /v1/hooks`. */
+export interface HooksView {
+  disabledBy: string | null;
+  sources: { path: string; scope: HookScope; exists: boolean; hooks: number }[];
+  events: HookEvent[];
+}
+
+/** `POST /v1/providers/ID/switch`. */
+export interface AccountSwitch {
+  ok: boolean;
+  message: string;
+  login: CliLogin | null;
+}
+
 export const setup = {
+  /** The hooks of the project, its local overrides and the home folder; listed, never edited. */
+  hooks: (key: string) =>
+    withCapability(key, HOOKS_CAPABILITY, () => call<HooksView>(key, "GET", "/v1/hooks")),
+  /** Switches an event's hooks off or on for this backend process; no file is written. */
+  setHookEvent: (key: string, event: string, enabled: boolean) =>
+    call<HooksView>(key, "POST", "/v1/hooks/session", { event, enabled }),
+  /** Whether the backend can switch a CLI provider's account in one step. */
+  canSwitchAccount: async (key: string) =>
+    offers(await capabilities(key), PROVIDER_SWITCH_CAPABILITY) === true,
+  /** Signs the CLI's account out and starts a new sign-in, as `/codex switch` does. */
+  switchAccount: (key: string, provider: string) =>
+    withCapability(key, PROVIDER_SWITCH_CAPABILITY, () =>
+      call<AccountSwitch>(key, "POST", `/v1/providers/${json(provider)}/switch`),
+    ),
+
   project: (key: string) => call<ProjectSummary>(key, "GET", "/v1/projects/current"),
   changeWorkingSet: (key: string, change: { add?: string[]; remove?: string[] }) =>
     call<ProjectSummary>(key, "POST", "/v1/projects/current/working-set", change),

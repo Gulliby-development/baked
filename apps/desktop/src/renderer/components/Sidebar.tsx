@@ -36,6 +36,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["run-memory", "Run memory", "run-memory"],
   ["chat-memory", "Chat memory", "chat-memory"],
   ["skills", "Skills", "skills"],
+  ["hooks", "Hooks", "hooks"],
 ];
 
 const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };

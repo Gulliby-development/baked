@@ -25,6 +25,7 @@ const TITLES: Record<ProjectSection, string> = {
   "run-memory": "Run memory",
   "chat-memory": "Chat memory",
   skills: "Skills",
+  hooks: "Hooks",
 };
 
 function Closed({ project }: { project: DesktopProject }) {

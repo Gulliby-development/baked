@@ -10,6 +10,7 @@ import {
   cliLoginSettled,
   setCliLoginBackend,
   startCliLogin,
+  switchCliAccount,
 } from "../src/core/llm/cli-login.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
@@ -156,5 +157,82 @@ describe("local API: CLI provider sign-in", () => {
     expect((await call("/v1/providers/openai/login", "POST")).status).toBe(404);
     expect((await call("/v1/providers/codex/logout")).status).toBe(405);
     expect((await call("/v1/providers/codex/login", "PUT")).status).toBe(405);
+  });
+});
+
+describe("CLI account switch", () => {
+  /** A signed-in CLI whose logout signs it out, or fails and keeps it signed in. */
+  function signedIn(logoutWorks: boolean) {
+    const state = { loggedIn: true, runs: 0 };
+    let finish: () => void = () => {};
+    const backend: CliLoginBackend = {
+      status: () => ({
+        installed: true,
+        loggedIn: state.loggedIn,
+        message: state.loggedIn ? "Logged in using ChatGPT" : "Not logged in",
+        command: "codex login",
+      }),
+      run: (_onLine, onUrl) => {
+        state.runs++;
+        onUrl("https://example.test/codex");
+        return { promise: new Promise<void>((resolve) => (finish = resolve)), abort: () => finish() };
+      },
+      logout: () => {
+        if (!logoutWorks) return { ok: false, message: "logout failed" };
+        state.loggedIn = false;
+        return { ok: true, message: "Successfully logged out" };
+      },
+    };
+    cleanups.push(setCliLoginBackend("codex", backend));
+    return { state, succeed: () => finish() };
+  }
+
+  test("signs the account out and starts a new sign-in", async () => {
+    const fake = signedIn(true);
+    const result = await switchCliAccount("codex");
+    expect(result).toMatchObject({
+      ok: true,
+      message: "Successfully logged out",
+      login: { state: "running", url: "https://example.test/codex" },
+    });
+    expect(fake.state.runs).toBe(1);
+    // A second switch while the sign-in runs returns it instead of signing out again.
+    expect((await switchCliAccount("codex")).login?.startedAt).toBe(result.login?.startedAt);
+    expect(fake.state.runs).toBe(1);
+    fake.succeed();
+    expect((await cliLoginSettled("codex"))?.state).toBe("succeeded");
+  });
+
+  test("a failed logout starts no sign-in", async () => {
+    const fake = signedIn(false);
+    expect(await switchCliAccount("codex")).toEqual({ ok: false, message: "logout failed", login: null });
+    expect(fake.state.runs).toBe(0);
+  });
+
+  test("POST /v1/providers/ID/switch over the local API", async () => {
+    signedIn(true);
+    const fixture = workflowFixture();
+    const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
+    const homeDir = mkdtempSync(join(tmpdir(), "baked-api-home-"));
+    const server = await startApiServer({ service: fixture.service, pollMs: 20, configDir, homeDir, log: () => {} });
+    cleanups.push(async () => {
+      await server.stop();
+      await fixture.dispose();
+      await removeTempDir(configDir);
+      await removeTempDir(homeDir);
+    });
+    const call = (path: string, method = "GET") =>
+      fetch(`${server.url}${path}`, { method, headers: { Authorization: `Bearer ${server.token}` } });
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("provider-switch");
+    const switched = await call("/v1/providers/codex/switch", "POST");
+    expect(switched.status).toBe(202);
+    const body = (await switched.json()) as { ok: boolean; message: string; login: CliLogin };
+    expect(Object.keys(body).sort()).toEqual(["login", "message", "ok"]);
+    expect(body.ok).toBe(true);
+    expect(body.login.state).toBe("running");
+    expect((await call("/v1/providers/codex/switch")).status).toBe(405);
+    expect((await call("/v1/providers/openai/switch", "POST")).status).toBe(404);
+    await cancelCliLogin("codex");
   });
 });
