@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
+import { type RouteExplanation, setup } from "../../client/setup.js";
 import {
   type DoctorCheck,
   type DoctorReport,
@@ -19,6 +20,7 @@ import {
   stageLabel,
   usdRange,
 } from "./logic.js";
+import { routeExtras, routeRows } from "./route-logic.js";
 
 export { doctorLine } from "./logic.js";
 
@@ -205,6 +207,113 @@ export function EstimatePanel({
       )}
     </section>
   );
+}
+
+/**
+ * Who runs each stage of the chosen workflow and why (`GET /v1/workflow/route`, what `baked
+ * workflow route` prints). Left out on a backend without the `routing` capability.
+ */
+export function RoutePanel({ state }: { state: RouteState }) {
+  if (state.unsupported) return null;
+  const rows = state.route ? routeRows(state.route) : [];
+  return (
+    <section aria-label="Models" className={PANEL} aria-busy={state.loading}>
+      <div className={PANEL_HEAD}>
+        <h2 className={LABEL}>Models</h2>
+        {state.route && (
+          <span className={`${NOTE} ml-auto`}>run model {shortModel(state.route.runModel)}</span>
+        )}
+      </div>
+      {state.error ? (
+        <p className={NOTE_ERR}>{state.error}</p>
+      ) : !state.route ? (
+        <p className={NOTE}>Routing…</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table
+              className={cn(
+                TABLE,
+                "text-[13px] text-soft-foreground [&_tbody_tr:last-child_td]:border-b-0",
+              )}
+            >
+              <thead>
+                <tr>
+                  <th className={CELL}>Stage</th>
+                  <th className={CELL}>Model</th>
+                  <th className={CELL}>Why</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const extras = routeExtras(row);
+                  return (
+                    <tr key={row.stageId}>
+                      <td className={CELL}>
+                        {stageLabel(row.stageId)}
+                        <span className="block text-[11px] text-dim-foreground">{row.kind}</span>
+                      </td>
+                      <td className={`font-mono ${CELL} whitespace-normal wrap-anywhere`}>
+                        {row.model ? shortModel(row.model) : "per profile"}
+                        {extras && (
+                          <span className="block text-[11px] text-dim-foreground">{extras}</span>
+                        )}
+                      </td>
+                      <td
+                        className={`font-mono ${CELL} whitespace-normal text-[12px] text-muted-foreground wrap-anywhere`}
+                      >
+                        {row.source}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {state.route.warnings.length > 0 && (
+            <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12px] text-[color:var(--warn)]">
+              {state.route.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+export interface RouteState {
+  route: RouteExplanation | null;
+  error: string | null;
+  loading: boolean;
+  /** The backend has no `routing` capability: the panel is left out. */
+  unsupported: boolean;
+}
+
+/** The route of a workflow with the chosen run model; an answer for older inputs is dropped. */
+export function useRoute(key: string, workflow: string, model: string): RouteState {
+  const [state, setState] = useState<RouteState>({
+    route: null,
+    error: null,
+    loading: true,
+    unsupported: false,
+  });
+  useEffect(() => {
+    let live = true;
+    setState((s) => ({ ...s, loading: true }));
+    setup.route(key, workflow, model || undefined).then(
+      (route) =>
+        live && setState({ route, error: null, loading: false, unsupported: route === null }),
+      (error: unknown) =>
+        live &&
+        setState({ route: null, error: message(error), loading: false, unsupported: false }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, workflow, model]);
+  return state;
 }
 
 interface PreRunState {
