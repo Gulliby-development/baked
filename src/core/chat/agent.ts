@@ -12,6 +12,7 @@ import { createBakeAgent } from "../agents/index.js";
 import type { SharedCacheRef } from "../agents/subagent-tools.js";
 import type { ContextManager } from "../context/manager.js";
 import { resolveModel } from "../llm/provider.js";
+import { DEFAULT_DISABLED_TOOLS } from "../settings/schema.js";
 import { onFileEdited } from "../tools/file-events.js";
 
 export type BakeAgent = ReturnType<typeof createBakeAgent>;
@@ -94,6 +95,7 @@ export function createChatAgent(options: ChatAgentOptions): BakeAgent {
   const webSearchEnabled = config.webSearch !== false;
   const webSearchModel = webSearchEnabled ? tryResolve(tr?.webSearch ?? undefined) : undefined;
   const deny = async (): Promise<boolean> => false;
+  const disabledTools = new Set(config.disabledTools ?? DEFAULT_DISABLED_TOOLS);
   return createBakeAgent({
     model: options.model,
     fullModelId: options.modelId,
@@ -109,7 +111,14 @@ export function createChatAgent(options: ChatAgentOptions): BakeAgent {
     onApproveDestructive: options.onApproveDestructive ?? (mode === "auto" ? undefined : deny),
     providerOptions: options.providerOptions,
     headers: options.headers,
-    agentFeatures: config.agentFeatures,
+    codeExecution: config.codeExecution,
+    computerUse: config.computerUse,
+    anthropicTextEditor: config.anthropicTextEditor,
+    agentFeatures: {
+      ...config.agentFeatures,
+      onDemandTools: !disabledTools.has("request_tools"),
+    },
+    disabledTools,
     sharedCacheRef: options.sharedCacheRef,
     cwd: options.cwd,
     ...(options.sessionId ? { sessionId: options.sessionId } : {}),
