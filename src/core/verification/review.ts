@@ -72,15 +72,35 @@ export function completeReview(
   const resolve = (ids: string[]) => resolveEvidenceIds(current, ids);
   for (const item of review.coverage) item.evidenceIds = resolve(item.evidenceIds);
   for (const finding of review.findings) finding.evidenceIds = resolve(finding.evidenceIds);
-  if (pad)
-    for (const criterion of spec.criteria)
-      if (!review.coverage.some((c) => c.criterionId === criterion.id))
+  if (!pad) return;
+  for (const criterion of spec.criteria) {
+    const item = review.coverage.find((c) => c.criterionId === criterion.id);
+    if (criterion.method === "manual") {
+      // A manual criterion has no evidence before work finishes, so the required reviewer neither
+      // passes nor fails it; the converge stage asks a person for the evidence.
+      if (!item)
         review.coverage.push({
           criterionId: criterion.id,
-          verdict: "inconclusive",
+          verdict: "deferred",
           evidenceIds: [],
-          explanation: "Criterion not covered by this review",
+          explanation: "A person provides the evidence for this manual criterion",
         });
+      else if (item.verdict === "inconclusive") item.verdict = "deferred";
+    } else if (!item)
+      review.coverage.push({
+        criterionId: criterion.id,
+        verdict: "inconclusive",
+        evidenceIds: [],
+        explanation: "Criterion not covered by this review",
+      });
+  }
+  // An inconclusive verdict caused only by manual criteria is the reviewer's pass over the rest.
+  if (
+    review.verdict === "inconclusive" &&
+    review.coverage.some((c) => c.verdict === "deferred") &&
+    review.coverage.every((c) => c.verdict === "pass" || c.verdict === "deferred")
+  )
+    review.verdict = review.findings.length ? "changes_requested" : "pass";
 }
 
 /** What `validateReview` rejects, as correction messages for the agent that submitted it. */
