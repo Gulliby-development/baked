@@ -1468,9 +1468,18 @@ export class WorkflowScheduler {
         profile.context === "planning")
         ? this.store.readArtifact(runId, state.workingSet.artifactId)
         : null;
+    // What earlier runs learned helps the agents that ask questions and choose the approach.
+    const memory =
+      state.projectMemory &&
+      (profile.context === "research" ||
+        profile.context === "specification" ||
+        profile.context === "planning")
+        ? this.store.readArtifact(runId, state.projectMemory.artifactId)
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
+      ...(memory ? { projectMemory: memory } : {}),
       executionContract: {
         checks: policy.checks,
         // An implementer works alone; the other agents' tools are only resent on every step.

@@ -8,6 +8,7 @@ import { validatePackage, workspacePath } from "../specs/validate.js";
 import { frozenInstructions } from "./context.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { PROJECT_MEMORY_ARTIFACT } from "./project-memory.js";
 import { redactSecrets } from "./redaction.js";
 import {
   type ArtifactService,
@@ -63,10 +64,12 @@ export class WorkflowArtifacts implements ArtifactService {
     }
     state.instructionText = instructions.text;
     state.frozenFiles = instructions.files;
-    // The working set stays the one the run captured at creation.
+    // The working set and project memory stay the ones the run captured at creation.
     state.manifest.instructionHashes = [
       ...instructions.hashes,
-      ...state.manifest.instructionHashes.filter((h) => h.source === WORKING_SET_ARTIFACT),
+      ...state.manifest.instructionHashes.filter(
+        (h) => h.source === WORKING_SET_ARTIFACT || h.source === PROJECT_MEMORY_ARTIFACT,
+      ),
     ];
     state.manifest.constitutionHash =
       instructions.files[join(store.workspace, "baked/constitution.md")] ?? null;

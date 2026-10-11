@@ -189,6 +189,12 @@ export const PolicySchema = z
      */
     clarification: z.enum(["ask", "assume"]).optional(),
     /**
+     * `false` leaves out project memory: answers, approved assumptions and passing checks of
+     * earlier runs that research, specification and planning otherwise read (project-memory.ts).
+     * Absent means on, so stored policies keep their hash.
+     */
+    projectMemory: z.boolean().optional(),
+    /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
      */

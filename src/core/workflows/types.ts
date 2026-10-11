@@ -164,6 +164,15 @@ export const RuntimeStateSchema = z
       .nullable()
       .default(null),
     /**
+     * Project memory rendered at run creation (artifact `project/run-memory.md`): what earlier runs
+     * of the workspace learned. Research, specification and planning read it. Null when empty.
+     */
+    projectMemory: z
+      .object({ artifactId: z.string(), hash: z.string() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
      * The run's own Git worktree once it exists (worktree execution mode). From then on the run
      * reads, edits, checks and snapshots there; the project working copy is never written.
      */
