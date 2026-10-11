@@ -30,6 +30,7 @@ This folder describes BAKED as it works now. It is the only place for long-lived
 
 - [Architecture](architecture.md): how the agent, the repository graph, tools and storage fit together.
 - [Bench loop](bench-loop.md): the agent loop that builds apps with BAKED, files what it finds and publishes the apps that pass.
+- [Feature parity](parity.md): the feature registry, the parity test and which surface lacks what.
 - [Brand](brand.md): the oven logo, the bun mascot and the icon set.
 - [CONTRIBUTING.md](../CONTRIBUTING.md): development setup, checks, distributables and releases.
 
