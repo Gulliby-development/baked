@@ -33,6 +33,7 @@ import {
   forgetKnownProject,
   type KnownProjectOptions,
   listKnownProjects,
+  renameKnownProject,
   setProjectPinned,
 } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
@@ -73,6 +74,8 @@ export interface SetupRouteContext extends RouteContext {
 }
 
 const PathBody = z.strictObject({ path: z.string().min(1) });
+/** An empty name restores the manifest or folder name. */
+const RenameBody = z.strictObject({ path: z.string().min(1), name: z.string().max(120) });
 const InstructionBody = z.strictObject({
   path: z.string().min(1),
   content: z.string().max(1024 * 1024),
@@ -167,14 +170,18 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
   if (
     path === "/v1/projects/pin" ||
     path === "/v1/projects/unpin" ||
-    path === "/v1/projects/forget"
+    path === "/v1/projects/forget" ||
+    path === "/v1/projects/rename"
   ) {
     ctx.only("POST");
-    const body = PathBody.parse(await ctx.readJson());
+    const raw = await ctx.readJson();
+    const rename = path.endsWith("/rename") ? RenameBody.parse(raw) : null;
+    const body = rename ?? PathBody.parse(raw);
     if (!isAbsolute(body.path)) ctx.fail(400, "INVALID_REQUEST", "Send the absolute folder path");
     const listed = listKnownProjects(known).some((p) => p.path === realPath(body.path));
     if (!listed) ctx.fail(404, "NOT_FOUND", `${body.path} is not a known project`);
-    if (path.endsWith("forget")) forgetKnownProject(body.path, known);
+    if (rename) renameKnownProject(rename.path, rename.name, known);
+    else if (path.endsWith("forget")) forgetKnownProject(body.path, known);
     else setProjectPinned(body.path, path.endsWith("/pin"), known);
     const here = realPath(workspace);
     return ctx.json(200, {
