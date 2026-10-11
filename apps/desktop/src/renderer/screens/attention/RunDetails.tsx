@@ -99,6 +99,17 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 </div>
               ))}
             </section>
+            {body.assumptions?.length ? (
+              <section className="card att-list" aria-label="Assumptions">
+                <span className="label">Assumptions the agents made instead of asking</span>
+                {body.assumptions.map((assumption, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: assumptions may repeat
+                  <div key={i} className="att-row">
+                    <span>{assumption}</span>
+                  </div>
+                ))}
+              </section>
+            ) : null}
             {body.deferredCriteria?.length ? (
               <p className="att-note">
                 Checked after release, not by this run: {body.deferredCriteria.join(", ")}.

@@ -199,11 +199,15 @@ for (const [width, height] of SIZES) {
       expect(text).toContain("‹ inline ›");
       // The skipped writer row lies below the focused field; a small terminal scrolls past it.
       if (height >= 40) expect(text).toContain("more needs worktree");
-      // Writers are skipped while inline: the next field is the start button.
+      // Writers are skipped while inline: the next field is Questions, then the start button.
+      await press(view, "tab");
+      await press(view, "right");
+      if (height >= 40) expect(await frame(view, width, height, "assume")).toContain("‹ assume ›");
       await press(view, "tab");
       await press(view, "return");
-      expect(started.at(-1)).toMatchObject({ executionMode: "inline" });
+      expect(started.at(-1)).toMatchObject({ executionMode: "inline", clarification: "assume" });
       expect(started.at(-1)?.maxConcurrentWriters).toBeUndefined();
+      await press(view, "up");
       await press(view, "up");
       await press(view, "right");
       text = await frame(view, width, height, "worktree");

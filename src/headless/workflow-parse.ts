@@ -104,6 +104,7 @@ const flags = new Set([
   "exclude-user-changes",
   "route",
   "resume",
+  "clarification",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -146,6 +147,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "worktree",
     "writers",
     "route",
+    "clarification",
   ],
   quick: [
     "feature",
@@ -312,6 +314,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "Specify exactly one of --prompt or --prompt-file",
       );
   }
+  if (
+    !result.flags.help &&
+    "clarification" in result.flags &&
+    !["ask", "assume"].includes(String(result.flags.clarification))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -337,10 +345,13 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume]
   --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
+  --clarification assume lets research, spec and analysis settle blocking questions with recorded
+  assumptions, shown at approval; only questions without a safe default wait for you. Default: the
+  policy's clarification, otherwise ask
 quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--events] [--worktree] [--confirm-auto-approval HASH]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from

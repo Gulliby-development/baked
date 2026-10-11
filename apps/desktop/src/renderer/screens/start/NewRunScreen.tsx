@@ -87,6 +87,8 @@ export function NewRunScreen({ project }: SectionProps) {
   const [budget, setBudget] = useState<BudgetPreset>("standard");
   const [worktree, setWorktree] = useState(false);
   const [writers, setWriters] = useState(1);
+  // Null follows the configured policy; the checkbox overrides it for this run.
+  const [assumeOverride, setAssume] = useState<boolean | null>(null);
   const [model, setModel] = useState("");
 
   const definitions = useLoad(key, start.definitions);
@@ -104,6 +106,7 @@ export function NewRunScreen({ project }: SectionProps) {
     preRun.estimate ?? preRun.doctor?.estimate ?? null,
   );
   const launcher = useStartRun(key);
+  const assume = assumeOverride ?? policy.policy?.clarification === "assume";
 
   const definition = useMemo(
     () => definitions.value?.find((d) => d.id === workflow) ?? null,
@@ -142,6 +145,8 @@ export function NewRunScreen({ project }: SectionProps) {
       ...(model ? { model } : {}),
       ...(worktree ? { worktree: true } : {}),
       ...(writers > 1 ? { writers } : {}),
+      // Sent only when changed here, so a backend without the field still starts the run.
+      ...(assumeOverride !== null ? { clarification: assume ? "assume" : "ask" } : {}),
     });
   };
 
@@ -235,6 +240,19 @@ export function NewRunScreen({ project }: SectionProps) {
             </span>
           </fieldset>
         </div>
+
+        <fieldset className="start-fieldset">
+          <legend className="start-legend">Open questions</legend>
+          <label className="check">
+            <input type="checkbox" checked={assume} onChange={(e) => setAssume(e.target.checked)} />
+            Settle them with recorded assumptions
+          </label>
+          <span className="start-hint">
+            {assume
+              ? "The agents pick conventional defaults and list them at approval; only questions without a safe default wait for you."
+              : "The run waits for your answers to blocking questions."}
+          </span>
+        </fieldset>
 
         <div className="start-inline">
           <label htmlFor="new-run-model" className="start-legend">

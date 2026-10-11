@@ -13,6 +13,7 @@ interface ApprovalBody {
   writes?: { path: string; action: string }[];
   checks?: Check[];
   deferredCriteria?: string[];
+  assumptions?: string[];
   executionMode?: "inline" | "worktree";
   worktree?: { path: string; branch: string; baseHead: string; userChangesInScope: string[] };
 }
@@ -404,6 +405,20 @@ export function DecisionPrompt({
               {`  ${c.id} [${c.method}] ${c.text}`}
             </text>
           ))}
+          {body.assumptions?.length ? (
+            <>
+              <text
+                fg={t.warning}
+                attributes={1}
+              >{`Assumptions the agents made instead of asking (${body.assumptions.length})`}</text>
+              {body.assumptions.map((a, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: assumptions may repeat
+                <text key={i} fg={t.textMuted}>
+                  {`  • ${flatten(a)}`}
+                </text>
+              ))}
+            </>
+          ) : null}
           <text
             fg={t.textSecondary}
             attributes={1}

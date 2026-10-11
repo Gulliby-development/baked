@@ -390,6 +390,8 @@ describe("local core API", () => {
     expect(((await invalid.json()) as { error: { code: string } }).error.code).toBe("INVALID_REQUEST");
     const extra = await post("/v1/workflow/runs", { ...startBody(), unknown: true });
     expect(extra.status).toBe(400);
+    const clarification = await post("/v1/workflow/runs", { ...startBody(), clarification: "maybe" });
+    expect(clarification.status).toBe(400);
     const writers = await post("/v1/workflow/runs", { ...startBody(), writers: 2 });
     expect(((await writers.json()) as { error: { code: string } }).error.code).toBe("INVALID_DEFINITION");
     const malformed = await call("/v1/workflow/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{" });

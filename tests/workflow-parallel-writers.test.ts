@@ -464,6 +464,8 @@ describe("workflow parallel writers", () => {
     expect(parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--worktree", "--writers", "3"]).flags.writers).toBe("3");
     expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--writers", "2"])).toThrow(/requires --worktree/);
     expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--worktree", "--writers", "5"])).toThrow(/from 1 to 4/);
+    expect(parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--clarification", "assume"]).flags.clarification).toBe("assume");
+    expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--clarification", "maybe"])).toThrow(/ask or assume/);
   });
 
   test("migration 006 keeps tasks, dependencies and findings and allows the interrupted status", () => {

@@ -108,7 +108,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Needs you | Blocking and advisory items of all open projects with project tags and a filter; the selected item's detail with its actions (approve, reject, answer, deliver). |
 | Project home | Task box with Quick, Full run and Ask in chat; recent sessions and runs; working set; doctor summary. |
 | Chat | One centered column (about 820 px): messages, collapsed tool lines, inline diffs, approval cards, suggestions; compact chips for context, changed files and working set, and New chat; the title opens the list of chats; composer with model, effort and approval mode. |
-| Quick task, New run | Workflow and budget preset choice (built-in presets), writers, model, checks, pre-run estimate. |
+| Quick task, New run | Workflow and budget preset choice (built-in presets), writers, open questions (ask, or settle with recorded assumptions), model, checks, pre-run estimate. The approval decision lists the assumptions the agents made. |
 | Run | Stage pipeline, approval card, tabs (overview, decision, tasks, changes, spec, plan, checks, criteria, findings), budget and activity. Pause, Resume, Cancel run, and Undo edits while the run is neither created nor running: after a confirmation it runs `baked workflow undo` and shows the `workspace-rollback` report (files restored, files left in place with the reason, or nothing to undo). |
 | Parallel writers | Writer columns with worktrees, integrator, task graph. |
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |

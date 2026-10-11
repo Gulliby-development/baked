@@ -306,6 +306,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.confirmAutoApproval) flags["confirm-auto-approval"] = body.confirmAutoApproval;
   if (body.worktree) flags.worktree = true;
   if (body.writers !== undefined) flags.writers = String(body.writers);
+  if (body.clarification) flags.clarification = body.clarification;
   if (body.policy !== undefined) flags.policy = true;
   return validateWorkflowArgs({
     command: "run",

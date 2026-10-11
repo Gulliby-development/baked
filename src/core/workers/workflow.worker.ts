@@ -89,6 +89,7 @@ const StartInput = z
     budget: BudgetPreset,
     executionMode: z.enum(["inline", "worktree"]).optional(),
     maxConcurrentWriters: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
+    clarification: z.enum(["ask", "assume"]).optional(),
   })
   .strict();
 const ctx = createWorkerHandler(
@@ -174,6 +175,7 @@ const ctx = createWorkerHandler(
         ...(request.maxConcurrentWriters !== undefined
           ? { maxConcurrentWriters: request.maxConcurrentWriters }
           : {}),
+        ...(request.clarification ? { clarification: request.clarification } : {}),
       });
       const controller = new AbortController();
       controllers.set(id, controller);

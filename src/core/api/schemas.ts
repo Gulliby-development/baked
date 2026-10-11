@@ -22,6 +22,8 @@ export const StartBody = z.strictObject({
   confirmAutoApproval: z.string().min(1).optional(),
   worktree: z.boolean().optional(),
   writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
+  /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
+  clarification: z.enum(["ask", "assume"]).optional(),
 });
 export const CommandBody = Command.strict();
 export const ApproveBody = Command.extend({

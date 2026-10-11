@@ -125,6 +125,8 @@ export interface StartBody {
   model?: string;
   worktree?: boolean;
   writers?: number;
+  /** What blocking spec questions do (`--clarification`); omitted, the policy decides. */
+  clarification?: "ask" | "assume";
 }
 
 /** The most tasks a run may implement at once (`MAX_CONCURRENT_WRITERS` in the core). */

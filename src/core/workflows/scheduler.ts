@@ -664,6 +664,8 @@ export class WorkflowScheduler {
                   deferredCriteria: state.spec.criteria
                     .filter((c) => c.method === "post-release")
                     .map((c) => c.id),
+                  // Defaults the agents chose instead of asking; approving accepts them.
+                  assumptions: state.spec.assumptions,
                   boundedCorrection: true,
                   // Granted walk-through capabilities are shown to the person; the frozen gates
                   // that hold them are part of the manifest the digest covers.
