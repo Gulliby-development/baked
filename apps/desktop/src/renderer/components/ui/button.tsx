@@ -18,6 +18,11 @@ const buttonVariants = cva(
           "border-transparent bg-transparent text-foreground hover:border-border hover:bg-background",
         danger:
           "bg-fill-err text-main-foreground shadow-shadow hover:translate-x-boxShadowX hover:translate-y-boxShadowY hover:shadow-none",
+        // The compact action buttons of the work screens: a small hard shadow and a 2px press.
+        primary:
+          "bg-main text-main-foreground shadow-sm-hard hover:translate-x-[2px] hover:translate-y-[2px] hover:text-main-foreground hover:shadow-none",
+        secondary:
+          "bg-raised text-foreground shadow-sm-hard hover:translate-x-[2px] hover:translate-y-[2px] hover:text-foreground hover:shadow-none",
       },
       size: {
         default: "h-10 px-4 py-2",
@@ -25,6 +30,8 @@ const buttonVariants = cva(
         lg: "h-11 px-8",
         icon: "size-10",
         "icon-sm": "size-8",
+        // Inherits the surrounding font and line height, so links styled as buttons match too.
+        md: "h-auto min-h-[34px] gap-1.5 px-3 py-0 [font-family:inherit] text-[13px] leading-[inherit] font-bold no-underline",
       },
     },
     defaultVariants: { variant: "default", size: "default" },
