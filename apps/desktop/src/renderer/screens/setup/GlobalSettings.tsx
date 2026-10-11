@@ -9,9 +9,34 @@ import {
   setup,
 } from "../../client/setup.js";
 import { useDesktop } from "../../store.js";
-import "../../styles/setup.css";
 import { type ClassRow, classRoute, classRows, commandLabel, splitList } from "./logic.js";
-import { errorText, LoadState, NeedsNewer, Tag, useLoad } from "./shared.js";
+import {
+  ACTIONS,
+  ADD,
+  errorText,
+  FIELD_HALF,
+  FL,
+  FLUSH,
+  FORM,
+  GROW,
+  H2,
+  LINE,
+  LINE_LOOSE,
+  LIST,
+  LoadState,
+  NeedsNewer,
+  NOTE,
+  OK,
+  PAIR,
+  ROW,
+  SETUP,
+  STACK,
+  Tag,
+  useLoad,
+  WARN,
+} from "./shared.js";
+
+const CELL = "min-w-[140px] whitespace-normal";
 
 /** Writes top-level keys of the global config; resolves to whether it worked. */
 type Patch = (set: Record<string, unknown>) => Promise<boolean>;
@@ -45,11 +70,11 @@ function ProviderRow({
   };
   const inputId = `key-${provider.id}`;
   return (
-    <li className="setup-line setup-wrap-line">
+    <li className={LINE_LOOSE}>
       <span className={`dot ${provider.configured ? "ok" : ""}`} aria-hidden="true" />
-      <span className="setup-grow stack">
+      <span className={`${GROW} stack`}>
         <span>{provider.name}</span>
-        <span className="muted setup-note">
+        <span className={`muted ${NOTE}`}>
           {provider.configured
             ? provider.source === "env"
               ? "configured · key from an environment variable"
@@ -82,7 +107,7 @@ function ProviderRow({
       )}
       {editing && (
         <form
-          className="setup-add setup-full"
+          className={`${ADD} basis-full`}
           onSubmit={(e) => {
             e.preventDefault();
             if (value.trim())
@@ -95,7 +120,7 @@ function ProviderRow({
           <input
             id={inputId}
             type="password"
-            className="mono"
+            className="mono min-h-[34px] rounded-base border-2 border-border bg-[var(--bg)] px-[10px] text-foreground [font-family:inherit] [font-size:inherit] [font-weight:inherit] [line-height:inherit]"
             autoComplete="off"
             placeholder="Paste the API key"
             value={value}
@@ -109,7 +134,7 @@ function ProviderRow({
           </button>
         </form>
       )}
-      {error && <div className="banner error setup-full">{error}</div>}
+      {error && <div className="banner error basis-full">{error}</div>}
     </li>
   );
 }
@@ -117,8 +142,8 @@ function ProviderRow({
 function Providers({ projectKey }: { projectKey: string }) {
   const [providers, reload] = useLoad(() => setup.providers(projectKey), [projectKey]);
   return (
-    <section className="setup-section" aria-labelledby="providers">
-      <h2 id="providers" className="setup-h2">
+    <section className={STACK} aria-labelledby="providers">
+      <h2 id="providers" className={H2}>
         Providers and keys
       </h2>
       <p className="lede">
@@ -126,7 +151,7 @@ function Providers({ projectKey }: { projectKey: string }) {
         shown here.
       </p>
       {providers.state === "ready" ? (
-        <ul className="card setup-list setup-flush">
+        <ul className={`card ${LIST} ${FLUSH}`}>
           {providers.data.providers.map((p) => (
             <ProviderRow key={p.id} projectKey={projectKey} provider={p} onChanged={reload} />
           ))}
@@ -160,9 +185,9 @@ function ClassEditor({
     onSave(name.trim(), model.trim(), effort, splitList(fallback));
   };
   return (
-    <form className="card setup-form" onSubmit={submit} aria-label="Model class">
-      <div className="setup-pair">
-        <div className="setup-fl">
+    <form className={`card ${FORM}`} onSubmit={submit} aria-label="Model class">
+      <div className={PAIR}>
+        <div className={FIELD_HALF}>
           <label htmlFor="class-name">Class</label>
           <input
             id="class-name"
@@ -174,7 +199,7 @@ function ClassEditor({
             onChange={(e) => setName(e.target.value)}
           />
         </div>
-        <div className="setup-fl">
+        <div className={FIELD_HALF}>
           <label htmlFor="class-effort">Effort</label>
           <select
             id="class-effort"
@@ -189,7 +214,7 @@ function ClassEditor({
           </select>
         </div>
       </div>
-      <div className="setup-fl">
+      <div className={FL}>
         <label htmlFor="class-model">Model</label>
         <input
           id="class-model"
@@ -200,7 +225,7 @@ function ClassEditor({
           onChange={(e) => setModel(e.target.value)}
         />
       </div>
-      <div className="setup-fl">
+      <div className={FL}>
         <label htmlFor="class-fallback">Fallback models, in order (up to 3)</label>
         <input
           id="class-fallback"
@@ -211,7 +236,7 @@ function ClassEditor({
           onChange={(e) => setFallback(e.target.value)}
         />
       </div>
-      <div className="setup-actions">
+      <div className={ACTIONS}>
         <button
           type="submit"
           className="btn-primary"
@@ -259,8 +284,8 @@ function Routing({
   };
   const editingRow = editing === "+" ? null : (rows.find((r) => r.name === editing) ?? null);
   return (
-    <section className="setup-section" aria-labelledby="routing">
-      <h2 id="routing" className="setup-h2">
+    <section className={STACK} aria-labelledby="routing">
+      <h2 id="routing" className={H2}>
         Model routing
       </h2>
       <p className="lede">
@@ -268,7 +293,7 @@ function Routing({
         <span className="mono">.baked/config.json</span>.
       </p>
       <h3 className="label">Classes</h3>
-      <div className="card setup-flush setup-scroll">
+      <div className={`card ${FLUSH}`}>
         <table className="table">
           <thead>
             <tr>
@@ -286,12 +311,10 @@ function Routing({
             {rows.map((row) => (
               <tr key={row.name}>
                 <td>${row.name}</td>
-                <td className={row.model ? "setup-cell" : "setup-cell muted"}>{describe(row)}</td>
+                <td className={row.model ? CELL : `${CELL} muted`}>{describe(row)}</td>
                 <td>{row.effort}</td>
-                <td className="setup-cell">
-                  {row.fallback.length ? row.fallback.join(", ") : "–"}
-                </td>
-                <td className="setup-cell">{row.usedBy.length ? row.usedBy.join(", ") : "–"}</td>
+                <td className={CELL}>{row.fallback.length ? row.fallback.join(", ") : "–"}</td>
+                <td className={CELL}>{row.usedBy.length ? row.usedBy.join(", ") : "–"}</td>
                 <td>
                   <button
                     type="button"
@@ -350,10 +373,10 @@ function Routing({
           }}
         />
       )}
-      <div className="card setup-row">
-        <span className="setup-grow stack">
+      <div className={`card ${ROW}`}>
+        <span className={`${GROW} stack`}>
           <span>Independent review</span>
-          <span className="muted setup-note">
+          <span className={`muted ${NOTE}`}>
             What happens when a reviewer would run on a model the implementation also uses.
           </span>
         </span>
@@ -398,9 +421,9 @@ function RouteExplanation({
       : ["sdd", "quick", "standard"];
   const override = config.project.modelRouting;
   return (
-    <section className="setup-section" aria-labelledby="route">
-      <div className="setup-row">
-        <h3 id="route" className="label setup-grow">
+    <section className={STACK} aria-labelledby="route">
+      <div className={ROW}>
+        <h3 id="route" className={`label ${GROW}`}>
           Who runs each stage of {workflow}
         </h3>
         <label htmlFor="route-workflow" className="sr-only">
@@ -416,7 +439,7 @@ function RouteExplanation({
       </div>
       {route.state === "ready" ? (
         <>
-          <div className="card setup-flush setup-scroll">
+          <div className={`card ${FLUSH}`}>
             <table className="table">
               <thead>
                 <tr>
@@ -440,17 +463,17 @@ function RouteExplanation({
             </table>
           </div>
           {route.data.warnings.length ? (
-            <ul className="setup-warn setup-note setup-plain">
+            <ul className={`m-0 list-none p-0 ${WARN} ${NOTE}`}>
               {route.data.warnings.map((w) => (
                 <li key={w}>! {w}</li>
               ))}
             </ul>
           ) : (
-            <span className="setup-ok setup-note">
+            <span className={`${OK} ${NOTE}`}>
               ✓ Reviewers use a different model from the implementer.
             </span>
           )}
-          <span className="muted setup-note">
+          <span className={`muted ${NOTE}`}>
             As routed for {projectName}, with run model{" "}
             <span className="mono">{route.data.runModel}</span>.
           </span>
@@ -459,9 +482,9 @@ function RouteExplanation({
         <LoadState value={route} what="the route explanation" />
       )}
       {override && (
-        <div className="card setup-row">
+        <div className={`card ${ROW}`}>
           <span className="dot warn" aria-hidden="true" />
-          <span className="setup-grow">
+          <span className={GROW}>
             {projectName} overrides model routing in its own{" "}
             <span className="mono">.baked/config.json</span>; the table above includes it.
           </span>
@@ -476,8 +499,8 @@ function GlobalCommands({ projectKey }: { projectKey: string }) {
   const global =
     commands.state === "ready" ? commands.data.commands.filter((c) => c.scope === "global") : [];
   return (
-    <section className="setup-section" aria-labelledby="commands">
-      <h2 id="commands" className="setup-h2">
+    <section className={STACK} aria-labelledby="commands">
+      <h2 id="commands" className={H2}>
         Global commands
       </h2>
       <p className="lede">
@@ -490,15 +513,15 @@ function GlobalCommands({ projectKey }: { projectKey: string }) {
       ) : global.length === 0 ? (
         <div className="empty">No global commands.</div>
       ) : (
-        <ul className="card setup-list setup-flush">
+        <ul className={`card ${LIST} ${FLUSH}`}>
           {global.map((c) => (
-            <li key={c.path} className="setup-line">
+            <li key={c.path} className={LINE}>
               <span className="mono">
                 {commandLabel(c.name)}
                 {c.argumentHint ? <span className="muted"> {c.argumentHint}</span> : null}
               </span>
-              <span className="muted setup-grow">{c.description}</span>
-              <span className="mono muted setup-note">{c.path}</span>
+              <span className={`muted ${GROW}`}>{c.description}</span>
+              <span className={`mono muted ${NOTE}`}>{c.path}</span>
             </li>
           ))}
         </ul>
@@ -511,11 +534,11 @@ function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; 
   const enabled = config.global.telemetry !== false;
   const url = config.effective.telemetryUrl;
   return (
-    <section className="setup-section" aria-labelledby="telemetry">
-      <h2 id="telemetry" className="setup-h2">
+    <section className={STACK} aria-labelledby="telemetry">
+      <h2 id="telemetry" className={H2}>
         Telemetry
       </h2>
-      <div className="card setup-stack">
+      <div className={`card ${STACK}`}>
         <label className="check">
           <input
             type="checkbox"
@@ -525,7 +548,7 @@ function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; 
           />
           Record anonymous usage stats (version, OS, surface)
         </label>
-        <span className="muted setup-note">
+        <span className={`muted ${NOTE}`}>
           {!enabled
             ? "Nothing is recorded."
             : url
@@ -586,7 +609,7 @@ function GlobalSettingsFor({
     }
   };
   return (
-    <div className="setup">
+    <div className={SETUP}>
       <div className="stack" style={{ gap: 4 }}>
         <h1>All projects</h1>
         <span className="lede">
@@ -597,12 +620,12 @@ function GlobalSettingsFor({
           . <Tag>read through {projectName}</Tag>
         </span>
       </div>
-      <nav className="setup-toc" aria-label="On this page">
+      <nav className="flex flex-wrap gap-x-4 gap-y-1" aria-label="On this page">
         {TOC.map(([id, label]) => (
           <button
             key={id}
             type="button"
-            className="setup-toc-link"
+            className="cursor-pointer border-0 bg-transparent px-0 py-[2px] [font-family:inherit] [font-weight:inherit] [line-height:inherit] text-[13px] text-[var(--accent)] hover:text-[var(--accent-soft)]"
             onClick={() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" })}
           >
             {label}

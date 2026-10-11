@@ -1,6 +1,5 @@
 import { type FormEvent, useState } from "react";
 import { setup } from "../../client/setup.js";
-import "../../styles/setup.css";
 import type { SectionProps } from "../sections.js";
 import {
   kb,
@@ -8,7 +7,22 @@ import {
   WORKING_SET_MAX_BYTES,
   workingSetBudget,
 } from "./logic.js";
-import { errorText, LoadState, Tag, useLoad } from "./shared.js";
+import {
+  ADD,
+  errorText,
+  FLUSH,
+  GROW,
+  LINE,
+  LIST,
+  LoadState,
+  NOTE,
+  ROW,
+  SETUP,
+  STACK,
+  Tag,
+  useLoad,
+  WRAP,
+} from "./shared.js";
 
 const FIT_LABEL = {
   included: null,
@@ -47,14 +61,14 @@ export function WorkingSetSection({ project }: SectionProps) {
   const percent = Math.min(100, Math.round((budget.used / WORKING_SET_MAX_BYTES) * 100));
 
   return (
-    <div className="setup">
+    <div className={SETUP}>
       <p className="lede">
         Files every chat and workflow agent of this project gets with its contents, stored in{" "}
         <span className="mono">baked/project.json</span>. A run captures them when it starts.
       </p>
 
-      <section className="card setup-budget" aria-label="Budget">
-        <div className="setup-row">
+      <section className="card flex flex-col gap-2" aria-label="Budget">
+        <div className={ROW}>
           <span>
             <span className="mono">{set.files.length}</span> files ·{" "}
             <span className="mono">{kb(budget.total)}</span>
@@ -63,16 +77,16 @@ export function WorkingSetSection({ project }: SectionProps) {
             {kb(budget.used)} of {kb(WORKING_SET_MAX_BYTES)} sent with contents
           </span>
         </div>
-        <div className="setup-meter" aria-hidden="true">
-          <span style={{ width: `${percent}%` }} />
+        <div className="h-[6px] overflow-hidden rounded-[3px] bg-hover" aria-hidden="true">
+          <span className="block h-full bg-[var(--accent)]" style={{ width: `${percent}%` }} />
         </div>
-        <span className="muted setup-note">
+        <span className={`muted ${NOTE}`}>
           Files over {kb(WORKING_SET_FILE_MAX_BYTES)}, and files past the budget, reach agents by
           name only.
         </span>
       </section>
 
-      <form className="setup-add" onSubmit={(e) => void add(e)}>
+      <form className={ADD} onSubmit={(e) => void add(e)}>
         <label htmlFor="ws-entry" className="sr-only">
           Path or glob
         </label>
@@ -91,15 +105,15 @@ export function WorkingSetSection({ project }: SectionProps) {
       </form>
       {error && <div className="banner error">{error}</div>}
 
-      <section aria-label="Entries" className="setup-section">
+      <section aria-label="Entries" className={STACK}>
         <h2 className="label">Entries</h2>
         {set.entries.length === 0 ? (
           <div className="empty">No entries yet. Add a file, a folder or a glob.</div>
         ) : (
-          <ul className="card setup-list">
+          <ul className={`card ${LIST}`}>
             {set.entries.map((e) => (
-              <li key={e} className="setup-line">
-                <span className="mono setup-grow">{e}</span>
+              <li key={e} className={LINE}>
+                <span className={`mono ${GROW}`}>{e}</span>
                 <button
                   type="button"
                   className="btn"
@@ -116,9 +130,9 @@ export function WorkingSetSection({ project }: SectionProps) {
       </section>
 
       {set.files.length > 0 && (
-        <section aria-label="Files" className="setup-section">
+        <section aria-label="Files" className={STACK}>
           <h2 className="label">Files</h2>
-          <div className="card setup-flush">
+          <div className={`card ${FLUSH}`}>
             <table className="table">
               <thead>
                 <tr>
@@ -132,7 +146,7 @@ export function WorkingSetSection({ project }: SectionProps) {
                   const fit = budget.fit[i] ?? "included";
                   return (
                     <tr key={file.path}>
-                      <td className="mono setup-wrap">{file.path}</td>
+                      <td className={`mono ${WRAP}`}>{file.path}</td>
                       <td className="mono">{kb(file.bytes)}</td>
                       <td>
                         {fit === "included" ? (
@@ -151,12 +165,12 @@ export function WorkingSetSection({ project }: SectionProps) {
       )}
 
       {set.skipped.length > 0 && (
-        <section aria-label="Skipped" className="setup-section">
+        <section aria-label="Skipped" className={STACK}>
           <h2 className="label">Left out</h2>
-          <ul className="card setup-list">
+          <ul className={`card ${LIST}`}>
             {set.skipped.map((s) => (
-              <li key={`${s.path}:${s.reason}`} className="setup-line">
-                <span className="mono setup-grow setup-wrap">{s.path}</span>
+              <li key={`${s.path}:${s.reason}`} className={LINE}>
+                <span className={`mono ${GROW} ${WRAP}`}>{s.path}</span>
                 <span className="muted">{s.reason}</span>
               </li>
             ))}

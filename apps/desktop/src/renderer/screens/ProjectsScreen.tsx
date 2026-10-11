@@ -6,7 +6,15 @@ import { bridge } from "../client/bridge.js";
 import { ago, backendLabel, initial } from "../format.js";
 import { href, projectHref } from "../router.js";
 import { useDesktop } from "../store.js";
-import "../styles/projects.css";
+
+const STATE_TONE = {
+  ok: "text-[var(--info)]",
+  warn: "text-[var(--warn)]",
+  err: "text-[var(--err)]",
+  muted: "text-dim-foreground",
+} as const;
+
+const ACTIONS = "flex flex-wrap items-center gap-2";
 
 /** The state line in a card's corner: closed, starting, open, or how many items wait. */
 export function projectState(
@@ -48,24 +56,37 @@ function Card({
   const state = projectState(project, waiting);
   return (
     <article
-      className="card proj-card"
+      className="card group flex min-w-0 flex-col gap-3 px-[18px] py-4 data-open:border-border data-open:bg-selected"
       aria-label={project.name}
       data-open={project.open || undefined}
     >
-      <div className="proj-head">
-        <span className="avatar proj-avatar">{initial(project.name)}</span>
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="avatar h-9 w-9 rounded-[9px] text-[14px] text-[var(--bg)] group-data-open:bg-[var(--accent)]">
+          {initial(project.name)}
+        </span>
         <div className="stack">
-          <h2>
-            {project.open ? <a href={projectHref(project.key)}>{project.name}</a> : project.name}
+          <h2 className="m-0 text-[16px] font-semibold">
+            {project.open ? (
+              <a
+                className="text-foreground no-underline hover:text-[var(--accent-soft)]"
+                href={projectHref(project.key)}
+              >
+                {project.name}
+              </a>
+            ) : (
+              project.name
+            )}
           </h2>
           <span className="sub-line" title={project.path}>
             {project.path}
             {project.branch ? ` · ${project.branch}` : ""}
           </span>
         </div>
-        <span className={`proj-state ${state.tone}`}>{state.text}</span>
+        <span className={`ml-auto flex-none text-[12px] ${STATE_TONE[state.tone]}`}>
+          {state.text}
+        </span>
       </div>
-      <div className="proj-lines">
+      <div className="flex flex-col gap-[6px] text-[13px] text-muted-foreground">
         <span>
           {overview.sessions} {overview.sessions === 1 ? "session" : "sessions"}
           {overview.lastSessionAt ? ` · last ${ago(overview.lastSessionAt)}` : ""}
@@ -88,13 +109,16 @@ function Card({
         )}
       </div>
       {project.backend.kind === "failed" && (
-        <div className="banner error mono proj-log">
+        <div className="banner error mono whitespace-pre-wrap text-[12px]">
           {project.backend.stderr.slice(-5).join("\n") || project.backend.lastError}
         </div>
       )}
       {confirmForget ? (
-        <fieldset className="proj-actions" aria-label={`Forget ${project.name}?`}>
-          <span className="proj-confirm">
+        <fieldset
+          className={`${ACTIONS} mx-0 mt-auto mb-0 min-w-0 border-0 p-0`}
+          aria-label={`Forget ${project.name}?`}
+        >
+          <span className="basis-full text-[13px] text-muted-foreground">
             Remove it from the list? Its sessions and runs stay in the folder.
           </span>
           <button type="button" className="btn" disabled={busy} onClick={() => onAction("forget")}>
@@ -105,7 +129,7 @@ function Card({
           </button>
         </fieldset>
       ) : (
-        <div className="proj-actions">
+        <div className={`${ACTIONS} mt-auto`}>
           {project.open ? (
             <>
               <a className="btn-primary" href={projectHref(project.key)}>
@@ -146,7 +170,7 @@ function Card({
           )}
           <button
             type="button"
-            className="btn proj-pin"
+            className="btn ml-auto aria-pressed:text-[var(--accent-soft)]"
             aria-pressed={project.pinned}
             aria-label={project.pinned ? `Unpin ${project.name}` : `Pin ${project.name}`}
             disabled={busy}
@@ -179,15 +203,15 @@ export function ProjectsScreen() {
   };
   return (
     <div className="page">
-      <header className="proj-header">
-        <h1>All projects</h1>
+      <header className="flex flex-wrap items-center gap-[10px]">
+        <h1 className="mr-auto">All projects</h1>
         <label htmlFor="proj-search" className="sr-only">
           Find a project
         </label>
         <input
           id="proj-search"
           type="search"
-          className="proj-search"
+          className="min-h-[38px] w-[240px] max-w-full rounded-base border-2 border-border bg-background px-3 text-foreground [font-family:inherit] [font-size:inherit] [font-weight:inherit] [line-height:inherit]"
           placeholder="Find a project"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -214,7 +238,7 @@ export function ProjectsScreen() {
       ) : shown.length === 0 ? (
         <div className="empty">No project matches “{query}”.</div>
       ) : (
-        <div className="proj-grid">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(380px,1fr))] gap-4 [@media(max-width:520px)]:grid-cols-[minmax(0,1fr)]">
           {shown.map((project) => (
             <Card
               key={project.key}

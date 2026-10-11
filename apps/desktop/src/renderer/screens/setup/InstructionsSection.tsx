@@ -8,11 +8,36 @@ import {
   setup,
 } from "../../client/setup.js";
 import { workflow } from "../../client/workflow.js";
-import "../../styles/setup.css";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { frozenRunState, instructionOrigin, kb } from "./logic.js";
-import { errorText, type Loaded, LoadState, NeedsNewer, Tag, useLoad } from "./shared.js";
+import {
+  errorText,
+  FLUSH,
+  FORM,
+  GATE,
+  GROW,
+  H,
+  LINE,
+  LIST,
+  type Loaded,
+  LoadState,
+  MARK,
+  NeedsNewer,
+  NOTE,
+  OK,
+  ROW,
+  SETUP,
+  SPLIT,
+  SPLIT_MAIN,
+  STACK,
+  Tag,
+  useLoad,
+  WARN,
+} from "./shared.js";
+
+const LINK =
+  "flex justify-between gap-3 px-0 py-[6px] text-[13px] text-soft-foreground no-underline";
 
 const ACTIVE = new Set(["created", "running", "waiting", "paused", "blocked"]);
 
@@ -56,11 +81,11 @@ function Editor({
     }
   };
   return (
-    <section className="card setup-form" aria-label={file.path}>
-      <div className="setup-row">
-        <span className="mono setup-h">{file.path}</span>
+    <section className={`card ${FORM}`} aria-label={file.path}>
+      <div className={ROW}>
+        <span className={`mono ${H}`}>{file.path}</span>
         <Tag>{file.scope === "global" ? "every project" : "this project"}</Tag>
-        <span className="setup-push" />
+        <span className="ml-auto" />
         <button
           type="button"
           className="btn"
@@ -86,7 +111,7 @@ function Editor({
       </label>
       <textarea
         id="instruction-text"
-        className="setup-text mono"
+        className="mono min-h-[360px] w-full resize-y rounded-base border-2 border-border text-foreground bg-[var(--bg-code)]! p-3! text-[13px]! leading-[1.55]!"
         rows={22}
         spellCheck={false}
         value={text}
@@ -96,7 +121,7 @@ function Editor({
         }}
       />
       {error && <div className="banner error">{error}</div>}
-      <span className={activeRuns > 0 && dirty ? "setup-warn setup-note" : "muted setup-note"}>
+      <span className={activeRuns > 0 && dirty ? `${WARN} ${NOTE}` : `muted ${NOTE}`}>
         {saveNote(activeRuns)}
         {saved && !dirty ? " Saved." : ""}
       </span>
@@ -149,9 +174,9 @@ function FrozenRuns({
   };
 
   return (
-    <section className="card setup-stack" aria-labelledby="frozen-runs">
-      <div className="setup-row">
-        <h2 id="frozen-runs" className="label setup-grow">
+    <section className={`card ${STACK}`} aria-labelledby="frozen-runs">
+      <div className={ROW}>
+        <h2 id="frozen-runs" className={`label ${GROW}`}>
           Runs that froze an earlier version
         </h2>
         <button type="button" className="btn" onClick={onChanged}>
@@ -159,12 +184,12 @@ function FrozenRuns({
         </button>
       </div>
       {unreported && (
-        <span className="muted setup-note">
+        <span className={`muted ${NOTE}`}>
           This BAKED does not report which runs froze a saved file; check your active runs.
         </span>
       )}
       {ids.length > 0 && (
-        <ul className="setup-list">
+        <ul className={LIST}>
           {ids.map((runId) => {
             const run = runs.find((r) => r.runId === runId);
             const state = run
@@ -172,12 +197,12 @@ function FrozenRuns({
               : { text: "not among the recent runs", canRevise: false };
             const revision = revisions[runId];
             return (
-              <li key={runId} className="setup-stack">
-                <div className="setup-line">
+              <li key={runId} className={STACK}>
+                <div className={LINE}>
                   <a className="mono" href={projectHref(projectKey, "runs", runId)}>
                     {runId}
                   </a>
-                  <span className="muted setup-grow">
+                  <span className={`muted ${GROW}`}>
                     {revision?.kind === "done" ? "plan revised; waiting for approval" : state.text}
                   </span>
                   {state.canRevise && revision?.kind !== "done" && (
@@ -192,7 +217,7 @@ function FrozenRuns({
                   )}
                 </div>
                 {revision?.kind === "done" && (
-                  <span className="setup-note setup-ok">
+                  <span className={`${NOTE} ${OK}`}>
                     Plan revised to the current files. Approve it under Needs you or on the run
                     page; the run resumes after that.
                   </span>
@@ -232,9 +257,9 @@ function AlsoGiven({ projectKey }: { projectKey: string }) {
   );
   const files = summary.state === "ready" ? summary.data.workingSet.files : null;
   return (
-    <section className="card setup-stack" aria-label="Also given to agents">
+    <section className={`card ${STACK}`} aria-label="Also given to agents">
       <h2 className="label">Also given to agents</h2>
-      <a className="setup-link" href={projectHref(projectKey, "working-set")}>
+      <a className={`${LINK} hover:text-foreground`} href={projectHref(projectKey, "working-set")}>
         <span>Working set</span>
         <span className="mono muted">
           {files
@@ -242,14 +267,14 @@ function AlsoGiven({ projectKey }: { projectKey: string }) {
             : "…"}
         </span>
       </a>
-      <div className="setup-link">
+      <div className={LINK}>
         <span>
           Skills in <span className="mono">.baked</span>, <span className="mono">.agents</span>,{" "}
           <span className="mono">.claude</span>
         </span>
         <span className="mono muted">{countText(skills)}</span>
       </div>
-      <div className="setup-link">
+      <div className={LINK}>
         <span>
           Commands in <span className="mono">.baked/commands</span>
         </span>
@@ -268,10 +293,10 @@ function FromSummary({ projectKey }: { projectKey: string }) {
     <>
       <NeedsNewer what="or edit every instruction file" />
       {files.length > 0 && (
-        <ul className="card setup-list setup-flush">
+        <ul className={`card ${LIST} ${FLUSH}`}>
           {files.map((path) => (
-            <li key={path} className="setup-line">
-              <span className="mono setup-grow">{path}</span>
+            <li key={path} className={LINE}>
+              <span className={`mono ${GROW}`}>{path}</span>
               <span className="muted">listed in baked/project.json</span>
             </li>
           ))}
@@ -300,7 +325,7 @@ export function InstructionsSection({ project }: SectionProps) {
   );
   if (list.state === "missing")
     return (
-      <div className="setup">
+      <div className={SETUP}>
         {intro}
         <FromSummary projectKey={key} />
         <AlsoGiven projectKey={key} />
@@ -314,7 +339,7 @@ export function InstructionsSection({ project }: SectionProps) {
     files[0];
 
   return (
-    <div className="setup">
+    <div className={SETUP}>
       {intro}
       <FrozenRuns
         projectKey={key}
@@ -323,8 +348,8 @@ export function InstructionsSection({ project }: SectionProps) {
         unreported={unreported}
         onChanged={reloadRuns}
       />
-      <div className="setup-split">
-        <div className="setup-section">
+      <div className={SPLIT}>
+        <div className={SPLIT_MAIN}>
           {files.length === 0 ? (
             <div className="empty">
               No instruction files. Add <span className="mono">baked.md</span> or{" "}
@@ -332,19 +357,19 @@ export function InstructionsSection({ project }: SectionProps) {
               <span className="mono">baked/project.json</span>.
             </div>
           ) : (
-            <ol className="card setup-list setup-flush">
+            <ol className={`card ${LIST} ${FLUSH}`}>
               {files.map((file) => (
                 <li key={file.absolutePath}>
                   <button
                     type="button"
-                    className="setup-gate"
+                    className={GATE}
                     aria-pressed={file === current}
                     onClick={() => setSelected(file.absolutePath)}
                   >
-                    <span className="mono muted setup-mark">{file.order}</span>
-                    <span className="setup-grow stack">
+                    <span className={`mono muted ${MARK}`}>{file.order}</span>
+                    <span className={`${GROW} stack`}>
                       <span className="mono">{file.path}</span>
-                      <span className="muted setup-note">{instructionOrigin(file)}</span>
+                      <span className={`muted ${NOTE}`}>{instructionOrigin(file)}</span>
                     </span>
                     <span className="mono muted">{kb(file.bytes)}</span>
                   </button>
@@ -352,14 +377,14 @@ export function InstructionsSection({ project }: SectionProps) {
               ))}
             </ol>
           )}
-          <span className="muted setup-note">
+          <span className={`muted ${NOTE}`}>
             {kb(list.data.promptBytes)} of instructions in every agent's prompt. Which file kinds
             are read (baked.md, AGENTS.md, CLAUDE.md, …) is set with{" "}
             <span className="mono">instructionFiles</span> in config.
           </span>
           <AlsoGiven projectKey={key} />
         </div>
-        <div className="setup-side setup-wide">
+        <div className="min-w-0 flex-[1_1_480px]">
           {current && (
             <Editor
               key={current.absolutePath}
