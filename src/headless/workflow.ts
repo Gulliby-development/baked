@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
+import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import type { BudgetLimits } from "../core/workflows/budget.js";
@@ -34,6 +35,7 @@ import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
 import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
+import { formatWorkflowModels, workflowModels } from "./workflow-models.js";
 import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
 import { formatDoctor, formatEstimate, preRunRequest } from "./workflow-pre-run.js";
 
@@ -500,6 +502,15 @@ export async function executeWorkflowCommand(
       ).result;
     case "route":
       return explainRoute(service.workspace, service.config, routeRequest(args, service.config));
+    case "models": {
+      const model = stringFlag(args, "model", service.config.defaultModel ?? "");
+      const provider = typeof args.flags.provider === "string" ? args.flags.provider : undefined;
+      return workflowModels(
+        service.config,
+        await loadModelCatalog(provider),
+        model && model !== "none" ? model : null,
+      );
+    }
     case "doctor":
       return runDoctor(service.workspace, service.config, preRunRequest(args, service.workspace));
     case "estimate":
@@ -554,6 +565,18 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     if (args.command === "profiles") {
       process.stdout.write(
         `${JSON.stringify(routedProfiles(cwd, config, modelFlag(args, config)).list(), null, 2)}\n`,
+      );
+      return 0;
+    }
+    if (args.command === "models") {
+      const provider = typeof args.flags.provider === "string" ? args.flags.provider : undefined;
+      const catalog = await loadModelCatalog(provider);
+      if (provider && !catalog.providers.length)
+        throw new WorkflowFault("INVALID_DEFINITION", `Unknown provider ${provider}`);
+      const model = stringFlag(args, "model", config.defaultModel ?? "");
+      const view = workflowModels(config, catalog, model && model !== "none" ? model : null);
+      process.stdout.write(
+        args.flags.json ? `${JSON.stringify(view, null, 2)}\n` : formatWorkflowModels(view),
       );
       return 0;
     }

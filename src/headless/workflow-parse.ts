@@ -39,6 +39,7 @@ const commands = [
   "deliver",
   "discard-worktree",
   "route",
+  "models",
   "doctor",
   "estimate",
 ] as const;
@@ -111,6 +112,7 @@ const flags = new Set([
   "issue",
   "output",
   "text",
+  "provider",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -212,6 +214,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
+  models: ["model", "provider", "json"],
   doctor: preRunFlags,
   estimate: preRunFlags,
 };
@@ -305,7 +308,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     result.command !== "gates"
   ) {
     const count =
-      ["list", "profiles", "import", "gc", "definitions"].includes(result.command) ||
+      ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
       (result.command === "validate" && result.flags.file)
         ? 0
         : 1;
@@ -440,6 +443,10 @@ gates confirm ID... | --all  confirm project gates (baked/gates) before a run ma
 profiles [--model ID]     artifacts RUN_ID [--file ARTIFACT_ID]
 route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
   show the model each stage and profile would use and where each choice comes from
+models [--model ID] [--provider ID] [--json]
+  list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
+  ...) with the model each resolves to, then the models of each provider; providers without a key
+  or login are listed with that reason
 doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--confirm-auto-approval HASH] [--json]
   check before a run: start refusals, provider keys of every routed model, check commands, Git,
   a busy workspace and the budget; exit 1 when something must be fixed (also: baked doctor)

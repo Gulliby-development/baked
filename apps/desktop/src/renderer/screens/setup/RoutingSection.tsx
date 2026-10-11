@@ -1,5 +1,7 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useCallback, useMemo, useState } from "react";
+import type { ModelCatalog } from "../../../../../../src/core/llm/model-choices.js";
 import { ApiError } from "../../client/api.js";
+import { chat } from "../../client/chat.js";
 import {
   type Effort,
   type IndependentReview,
@@ -23,6 +25,7 @@ import {
 import { Empty } from "../../components/ui/empty.js";
 import { Input } from "../../components/ui/input.js";
 import { Label } from "../../components/ui/label.js";
+import { ModelListPicker, ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import {
   Table,
@@ -45,12 +48,13 @@ import {
   EFFORT_CHOICES,
   effortLabel,
   layerValue,
-  parseFallback,
   plainName,
   routingGroups,
   unresolvedText,
 } from "./routing-logic.js";
 import { errorText, GROW, LoadState, NOTE, OK, ROW, STACK, useLoad, WARN } from "./shared.js";
+
+type Models = { catalog: ModelCatalog | null; error: string | null };
 
 export interface RoutingProject {
   key: string;
@@ -86,6 +90,8 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
   const [problems, setProblems] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const loadModels = useCallback(() => chat.models(key), [key]);
+  const models = useModelCatalog(key ? loadModels : null);
 
   const change = async (next: RoutingChange, what: string): Promise<boolean> => {
     setBusy(true);
@@ -200,6 +206,7 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
           view={view.data}
           scope={scope}
           busy={busy}
+          models={models}
           editing={editing}
           problems={problems}
           onEdit={(next) => {
@@ -222,6 +229,7 @@ function RoutingTables({
   view,
   scope,
   busy,
+  models,
   editing,
   problems,
   onEdit,
@@ -230,6 +238,7 @@ function RoutingTables({
   view: RoutingOverview;
   scope: RoutingScope;
   busy: boolean;
+  models: Models;
   editing: Editing | null;
   problems: string[];
   onEdit: (editing: Editing | null) => void;
@@ -250,6 +259,7 @@ function RoutingTables({
             target={row?.target ?? { kind: "class", name: "" }}
             scope={scope}
             busy={busy}
+            models={models}
             problems={problems}
             onCancel={() => onEdit(null)}
             onSave={({ name, ...route }, create) =>
@@ -445,6 +455,7 @@ function RouteForm({
   target,
   scope,
   busy,
+  models,
   problems,
   onSave,
   onCancel,
@@ -454,6 +465,7 @@ function RouteForm({
   target: RoutingTarget;
   scope: RoutingScope;
   busy: boolean;
+  models: Models;
   problems: string[];
   onSave: (
     draft: { name: string; model: string; effort: Effort | null; fallback: string[] },
@@ -465,12 +477,23 @@ function RouteForm({
   const [name, setName] = useState("");
   const [model, setModel] = useState(initial.model);
   const [effort, setEffort] = useState<Effort | null>(initial.effort);
-  const [fallback, setFallback] = useState(initial.fallback.join(", "));
+  const [fallback, setFallback] = useState(initial.fallback);
   const create = row === null;
   const isClass = target.kind === "class";
+  // A class names a model, so only other routes offer the model names.
+  const classes = useMemo(
+    () => (isClass ? [] : classSuggestions(view).map((c) => c.slice(1))),
+    [isClass, view],
+  );
+  const classDetails = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const c of view.classes)
+      if (c.resolved) out[c.label.slice(1)] = describeResolved(c.resolved);
+    return out;
+  }, [view]);
   const submit = (e: FormEvent): void => {
     e.preventDefault();
-    onSave({ name: name.trim(), model, effort, fallback: parseFallback(fallback) }, create);
+    onSave({ name: name.trim(), model, effort, fallback }, create);
   };
   const id = (field: string) => `route-${field}`;
   const layer = scope === "global" ? "All projects" : "This project";
@@ -516,7 +539,7 @@ function RouteForm({
             />
           </div>
         )}
-        <div className="grid gap-4 sm:grid-cols-[2fr_1fr]">
+        <div className="grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
           <div className="flex flex-col gap-1">
             <Label htmlFor={id("model")} className="flex items-center">
               Model
@@ -525,21 +548,16 @@ function RouteForm({
                 {isClass ? "." : ", or a model name ($fast, $review…) from the first table."}
               </Hint>
             </Label>
-            <Input
+            <ModelPicker
               id={id("model")}
-              className="font-mono"
               value={model}
-              list={isClass ? undefined : id("classes")}
+              onChange={setModel}
+              catalog={models.catalog}
+              error={models.error}
+              classes={classes}
+              classDetails={classDetails}
               placeholder={isClass ? "provider/model" : "provider/model or $name"}
-              onChange={(e) => setModel(e.target.value)}
             />
-            {!isClass && (
-              <datalist id={id("classes")}>
-                {classSuggestions(view).map((c) => (
-                  <option key={c} value={c} />
-                ))}
-              </datalist>
-            )}
           </div>
           <div className="flex flex-col gap-1">
             <Label htmlFor={id("effort")} className="flex items-center">
@@ -567,16 +585,16 @@ function RouteForm({
           <Label htmlFor={id("fallback")} className="flex items-center">
             Fallback models
             <Hint label="fallback models">
-              Up to three model IDs, tried in order when the main model fails or its provider runs
-              out of credits. Separate them with commas.
+              Up to three models, tried in order when the main model fails or its provider runs out
+              of credits. Choose them from the list or type an ID and press Enter.
             </Hint>
           </Label>
-          <Input
+          <ModelListPicker
             id={id("fallback")}
-            className="font-mono"
             value={fallback}
-            placeholder="none"
-            onChange={(e) => setFallback(e.target.value)}
+            onChange={setFallback}
+            catalog={models.catalog}
+            error={models.error}
           />
         </div>
         {problems.length > 0 && <Refused problems={problems} />}

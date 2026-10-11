@@ -19,6 +19,8 @@ baked --list-models openai
 baked --set-key anthropic sk-ant-...
 ```
 
+`baked workflow models` lists the same models for [model routing](workflows/runtime.md#routing-screen), with the routing model names and the providers that still need a key or login.
+
 ## Claude Code
 
 The Claude Code connection runs Claude models through the official `claude` CLI and the account it is signed in to, so a Claude subscription works without an API key.
