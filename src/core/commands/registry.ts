@@ -620,6 +620,27 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["prompt", "config"],
   },
   {
+    cmd: "/instructions files",
+    ic: "system",
+    desc: "List instruction files in prompt order; Enter edits one in $EDITOR",
+    category: "Settings",
+    tags: ["prompt", "agents", "claude"],
+  },
+  {
+    cmd: "/instructions show",
+    ic: "system",
+    desc: "Show an instruction file's content",
+    category: "Settings",
+    tags: ["prompt", "view"],
+  },
+  {
+    cmd: "/instructions edit",
+    ic: "system",
+    desc: "Edit or create an instruction file in $EDITOR",
+    category: "Settings",
+    tags: ["prompt", "agents.md", "create"],
+  },
+  {
     cmd: "/mode",
     ic: "cog",
     desc: "Switch Baked mode",

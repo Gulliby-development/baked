@@ -484,7 +484,19 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
   });
 }
 
-async function handleInstructions(_input: string, ctx: CommandContext): Promise<void> {
+async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
+  const [sub = "", ...rest] = input.trim().split(/\s+/).slice(1);
+  const arg = rest.join(" ");
+  if (sub === "files") return openInstructionFiles(ctx);
+  if (sub === "show") return showInstructionFile(ctx, arg);
+  if (sub === "edit") {
+    if (arg) return editInstruction(ctx, arg);
+    return openInstructionFiles(ctx);
+  }
+  if (sub) {
+    sysMsg(ctx, "Usage: /instructions [files | show <path> | edit <path>]");
+    return;
+  }
   const { INSTRUCTION_SOURCES, loadInstructions, buildInstructionPrompt } = await import(
     "../instructions.js"
   );
@@ -496,21 +508,28 @@ async function handleInstructions(_input: string, ctx: CommandContext): Promise<
   );
   const loaded = loadInstructions(ctx.cwd, [...currentEnabled]);
   const loadedIds = new Set(loaded.map((l: { source: string }) => l.source));
+  const { listInstructionFiles } = await import("../instruction-files.js");
+  const onDisk = () => listInstructionFiles(ctx.cwd, [...currentEnabled]);
+  let found = onDisk();
 
   const buildOptions = () =>
     INSTRUCTION_SOURCES.map((s: { id: string; label: string; files: string[] }) => {
       const enabled = currentEnabled.has(s.id);
-      const found = loadedIds.has(s.id);
-      const suffix = enabled ? (found ? "" : " (not found)") : "";
+      const loadedHere = loadedIds.has(s.id);
+      const files = found.filter((f) => f.source === s.id);
+      const suffix = enabled ? (loadedHere ? "" : " (not found)") : "";
       return {
         value: s.id,
         icon: enabled ? "✓" : " ",
         color: enabled
-          ? found
+          ? loadedHere
             ? getThemeTokens().success
             : getThemeTokens().warning
           : getThemeTokens().textMuted,
         label: `${s.label}${suffix}`,
+        description: files.length
+          ? files.map((f) => (f.scope === "global" ? `~/${f.path}` : f.path)).join(", ")
+          : "no file",
       };
     });
 
@@ -534,12 +553,13 @@ async function handleInstructions(_input: string, ctx: CommandContext): Promise<
       const freshLoaded = loadInstructions(ctx.cwd, ids);
       loadedIds.clear();
       for (const l of freshLoaded) loadedIds.add(l.source);
+      found = onDisk();
 
       ctx.contextManager.setProjectInstructions(buildInstructionPrompt(freshLoaded));
 
       sysMsg(
         ctx,
-        `Instruction file "${value}" ${currentEnabled.has(value) ? "enabled" : "disabled"} (${scope ?? "project"})`,
+        `Instruction file "${value}" ${currentEnabled.has(value) ? "enabled" : "disabled"} (${scope ?? "project"}). /instructions files views and edits them.`,
       );
       useUIStore.getState().updatePickerOptions(buildOptions());
     },
@@ -547,6 +567,87 @@ async function handleInstructions(_input: string, ctx: CommandContext): Promise<
       ctx.saveToScope({ instructionFiles: [...currentEnabled] }, to, from);
     },
   });
+}
+
+/** The files on disk, in prompt order; Enter opens one in $EDITOR. */
+async function openInstructionFiles(ctx: CommandContext): Promise<void> {
+  const { listInstructionFiles } = await import("../instruction-files.js");
+  const files = listInstructionFiles(ctx.cwd, ctx.instructionFiles);
+  const t = getThemeTokens();
+  const options = files.map((f) => ({
+    value: f.absolutePath,
+    icon: f.enabled ? String(f.order) : " ",
+    color: f.enabled ? t.textPrimary : t.textMuted,
+    label: f.scope === "global" ? `~/${f.path}` : f.path,
+    description: `${f.sourceLabel} · ${f.scope === "global" ? "every project" : "this project"} · ${f.enabled ? "read by agents" : "off"} · ${f.bytes} B`,
+  }));
+  if (!options.length) {
+    sysMsg(
+      ctx,
+      "No instruction files. /instructions edit baked.md (or AGENTS.md, CLAUDE.md, ...) creates one.",
+    );
+    return;
+  }
+  ctx.openCommandPicker({
+    title: "Instruction Files: Enter edits in $EDITOR",
+    icon: icon("system"),
+    options,
+    onSelect: (value) => {
+      const file = files.find((f) => f.absolutePath === value);
+      if (file) void editInstruction(ctx, file.path);
+    },
+  });
+}
+
+async function showInstructionFile(ctx: CommandContext, path: string): Promise<void> {
+  const { findInstructionFile, listInstructionFiles } = await import("../instruction-files.js");
+  const files = listInstructionFiles(ctx.cwd, ctx.instructionFiles);
+  const file = path ? findInstructionFile(files, path) : files.find((f) => f.enabled);
+  if (!file) {
+    sysMsg(ctx, path ? `${path} is not an instruction file.` : "No instruction files.");
+    return;
+  }
+  ctx.openInfoPopup({
+    title: file.path,
+    icon: icon("system"),
+    width: 100,
+    lines: [
+      {
+        type: "entry",
+        label: "Read by agents",
+        desc: file.enabled ? `yes, number ${file.order}` : `no (${file.sourceLabel} is off)`,
+      },
+      {
+        type: "entry",
+        label: "Scope",
+        desc: file.scope === "global" ? "every project" : "this project",
+      },
+      { type: "entry", label: "Path", desc: file.absolutePath },
+      { type: "separator" },
+      ...file.content.split("\n").map((line) => ({ type: "text" as const, label: line || " " })),
+    ],
+  });
+}
+
+async function editInstruction(ctx: CommandContext, path: string): Promise<void> {
+  const { editInstructionFile } = await import("../instruction-files.js");
+  const { buildInstructionPrompt, loadInstructions } = await import("../instructions.js");
+  const result = await editInstructionFile(ctx.cwd, ctx.instructionFiles, path);
+  if (result.status === "saved") {
+    ctx.contextManager.setProjectInstructions(
+      buildInstructionPrompt(loadInstructions(ctx.cwd, ctx.instructionFiles)),
+    );
+    const runs = result.affectedRuns.length
+      ? ` Active runs that froze the earlier version stop at their next step until their plan is revised: ${result.affectedRuns.join(", ")}.`
+      : "";
+    const off = result.enabled
+      ? ""
+      : " Its source is off, so agents do not read it; /instructions switches it on.";
+    sysMsg(ctx, `${result.created ? "Created" : "Saved"} ${result.path}.${off}${runs}`);
+  } else if (result.status === "unchanged") sysMsg(ctx, `${result.path} is unchanged.`);
+  else if (result.status === "conflict")
+    sysMsg(ctx, `${result.message}. Your edit was not saved; it is kept in ${result.keptAt}.`);
+  else sysMsg(ctx, result.message);
 }
 
 function handleDiffStyle(_input: string, ctx: CommandContext): void {

@@ -7,8 +7,14 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import {
+  currentTerminalHandoff,
+  type EditTextOptions,
+  editTextInEditor,
+} from "./chat/external-editor.js";
 import { INSTRUCTION_SOURCES, loadInstructions } from "./instructions.js";
+import { tmpDir } from "./platform/index.js";
 import { WorkflowStore } from "./workflows/store.js";
 
 export interface InstructionFileEntry {
@@ -46,7 +52,9 @@ export function enabledInstructionSources(configured: string[] | undefined): str
   return configured ?? INSTRUCTION_SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
 }
 
-export function instructionSourceStates(configured: string[] | undefined): InstructionSourceState[] {
+export function instructionSourceStates(
+  configured: string[] | undefined,
+): InstructionSourceState[] {
   const enabled = new Set(enabledInstructionSources(configured));
   return INSTRUCTION_SOURCES.map((s) => ({
     id: s.id,
@@ -117,7 +125,8 @@ export function findInstructionFile(
   path: string,
 ): InstructionFileEntry | undefined {
   return (
-    files.find((f) => f.path === path && f.scope === "project") ?? files.find((f) => f.path === path)
+    files.find((f) => f.path === path && f.scope === "project") ??
+    files.find((f) => f.path === path)
   );
 }
 
@@ -146,7 +155,10 @@ export function writeInstructionFile(
 ): InstructionWrite {
   if (expectedHash === null) {
     if (!sourceForNewFile(path))
-      return { status: "unknown", message: `${path} is not a file name an instruction source reads` };
+      return {
+        status: "unknown",
+        message: `${path} is not a file name an instruction source reads`,
+      };
     const absolute = resolve(workspace, path);
     if (
       findInstructionFile(files, path)?.scope === "project" ||
@@ -159,7 +171,10 @@ export function writeInstructionFile(
   }
   const entry = findInstructionFile(files, path);
   if (!entry)
-    return { status: "unknown", message: `${path} is not one of the instruction files agents read` };
+    return {
+      status: "unknown",
+      message: `${path} is not one of the instruction files agents read`,
+    };
   const current = existsSync(entry.absolutePath) ? sha256(readFileSync(entry.absolutePath)) : "";
   if (current !== expectedHash)
     return { status: "changed", message: `${path} changed since it was read; read it again` };
@@ -192,4 +207,76 @@ export function workspaceRunsFreezing(workspace: string, absolutePath: string): 
   } finally {
     store?.close();
   }
+}
+
+export type InstructionEdit =
+  | {
+      status: "saved";
+      path: string;
+      absolutePath: string;
+      created: boolean;
+      enabled: boolean;
+      affectedRuns: string[];
+    }
+  | { status: "unchanged"; path: string }
+  | { status: "cancelled"; message: string }
+  | { status: "conflict"; message: string; keptAt: string }
+  | { status: "error"; message: string };
+
+/**
+ * Opens an instruction file in `$EDITOR` and saves it with the hash read before the editor
+ * started, so a change made meanwhile (by the desktop app, Git, another editor) is not
+ * overwritten: the edit is then kept in a temporary file instead. A path a source reads that
+ * does not exist yet is created. Reports the runs that froze the file.
+ */
+export async function editInstructionFile(
+  workspace: string,
+  configured: string[] | undefined,
+  path: string,
+  opts: EditTextOptions & { homeDir?: string } = {},
+): Promise<InstructionEdit> {
+  const files = listInstructionFiles(workspace, configured, opts);
+  const entry = findInstructionFile(files, path);
+  if (!entry && !sourceForNewFile(path))
+    return {
+      status: "error",
+      message: `${path} is not an instruction file. Run /instructions files to see them.`,
+    };
+  const original = entry?.content ?? "";
+  const handoff = currentTerminalHandoff();
+  const result = await editTextInEditor(original, {
+    ...(handoff ? { suspend: handoff.suspend, resume: handoff.resume } : {}),
+    ...opts,
+    fileName: basename(path),
+  });
+  if (result.status === "error") return { status: "error", message: result.message };
+  if (result.status === "cancelled")
+    return { status: "cancelled", message: `${path} was not saved: ${result.reason}` };
+  // The editor round trip drops one trailing newline; files keep theirs.
+  const text = original.endsWith("\n") || !entry ? `${result.text}\n` : result.text;
+  if (entry && text === original) return { status: "unchanged", path: entry.path };
+  const written = writeInstructionFile(
+    workspace,
+    files,
+    entry?.path ?? path,
+    text,
+    entry?.hash ?? null,
+  );
+  if (written.status !== "saved") {
+    const keptAt = join(tmpDir(), `baked-${Date.now()}-${basename(path)}`);
+    writeFileSync(keptAt, text);
+    return { status: "conflict", message: written.message, keptAt };
+  }
+  const saved = findInstructionFile(
+    listInstructionFiles(workspace, configured, opts),
+    entry?.path ?? path,
+  );
+  return {
+    status: "saved",
+    path: entry?.path ?? path,
+    absolutePath: written.absolutePath,
+    created: !entry,
+    enabled: saved?.enabled ?? false,
+    affectedRuns: workspaceRunsFreezing(workspace, written.absolutePath),
+  };
 }
