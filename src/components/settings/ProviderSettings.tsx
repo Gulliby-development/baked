@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getSupportedEfforts } from "../../core/llm/provider-options.js";
+import { type SettingDefinition, settingById } from "../../core/settings/schema.js";
 import { useTheme } from "../../core/theme/index.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import type {
@@ -38,152 +39,92 @@ type SettingItem = SettingRow | SettingSection | SettingInfo;
 type ProviderTab = "claude" | "openai" | "compat" | "general";
 const TABS: ProviderTab[] = ["claude", "openai", "compat", "general"];
 
+/** Provider option keys of this picker and the settings they edit in `src/core/settings/schema.ts`. */
+const SETTING_IDS = {
+  thinkingMode: "thinking.mode",
+  budgetTokens: "thinking.budgetTokens",
+  effort: "performance.effort",
+  clearThinking: "contextManagement.clearThinking",
+  speed: "performance.speed",
+  toolStreaming: "performance.toolStreaming",
+  sendReasoning: "performance.sendReasoning",
+  codeExecution: "codeExecution",
+  computerUse: "computerUse",
+  anthropicTextEditor: "anthropicTextEditor",
+  compact: "contextManagement.compact",
+  clearToolUses: "contextManagement.clearToolUses",
+  cacheTtl: "cache.ttl",
+  openaiReasoningEffort: "performance.openaiReasoningEffort",
+  openaiReasoningSummary: "performance.openaiReasoningSummary",
+  openaiVerbosity: "performance.openaiVerbosity",
+  serviceTier: "performance.serviceTier",
+  compatReasoningEffort: "performance.compatReasoningEffort",
+  disableParallelToolUse: "performance.disableParallelToolUse",
+  webSearch: "webSearch",
+  pruning: "contextManagement.pruningTarget",
+} as const;
+type ValueKey = keyof typeof SETTING_IDS;
+
+function schemaSetting(key: ValueKey): SettingDefinition {
+  const setting = settingById(SETTING_IDS[key]);
+  if (!setting) throw new Error(`No setting ${SETTING_IDS[key]} in the settings schema`);
+  return setting;
+}
+
+/** A picker row with the label, help and choices of its setting in the shared schema. */
+function row(key: ValueKey, options?: string[]): SettingRow {
+  const setting = schemaSetting(key);
+  const type: ItemType =
+    setting.type === "boolean" ? "toggle" : setting.type === "number" ? "budget" : "cycle";
+  return {
+    type,
+    key,
+    label: setting.label,
+    desc: setting.help,
+    ...(options
+      ? { options }
+      : setting.type === "enum"
+        ? { options: setting.options.map((option) => option.value) }
+        : {}),
+  };
+}
+
 const CLAUDE_ITEMS: SettingItem[] = [
   { type: "section", label: "Reasoning" },
-  {
-    key: "thinkingMode",
-    label: "Thinking",
-    desc: "Extended thinking mode. auto = adaptive · enabled = fixed budget",
-    type: "cycle",
-    options: ["off", "auto", "adaptive", "enabled"],
-  },
-  {
-    key: "budgetTokens",
-    label: "Budget",
-    desc: "Token budget when thinking = enabled",
-    type: "budget",
-    options: ["1024", "2048", "5000", "10000", "20000"],
-  },
-  {
-    key: "effort",
-    label: "Effort",
-    desc: "Reasoning depth across thinking, text, and tool calls",
-    type: "cycle",
-    options: ["off", "low", "medium", "high", "xhigh", "max"],
-  },
-  {
-    key: "clearThinking",
-    label: "Preserve thinking",
-    desc: "Keep thinking blocks across turns for cache hits (requires thinking on)",
-    type: "toggle",
-  },
+  row("thinkingMode"),
+  row("budgetTokens", ["1024", "2048", "5000", "10000", "20000"]),
+  row("effort"),
+  row("clearThinking"),
   { type: "section", label: "Performance" },
-  {
-    key: "speed",
-    label: "Speed",
-    desc: "Opus 4.6 only — 2.5× faster output",
-    type: "cycle",
-    options: ["off", "standard", "fast"],
-  },
-  {
-    key: "toolStreaming",
-    label: "Tool streaming",
-    desc: "Stream tool call args incrementally",
-    type: "toggle",
-  },
-  {
-    key: "sendReasoning",
-    label: "Send reasoning",
-    desc: "Include reasoning content in multi-turn requests",
-    type: "toggle",
-  },
+  row("speed"),
+  row("toolStreaming"),
+  row("sendReasoning"),
   { type: "section", label: "Beta tools" },
-  {
-    key: "codeExecution",
-    label: "Code execution",
-    desc: "Programmatic tool calling — batches reads in Python",
-    type: "toggle",
-  },
-  {
-    key: "computerUse",
-    label: "Computer use",
-    desc: "Keyboard / mouse / screenshot control",
-    type: "toggle",
-  },
-  {
-    key: "anthropicTextEditor",
-    label: "Text editor",
-    desc: "Anthropic str_replace editor tool",
-    type: "toggle",
-  },
+  row("codeExecution"),
+  row("computerUse"),
+  row("anthropicTextEditor"),
   { type: "section", label: "Server context" },
-  {
-    key: "compact",
-    label: "Server compaction",
-    desc: "Anthropic server-side compaction (200K+ models)",
-    type: "toggle",
-  },
-  {
-    key: "clearToolUses",
-    label: "Clear old tool uses",
-    desc: "Drop old tool results at 65% ctx. Busts prompt cache when it fires",
-    type: "toggle",
-  },
+  row("compact"),
+  row("clearToolUses"),
   { type: "section", label: "Cache" },
-  {
-    key: "cacheTtl",
-    label: "Cache TTL",
-    desc: "5m = free · 1h = ~2× cache-write cost, 12× lifetime (long agentic runs)",
-    type: "cycle",
-    options: ["5m", "1h"],
-  },
+  row("cacheTtl"),
 ];
 
 const OPENAI_ITEMS: SettingItem[] = [
   { type: "section", label: "Reasoning" },
-  {
-    key: "openaiReasoningEffort",
-    label: "Effort",
-    desc: "o3 · o4 · gpt-5.x — reasoning depth. none = fastest (latency-sensitive)",
-    type: "cycle",
-    options: ["off", "none", "minimal", "low", "medium", "high"],
-  },
-  {
-    key: "openaiReasoningSummary",
-    label: "Reasoning summary",
-    desc: "Include synthesized reasoning summary in the response",
-    type: "cycle",
-    options: ["off", "auto", "detailed"],
-  },
-  {
-    key: "openaiVerbosity",
-    label: "Verbosity",
-    desc: "gpt-5+ — controls answer length",
-    type: "cycle",
-    options: ["off", "low", "medium", "high"],
-  },
+  row("openaiReasoningEffort"),
+  row("openaiReasoningSummary"),
+  row("openaiVerbosity"),
   { type: "section", label: "Service" },
-  {
-    key: "serviceTier",
-    label: "Service tier",
-    desc: "flex = 50% cheaper · priority = fastest (Enterprise)",
-    type: "cycle",
-    options: ["off", "auto", "default", "flex", "priority"],
-  },
+  row("serviceTier"),
 ];
 
 const GENERAL_ITEMS: SettingItem[] = [
   { type: "section", label: "Tools" },
-  {
-    key: "disableParallelToolUse",
-    label: "Sequential tools",
-    desc: "Run tools one at a time instead of parallel (all providers)",
-    type: "toggle",
-  },
-  {
-    key: "webSearch",
-    label: "Web search",
-    desc: "Allow the web search tool",
-    type: "toggle",
-  },
+  row("disableParallelToolUse"),
+  row("webSearch"),
   { type: "section", label: "Context" },
-  {
-    key: "pruning",
-    label: "Tool result pruning",
-    desc: "Client-side — compact old tool results",
-    type: "cycle",
-    options: ["none", "main", "subagents", "both"],
-  },
+  row("pruning"),
 ];
 
 const COMPAT_ITEMS: SettingItem[] = [
@@ -192,13 +133,7 @@ const COMPAT_ITEMS: SettingItem[] = [
     text: "Reasoning options shared by Copilot and GitHub Models.",
   },
   { type: "section", label: "Shared effort" },
-  {
-    key: "compatReasoningEffort",
-    label: "Effort",
-    desc: "Single knob — propagates as reasoning_effort in the request body for every provider listed above.",
-    type: "cycle",
-    options: ["off", "low", "medium", "high", "xhigh"],
-  },
+  row("compatReasoningEffort"),
 ];
 
 const TAB_ITEMS: Record<ProviderTab, SettingItem[]> = {
@@ -232,29 +167,9 @@ interface CurrentValues {
   cacheTtl: string;
 }
 
-const DEFAULTS: CurrentValues = {
-  thinkingMode: "off",
-  budgetTokens: 10000,
-  effort: "off",
-  speed: "off",
-  sendReasoning: false,
-  toolStreaming: true,
-  disableParallelToolUse: false,
-  openaiReasoningEffort: "off",
-  serviceTier: "off",
-  codeExecution: true,
-  computerUse: false,
-  anthropicTextEditor: false,
-  webSearch: true,
-  compact: false,
-  clearToolUses: false,
-  clearThinking: true,
-  pruning: "none",
-  compatReasoningEffort: "off",
-  openaiReasoningSummary: "off",
-  openaiVerbosity: "off",
-  cacheTtl: "5m",
-};
+const DEFAULTS = Object.fromEntries(
+  (Object.keys(SETTING_IDS) as ValueKey[]).map((key) => [key, schemaSetting(key).default]),
+) as unknown as CurrentValues;
 
 function readValuesFromLayer(layer: Partial<AppConfig> | null): Partial<CurrentValues> {
   if (!layer) return {};

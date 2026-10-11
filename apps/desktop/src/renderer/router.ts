@@ -17,9 +17,13 @@ export const PROJECT_SECTIONS = [
 ] as const;
 export type ProjectSection = (typeof PROJECT_SECTIONS)[number];
 
-/** Settings pages: this app's own, then one page per part of `~/.baked/config.json`. */
+/**
+ * Settings pages: this app's own, the chat settings (one page per page of the backend's settings
+ * schema, named by `page`), then one page per part of `~/.baked/config.json`.
+ */
 export const SETTINGS_SECTIONS = [
   "app",
+  "chat",
   "providers",
   "routing",
   "commands",
@@ -40,14 +44,19 @@ export type Route =
   | { name: "projects" }
   | { name: "attention"; key?: string; id?: string }
   | { name: "project"; key: string; section: ProjectSection; id: string | null }
-  | { name: "settings"; section: SettingsSection };
+  | { name: "settings"; section: SettingsSection; page?: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   const [head, a, b, c] = parts;
   if (head === "attention")
     return a && b ? { name: "attention", key: a, id: b } : { name: "attention" };
-  if (head === "settings") return { name: "settings", section: settingsSection(a) };
+  if (head === "settings") {
+    const section = settingsSection(a);
+    return section === "chat" && b
+      ? { name: "settings", section, page: b }
+      : { name: "settings", section };
+  }
   if (head === "p" && a) {
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
       ? (b as ProjectSection)
@@ -66,7 +75,7 @@ export function href(route: Route): string {
         ? `#/attention/${encodeURIComponent(route.key)}/${encodeURIComponent(route.id)}`
         : "#/attention";
     case "settings":
-      return `#/settings/${route.section}`;
+      return `#/settings/${route.section}${route.page ? `/${encodeURIComponent(route.page)}` : ""}`;
     case "project":
       return `#/p/${encodeURIComponent(route.key)}/${route.section}${route.id ? `/${encodeURIComponent(route.id)}` : ""}`;
   }

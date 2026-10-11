@@ -311,7 +311,7 @@ interface SettingDefinition {
 }
 ```
 
-A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`.
+A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
 
 ## Code graph
 
