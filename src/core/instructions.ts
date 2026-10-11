@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { marked } from "marked";
 import { projectInstructionFiles } from "./projects/defaults.js";
+import { displayPath } from "./projects/paths.js";
 import { activeProject } from "./projects/resolve.js";
 
 interface InstructionSource {
@@ -204,7 +205,7 @@ export function loadInstructions(
     for (const file of projectInstructionFiles(project).files)
       results.push({
         source: "project",
-        file: relative(projectRoot, file.path).replaceAll("\\", "/"),
+        file: displayPath(projectRoot, file.path),
         content: file.content,
         scope: "project",
       });

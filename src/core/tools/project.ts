@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { bunShellArgs, IS_WIN } from "../platform/index.js";
+import { realPath } from "../projects/paths.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
@@ -1075,7 +1076,9 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   const profile = await detectProfile(effectiveCwd);
   if (!profile.formatFile) return false;
 
-  const command = `${profile.formatFile} ${shellQuote(filePath)}`;
+  // The formatter's working directory is a real path; a file path through a symlink (macOS
+  // `/var` is `/private/var`) would look outside the project to it.
+  const command = `${profile.formatFile} ${shellQuote(realPath(filePath))}`;
   try {
     const proc = Bun.spawn(bunShellArgs(command), {
       cwd: effectiveCwd,

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
@@ -336,7 +336,8 @@ describe("durable SDD runtime", () => {
   test("all file action aliases are checked against the workspace boundary", () => {
     const { root } = setup();
     for (const path of ["../escape", "C:/escape", ".baked./config.json", "src/../secret", "src\\file", "file:stream", "NUL.txt"]) expect(() => workspacePath(root, path)).toThrow();
-    expect(workspacePath(root, "new/file.ts")).toBe(join(root, "new/file.ts"));
+    // The target is resolved under the workspace's real path (macOS temp folders are symlinks).
+    expect(workspacePath(root, "new/file.ts")).toBe(join(realpathSync(root), "new/file.ts"));
   });
   test("an expired lease with a live owner cannot be taken over", async () => {
     const { service, root, config } = setup(); const { run } = await start(service);

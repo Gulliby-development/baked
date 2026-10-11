@@ -121,11 +121,14 @@ export const PROCESS_SCOPE_ENV = "BAKED_PROCESS_SCOPE";
 
 /**
  * PIDs of processes that inherited `PROCESS_SCOPE_ENV=scope`, or null where the platform
- * offers no readable process environment. Linux only: a descendant that calls setsid()
- * leaves the command's process group and is reparented, so only the inherited marker
- * still links it to the command. A process that clears its environment is not found.
+ * offers no readable process environment. Linux reads `/proc/<pid>/environ`; macOS asks
+ * `ps -E`, which shows the environment of the user's own processes. Windows has no such
+ * table. A descendant that calls setsid() leaves the command's process group and is
+ * reparented, so only the inherited marker still links it to the command. A process that
+ * clears its environment is not found.
  */
 export function scopedProcesses(scope: string): number[] | null {
+  if (IS_DARWIN) return darwinScopedProcesses(scope);
   if (!IS_LINUX) return null;
   const marker = Buffer.from(`${PROCESS_SCOPE_ENV}=${scope}\0`);
   let entries: string[];
@@ -147,6 +150,31 @@ export function scopedProcesses(scope: string): number[] | null {
     }
   }
   return found;
+}
+
+/** Lines of `ps -A -E -ww -o pid=,command=`: the PID, the command and then its environment. */
+export function parseScopedPs(text: string, scope: string): number[] {
+  const marker = ` ${PROCESS_SCOPE_ENV}=${scope}`;
+  const found: number[] = [];
+  for (const line of text.split("\n")) {
+    const at = line.indexOf(marker);
+    const end = line[at + marker.length];
+    if (at < 0 || (end !== undefined && end !== " ")) continue;
+    const pid = Number.parseInt(line.trim(), 10);
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) found.push(pid);
+  }
+  return found;
+}
+
+function darwinScopedProcesses(scope: string): number[] | null {
+  const result = spawnSync("ps", ["-A", "-E", "-ww", "-o", "pid=,command="], {
+    encoding: "utf8",
+    timeout: 5000,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.status !== 0 || typeof result.stdout !== "string") return null;
+  return parseScopedPs(result.stdout, scope);
 }
 
 /** Windows FILETIME (100 ns since 1601) to Unix milliseconds. */

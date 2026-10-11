@@ -150,7 +150,7 @@ export class TerminalApp {
   includes(text: string): boolean {
     return this.output.includes(text);
   }
-  /** The process and the descendants the platform can link to it (Linux: the scope marker). */
+  /** The process and the descendants the platform can link to it (Linux, macOS: the scope marker). */
   pids(): number[] {
     const own = this.child?.pid && !this.exit ? [this.child.pid] : [];
     return [...new Set([...own, ...(scopedProcesses(this.scope) ?? [])])];
@@ -205,7 +205,8 @@ export const PORTS_UNCHECKED =
  * The TCP sockets the given processes and their descendants listen on, or null where the socket
  * table cannot be read. Linux reads `/proc`; macOS asks `ps` and `lsof`; Windows asks PowerShell
  * for the process table and `Get-NetTCPConnection`. Descendants are found by parent PID and, on
- * POSIX, by process group; on Linux the caller also passes processes carrying the scope marker.
+ * POSIX, by process group; on Linux and macOS the caller also passes processes carrying the scope
+ * marker.
  */
 export async function listeningSockets(pids: readonly number[]): Promise<Listener[] | null> {
   if (process.platform === "linux") return linuxListeners(pids);
