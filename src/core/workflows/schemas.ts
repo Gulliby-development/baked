@@ -386,6 +386,7 @@ export const ReasonCode = z.enum([
   "tool_denied",
   "storage_failure",
   "invalid_output",
+  "host_state",
   "interrupted_effect",
   "dependency_failed",
   "none",
