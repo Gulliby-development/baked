@@ -75,6 +75,7 @@ import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun } from "./recovery.js";
 import { abortableDelay, accountRefusal, isTransient, retryAfterMs, retryDelay } from "./retry.js";
+import { buildReviewBundle, REVIEW_BUNDLE_PATH } from "./review-bundle.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -791,6 +792,7 @@ export class WorkflowScheduler {
                     this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.artifactId),
                   );
               }
+              await this.addReviewBundle(runId, state, signal);
               const failures = await this.review(
                 runId,
                 stepId,
@@ -1770,6 +1772,47 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         `${relative} belongs to open run ${last.runId} (${last.status}); continue or cancel that run before publishing a new plan for this feature`,
       );
     return current;
+  }
+  /**
+   * Adds one diff of the run's changes to the review snapshot, once per snapshot. Task diffs sit
+   * on the snapshot each task made, so only the last task's patch was current at review and
+   * reviewers read the other files whole (or wrote that they could not).
+   */
+  private async addReviewBundle(
+    runId: string,
+    state: RuntimeState,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!state.snapshotId) return;
+    const logicalPath = `${REVIEW_BUNDLE_PATH}${state.snapshotId}.json`;
+    if (this.store.latestArtifact(runId, logicalPath)) return;
+    const bundle = await buildReviewBundle(this.store, runId, runRoot(this.store.workspace, state));
+    signal.throwIfAborted();
+    if (bundle.changed.length === 0) return;
+    const snapshotId = state.snapshotId;
+    const criteria = Object.fromEntries(
+      (state.spec?.criteria ?? []).map((c) => [
+        c.id,
+        (state.graph?.tasks ?? []).filter((t) => t.criterionIds.includes(c.id)).map((t) => t.id),
+      ]),
+    );
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diff",
+        logicalPath,
+        canonical({
+          note: "One diff of every file the run changed, against its content before the run.",
+          changed: bundle.changed,
+          files: Object.fromEntries(
+            bundle.changed.map((path) => [path, state.expectedFiles?.[path] ?? null]),
+          ),
+          criteriaToTasks: criteria,
+          patch: bundle.patch,
+        }),
+      );
+      this.store.addEvidence(runId, "diff", snapshotId, artifact.id);
+    });
   }
   /** What a format correction of a review needs and cannot see: the hash and the citable ids. */
   private formatHints(runId: string, state: RuntimeState, output: string): string | undefined {
