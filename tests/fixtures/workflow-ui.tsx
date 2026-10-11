@@ -52,6 +52,7 @@ const service = {
     checkDetails: () => [{ checkId: "tests", status: "failed", validity: "current", exitCode: 1, reason: "exit", durationMs: 1500, runs: 2, outputTail: "expect(received).toBe(expected)" }],
     configuredChecks: () => ["tests", "lint"],
     runModel: () => "fixture/model",
+    routing: () => null,
     changes: () => [{ path: "src/example.ts", source: "code", action: "modified", edits: 2, status: "applied", drifted: false }, { path: "specs/x/spec.md", source: "spec", action: "created", edits: 1, status: "applied", drifted: false }],
   },
 };
