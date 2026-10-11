@@ -12,7 +12,13 @@ import { validatePackage, workspacePath } from "../specs/validate.js";
 import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
-import { validateEvidence } from "../verification/evidence.js";
+import {
+  currentEvidence,
+  evidenceHandle,
+  resolveEvidenceIds,
+  validateEvidence,
+  validEvidenceNote,
+} from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
   type ReproOutcome,
@@ -21,7 +27,7 @@ import {
   reproTool,
   runRepro,
 } from "../verification/repro.js";
-import { validateReview } from "../verification/review.js";
+import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
@@ -854,7 +860,31 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   { evidence: this.evidenceContext(runId, state) },
                   signal,
+                  undefined,
+                  0,
+                  (output) => {
+                    const parsed = ReviewSchema.safeParse(output);
+                    if (!parsed.success || !state.spec || !state.snapshotId) return [];
+                    return reviewProblems(
+                      this.store,
+                      runId,
+                      state.snapshotId,
+                      state.workspaceHash ?? "",
+                      state.spec,
+                      output as Review,
+                      false,
+                    );
+                  },
                 ),
+              );
+              completeReview(
+                this.store,
+                runId,
+                state.snapshotId,
+                state.workspaceHash,
+                state.spec,
+                review,
+                false,
               );
               const omitted = state.spec.criteria.filter(
                 (criterion) => !review.coverage.some((item) => item.criterionId === criterion.id),
@@ -1318,6 +1348,9 @@ export class WorkflowScheduler {
           ? { attemptTokens: taskSize(state, task, "taskBudgets") }
           : {}),
         ...(validate ? { validate } : {}),
+        ...(this.formatHints(runId, state, profile.output)
+          ? { formatHints: this.formatHints(runId, state, profile.output) }
+          : {}),
         ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
         ...(route.effort ? { effort: route.effort } : {}),
       });
@@ -1684,6 +1717,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       );
     return current;
   }
+  /** What a format correction of a review needs and cannot see: the hash and the citable ids. */
+  private formatHints(runId: string, state: RuntimeState, output: string): string | undefined {
+    if ((output !== "review" && output !== "convergence") || !state.snapshotId) return undefined;
+    return `snapshotHash is ${state.workspaceHash ?? ""}. ${validEvidenceNote(
+      currentEvidence(this.store, runId, state.snapshotId),
+    )}`;
+  }
   /**
    * Current evidence handed to an agent with its content. An implementer does not need the
    * research-phase file reads (up to 16 KB each, resent on every step); it reads what it edits
@@ -1694,18 +1734,23 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     state: RuntimeState,
     options: { reads: boolean; commands?: boolean } = { reads: true },
   ): unknown[] {
-    return this.store
-      .evidence(runId)
-      .filter((e) => e.snapshot_id === state.snapshotId && e.validity === "current")
+    const current = currentEvidence(this.store, runId, state.snapshotId ?? "");
+    // Short handles (E1..En) number every current entry, so an agent can cite them instead of
+    // copying a 36-character id; the host resolves them.
+    const handles = new Map(current.map((e, index) => [e.id, evidenceHandle(index)]));
+    return current
       .filter((e) => options.reads || e.kind !== "read")
       .filter((e) => options.commands !== false || e.kind !== "command")
       .map((e) => {
         const content = this.store.readArtifact(runId, e.artifact_id);
         // A read is replaced by what it read: its content is resent on every step of every later
         // agent, and cut at the limit it showed no file whole, so agents read the files again.
-        if (e.kind === "read") return { id: e.id, kind: e.kind, read: readSummary(content) };
+        const handle = handles.get(e.id);
+        if (e.kind === "read")
+          return { id: e.id, handle, kind: e.kind, read: readSummary(content) };
         return {
           id: e.id,
+          handle,
           kind: e.kind,
           content: content.slice(0, e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000),
         };
@@ -3084,6 +3129,10 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         signal,
       });
     const runReviewer = async (reviewer: Reviewer) => {
+      // A review of this very snapshot that an earlier, interrupted round finished is kept.
+      const kept = state.reviews[reviewer.key];
+      if (kept && kept.snapshotHash === reviewSnapshotHash && kept.verdict !== "inconclusive")
+        return { reviewer, result: kept };
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
@@ -3099,13 +3148,26 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           signal,
           undefined,
           0,
-          undefined,
+          (output) =>
+            ReviewSchema.safeParse(output).success
+              ? reviewProblems(
+                  this.store,
+                  runId,
+                  reviewSnapshotId,
+                  reviewSnapshotHash,
+                  reviewSpec,
+                  output as Review,
+                )
+              : [],
           undefined,
           executables.length && profile.allowedTools.includes("run_repro")
             ? () => ({ run_repro: reproTool(executables, repro) })
             : undefined,
         ),
       );
+      // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
+      // inconclusive, and the converge stage settles coverage.
+      completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, result);
       validateReview(
         this.store,
         runId,
@@ -3113,7 +3175,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         reviewSnapshotHash,
         reviewSpec,
         result,
-        reviewer.dimension === "correctness" && result.verdict === "pass",
+        false,
       );
       if (result.verdict === "inconclusive" && reviewer.required)
         throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
@@ -3124,6 +3186,16 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       const batch = await Promise.allSettled(
         reviewers.slice(offset, offset + policy.maxConcurrentReadAgents).map(runReviewer),
       );
+      // Reviews that finished are kept before a sibling's failure is raised, so a resume does not
+      // pay for them again.
+      const failed = batch.find((outcome) => outcome.status === "rejected");
+      if (failed) {
+        for (const outcome of batch)
+          if (outcome.status === "fulfilled")
+            state.reviews[outcome.value.reviewer.key] = outcome.value.result;
+        this.store.transaction(() => this.store.saveState(runId, state));
+        throw failed.reason;
+      }
       for (const outcome of batch) {
         if (outcome.status === "rejected") throw outcome.reason;
         const { reviewer, result } = outcome.value;
@@ -3177,6 +3249,10 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           { finding, evidence: this.evidenceContext(runId, state) },
           signal,
         ),
+      );
+      result.evidenceIds = resolveEvidenceIds(
+        currentEvidence(this.store, runId, state.snapshotId),
+        result.evidenceIds,
       );
       if (result.findingId !== finding.id)
         throw new WorkflowFault("OUTPUT_INVALID", "Skeptic returned another finding ID");

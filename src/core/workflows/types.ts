@@ -262,6 +262,11 @@ export interface ExecutionRequest {
    * and no tool of the registry.
    */
   hostTools?: Record<string, HostTool>;
+  /**
+   * Facts the host knows that the one-step format correction needs, because that step sees only
+   * the previous text: the snapshot hash and the evidence ids a result may cite.
+   */
+  formatHints?: string;
   /** Reasoning effort from the attempt's model route; unset keeps the configured default. */
   effort?: RouteEffort;
 }

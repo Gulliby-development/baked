@@ -2,7 +2,12 @@ import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import type { Review, Spec } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
-import { validateEvidence } from "./evidence.js";
+import {
+  currentEvidence,
+  resolveEvidenceIds,
+  validateEvidence,
+  validEvidenceNote,
+} from "./evidence.js";
 export function validateReview(
   store: WorkflowStore,
   runId: string,
@@ -44,5 +49,60 @@ export function validateReview(
     )
       throw new WorkflowFault("OUTPUT_INVALID", "Finding has unknown requirement/criterion IDs");
     validateEvidence(store, runId, snapshotId, finding.evidenceIds);
+  }
+}
+
+/**
+ * Replaces what the host knows and the model copied: the snapshot hash is set, evidence
+ * references (handles, ids with a mistyped tail) become ids of the snapshot's current evidence,
+ * and criteria the review does not mention are listed as inconclusive, so the review is judged on
+ * what it says. Mutates the review; running it again changes nothing.
+ */
+export function completeReview(
+  store: WorkflowStore,
+  runId: string,
+  snapshotId: string,
+  hash: string,
+  spec: Spec,
+  review: Review,
+  pad = true,
+): void {
+  review.snapshotHash = hash;
+  const current = currentEvidence(store, runId, snapshotId);
+  const resolve = (ids: string[]) => resolveEvidenceIds(current, ids);
+  for (const item of review.coverage) item.evidenceIds = resolve(item.evidenceIds);
+  for (const finding of review.findings) finding.evidenceIds = resolve(finding.evidenceIds);
+  if (pad)
+    for (const criterion of spec.criteria)
+      if (!review.coverage.some((c) => c.criterionId === criterion.id))
+        review.coverage.push({
+          criterionId: criterion.id,
+          verdict: "inconclusive",
+          evidenceIds: [],
+          explanation: "Criterion not covered by this review",
+        });
+}
+
+/** What `validateReview` rejects, as correction messages for the agent that submitted it. */
+export function reviewProblems(
+  store: WorkflowStore,
+  runId: string,
+  snapshotId: string,
+  hash: string,
+  spec: Spec,
+  review: Review,
+  pad = true,
+): string[] {
+  completeReview(store, runId, snapshotId, hash, spec, review, pad);
+  try {
+    validateReview(store, runId, snapshotId, hash, spec, review, false);
+    return [];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return [
+      /evidence/i.test(message)
+        ? `${message}. ${validEvidenceNote(currentEvidence(store, runId, snapshotId))}`
+        : message,
+    ];
   }
 }
