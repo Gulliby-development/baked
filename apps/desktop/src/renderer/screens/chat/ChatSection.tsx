@@ -10,7 +10,8 @@ import {
 } from "react";
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
-import { type ChatMode, chat, isMissingChatApi } from "../../client/chat.js";
+import { COMPACTION_CAPABILITY, DIFF_STATS_CAPABILITY } from "../../client/capabilities.js";
+import { type ChatMode, chat, isMissingChatApi, type SessionDiffStats } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -18,7 +19,7 @@ import { peekDraft, takeDraft } from "../start/drafts.js";
 import { Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
 import { forkReportLines, rememberForkReport, takeForkReport } from "./fork.js";
-import { ChatHeader } from "./Header.js";
+import { ChatHeader, type CompactControl } from "./Header.js";
 import { emptyTranscript, isBusy, reduceTranscript } from "./transcript.js";
 
 const NEW = "new";
@@ -149,7 +150,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           if (!live) return;
           dispatch(event);
           // The saved session carries context fill and edited files the events leave out.
-          if (event.type === "turn-done") {
+          if (event.type === "turn-done" || event.type === "compaction-done") {
             refresh();
             chatSessionsChanged();
           }
@@ -175,6 +176,35 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   useEffect(() => {
     if (transcript.needsReset) setGeneration((g) => g + 1);
   }, [transcript.needsReset]);
+
+  // Capabilities decide whether "Compact now" and line counts show; older servers have neither.
+  const [capabilities, setCapabilities] = useState<string[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    chat.capabilities(key).then((caps) => live && setCapabilities(caps));
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
+  const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
+
+  // Line counts follow the edited files; a turn that ends may also have changed them on disk.
+  const [diff, setDiff] = useState<SessionDiffStats | null>(null);
+  const editedKey = transcript.filesEdited.join("\n");
+  const turnRunning = transcript.turnId !== null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch when edits or turns change
+  useEffect(() => {
+    if (draft || !hasDiffStats || turnRunning) return;
+    let live = true;
+    chat.diff(key, sessionId).then(
+      (stats) => live && setDiff(stats),
+      () => live && setDiff(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, sessionId, draft, hasDiffStats, editedKey, turnRunning]);
 
   const busy = !draft && isBusy(transcript);
   const canStop = busy;
@@ -260,6 +290,23 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     chat.update(key, sessionId, changes).catch((e: unknown) => setActionError(message(e)));
   };
 
+  const compact = (): void => {
+    setActionError(null);
+    stick();
+    chat.compact(key, sessionId).catch((e: unknown) => setActionError(message(e)));
+  };
+  const compactControl: CompactControl | undefined =
+    canCompact && !draft
+      ? {
+          run: compact,
+          disabled: transcript.compacting
+            ? "Compacting…"
+            : busy
+              ? "Available when the turn ends."
+              : null,
+        }
+      : undefined;
+
   const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
   const loadMentions = useCallback(
     (query: string) => chat.mentions(key, query).then((result) => result.mentions),
@@ -294,6 +341,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               usage: transcript.usage,
               model: session?.model ?? null,
               filesEdited: transcript.filesEdited,
+              diff,
+              ...(compactControl ? { compact: compactControl } : {}),
             })}
       />
       <section className="chat-scroll" aria-label="Conversation" ref={scroller} onScroll={onScroll}>

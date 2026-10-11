@@ -235,4 +235,44 @@ describe("chat transcript", () => {
     });
     expect(state.notice).toEqual({ kind: "error", text: "Provider unavailable" });
   });
+
+  test("a compaction keeps the session busy, adds its note and updates the context", () => {
+    let state = fromDetail(detail({ context: { usedTokens: 900, windowTokens: 1000, percent: 90 } }));
+    state = applyChatEvent(state, { type: "compaction-start", compactionId: "c1", seq: 1, at: 1 });
+    expect(state.compacting).toBe(true);
+    expect(isBusy(state)).toBe(true);
+    expect(state.turnId).toBeNull();
+    state = applyChatEvent(state, {
+      type: "compaction-done",
+      compactionId: "c1",
+      status: "compacted",
+      compacted: 6,
+      context: { usedTokens: 200, windowTokens: 1000, percent: 20 },
+      message: { id: "n1", role: "system", content: "Compacted 6 messages", timestamp: 2 },
+      seq: 2,
+      at: 2,
+    });
+    expect(state.compacting).toBe(false);
+    expect(state.messages.map((m) => m.id)).toEqual(["n1"]);
+    expect(state.context?.percent).toBe(20);
+    expect(isBusy(state)).toBe(false);
+  });
+
+  test("a session loaded while compacting shows the compaction, not a turn", () => {
+    const state = fromDetail(detail({ state: "working", compacting: true }));
+    expect(state.compacting).toBe(true);
+    expect(state.turnId).toBeNull();
+    const failed = applyChatEvent(state, {
+      type: "compaction-done",
+      compactionId: "c1",
+      status: "failed",
+      error: "model unavailable",
+      compacted: 0,
+      context: null,
+      message: null,
+      seq: 1,
+      at: 1,
+    });
+    expect(failed.notice).toEqual({ kind: "error", text: "Compaction failed: model unavailable" });
+  });
 });
