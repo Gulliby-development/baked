@@ -77,7 +77,7 @@ bun test tests/feature-parity.test.ts
 | Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | `settings/chat` |
 | Provider options: thinking, speed, cache TTL, server compaction, tool streaming | `/provider-settings` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Chat task router and fallback chains | `/router` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
-| Workflow model routing | `/workflow` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/workflow/routing`, `/v1/workflow/route` | `settings/routing` |
+| Workflow model routing | `/workflow` | `baked workflow route`, `baked workflow routing` | `/v1/workflow/routing`, `/v1/workflow/route` | `settings/routing` |
 | Web search keys (Brave, Jina) | `/web-search` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | MCP servers: list, add, edit, reconnect, tools | `/mcp` | Partial [#402](https://github.com/Gulliby-development/baked/issues/402): no management | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) |
 
@@ -95,7 +95,7 @@ bun test tests/feature-parity.test.ts
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
 | Instruction files: view and edit content | **Gap** [#406](https://github.com/Gulliby-development/baked/issues/406) | `baked project show` | `/v1/projects/current/instructions` | `project/instructions` |
 | Instruction files: switch on or off | `/instructions` | Not needed: set instructionFiles in config.json | **Gap** [#406](https://github.com/Gulliby-development/baked/issues/406) | **Gap** [#406](https://github.com/Gulliby-development/baked/issues/406) |
-| Long-term chat memory: browse, pin, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | **Gap** [#403](https://github.com/Gulliby-development/baked/issues/403) | **Gap** [#403](https://github.com/Gulliby-development/baked/issues/403) |
+| Long-term chat memory: browse, pin, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/chat-memory` |
 | Run memory: view and edit what runs learned | `/workflow` | `baked workflow memory` | `/v1/workflow/memory` | `project/run-memory` |
 
 ### Workflow runs
@@ -159,10 +159,8 @@ bun test tests/feature-parity.test.ts
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#399](https://github.com/Gulliby-development/baked/issues/399): Start an initiative; Reject, merge, split, rename, remove, re-plan, extend
 - [#402](https://github.com/Gulliby-development/baked/issues/402): MCP servers: list, add, edit, reconnect, tools
-- [#403](https://github.com/Gulliby-development/baked/issues/403): Long-term chat memory: browse, pin, hide, cleanup, scopes
 - [#405](https://github.com/Gulliby-development/baked/issues/405): Delete a session; Export a chat (Markdown, JSON, clipboard)
 - [#406](https://github.com/Gulliby-development/baked/issues/406): Instruction files: view and edit content; Instruction files: switch on or off
-- [#407](https://github.com/Gulliby-development/baked/issues/407): Workflow model routing
 - [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Git menu: status, diff, commit, push, pull, branch, stash; Storage cleanup, model events and the error log; Telemetry switch; Notifications: system and webhook
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
