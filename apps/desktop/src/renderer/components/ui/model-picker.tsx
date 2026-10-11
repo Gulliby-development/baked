@@ -229,7 +229,9 @@ export function ModelPicker({
                   >
                     <span className="shrink-0 font-mono">{choice.id}</span>
                     {choice.label !== choice.id && (
-                      <span className="min-w-0 shrink-[3] truncate text-dim-foreground">{choice.label}</span>
+                      <span className="min-w-0 shrink-[3] truncate text-dim-foreground">
+                        {choice.label}
+                      </span>
                     )}
                     {choice.detail && (
                       <span className="ml-auto min-w-0 truncate font-mono text-[12px] text-dim-foreground">
