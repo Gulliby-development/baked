@@ -57,6 +57,8 @@ export interface ChatAgentOptions {
   modelId: string;
   model: LanguageModel;
   mode: BakeMode;
+  /** The turn carries out an accepted plan. */
+  planExecution?: boolean;
   contextManager: ContextManager;
   providerOptions: ProviderOptions;
   headers: Record<string, string> | undefined;
@@ -97,6 +99,7 @@ export function createChatAgent(options: ChatAgentOptions): BakeAgent {
     fullModelId: options.modelId,
     contextManager: options.contextManager,
     bakeMode: mode,
+    ...(options.planExecution ? { planExecution: true } : {}),
     interactive: callbacks,
     subagentModels,
     webSearchModel,
