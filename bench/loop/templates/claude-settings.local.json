@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo create Gulliby-development/*)",
+      "Bash(gh repo edit Gulliby-development/* --visibility public*)"
+    ]
+  }
+}

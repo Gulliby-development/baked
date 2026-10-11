@@ -184,16 +184,17 @@ First start on a PC:
 1. Copy `bench/loop/` from the BAKED runner checkout to the loop root: `AGENTS.md`, `roles/`, `templates/`, `controls/README.md`, and `config.json` (only if the loop root has none). Copy `templates/ledger/*` to `ledger/` for each file that does not exist yet.
 2. Check prerequisites and report what is missing instead of working around it: Bun, Git, Python 3.11+, Playwright's Chromium, `gh` signed in with the `repo` and `project` scopes (and permission to create repositories in the org), the BAKED runner and dev checkouts, at least one working provider in BAKED.
 3. Bootstrap the control prompts (`controls/README.md`).
-4. Write `state.json` with `round: 1`, `phase: "prepare"`.
+4. Copy `templates/claude-settings.local.json` to `<loop root>/.claude/settings.local.json` if that file does not exist (create the folder). Never overwrite or widen an existing file. The `.claude` folder inside the loop root is not part of the repository.
+5. Write `state.json` with `round: 1`, `phase: "prepare"`.
 
-Every later start (after a crash, a reboot or a new session): read `config.json`, `state.json` and the current round folder, then continue the step `state.json` names. A session that drives the loop from a project thread starts it with one instruction: "Read AGENTS.md in the loop root and run the loop."
+Every later start (after a crash, a reboot or a new session): read `config.json`, `state.json` and the current round folder, then continue the step `state.json` names. Start the loop session with the loop root as its working folder: Claude Code reads `.claude/settings.local.json` from the session's project folder, otherwise the allow rules do not apply and `gh repo create` / `gh repo edit --visibility public` may be blocked by the harness. The loop reports that once and never edits permission settings itself, except creating this file from the template. A session that drives the loop from a project thread starts it with one instruction: "Read AGENTS.md in the loop root and run the loop."
 
 ## Phase 0: prepare
 
 1. If `STOP` exists, stop (see [Stop conditions](#stop-conditions)).
 2. Close the previous round: make sure its `report.md` exists and its fix PRs are merged or recorded as left open.
 3. Update the runner: `git fetch origin && git checkout --detach origin/main` in `paths.runner`, `bun install`, `bun run build`. Record the commit in `round.json`. If the build fails, the fixer gets the failure as a P0 issue and the round waits for it (main must build).
-4. Refresh the spec: copy `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` to the loop root, so spec changes merged to `main` take effect from the next round. Never overwrite `config.json`, `controls/*.md`, `ledger/`, `state.json` or round folders. Then re-read this file.
+4. Refresh the spec: copy `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` to the loop root, so spec changes merged to `main` take effect from the next round. Never overwrite `config.json`, `controls/*.md`, `ledger/`, `state.json` or round folders. Also check `.claude/settings.local.json` in the loop root: create it from `templates/claude-settings.local.json` if missing, never overwrite it. Then re-read this file.
 5. Run `baked doctor` in an empty scratch repo with the round's policy; any refusal is a P0 finding and stops the round until fixed.
 6. List configured providers and check each with one tiny headless call (`baked --headless --model PROVIDER/MODEL "Reply OK"`). A provider that refuses for credits or auth is skipped this round and reported once. Resolve `referenceModel` if unset. If the reference model is unavailable, control apps wait for it; they never switch models (that would break comparability).
 7. Write `round.json` and set `state.phase = "ideate"`.

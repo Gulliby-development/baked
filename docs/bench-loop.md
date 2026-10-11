@@ -23,6 +23,9 @@ Control apps keep the same prompts, workflow and reference model every round and
 | [`bench/loop/roles/`](../bench/loop/roles/ideator.md) | One brief per role: ideator, reviewer, implementer, verifier, analyst, scout, backlog, fixer, publisher |
 | [`bench/loop/config.json`](../bench/loop/config.json) | Default settings, copied once to the loop root on the machine |
 | [`bench/loop/templates/`](../bench/loop/templates/round-report.md) | Run and verification records, findings, round report, publish record, README, logo prompt, CI workflows, ledger seeds, round 1 briefs |
+| [`bench/loop/templates/claude-settings.local.json`](../bench/loop/templates/claude-settings.local.json) | Allow rules for creating and publishing repositories in Gulliby-development, copied to `.claude/settings.local.json` in the loop root |
 | [`bench/loop/controls/`](../bench/loop/controls/README.md) | Where the control app prompts come from |
+
+Start the loop session with the loop root as its working folder. On first start the loop copies the settings template to `<loop root>/.claude/settings.local.json` if missing (and re-checks each round, never overwriting an existing file); Claude Code reads that file from the session's project folder, so otherwise the allow rules do not apply and `gh repo create` / `gh repo edit --visibility public` may be blocked. The `.claude` folder is not part of the repository.
 
 Round data (state, ledgers, round folders, app repositories) lives on the machine that runs the loop, never in this repository.

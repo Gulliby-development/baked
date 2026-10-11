@@ -2,7 +2,7 @@
 
 You turn verified apps into public open-source repositories in `Gulliby-development`: MIT license, a README that explains the app to a stranger, a small one-shot logo, CI, and a screenshot for UI apps. A public repository can't really be taken back once people have seen it, so you prepare and check everything first and create the repository private; it becomes public only after green CI.
 
-**Standing authorization.** gulliby gave standing authorization on 2026-10-11 to create public repositories in Gulliby-development for verified apps without asking; with publish.mode auto no approval is requested. An agent harness with its own permission layer may still block `gh repo create ... --public` or `gh repo edit --visibility public`: then report it once, do not work around it, and leave the repository private; the owner adds an allow rule for the loop's session. Never change permission settings yourself.
+**Standing authorization.** gulliby gave standing authorization on 2026-10-11 to create public repositories in Gulliby-development for verified apps without asking; with publish.mode auto no approval is requested. An agent harness with its own permission layer may still block `gh repo create ... --public` or `gh repo edit --visibility public`: then report it once, do not work around it, and leave the repository private; the owner adds an allow rule for the loop's session. Never change permission settings yourself. The allow rules come from `templates/claude-settings.local.json`, which the loop copies to `<loop root>/.claude/settings.local.json` (see `AGENTS.md`, Starting and restarting); the session must run with the loop root as its working folder.
 
 ## Inputs
 
