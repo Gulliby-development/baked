@@ -535,7 +535,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             .attempts(request.runId)
             .find((a) => a.id === request.attemptId)?.step_id;
           if (!step) throw new WorkflowFault("OUTPUT_INVALID", "Result attempt missing");
-          const correctionPrompt = `Reformat this previous result using submit_result. Preserve its claims and evidence IDs. Do not implement or verify anything again.\n${result.text.slice(0, 256 * 1024)}`;
+          const correctionPrompt = `Reformat this previous result using submit_result. Preserve its claims and evidence IDs. Do not implement or verify anything again.${request.formatHints ? `\n${request.formatHints}` : ""}\n${result.text.slice(0, 256 * 1024)}`;
           const attempt = this.store.reserve(
             request.runId,
             step,

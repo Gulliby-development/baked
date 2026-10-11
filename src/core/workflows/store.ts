@@ -1173,7 +1173,9 @@ export class WorkflowStore {
     );
   }
   evidence(runId: string): EvidenceRow[] {
-    return this.db.query<EvidenceRow, [string]>("SELECT * FROM evidence WHERE run_id=?").all(runId);
+    return this.db
+      .query<EvidenceRow, [string]>("SELECT * FROM evidence WHERE run_id=? ORDER BY rowid")
+      .all(runId);
   }
   addEvidence(
     runId: string,
