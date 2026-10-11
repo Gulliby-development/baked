@@ -67,6 +67,26 @@ describe("host-filled review submission", () => {
     completeReview(store, runId, snapshotId, HASH, spec, result);
     expect(result.coverage).toHaveLength(3);
   });
+  test("manual criteria are deferred and do not make a required review inconclusive", async () => {
+    const { store, runId, snapshotId, ids } = await evidenceFixture();
+    const manual = (id: string) => ({ ...criterion(id), method: "manual" as const });
+    const withManual: Spec = { ...spec, criteria: [criterion("AC-001"), manual("AC-005"), manual("AC-007")] };
+    // The jsondelta shape: the other criteria pass with citations, the manual ones are inconclusive.
+    const result = review({
+      verdict: "inconclusive",
+      coverage: [
+        { criterionId: "AC-001", verdict: "pass", evidenceIds: [ids[0] ?? ""], explanation: "ok" },
+        { criterionId: "AC-005", verdict: "inconclusive", evidenceIds: [], explanation: "No evidence yet" },
+      ],
+    });
+    expect(reviewProblems(store, runId, snapshotId, HASH, withManual, result)).toEqual([]);
+    expect(result.verdict).toBe("pass");
+    expect(result.coverage.map((c) => `${c.criterionId}:${c.verdict}`)).toEqual(["AC-001:pass", "AC-005:deferred", "AC-007:deferred"]);
+    // An automated criterion left inconclusive still keeps the verdict inconclusive.
+    const open = review({ verdict: "inconclusive", coverage: [{ criterionId: "AC-005", verdict: "inconclusive", evidenceIds: [], explanation: "x" }] });
+    reviewProblems(store, runId, snapshotId, HASH, withManual, open);
+    expect(open.verdict).toBe("inconclusive");
+  });
   test("an unknown id is rejected with the message and the valid ids", async () => {
     const { store, runId, snapshotId, ids } = await evidenceFixture();
     const result = review({ coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: ["feedface-0000-4000-8000-000000000000"], explanation: "ok" }] });
