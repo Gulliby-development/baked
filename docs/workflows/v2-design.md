@@ -135,6 +135,7 @@ Each preset is a file in `src/core/workflows/v2/presets/` and is checked: valid 
 | Full | the current SDD: Standard plus security review, convergence on every criterion and learn | yes, after approval | as Standard, security review when triggered | Large or risky changes |
 | Spike | research, report | never | none | Learn something and write it down |
 | Review only | review of an existing diff | never | correctness and security review | Check a diff against criteria |
+| Fix CI | reproduce, research, plan, approve, implement, verify | yes, after approval | typecheck, lint, tests in reproduce and verify, task tests on implement | Make failing checks pass ([Fix CI](fix-ci.md)) |
 
 Notes:
 
@@ -143,6 +144,7 @@ Notes:
 - Spike and Review only contain no `tasks` stage and every stage has `effects: "none"`. The new-run form shows "no file will change" for them, and the runtime refuses to attach a writing tool to their profiles.
 - The new-run form lists the presets and the user's own definitions, shows the stages and the gates of the chosen one and the spend estimate for it. A preset is a starting point: "duplicate as custom" copies it into `baked/workflows/`.
 - Auto approval (section 5.2) is never the default of any preset.
+- Fix CI starts with a check stage. When those checks already pass, the run completes without a model call or a change; a run that ends before any `tasks` stage has nothing to accept.
 
 ## 5. The approval invariant
 
