@@ -111,7 +111,7 @@ function Editor({
       </label>
       <textarea
         id="instruction-text"
-        className="mono min-h-[360px] w-full resize-y rounded-base border-2 border-border text-foreground bg-[var(--bg-code)]! p-3! text-[13px]! leading-[1.55]!"
+        className="mono min-h-[360px] w-full resize-y rounded-base border-2 border-border bg-[var(--bg-code)] p-3 font-sans text-[13px] leading-[1.55] text-foreground"
         rows={22}
         spellCheck={false}
         value={text}

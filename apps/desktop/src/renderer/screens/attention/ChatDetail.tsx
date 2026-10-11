@@ -1,7 +1,19 @@
 import { useState } from "react";
 import { attentionApi, type ChatPrompt } from "../../client/attention.js";
 import { projectHref } from "../../router.js";
-import { ActionError, DetailHeader, Loading, useAction, useLoad } from "./common.js";
+import {
+  ACTIONS,
+  ActionError,
+  BTN,
+  DetailHeader,
+  FORM,
+  INPUT,
+  LEDE,
+  Loading,
+  NOTE,
+  useAction,
+  useLoad,
+} from "./common.js";
 import { type DetailProps, Gone } from "./RunDetails.js";
 
 /** What a chat prompt asks to do, in one sentence. */
@@ -34,7 +46,7 @@ export function ChatDetail({ item, onDone }: DetailProps) {
       onDone(message);
     });
   const openChat = (
-    <a className="btn att-btn" href={projectHref(item.projectKey, "chat", sessionId)}>
+    <a className={`btn ${BTN}`} href={projectHref(item.projectKey, "chat", sessionId)}>
       Open chat
     </a>
   );
@@ -48,20 +60,20 @@ export function ChatDetail({ item, onDone }: DetailProps) {
             <DetailHeader item={item} />
             {prompt.kind === "question" ? (
               <form
-                className="att-form"
+                className={FORM}
                 onSubmit={(event) => {
                   event.preventDefault();
                   if (text.trim()) send({ answer: text.trim() }, "Answered. The chat continues.");
                 }}
               >
-                <p className="att-question-text">{prompt.question}</p>
+                <p className="m-0 text-[15px] text-foreground">{prompt.question}</p>
                 {prompt.options.length > 0 && (
-                  <div className="att-options">
+                  <div className="flex flex-col gap-2">
                     {prompt.options.map((option) => (
                       <button
                         key={option.value}
                         type="button"
-                        className="btn att-option"
+                        className="btn min-h-[42px] flex-col items-start px-[14px] py-2 text-left"
                         disabled={action.busy}
                         onClick={() =>
                           send({ answer: option.value }, `Answered "${option.label}".`)
@@ -78,16 +90,16 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                 </label>
                 <textarea
                   id="att-chat-answer"
-                  className="att-input"
+                  className={INPUT}
                   rows={3}
                   value={text}
                   onChange={(event) => setText(event.target.value)}
                 />
                 <ActionError error={action.error} />
-                <div className="att-actions">
+                <div className={ACTIONS}>
                   <button
                     type="submit"
-                    className="btn-primary att-btn"
+                    className={`btn-primary ${BTN}`}
                     disabled={action.busy || !text.trim()}
                   >
                     Send answer
@@ -95,7 +107,7 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                   {prompt.allowSkip && (
                     <button
                       type="button"
-                      className="btn att-btn"
+                      className={`btn ${BTN}`}
                       disabled={action.busy}
                       onClick={() => send({ answer: "" }, "Skipped the question.")}
                     >
@@ -107,15 +119,15 @@ export function ChatDetail({ item, onDone }: DetailProps) {
               </form>
             ) : (
               <>
-                <p className="att-lede">{promptSummary(prompt)}</p>
-                <p className="att-note">
+                <p className={LEDE}>{promptSummary(prompt)}</p>
+                <p className={NOTE}>
                   The chat <strong>{session.title}</strong> waits until you decide.
                 </p>
                 <ActionError error={action.error} />
-                <div className="att-actions">
+                <div className={ACTIONS}>
                   <button
                     type="button"
-                    className="btn-primary att-btn"
+                    className={`btn-primary ${BTN}`}
                     disabled={action.busy}
                     onClick={() => send({ approve: true }, "Approved. The chat continues.")}
                   >
@@ -123,7 +135,7 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                   </button>
                   <button
                     type="button"
-                    className="btn att-btn"
+                    className={`btn ${BTN}`}
                     disabled={action.busy}
                     onClick={() => send({ approve: false }, "Denied. The agent was told no.")}
                   >

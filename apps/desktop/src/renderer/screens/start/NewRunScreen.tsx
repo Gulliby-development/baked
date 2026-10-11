@@ -1,9 +1,26 @@
-import "../../styles/start.css";
 import { useMemo, useState } from "react";
 import { type DefinitionSummary, MAX_WRITERS, start } from "../../client/start.js";
 import type { SectionProps } from "../sections.js";
 import { takeDraft } from "./drafts.js";
-import { BudgetPicker, policyFor, presetLimits, usePolicy, useStartRun } from "./form.js";
+import {
+  BudgetPicker,
+  CHIP,
+  CHIPS,
+  FIELD,
+  FIELDSET,
+  FORM,
+  GOAL,
+  HINT,
+  HINT_ERR,
+  INLINE,
+  LEGEND,
+  policyFor,
+  presetLimits,
+  SUBMIT,
+  TITLE,
+  usePolicy,
+  useStartRun,
+} from "./form.js";
 import { type BudgetPreset, featureSlug, isFeatureId, stageLabel } from "./logic.js";
 import { DoctorPanel, doctorLine, EstimatePanel, message, useLoad, usePreRun } from "./panels.js";
 
@@ -35,30 +52,30 @@ function WorkflowChoice({
   const more = definitions.filter((d) => !MAIN_WORKFLOWS.some(([id]) => id === d.id));
   const chosen = definitions.find((d) => d.id === value);
   return (
-    <fieldset className="start-fieldset">
-      <legend className="start-legend">Workflow</legend>
-      <div className="start-workflows">
+    <fieldset className={FIELDSET}>
+      <legend className={LEGEND}>Workflow</legend>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-[10px]">
         {main.map(({ definition, note }) => (
           <button
             key={definition.id}
             type="button"
-            className="start-workflow"
+            className="flex cursor-pointer flex-col items-start gap-1 rounded-[var(--radius-lg)] border border-[color:var(--line)] bg-background px-[14px] py-3 text-left [font:inherit] hover:border-[color:var(--line-strong)] aria-pressed:border-[color:var(--accent)] aria-pressed:bg-hover"
             aria-pressed={value === definition.id}
             onClick={() => onChange(definition)}
           >
-            <span className="start-workflow-id">{definition.id}</span>
-            <span className="start-workflow-note">{note}</span>
+            <span className="font-semibold text-foreground">{definition.id}</span>
+            <span className="text-[12px] text-muted-foreground">{note}</span>
           </button>
         ))}
       </div>
       {more.length > 0 && (
-        <div className="start-more">
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-dim-foreground">
           <span>More workflows:</span>
           {more.map((definition) => (
             <button
               key={definition.id}
               type="button"
-              className="seg start-chip"
+              className={CHIP}
               aria-pressed={value === definition.id}
               title={definition.description || undefined}
               onClick={() => onChange(definition)}
@@ -70,10 +87,10 @@ function WorkflowChoice({
         </div>
       )}
       {chosen && (
-        <span className="mono start-hint">{chosen.stages.map(stageLabel).join(" → ")}</span>
+        <span className={`mono ${HINT}`}>{chosen.stages.map(stageLabel).join(" → ")}</span>
       )}
       {chosen && chosen.problems.length > 0 && (
-        <span className="start-hint err">{chosen.problems.join("; ")}</span>
+        <span className={HINT_ERR}>{chosen.problems.join("; ")}</span>
       )}
     </fieldset>
   );
@@ -151,39 +168,43 @@ export function NewRunScreen({ project }: SectionProps) {
   };
 
   return (
-    <div className="start-layout">
-      <form className="start-form" onSubmit={submit} aria-labelledby="new-run-title">
-        <h2 id="new-run-title" className="start-title">
+    <div className="flex flex-wrap items-start gap-[22px]">
+      <form
+        className={`${FORM} flex-[999_1_460px]`}
+        onSubmit={submit}
+        aria-labelledby="new-run-title"
+      >
+        <h2 id="new-run-title" className={TITLE}>
           New workflow run
         </h2>
-        <div className="start-field">
-          <label htmlFor="new-run-goal" className="start-legend">
+        <div className={FIELD}>
+          <label htmlFor="new-run-goal" className={LEGEND}>
             Goal
           </label>
           <textarea
             id="new-run-goal"
-            className="start-goal"
+            className={GOAL}
             rows={3}
             value={prompt}
             placeholder="Describe what should change and how you will know it works."
             onChange={(e) => setPrompt(e.target.value)}
           />
         </div>
-        <div className="start-field">
-          <label htmlFor="new-run-feature" className="start-legend">
+        <div className={FIELD}>
+          <label htmlFor="new-run-feature" className={LEGEND}>
             Feature ID
           </label>
           <input
             id="new-run-feature"
             type="text"
-            className="mono start-input"
+            className="mono max-w-[520px] aria-[invalid=true]:border-[color:var(--err)]"
             value={feature}
             placeholder="derived from the goal"
             aria-invalid={feature !== "" && !featureValid}
             aria-describedby="new-run-feature-hint"
             onChange={(e) => setFeatureEdit(e.target.value)}
           />
-          <span id="new-run-feature-hint" className="start-hint">
+          <span id="new-run-feature-hint" className={HINT}>
             {feature !== "" && !featureValid
               ? "Letters, digits, - and _; starts with a letter or digit; at most 96 characters."
               : "Names the run and its folder under specs/."}
@@ -199,13 +220,13 @@ export function NewRunScreen({ project }: SectionProps) {
             onChange={pickWorkflow}
           />
         ) : (
-          <p className="start-hint">Loading workflows…</p>
+          <p className={HINT}>Loading workflows…</p>
         )}
 
-        <div className="start-row">
+        <div className="flex flex-wrap gap-7 [&>fieldset]:flex-[1_1_240px]">
           <BudgetPicker value={budget} onChange={setBudget} policy={policy} base={limits.base} />
-          <fieldset className="start-fieldset">
-            <legend className="start-legend">Mode and writers</legend>
+          <fieldset className={FIELDSET}>
+            <legend className={LEGEND}>Mode and writers</legend>
             <label className="check">
               <input
                 type="checkbox"
@@ -215,12 +236,12 @@ export function NewRunScreen({ project }: SectionProps) {
               />
               Run in a Git worktree
             </label>
-            <fieldset className="start-chips start-bare" aria-label="Writers">
+            <fieldset className={`${CHIPS} m-0 min-w-0 border-0 p-0`} aria-label="Writers">
               {Array.from({ length: MAX_WRITERS }, (_, i) => i + 1).map((count) => (
                 <button
                   key={count}
                   type="button"
-                  className="seg start-chip"
+                  className={CHIP}
                   aria-pressed={writers === count}
                   aria-label={`${count} writer${count === 1 ? "" : "s"}`}
                   disabled={count > 1 && worktreeRefusal !== null}
@@ -230,7 +251,7 @@ export function NewRunScreen({ project }: SectionProps) {
                 </button>
               ))}
             </fieldset>
-            <span className="start-hint">
+            <span className={HINT}>
               {worktreeRefusal ??
                 (writers > 1
                   ? `${writers} tasks at once, each in its own worktree`
@@ -241,21 +262,21 @@ export function NewRunScreen({ project }: SectionProps) {
           </fieldset>
         </div>
 
-        <fieldset className="start-fieldset">
-          <legend className="start-legend">Open questions</legend>
+        <fieldset className={FIELDSET}>
+          <legend className={LEGEND}>Open questions</legend>
           <label className="check">
             <input type="checkbox" checked={assume} onChange={(e) => setAssume(e.target.checked)} />
             Settle them with recorded assumptions
           </label>
-          <span className="start-hint">
+          <span className={HINT}>
             {assume
               ? "The agents pick conventional defaults and list them at approval; only questions without a safe default wait for you."
               : "The run waits for your answers to blocking questions."}
           </span>
         </fieldset>
 
-        <div className="start-inline">
-          <label htmlFor="new-run-model" className="start-legend">
+        <div className={INLINE}>
+          <label htmlFor="new-run-model" className={LEGEND}>
             Run model
           </label>
           <select id="new-run-model" value={model} onChange={(e) => setModel(e.target.value)}>
@@ -271,17 +292,17 @@ export function NewRunScreen({ project }: SectionProps) {
         </div>
 
         {launcher.error && <div className="banner error">{launcher.error}</div>}
-        <div className="start-inline">
-          <button type="submit" className="btn-primary start-submit" disabled={!canStart}>
+        <div className={INLINE}>
+          <button type="submit" className={SUBMIT} disabled={!canStart}>
             {launcher.starting ? "Starting…" : "Start run"}
           </button>
-          <span className="start-hint" aria-live="polite">
+          <span className={HINT} aria-live="polite">
             {preRun.doctor ? doctorLine(preRun.doctor) : preRun.loading ? "Checking…" : ""}
           </span>
         </div>
       </form>
 
-      <aside className="start-aside" aria-label="Before the run">
+      <aside className="flex min-w-0 flex-[1_1_420px] flex-col gap-4" aria-label="Before the run">
         <DoctorPanel report={preRun.doctor} error={preRun.doctorError} loading={preRun.loading} />
         <EstimatePanel
           estimate={preRun.estimate}

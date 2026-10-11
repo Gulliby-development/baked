@@ -22,8 +22,8 @@ export function LoadState({
       return missing ? (
         <div className="empty">{missing}</div>
       ) : (
-        <div className="empty ins-newer">
-          <strong>Needs a newer BAKED</strong>
+        <div className="empty flex flex-col items-center gap-[6px]">
+          <strong className="text-foreground">Needs a newer BAKED</strong>
           <span>
             {what} need a newer <code className="mono">baked serve</code> than the one running this
             project. Update BAKED, then restart the project.
