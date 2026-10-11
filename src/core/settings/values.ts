@@ -2,6 +2,7 @@
  * Reading and changing the settings of `schema.ts` against the global and project config layers.
  * File access stays with the caller, so the local API and tests share the same rules.
  */
+import { z } from "zod";
 import { getToolCatalog } from "../tools/constants.js";
 import {
   readSettingPath,
@@ -11,9 +12,41 @@ import {
   type SettingPage,
   type SettingScope,
   settingById,
-  settingValueSchema,
   writeSettingPath,
 } from "./schema.js";
+
+const ModelId = z.string().trim().min(1).max(200);
+
+/** The validator of a setting's value as the API receives it; secrets take the key itself. */
+export function settingValueSchema(setting: SettingDefinition): z.ZodType {
+  switch (setting.type) {
+    case "boolean":
+      return z.boolean();
+    case "enum": {
+      const values = setting.options.map((option) => option.value) as [string, ...string[]];
+      return z.enum(values);
+    }
+    case "number": {
+      let number = z.number().min(setting.min).max(setting.max);
+      if (setting.integer) number = number.int();
+      return setting.nullable ? number.nullable() : number;
+    }
+    case "model":
+      return ModelId.nullable();
+    case "string-list":
+      return z.array(z.string().min(1).max(200)).max(500);
+    case "model-list-map":
+      return z
+        .record(ModelId, z.array(ModelId).max(10))
+        .refine((map) => Object.keys(map).length <= 100);
+    case "model-number-map":
+      return z
+        .record(ModelId, z.number().int().min(setting.min).max(setting.max))
+        .refine((map) => Object.keys(map).length <= 100);
+    case "secret":
+      return z.string().trim().min(1).max(4096);
+  }
+}
 
 export type SettingSource = "project" | "global" | "default" | "env" | "keychain" | "file";
 

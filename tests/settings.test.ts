@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
 import type { SettingsSecretStore } from "../src/core/api/settings-routes.js";
 import { mergeConfigs, DEFAULT_CONFIG } from "../src/config/index.js";
-import { SETTING_PAGES, SETTINGS, settingValueSchema, writeSettingPath } from "../src/core/settings/schema.js";
-import { planSettingsChange, SettingsChangeError, settingsView, type SettingsView } from "../src/core/settings/values.js";
+import { SETTING_PAGES, SETTINGS, writeSettingPath } from "../src/core/settings/schema.js";
+import { planSettingsChange, SettingsChangeError, settingValueSchema, settingsView, type SettingsView } from "../src/core/settings/values.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 

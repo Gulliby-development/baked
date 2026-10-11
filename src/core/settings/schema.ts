@@ -3,10 +3,9 @@
  * validate and serve them and the desktop can render its settings pages from the same description.
  * Each setting names its place in `config.json` (a dotted path), its type, default and the config
  * layers it may live in. API keys are `secret` settings: they live in the secret store, never in
- * the config file, and their value is never returned.
+ * the config file, and their value is never returned. This module is plain data so the desktop
+ * renderer can import it; the validators are in `values.ts`.
  */
-import { z } from "zod";
-
 export type SettingScope = "global" | "project";
 
 export interface SettingOption {
@@ -758,39 +757,6 @@ const BY_ID = new Map(SETTINGS.map((setting) => [setting.id, setting]));
 
 export function settingById(id: string): SettingDefinition | undefined {
   return BY_ID.get(id);
-}
-
-const ModelId = z.string().trim().min(1).max(200);
-
-/** The validator of a setting's value as the API receives it; secrets take the key itself. */
-export function settingValueSchema(setting: SettingDefinition): z.ZodType {
-  switch (setting.type) {
-    case "boolean":
-      return z.boolean();
-    case "enum": {
-      const values = setting.options.map((option) => option.value) as [string, ...string[]];
-      return z.enum(values);
-    }
-    case "number": {
-      let number = z.number().min(setting.min).max(setting.max);
-      if (setting.integer) number = number.int();
-      return setting.nullable ? number.nullable() : number;
-    }
-    case "model":
-      return ModelId.nullable();
-    case "string-list":
-      return z.array(z.string().min(1).max(200)).max(500);
-    case "model-list-map":
-      return z
-        .record(ModelId, z.array(ModelId).max(10))
-        .refine((map) => Object.keys(map).length <= 100);
-    case "model-number-map":
-      return z
-        .record(ModelId, z.number().int().min(setting.min).max(setting.max))
-        .refine((map) => Object.keys(map).length <= 100);
-    case "secret":
-      return z.string().trim().min(1).max(4096);
-  }
 }
 
 /** Reads a dotted path from a config layer. */
