@@ -25,6 +25,6 @@ BAKED records one anonymous event when a session starts and writes it to `teleme
 
 Never recorded: prompts, code, file contents, paths, the working directory, host or user names, keys or tokens, custom model or provider names, IP addresses.
 
-**Opt out** with any one of `"telemetry": false` in config, `BAKED_TELEMETRY=0` or `DO_NOT_TRACK=1`. Then nothing is written and no ID is created or read.
+**Opt out** with any one of `"telemetry": false` in config, `BAKED_TELEMETRY=0` or `DO_NOT_TRACK=1`. Then nothing is written and no ID is created or read. `/telemetry on|off` in the terminal app, `baked telemetry on|off` on the command line and Settings, All projects, Telemetry in the desktop app set `telemetry` in the global config; the environment variables still win over it. The change applies from the next session start.
 
 **Receiver.** With `telemetryUrl` in config or `BAKED_TELEMETRY_URL`, each event is also sent as a fire-and-forget GET with a 1.5 s timeout. Recording never blocks startup or shows an error. The client is `src/core/telemetry.ts`; an optional Cloudflare Worker receiver is in [`telemetry-worker/`](../telemetry-worker/README.md).

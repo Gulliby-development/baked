@@ -230,7 +230,7 @@ Each announcement goes to three places:
 }
 ```
 
-The desktop app edits the same settings under Settings, All projects, Run notifications.
+The desktop app edits the same settings under Settings, All projects, Run notifications. In the terminal app, `/notifications` shows them and opens a menu, and `/notifications system on|off`, `/notifications webhook URL|off` and `/notifications blocking-only on|off` change them in the global config; an idle workflow worker restarts to apply the change, and a worker driving a run applies it after BAKED restarts. Headers stay in the config file on both.
 
 ## Gates, budgets and estimates
 
