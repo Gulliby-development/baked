@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { logBackgroundError } from "../../../../stores/errors.js";
+import { logBackgroundError } from "../../../diagnostics/errors.js";
 import { IS_WIN, killTree as platformKillTree } from "../../../platform/index.js";
 import { trackProcess } from "../../../process-tracker.js";
 import { trackLspPid, untrackLspPid } from "./pid-tracker.js";

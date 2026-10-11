@@ -15,7 +15,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { logBackgroundError } from "../../stores/errors.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { IS_WIN, shellInvocation } from "../platform/index.js";
 import { buildSafeEnv } from "../spawn.js";
 import { hasWorkspaceMutationContext } from "../workflows/leases.js";

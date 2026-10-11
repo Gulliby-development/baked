@@ -28,7 +28,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
-import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AppConfig,
   BakeMode,
@@ -63,6 +62,8 @@ import {
 import { expandCustomCommandInput } from "../commands/custom.js";
 import { type CompactResult, compactionBlocker, messageChars } from "../compaction/manual.js";
 import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
+import { recordModelCall } from "../diagnostics/model-events.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
@@ -1035,6 +1036,8 @@ export class ChatSession {
     const inputs = new Map<string, Record<string, unknown>>();
     const usage = emptyUsage();
     let steps = 0;
+    /** When the current model step started; 0 until the model is called. */
+    let stepStartedAt = 0;
     let status: "completed" | "interrupted" | "failed" = "completed";
     let error: string | undefined;
     let response: ModelMessage[] = [];
@@ -1078,6 +1081,7 @@ export class ChatSession {
         planExecution,
         ...this.approvalCallbacks(),
       });
+      stepStartedAt = Date.now();
       const result = await agent.stream({
         messages: history,
         options: { userMessage: text },
@@ -1143,10 +1147,23 @@ export class ChatSession {
             const stepUsage = (part.usage ?? {}) as {
               inputTokens?: number;
               outputTokens?: number;
-              inputTokenDetails?: { cacheReadTokens?: number };
+              inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
             };
             const input = stepUsage.inputTokens ?? 0;
             const cacheRead = stepUsage.inputTokenDetails?.cacheReadTokens ?? 0;
+            recordModelCall({
+              modelId: model,
+              source: "main",
+              startedAt: stepStartedAt,
+              durationMs: Math.max(0, Date.now() - stepStartedAt),
+              state: "ok",
+              sessionId: this.meta.id,
+              input,
+              output: stepUsage.outputTokens ?? 0,
+              cacheRead,
+              cacheWrite: stepUsage.inputTokenDetails?.cacheWriteTokens ?? 0,
+            });
+            stepStartedAt = Date.now();
             usage.input += input;
             usage.output += stepUsage.outputTokens ?? 0;
             usage.cacheRead += cacheRead;
@@ -1184,6 +1201,16 @@ export class ChatSession {
       else {
         status = "failed";
         error = errorText(err);
+        if (stepStartedAt > 0)
+          recordModelCall({
+            modelId: this.model ?? "none",
+            source: "main",
+            startedAt: stepStartedAt,
+            durationMs: Math.max(0, Date.now() - stepStartedAt),
+            state: "error",
+            sessionId: this.meta.id,
+            errorMessage: error.slice(0, 500),
+          });
       }
     }
 
@@ -1369,9 +1396,9 @@ export class ChatService {
   }
 
   /** Refuses a file rollback while any loaded session runs a turn that may be editing files. */
-  assertIdleWorkspace(): void {
+  assertIdleWorkspace(action = "rolling back"): void {
     if ([...this.live.values()].some((s) => s.busy))
-      throw new ChatError("SESSION_BUSY", "Wait for running turns to finish before rolling back");
+      throw new ChatError("SESSION_BUSY", `Wait for running turns to finish before ${action}`);
   }
 
   /** Model messages a compaction keeps verbatim. */
@@ -1525,6 +1552,17 @@ export class ChatService {
     this.live.delete(session.id);
     this.host.release(session.id);
     this.store.deleteSession(session.id);
+  }
+
+  /**
+   * Deletes every saved session of the workspace, as the terminal UI's `/storage` does; refused
+   * while a loaded session runs a turn. Returns how many sessions were removed.
+   */
+  clearAll(): number {
+    this.assertIdleWorkspace("clearing sessions");
+    for (const id of this.live.keys()) this.host.release(id);
+    this.live.clear();
+    return this.store.clearAllSessions();
   }
 
   async persist(session: ChatSession): Promise<void> {

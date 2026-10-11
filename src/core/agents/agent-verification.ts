@@ -1,4 +1,4 @@
-import { logBackgroundError } from "../../stores/errors.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { CORE_RULES } from "../prompts/families/shared-rules.js";
 import { projectTool } from "../tools/project.js";
 import type { AgentBus, AgentTask } from "./agent-bus.js";

@@ -26,7 +26,7 @@
  * failure can never crash a tool result.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { logBackgroundError } from "../../stores/errors.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import type { MemoryManager } from "./manager.js";
 import type { MemoryCategory } from "./types.js";
 

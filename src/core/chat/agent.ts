@@ -1,6 +1,5 @@
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModel } from "ai";
-import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AppConfig,
   BakeMode,
@@ -11,6 +10,7 @@ import { normalizePath } from "../agents/agent-bus.js";
 import { createBakeAgent } from "../agents/index.js";
 import type { SharedCacheRef } from "../agents/subagent-tools.js";
 import type { ContextManager } from "../context/manager.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { resolveModel } from "../llm/provider.js";
 import { onFileEdited } from "../tools/file-events.js";
 

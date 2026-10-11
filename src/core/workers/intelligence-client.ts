@@ -1,5 +1,5 @@
-import { logBackgroundError } from "../../stores/errors.js";
 import { useWorkerStore } from "../../stores/workers.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import type { RepoMapOptions, SymbolForSummary } from "../intelligence/repo-map.js";
 import type { HealthCheckResult } from "../intelligence/router.js";
 import type {

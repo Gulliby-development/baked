@@ -6,8 +6,8 @@
  * The bus is immutable-append-only (no deletions) to avoid race conditions.
  */
 
-import { logBackgroundError } from "../../stores/errors.js";
 import type { TaskTier } from "../../types/index.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import type { AgentExecutionResult } from "./execution-result.js";
 import { opensDependency } from "./execution-result.js";
 

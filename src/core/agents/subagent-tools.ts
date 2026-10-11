@@ -3,10 +3,10 @@ import type { LanguageModel, ToolExecutionEndEvent, ToolExecutionStartEvent } fr
 import { tool } from "ai";
 import { z } from "zod";
 import { loadConfig } from "../../config/index.js";
-import { logBackgroundError } from "../../stores/errors.js";
 import type { AgentFeatures } from "../../types/index.js";
 import { getWorkspaceCoordinator } from "../coordination/WorkspaceCoordinator.js";
 import { getCwd } from "../cwd.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { getModelContextWindow } from "../llm/models.js";
 import { buildProviderOptions, supportsProgrammaticToolCalling } from "../llm/provider-options.js";
 import { wrapWithBusCache } from "../tools/bus-cache.js";

@@ -3,11 +3,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { generateText } from "ai";
 import { loadConfig } from "../../config/index.js";
-import { logBackgroundError } from "../../stores/errors.js";
-import { recordModelCall } from "../../stores/model-events.js";
 import { useRepoMapStore } from "../../stores/repomap.js";
 import type { BakeMode, TaskRouter } from "../../types/index.js";
 import { toErrorMessage } from "../../utils/errors.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
+import { recordModelCall } from "../diagnostics/model-events.js";
 import { getIntelligenceClient, setIntelligenceClient } from "../intelligence/instance.js";
 import type { SymbolForSummary } from "../intelligence/repo-map.js";
 import { cacheTtlToMs, supportsPromptCache } from "../llm/cache-support.js";
@@ -1773,7 +1773,7 @@ export class ContextManager {
       } else {
         // configureEmbedder smoke-tested and rejected — log once, fall back.
         try {
-          const { logBackgroundError } = await import("../../stores/errors.js");
+          const { logBackgroundError } = await import("../diagnostics/errors.js");
           logBackgroundError(
             "memory.embedder",
             `Failed to wire ${resolution.modelId} (${resolution.reason}) — using hashbag-v2`,

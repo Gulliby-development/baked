@@ -13,6 +13,7 @@ import type { AppConfig } from "../../types/index.js";
 import { cleanStepMessages } from "../agents/stream-options.js";
 import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
+import { recordModelCall } from "../diagnostics/model-events.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { resolveModel } from "../llm/provider.js";
 import {
@@ -433,6 +434,32 @@ export class NativeAgentExecutor implements AgentExecutor {
       const finished: StepLike[] = [];
       // Usage of the latest model call, which a step rejected for its tool choice never reports.
       let lastCallUsage: LanguageModelUsage | undefined;
+      // Each model step of a run also goes to the model events view of this process.
+      let stepStartedAt = Date.now();
+      const recordStep = (usage: Partial<LanguageModelUsage> | undefined, failure?: unknown) => {
+        recordModelCall({
+          modelId: request.profile.model,
+          source: "run",
+          startedAt: stepStartedAt,
+          durationMs: Math.max(0, Date.now() - stepStartedAt),
+          state: failure === undefined ? "ok" : "error",
+          runId: request.runId,
+          agentId: request.profile.id,
+          input: usage?.inputTokens ?? 0,
+          output: usage?.outputTokens ?? 0,
+          cacheRead: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
+          cacheWrite: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
+          ...(failure === undefined
+            ? {}
+            : {
+                errorMessage: (failure instanceof Error ? failure.message : String(failure)).slice(
+                  0,
+                  500,
+                ),
+              }),
+        });
+        stepStartedAt = Date.now();
+      };
       let result: { steps: readonly StepLike[]; text: string; usage: Partial<LanguageModelUsage> };
       try {
         // Anthropic prompt cache: a breakpoint after the tools and system prompt, and the
@@ -459,6 +486,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           headers: provider.headers,
           onStepEnd: (step) => {
             finished.push(step);
+            recordStep(step.usage);
             this.store.recordAttemptUsage(
               request.runId,
               request.attemptId,
@@ -500,6 +528,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             usage: sumUsage(finished),
           };
         } else {
+          if (!request.signal.aborted) recordStep(undefined, error);
           try {
             writeUsage(
               budget.record(finished, false, meta, request.signal.aborted ? "aborted" : "error"),

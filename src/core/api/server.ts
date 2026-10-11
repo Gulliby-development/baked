@@ -32,7 +32,9 @@ import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow
 import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
+import { storageDirs } from "../diagnostics/storage.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
+import { configDir as defaultConfigDir } from "../platform/index.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
@@ -62,6 +64,7 @@ import {
 } from "./auth.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
+import { diagnosticsRoute } from "./diagnostics-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { memoryRoute } from "./memory-routes.js";
@@ -117,6 +120,7 @@ export const CAPABILITIES = [
   "skills-install",
   "custom-commands",
   "settings",
+  "diagnostics",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -825,6 +829,21 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         config: service.config,
         ...(options.configDir ? { configDir: options.configDir } : {}),
         ...(options.settingsSecrets ? { secrets: options.settingsSecrets } : {}),
+      })) ??
+      (await diagnosticsRoute({
+        ...ctx,
+        dirs: storageDirs(service.workspace, options.configDir ?? defaultConfigDir()),
+        clearSessions: () => chat.clearAll(),
+        clearRepoMap: async () => {
+          if (drives.size > 0)
+            throw new ApiError(
+              409,
+              "WORKSPACE_BUSY",
+              "Wait for the runs this server drives to stop before clearing the code map",
+            );
+          chat.assertIdleWorkspace("clearing the code map");
+          await (await service.rootContext.get()).clearRepoMap();
+        },
       }));
     if (routed) return routed;
     if (path === "/v1/projects") {

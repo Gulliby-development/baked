@@ -5,7 +5,6 @@ import type { LanguageModel } from "ai";
 import { ToolLoopAgent } from "ai";
 import { z } from "zod";
 import { loadConfig } from "../../config/index.js";
-import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AgentFeatures,
   BakeMode,
@@ -15,6 +14,7 @@ import type {
 import { compressImageForApi } from "../../utils/image-compress.js";
 import type { ContextManager } from "../context/manager.js";
 import { getCwd } from "../cwd.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import {
   type CacheTTL,
   detectModelFamily,

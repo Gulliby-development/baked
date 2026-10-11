@@ -1,8 +1,8 @@
 import type { JSONObject } from "@ai-sdk/provider";
 import type { ModelMessage } from "ai";
 import { generateText } from "ai";
-import { logBackgroundError } from "../../stores/errors.js";
-import { recordModelCall } from "../../stores/model-events.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
+import { recordModelCall } from "../diagnostics/model-events.js";
 import { getModelId, supportsTemperature } from "../llm/provider-options.js";
 import type { IOClient } from "../workers/io-client.js";
 import { buildFullConvoText } from "./convo-text.js";
