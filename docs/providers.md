@@ -7,7 +7,7 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | Claude | `anthropic` | `ANTHROPIC_API_KEY` or `/keys` |
 | Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`), see below |
 | OpenAI API | `openai` | `OPENAI_API_KEY` or `/keys` |
-| OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), or Sign in in the desktop app's settings |
+| OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), or Sign in and Switch account in the desktop app's settings |
 | GitHub Copilot | `copilot` | `COPILOT_API_KEY`, `/keys` or `--set-key copilot`, see below |
 | GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys` |
 

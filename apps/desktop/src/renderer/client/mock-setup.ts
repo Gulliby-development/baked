@@ -10,11 +10,15 @@ import type {
   CheckList,
   CheckRunResult,
   CheckSuggestion,
+  CliLogin,
   CommandEntry,
   ConfigFile,
   ConfigView,
   Effort,
   GateEntry,
+  HookCommand,
+  HookEvent,
+  HooksView,
   IndependentReview,
   InstructionFile,
   ModelRouting,
@@ -1011,6 +1015,95 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
   return response(200, { id: edit.id, ...memoryState(key) });
 }
 
+/** Events switched off per project, as each backend process keeps them until it restarts. */
+const hooksOff = new Map<string, Set<string>>();
+const HOOK_EVENTS = [
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "UserPromptSubmit",
+  "Stop",
+  "StopFailure",
+  "SessionStart",
+  "SessionEnd",
+  "PreCompact",
+  "PostCompact",
+  "SubagentStart",
+  "SubagentStop",
+  "Notification",
+  "RunAttention",
+];
+
+function hooksView(key: string, root: string): HooksView {
+  const off = hooksOff.get(key) ?? new Set<string>();
+  const home = "C:\\Users\\dev";
+  const project = `${root}\\.claude\\settings.json`;
+  const user = `${home}\\.baked\\config.json`;
+  const command = (source: string, scope: HookCommand["scope"], text: string) => ({
+    source,
+    scope,
+    matcher: null,
+    command: text,
+    async: false,
+    once: false,
+    timeout: null,
+    if: null,
+  });
+  const events: HookEvent[] = [
+    {
+      event: "PreToolUse",
+      known: true,
+      disabled: off.has("PreToolUse"),
+      blocking: true,
+      hooks: [
+        {
+          ...command(project, "project", "./scripts/check-command.sh"),
+          matcher: "Bash",
+          if: "Bash(rm -rf *)",
+          timeout: 5,
+        },
+      ],
+    },
+    {
+      event: "PostToolUse",
+      known: true,
+      disabled: off.has("PostToolUse"),
+      blocking: true,
+      hooks: [
+        { ...command(project, "project", "bunx biome format --write"), matcher: "Edit|Write" },
+      ],
+    },
+    {
+      event: "Stop",
+      known: true,
+      disabled: off.has("Stop"),
+      blocking: false,
+      hooks: [{ ...command(user, "user", "notify-send 'BAKED finished'"), async: true }],
+    },
+  ];
+  return {
+    disabledBy: null,
+    sources: [
+      { path: `${home}\\.claude\\settings.json`, scope: "user", exists: false, hooks: 0 },
+      { path: project, scope: "project", exists: true, hooks: 2 },
+      { path: `${root}\\.claude\\settings.local.json`, scope: "local", exists: false, hooks: 0 },
+      { path: user, scope: "user", exists: true, hooks: 1 },
+      { path: `${root}\\.baked\\config.json`, scope: "project", exists: true, hooks: 0 },
+    ],
+    events,
+  };
+}
+
+function setHookEvent(key: string, root: string, change: { event?: string; enabled?: boolean }) {
+  if (!change.event || !HOOK_EVENTS.includes(change.event) || typeof change.enabled !== "boolean")
+    return error(400, "INVALID_REQUEST", "Send {event, enabled} with an event BAKED fires");
+  const off = hooksOff.get(key) ?? new Set<string>();
+  if (change.enabled) off.delete(change.event);
+  else off.add(change.event);
+  hooksOff.set(key, off);
+  return response(200, hooksView(key, root));
+}
+
 export const setupRoutes: MockRoute = (request) => {
   const { key, method, path } = request;
   const skill = skillRoutes(request);
@@ -1037,6 +1130,14 @@ export const setupRoutes: MockRoute = (request) => {
       }
       return response(200, s.summary);
     }
+    case "GET /v1/hooks":
+      return response(200, hooksView(key, s.summary.root));
+    case "POST /v1/hooks/session":
+      return setHookEvent(
+        key,
+        s.summary.root,
+        body<{ event?: string; enabled?: boolean }>(request),
+      );
     case "GET /v1/workflow/memory":
       return response(200, memoryState(key));
     case "POST /v1/workflow/memory":
@@ -1184,12 +1285,21 @@ export const setupRoutes: MockRoute = (request) => {
       return response(200, routingOverview(s, edit.workflow ?? null));
     }
   }
-  const providerSignIn = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/.exec(path);
+  const providerSignIn = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/.exec(path);
   if (providerSignIn) {
     const provider = providers.find((p) => p.id === providerSignIn[1]);
     if (!provider?.signIn)
       return error(404, "NOT_FOUND", "This provider does not sign in through a CLI");
     if (providerSignIn[2] === "login") return mockLogin(provider, method);
+    if (providerSignIn[2] === "switch") {
+      if (method !== "POST") return error(405, "METHOD_NOT_ALLOWED", `Use POST for ${path}`);
+      if (provider.signIn.login?.state !== "running") {
+        Object.assign(provider.signIn, { loggedIn: false, message: "Not logged in", login: null });
+        provider.configured = false;
+      }
+      const started = mockLogin(provider, "POST").body as { login: CliLogin };
+      return response(202, { ok: true, message: "Logged out.", login: started.login });
+    }
     if (method === "POST") {
       Object.assign(provider.signIn, { loggedIn: false, message: "Not logged in", login: null });
       provider.configured = false;

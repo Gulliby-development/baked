@@ -9,6 +9,7 @@ import {
 } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Dot } from "../../components/ui/dot.js";
 import { Empty } from "../../components/ui/empty.js";
 import { cn } from "../../lib/cn.js";
@@ -51,15 +52,19 @@ function CliSignInControls({
   projectKey,
   provider,
   signIn,
+  canSwitch,
   onChanged,
 }: {
   projectKey: string;
   provider: ProviderStatus;
   signIn: CliSignIn;
+  /** Whether the backend has `POST /v1/providers/ID/switch`. */
+  canSwitch: boolean;
   onChanged: () => void;
 }) {
   const [login, setLogin] = useState<CliLogin | null>(signIn.login);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const running = login?.state === "running";
 
@@ -154,6 +159,32 @@ function CliSignInControls({
           Sign out
         </Button>
       )}
+      {view.action === "sign-out" && canSwitch && (
+        <Button size="sm" variant="neutral" disabled={busy} onClick={() => setConfirming(true)}>
+          Switch account
+        </Button>
+      )}
+      <ConfirmDialog
+        open={confirming}
+        title={`Switch ${provider.name} account`}
+        confirmLabel="Sign out and sign in"
+        busy={busy}
+        error={confirming ? error : null}
+        onClose={() => setConfirming(false)}
+        onConfirm={() =>
+          void act(async () => {
+            const result = await setup.switchAccount(projectKey, provider.id);
+            if (!result.ok) throw new Error(result.message);
+            setLogin(result.login);
+            setConfirming(false);
+            onChanged();
+          })
+        }
+      >
+        Signs the current account out of the {provider.name} CLI, then opens the browser to sign in
+        with another account. The CLI keeps one account at a time; until the new sign-in finishes,{" "}
+        {provider.name} models cannot run.
+      </ConfirmDialog>
       {view.action === "install" && (
         <span className={cn("text-dim-foreground", NOTE, "basis-full")}>
           Install the {provider.name} CLI, then sign in here or run{" "}
@@ -174,7 +205,7 @@ function CliSignInControls({
           <code className="font-mono">{signIn.command}</code> in a terminal.
         </Alert>
       )}
-      {error && (
+      {error && !confirming && (
         <Alert tone="error" className="basis-full">
           {error}
         </Alert>
@@ -186,10 +217,12 @@ function CliSignInControls({
 function ProviderRow({
   projectKey,
   provider,
+  canSwitch,
   onChanged,
 }: {
   projectKey: string;
   provider: ProviderStatus;
+  canSwitch: boolean;
   onChanged: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -234,6 +267,7 @@ function ProviderRow({
           projectKey={projectKey}
           provider={provider}
           signIn={provider.signIn}
+          canSwitch={canSwitch}
           onChanged={onChanged}
         />
       )}
@@ -297,12 +331,29 @@ function ProviderRow({
 
 function Providers({ projectKey }: { projectKey: string }) {
   const [providers, reload] = useLoad(() => setup.providers(projectKey), [projectKey]);
+  const [canSwitch, setCanSwitch] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setup.canSwitchAccount(projectKey).then(
+      (yes) => live && setCanSwitch(yes),
+      () => live && setCanSwitch(false),
+    );
+    return () => {
+      live = false;
+    };
+  }, [projectKey]);
   return (
     <section className={STACK} aria-label="Providers">
       {providers.state === "ready" ? (
         <ul className={cn(PANEL, LIST, FLUSH)}>
           {providers.data.providers.map((p) => (
-            <ProviderRow key={p.id} projectKey={projectKey} provider={p} onChanged={reload} />
+            <ProviderRow
+              key={p.id}
+              projectKey={projectKey}
+              provider={p}
+              canSwitch={canSwitch}
+              onChanged={reload}
+            />
           ))}
         </ul>
       ) : (

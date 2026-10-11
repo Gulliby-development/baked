@@ -24,6 +24,7 @@ import {
   isCliLoginProvider,
   logoutCli,
   startCliLogin,
+  switchCliAccount,
 } from "../llm/cli-login.js";
 import { type ModelRouting, ROUTED_ROLES, RouteEffort } from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
@@ -143,7 +144,7 @@ const SkillInstallBody = z.strictObject({
 const SKILL_ITEM = /^\/v1\/skills\/(project|global)\/([^/]+)$/;
 const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
-const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/;
+const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/;
 
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
@@ -451,6 +452,11 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     if (loginMatch[2] === "logout") {
       ctx.only("POST");
       return ctx.json(200, await logoutCli(id));
+    }
+    if (loginMatch[2] === "switch") {
+      ctx.only("POST");
+      const result = await switchCliAccount(id);
+      return ctx.json(result.login ? 202 : 200, result);
     }
     ctx.only("GET", "POST", "DELETE");
     if (method === "POST") return ctx.json(202, { login: startCliLogin(id) });
