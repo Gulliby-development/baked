@@ -16,6 +16,7 @@ import {
 } from "../src/core/chat/sessions.js";
 import { assembleCompacted, splitForCompaction } from "../src/core/compaction/manual.js";
 import { SessionManager } from "../src/core/sessions/manager.js";
+import { renderChatExport } from "../src/core/sessions/export.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 type Part = Record<string, unknown> & { type: string };
@@ -424,10 +425,37 @@ describe("local API chat sessions", () => {
     expect(host.released).toContain(fork.id);
   });
 
+  test("a session exports as Markdown or JSON with the terminal UI's renderer", async () => {
+    const { call, post, detail } = await setup();
+    const session = (await (await post("/v1/sessions", { title: "Router fix", text: "Hello" })).json()) as SessionDetail;
+    const done = await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+
+    const markdown = await call(`/v1/sessions/${session.id}/export`);
+    expect(markdown.status).toBe(200);
+    expect(markdown.headers.get("content-type")).toContain("text/markdown");
+    expect(markdown.headers.get("content-disposition")).toMatch(/^attachment; filename="router-fix-[\d-]+\.md"$/);
+    const text = await markdown.text();
+    expect(text.startsWith("# Router fix\n")).toBe(true);
+    expect(text).toContain("### User");
+    expect(text).toContain("Hello");
+    expect(text).toContain("### Assistant");
+    expect(text).toBe(renderChatExport(done.messages, "markdown", "Router fix"));
+
+    const json = await call(`/v1/sessions/${session.id.slice(0, 8)}/export?format=json`);
+    expect(json.status).toBe(200);
+    expect(json.headers.get("content-disposition")).toMatch(/\.json"$/);
+    expect(((await json.json()) as { content: string }[]).map((m) => m.content)).toEqual(["Hello", "ok"]);
+
+    expect((await call(`/v1/sessions/${session.id}/export?format=pdf`)).status).toBe(400);
+    expect((await call(`/v1/sessions/${session.id}/export`, { method: "POST" })).status).toBe(405);
+    expect((await call("/v1/sessions/missing/export")).status).toBe(404);
+  });
+
   test("undo and redo rewind the conversation over the API", async () => {
     const { host, call, post, detail } = await setup();
     const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
     expect(health.capabilities).toContain("chat-undo");
+    expect(health.capabilities).toContain("chat-export");
     const session = (await (await post("/v1/sessions", { text: "One" })).json()) as SessionDetail;
     await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
     await post(`/v1/sessions/${session.id}/messages`, { text: "Two" });

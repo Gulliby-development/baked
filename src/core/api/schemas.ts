@@ -151,6 +151,9 @@ export const PromptAnswerBody = z.union([
   z.strictObject({ action: z.enum(PLAN_ACTIONS), feedback: z.string().max(20_000).optional() }),
 ]);
 export const SessionListQuery = z.strictObject({ limit: z.string().regex(/^\d+$/).optional() });
+export const SessionExportQuery = z.strictObject({
+  format: z.enum(["markdown", "json"]).optional(),
+});
 export const ModelsQuery = z.strictObject({ provider: z.string().min(1).optional() });
 export const MentionsQuery = z.strictObject({
   q: z.string().max(200).optional(),

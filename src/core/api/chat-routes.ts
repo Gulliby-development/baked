@@ -10,6 +10,7 @@ import {
 } from "../chat/images.js";
 import { ChatError, type ChatService } from "../chat/sessions.js";
 import { loadModelCatalog } from "../llm/model-catalog.js";
+import { chatExportFileName, renderChatExport } from "../sessions/export.js";
 import type { RouteContext } from "./route-context.js";
 import {
   CompactBody,
@@ -20,6 +21,7 @@ import {
   ModelsQuery,
   PromptAnswerBody,
   RedoSessionBody,
+  SessionExportQuery,
   SessionListQuery,
   UndoSessionBody,
   UpdateSessionBody,
@@ -31,7 +33,7 @@ export interface ChatRouteContext extends RouteContext {
 
 const ID = "[A-Za-z0-9-]+";
 const SESSION = new RegExp(
-  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|undo|redo)(?:/(${ID}))?)?$`,
+  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|export|undo|redo)(?:/(${ID}))?)?$`,
 );
 
 export function chatErrorStatus(error: ChatError): number {
@@ -117,6 +119,21 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     only("GET");
     if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
     return ctx.json(200, await chat.get(id).diffStats());
+  }
+  if (action === "export") {
+    only("GET");
+    if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
+    const format = ctx.query(SessionExportQuery).format ?? "markdown";
+    const { title, messages } = chat.get(id).detail();
+    const fileName = chatExportFileName(title, format);
+    return new Response(renderChatExport(messages, format, title), {
+      status: 200,
+      headers: {
+        "content-type":
+          format === "json" ? "application/json; charset=utf-8" : "text/markdown; charset=utf-8",
+        "content-disposition": `attachment; filename="${fileName}"`,
+      },
+    });
   }
   only("POST");
   if (action === "prompts") {

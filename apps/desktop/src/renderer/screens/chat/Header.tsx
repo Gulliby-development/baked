@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { DesktopProject } from "../../../shared/api.js";
+import type { ChatExportFormat } from "../../../shared/bridge.js";
 import {
   type ContextFill,
   chat,
@@ -8,8 +9,10 @@ import {
   type SessionSummary,
   type Usage,
 } from "../../client/chat.js";
+import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { Icon } from "../../components/Icon.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
+import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Dot, type DotTone } from "../../components/ui/dot.js";
 import { ago, tokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
@@ -32,29 +35,157 @@ const KV = "flex justify-between gap-3";
 
 const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };
 
+/** Export and Delete for the open chat; each `…Disabled` says why the action cannot run, if it cannot. */
+export interface ChatManageControl {
+  canExport: boolean;
+  deleteDisabled: string | null;
+}
+
 function SessionMenu({
   project,
   title,
   currentId,
+  manage,
 }: {
   project: DesktopProject;
   title: string;
   currentId: string | null;
+  manage?: ChatManageControl | undefined;
 }) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const remove = (): void => {
+    if (currentId === null) return;
+    setDeleting(true);
+    setDeleteError(null);
+    chat.remove(project.key, currentId).then(
+      () => {
+        setDeleting(false);
+        setConfirming(false);
+        chatSessionsChanged();
+        window.location.hash = projectHref(project.key, "chat");
+      },
+      (e: unknown) => {
+        setDeleting(false);
+        setDeleteError(e instanceof Error ? e.message : String(e));
+      },
+    );
+  };
   return (
-    <Popover
-      label="Chats"
-      className={SESSION_TITLE}
-      buttonLabel={`${title}, switch chat`}
-      button={
-        <>
-          <h1 className="m-0 text-[15px] font-bold truncate">{title}</h1>
-          <Icon name="chevron-down" size={12} />
-        </>
-      }
-    >
-      {(close) => <SessionList project={project} currentId={currentId} close={close} />}
-    </Popover>
+    <>
+      <Popover
+        label="Chats"
+        className={SESSION_TITLE}
+        buttonLabel={`${title}, switch chat`}
+        button={
+          <>
+            <h1 className="m-0 text-[15px] font-bold truncate">{title}</h1>
+            <Icon name="chevron-down" size={12} />
+          </>
+        }
+      >
+        {(close) => (
+          <>
+            <SessionList project={project} currentId={currentId} close={close} />
+            {manage && currentId !== null && (
+              <ChatActions
+                project={project}
+                sessionId={currentId}
+                manage={manage}
+                onDelete={() => {
+                  close();
+                  setDeleteError(null);
+                  setConfirming(true);
+                }}
+              />
+            )}
+          </>
+        )}
+      </Popover>
+      <ConfirmDialog
+        open={confirming}
+        title="Delete this chat?"
+        confirmLabel="Delete chat"
+        danger
+        busy={deleting}
+        error={deleteError}
+        onConfirm={remove}
+        onClose={() => setConfirming(false)}
+      >
+        “{title}” and its messages are removed from this project. Files the chat edited stay as they
+        are. This cannot be undone; export the chat first to keep a copy.
+      </ConfirmDialog>
+    </>
+  );
+}
+
+const EXPORTS: { format: ChatExportFormat; label: string }[] = [
+  { format: "markdown", label: "Export as Markdown…" },
+  { format: "json", label: "Export as JSON…" },
+];
+
+function ChatActions({
+  project,
+  sessionId,
+  manage,
+  onDelete,
+}: {
+  project: DesktopProject;
+  sessionId: string;
+  manage: ChatManageControl;
+  onDelete: () => void;
+}) {
+  const [note, setNote] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const save = (format: ChatExportFormat): void => {
+    setSaving(true);
+    setNote(null);
+    chat.exportTo(project.key, sessionId, format).then(
+      (path) => {
+        setSaving(false);
+        if (path) setNote(`Saved to ${path}`);
+      },
+      (e: unknown) => {
+        setSaving(false);
+        setNote(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+      },
+    );
+  };
+  return (
+    <div className={`${MENU_LIST} w-[320px] mt-1 pt-1 border-t-2 border-t-border`}>
+      <p className={LABEL} style={{ padding: "6px 4px 2px" }}>
+        This chat
+      </p>
+      {manage.canExport &&
+        EXPORTS.map(({ format, label }) => (
+          <button
+            key={format}
+            type="button"
+            className={MENU_ITEM}
+            disabled={saving}
+            onClick={() => save(format)}
+          >
+            <Icon name="export" size={13} />
+            {label}
+          </button>
+        ))}
+      {note && (
+        <p className={cn(MENU_NOTE, "break-all")} role="status">
+          {note}
+        </p>
+      )}
+      <button
+        type="button"
+        className={cn(MENU_ITEM, "disabled:cursor-default disabled:opacity-50")}
+        disabled={manage.deleteDisabled !== null}
+        title={manage.deleteDisabled ?? undefined}
+        onClick={onDelete}
+      >
+        <Icon name="delete" size={13} />
+        Delete chat…
+      </button>
+    </div>
   );
 }
 
@@ -415,6 +546,7 @@ export function ChatHeader({
   diff,
   compact,
   rewind,
+  manage,
 }: {
   project: DesktopProject;
   title: string;
@@ -427,6 +559,7 @@ export function ChatHeader({
   diff?: SessionDiffStats | null;
   compact?: CompactControl;
   rewind?: RewindControl;
+  manage?: ChatManageControl;
 }) {
   return (
     <header className="flex flex-wrap items-center gap-[10px] px-6 py-[10px] border-b-2 border-b-border bg-background">
@@ -440,7 +573,7 @@ export function ChatHeader({
       <span className="text-[var(--line-strong)]" aria-hidden="true">
         /
       </span>
-      <SessionMenu project={project} title={title} currentId={sessionId} />
+      <SessionMenu project={project} title={title} currentId={sessionId} manage={manage} />
       <div className="ml-auto flex flex-wrap gap-[6px] [@media(max-width:720px)]:ml-0">
         {usage && (
           <ContextChip

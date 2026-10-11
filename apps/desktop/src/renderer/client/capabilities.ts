@@ -33,6 +33,9 @@ export const SKILLS_INSTALL_CAPABILITY = "skills-install";
 /** `GET|PATCH /v1/settings` (the Chat settings pages). */
 export const SETTINGS_CAPABILITY = "settings";
 
+/** `GET /v1/sessions/ID/export` (Export in the chat menu). */
+export const CHAT_EXPORT_CAPABILITY = "chat-export";
+
 /** `/v1/graph*` (the Code graph section). */
 export const CODE_GRAPH_CAPABILITY = "code-graph";
 
