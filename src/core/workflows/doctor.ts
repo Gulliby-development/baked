@@ -7,6 +7,7 @@ import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type PreRunEstimate, readHistory } from "./estimate.js";
 import { commandMayBeRunning, leaseOwnerAlive } from "./leases.js";
+import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
 import { reachableModels } from "./routing.js";
 import { PolicySchema, WorkflowConfigSchema } from "./schemas.js";
@@ -464,6 +465,18 @@ export async function runDoctor(
           fix: "Route review to another model (modelRouting.roles.reviewer or classes.review)",
         });
       checks.push(...commandChecks(workspace, prepared, deps.which));
+      for (const { profileId, grant } of unmatchedMcpGrants(
+        config.mcpServers ?? [],
+        prepared.profiles,
+      ))
+        checks.push({
+          id: "mcp.server",
+          status: "warn",
+          title: `${profileId}: ${grant} names no configured MCP server`,
+          detail: "No enabled server in mcpServers provides it, so the agent never gets it.",
+          fix: "Add the server to mcpServers, enable it, or remove the grant",
+          subject: profileId,
+        });
       try {
         estimate = estimatePrepared(prepared, workflowId, store ? readHistory(store, 0) : []);
       } catch {

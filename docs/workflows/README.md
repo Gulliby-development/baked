@@ -22,6 +22,7 @@ baked doctor                                     # check keys, models, checks an
 | `full` | The SDD pipeline as a v2 definition, with security review, convergence on every criterion and learning |
 | `spike` | Research and a written report; no file changes |
 | `review-only` | Review an existing diff against criteria; no file changes |
+| `fix-ci` | Reproduce failing checks, research the failure, plan, approve, fix and rerun the same checks ([Fix CI](fix-ci.md)) |
 
 `baked workflow definitions` lists them with the project's own definitions from `baked/workflows/`; `baked workflow define ID --from PRESET` copies one to edit.
 
@@ -33,6 +34,7 @@ baked doctor                                     # check keys, models, checks an
 | [Architecture](architecture.md) | The v1 design: components, state machine, invariants, storage, security and recovery |
 | [Workflow v2](v2-design.md) | Definitions as stage graphs, presets, the approval invariant, the gate library and editor, the AI acceptance gate, migration from v1 |
 | [Quick workflow](quick.md) | `baked quick` for small changes |
+| [Fix CI](fix-ci.md) | The `fix-ci` preset for failing checks |
 | [Doctor and estimate](doctor-and-estimate.md) | Checks before a run and the token and cost estimate |
 | [Parallel worktrees](parallel-worktrees.md) | Task worktrees, several writers and the integrator |
 | [Example gate](examples/ai-acceptance-gate.json) | An `ai-acceptance` gate definition |

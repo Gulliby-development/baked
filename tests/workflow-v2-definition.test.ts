@@ -81,11 +81,17 @@ describe("v2 definitions and presets (V2-01, V2-04)", () => {
     const types = (id: string) =>
       instantiatePreset(builtinPresets.get(id) as WorkflowV2, policy).stages.map((s) => s.type);
     expect([...builtinPresets.keys()].sort()).toEqual(
-      ["full", "quick", "quick-fix", "review-only", "spike", "standard"].sort(),
+      ["fix-ci", "full", "quick", "quick-fix", "review-only", "spike", "standard"].sort(),
     );
     for (const preset of builtinPresets.values())
       expect(validateWorkflowV2(instantiatePreset(preset, policy), library)).toEqual([]);
     expect(types("quick-fix")).toEqual(["agent", "approval", "tasks", "check"]);
+    // Fix CI reproduces with the same checks it verifies with.
+    expect(types("fix-ci")).toEqual(["check", "agent", "agent", "approval", "tasks", "check"]);
+    const fixCi = instantiatePreset(builtinPresets.get("fix-ci") as WorkflowV2, policy);
+    const gatesOf = (id: string) =>
+      (fixCi.stages.find((s) => s.id === id) as Stage & { gates: { gateId: string }[] }).gates;
+    expect(gatesOf("reproduce")).toEqual(gatesOf("verify"));
     expect(types("quick")).toEqual(["agent", "approval", "tasks", "check", "review"]);
     expect(builtinPresets.get("quick")?.publish).toBe(false);
     expect(builtinPresets.get("standard")?.stages.map((s) => s.id)).toEqual([
@@ -329,7 +335,7 @@ describe("definitions on disk", () => {
     expect(() => loadDefinition(root, "missing", policy)).toThrow("Unknown workflow");
     const listed = listDefinitions(root, policy);
     expect(listed.map((d) => d.id)).toEqual([
-      "sdd", "quick", "quick-fix", "standard", "full", "spike", "review-only", "bad", "legacy", "mine",
+      "sdd", "quick", "quick-fix", "standard", "full", "spike", "review-only", "fix-ci", "bad", "legacy", "mine",
     ]);
     expect(listed.filter((d) => d.problems.length).map((d) => d.id)).toEqual(["bad"]);
     expect(listed.find((d) => d.id === "spike")?.writes).toBe(false);
