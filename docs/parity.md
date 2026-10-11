@@ -51,7 +51,7 @@ bun test tests/feature-parity.test.ts
 | List custom commands | `/commands` | Not needed: scripts read .baked/commands directly | `/v1/commands` | `settings/commands` |
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) |
-| Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `--json` | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) |
+| Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) | **Gap** [#405](https://github.com/Gulliby-development/baked/issues/405) |
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
@@ -138,11 +138,11 @@ bun test tests/feature-parity.test.ts
 | Local API server, health and capabilities | Not needed: the TUI runs the core in process | `baked serve` | `/v1/health` | `projects` |
 | Prerequisite check and first-run wizard | `/setup`, `/wizard` | `baked self-check`, `--wizard` | `/v1/workflow/doctor` | `project/overview` |
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
-| Git menu: status, diff, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +9 | Not needed: scripts call git | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408): the desktop relies on workflow delivery |
+| Git menu: status, diff, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +9 | Not needed: scripts call git | `/v1/git`, `/v1/git/actions` | `project/git` |
 | Storage cleanup, model events and the error log | `/storage`, `/model-events`, `/errors` | Not needed: scripts read the log files | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
 | Tool and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
-| Telemetry switch | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | `baked telemetry` | `/v1/config` | `settings/telemetry` |
-| Notifications: system and webhook | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | Not needed: scripts read the exit code and output | `/v1/config` | `settings/notifications` |
+| Telemetry switch | `/telemetry` | `baked telemetry` | `/v1/config` | `settings/telemetry` |
+| Notifications: system and webhook | `/notifications` | Not needed: scripts read the exit code and output | `/v1/config` | `settings/notifications` |
 
 ### Terminal interface
 
@@ -161,7 +161,7 @@ bun test tests/feature-parity.test.ts
 - [#402](https://github.com/Gulliby-development/baked/issues/402): MCP servers: list, add, edit, reconnect, tools
 - [#405](https://github.com/Gulliby-development/baked/issues/405): Delete a session; Export a chat (Markdown, JSON, clipboard)
 - [#406](https://github.com/Gulliby-development/baked/issues/406): Instruction files: view and edit content; Instruction files: switch on or off
-- [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Git menu: status, diff, commit, push, pull, branch, stash; Storage cleanup, model events and the error log; Telemetry switch; Notifications: system and webhook
+- [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Storage cleanup, model events and the error log
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 
