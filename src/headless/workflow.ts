@@ -45,6 +45,7 @@ import {
   workflowHelp,
 } from "./workflow-parse.js";
 import { formatDoctor, formatEstimate, preRunRequest } from "./workflow-pre-run.js";
+import { runRoutingCli } from "./workflow-routing.js";
 
 export function workflowExit(
   snapshot: RunSnapshot,
@@ -549,7 +550,9 @@ export async function executeWorkflowCommand(
 export async function runWorkflowCli(argv: string[]): Promise<number> {
   if (
     argv.length === 0 ||
-    (argv[0] !== "initiative" && (argv.includes("--help") || argv.includes("-h")))
+    (argv[0] !== "initiative" &&
+      argv[0] !== "routing" &&
+      (argv.includes("--help") || argv.includes("-h")))
   ) {
     process.stdout.write(workflowHelp);
     return 0;
@@ -575,6 +578,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
         controller.signal,
       );
     }
+    if (argv[0] === "routing") return runRoutingCli(argv.slice(1));
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
     const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
