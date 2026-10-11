@@ -125,7 +125,7 @@ The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/I
 
 ## Workflow runs (exists, gaps filled by B)
 
-Exists: `GET /v1/workflow/definitions`, `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers), `.../usage`, `.../artifacts`, `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend`. Quick tasks are runs started with `workflow: "quick"`.
+Exists: `GET /v1/workflow/definitions`, `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers), `.../usage`, `.../artifacts`, `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. Quick tasks are runs started with `workflow: "quick"`.
 
 B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations.
 
@@ -198,7 +198,7 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | Needs you | `GET /v1/attention` (stream) of every open project; answers go to the owning run, initiative or session |
 | Chat session | `/v1/sessions/*`, `GET /v1/models`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
 | Quick task, New run | `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET /v1/workflow/definitions`, `POST /v1/workflow/runs` |
-| Workflow run, Parallel writers | `GET /v1/workflow/runs/RUN_ID` and its events, artifacts, usage; approve, reject, answer, pause, resume, extend |
+| Workflow run, Parallel writers | `GET /v1/workflow/runs/RUN_ID` and its events, artifacts, usage; approve, reject, answer, pause, resume, extend, reroute (the Model panel) |
 | AI acceptance gate | run snapshot requests and artifacts; `evidence` for manual criteria; resume to re-run |
 | Delivery (in Needs you) | `deliver`, `approve`, `deliver/execute` |
 | Initiatives | `/v1/initiatives/*` |

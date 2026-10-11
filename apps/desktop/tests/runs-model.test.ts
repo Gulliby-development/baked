@@ -64,6 +64,16 @@ describe("event replay", () => {
     expect(trace.activity.map((a) => a.text)).toContain("Plan finished");
   });
 
+  test("a model switch shows in the activity and refetches the run", () => {
+    const switched = ev("run.rerouted", {
+      artifactId: "a1",
+      runModel: { from: "openai/gpt-6-luna", to: "codex/gpt-6-luna" },
+      changes: [{ target: "profile implementer", from: "openai/gpt-6-luna", to: "codex/gpt-6-luna" }],
+    });
+    expect(replay([switched]).activity.map((a) => a.text)).toEqual(["Switched to codex/gpt-6-luna (was openai/gpt-6-luna)"]);
+    expect(refetchFor([switched]).status).toBe(true);
+  });
+
   test("running tasks take the lowest free writer slot and integrate when done", () => {
     const trace = replay([
       task("T001", "running"),

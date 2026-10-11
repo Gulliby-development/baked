@@ -301,3 +301,68 @@ export function reachableModels(
   for (const model of required.keys()) optional.delete(model);
   return { required, optional };
 }
+
+export interface RerouteRequest {
+  /** The new run model; omitted, the run keeps its run model. */
+  model?: string | undefined;
+  /** Stage routes for the rest of the run, as `--route` at start. */
+  routes?: Record<string, string> | undefined;
+}
+
+/** One route a reroute changes: `stage ID` or `profile ID`, with its model before and after. */
+export interface RouteChange {
+  target: string;
+  from: string;
+  to: string;
+}
+
+const ROUTE_OVERRIDE = "route override ";
+
+/**
+ * The routing record a stopped run continues with. Routes resolve again through the current
+ * `modelRouting` and `modelFallback` with the new run model, so everything that followed the old
+ * run model follows the new one. Stage routes given at start stay, except that one naming the old
+ * run model moves to the new one; `request.routes` replaces them stage by stage. Only the run's
+ * own profiles are kept; one that no longer resolves keeps its entry, moved like a start route.
+ */
+export function rerouteRecord(
+  workspace: string,
+  config: AppConfig,
+  previous: RoutingRecord,
+  workflowId: string,
+  stageIds: string[],
+  profileIds: string[],
+  request: RerouteRequest,
+): RoutingRecord {
+  const model = request.model?.trim() || previous.runModel;
+  const moved = (id: string): string => (id === previous.runModel ? model : id);
+  const carried: Record<string, string> = {};
+  for (const [stageId, entry] of Object.entries(previous.stages))
+    if (entry.source.startsWith(ROUTE_OVERRIDE)) carried[stageId] = moved(entry.model);
+  const overrides = { ...carried, ...request.routes };
+  const registry = routedProfiles(workspace, config, model);
+  const fresh = routingRecord(config, registry, model, workflowId, stageIds, overrides);
+  const profiles: RoutingRecord["profiles"] = {};
+  for (const id of profileIds) {
+    const entry = fresh.profiles[id] ?? previous.profiles[id];
+    if (entry) profiles[id] = fresh.profiles[id] ? entry : { ...entry, model: moved(entry.model) };
+  }
+  return { schemaVersion: 1, runModel: model, profiles, stages: fresh.stages };
+}
+
+/** The stage and profile routes whose model or fallback chain differ between two records. */
+export function routeChanges(before: RoutingRecord, after: RoutingRecord): RouteChange[] {
+  const chain = (entry: RoutingEntry | undefined): string =>
+    entry ? [entry.model, ...(entry.fallback ?? [])].join(" > ") : "(profile model)";
+  const changes: RouteChange[] = [];
+  for (const [kind, a, b] of [
+    ["stage", before.stages, after.stages],
+    ["profile", before.profiles, after.profiles],
+  ] as const)
+    for (const id of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+      const from = chain(a[id]);
+      const to = chain(b[id]);
+      if (from !== to) changes.push({ target: `${kind} ${id}`, from, to });
+    }
+  return changes;
+}

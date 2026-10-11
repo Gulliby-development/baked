@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { RunSnapshot } from "../../../shared/api.js";
+import { chat } from "../../client/chat.js";
 import { errorText, type RollbackReport, undoRun } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
 import { tokens, usd } from "../../format.js";
@@ -226,6 +227,124 @@ function Budget({
   );
 }
 
+/** Statuses in which nothing executes the run, so its models can change. */
+const STOPPED = new Set(["created", "paused", "blocked", "waiting"]);
+
+/**
+ * The run model, and a switch to another one for a run that is not executing: completed stages
+ * and tasks stay, the next agent calls use the new model, and a blocked or paused run resumes.
+ */
+function Models({
+  projectKey,
+  data,
+  onDone,
+}: {
+  projectKey: string;
+  data: RunData;
+  onDone: () => Promise<void>;
+}) {
+  const run = data.status;
+  const routing = data.artifacts.routing;
+  const [model, setModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const stopped = STOPPED.has(run.status);
+  useEffect(() => {
+    if (!stopped) return;
+    let live = true;
+    chat.models(projectKey).then(
+      (result) =>
+        live &&
+        setModels(
+          result.providers.filter((p) => p.configured).flatMap((p) => p.models.map((m) => m.id)),
+        ),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [projectKey, stopped]);
+  if (!routing) return null;
+  const routed = Object.entries(routing.stages);
+  const providerStop =
+    run.status === "blocked" &&
+    (run.reason === "provider_account" || run.reason === "provider_unavailable");
+  const reroute = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await workflow.reroute(projectKey, run, { model: model.trim() });
+      if (next.status === "blocked" || next.status === "paused")
+        await workflow.resume(projectKey, next);
+      setModel("");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+      await onDone();
+    }
+  };
+  return (
+    <Panel title="Model">
+      <p className="small">
+        Run model <span className="mono">{routing.runModel}</span>
+      </p>
+      {routed.length > 0 && (
+        <ul className="small sub-text">
+          {routed.map(([stage, entry]) => (
+            <li key={stage}>
+              {stage}: <span className="mono">{entry.model}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {stopped && (
+        <form
+          className="stack-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (model.trim()) void reroute();
+          }}
+        >
+          {providerStop && (
+            <p className="warn-text small">
+              The provider stopped this run. Switch it to another model to continue; completed work
+              stays.
+            </p>
+          )}
+          <label htmlFor="reroute-model" className="field-label">
+            Switch to model
+          </label>
+          <input
+            id="reroute-model"
+            type="text"
+            list="reroute-models"
+            value={model}
+            placeholder="provider/model"
+            onChange={(e) => setModel(e.target.value)}
+          />
+          <datalist id="reroute-models">
+            {models.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          {error && <div className="banner error">{error}</div>}
+          <button
+            type="submit"
+            className="btn"
+            disabled={busy || !model.trim() || model.trim() === routing.runModel}
+          >
+            {run.status === "blocked" || run.status === "paused"
+              ? "Switch and resume"
+              : "Switch model"}
+          </button>
+        </form>
+      )}
+    </Panel>
+  );
+}
+
 function Activity({ trace }: { trace: RunTrace }) {
   const lines = trace.activity.slice(-12).reverse();
   return (
@@ -428,6 +547,7 @@ function RunBody({
         </div>
         <aside className="run-side" aria-label="Run status">
           <Budget projectKey={projectKey} data={data} onDone={refresh} />
+          <Models projectKey={projectKey} data={data} onDone={refresh} />
           <Activity trace={trace} />
         </aside>
       </div>

@@ -227,6 +227,18 @@ export async function executeWorkflowCommand(
       onDrive?.(runId);
       return service.drive(runId, signal);
     }
+    case "reroute": {
+      const rerouted = await service.reroute(runId, identity(), {
+        ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
+        ...(typeof args.flags.route === "string"
+          ? { routes: parseRouteOverrides(args.flags.route) }
+          : {}),
+      });
+      if (args.flags.resume !== true) return rerouted;
+      await service.resume(runId, { commandId: newId(), expectedRevision: rerouted.revision });
+      onDrive?.(runId);
+      return service.drive(runId, signal);
+    }
     case "revise": {
       const revised = await service.revise(runId, identity(), stringFlag(args, "candidate"));
       if (args.flags.resume !== true) return revised;
@@ -521,7 +533,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     await Promise.all(streams);
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
     return ["run", "quick", "resume"].includes(args.command) ||
-      (["revise", "extend"].includes(args.command) && args.flags.resume === true)
+      (["revise", "extend", "reroute"].includes(args.command) && args.flags.resume === true)
       ? workflowExit(
           result as RunSnapshot,
           PolicySchema.parse(

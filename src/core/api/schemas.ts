@@ -45,6 +45,16 @@ export const ExtendBody = Command.extend({
   timeMs: PositiveInt.optional(),
 }).strict();
 
+/** A new run model and/or stage routes (stage ID to model or `$class`), as `workflow reroute`. */
+export const RerouteBody = Command.extend({
+  model: z.string().min(1).optional(),
+  routes: z.record(SafeId, z.string().min(1)).optional(),
+})
+  .strict()
+  .refine((body) => body.model || Object.keys(body.routes ?? {}).length, {
+    message: "Name a model or stage routes",
+  });
+
 /** `doctor` and `estimate`: the run inputs that change a start; the API uses the configured policy. */
 export const PreRunQuery = z.strictObject({
   workflow: SafeId.optional(),

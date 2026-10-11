@@ -59,9 +59,11 @@ export class FixtureExecutor implements AgentExecutor {
   }
 }
 
-export function workflowFixture(options: { policy?: RunPolicy; tokensPerCall?: number | ((output: string) => number) } = {}) {
+export function workflowFixture<E extends FixtureExecutor = FixtureExecutor>(
+  options: { policy?: RunPolicy; tokensPerCall?: number | ((output: string) => number); executor?: (root: string) => E } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
-  const executor = new FixtureExecutor(root, options.tokensPerCall);
+  const executor = options.executor ? options.executor(root) : (new FixtureExecutor(root, options.tokensPerCall) as E);
   const policy = options.policy ?? fixturePolicy;
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);

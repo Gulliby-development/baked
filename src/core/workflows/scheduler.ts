@@ -222,6 +222,8 @@ export class WorkflowScheduler {
     this.checks = new CheckRunner(store, this.processes);
   }
   async drive(runId: string, outerSignal: AbortSignal): Promise<void> {
+    // A reroute between drives writes a new routing revision; read it again.
+    this.routing.delete(runId);
     const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
     // A worktree run holds the lease of its worktree; the project working copy stays free.
     this.mutation =
@@ -1162,9 +1164,11 @@ export class WorkflowScheduler {
     if (!routing) return { models: [profile.model] };
     const stage = this.store.rootStage(runId, stepId);
     const staged = stage ? routing.stages[stage] : undefined;
-    const entry = staged ?? routing.profiles[profile.id];
+    const own = routing.profiles[profile.id];
+    const entry = staged ?? own;
+    // The frozen profile keeps its start model; a reroute changes only the record.
     return {
-      models: [staged?.model ?? profile.model, ...(entry?.fallback ?? [])],
+      models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
       ...(entry?.effort ? { effort: entry.effort } : {}),
     };
   }
@@ -1364,7 +1368,7 @@ export class WorkflowScheduler {
       if (refusal && !signal.aborted)
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}. ${error instanceof Error ? error.message : String(error)}`,
+          `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
           { reason: "provider_account" },
         );
       const next = route.models[fallbackIndex + 1];

@@ -827,6 +827,12 @@ function localeValidation(): MockRun {
     events: log.events,
     artifacts: [
       artifact(runId, 4, "estimates/start.json", "estimate", estimate(600_000, 300_000, 520_000)),
+      artifact(runId, 5, "routing.json", "routing", {
+        schemaVersion: 1,
+        runModel: "claude-sonnet-5-5",
+        profiles: {},
+        stages: { review: { model: "gpt-5.1", source: "route override review" } },
+      }),
     ],
     requests: [],
     usage: usage(
@@ -996,6 +1002,27 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
     case "cancel":
       setStatus(run, "cancelled");
       break;
+    case "reroute": {
+      if (run.status === "running" || ENDED.includes(run.status))
+        return conflict("WORKSPACE_BUSY", "Pause the run before switching its models");
+      const model = (body as { model?: string }).model;
+      const found = run.artifacts.find((a) => a.entry.path === "routing.json");
+      if (!model || !found) break;
+      const record = JSON.parse(found.content) as { runModel: string };
+      const next = artifact(run.runId, run.artifacts.length + 1, "routing.json", "routing", {
+        ...record,
+        runModel: model,
+      });
+      next.entry.revision = found.entry.revision + 1;
+      run.artifacts.push(next);
+      append(run, "run.rerouted", {
+        artifactId: next.entry.id,
+        runModel: { from: record.runModel, to: model },
+        changes: [],
+      });
+      run.revision += 1;
+      break;
+    }
     case "extend":
       if (run.status !== "blocked" || run.reason !== "budget_exhausted")
         return response(409, {

@@ -12,7 +12,15 @@ import type { RunSummary, StartRunInput, WorkflowInfo, WorkflowView } from "../w
 import { workerPath } from "./path.js";
 import { WorkerClient } from "./rpc.js";
 
-export type WorkflowAction = "resume" | "pause" | "cancel" | "fork" | "extend" | Decision;
+/** `reroute` moves a stopped run to another run model and continues it in one decision. */
+export type WorkflowAction =
+  | "resume"
+  | "pause"
+  | "cancel"
+  | "fork"
+  | "extend"
+  | { reroute: string }
+  | Decision;
 /** The run after an undo, and the `workspace-rollback` report it wrote; null when nothing was undone. */
 export interface UndoResult {
   snapshot: RunSnapshot;
@@ -147,6 +155,7 @@ export class WorkflowClient extends WorkerClient {
     configuredChecks: (id: string) => this.views.get(id)?.configuredChecks ?? [],
     findings: (id: string) => this.views.get(id)?.findings ?? [],
     requests: (id: string) => this.views.get(id)?.requests ?? [],
+    runModel: (id: string) => this.views.get(id)?.runModel ?? null,
   };
   async command(
     argv: string[],
