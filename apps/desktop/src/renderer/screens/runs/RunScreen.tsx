@@ -10,6 +10,7 @@ import { GateView } from "./GateView.js";
 import { type RunData, useRun } from "./load.js";
 import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
 import { Meter, Panel, StatusPill } from "./parts.js";
+import { ReportView } from "./ReportView.js";
 import {
   ChangesView,
   ChecksView,
@@ -34,6 +35,7 @@ const TABS = [
   "checks",
   "criteria",
   "findings",
+  "report",
 ] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABEL: Record<Tab, string> = {
@@ -46,6 +48,7 @@ const TAB_LABEL: Record<Tab, string> = {
   checks: "Checks",
   criteria: "Criteria",
   findings: "Findings",
+  report: "Report",
 };
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -544,6 +547,9 @@ function RunBody({
             <GateView projectKey={projectKey} data={data} trace={trace} onDone={refresh} />
           )}
           {tab === "findings" && <FindingsView data={data} trace={trace} />}
+          {tab === "report" && (
+            <ReportView projectKey={projectKey} runId={run.runId} stamp={run.eventSeq} />
+          )}
         </div>
         <aside className="run-side" aria-label="Run status">
           <Budget projectKey={projectKey} data={data} onDone={refresh} />

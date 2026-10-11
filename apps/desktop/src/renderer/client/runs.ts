@@ -123,6 +123,10 @@ export const runs = {
       )
     ).content,
   usage: (key: string, runId: string) => call<RunUsage>(key, "GET", runPath(runId, "usage")),
+  /** `GET /v1/workflow/runs/:id/report`: the run report in Markdown (src/core/workflows/run-report.ts). */
+  report: async (key: string, runId: string): Promise<string> =>
+    (await call<{ runId: string; markdown: string }>(key, "GET", runPath(runId, "report")))
+      .markdown,
   eventsPage: (key: string, runId: string, after: number, limit = EVENT_PAGE) =>
     call<{ events: WorkflowEvent[]; lastSeq: number }>(
       key,

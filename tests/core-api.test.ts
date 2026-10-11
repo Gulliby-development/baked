@@ -264,6 +264,9 @@ describe("local core API", () => {
     if (!first) throw new Error("No artifact");
     const content = (await (await call(`/v1/workflow/runs/${run.runId}/artifacts?file=${first.id}`)).json()) as { content: string };
     expect(typeof content.content).toBe("string");
+    const report = (await (await call(`/v1/workflow/runs/${run.runId}/report`)).json()) as { runId: string; markdown: string };
+    expect(report.runId).toBe(run.runId);
+    expect(report.markdown).toContain("## Usage");
     expect(server.port).toBeGreaterThan(0);
   }, 60000);
 

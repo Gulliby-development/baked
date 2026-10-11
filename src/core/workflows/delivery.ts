@@ -28,6 +28,7 @@ import {
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { mutationLeaseFor, WorkspaceLeases } from "./leases.js";
+import { PULL_REQUEST_BODY_LIMIT, runReport } from "./run-report.js";
 import {
   type Decision,
   DeliveryConfigSchema,
@@ -296,39 +297,22 @@ function message(
   ].join("\n");
 }
 
+/** The run report with what this delivery commits; the plan digest covers the exact text. */
 function pullRequestBody(
+  store: WorkflowStore,
   plan: Omit<DeliveryPlan, "pullRequest" | "commitMessage" | "diff">,
-  outcome: string | null,
 ): string {
-  const lines = [
-    "## Summary",
-    "",
-    outcome ?? `Result of BAKED workflow run \`${plan.runId}\`.`,
-    "",
-    "## Acceptance criteria",
-    "",
-    ...(plan.evidence.criteria.length
-      ? plan.evidence.criteria.map((c) => `- ${c.id}: ${c.verdict}`)
-      : ["- none recorded"]),
-    "",
-    "## Checks",
-    "",
-    ...(plan.evidence.checks.length
-      ? plan.evidence.checks.map((c) => `- \`${c.id}\`: ${c.status} (${c.validity})`)
-      : ["- none configured"]),
-    "",
-    `Final review: ${plan.evidence.review ?? "not recorded"}. Open findings: ${plan.evidence.openFindings}.`,
-    "",
-    "## Files",
+  const appendix = [
+    "## Delivery",
     "",
     ...plan.files.map((f) => `- ${f.action} \`${f.path}\``),
     ...(plan.excluded.length
-      ? ["", "Not delivered:", ...plan.excluded.map((e) => `- \`${e.path}\` (${e.reason})`)]
+      ? ["", "Not delivered:", "", ...plan.excluded.map((e) => `- \`${e.path}\` (${e.reason})`)]
       : []),
     "",
     `Run \`${plan.runId}\`, snapshot \`${plan.snapshotId}\`, base \`${plan.base.commit}\`.`,
-  ];
-  return lines.join("\n");
+  ].join("\n");
+  return runReport(store, plan.runId, { maxChars: PULL_REQUEST_BODY_LIMIT, appendix });
 }
 
 export interface PrepareDeliveryOptions {
@@ -593,6 +577,7 @@ export async function prepareDelivery(
     ...(source ? { worktree: source } : {}),
     evidence,
   };
+  const body = pullRequestTarget ? pullRequestBody(store, core) : "";
   return store.transaction(() => {
     if (store.run(runId).revision !== run.revision)
       throw new WorkflowFault("REVISION_CONFLICT", "Run changed while the delivery was prepared");
@@ -620,7 +605,7 @@ export async function prepareDelivery(
             provider: pullRequestTarget.provider.name,
             repository: pullRequestTarget.repository,
             title,
-            body: pullRequestBody(core, outcome),
+            body,
             base: core.base.branch,
             draft: options.draft === true,
           }

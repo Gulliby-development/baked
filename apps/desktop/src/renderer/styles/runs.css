@@ -834,3 +834,16 @@ textarea,
   flex-direction: column;
   gap: 6px;
 }
+
+.report-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.report-head > .lede {
+  flex: 1;
+  margin: 0;
+}

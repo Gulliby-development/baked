@@ -166,8 +166,13 @@ describe("Git delivery", () => {
     expect(prepared.diff).not.toContain("user edit");
     expect(plan.commitMessage).toContain(`Baked-Run: ${s.runId}`);
     expect(plan.pullRequest).toMatchObject({ repository: "acme/widget", base: "main", draft: true });
-    expect(plan.pullRequest?.body).toContain("`check`: passed");
-    expect(plan.pullRequest?.body).toContain("AC-001: pass");
+    // The body is the run report with the delivery's files appended.
+    expect(plan.pullRequest?.body).toContain("| `check` | passed | current |");
+    expect(plan.pullRequest?.body).toContain("| AC-001 | pass |");
+    expect(plan.pullRequest?.body).toContain("## Usage");
+    expect(plan.pullRequest?.body).toContain("## Delivery\n\n- add `specs/fixture/plan.md`");
+    expect(plan.pullRequest?.body).toContain("- add `value.txt`");
+    expect(plan.pullRequest?.body.trimEnd().endsWith(`base \`${headBefore}\`.`)).toBe(true);
     const request = s.fx.service.store.requests(s.runId).find((r) => r.id === prepared.requestId);
     expect(request).toMatchObject({ kind: "delivery", status: "pending", digest: prepared.digest });
 
