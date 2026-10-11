@@ -8,31 +8,47 @@ import type { Task } from "./types.js";
 
 /**
  * Plan-time sizing. Once the plan names the tasks and the files they write, each task is priced
- * per written file by the kind of file: tests cost far more than code, and the size of a file says
- * little about the size of its change. The rates are the tokens earlier tasks of the same kind
- * spent per file to get done, their corrective tasks included. The price sets each task's attempt
- * cap, raises the run budget up to the ceiling the policy allows, and decides when a plan is too
- * large and must be split.
+ * per written file by the kind of file (code, test or docs) and by whether the task creates or
+ * modifies it: tests cost far more than code, a README cost more than a code file, and editing
+ * existing code cost more than writing new code. The size of a file says little about the size of
+ * its change. The rates are the tokens earlier tasks of the same kind spent per file to get done,
+ * their corrective tasks included, taken from this project's own runs first: rates carried over
+ * from another project were off in both directions. The price sets each task's attempt cap, raises
+ * the run budget up to the ceiling the policy allows, and decides when a plan is too large and
+ * must be split.
  */
 
-export type FileKind = "code" | "test";
+export type FileKind = "code" | "test" | "docs";
 export type TaskKind = FileKind | "mixed";
+export type WriteAction = "create" | "modify";
+export const WRITE_ACTIONS: readonly WriteAction[] = ["create", "modify"];
 
 /** One finished task of history: what it took to get done and what kind of files it wrote. */
 export interface SizingSample {
   runId: string;
   taskId: string;
   kind: TaskKind;
+  /** Whether the task created or modified its files; mixed when it did both. */
+  action: WriteAction | "mixed";
+  /** This project's own store, or a store the policy names in `historyStores`. */
+  source: "project" | "shared";
   files: number;
   /** Tokens of the task's attempts and of the corrective tasks that wrote the same files. */
   tokens: number;
 }
 
-/** Tokens per written file when history has no task of the kind; measured on this project. */
-export const DEFAULT_PER_FILE: Record<FileKind, TokenRange> = {
-  code: { low: 30_000, high: 100_000 },
-  test: { low: 150_000, high: 350_000 },
+/**
+ * Tokens per written file when history has no task of the kind. They are wide on purpose: they
+ * must hold for any provider and model, and a cap that is too low costs a failed attempt while one
+ * that is too high costs nothing that is not spent.
+ */
+export const DEFAULT_PER_FILE: Record<FileKind, Record<WriteAction, TokenRange>> = {
+  code: { create: { low: 30_000, high: 100_000 }, modify: { low: 40_000, high: 130_000 } },
+  test: { create: { low: 60_000, high: 350_000 }, modify: { low: 150_000, high: 350_000 } },
+  docs: { create: { low: 40_000, high: 250_000 }, modify: { low: 60_000, high: 250_000 } },
 };
+/** This project's own samples of a kind and action needed before other projects' are left out. */
+export const MIN_PROJECT_SAMPLES = 2;
 /** Steps of a test task attempt when the policy names none; test tasks ran out at 20. */
 export const DEFAULT_TEST_TASK_STEPS = 32;
 /** Without a configured ceiling, a task attempt may grow to this. */
@@ -41,14 +57,33 @@ export const DEFAULT_MAX_SIZED_ATTEMPT = 600_000;
 const VERIFICATION_FACTOR = 1.5;
 
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/i;
-export const fileKind = (path: string): FileKind => (TEST_PATH.test(path) ? "test" : "code");
+const DOCS_EXTENSION = /\.(md|mdx|markdown|rst|adoc)$/i;
+const DOCS_DIR = /(^|\/)docs?\//i;
+const SOURCE = /\.[cm]?[jt]sx?$/i;
+/** Documentation by extension anywhere, or a non-source file under `docs/`; then tests; else code. */
+export const fileKind = (path: string): FileKind =>
+  DOCS_EXTENSION.test(path) || (DOCS_DIR.test(path) && !SOURCE.test(path))
+    ? "docs"
+    : TEST_PATH.test(path)
+      ? "test"
+      : "code";
 
+type Written = { path: string; action: WriteAction };
+function written(task: Pick<Task, "writes">): Written[] {
+  return task.writes.flatMap((w) =>
+    w.action === "delete" ? [] : [{ path: w.path, action: w.action }],
+  );
+}
 function writtenFiles(task: Pick<Task, "writes">): string[] {
-  return task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+  return written(task).map((w) => w.path);
 }
 export function taskKind(task: Pick<Task, "writes">): TaskKind {
   const kinds = new Set(writtenFiles(task).map(fileKind));
   return kinds.size === 1 ? ([...kinds][0] as FileKind) : "mixed";
+}
+function taskAction(task: Pick<Task, "writes">): SizingSample["action"] {
+  const actions = new Set(written(task).map((w) => w.action));
+  return actions.size === 1 ? ([...actions][0] as WriteAction) : "mixed";
 }
 
 /**
@@ -56,7 +91,10 @@ export function taskKind(task: Pick<Task, "writes">): TaskKind {
  * tokens join the planned task of the same run that writes the same files, because getting that
  * task done took both.
  */
-export function samplesFrom(databasePath: string): SizingSample[] {
+export function samplesFrom(
+  databasePath: string,
+  source: SizingSample["source"] = "project",
+): SizingSample[] {
   if (!existsSync(databasePath)) return [];
   let db: Database | null = null;
   try {
@@ -101,7 +139,15 @@ export function samplesFrom(databasePath: string): SizingSample[] {
         const files = writtenFiles(task).length;
         const tokens = totals.get(task.id) ?? 0;
         if (files > 0 && tokens > 0)
-          samples.push({ runId: id, taskId: task.id, kind: taskKind(task), files, tokens });
+          samples.push({
+            runId: id,
+            taskId: task.id,
+            kind: taskKind(task),
+            action: taskAction(task),
+            source,
+            files,
+            tokens,
+          });
       }
     }
     return samples;
@@ -112,17 +158,18 @@ export function samplesFrom(databasePath: string): SizingSample[] {
   }
 }
 
-/** History from this run's own store and the extra stores the policy names, without duplicates. */
+/**
+ * History from this run's own store (this project) and the extra stores the policy names, without
+ * duplicates; a run found in both counts as this project's.
+ */
 export function sizingHistory(workspace: string, policy: RunPolicy): SizingSample[] {
-  const stores = [
-    join(workspace, ".baked", "workflows.sqlite"),
-    ...(policy.sizing?.historyStores ?? []).map((path) =>
-      path.endsWith(".sqlite") ? path : join(path, ".baked", "workflows.sqlite"),
-    ),
-  ];
+  const own = join(workspace, ".baked", "workflows.sqlite");
+  const shared = (policy.sizing?.historyStores ?? [])
+    .map((path) => (path.endsWith(".sqlite") ? path : join(path, ".baked", "workflows.sqlite")))
+    .filter((path) => path !== own);
   const seen = new Set<string>();
-  return stores
-    .flatMap((path) => samplesFrom(path))
+  return [samplesFrom(own, "project"), ...shared.map((path) => samplesFrom(path, "shared"))]
+    .flat()
     .filter((sample) => {
       const key = `${sample.runId}/${sample.taskId}`;
       return !seen.has(key) && seen.add(key);
@@ -132,20 +179,52 @@ export function sizingHistory(workspace: string, policy: RunPolicy): SizingSampl
 export interface KindRate {
   perFile: TokenRange;
   samples: number;
-  basis: "history" | "defaults";
+  /**
+   * `project`: this project's own tasks of the kind and action. `history`: too few of those, so
+   * other projects' tasks and tasks that both created and modified count too, and the upper bound
+   * is at least the default's. `defaults`: no task of the kind.
+   */
+  basis: "project" | "history" | "defaults";
+}
+export type Rates = Record<FileKind, Record<WriteAction, KindRate>>;
+
+/**
+ * Tokens per written file of each kind and action, from tasks that wrote only files of that kind.
+ * This project's tasks that only created (or only modified) such files decide alone once there are
+ * enough of them. Otherwise every task of the kind counts, from any store and with either action,
+ * since a rate from elsewhere is a guess: it keeps at least the default upper bound, so a task it
+ * underprices still gets the default's room.
+ */
+export function perFileRates(samples: SizingSample[]): Rates {
+  const perFile = (list: SizingSample[]) => rangeOf(list.map((s) => s.tokens / s.files));
+  const rate = (kind: FileKind, action: WriteAction): KindRate => {
+    const fallback = DEFAULT_PER_FILE[kind][action];
+    const ofKind = samples.filter((sample) => sample.kind === kind);
+    const exact = ofKind.filter((sample) => sample.action === action);
+    const project = exact.filter((sample) => sample.source === "project");
+    const own = project.length >= MIN_PROJECT_SAMPLES ? perFile(project) : null;
+    if (own) return { perFile: own, samples: project.length, basis: "project" };
+    const pool = exact.length ? exact : ofKind;
+    const range = perFile(pool);
+    return range
+      ? {
+          perFile: { low: range.low, high: Math.max(range.high, fallback.high) },
+          samples: pool.length,
+          basis: "history",
+        }
+      : { perFile: fallback, samples: 0, basis: "defaults" };
+  };
+  const byAction = (kind: FileKind) =>
+    Object.fromEntries(WRITE_ACTIONS.map((action) => [action, rate(kind, action)])) as Record<
+      WriteAction,
+      KindRate
+    >;
+  return { code: byAction("code"), test: byAction("test"), docs: byAction("docs") };
 }
 
-/** Tokens per written file of each kind, from tasks that wrote only files of that kind. */
-export function perFileRates(samples: SizingSample[]): Record<FileKind, KindRate> {
-  const rate = (kind: FileKind): KindRate => {
-    const own = samples.filter((sample) => sample.kind === kind);
-    const range = rangeOf(own.map((sample) => sample.tokens / sample.files));
-    return range
-      ? { perFile: range, samples: own.length, basis: "history" }
-      : { perFile: DEFAULT_PER_FILE[kind], samples: 0, basis: "defaults" };
-  };
-  return { code: rate("code"), test: rate("test") };
-}
+/** The highest per-file price of a kind, over creating and modifying. */
+const highest = (rates: Rates, kind: FileKind): number =>
+  Math.max(...WRITE_ACTIONS.map((action) => rates[kind][action].perFile.high));
 
 export interface TaskSize {
   taskId: string;
@@ -162,8 +241,8 @@ export interface TaskSize {
 }
 
 export interface SizingReport {
-  schemaVersion: 2;
-  rates: Record<FileKind, KindRate>;
+  schemaVersion: 3;
+  rates: Rates;
   tasks: TaskSize[];
   /** Tokens the run is expected to need in total, from what it spent so far. */
   runTokens: number;
@@ -175,14 +254,11 @@ export interface SizingReport {
   reasons: string[];
 }
 
-/** One task's price: the per-file rate of each file it writes, summed. */
-export function priceTask(
-  task: Pick<Task, "writes">,
-  rates: Record<FileKind, KindRate>,
-): TokenRange {
-  return writtenFiles(task).reduce(
-    (total, path) => {
-      const rate = rates[fileKind(path)].perFile;
+/** One task's price: the per-file rate of each file it writes, by its kind and action, summed. */
+export function priceTask(task: Pick<Task, "writes">, rates: Rates): TokenRange {
+  return written(task).reduce(
+    (total, { path, action }) => {
+      const rate = rates[fileKind(path)][action].perFile;
       return { low: total.low + rate.low, high: total.high + rate.high };
     },
     { low: 0, high: 0 },
@@ -248,7 +324,7 @@ export function sizePlan(input: {
     reasons.push(`The run budget grows from ${budgetBefore} to ${budgetAfter} tokens`);
   }
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     rates,
     tasks,
     runTokens,
@@ -268,14 +344,13 @@ export function plannerSizing(
 ): { maxCodeFilesPerTask: number; note: string } {
   const rates = perFileRates(samples);
   const maxAttemptTokens = policy.sizing?.maxAttemptTokens ?? DEFAULT_MAX_SIZED_ATTEMPT;
-  const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / rates.code.perFile.high));
+  const maxCodeFilesPerTask = Math.max(1, Math.floor(maxAttemptTokens / highest(rates, "code")));
+  const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${Math.round(rates.test.perFile.high / 1000)}k tokens, a code file about ${Math.round(rates.code.perFile.high / 1000)}k. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own: a test file costs about ${k("test")} tokens, a code file about ${k("code")}, a documentation file about ${k("docs")}. Keep each code task to at most ${maxCodeFilesPerTask} files. Give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel and are merged afterwards; a test task depends on the code tasks whose criteria it covers. A test task above one attempt is split into one task per test file.`,
   };
 }
-
-const SOURCE = /\.[cm]?[jt]sx?$/i;
 
 /**
  * The policy's task-scope typecheck check: the one named `typecheck`, else one that runs
@@ -336,6 +411,56 @@ export function codeTaskCheckProblems(graph: TaskGraph, policy: RunPolicy): stri
       (task) =>
         `Task ${task.id} writes source code but its checkIds do not name the policy check ${id}; add it so its type errors show in that task.`,
     );
+}
+
+/**
+ * Splits each oversized test task into one task per test file, so the plan needs no second round
+ * for it: test files rarely depend on each other, and a planner told to split a test task did not
+ * (expenses-py-r4). The first file keeps the task's ID and the others get new ones; every part
+ * keeps the task's criteria, checks and dependencies, and a task that depended on it depends on
+ * every part. Returns null when no test task is oversized.
+ */
+export function splitTestTasks(graph: TaskGraph, report: SizingReport): TaskGraph | null {
+  const oversized = new Set(
+    report.tasks.filter((task) => task.oversized && task.kind === "test").map((t) => t.taskId),
+  );
+  if (!oversized.size) return null;
+  let next = Math.max(...graph.tasks.map((task) => Number(task.id.slice(1)))) + 1;
+  const parts = new Map<string, string[]>();
+  const tasks = graph.tasks.flatMap((task) => {
+    if (!oversized.has(task.id)) return [task];
+    const files = task.writes.filter((write) => write.action !== "delete");
+    const deletes = task.writes.filter((write) => write.action === "delete");
+    const split = files.map((write, index) => {
+      const id = index === 0 ? task.id : `T${String(next++).padStart(3, "0")}`;
+      const siblings = files.filter((other) => other !== write).map((other) => other.path);
+      return {
+        ...task,
+        id,
+        writes: index === 0 ? [write, ...deletes] : [write],
+        description: `${task.description}\nSizing split this task by file: write only ${write.path}; ${siblings.join(", ")} belong to the other parts of ${task.id}.`,
+      };
+    });
+    parts.set(
+      task.id,
+      split.map((part) => part.id),
+    );
+    return split;
+  });
+  return {
+    ...graph,
+    tasks: tasks.map((task) => ({
+      ...task,
+      dependsOn: [
+        ...new Set(
+          task.dependsOn.flatMap((id) => {
+            const split = parts.get(id);
+            return split && !split.includes(task.id) ? split : [id];
+          }),
+        ),
+      ],
+    })),
+  };
 }
 
 /** The note that sends an oversized plan back to the planner once. */

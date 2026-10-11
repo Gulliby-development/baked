@@ -1,7 +1,12 @@
 import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { decodePasteBytes, type PasteEvent, TextAttributes } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useRenderer } from "@opentui/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MentionSuggestion,
+  mentionAtCursor,
+  suggestMentions,
+} from "../../core/chat/mention-suggest.js";
 import { getCommandDefs, isCustomSlashInput, isDefHidden } from "../../core/commands/registry.js";
 import { getCwd } from "../../core/cwd.js";
 import { type FuzzyMatch, fuzzyFilter, fuzzyMatch } from "../../core/history/fuzzy.js";
@@ -14,6 +19,8 @@ import {
 } from "../../core/history/index.js";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
+import type { IntelligenceClient } from "../../core/workers/intelligence-client.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { logBackgroundError } from "../../stores/errors.js";
 import { useUIStore } from "../../stores/ui.js";
 import type { ImageAttachment } from "../../types/index.js";
@@ -39,6 +46,8 @@ interface Props {
   /** When set, the user is browsing a past checkpoint — show a rewind hint. */
   viewingCheckpoint?: number | null;
   tabId: string;
+  /** The repository graph for `@` symbol completions, when it is ready. */
+  getRepoMap?: () => IntelligenceClient | undefined;
 }
 
 function getCommands(): Array<{ cmd: string; icon: string; desc: string }> {
@@ -84,6 +93,47 @@ const HighlightedText = memo(function HighlightedText({
   );
 });
 
+/** The `@` completion list, scrolled so the selected row stays visible. */
+const MentionList = memo(function MentionList({
+  results,
+  selected,
+  maxVisible,
+}: {
+  results: MentionSuggestion[];
+  selected: number;
+  maxVisible: number;
+}) {
+  const t = useTheme();
+  const first = Math.max(0, Math.min(selected - maxVisible + 1, results.length - maxVisible));
+  const visible = results.slice(first, first + maxVisible);
+  return (
+    <box flexDirection="column">
+      {visible.map((r, i) => {
+        const isSelected = first + i === selected;
+        return (
+          <box key={`${r.kind}:${r.insert}`} gap={1} paddingX={1} height={1} flexDirection="row">
+            <text fg={isSelected ? t.info : t.textFaint}>{isSelected ? "›" : " "}</text>
+            <text fg={r.kind === "symbol" ? t.brandSecondary : t.textDim}>
+              {r.kind === "symbol" ? "ƒ" : r.kind === "directory" ? "▸" : "·"}
+            </text>
+            <HighlightedText text={r.label} indices={r.indices} />
+            <text fg={isSelected ? t.textSecondary : t.textDim} truncate>
+              {r.kind === "symbol" ? r.detail : ""}
+            </text>
+          </box>
+        );
+      })}
+      {results.length > maxVisible && (
+        <box paddingX={1} height={1}>
+          <text fg={t.textDim}>
+            {selected + 1}/{String(results.length)} · Tab insert · Esc close
+          </text>
+        </box>
+      )}
+    </box>
+  );
+});
+
 /** Override textarea defaults: Enter=submit, Shift+Enter=newline */
 const INPUT_KEY_BINDINGS = [
   { name: "return", action: "submit" as const },
@@ -117,6 +167,7 @@ export const InputBox = memo(function InputBox({
   widthPct,
   onCycleTab,
   viewingCheckpoint,
+  getRepoMap,
 }: Props) {
   const [value, setValue] = useState("");
   const valueRef = useRef(value);
@@ -332,6 +383,53 @@ export const InputBox = memo(function InputBox({
     hasMatchesForNav && matches[selectedIdx]?.cmd.startsWith(commandToken)
       ? matches[selectedIdx].cmd.slice(value.length)
       : "";
+
+  // ── `@` mention completion: files, directories and symbols ──
+  const mentionToken =
+    !value.startsWith("/") && focused && !fuzzyMode && historyIdx.current === -1
+      ? mentionAtCursor(value)
+      : null;
+  const mentionQuery = mentionToken?.query ?? null;
+  const [mentionResults, setMentionResults] = useState<MentionSuggestion[]>([]);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState<string | null>(null);
+  const mentionReq = useRef(0);
+  useEffect(() => {
+    if (mentionQuery === null) {
+      setMentionResults([]);
+      return;
+    }
+    const req = ++mentionReq.current;
+    const timer = setTimeout(() => {
+      suggestMentions(mentionQuery, {
+        cwd: cwd ?? getCwd(),
+        repoMap: getRepoMap?.(),
+        limit: 30,
+      })
+        .then((results) => {
+          if (req !== mentionReq.current) return;
+          setMentionResults(results);
+          setMentionIdx(0);
+        })
+        .catch((err) => logBackgroundError("mentions", toErrorMessage(err)));
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [mentionQuery, cwd, getRepoMap]);
+  const showMentions =
+    mentionToken !== null && mentionResults.length > 0 && mentionDismissed !== value;
+
+  const acceptMention = useCallback(() => {
+    const pick = mentionResults[mentionIdx];
+    if (!pick || !mentionToken) return;
+    const target = /\s/.test(pick.insert) ? `"${pick.insert}"` : pick.insert;
+    const next = `${value.slice(0, mentionToken.start)}@${target}${pick.kind === "directory" ? "" : " "}`;
+    isNavigatingHistory.current = true;
+    setValue(next);
+    textareaRef.current?.setText(next);
+    textareaRef.current?.gotoBufferEnd();
+    lineCountRef.current = (next.match(/\n/g)?.length ?? 0) + 1;
+    setMentionResults([]);
+  }, [mentionResults, mentionIdx, mentionToken, value]);
 
   const maxVisible = Math.min(8, Math.max(4, Math.floor(termRows * 0.25)));
   const acScrollOffset = useRef(0);
@@ -627,6 +725,29 @@ export const InputBox = memo(function InputBox({
       return;
     }
 
+    if (showMentions) {
+      if (evt.name === "down") {
+        setMentionIdx((prev) => (prev + 1) % mentionResults.length);
+        evt.preventDefault();
+        return;
+      }
+      if (evt.name === "up") {
+        setMentionIdx((prev) => (prev > 0 ? prev - 1 : mentionResults.length - 1));
+        evt.preventDefault();
+        return;
+      }
+      if (evt.name === "tab" || (evt.name === "return" && !evt.shift && !evt.ctrl && !evt.meta)) {
+        acceptMention();
+        evt.preventDefault();
+        return;
+      }
+      if (evt.name === "escape") {
+        setMentionDismissed(valueRef.current);
+        evt.preventDefault();
+        return;
+      }
+    }
+
     if (hasMatchesForNav) {
       if (evt.name === "down") {
         setSelectedIdx((prev) => (prev + 1) % matches.length);
@@ -823,7 +944,7 @@ export const InputBox = memo(function InputBox({
 
   const fuzzyMaxVisible = Math.min(8, Math.max(3, Math.floor(termRows * 0.2)));
 
-  const dropdownVisible = hasMatches || (fuzzyMode && fuzzyResults.length > 0);
+  const dropdownVisible = hasMatches || showMentions || (fuzzyMode && fuzzyResults.length > 0);
   useEffect(() => {
     onDropdownChange?.(dropdownVisible);
     return () => onDropdownChange?.(false);
@@ -849,15 +970,18 @@ export const InputBox = memo(function InputBox({
 
   // Border color per state
   const slashMode = value.startsWith("/") && focused;
+  const shellMode = value.trimStart().startsWith("!") && focused;
   const borderColor = fuzzyMode
     ? t.warning
     : slashMode
       ? t.borderSlash
-      : showBusy
-        ? t.brandDim
-        : focused
-          ? t.borderFocused
-          : t.border;
+      : shellMode
+        ? t.warning
+        : showBusy
+          ? t.brandDim
+          : focused
+            ? t.borderFocused
+            : t.border;
 
   const lines = value.split("\n");
   const isMultiline = lines.length > 1;
@@ -908,6 +1032,27 @@ export const InputBox = memo(function InputBox({
                     </text>
                   </box>
                 )}
+              </box>
+            </box>
+          </box>
+        )}
+
+        {/* ── `@` mention completions (floating overlay) ── */}
+        {showMentions && (
+          <box position="absolute" bottom="100%" width="100%" zIndex={10}>
+            <box
+              flexDirection="column"
+              borderStyle="rounded"
+              border={true}
+              borderColor={t.info}
+              width="100%"
+            >
+              <box flexDirection="column" backgroundColor={t.bgInput}>
+                <MentionList
+                  results={mentionResults}
+                  selected={mentionIdx}
+                  maxVisible={maxVisible}
+                />
               </box>
             </box>
           </box>

@@ -50,12 +50,17 @@ function ensureDir(): void {
   }
 }
 
-/** Record a newly spawned LSP process — append-only so main+worker don't race */
+/**
+ * Record a newly spawned LSP process — append-only so main+worker don't race.
+ * The entry names the BAKED process that owns it, so a reaper in another
+ * BAKED process (a second `baked serve`, another terminal) leaves it alone
+ * while that owner is alive.
+ */
 export function trackLspPid(pid: number): void {
   activePids.add(pid);
   try {
     ensureDir();
-    appendFileSync(PID_LOG, `+${String(pid)}\n`, "utf-8");
+    appendFileSync(PID_LOG, `+${String(pid)}:${String(process.pid)}\n`, "utf-8");
   } catch {}
 }
 
@@ -67,22 +72,39 @@ export function untrackLspPid(pid: number): void {
   } catch {}
 }
 
-/** Read the PID log and compute the set of still-alive tracked PIDs */
-function readLoggedPids(): Set<number> {
-  const alive = new Set<number>();
+/**
+ * Read the PID log: every tracked PID not yet untracked, mapped to the PID of
+ * the BAKED process that spawned it (0 for entries written before owners were
+ * logged).
+ */
+export function readLoggedPids(): Map<number, number> {
+  const tracked = new Map<number, number>();
   try {
-    if (!existsSync(PID_LOG)) return alive;
+    if (!existsSync(PID_LOG)) return tracked;
     const raw = readFileSync(PID_LOG, "utf-8");
     for (const line of raw.split("\n")) {
       if (!line) continue;
       const op = line[0];
-      const pid = Number.parseInt(line.slice(1), 10);
+      const [pidText, ownerText] = line.slice(1).split(":");
+      const pid = Number.parseInt(pidText ?? "", 10);
       if (!Number.isFinite(pid) || pid <= 0) continue;
-      if (op === "+") alive.add(pid);
-      else if (op === "-") alive.delete(pid);
+      if (op === "+") {
+        const owner = Number.parseInt(ownerText ?? "", 10);
+        tracked.set(pid, Number.isFinite(owner) && owner > 0 ? owner : 0);
+      } else if (op === "-") tracked.delete(pid);
     }
   } catch {}
-  return alive;
+  return tracked;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 /**
@@ -231,17 +253,24 @@ export function reapOrphanedLspProcesses(): number {
   const myUser = safeUser();
   const myPid = process.pid;
 
-  // Layer 1: drain the PID log. Kill anything we previously tracked
-  // that we don't still own in-memory.
-  const logged = readLoggedPids();
-  for (const pid of logged) {
+  // Layer 1: drain the PID log. Kill anything we previously tracked that we
+  // don't still own in-memory, unless another BAKED process that is still
+  // running owns it (each project in the desktop app runs its own
+  // `baked serve`). Entries with no owner predate owner logging.
+  const tracked = readLoggedPids();
+  const logged = new Set<number>();
+  const keep = new Map<number, number>();
+  for (const [pid, owner] of tracked) {
     if (activePids.has(pid)) continue;
-    if (pid === myPid) continue;
-    try {
-      process.kill(pid, 0);
-    } catch {
+    if (owner !== 0 && owner !== myPid && processAlive(owner)) {
+      keep.set(pid, owner);
       continue;
     }
+    logged.add(pid);
+  }
+  for (const pid of logged) {
+    if (pid === myPid) continue;
+    if (!processAlive(pid)) continue;
     if (!pidLooksLikeLsp(pid)) continue;
     if (killTree(pid)) killed++;
   }
@@ -263,25 +292,23 @@ export function reapOrphanedLspProcesses(): number {
     }
   }
   for (const pid of orphaned) {
-    if (activePids.has(pid)) continue;
+    if (activePids.has(pid) || keep.has(pid)) continue;
     if (killTree(pid)) killed++;
   }
 
-  // Truncate the log — we've handled every pre-existing entry. PIDs this
-  // session has appended for its own active children are still tracked
-  // in the in-memory activePids Set, so future untrack/kill still works.
+  // Rewrite the log: every pre-existing entry of a dead owner is handled.
+  // Keep the entries of live BAKED processes and re-log the PIDs this
+  // process still owns, so a later reap from any process knows about them.
   try {
-    if (existsSync(PID_LOG)) unlinkSync(PID_LOG);
-  } catch {}
-  // Re-log the PIDs we still own so a subsequent reap from another process
-  // still knows about them.
-  if (activePids.size > 0) {
-    try {
+    const payload = [
+      ...[...keep].map(([pid, owner]) => `+${String(pid)}:${String(owner)}\n`),
+      ...[...activePids].map((pid) => `+${String(pid)}:${String(myPid)}\n`),
+    ].join("");
+    if (payload) {
       ensureDir();
-      const payload = [...activePids].map((p) => `+${String(p)}\n`).join("");
-      appendFileSync(PID_LOG, payload, "utf-8");
-    } catch {}
-  }
+      writeFileSync(PID_LOG, payload, "utf-8");
+    } else if (existsSync(PID_LOG)) unlinkSync(PID_LOG);
+  } catch {}
 
   return killed;
 }
@@ -334,11 +361,8 @@ export function killAllLspSync(): void {
   // System scan catches LSPs spawned by the worker thread (separate
   // module scope → separate activePids Set we can't reach directly)
   // plus grandchildren that outlived their wrapper.
+  // The reap also rewrites the log down to entries of other live BAKED processes.
   try {
     reapOrphanedLspProcesses();
-  } catch {}
-  // Clear the log — nothing left to reap.
-  try {
-    writeFileSync(PID_LOG, "", "utf-8");
   } catch {}
 }

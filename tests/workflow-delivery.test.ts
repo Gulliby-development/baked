@@ -166,8 +166,13 @@ describe("Git delivery", () => {
     expect(prepared.diff).not.toContain("user edit");
     expect(plan.commitMessage).toContain(`Baked-Run: ${s.runId}`);
     expect(plan.pullRequest).toMatchObject({ repository: "acme/widget", base: "main", draft: true });
-    expect(plan.pullRequest?.body).toContain("`check`: passed");
-    expect(plan.pullRequest?.body).toContain("AC-001: pass");
+    // The body is the run report with the delivery's files appended.
+    expect(plan.pullRequest?.body).toContain("| `check` | passed | current |");
+    expect(plan.pullRequest?.body).toContain("| AC-001 | pass |");
+    expect(plan.pullRequest?.body).toContain("## Usage");
+    expect(plan.pullRequest?.body).toContain("## Delivery\n\n- add `specs/fixture/plan.md`");
+    expect(plan.pullRequest?.body).toContain("- add `value.txt`");
+    expect(plan.pullRequest?.body.trimEnd().endsWith(`base \`${headBefore}\`.`)).toBe(true);
     const request = s.fx.service.store.requests(s.runId).find((r) => r.id === prepared.requestId);
     expect(request).toMatchObject({ kind: "delivery", status: "pending", digest: prepared.digest });
 
@@ -549,5 +554,17 @@ describe("delivery building blocks", () => {
     expect(store.requests("r").map((r) => r.kind)).toEqual(["checkpoint", "delivery"]);
     store.close();
     expect(existsSync(join(root, ".baked", "workflows.sqlite"))).toBe(true);
+  });
+});
+
+describe("Delivery of a run started from an issue", () => {
+  test("the pull request body opens with the line that closes the issue", async () => {
+    const s = await completedRun();
+    const store = s.fx.service.store;
+    const issue = { repository: "acme/widget", number: 7, url: "https://github.com/acme/widget/issues/7", title: "Ready value" };
+    store.saveState(s.runId, { ...store.state(s.runId), issue });
+    expect((await prepare(s)).plan.pullRequest?.body.startsWith("Closes #7\n\n")).toBe(true);
+    store.saveState(s.runId, { ...store.state(s.runId), issue: { ...issue, repository: "acme/tracker" } });
+    expect((await prepare(s)).plan.pullRequest?.body.startsWith("Closes acme/tracker#7\n\n")).toBe(true);
   });
 });

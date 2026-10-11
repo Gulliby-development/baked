@@ -34,6 +34,7 @@
   --fill-warn: #f2c575;
   --fill-err: #ff8e86;
   --fill-info: #eac8a3;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23fff4e5' stroke-width='2'/%3E%3C/svg%3E");
 }
 
 :root[data-theme="light"] {
@@ -69,6 +70,7 @@
   --fill-warn: #f7d38a;
   --fill-err: #ffa69f;
   --fill-info: #f0d4b4;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23302015' stroke-width='2'/%3E%3C/svg%3E");
 }
 
 :root {
@@ -83,6 +85,8 @@
   --shadow-y: 4px;
   --shadow: var(--shadow-x) var(--shadow-y) 0 0 var(--ink);
   --shadow-sm: 2px 2px 0 0 var(--ink);
+  /* The check of a ticked checkbox, drawn on the accent fill in the on-fill colour. */
+  --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5' fill='none' stroke='%23191410' stroke-width='2.2'/%3E%3C/svg%3E");
 }
 
 :root[data-density="compact"] {

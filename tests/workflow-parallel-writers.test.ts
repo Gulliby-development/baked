@@ -78,6 +78,12 @@ class ParallelExecutor implements AgentExecutor {
   hooks: Record<string, (request: ExecutionRequest) => Promise<void> | void> = {};
   /** Content the integrator writes for each conflicting file. */
   resolution: Record<string, string> = {};
+  /** Tasks whose first attempt writes a partial file and stops at its token cap. */
+  capped = new Set<string>();
+  /** Attempts per task whose worker writes a partial file and then dies without a result. */
+  crashes: Record<string, number> = {};
+  /** The earlier edits each implementation was handed. */
+  earlier: { taskId: string; root: string; content: string | null; earlierEdits?: { paths: string[]; patch: string } }[] = [];
   constructor(private workspace: string, private plans: Plan[]) {}
   async execute(request: ExecutionRequest) {
     const root = request.root ?? this.workspace;
@@ -90,7 +96,9 @@ class ParallelExecutor implements AgentExecutor {
       return new FixtureExecutor(root).execute(request);
     const task = request.task;
     if (!task) throw new Error("Implementation without a task");
-    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { extra: { integration?: Record<string, unknown> } };
+    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+      extra: { integration?: Record<string, unknown>; earlierEdits?: { paths: string[]; patch: string } };
+    };
     const guard = new WorkflowToolPolicy(
       service.store, service.leases, request.runId, request.attemptId, request.profile,
       PolicySchema.parse(JSON.parse(service.store.run(request.runId).policy_json)), task, root,
@@ -108,6 +116,26 @@ class ParallelExecutor implements AgentExecutor {
       this.started.push(entry);
       await this.hooks[task.id]?.(request);
       const plan = this.plans.find((p) => p.id === task.id);
+      const first = Object.keys(plan?.files ?? {})[0] ?? "";
+      this.earlier.push({
+        taskId: task.id, root,
+        content: existsSync(join(root, first)) ? readFileSync(join(root, first), "utf8") : null,
+        ...(data.extra.earlierEdits ? { earlierEdits: data.extra.earlierEdits } : {}),
+      });
+      if ((this.crashes[task.id] ?? 0) > 0) {
+        this.crashes[task.id] = (this.crashes[task.id] ?? 0) - 1;
+        await write(first, "partial");
+        throw new Error("worker process exited");
+      }
+      if (this.capped.delete(task.id)) {
+        await write(first, "partial");
+        service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
+        return {
+          output: { schemaVersion: 1, taskId: task.id, outcome: "blocked", summary: "Ran out of tokens", evidenceIds: [], unresolved: [`${first} is only partly written`] },
+          inputTokens: 25,
+          outputTokens: 25,
+        };
+      }
       for (const [path, content] of Object.entries(plan?.files ?? {})) await write(path, content);
       entry.end = performance.now();
     }
@@ -217,6 +245,25 @@ describe("workflow parallel writers", () => {
     expect(fx.store.leases()).toEqual([]);
   });
 
+  test("a task capped after editing continues in a new worktree with its earlier edits", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.capped.add("T001");
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(fx.lastError(run.runId)).toBe("");
+    expect(done.status).toBe("completed");
+    const attempts = fx.executor.earlier.filter((e) => e.taskId === "T001");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]?.content).toBeNull();
+    // The continuing attempt finds the partial file in its new worktree and is told about it.
+    expect(attempts[1]?.content).toBe("partial");
+    expect(attempts[1]?.earlierEdits?.paths).toEqual(["a.txt"]);
+    expect(attempts[1]?.earlierEdits?.patch).toContain("+partial");
+    expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
+    expect(fx.store.state(run.runId).taskCarry).toEqual({});
+    expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+  });
+
   test("tasks that would create the same directory are serialized into batches", async () => {
     const fx = setup([{ id: "T001", files: { "lib/a.txt": "A" } }, { id: "T002", files: { "lib/b.txt": "B" } }, { id: "T003", files: { "c.txt": "C" } }], { "lib/a.txt": "A", "lib/b.txt": "B", "c.txt": "C" });
     const run = await fx.start(3);
@@ -282,6 +329,44 @@ describe("workflow parallel writers", () => {
     expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
     expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
     expect(fx.store.leases()).toEqual([]);
+  });
+
+  test("a task whose worker dies is restarted once with its edits and the run completes", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.crashes = { T002: 1 };
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
+    // The restarted attempt starts from the run worktree with the dead worker's edit applied.
+    const restarted = fx.executor.earlier.filter((e) => e.taskId === "T002").at(-1);
+    expect(restarted?.content).toBe("partial");
+    expect(restarted?.earlierEdits?.paths).toEqual(["b.txt"]);
+    const record = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/restarts/T002.json");
+    expect(record).toBeDefined();
+    const restart = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as { reason: string; carriedPaths: string[] };
+    expect(restart.reason).toContain("worker process exited");
+    expect(restart.carriedPaths).toEqual(["b.txt"]);
+    expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
+    expect(fx.store.leases()).toEqual([]);
+  });
+
+  test("a task whose worker dies again after its restart blocks the run with owner_lost", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.crashes = { T002: 2 };
+    const run = await fx.start(2);
+    const stopped = await fx.complete(run.runId);
+    expect(stopped.status).toBe("blocked");
+    expect(stopped.reason).toBe("owner_lost");
+    expect(fx.lastError(run.runId)).toContain("Lost the worker of T002");
+    expect(fx.status("T002", run.runId)).toBe("interrupted");
+    expect(fx.status("T001", run.runId)).toBe("implemented");
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
+    // A person's resume still implements it again.
+    await fx.service.resume(run.runId, { commandId: newId(), expectedRevision: fx.store.run(run.runId).revision });
+    expect((await fx.drive(run.runId)).status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
   });
 
   test("a batch shrinks to the tasks the remaining budget covers", async () => {
@@ -379,6 +464,8 @@ describe("workflow parallel writers", () => {
     expect(parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--worktree", "--writers", "3"]).flags.writers).toBe("3");
     expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--writers", "2"])).toThrow(/requires --worktree/);
     expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--worktree", "--writers", "5"])).toThrow(/from 1 to 4/);
+    expect(parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--clarification", "assume"]).flags.clarification).toBe("assume");
+    expect(() => parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--clarification", "maybe"])).toThrow(/ask or assume/);
   });
 
   test("migration 006 keeps tasks, dependencies and findings and allows the interrupted status", () => {
@@ -400,7 +487,7 @@ describe("workflow parallel writers", () => {
     db.close();
     const store = new WorkflowStore(root);
     try {
-      expect(store.schemaVersion()).toBe(7);
+      expect(store.schemaVersion()).toBe(8);
       expect(store.tasks("r1").map((t) => t.id)).toEqual(["T001", "T002"]);
       expect(store.findings("r1").map((f) => f.repair_task_id)).toEqual(["T002"]);
       store.transaction(() => store.taskStatus("r1", "T002", "interrupted"));

@@ -18,6 +18,9 @@ export function renderSpec(spec: Spec): string {
     "## Out of scope",
     ...spec.outOfScope.map((s) => `- ${s}`),
     "",
+    ...(spec.assumptions.length
+      ? ["## Assumptions", ...spec.assumptions.map((a) => `- ${a}`), ""]
+      : []),
     "## Requirements",
     ...spec.requirements.map((r) => `- ${r.id} [${r.priority}; ${r.verification}] ${r.text}`),
     "",

@@ -7,7 +7,12 @@
  * show "needs a newer BAKED" either way.
  */
 import { ApiError, call } from "./api.js";
-import { CHECKS_CAPABILITY, LIBRARY_CAPABILITY, offers } from "./capabilities.js";
+import {
+  CHECKS_CAPABILITY,
+  LIBRARY_CAPABILITY,
+  offers,
+  ROUTING_CAPABILITY,
+} from "./capabilities.js";
 
 // --- Working set (exists) -----------------------------------------------------------------------
 
@@ -184,6 +189,31 @@ export interface ProviderStatus {
   acceptsKey: boolean;
   source: "env" | "app" | null;
   keyUrl?: string;
+  /** Present for providers that sign in through their own CLI (Claude Code, Codex). */
+  signIn?: CliSignIn;
+}
+
+export type CliLoginState = "running" | "succeeded" | "failed" | "cancelled";
+
+/** A sign-in started through `POST /v1/providers/ID/login`; the CLI keeps the credentials. */
+export interface CliLogin {
+  provider: string;
+  state: CliLoginState;
+  lines: string[];
+  url?: string;
+  error?: string;
+  startedAt: string;
+  endedAt?: string;
+}
+
+export interface CliSignIn {
+  installed: boolean;
+  loggedIn: boolean;
+  message: string;
+  /** The terminal command that does the same sign-in. */
+  command: string;
+  /** The current or last sign-in this backend started, if any. */
+  login: CliLogin | null;
 }
 
 export interface WorkflowDefinition {
@@ -208,6 +238,64 @@ export interface RouteExplanation {
   profiles: Record<string, { model: string; source: string; effort?: string; fallback?: string[] }>;
   warnings: string[];
 }
+
+// --- Model routing (`routing` capability) -----------------------------------------------------
+
+export type RoutingScope = ConfigScope;
+
+/** One place in `modelRouting` that holds a route. */
+export type RoutingTarget =
+  | { kind: "class"; name: string }
+  | { kind: "role"; role: string }
+  | { kind: "profile"; id: string }
+  | { kind: "stage"; workflowId: string; stageId: string };
+
+export interface ResolvedRoute {
+  model: string;
+  source: string;
+  effort?: string | null;
+  fallback?: string[];
+}
+
+export interface RoutingRow {
+  target: RoutingTarget;
+  /** The key under `modelRouting`, such as `roles.reviewer`. */
+  path: string;
+  label: string;
+  global: Route | null;
+  project: Route | null;
+  resolved: ResolvedRoute | null;
+}
+
+/** `GET /v1/workflow/routing`: every editable route with both layers and what a run resolves. */
+export interface RoutingOverview {
+  layers: { global?: ModelRouting; project?: ModelRouting };
+  workflows: string[];
+  workflowId: string | null;
+  runModel: string | null;
+  classes: RoutingRow[];
+  roles: RoutingRow[];
+  stages: RoutingRow[];
+  profiles: RoutingRow[];
+  independentReview: {
+    global: IndependentReview | null;
+    project: IndependentReview | null;
+    effective: IndependentReview;
+  };
+  warnings: string[];
+  error: string | null;
+}
+
+/** A route as the form edits it; `effort: null` leaves it unset. */
+export interface RouteDraft {
+  model: string;
+  effort: Effort | null;
+  fallback: string[];
+}
+
+export type RoutingChange =
+  | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
+  | { independentReview: IndependentReview | null };
 
 // --- Calls --------------------------------------------------------------------------------------
 
@@ -300,15 +388,54 @@ export const setup = {
     ),
   removeProviderKey: (key: string, provider: string) =>
     call<null>(key, "DELETE", `/v1/providers/${json(provider)}/key`),
+  startLogin: (key: string, provider: string) =>
+    call<{ login: CliLogin }>(key, "POST", `/v1/providers/${json(provider)}/login`),
+  login: (key: string, provider: string) =>
+    call<{ login: CliLogin | null }>(key, "GET", `/v1/providers/${json(provider)}/login`),
+  cancelLogin: (key: string, provider: string) =>
+    call<{ login: CliLogin | null }>(key, "DELETE", `/v1/providers/${json(provider)}/login`),
+  logout: (key: string, provider: string) =>
+    call<{ ok: boolean; message: string }>(key, "POST", `/v1/providers/${json(provider)}/logout`),
   definitions: (key: string) => call<WorkflowDefinition[]>(key, "GET", "/v1/workflow/definitions"),
   route: (key: string, workflow: string) =>
     call<RouteExplanation>(key, "GET", `/v1/workflow/route?workflow=${json(workflow)}`),
+  routing: (key: string, workflow: string | null) =>
+    withCapability(key, ROUTING_CAPABILITY, () =>
+      call<RoutingOverview>(
+        key,
+        "GET",
+        `/v1/workflow/routing${workflow ? `?workflow=${json(workflow)}` : ""}`,
+      ),
+    ),
+  /**
+   * Changes one route of a layer. A refused change (an unknown class, a class naming a class, bad
+   * fallback models) fails with 422 `ROUTING_REFUSED` and every problem in `problems`; nothing is
+   * written then.
+   */
+  changeRouting: (
+    key: string,
+    scope: RoutingScope,
+    workflow: string | null,
+    change: RoutingChange,
+  ) =>
+    call<RoutingOverview>(key, "PATCH", "/v1/workflow/routing", {
+      scope,
+      ...(workflow ? { workflow } : {}),
+      ...change,
+    }),
 };
 
 /**
  * True when the backend has no such endpoint: an older `baked serve`. Other 404s, such as a folder
  * that is not a BAKED project yet, are errors the screen shows as they are.
  */
+/** The folder has no baked/project.json: project-only endpoints answer 404 "No project here". */
+export function isNoProject(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 404 && /^No project here/.test(error.message)
+  );
+}
+
 export function isMissingEndpoint(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
   if (error.status === 405) return true;

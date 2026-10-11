@@ -7,10 +7,12 @@ import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type PreRunEstimate, readHistory } from "./estimate.js";
 import { commandMayBeRunning, leaseOwnerAlive } from "./leases.js";
-import { estimatePrepared, type ModelUse, modelsInUse, plannedStages } from "./pre-run.js";
+import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
+import { reachableModels } from "./routing.js";
 import { PolicySchema, WorkflowConfigSchema } from "./schemas.js";
 import { type PreparedStart, prepareStart } from "./start.js";
 import { WorkflowStore } from "./store.js";
+import { loadGateLibrary } from "./v2/library.js";
 
 /**
  * Pre-run diagnostics (`baked workflow doctor`). Run start refusals come from `prepareStart`
@@ -57,6 +59,8 @@ export interface ProviderReadiness {
   ready: boolean;
   /** The environment variable that holds the key, when the provider uses one. */
   envVar?: string;
+  /** The availability probe did not answer in time, which says nothing about credentials. */
+  timedOut?: boolean;
 }
 export interface DoctorDeps {
   providerReady(providerId: string): Promise<ProviderReadiness>;
@@ -67,19 +71,32 @@ export interface DoctorDeps {
 
 const PROBE_TIMEOUT_MS = 5000;
 
+/** Whether a provider can be called now; a probe that does not answer within `timeoutMs` times out. */
+export async function providerReadiness(
+  providerId: string,
+  timeoutMs = PROBE_TIMEOUT_MS,
+): Promise<ProviderReadiness> {
+  const provider = getProvider(providerId);
+  if (!provider) return { known: false, ready: false };
+  // A local provider's availability probe may hang; an unanswered probe is reported, not failed.
+  const answer = provider.checkAvailability
+    ? await Promise.race([
+        provider.checkAvailability().catch(() => false),
+        new Promise<"timeout">((done) => setTimeout(() => done("timeout"), timeoutMs).unref?.()),
+      ])
+    : provider.envVar === "" || Boolean(getProviderApiKey(provider.envVar));
+  if (answer === "timeout")
+    return {
+      known: true,
+      ready: false,
+      timedOut: true,
+      ...(provider.envVar ? { envVar: provider.envVar } : {}),
+    };
+  return { known: true, ready: answer, ...(provider.envVar ? { envVar: provider.envVar } : {}) };
+}
+
 export const defaultDoctorDeps: DoctorDeps = {
-  async providerReady(providerId) {
-    const provider = getProvider(providerId);
-    if (!provider) return { known: false, ready: false };
-    // A local provider's availability probe may hang; an unanswered probe counts as unavailable.
-    const ready = provider.checkAvailability
-      ? await Promise.race([
-          provider.checkAvailability().catch(() => false),
-          new Promise<boolean>((done) => setTimeout(() => done(false), PROBE_TIMEOUT_MS).unref?.()),
-        ])
-      : provider.envVar === "" || Boolean(getProviderApiKey(provider.envVar));
-    return { known: true, ready, ...(provider.envVar ? { envVar: provider.envVar } : {}) };
-  },
+  providerReady: (providerId) => providerReadiness(providerId),
   which(command, cwd) {
     if (command.includes("/") || command.includes("\\")) {
       const path = isAbsolute(command) ? command : resolve(cwd, command);
@@ -100,52 +117,113 @@ export const defaultDoctorDeps: DoctorDeps = {
 
 const providerOf = (model: string): string => {
   const slash = model.indexOf("/");
-  return slash > 0 ? model.slice(0, slash) : "";
+  return slash > 0 && slash < model.length - 1 ? model.slice(0, slash) : "";
 };
 
 /**
- * One line per model: its provider is known and has a key. Shared with the run start's key
- * preflight so both say the same thing.
+ * One line per model: its provider is known and has a key. A provider without credentials fails
+ * for a model the run needs and warns for an `optional` one (a fallback, or a profile the workflow
+ * does not bind). An unknown provider or an unanswered probe only warns: the model fails at its
+ * first call, which `workflow run` leaves to the stage.
  */
 export async function checkModels(
   models: ModelUse[],
   providerReady: DoctorDeps["providerReady"],
+  optional = false,
 ): Promise<DoctorCheck[]> {
-  const checks: DoctorCheck[] = [];
-  for (const { model, usedBy } of models) {
-    const providerId = providerOf(model);
-    const used = `Used by ${usedBy.join(", ")}`;
-    const readiness = providerId ? await providerReady(providerId) : { known: false, ready: false };
-    if (!readiness.known)
-      checks.push({
-        id: "models.provider",
-        status: "fail",
-        title: `Unknown provider for ${model}`,
-        detail: `${used}. Model IDs are provider/model.`,
-        fix: "Route this stage or profile to a model of a configured provider",
-        subject: model,
-      });
-    else if (!readiness.ready)
-      checks.push({
-        id: "models.key",
-        status: "fail",
-        title: `No credentials for ${providerId} (${model})`,
-        detail: used,
-        fix: readiness.envVar
-          ? `baked --set-key ${providerId} KEY, or set ${readiness.envVar}`
-          : `Sign in to ${providerId}`,
-        subject: model,
-      });
-    else
-      checks.push({
+  return Promise.all(
+    models.map(async ({ model, usedBy }): Promise<DoctorCheck> => {
+      const providerId = providerOf(model);
+      const used = `Used by ${usedBy.join(", ")}`;
+      const readiness = providerId
+        ? await providerReady(providerId)
+        : { known: false, ready: false };
+      if (!readiness.known)
+        return {
+          id: "models.provider",
+          status: "warn",
+          title: providerId
+            ? `Unknown provider for ${model}`
+            : `${model} is not a provider/model ID`,
+          detail: `${used}; model IDs are provider/model`,
+          fix: "Route this stage or profile to a model of a configured provider",
+          subject: model,
+        };
+      if (readiness.timedOut)
+        return {
+          id: "models.key",
+          status: "warn",
+          title: `${providerId} did not answer its availability check (${model})`,
+          detail: used,
+          subject: model,
+        };
+      if (!readiness.ready)
+        return {
+          id: "models.key",
+          status: optional ? "warn" : "fail",
+          title: `No credentials for ${providerId} (${model})`,
+          detail: used,
+          fix: readiness.envVar
+            ? `baked --set-key ${providerId} KEY, or set ${readiness.envVar}`
+            : `Sign in to ${providerId}`,
+          subject: model,
+        };
+      return {
         id: "models.key",
         status: "ok",
         title: `${model} is available`,
         detail: used,
         subject: model,
-      });
-  }
-  return checks;
+      };
+    }),
+  );
+}
+
+/**
+ * The model checks of a prepared start: primary models of bound stages and profiles are required,
+ * fallback models and unbound profiles optional. `workflow run` refuses on the failures and records
+ * the warnings, and `workflow doctor` prints the same lines.
+ */
+export async function checkStartModels(
+  workspace: string,
+  prepared: PreparedStart,
+  providerReady: DoctorDeps["providerReady"],
+): Promise<DoctorCheck[]> {
+  return checkRoutingModels(
+    workspace,
+    { ...prepared, definition: prepared.loaded.definition },
+    providerReady,
+  );
+}
+
+/** The model checks of a routing record for a run of `definition`, as `checkStartModels`. */
+export async function checkRoutingModels(
+  workspace: string,
+  run: Pick<PreparedStart, "routing" | "policy" | "profiles"> & {
+    definition: PreparedStart["loaded"]["definition"];
+  },
+  providerReady: DoctorDeps["providerReady"],
+): Promise<DoctorCheck[]> {
+  const { routing, definition, policy, profiles } = run;
+  const { required, optional } = reachableModels(
+    routing,
+    definition,
+    policy,
+    loadGateLibrary(workspace, policy).gates,
+    profiles,
+  );
+  const uses = (models: Map<string, string[]>): ModelUse[] =>
+    [...models].map(([model, usedBy]) => ({ model, usedBy }));
+  const [bound, other] = await Promise.all([
+    checkModels(uses(required), providerReady),
+    checkModels(uses(optional), providerReady, true),
+  ]);
+  return [...bound, ...other];
+}
+
+/** A check as one line of text, for refusals and run warnings. */
+export function checkLine(check: DoctorCheck): string {
+  return [check.title, check.detail, check.fix && `fix: ${check.fix}`].filter(Boolean).join("; ");
 }
 
 function startRequest(config: AppConfig, request: PreRunRequest) {
@@ -368,8 +446,7 @@ export async function runDoctor(
   let estimate: PreRunEstimate | null = null;
   try {
     if (prepared) {
-      const uses = modelsInUse(prepared);
-      checks.push(...(await checkModels(uses, deps.providerReady)));
+      checks.push(...(await checkStartModels(workspace, prepared, deps.providerReady)));
       const stageModels = (type: string) =>
         new Set(
           plannedStages(prepared)

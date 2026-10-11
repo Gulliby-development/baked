@@ -1,4 +1,3 @@
-import { useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import {
@@ -11,6 +10,7 @@ import {
   type GateSuggestion,
 } from "../../core/workflows/gates.js";
 import type { Check } from "../../core/workflows/types.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { Hint } from "../ui/index.js";
 import { formatDuration } from "./format.js";
 

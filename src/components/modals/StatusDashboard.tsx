@@ -1,6 +1,5 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ContextManager } from "../../core/context/manager.js";
 import { icon } from "../../core/icons.js";
@@ -9,6 +8,7 @@ import { getModelContextInfoSync, getShortModelLabel } from "../../core/llm/mode
 import { isAnthropicNative } from "../../core/llm/provider-options.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { UseTabsReturn } from "../../hooks/useTabs.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { useRepoMapStore } from "../../stores/repomap.js";
 import {
   computeModelCost,

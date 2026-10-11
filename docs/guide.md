@@ -69,9 +69,23 @@ Every turn is a checkpoint. `Ctrl+B` and `Ctrl+F` step back and forward; browsin
 | `/checkpoint N`, `/checkpoint live` | View checkpoint N, return to live |
 | `/checkpoint undo [N]` | Undo the last checkpoint, or back to N, including its file edits |
 | `/checkpoint redo` | Redo the last undo |
+| `/checkpoint fork [N] [--force]` | Continue from checkpoint N (the viewed one, or the latest) in a new tab, with the files rolled back to it |
 | `/checkpoint save` | Save the current state as a Git tag |
 
 Checkpoints with file edits are tagged in Git; undo restores only the files those checkpoints edited. Without Git, undo rewinds the conversation only. Each tab has its own checkpoint history.
+
+### Forking a checkpoint
+
+`/checkpoint fork N` opens a new tab with the conversation up to the end of checkpoint N and restores the files the agent edited after it to their state at N; the original tab keeps its whole history. Browse to a checkpoint with `Ctrl+B` and run `/checkpoint fork` to fork the one you are viewing. The working tree is shared, so the rollback is visible to every tab.
+
+The snapshots are Git tags (`baked/cp-*`) of the whole working tree, uncommitted and untracked files included and ignored files left out, made in a temporary index so your index, HEAD and branch do not change. The first message of a tab snapshots the workspace as it was before the conversation, and each checkpoint with edits snapshots it after. Forking never discards work silently:
+
+- Before any file changes, the current working tree is saved to a `baked/fork-backup-*` tag; restore a file with `git restore --source=baked/fork-backup-XXXX -- path`.
+- A file whose current content is in none of the conversation's snapshots (you or another program changed it after the agent did) is left as it is and listed. `--force` restores it too; it is still in the backup tag.
+- Files another tab is editing, files Git ignores, and files outside the project are left as they are and listed.
+- Only files the agent changed with its edit tools are rolled back; changes made through shell commands are not tracked.
+
+Fork needs a Git repository only when there are files to restore. The same fork is `baked session fork` on the command line ([headless CLI](headless.md#forking-a-session)) and "Fork from here" in the desktop chat.
 
 ## Sessions
 
@@ -108,6 +122,24 @@ Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instr
 ## Custom commands
 
 Markdown files in `.baked/commands/` and `~/.baked/commands/` become slash commands: `fix-ci.md` is `/fix-ci`. See [custom commands](custom-commands.md).
+
+## Mentions and shell commands in the input
+
+`@` in the chat input opens a fuzzy list of the project's files, folders and, when the repository graph is ready, symbols. `Up`/`Down` choose, `Tab` or `Enter` inserts, `Esc` closes the list. When the message is sent, each mention attaches context for the model; the message shows as typed, with one line per mention under it:
+
+| Mention | Attaches |
+| --- | --- |
+| `@src/auth.ts` | The file (up to 2000 lines or 100 KB) |
+| `@src/auth.ts#10-40` | Lines 10 to 40 of the file |
+| `@src/auth/` | The folder listing |
+| `@"docs/my notes.md"` | A path with spaces |
+| `@AuthService`, `@AuthService.login` | The definition from the repository graph with its call sites and importers |
+
+A mention that names nothing (an e-mail address, `@types/node`) stays plain text. Files outside the project and files matching the [forbidden patterns](configuration.md) are not attached; the line under the message says why. `@` inside inline code or a code block is literal.
+
+A message that starts with `!` runs the rest of its first line as a shell command in the project folder, for example `!git log -5`. Its output (up to 20 000 characters) goes into the context, and the first lines show under the message. Lines after the command are the question for the model: `!bun test` then `why does this fail?` on the next line. A bare `!command` sends the output with a short note, so the agent comments on it. The command goes through the same rules as the agent's `shell` tool: it does not run in `plan` or `architect` mode, `PreToolUse`/`PostToolUse` hooks for `shell` apply, forbidden paths are refused, and a destructive command (`rm -rf`, `git reset --hard`, ...) asks for approval in default mode and runs unasked in auto mode. When the command does not run and the message has nothing else, no turn starts. `Ctrl+X` stops a running command.
+
+A message with `@` or `!` typed while the agent works waits for the turn to end instead of steering it, so it is expanded like a new message.
 
 ## Web search
 

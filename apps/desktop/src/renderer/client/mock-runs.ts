@@ -827,6 +827,12 @@ function localeValidation(): MockRun {
     events: log.events,
     artifacts: [
       artifact(runId, 4, "estimates/start.json", "estimate", estimate(600_000, 300_000, 520_000)),
+      artifact(runId, 5, "routing.json", "routing", {
+        schemaVersion: 1,
+        runModel: "claude-sonnet-5-5",
+        profiles: {},
+        stages: { review: { model: "gpt-5.1", source: "route override review" } },
+      }),
     ],
     requests: [],
     usage: usage(
@@ -975,9 +981,48 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
     case "pause":
       setStatus(run, "paused", "user_pause");
       break;
+    case "undo": {
+      if (run.status === "created" || run.status === "running")
+        return conflict("RUN_ACTIVE", "Undo needs a run that is not executing; pause it first");
+      // The first undo restores the sample edits; later ones find nothing left to undo.
+      if (run.artifacts.some((a) => a.entry.kind === "workspace-rollback")) break;
+      run.artifacts.push(
+        artifact(run.runId, run.artifacts.length + 1, "rollbacks/undo.json", "workspace-rollback", {
+          reason: "undo",
+          effectIds: ["eff-1", "eff-2", "eff-3"],
+          restored: [
+            { path: "src/core/workflows/usage.ts", from: DIGEST, to: DIGEST, keptAs: null },
+            { path: "tests/usage-totals.test.ts", from: DIGEST, to: null, keptAs: null },
+          ],
+          kept: [{ path: "src/headless/report.ts", reason: "changed after the run wrote it" }],
+        }),
+      );
+      break;
+    }
     case "cancel":
       setStatus(run, "cancelled");
       break;
+    case "reroute": {
+      if (run.status === "running" || ENDED.includes(run.status))
+        return conflict("WORKSPACE_BUSY", "Pause the run before switching its models");
+      const model = (body as { model?: string }).model;
+      const found = run.artifacts.find((a) => a.entry.path === "routing.json");
+      if (!model || !found) break;
+      const record = JSON.parse(found.content) as { runModel: string };
+      const next = artifact(run.runId, run.artifacts.length + 1, "routing.json", "routing", {
+        ...record,
+        runModel: model,
+      });
+      next.entry.revision = found.entry.revision + 1;
+      run.artifacts.push(next);
+      append(run, "run.rerouted", {
+        artifactId: next.entry.id,
+        runModel: { from: record.runModel, to: model },
+        changes: [],
+      });
+      run.revision += 1;
+      break;
+    }
     case "extend":
       if (run.status !== "blocked" || run.reason !== "budget_exhausted")
         return response(409, {
@@ -992,6 +1037,28 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
       return undefined;
   }
   return response(200, snapshot(run));
+}
+
+/** A short stand-in for `runReport` (src/core/workflows/run-report.ts). */
+function mockReport(run: MockRun): string {
+  return [
+    `# ${run.featureId}`,
+    "",
+    `Run \`${run.runId}\` · status **${run.status}**`,
+    "",
+    "## Usage",
+    "",
+    `${run.tokenUsage.toLocaleString("en-US")} tokens.`,
+    "",
+    "| Stage | Attempts | Tokens |",
+    "| --- | --- | --- |",
+    ...run.usage.stages.map((s) => `| ${s.stage} | ${s.attempts} | ${s.tokens} |`),
+    "",
+    "## Artifacts",
+    "",
+    ...run.artifacts.map((a) => `- \`${a.entry.path}\` (${a.entry.kind})`),
+    "",
+  ].join("\n");
 }
 
 const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
@@ -1018,6 +1085,8 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
       return response<RunDetailStatus>(200, { ...snapshot(run), requests: run.requests });
     case "usage":
       return response(200, run.usage);
+    case "report":
+      return response(200, { runId: run.runId, markdown: mockReport(run) });
     case "artifacts": {
       const file = query.get("file");
       if (!file)

@@ -1,5 +1,5 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useState } from "react";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { PremiumPopup, Search, Section, VSpacer } from "../ui/index.js";
 import { fitPopupWidth } from "../ui/popup-geometry.js";
 

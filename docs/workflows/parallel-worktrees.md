@@ -47,7 +47,7 @@ Implemented; see [several writers](runtime.md#several-writers). Deviations: no s
 - Task checks run in the task's worktree; a semaphore limits concurrent heavy checks.
 - Integration is sequential, in topological order: a task's changes are applied to the run branch, then feature checks run. A file change outside the task's `writes` rejects its result, as today.
 - Budget: tokens are reserved for the whole batch before it starts; when they are short, the batch shrinks.
-- Recovery: every worktree has its own lease and fencing epoch; a lost worker moves only its own task to `interrupted`.
+- Recovery: every worktree has its own lease and fencing epoch; a lost worker moves only its own task to `interrupted`, and a task whose worker failed while its lease stayed with the run is restarted once with the edits the worker left before the run blocks with `owner_lost`.
 
 ### Phase 3. Conflicts and overlapping writes (done)
 

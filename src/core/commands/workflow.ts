@@ -26,6 +26,11 @@ const isSnapshot = (value: unknown): value is RunSnapshot =>
   "status" in value &&
   "featureId" in value;
 
+const isReport = (value: unknown): value is { runId: string; markdown: string } =>
+  !!value && typeof value === "object" && "markdown" in value && typeof value.markdown === "string";
+const isWrittenReport = (value: unknown): value is { runId: string; path: string; bytes: number } =>
+  !!value && typeof value === "object" && "path" in value && "bytes" in value && "runId" in value;
+
 /** Short chat summary; the panel carries the details. Unknown result shapes stay as JSON. */
 export function formatWorkflowResult(result: unknown): string {
   if (isSnapshot(result)) {
@@ -35,6 +40,8 @@ export function formatWorkflowResult(result: unknown): string {
       : "";
     return `Workflow ${result.featureId}: ${result.status}${reason}.${waiting}\nRun ${result.runId} · /workflow opens the panel.`;
   }
+  if (isReport(result)) return result.markdown;
+  if (isWrittenReport(result)) return `Run report written to ${result.path}.`;
   return JSON.stringify(result, null, 2);
 }
 const SHORT_HELP = `
@@ -43,6 +50,8 @@ const SHORT_HELP = `
 /workflow quick [text] The same form on the quick workflow for a small task
 /workflow gates      Add, edit, remove and try the checks every run uses
 /workflow edit ID    Edit a workflow definition: stages, transitions and their gates
+/workflow routing    Which model runs each class, role, stage and profile (modelRouting)
+/workflow report ID  The run's report in Markdown (--output FILE writes it)
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
 
 /** The definition a quick task starts with in this project. */
@@ -63,6 +72,11 @@ export function register(map: Map<string, CommandHandler>): void {
     }
     if (tokens[0] === "gates") {
       ui.showGates();
+      useUIStore.getState().openModal("workflow");
+      return;
+    }
+    if (tokens[0] === "routing") {
+      ui.showRouting();
       useUIStore.getState().openModal("workflow");
       return;
     }
@@ -99,7 +113,7 @@ export function register(map: Map<string, CommandHandler>): void {
       useWorkflowStore.getState().select(runId, ctx.tabMgr.activeTabId);
       useUIStore.getState().openModal("workflow");
     });
-    if (result && typeof result === "object" && "runId" in result) {
+    if (args.command !== "report" && result && typeof result === "object" && "runId" in result) {
       useWorkflowStore.getState().select(String(result.runId), ctx.tabMgr.activeTabId);
       useUIStore.getState().openModal("workflow");
     }

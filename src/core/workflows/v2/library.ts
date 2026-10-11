@@ -62,6 +62,7 @@ export function checkToGate(check: Check): CommandGateDefinition {
       cwd: check.cwd,
       envNames: check.envNames,
       writes: check.writes,
+      ...(check.fix ? { fix: check.fix } : {}),
     },
   };
 }
@@ -78,6 +79,7 @@ export function gateToCheck(gate: CommandGateDefinition, binding?: GateBinding):
     scope: gate.scope === "task" ? "task" : "feature",
     envNames: gate.command.envNames,
     writes: gate.command.writes,
+    ...(gate.command.fix ? { fix: gate.command.fix } : {}),
   };
 }
 

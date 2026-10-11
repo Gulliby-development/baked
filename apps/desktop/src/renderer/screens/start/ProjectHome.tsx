@@ -3,7 +3,8 @@ import type { VariantProps } from "class-variance-authority";
 import { type ReactNode, useState } from "react";
 import type { AttentionItem, RunSnapshot, RunState } from "../../../shared/api.js";
 import { attentionHash, attentionId } from "../../../shared/attention.js";
-import { ApiError, api } from "../../client/api.js";
+import { api } from "../../client/api.js";
+import { isNoProject } from "../../client/setup.js";
 import { type ProjectSummary, start } from "../../client/start.js";
 import { Badge, type badgeVariants } from "../../components/ui/badge.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
@@ -62,9 +63,6 @@ const ATTENTION_TEXT: Record<string, [string, string]> = {
 
 const kb = (bytes: number): string =>
   bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024).toLocaleString("en-US")} KB`;
-
-const noProject = (error: unknown): boolean =>
-  error instanceof ApiError && error.status === 404 && /No project here/.test(error.message);
 
 function TaskBox({ projectKey }: { projectKey: string }) {
   const [text, setText] = useState("");
@@ -376,7 +374,7 @@ export function ProjectHome({ project }: SectionProps) {
             <section className="card start-panel">
               <h2 className="label">Project</h2>
               <p className="start-note">
-                {noProject(summary.error)
+                {isNoProject(summary.error)
                   ? "This folder has no baked/project.json, so it has no working set or project sessions. Run baked project init in the folder to create one."
                   : message(summary.error)}
               </p>

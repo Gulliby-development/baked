@@ -13,19 +13,35 @@
  * first.
  */
 import type { ModelMessage } from "ai";
+import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AppConfig,
   BakeMode,
   ChatMessage,
   ImageAttachment,
+  InputContextItem,
   InteractiveCallbacks,
   MessageSegment,
   ToolCall,
   ToolResult,
 } from "../../types/index.js";
+import {
+  checkpointTagName,
+  copyCheckpointTags,
+  ensureBaseSnapshot,
+  forkPoint,
+  RollbackError,
+  type RollbackReport,
+  rollbackToCheckpoint,
+} from "../checkpoints/fork.js";
+import { snapshotWorkspace } from "../checkpoints/snapshot.js";
+import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import type { ExpandedChatInput } from "./input-expansion.js";
+import { hasInputReferences } from "./input-parse.js";
+import type { MentionSuggestion } from "./mention-suggest.js";
 
 export const CHAT_MODES = ["default", "architect", "auto"] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
@@ -140,9 +156,21 @@ export interface TurnAgentRequest {
   drainSteering: () => { text: string; images?: ImageAttachment[] } | null;
 }
 
+export interface InputExpansionRequest {
+  sessionId: string;
+  mode: ChatMode;
+  text: string;
+  onApproveDestructive: (description: string) => Promise<boolean>;
+  abortSignal: AbortSignal;
+}
+
 /** Builds the agent of each turn; the API server uses a host backed by `createChatAgent`. */
 export interface ChatAgentHost {
   agent(request: TurnAgentRequest): Promise<{ agent: TurnAgent; contextWindow: number }>;
+  /** Expands the `@` mentions and `!` command of a message; without it, text goes as typed. */
+  expandInput?(request: InputExpansionRequest): Promise<ExpandedChatInput>;
+  /** `@` completions for a chat input, from the workspace files and the repository graph. */
+  suggestMentions?(query: string, limit?: number): Promise<MentionSuggestion[]>;
   /** Frees what the host keeps for a session that is no longer loaded. */
   release(sessionId: string): void;
   dispose(): Promise<void>;
@@ -150,7 +178,12 @@ export interface ChatAgentHost {
 
 export class ChatError extends Error {
   constructor(
-    readonly code: "NOT_FOUND" | "SESSION_BUSY" | "STALE_PROMPT" | "INVALID_REQUEST",
+    readonly code:
+      | "NOT_FOUND"
+      | "SESSION_BUSY"
+      | "STALE_PROMPT"
+      | "INVALID_REQUEST"
+      | "ROLLBACK_UNAVAILABLE",
     message: string,
   ) {
     super(message);
@@ -197,6 +230,9 @@ function toolResultOf(output: unknown): ToolResult {
   }
   return { success: true, output: typeof output === "string" ? output : JSON.stringify(output) };
 }
+
+/** Ends a turn before the model runs, without counting as a failure. */
+class SkipTurn extends Error {}
 
 const EDIT_TOOLS = new Set(["edit_file", "write_file", "create_file", "multi_edit"]);
 
@@ -262,6 +298,26 @@ export class ChatSession {
 
   get messages(): ChatMessage[] {
     return this.tabMessages.get(this.tabId) ?? [];
+  }
+
+  /** The workspace snapshots of this conversation's checkpoints. */
+  get checkpointTags(): CheckpointTag[] {
+    return this.tab.checkpointTags ?? [];
+  }
+
+  /** The key of this conversation's snapshot tags; API sessions all share one tab id. */
+  get tagOwner(): string {
+    return this.tabId === API_TAB ? this.meta.id : this.tabId;
+  }
+
+  addCheckpointTag(tag: CheckpointTag): void {
+    const tags = [...this.checkpointTags.filter((t) => t.index !== tag.index), tag];
+    this.meta = {
+      ...this.meta,
+      tabs: this.meta.tabs.map((t) =>
+        t.id === this.tabId ? { ...t, checkpointTags: tags.sort((a, b) => a.index - b.index) } : t,
+      ),
+    };
   }
 
   private set messages(value: ChatMessage[]) {
@@ -470,7 +526,11 @@ export class ChatSession {
       onApproveDestructive: (description) => approve({ kind: "destructive", description }),
       drainSteering: () => {
         if (!this.turn || this.queue.length === 0) return null;
-        const text = this.queue.splice(0).join("\n\n");
+        // A message with `@` mentions or a `!command` waits for the next turn, which expands it.
+        const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+        const count = firstRef === -1 ? this.queue.length : firstRef;
+        if (count === 0) return null;
+        const text = this.queue.splice(0, count).join("\n\n");
         const message: ChatMessage = {
           id: crypto.randomUUID(),
           role: "user",
@@ -490,14 +550,36 @@ export class ChatSession {
 
   private async runTurn(turn: TurnState, text: string): Promise<void> {
     const started = Date.now();
+    let modelText = text;
+    let inputContext: InputContextItem[] | undefined;
+    let send = true;
+    const { host } = this.owner;
+    if (host.expandInput && hasInputReferences(text)) {
+      try {
+        const expanded = await host.expandInput({
+          sessionId: this.meta.id,
+          mode: this.mode,
+          text,
+          onApproveDestructive: this.approvalCallbacks().onApproveDestructive,
+          abortSignal: turn.abort.signal,
+        });
+        modelText = expanded.text;
+        send = expanded.send && !turn.abort.signal.aborted;
+        if (expanded.items.length > 0) inputContext = expanded.items;
+      } catch (err) {
+        logBackgroundError("chat:input-expansion", errorText(err));
+      }
+    }
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
       content: text,
       timestamp: started,
+      ...(inputContext ? { inputContext } : {}),
     };
-    const history = [...this.core, { role: "user" as const, content: text }];
-    this.messages = [...this.messages, userMessage];
+    const history = [...this.core, { role: "user" as const, content: modelText }];
+    const before = this.messages;
+    this.messages = [...before, userMessage];
     this.steered = [];
     this.emit({ type: "turn-start", turnId: turn.id, message: userMessage });
     this.emitSession();
@@ -529,8 +611,17 @@ export class ChatSession {
     };
 
     try {
+      const base = await ensureBaseSnapshot(
+        this.owner.workspace,
+        this.tagOwner,
+        before,
+        this.checkpointTags,
+      );
+      if (base) this.addCheckpointTag(base);
       const model = this.model;
       if (!model) throw new Error("No model configured");
+      // A `!` command that did not run leaves nothing to answer.
+      if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
         sessionId: this.meta.id,
         modelId: model,
@@ -638,7 +729,8 @@ export class ChatSession {
       }
       if (turn.abort.signal.aborted) status = "interrupted";
     } catch (err) {
-      if (turn.abort.signal.aborted) status = "interrupted";
+      if (err instanceof SkipTurn) status = turn.abort.signal.aborted ? "interrupted" : "completed";
+      else if (turn.abort.signal.aborted) status = "interrupted";
       else {
         status = "failed";
         error = errorText(err);
@@ -649,7 +741,7 @@ export class ChatSession {
     if (response.length === 0 && fullText.length > 0)
       response = [{ role: "assistant", content: fullText }];
     const steering = this.steered.map((content) => ({ role: "user" as const, content }));
-    this.core = [...history, ...steering, ...response];
+    if (send) this.core = [...history, ...steering, ...response];
     const assistant: ChatMessage | null =
       fullText.length > 0 || calls.length > 0
         ? {
@@ -663,6 +755,12 @@ export class ChatSession {
           }
         : null;
     if (assistant) this.messages = [...this.messages, assistant];
+    if (assistant && extractFilesFromToolCalls(assistant).edited.length > 0) {
+      const index = buildTurns(this.messages).length;
+      const tag = checkpointTagName(this.tagOwner, index, text);
+      if (await snapshotWorkspace(this.owner.workspace, tag, `baked checkpoint ${String(index)}`))
+        this.addCheckpointTag({ index, anchorMessageId: userMessage.id, gitTag: tag });
+    }
     this.usage = {
       input: this.usage.input + usage.input,
       output: this.usage.output + usage.output,
@@ -682,8 +780,14 @@ export class ChatSession {
     this.emitSession();
     // Text that arrived after the last step of the turn starts the next one.
     if (this.queue.length > 0 && status === "completed") {
-      const next = this.queue.splice(0).join("\n\n");
+      // Messages with `@` or `!` start a turn of their own so their expansion stays separate.
+      const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+      const count = firstRef === 0 ? 1 : firstRef === -1 ? this.queue.length : firstRef;
+      const next = this.queue.splice(0, count).join("\n\n");
+      const rest = this.queue;
+      this.queue = [];
       this.send(next);
+      this.queue.push(...rest);
     } else this.queue = [];
   }
 
@@ -737,6 +841,10 @@ export class ChatService {
     this.host = options.host;
     this.bufferSize = options.bufferSize ?? DEFAULT_BUFFER;
     this.store = new SessionManager(options.workspace);
+  }
+
+  get workspace(): string {
+    return this.options.workspace;
   }
 
   get defaultModel(): string | null {
@@ -829,23 +937,54 @@ export class ChatService {
     return session;
   }
 
-  /** A new session with the messages up to and including `atMessageId`, or all of them. */
-  async fork(idOrPrefix: string, atMessageId?: string): Promise<ChatSession> {
+  /**
+   * A new session with the messages up to and including `atMessageId`, or all of them. With
+   * `rollbackFiles` the workspace files the agent edited after that message's checkpoint are
+   * restored to the checkpoint (see `src/core/checkpoints/fork.ts`).
+   */
+  async fork(
+    idOrPrefix: string,
+    atMessageId?: string,
+    options: { rollbackFiles?: boolean; force?: boolean } = {},
+  ): Promise<{ session: ChatSession; rollback: RollbackReport | null }> {
     const source = this.get(idOrPrefix);
     const all = source.messages;
-    let messages = all;
-    if (atMessageId !== undefined) {
-      const index = all.findIndex((m) => m.id === atMessageId);
-      if (index < 0) throw new ChatError("NOT_FOUND", `Message ${atMessageId} not found`);
-      messages = all.slice(0, index + 1);
-    }
+    const point = forkPoint(all, atMessageId);
+    if (!point) throw new ChatError("NOT_FOUND", `Message ${atMessageId} not found`);
+    if (options.rollbackFiles && [...this.live.values()].some((s) => s.busy))
+      throw new ChatError("SESSION_BUSY", "Wait for running turns to finish before rolling back");
     const summary = source.summary();
-    return this.create({
+    const session = await this.create({
       title: `${summary.title} (fork)`,
       ...(summary.model ? { model: summary.model } : {}),
       mode: summary.mode,
-      messages: messages.map((m) => ({ ...m })),
+      messages: point.messages.map((m) => ({ ...m })),
     });
+    if (!options.rollbackFiles) return { session, rollback: null };
+    try {
+      const rollback = await rollbackToCheckpoint({
+        cwd: this.options.workspace,
+        messages: all,
+        checkpoint: point.checkpoint,
+        tags: source.checkpointTags,
+        backupTag: `baked/fork-backup-${session.id.slice(0, 8)}`,
+        force: options.force === true,
+      });
+      const copied = await copyCheckpointTags(
+        this.options.workspace,
+        source.checkpointTags,
+        point.checkpoint,
+        session.tagOwner,
+      );
+      for (const tag of copied) session.addCheckpointTag(tag);
+      await this.persist(session);
+      return { session, rollback };
+    } catch (err) {
+      this.live.delete(session.id);
+      this.store.deleteSession(session.id);
+      if (err instanceof RollbackError) throw new ChatError("ROLLBACK_UNAVAILABLE", err.message);
+      throw err;
+    }
   }
 
   delete(idOrPrefix: string): void {

@@ -118,13 +118,19 @@ export interface PreRunInput {
 /** `POST /v1/workflow/runs` (`StartBody` in `src/core/api/schemas.ts`). */
 export interface StartBody {
   commandId: string;
-  feature: string;
-  prompt: string;
+  /** Optional with `issue`: the core names the feature `issue-N-TITLE`. */
+  feature?: string;
+  /** Optional with `issue`; with it, extra instructions added to the issue's text. */
+  prompt?: string;
+  /** A GitHub issue URL, `owner/name#N` or `#N`; the delivered pull request closes it. */
+  issue?: string;
   workflow?: string;
   policy?: RunPolicy;
   model?: string;
   worktree?: boolean;
   writers?: number;
+  /** What blocking spec questions do (`--clarification`); omitted, the policy decides. */
+  clarification?: "ask" | "assume";
 }
 
 /** The most tasks a run may implement at once (`MAX_CONCURRENT_WRITERS` in the core). */

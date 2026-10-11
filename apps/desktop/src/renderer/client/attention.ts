@@ -25,6 +25,8 @@ export interface ApprovalBody {
   checks?: { id: string; command?: string }[];
   profiles?: string[];
   deferredCriteria?: string[];
+  /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
+  assumptions?: string[];
   executionMode?: "inline" | "worktree";
   worktree?: { branch: string; userChangesInScope?: string[] };
 }

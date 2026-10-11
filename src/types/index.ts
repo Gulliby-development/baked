@@ -147,6 +147,20 @@ export interface ChatMessage {
    *  When true, text segments after the last `tools` segment stream as the final
    *  answer; the rest renders as a collapsed rail. */
   finalResponseCalled?: boolean;
+  /** What the message's `@` mentions and `!` command added to the context. */
+  inputContext?: InputContextItem[];
+}
+
+/** One `@` mention or `!` command of a user message and what it attached. */
+export interface InputContextItem {
+  kind: "file" | "directory" | "symbol" | "command";
+  /** The mention target or the command as typed. */
+  ref: string;
+  ok: boolean;
+  /** A short line such as "120 lines", "ran" or "not found". */
+  summary: string;
+  /** The start of the command output, for display. */
+  output?: string;
 }
 
 export interface ToolCall {
@@ -371,6 +385,22 @@ export interface AppConfig {
   telemetryUrl?: string;
   /** Set once the one-time telemetry first-run notice has been shown. */
   telemetryNoticeShown?: boolean;
+  /** How BAKED announces a workflow run that waits for a person. */
+  notifications?: NotificationsConfig;
+}
+
+/** Announcements of workflow runs that wait for a person; see `src/core/workflows/attention-notify.ts`. */
+export interface NotificationsConfig {
+  /** Native desktop notifications from the terminal app and the CLI. Default: true. */
+  system?: boolean;
+  /** Unset by default: nothing is sent. Receives one JSON POST per waiting request or blocked run. */
+  webhook?: {
+    url: string;
+    /** Extra request headers, such as an authorization token. */
+    headers?: Record<string, string>;
+    /** Skip advisory acceptance decisions, which the run does not wait for. Default: false. */
+    blockingOnly?: boolean;
+  };
 }
 
 export interface RetryConfig {

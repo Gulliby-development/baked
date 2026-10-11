@@ -1,7 +1,7 @@
-import { useTerminalDimensions } from "@opentui/react";
 import { useTheme } from "../../core/theme/index.js";
 import { getModeLabel } from "../../hooks/useBakeMode.js";
 import type { Tab, TabActivity } from "../../hooks/useTabs.js";
+import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import type { BakeMode } from "../../types/index.js";
 import { Spinner } from "./shared.js";
 

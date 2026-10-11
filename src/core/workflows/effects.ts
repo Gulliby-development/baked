@@ -47,7 +47,7 @@ export class EffectJournal {
     runId: string,
     attemptId: string,
     relativePath: string,
-    content: string | null,
+    content: string | Uint8Array | null,
     expected: string | null,
     kind: "file_patch" | "artifact_write" = "artifact_write",
     root: string = this.store.workspace,

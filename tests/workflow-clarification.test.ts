@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
@@ -101,11 +101,12 @@ describe("clarification resume point", () => {
     expect(clarificationResumeIndex(stages, at("research"), { questions: [] })).toBe(at("specify"));
     expect(clarificationResumeIndex(stages, at("specify"), { questions: [] })).toBe(at("specify"));
   });
-  test("analysis repeats the earliest stage its blocking findings refer to", () => {
+  test("analysis repeats the earliest stage its findings refer to, since an answer may cover any of them", () => {
     const finding = (refs: string[], blocking = true) => ({ id: "F", kind: "coverage", refs, description: "x", blocking });
     expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["plan.md", "tasks.json"])] })).toBe(at("plan"));
     expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["plan.md"]), finding(["NFR-001", "AC-004"])] })).toBe(at("specify"));
-    expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["spec.json"], false), finding(["tasks.json"])] })).toBe(at("plan"));
+    expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["spec.json"], false), finding(["tasks.json"])] })).toBe(at("specify"));
+    expect(clarificationResumeIndex(stages, at("analyze"), { findings: [finding(["plan.md"], false), finding(["tasks.json"])] })).toBe(at("plan"));
   });
 });
 
@@ -257,6 +258,22 @@ describe("answering a clarification", () => {
       expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
       expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
       expect(executor.requests[4]?.prompt).toContain("Assumed:");
+    });
+    test("the start request turns it on and the approval lists the assumptions", async () => {
+      const executor = new ScriptedExecutor({ specQuestion: true });
+      const service = setup(executor);
+      const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy, clarification: "assume" });
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+      const approval = service.store.requests(run.runId).find((r) => r.kind === "approval");
+      expect(JSON.parse(approval?.body_json ?? "{}").assumptions).toEqual(["What does a zero total show? Assumed: 0%, because nothing was spent."]);
+      const published = readFileSync(join(service.workspace, "specs/fixture/spec.md"), "utf8");
+      expect(published).toContain("## Assumptions\n- What does a zero total show? Assumed: 0%");
+    });
+    test("the start request can ask under an assuming policy; asking keeps the policy hash", async () => {
+      const service = setup(new ScriptedExecutor({ specQuestion: true }));
+      const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: assume, clarification: "ask" });
+      expect(JSON.parse(service.store.run(run.runId).policy_json).clarification).toBeUndefined();
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
     });
     test("a finding that survives goes to a person", async () => {
       const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] });

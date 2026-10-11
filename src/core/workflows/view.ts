@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ROUTING_ARTIFACT, RoutingRecordSchema } from "../llm/model-routing.js";
 import { renderSpec } from "../specs/render.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
@@ -13,6 +14,7 @@ import {
   type StartEstimate,
 } from "./estimate.js";
 import {
+  type ClarificationMode,
   type ExecutionMode,
   executionModeOf,
   MAX_CONCURRENT_WRITERS,
@@ -34,14 +36,20 @@ export const BudgetPreset = z.enum(BUDGET_PRESETS);
 export type { BudgetPresetId };
 export interface StartRunInput {
   workflowId: string;
+  /** Empty with `issue` lets the core name the feature `issue-N-TITLE`. */
   featureId: string;
+  /** With `issue`, extra instructions added to the issue's text; may be empty. */
   prompt: string;
+  /** A GitHub issue URL, `owner/name#N` or `#N`, as `workflow run --issue`. */
+  issue?: string;
   model: string;
   budget: BudgetPresetId;
   /** Requested execution mode, as `workflow run --worktree`; omitted, the definition's applies. */
   executionMode?: ExecutionMode;
   /** Requested concurrent writers, as `--writers N`; sent only with worktree execution. */
   maxConcurrentWriters?: number;
+  /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
+  clarification?: ClarificationMode;
 }
 
 /** The execution controls of the new-run form. */
@@ -307,7 +315,8 @@ function detailsOf(store: WorkflowStore, runId: string): RunDetails {
       }) ?? [],
   };
 }
-function changesOf(store: WorkflowStore, runId: string): FileChange[] {
+/** Files the run changed, from its effect journal, with drift against the workspace. */
+export function changesOf(store: WorkflowStore, runId: string): FileChange[] {
   const root = runRoot(store.workspace, store.state(runId));
   const byPath = new Map<string, FileChange & { before: string | null; after: string | null }>();
   for (const effect of store.effects(runId)) {
@@ -375,6 +384,17 @@ function recentEvents(store: WorkflowStore, row: RunRow): WorkflowEvent[] {
   return store.events(row.id, Math.max(0, row.event_seq - RECENT_EVENTS), RECENT_EVENTS);
 }
 
+/** The run model of the run's latest routing record; null for runs started before routing. */
+function runModelOf(store: WorkflowStore, runId: string): string | null {
+  const row = store.latestArtifact(runId, ROUTING_ARTIFACT);
+  if (!row) return null;
+  try {
+    return RoutingRecordSchema.parse(JSON.parse(store.readArtifact(runId, row.id))).runModel;
+  } catch {
+    return null;
+  }
+}
+
 export function readWorkflowView(service: NativeWorkflowService, runId: string) {
   const store = service.store;
   return store.readTransaction(() => {
@@ -395,6 +415,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       findings: store.findings(runId),
       requests: store.requests(runId),
       events: recentEvents(store, row),
+      runModel: runModelOf(store, runId),
     };
   });
 }

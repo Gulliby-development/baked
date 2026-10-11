@@ -57,15 +57,32 @@ export function buildWorkflowContext(
   extra: unknown,
   contextWindow = 128000,
 ): string {
+  const implementation = profile.context === "implementation";
   // The run-level documents come first and the attempt's own input last, so attempts of a run
   // share a byte-identical prompt prefix that providers serve from their prompt cache.
+  // Every step of an attempt resends them. Research has been distilled into the spec and plan by
+  // the time code is written or reviewed, and an implementer gets its own task whole in its input,
+  // so the other tasks are listed only by what they write.
   const documents = {
     request: state.prompt,
     research:
-      profile.context === "review" || profile.context === "convergence" ? null : state.research,
+      profile.context === "review" || profile.context === "convergence" || implementation
+        ? null
+        : state.research,
     spec: state.spec,
     plan: state.plan,
-    graph: state.graph,
+    graph:
+      implementation && state.graph
+        ? {
+            ...state.graph,
+            tasks: state.graph.tasks.map((t) => ({
+              id: t.id,
+              title: t.title,
+              dependsOn: t.dependsOn,
+              writes: t.writes,
+            })),
+          }
+        : state.graph,
   };
   const attempt = {
     inputHash: hashBytes(canonical(state.manifest)),

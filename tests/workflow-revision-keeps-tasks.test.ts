@@ -157,6 +157,50 @@ describe("revision of an implemented run", () => {
       ).toBe("passed");
   });
 
+  test("a revision that only adds a criterion to T001 keeps its implementation", async () => {
+    const fixture = await implementedThenBlocked();
+    const { service, executor, runId } = fixture;
+    const { spec, graph } = service.store.state(runId);
+    if (!spec || !graph) throw new Error("No package");
+    const added = { ...(spec.criteria[0] as (typeof spec.criteria)[number]), id: "AC-999" };
+    const candidate = await new WorkflowArtifacts(service).stageRevision(runId, {
+      commandId: newId(),
+      expectedInputHash: (await service.get(runId)).inputHash,
+      spec: { ...spec, revision: spec.revision + 1, criteria: [...spec.criteria, added] },
+      graph: {
+        ...graph,
+        tasks: graph.tasks.map((t) =>
+          t.id === "T001" ? { ...t, criterionIds: [...t.criterionIds, added.id] } : t,
+        ),
+      },
+    });
+    await service.revise(
+      runId,
+      { commandId: newId(), expectedRevision: (await service.get(runId)).revision },
+      candidate.candidateHash,
+    );
+    const row = service.store.tasks(runId).find((t) => t.id === "T001");
+    expect(row?.status).toBe("implemented");
+    expect((JSON.parse(row?.definition_json ?? "{}") as Task).criterionIds).toContain("AC-999");
+    // The run's review and final convergence cover the criterion T001 gained.
+    const review = executor.execute.bind(executor);
+    executor.execute = async (request: ExecutionRequest) => {
+      const out = await review(request);
+      if (["review", "convergence"].includes(request.profile.output)) {
+        const result = out.output as { coverage: { criterionId: string }[] };
+        const first = result.coverage[0];
+        if (first) result.coverage.push({ ...first, criterionId: added.id });
+      }
+      return out;
+    };
+    await fixture.resume(runId);
+    expect(await service.drive(runId, signal())).toMatchObject({ reason: "approval" });
+    await fixture.approve(runId);
+    await fixture.resume(runId);
+    expect(await service.drive(runId, signal())).toMatchObject({ status: "completed" });
+    expect(executor.calls.filter((c) => c === "implementation")).toHaveLength(1);
+  });
+
   test("a revision that changes T001's definition implements it again", async () => {
     const fixture = await implementedThenBlocked();
     const { service, executor, runId } = fixture;
@@ -203,9 +247,17 @@ describe("reusableImplementations", () => {
     findingIds: [],
     rationale: "Fixture",
   });
-  const state = (tasks: Task[], plan = "plan") =>
+  const criterion = (id: string, then = "it works") => ({
+    id,
+    requirementIds: ["FR-001"],
+    given: "a run",
+    when: "it runs",
+    then,
+    method: "automated",
+  });
+  const state = (tasks: Task[], plan = "plan", criteria = [criterion("AC-001")], revision = 1) =>
     ({
-      spec: { id: "spec" },
+      spec: { featureId: "feature", revision, title: "Spec", criteria },
       plan,
       graph: { tasks },
     }) as unknown as RuntimeState;
@@ -239,6 +291,28 @@ describe("reusableImplementations", () => {
     );
     expect(reusableImplementations(state(tasks), state(widened), rows(tasks)).size).toBe(0);
     expect(reusableImplementations(state(tasks), state(tasks), rows(tasks, "blocked")).size).toBe(0);
+  });
+  test("added criteria keep every task, including the one whose criterion list grew", () => {
+    const grown = tasks.map((t) =>
+      t.id === "T001" ? { ...t, criterionIds: [...t.criterionIds, "AC-002"] } : t,
+    );
+    const added = state(grown, "plan", [criterion("AC-001"), criterion("AC-002")], 2);
+    expect([...reusableImplementations(state(tasks), added, rows(tasks))]).toEqual([
+      "T001",
+      "T002",
+      "T003",
+    ]);
+  });
+  test("a changed or removed criterion keeps nothing, and a dropped task criterion redoes it", () => {
+    const changed = state(tasks, "plan", [criterion("AC-001", "it fails")]);
+    expect(reusableImplementations(state(tasks), changed, rows(tasks)).size).toBe(0);
+    const two = state(tasks, "plan", [criterion("AC-001"), criterion("AC-002")]);
+    expect(reusableImplementations(two, state(tasks), rows(tasks)).size).toBe(0);
+    const swapped = tasks.map((t) => (t.id === "T003" ? { ...t, criterionIds: ["AC-002"] } : t));
+    expect([...reusableImplementations(two, state(swapped, "plan", two.spec?.criteria), rows(tasks))]).toEqual([
+      "T001",
+      "T002",
+    ]);
   });
 });
 

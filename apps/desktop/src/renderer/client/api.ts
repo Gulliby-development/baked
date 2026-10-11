@@ -7,6 +7,8 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Every problem of a refused change, when the answer lists them (`ROUTING_REFUSED`). */
+    readonly problems: string[] = [],
   ) {
     super(message);
   }
@@ -14,11 +16,16 @@ export class ApiError extends Error {
 
 function unwrap<T>(response: ApiResponse<unknown>): T {
   if (response.status >= 200 && response.status < 300) return response.body as T;
-  const error = (response.body as Partial<ApiErrorBody> | null)?.error;
+  const answer = response.body as (Partial<ApiErrorBody> & { problems?: unknown }) | null;
+  const error = answer?.error;
+  const problems = Array.isArray(answer?.problems)
+    ? answer.problems.filter((p): p is string => typeof p === "string")
+    : [];
   throw new ApiError(
     response.status,
     error?.code ?? "HTTP_ERROR",
     error?.message ?? `Request failed with ${response.status}`,
+    problems,
   );
 }
 

@@ -32,11 +32,12 @@ export function readyTasks(
 }
 /**
  * Tasks whose implementation a package revision keeps instead of implementing them again. This
- * holds only when the spec and plan are unchanged and no task's write scope changed (no task
- * added or removed either), and then for an implemented task whose own definition is unchanged,
- * that depends only on kept tasks and shares no file with a task that is implemented again. Its
- * evidence is still invalidated: its task checks and the run's checks run again on the current
- * snapshot.
+ * holds only when the plan is unchanged, the spec is unchanged apart from added acceptance
+ * criteria, and no task's write scope changed (no task added or removed either), and then for an
+ * implemented task whose own definition is unchanged apart from added criteria, that depends only
+ * on kept tasks and shares no file with a task that is implemented again. Its evidence is still
+ * invalidated: its task checks and the run's checks run again on the current snapshot, and the
+ * run's review covers the criteria it gained.
  */
 export function reusableImplementations(
   before: RuntimeState,
@@ -49,7 +50,7 @@ export function reusableImplementations(
   const scope = (tasks: TaskGraph["tasks"]) =>
     hashJson(Object.fromEntries(tasks.map((task) => [task.id, task.writes])));
   if (
-    hashJson(before.spec) !== hashJson(after.spec) ||
+    !onlyAddsCriteria(before.spec, after.spec) ||
     before.plan !== after.plan ||
     scope(before.graph.tasks) !== scope(graph.tasks)
   )
@@ -60,7 +61,7 @@ export function reusableImplementations(
       row &&
       ["implemented", "verified"].includes(row.status) &&
       row.snapshot_id !== null &&
-      hashJson(JSON.parse(row.definition_json)) === hashJson(task)
+      sameApartFromAddedCriteria(JSON.parse(row.definition_json) as Task, task)
     )
       kept.add(task.id);
   }
@@ -80,4 +81,22 @@ export function reusableImplementations(
       }
   }
   return kept;
+}
+/** The revision number aside, `after` keeps every criterion of `before` and adds only criteria. */
+function onlyAddsCriteria(
+  before: NonNullable<RuntimeState["spec"]>,
+  after: NonNullable<RuntimeState["spec"]>,
+): boolean {
+  const rest = ({ revision: _r, criteria: _c, ...spec }: NonNullable<RuntimeState["spec"]>) => spec;
+  const criteria = new Map(after.criteria.map((c) => [c.id, hashJson(c)] as const));
+  return (
+    hashJson(rest(before)) === hashJson(rest(after)) &&
+    before.criteria.every((c) => criteria.get(c.id) === hashJson(c))
+  );
+}
+/** The task is unchanged apart from criterion IDs added to its list. */
+function sameApartFromAddedCriteria(before: Task, after: Task): boolean {
+  const { criterionIds: was, ...rest } = before;
+  const { criterionIds: now, ...next } = after;
+  return hashJson(rest) === hashJson(next) && was.every((id) => now.includes(id));
 }

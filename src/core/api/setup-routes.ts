@@ -17,6 +17,15 @@ import {
 import type { AppConfig } from "../../types/index.js";
 import { listCustomCommands } from "../commands/custom.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
+import {
+  cancelCliLogin,
+  cliSignInStatus,
+  getCliLogin,
+  isCliLoginProvider,
+  logoutCli,
+  startCliLogin,
+} from "../llm/cli-login.js";
+import { type ModelRouting, ROUTED_ROLES, RouteEffort } from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
@@ -31,6 +40,16 @@ import { realPath } from "../projects/paths.js";
 import { deleteSecret, hasSecret, type SecretKey, setSecret } from "../secrets.js";
 import { listInstalledSkills } from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
+import { defaultWorkflowPolicy } from "../workflows/defaults.js";
+import { explainRoute, type RouteExplanation } from "../workflows/routing.js";
+import {
+  applyRoutingChange,
+  type RoutingChange,
+  type RoutingLayers,
+  routingOverview,
+} from "../workflows/routing-edit.js";
+import { PolicySchema } from "../workflows/schemas.js";
+import { listDefinitions } from "../workflows/v2/definitions.js";
 import type { RouteContext } from "./route-context.js";
 
 export interface SetupRouteContext extends RouteContext {
@@ -61,8 +80,45 @@ const ConfigBody = z
   .refine((body) => Object.keys(body.set ?? {}).length > 0 || (body.remove?.length ?? 0) > 0, {
     message: "Name keys to set or remove",
   });
+const RoutingQuery = z.strictObject({
+  workflow: z.string().min(1).max(200).optional(),
+  model: z.string().min(1).max(200).optional(),
+});
+const RoutingTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("class"), name: z.string().max(64) }),
+  z.strictObject({ kind: z.literal("role"), role: z.enum(ROUTED_ROLES) }),
+  z.strictObject({ kind: z.literal("profile"), id: z.string().min(1).max(200) }),
+  z.strictObject({
+    kind: z.literal("stage"),
+    workflowId: z.string().min(1).max(200),
+    stageId: z.string().min(1).max(200),
+  }),
+]);
+const RoutingBody = z.union([
+  z.strictObject({
+    scope: z.enum(["global", "project"]),
+    workflow: z.string().min(1).max(200).optional(),
+    model: z.string().min(1).max(200).optional(),
+    target: RoutingTargetSchema,
+    route: z
+      .strictObject({
+        model: z.string().max(200),
+        effort: RouteEffort.nullable().optional(),
+        fallback: z.array(z.string().max(200)).max(10).optional(),
+      })
+      .nullable(),
+    create: z.boolean().optional(),
+  }),
+  z.strictObject({
+    scope: z.enum(["global", "project"]),
+    workflow: z.string().min(1).max(200).optional(),
+    model: z.string().min(1).max(200).optional(),
+    independentReview: z.enum(["off", "warn", "require"]).nullable(),
+  }),
+]);
 const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
+const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/;
 
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
@@ -210,6 +266,87 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     return ctx.json(200, result);
   }
 
+  if (path === "/v1/workflow/routing") {
+    ctx.only("GET", "PATCH");
+    const effectiveConfig = (): AppConfig => {
+      const base = ctx.configDir
+        ? ({ ...DEFAULT_CONFIG, ...readJsonFile(globalFile) } as AppConfig)
+        : loadConfig();
+      return mergeConfigs(base, loadEffectiveProjectConfig(workspace));
+    };
+    const layersOf = (): RoutingLayers => ({
+      global: readJsonFile(globalFile).modelRouting as ModelRouting | undefined,
+      project: readJsonFile(projectFile).modelRouting as ModelRouting | undefined,
+    });
+    // Routes resolve with the config the server starts runs with.
+    const overview = (workflow: string | undefined, model: string | undefined) => {
+      const config = ctx.config;
+      const policy = PolicySchema.parse(config.workflows?.policy ?? defaultWorkflowPolicy);
+      const workflows = listDefinitions(workspace, policy).map((d) => d.id);
+      const workflowId = workflow ?? (workflows.includes("sdd") ? "sdd" : (workflows[0] ?? null));
+      let explanation: RouteExplanation | null = null;
+      let error: string | null = workflowId ? null : "No workflow definitions found";
+      if (workflowId)
+        try {
+          explanation = explainRoute(workspace, config, { workflowId, model });
+        } catch (failure) {
+          error = failure instanceof Error ? failure.message : String(failure);
+        }
+      const runModel = model ?? config.defaultModel;
+      return routingOverview({
+        layers: layersOf(),
+        workflows,
+        workflowId,
+        runModel: runModel?.trim() && runModel.trim() !== "none" ? runModel : null,
+        legacy: {
+          coding: config.taskRouter?.ember ?? config.taskRouter?.coding ?? undefined,
+          review: config.taskRouter?.verify ?? undefined,
+        },
+        explanation,
+        error,
+      });
+    };
+    if (method === "GET") {
+      const query = ctx.query(RoutingQuery);
+      return ctx.json(200, overview(query.workflow, query.model));
+    }
+    const body = RoutingBody.parse(await ctx.readJson());
+    const file = body.scope === "global" ? globalFile : projectFile;
+    let current: Record<string, unknown>;
+    try {
+      current = readJsonFile(file);
+    } catch (error) {
+      return ctx.fail(409, "INPUT_CHANGED", error instanceof Error ? error.message : String(error));
+    }
+    const change: RoutingChange =
+      "independentReview" in body
+        ? { independentReview: body.independentReview }
+        : {
+            target: body.target,
+            route: body.route && {
+              model: body.route.model,
+              effort: body.route.effort ?? null,
+              fallback: body.route.fallback ?? [],
+            },
+            ...(body.create ? { create: true } : {}),
+          };
+    const { routing, problems } = applyRoutingChange(layersOf(), body.scope, change);
+    if (problems.length)
+      return ctx.json(422, {
+        error: { code: "ROUTING_REFUSED", message: problems.join("; ") },
+        problems,
+      });
+    const { modelRouting: _previous, ...rest } = current;
+    const next = routing ? { ...current, modelRouting: routing } : rest;
+    if (body.scope === "global") mkdirSync(dir, { recursive: true, mode: 0o700 });
+    else ensurebakedDir(workspace);
+    writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
+    // Only modelRouting changed; the rest of the running config stays as it is.
+    const merged = effectiveConfig().modelRouting;
+    ctx.config.modelRouting = merged;
+    return ctx.json(200, overview(body.workflow, body.model));
+  }
+
   if (path === "/v1/providers") {
     ctx.only("GET");
     const secrets = new Map(getProviderSecretEntries().map((e) => [e.providerId, e]));
@@ -225,9 +362,26 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
           acceptsKey: Boolean(secret),
           source: source === "none" ? null : source === "env" ? "env" : "app",
           ...(secret?.keyUrl ? { keyUrl: secret.keyUrl } : {}),
+          ...(isCliLoginProvider(status.id)
+            ? { signIn: { ...cliSignInStatus(status.id), login: getCliLogin(status.id) } }
+            : {}),
         };
       }),
     });
+  }
+  const loginMatch = PROVIDER_LOGIN.exec(path);
+  if (loginMatch?.[1]) {
+    const id = loginMatch[1];
+    if (!isCliLoginProvider(id))
+      ctx.fail(404, "NOT_FOUND", `Provider ${id} does not sign in through a CLI`);
+    if (loginMatch[2] === "logout") {
+      ctx.only("POST");
+      return ctx.json(200, await logoutCli(id));
+    }
+    ctx.only("GET", "POST", "DELETE");
+    if (method === "POST") return ctx.json(202, { login: startCliLogin(id) });
+    if (method === "DELETE") return ctx.json(200, { login: await cancelCliLogin(id) });
+    return ctx.json(200, { login: getCliLogin(id) });
   }
   const keyMatch = PROVIDER_KEY.exec(path);
   if (keyMatch?.[1]) {

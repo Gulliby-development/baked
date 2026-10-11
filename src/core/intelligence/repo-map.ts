@@ -3565,6 +3565,106 @@ export class RepoMap {
     return results;
   }
 
+  /**
+   * Definitions of a symbol by bare name (`login`) or qualified name (`AuthService.login`), with
+   * their line ranges, best ranked first. Stale files are skipped like in `findSymbols`.
+   */
+  findSymbolDefinitions(
+    query: string,
+    limit = 3,
+  ): Array<{
+    name: string;
+    qualifiedName: string | null;
+    kind: string;
+    path: string;
+    line: number;
+    endLine: number;
+  }> {
+    const qualified = query.includes(".");
+    const rows = this.db
+      .query<
+        {
+          name: string;
+          qualified_name: string | null;
+          kind: string;
+          path: string;
+          line: number;
+          end_line: number;
+          mtime_ms: number;
+        },
+        [string, string, number]
+      >(
+        `SELECT s.name, s.qualified_name, s.kind, f.path, s.line, s.end_line, f.mtime_ms
+         FROM symbols s JOIN files f ON f.id = s.file_id
+         WHERE ${qualified ? "(s.qualified_name = ? OR s.qualified_name LIKE '%.' || ?)" : "(s.name = ? OR s.name = ?)"}
+           AND s.kind IN ('interface','type','class','function','enum','variable','method','constant')
+         ORDER BY (f.path LIKE '%.d.ts') ASC, s.is_exported DESC, f.pagerank DESC
+         LIMIT ?`,
+      )
+      .all(query, query, limit * 3);
+    const results: Array<{
+      name: string;
+      qualifiedName: string | null;
+      kind: string;
+      path: string;
+      line: number;
+      endLine: number;
+    }> = [];
+    for (const row of rows) {
+      try {
+        const stat = statSync(join(this.cwd, row.path));
+        if (Math.abs(stat.mtimeMs - row.mtime_ms) > 1000) continue;
+      } catch {
+        continue;
+      }
+      results.push({
+        name: row.name,
+        qualifiedName: row.qualified_name,
+        kind: row.kind,
+        path: row.path,
+        line: row.line,
+        endLine: row.end_line,
+      });
+      if (results.length >= limit) break;
+    }
+    return results;
+  }
+
+  /** Call sites of a symbol defined in `relPath`, and the files that import it by name. */
+  getSymbolReferences(
+    name: string,
+    relPath: string,
+    limit = 20,
+  ): {
+    calls: Array<{ path: string; line: number; caller: string }>;
+    importers: string[];
+  } {
+    const calls = this.db
+      .query<{ path: string; line: number; caller: string }, [string, string, number]>(
+        `SELECT f.path, c.line, s.name AS caller
+         FROM calls c
+         JOIN symbols s ON s.id = c.caller_symbol_id
+         JOIN files f ON f.id = s.file_id
+         WHERE c.callee_name = ?
+           AND c.callee_file_id = (SELECT id FROM files WHERE path = ?)
+         ORDER BY f.pagerank DESC, f.path, c.line
+         LIMIT ?`,
+      )
+      .all(name, relPath, limit);
+    const importers = this.db
+      .query<{ path: string }, [string, string, number]>(
+        `SELECT DISTINCT f.path
+         FROM refs r JOIN files f ON f.id = r.file_id
+         WHERE r.name = ?
+           AND r.source_file_id = (SELECT id FROM files WHERE path = ?)
+         ORDER BY f.pagerank DESC
+         LIMIT ?`,
+      )
+      .all(name, relPath, limit)
+      .map((r) => r.path);
+    return { calls, importers };
+  }
+
   getFileSymbols(
     relPath: string,
   ): Array<{ name: string; kind: string; isExported: boolean; line: number; endLine: number }> {

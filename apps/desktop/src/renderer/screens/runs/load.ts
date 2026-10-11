@@ -33,6 +33,8 @@ export interface RunArtifacts {
   plan: string | null;
   graph: TaskGraph | null;
   estimate: SavedEstimate | null;
+  /** The latest routing record: the run model and the routed stages. */
+  routing: RoutingRecord | null;
   reviews: Review[];
   walks: WalkRecord[];
   gates: AcceptanceGate[];
@@ -59,6 +61,13 @@ async function readJson<T>(key: string, runId: string, entry: ArtifactEntry | un
   }
 }
 
+/** The parts of `routing.json` the run screen shows. */
+export interface RoutingRecord {
+  runModel: string;
+  stages: Record<string, { model: string; source: string }>;
+  profiles: Record<string, { model: string; source: string }>;
+}
+
 export async function loadArtifacts(
   key: string,
   runId: string,
@@ -70,13 +79,14 @@ export async function loadArtifacts(
     /^acceptance\/[^/]+\/[^/]+\/walk\.json$/.test(a.path),
   );
   const reviewIds = [...new Set(findingArtifacts)];
-  const [spec, planText, graph, estimate, gates, walks, reviews] = await Promise.all([
+  const [spec, planText, graph, estimate, routing, gates, walks, reviews] = await Promise.all([
     readJson<Spec>(key, runId, latest.get("spec.json")),
     latest.has("plan.md")
       ? read(key, runId, latest.get("plan.md")?.id ?? "").catch(() => null)
       : Promise.resolve(null),
     readJson<TaskGraph>(key, runId, latest.get("tasks.json")),
     readJson<SavedEstimate>(key, runId, latest.get("estimates/start.json")),
+    readJson<RoutingRecord>(key, runId, latest.get("routing.json")),
     readJson<AcceptanceGate[]>(key, runId, latest.get("definition/gates.json")),
     Promise.all(walkEntries.map((e) => readJson<WalkRecord>(key, runId, e))),
     Promise.all(
@@ -92,6 +102,7 @@ export async function loadArtifacts(
     plan: planText,
     graph,
     estimate,
+    routing: routing && typeof routing.runModel === "string" ? routing : null,
     gates: Array.isArray(gates) ? gates : [],
     walks: walks.filter((w): w is WalkRecord => w !== null),
     reviews: reviews.filter((r): r is Review => r !== null && Array.isArray(r.findings)),

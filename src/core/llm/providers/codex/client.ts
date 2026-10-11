@@ -20,6 +20,19 @@ export interface CodexAppServerClient {
   close(): void;
 }
 
+/** A long-lived app-server connection that also exposes notifications and closure. */
+export interface CodexAppServerConnection extends CodexAppServerClient {
+  onNotification(listener: (method: string, params: unknown) => void): () => void;
+  onClose(listener: (error: Error) => void): () => void;
+  /** Handles server-initiated requests; a listener returns true when it will respond. */
+  onServerRequest(
+    listener: (method: string, id: string | number, params: unknown) => boolean,
+  ): () => void;
+  respond(id: string | number, result: unknown): void;
+  respondError(id: string | number, message: string): void;
+  readonly closed: boolean;
+}
+
 export function parseCodexLoginStatus(status: number | null, output: string): CodexLoginStatus {
   const message = output.trim() || (status === 0 ? "Logged in" : "Not logged in");
   if (message.includes("Logged in using ChatGPT")) {
@@ -145,9 +158,12 @@ export function assertCodexReady(): void {
   }
 }
 
-export async function startCodexAppServerSession(): Promise<CodexAppServerClient> {
+export async function startCodexAppServerSession(
+  options: { experimentalApi?: boolean } = {},
+): Promise<CodexAppServerConnection> {
   const child = spawn("codex", ["app-server", "--listen", "stdio://"], {
     stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
   });
   trackProcess(child);
 
@@ -168,6 +184,8 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
     child.stdin.write(`${JSON.stringify(message)}\n`);
 
   let closed = false;
+  // Set when the process exits or fails to spawn, before anyone calls close().
+  let ended = false;
   let nextRequestId = 1;
   const pending = new Map<
     number,
@@ -177,10 +195,20 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
     }
   >();
   const listeners = new Set<(method: string, params: unknown) => void>();
+  const closeListeners = new Set<(error: Error) => void>();
+  const requestListeners = new Set<
+    (method: string, id: string | number, params: unknown) => boolean
+  >();
+
+  const notifyClosed = (error: Error) => {
+    for (const listener of [...closeListeners]) listener(error);
+    closeListeners.clear();
+  };
 
   const shutdown = () => {
     if (closed) return;
     closed = true;
+    notifyClosed(new Error("Codex app-server connection closed"));
     rl.close();
     child.removeAllListeners();
     for (const waiter of pending.values()) {
@@ -188,6 +216,7 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
     }
     pending.clear();
     listeners.clear();
+    requestListeners.clear();
     try {
       if (!child.killed) child.kill();
     } catch {}
@@ -199,6 +228,8 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
       waiter.reject(err);
     }
     pending.clear();
+    ended = true;
+    notifyClosed(err);
   });
 
   child.once("exit", (code, signal) => {
@@ -213,6 +244,8 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
       waiter.reject(err);
     }
     pending.clear();
+    ended = true;
+    notifyClosed(err);
   });
 
   rl.on("line", (line) => {
@@ -220,6 +253,19 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
     try {
       message = JSON.parse(line) as Record<string, unknown>;
     } catch {
+      return;
+    }
+
+    // Server-initiated requests carry both an id and a method; only bare ids are responses.
+    if (typeof message.method === "string" && message.id != null) {
+      const requestId = message.id as string | number;
+      for (const listener of [...requestListeners]) {
+        if (listener(message.method, requestId, message.params)) return;
+      }
+      send({
+        id: requestId,
+        error: { code: -32601, message: `baked does not handle ${message.method}` },
+      });
       return;
     }
 
@@ -248,7 +294,7 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
   });
 
   const request = (method: string, params: Record<string, unknown>, timeoutMs = 30_000) => {
-    if (closed) return Promise.reject(new Error("Codex app-server connection closed"));
+    if (closed || ended) return Promise.reject(new Error("Codex app-server connection closed"));
     const id = nextRequestId++;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -295,9 +341,39 @@ export async function startCodexAppServerSession(): Promise<CodexAppServerClient
   try {
     await request("initialize", {
       clientInfo: { name: "baked", title: "baked", version: "0.0.0" },
+      ...(options.experimentalApi ? { capabilities: { experimentalApi: true } } : {}),
     });
     send({ method: "initialized", params: {} });
-    return { request, waitForNotification, close: shutdown };
+    return {
+      request,
+      waitForNotification,
+      close: shutdown,
+      onNotification(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      onClose(listener) {
+        if (closed || ended) {
+          listener(new Error("Codex app-server connection closed"));
+          return () => {};
+        }
+        closeListeners.add(listener);
+        return () => closeListeners.delete(listener);
+      },
+      onServerRequest(listener) {
+        requestListeners.add(listener);
+        return () => requestListeners.delete(listener);
+      },
+      respond(id, result) {
+        if (!closed && !ended) send({ id, result });
+      },
+      respondError(id, message) {
+        if (!closed && !ended) send({ id, error: { code: -32000, message } });
+      },
+      get closed() {
+        return closed || ended;
+      },
+    };
   } catch (error) {
     shutdown();
     throw error;

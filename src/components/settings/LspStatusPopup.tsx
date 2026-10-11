@@ -1,8 +1,8 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getDetailedLspServers } from "../../core/intelligence/instance.js";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { useErrorStore } from "../../stores/errors.js";
 import {
   buildGroupedRows,

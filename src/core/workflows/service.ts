@@ -1,9 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
-import type { ContextManager } from "../context/manager.js";
-import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
-import { modelReadinessProblem } from "../llm/provider.js";
+import { SharedRootContext } from "../context/shared-root.js";
+import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
 import {
@@ -16,6 +15,7 @@ import { validatePackage } from "../specs/validate.js";
 import { hostDiff } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
+import { AttentionNotifier } from "./attention-notify.js";
 import {
   type BudgetLimits,
   budgetUsage,
@@ -28,6 +28,13 @@ import { validateChecks } from "./check-policy.js";
 import { clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
+import {
+  checkLine,
+  checkRoutingModels,
+  checkStartModels,
+  type DoctorDeps,
+  defaultDoctorDeps,
+} from "./doctor.js";
 import { WorkflowFault } from "./errors.js";
 import { readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
@@ -40,7 +47,14 @@ import {
 } from "./leases.js";
 import { estimatePrepared } from "./pre-run.js";
 import { undoRunEdits } from "./rollback.js";
-import { reachableModels } from "./routing.js";
+import {
+  independenceWarnings,
+  independentReviewMode,
+  type RerouteRequest,
+  type RouteChange,
+  rerouteRecord,
+  routeChanges,
+} from "./routing.js";
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
@@ -85,6 +99,25 @@ import {
 } from "./v2/runtime.js";
 import { removeRunWorktree, runRoot } from "./worktree.js";
 
+/** A checked reroute that is not written yet (`planReroute`). */
+export interface PlannedReroute {
+  before: RoutingRecord;
+  after: RoutingRecord;
+  changes: RouteChange[];
+}
+
+/** The stored command body of a reroute; a replay with the same command ID must match it. */
+function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRequest) {
+  const model = request.model?.trim() || undefined;
+  return {
+    runId,
+    ...command,
+    action: "reroute",
+    model: model ?? null,
+    routes: request.routes ?? {},
+  };
+}
+
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
   readonly leases: WorkspaceLeases;
@@ -94,26 +127,33 @@ export class NativeWorkflowService implements WorkflowService {
     { controller: AbortController; promise: Promise<RunSnapshot> }
   >();
   /**
-   * Why a model cannot be called, or null; checked for every bound model before a run starts.
-   * Only the native executor calls providers, so a service given its own executor checks nothing.
+   * Answers whether a provider can be called; checked for every model before a run starts. Only
+   * the native executor calls providers, so a service given its own executor checks nothing.
    */
-  modelReadiness: (
-    model: string,
-  ) => Promise<{ problem: string; missingCredentials: boolean } | null>;
+  providerReady: DoctorDeps["providerReady"] | null;
+  /**
+   * The process's root context, created on first use. The native executor builds each step's
+   * context on it, and `baked serve` gives it to the chat host too. The service disposes it on close.
+   */
+  readonly rootContext: SharedRootContext;
+  /** Announces runs that start waiting for a person; null on a read-only service. */
+  readonly attention: AttentionNotifier | null;
   constructor(
     readonly workspace: string,
     readonly config: AppConfig,
     executor?: AgentExecutor,
     readonly = false,
-    parentContext?: ContextManager,
+    rootContext?: SharedRootContext,
   ) {
-    this.modelReadiness = executor ? async () => null : (model) => modelReadinessProblem(model);
+    this.rootContext = rootContext ?? SharedRootContext.forWorkspace(workspace, config);
+    this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
+    this.attention = readonly ? null : new AttentionNotifier(this.store, workspace, config);
     this.scheduler = new WorkflowScheduler(
       this.store,
       this.leases,
-      executor ?? new NativeAgentExecutor(this.store, this.leases, config, parentContext),
+      executor ?? new NativeAgentExecutor(this.store, this.leases, config, this.rootContext),
     );
   }
   private enabled(): void {
@@ -221,6 +261,9 @@ export class NativeWorkflowService implements WorkflowService {
       taskSteps: {},
       sizingReplans: 0,
       analysisReplans: 0,
+      taskContinuations: {},
+      taskRestarts: {},
+      taskCarry: {},
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
       report: null,
@@ -231,6 +274,7 @@ export class NativeWorkflowService implements WorkflowService {
       worktree: null,
       gateResults: {},
       acceptance: {},
+      issue: request.issue ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -270,42 +314,24 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Keeps the expectation made at creation, so a finished run can be compared with it. */
   /**
-   * Refuses a start when a bound model's provider has no credentials, naming what uses it; the
-   * run would otherwise fail at that stage much later. Fallback models, unbound profiles and
-   * model IDs this build does not know (they fail at their first call either way) add warnings.
+   * Refuses a start on the model checks `workflow doctor` fails: a bound model whose provider has
+   * no credentials, naming what uses it; the run would otherwise fail at that stage much later.
+   * Its warnings (fallback models, unbound profiles, unknown providers, an unanswered probe) are
+   * recorded with the routing.
    */
   private async preflight(prepared: PreparedStart): Promise<void> {
-    const { routing, loaded, policy, profiles } = prepared;
-    const { required, optional } = reachableModels(
-      routing,
-      loaded.definition,
-      policy,
-      loadGateLibrary(this.workspace, policy).gates,
-      profiles,
-    );
-    const check = async (models: Map<string, string[]>) =>
-      (
-        await Promise.all(
-          [...models].map(async ([model, users]) => {
-            const found = await this.modelReadiness(model);
-            return found
-              ? { ...found, line: `${found.problem}; used by ${users.join(", ")}` }
-              : null;
-          }),
-        )
-      ).filter((found) => found !== null);
-    const [bound, other] = await Promise.all([check(required), check(optional)]);
-    const refusals = bound.filter((found) => found.missingCredentials).map((found) => found.line);
+    if (!this.providerReady) return;
+    const checks = await checkStartModels(this.workspace, prepared, this.providerReady);
+    const refusals = checks.filter((check) => check.status === "fail").map(checkLine);
     if (refusals.length)
       throw new WorkflowFault(
         "CAPABILITY_DENIED",
         `These models cannot be called:\n${refusals.join("\n")}`,
         { reason: "model_unavailable", problems: refusals },
       );
-    const warnings = [...bound, ...other]
-      .filter((found) => !refusals.includes(found.line))
-      .map((found) => found.line);
-    if (warnings.length) routing.warnings = [...(routing.warnings ?? []), ...warnings];
+    const warnings = checks.filter((check) => check.status === "warn").map(checkLine);
+    if (warnings.length)
+      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
   }
   private saveEstimate(runId: string, prepared: PreparedStart, workflowId: string): void {
     try {
@@ -954,6 +980,132 @@ export class NativeWorkflowService implements WorkflowService {
       },
     );
   }
+  /**
+   * Moves a run that is not executing to other models: a new revision of its routing record, so
+   * completed stages and tasks stay and the next agent calls use the new models. The new models
+   * pass the start's model checks and the `independentReview` rule first; the run keeps its
+   * status, and resume continues it from where it stopped.
+   */
+  async reroute(
+    runId: string,
+    command: CommandIdentity,
+    request: RerouteRequest,
+  ): Promise<RunSnapshot> {
+    this.enabled();
+    const previous = this.store.previousCommand(
+      command.commandId,
+      rerouteBody(runId, command, request),
+    );
+    if (previous) return previous;
+    const planned = await this.planReroute(runId, request);
+    if (!planned)
+      throw new WorkflowFault("INVALID_DEFINITION", "The run already uses these models");
+    return this.commitReroute(runId, command, request, planned);
+  }
+  /**
+   * The routing record a reroute would write, after the same checks as `reroute`; nothing is
+   * written. Null when the run already uses these models. An initiative plans every run first, so
+   * one refused model leaves all of them unchanged.
+   */
+  async planReroute(runId: string, request: RerouteRequest): Promise<PlannedReroute | null> {
+    this.enabled();
+    const model = request.model?.trim() || undefined;
+    const routes = request.routes ?? {};
+    this.assertReroutable(runId);
+    if (!model && !Object.keys(routes).length)
+      throw new WorkflowFault("INVALID_DEFINITION", "Name a model (--model ID) or stage routes");
+    if (model === "none")
+      throw new WorkflowFault("INVALID_DEFINITION", "Select a model to switch the run to");
+    const row = this.store.run(runId);
+    const saved = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
+    if (!saved)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "This run started before routing was recorded; fork it to choose other models",
+      );
+    const before: RoutingRecord = RoutingRecordSchema.parse(
+      JSON.parse(this.store.readArtifact(runId, saved.id)),
+    );
+    const { definition } = parseRunDefinition(row.definition_json);
+    const policy = PolicySchema.parse(JSON.parse(row.policy_json));
+    const profiles = ProfileSchema.array().parse(JSON.parse(row.profiles_json));
+    const after = rerouteRecord(
+      this.workspace,
+      this.config,
+      before,
+      definition.id,
+      definition.stages.map((stage) => stage.id),
+      profiles.map((profile) => profile.id),
+      { model, routes },
+    );
+    const changes = routeChanges(before, after);
+    if (!changes.length && after.runModel === before.runModel) return null;
+    const warnings: string[] = [];
+    const independence = independentReviewMode(this.config);
+    if (independence !== "off") {
+      const found = independenceWarnings(
+        after,
+        definition,
+        policy,
+        loadGateLibrary(this.workspace, policy).gates,
+        profiles,
+      );
+      if (found.length && independence === "require")
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `${found.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
+        );
+      warnings.push(...found);
+    }
+    if (this.providerReady) {
+      const checks = await checkRoutingModels(
+        this.workspace,
+        { routing: after, definition, policy, profiles },
+        this.providerReady,
+      );
+      const refusals = checks.filter((check) => check.status === "fail").map(checkLine);
+      if (refusals.length)
+        throw new WorkflowFault(
+          "CAPABILITY_DENIED",
+          `These models cannot be called:\n${refusals.join("\n")}`,
+          { reason: "model_unavailable", problems: refusals },
+        );
+      warnings.push(...checks.filter((check) => check.status === "warn").map(checkLine));
+    }
+    if (warnings.length) after.warnings = warnings;
+    return { before, after, changes };
+  }
+  /** Writes a planned reroute: the new routing revision and its `run.rerouted` event. */
+  commitReroute(
+    runId: string,
+    command: CommandIdentity,
+    request: RerouteRequest,
+    planned: PlannedReroute,
+  ): RunSnapshot {
+    this.enabled();
+    const { before, after, changes } = planned;
+    return this.store.command(runId, command, rerouteBody(runId, command, request), () => {
+      this.assertReroutable(runId);
+      const artifact = this.store.artifact(runId, "routing", ROUTING_ARTIFACT, canonical(after));
+      this.store.emit(runId, {
+        type: "run.rerouted",
+        payload: {
+          artifactId: artifact.id,
+          runModel: { from: before.runModel, to: after.runModel },
+          changes,
+        },
+      });
+    });
+  }
+  private assertReroutable(runId: string): void {
+    const status = this.store.run(runId).status;
+    assertMutable(status);
+    if (status === "running" || this.active.has(runId))
+      throw new WorkflowFault(
+        "WORKSPACE_BUSY",
+        "The run is executing; pause it before switching its models",
+      );
+  }
   async fork(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
     this.enabled();
     return this.forkRun(runId, command, { runId, ...command, action: "fork" });
@@ -1190,6 +1342,8 @@ export class NativeWorkflowService implements WorkflowService {
       );
     this.leases.release();
     this.scheduler.dispose();
+    void this.rootContext.dispose().catch(() => {});
+    this.attention?.dispose();
     this.store.close();
   }
 }

@@ -805,6 +805,7 @@ function runCommand(
     const proc = spawn(cmd, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...extraEnv },
+      windowsHide: true,
     });
 
     let stderr = "";

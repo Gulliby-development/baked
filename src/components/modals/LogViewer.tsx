@@ -8,9 +8,9 @@ import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
  */
 
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import {
   handleCursorNavKey,

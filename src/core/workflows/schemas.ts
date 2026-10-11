@@ -111,6 +111,14 @@ export const CheckSchema = z
     scope: z.enum(["task", "feature"]),
     envNames: UniqueStrings,
     writes: z.array(RelativePath),
+    /**
+     * A fixer for what the check reports, such as `ruff check --fix` or `biome check --write`.
+     * Implementers run it on their task's files with `apply_fix`; the file path is appended.
+     */
+    fix: z
+      .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -218,6 +226,10 @@ export const PolicySchema = z
   })
   .strict();
 export type ExecutionMode = "inline" | "worktree";
+export type ClarificationMode = "ask" | "assume";
+/** What a blocking question does under a policy; a policy without the field asks a person. */
+export const clarificationOf = (policy: { clarification?: ClarificationMode | undefined }) =>
+  policy.clarification ?? "ask";
 /** The execution mode of a policy; a policy without the field runs inline. */
 export const executionModeOf = (policy: { executionMode?: ExecutionMode | undefined }) =>
   policy.executionMode ?? "inline";
@@ -364,6 +376,7 @@ export const ReasonCode = z.enum([
   "no_progress",
   "verification_failed",
   "provider_unavailable",
+  "provider_account",
   "tool_denied",
   "storage_failure",
   "invalid_output",
@@ -371,6 +384,17 @@ export const ReasonCode = z.enum([
   "dependency_failed",
   "none",
 ]);
+
+/** A reproducible example a review finding attaches to a claim about behavior (#155). */
+export const ReproSchema = z
+  .object({
+    executable: z.string().min(1).max(512),
+    args: z.array(z.string().max(4096)).max(32),
+    expected: z.string().min(1).max(2000),
+    actual: z.string().min(1).max(2000),
+  })
+  .strict();
+export type Repro = z.infer<typeof ReproSchema>;
 
 export const ReviewSchema = z
   .object({
@@ -401,6 +425,19 @@ export const ReviewSchema = z
               "unrequested",
             ]),
             severity: z.enum(["critical", "high", "medium", "low"]),
+            /**
+             * `spec` when the request, a requirement or a criterion names the behavior or input that
+             * fails; `inferred` when the finding comes from a standard, convention or general
+             * robustness the spec does not name. Inferred findings are notes unless they are
+             * security findings or critical. A finding without a basis counts as `spec`.
+             */
+            basis: z.enum(["spec", "inferred"]).optional(),
+            /**
+             * A command that shows the claimed behavior: it prints `actual` on a line of its
+             * output where the spec requires `expected`. The runtime runs it before the finding
+             * starts a correction; a finding whose repro does not print `actual` is a note.
+             */
+            repro: ReproSchema.optional(),
             requirementIds: z.array(RequirementId),
             criterionIds: z.array(CriterionId),
             file: RelativePath.nullable(),
@@ -556,6 +593,7 @@ export const InputManifestSchema = z
 export const EventType = z.enum([
   "run.created",
   "run.state_changed",
+  "run.rerouted",
   "stage.started",
   "stage.finished",
   "attempt.started",
@@ -601,6 +639,22 @@ export const EventSchema = z.discriminatedUnion("type", [
           to: RunStatus,
           reason: ReasonCode,
           revision: z.number().int().nonnegative(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A stopped run continues on other models; the routing artifact holds the full record.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("run.rerouted"),
+      payload: z
+        .object({
+          artifactId: SafeId,
+          runModel: z.object({ from: z.string(), to: z.string() }).strict(),
+          changes: z
+            .array(z.object({ target: z.string(), from: z.string(), to: z.string() }).strict())
+            .max(500),
         })
         .strict(),
     })
@@ -892,11 +946,15 @@ export interface StartRequest {
   executionMode?: ExecutionMode;
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
+  clarification?: ClarificationMode;
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
    */
   routes?: Record<string, string>;
+  /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
+  issue?: { repository: string; number: number; url: string; title: string };
 }
 export type Decision =
   | {
@@ -986,6 +1044,12 @@ export interface WorkflowService {
     runId: string,
     command: CommandIdentity,
     limits?: Partial<import("./budget.js").BudgetLimits>,
+  ): Promise<RunSnapshot>;
+  /** Moves a stopped run to other models from where it stopped; the run keeps its status. */
+  reroute(
+    runId: string,
+    command: CommandIdentity,
+    request: import("./routing.js").RerouteRequest,
   ): Promise<RunSnapshot>;
   events(runId: string, afterSeq: number, signal: AbortSignal): AsyncIterable<WorkflowEvent>;
 }

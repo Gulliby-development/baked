@@ -85,7 +85,7 @@ export class StandaloneLspClient {
 
   /** Spawn the server process and perform the initialize handshake */
   async start(): Promise<void> {
-    // Spawn with detached: true so the child becomes its own process group leader.
+    // On POSIX, spawn detached so the child becomes its own process group leader.
     // This lets us kill the entire process tree via negative PID, which is critical
     // for LSP wrappers (e.g. biome's Mason shim) that use spawnSync to launch
     // a native binary grandchild — without this, SIGTERM only hits the wrapper
@@ -93,7 +93,11 @@ export class StandaloneLspClient {
     this.process = spawn(this.config.command, this.config.args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: this.cwd,
-      detached: true,
+      // On Windows a detached child has no console, so console grandchildren
+      // (e.g. node behind the biome.exe shim) open visible windows. Tree kill
+      // there goes through taskkill, so the process group is not needed.
+      detached: !IS_WIN,
+      windowsHide: true,
     });
     trackProcess(this.process);
     if (this.process.pid) trackLspPid(this.process.pid);

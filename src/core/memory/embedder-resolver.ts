@@ -28,6 +28,7 @@ const PROVIDER_DEFAULTS: Readonly<Record<string, string | null>> = {
   // No embedding API on these providers — fall back to hashbag.
   anthropic: null,
   codex: null,
+  "claude-code": null,
   copilot: null,
   "github-models": null,
 };

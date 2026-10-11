@@ -145,7 +145,8 @@
 
 .setup-gate[aria-pressed="true"] {
   background: var(--bg-hover);
-  border-left-color: var(--accent);
+  border-left-color: var(--fill-accent);
+  background: var(--bg-selected);
   color: var(--text);
 }
 
@@ -188,7 +189,7 @@
   max-height: 260px;
   overflow: auto;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   background: var(--bg-code);
   color: var(--text-2);
@@ -216,7 +217,7 @@
 }
 
 .setup-callout {
-  border-color: var(--line-strong);
+  border-color: var(--ink);
 }
 
 /* List on the left, editor on the right; stacked when narrow. */
@@ -302,7 +303,7 @@
 
 .setup input[type="password"] {
   min-height: 34px;
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   padding: 0 10px;
   font: inherit;
@@ -353,7 +354,7 @@
   min-height: 360px;
   resize: vertical;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   background: var(--bg-code);
   color: var(--text);
@@ -397,4 +398,17 @@ a.setup-link:hover {
 
 .setup-wrap-line {
   row-gap: 10px;
+}
+
+.setup-login-log {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: var(--border-w) solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-code);
 }

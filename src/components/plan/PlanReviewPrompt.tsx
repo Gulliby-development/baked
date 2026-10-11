@@ -1,8 +1,8 @@
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
 import { useMemo, useState } from "react";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import type { Plan } from "../../types/index.js";
 import { KeyCaps } from "../ui/index.js";
 

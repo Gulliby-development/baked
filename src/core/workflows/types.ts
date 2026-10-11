@@ -10,6 +10,18 @@ import {
   TaskGraphSchema,
 } from "./schemas.js";
 
+/** The GitHub issue a run was started from (`workflow run --issue`); its delivery closes it. */
+export const IssueSourceSchema = z
+  .object({
+    /** `owner/name` on the configured GitHub host. */
+    repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+    number: z.number().int().positive(),
+    url: z.string(),
+    title: z.string(),
+  })
+  .strict();
+export type IssueSource = z.infer<typeof IssueSourceSchema>;
+
 export const WorktreeStateSchema = z
   .object({
     /** Path relative to the project root, `.baked/worktrees/RUN_ID/main`. */
@@ -64,6 +76,30 @@ export const RuntimeStateSchema = z
     taskSteps: z.record(z.string(), z.number().int().positive()).default({}),
     /** Times plan-time sizing sent the plan back to be split; it does so once. */
     sizingReplans: z.number().int().nonnegative().default(0),
+    /**
+     * Continuations per task: an attempt that stopped at its step or token cap after editing
+     * files gets one more with caps raised by half instead of blocking the run.
+     */
+    taskContinuations: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    /**
+     * Automatic restarts per task: a batch task whose worker was lost runs once more before the
+     * run blocks with `owner_lost`.
+     */
+    taskRestarts: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    /**
+     * Edits a batch task's attempt left in its worktree when it continues at its cap or restarts after a lost worker, by task and
+     * path: the hash before and after (null for absent). The worktree is removed, so the next
+     * attempt gets them applied to its new worktree.
+     */
+    taskCarry: z
+      .record(
+        z.string(),
+        z.record(
+          z.string(),
+          z.object({ before: z.string().nullable(), after: z.string().nullable() }),
+        ),
+      )
+      .default({}),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
@@ -178,6 +214,7 @@ export const RuntimeStateSchema = z
           .strict(),
       )
       .default({}),
+    issue: IssueSourceSchema.nullable().default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;

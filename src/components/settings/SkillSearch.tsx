@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContextManager } from "../../core/context/manager.js";
 import { getCwd } from "../../core/cwd.js";
@@ -16,6 +15,7 @@ import {
   searchSkills,
 } from "../../core/skills/manager.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { PremiumPopup, Radio, Search, VirtualList } from "../ui/index.js";
 import { fitPopupWidth, popupContentWidth } from "../ui/popup-geometry.js";
 

@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { uncommittedEdits } from "../src/core/workflows/rollback.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -37,24 +38,49 @@ const valueCheck = {
   cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [],
 };
 const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [valueCheck] };
+/** A repro that shows the claimed value, run with the program the value check starts. */
+const oldValueRepro = { executable: "bun", args: ["-e", "console.log('old')"], expected: "ready", actual: "old" };
 
 interface Behavior {
   /** Implementations that write a broken value before the fixture writes the right one. */
   broken?: number;
   /** Convergence rounds that report a new gap each before passing. */
   gaps?: number;
+  /** Implementations that stop at their token cap after a partial edit. */
+  capped?: number;
   /** Severity of the convergence gaps; high by default. */
   gapSeverity?: "high" | "medium";
+  /** A spec that names another feature than the run's. */
+  renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
+  /** Fields that replace those of the medium correctness finding a review requesting changes reports. */
+  reviewFinding?: {
+    severity?: string;
+    kind?: string;
+    basis?: "spec" | "inferred";
+    repro?: { executable: string; args: string[]; expected: string; actual: string } | undefined;
+  };
+  /** Analyses that report one blocking finding before passing. */
+  analysisFindings?: number;
+  findingKind?: string;
+  findingRefs?: string[];
 }
 
 class V2Executor implements AgentExecutor {
   calls: string[] = [];
+  prompts: string[] = [];
+  analyses = 0;
+  /** Set by setup; a capped attempt records its usage the way the agent executor does. */
+  service?: NativeWorkflowService;
+  maxTokens: number[] = [];
   implementations = 0;
   convergences = 0;
+  /** Host tools each review attempt was offered. */
+  reviewTools: string[][] = [];
   constructor(private root: string, private behavior: Behavior = {}) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
+    this.prompts.push(request.prompt);
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
       inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] };
     };
@@ -65,7 +91,7 @@ class V2Executor implements AgentExecutor {
         output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
         break;
       case "spec":
-        output = spec;
+        output = this.behavior.renamedFeature ? { ...spec, featureId: "expense-report" } : spec;
         break;
       case "plan": {
         const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\nvalue.txt\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture";
@@ -79,18 +105,29 @@ class V2Executor implements AgentExecutor {
         break;
       }
       case "analysis":
-        output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
+        output = ++this.analyses <= (this.behavior.analysisFindings ?? 0)
+          ? { schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision", findings: [{ id: "F1", kind: this.behavior.findingKind ?? "coverage", refs: this.behavior.findingRefs ?? ["tasks.json"], description: "Task order unclear", blocking: true }] }
+          : { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       case "implementation":
         this.implementations++;
+        this.maxTokens.push(request.attemptTokens ?? 0);
+        if (this.implementations <= (this.behavior.capped ?? 0)) {
+          writeFileSync(join(this.root, "value.txt"), "rea");
+          this.service?.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: request.task?.id ?? null, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
+          output = { schemaVersion: 1, taskId: request.task?.id, outcome: "blocked", summary: "Ran out of tokens", evidenceIds: [], unresolved: ["The value is only partly written"] };
+          break;
+        }
         writeFileSync(join(this.root, "value.txt"), this.implementations <= (this.behavior.broken ?? 0) ? "broken" : `ready${"\n".repeat(this.implementations)}`);
         output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
         break;
       case "review":
+        this.reviewTools.push(Object.keys(request.hostTools ?? {}));
         output = this.behavior.reviewVerdict === "changes_requested"
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [],
-              findings: [{ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case" }],
+              // An undefined field in reviewFinding drops the default.
+              findings: [Object.fromEntries(Object.entries({ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case", repro: oldValueRepro, ...this.behavior.reviewFinding }).filter(([, value]) => value !== undefined))],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Evidence checked" }], findings: [] };
         break;
@@ -121,6 +158,7 @@ function setup(behavior: Behavior = {}, runPolicy: RunPolicy = policy) {
   const executor = new V2Executor(root, behavior);
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: runPolicy } };
   const service = new NativeWorkflowService(root, config, executor);
+  executor.service = service;
   cleanups.push(() => service.close());
   const define = (definition: WorkflowV2) => {
     mkdirSync(join(root, "baked", "workflows"), { recursive: true });
@@ -251,6 +289,44 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check"]);
   }, 30000);
 
+  test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
+    const { start, drive, service, executor } = setup({ analysisFindings: 1 });
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Analysis findings on the plan");
+    expect(service.store.state(run.runId).position?.visits.plan).toBe(2);
+  }, 30000);
+
+  test("under clarification: assume a spec finding from analysis goes back to specify", async () => {
+    const { start, drive, service, executor } = setup(
+      { analysisFindings: 1, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] },
+      { ...policy, clarification: "assume" },
+    );
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Assumed:");
+    expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+    const position = service.store.state(run.runId).position;
+    expect(position?.visits.specify).toBe(2);
+    expect(position?.stageId).toBe("approve");
+  }, 30000);
+
+  test("under clarification: assume a finding that survives the loop-backs goes to a person", async () => {
+    const { start, drive, executor } = setup({ analysisFindings: 3 }, { ...policy, clarification: "assume" });
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("clarification");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis", "plan", "analysis"]);
+  }, 30000);
+
+  test("without clarification: assume a spec finding from analysis goes to a person", async () => {
+    const { start, drive, executor } = setup({ analysisFindings: 1, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] });
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("clarification");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis"]);
+  }, 30000);
+
   // Runs de6cf1ab and 2fa658c0 used up their repair rounds on ever deeper medium findings while
   // every check passed. A medium finding after the first round is recorded, not repaired.
   test("a medium review finding after the first repair round does not start another", async () => {
@@ -274,6 +350,89 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.run(run.runId).convergence_rounds).toBe(2);
   }, 60000);
 
+  test("a spec that renames the feature keeps the run's feature ID", async () => {
+    const { start, complete, service } = setup({ renamedFeature: true });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.state(run.runId).spec?.featureId).toBe("fixture");
+  }, 60000);
+
+  test("an attempt that stops at its cap after editing continues once with larger caps", async () => {
+    const { start, complete, service, executor } = setup({ capped: 1 });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.maxTokens[1]).toBe(1500);
+    expect(service.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
+  }, 60000);
+
+  test("a second capped attempt of the same task blocks the run", async () => {
+    const { start, complete, service } = setup({ capped: 2 });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(final.status).toBe("blocked");
+    expect(lastError(service, run.runId)).toContain("did not complete its implementation");
+  }, 60000);
+
+  // Run de6cf1ab spent every repair round on ISO 8601 forms the spec never listed (#159).
+  test("an inferred review finding is a note and starts no correction", async () => {
+    const { start, complete, service, executor } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { basis: "inferred" },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.calls.filter((c) => c === "review")).toHaveLength(1);
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+    expect(service.store.findings(run.runId)).toHaveLength(0);
+  }, 30000);
+
+  // Run 5b703388 corrected a regex claim that holds in Python but not in JavaScript (#155).
+  test("a review finding whose repro does not show the claim is a note", async () => {
+    const { start, complete, service, executor } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { repro: { ...oldValueRepro, args: ["-e", "console.log('ready')"] } },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.reviewTools[0]).toEqual(["run_repro"]);
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+    expect(service.store.findings(run.runId)).toHaveLength(0);
+    const record = service.store.artifacts(run.runId).find((a) => a.kind === "repro");
+    expect(service.store.readArtifact(run.runId, record?.id ?? "")).toContain('"status":"refuted"');
+  }, 30000);
+
+  test("a correctness finding without a repro is a note", async () => {
+    const { start, complete, service } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { repro: undefined },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+  }, 30000);
+
+  test("an inferred security finding still starts a correction", async () => {
+    const { start, complete, service } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { kind: "security", basis: "inferred" },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+  }, 30000);
+
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {
     const { start, complete, service, define } = setup({ broken: 1 });
     define(quickFix());
@@ -286,6 +445,64 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.state(run.runId).position?.loops).toEqual({ "checks-repair": 1 });
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
   }, 30000);
+
+  // A check whose fixer resolves what it reports passes without a repair task (#235).
+  const fixer = (to: string) => ({
+    executable: "bun",
+    args: ["-e", `const f = process.argv.at(-1); await Bun.write(f, (await Bun.file(f).text()).replace('broken', '${to}'))`],
+  });
+
+  test("a failed check fixed by its fixer passes without a repair task, and undo sees the fix", async () => {
+    const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("ready") }] };
+    const { start, complete, service, define, root, executor } = setup({ broken: 1 }, fixable);
+    const preset = builtinPresets.get("quick-fix");
+    if (!preset) throw new Error("quick-fix preset missing");
+    define({ ...instantiatePreset(preset, fixable), id: "custom-fix", preset: "custom" });
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.implementations).toBe(1);
+    expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
+    const taken = ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId);
+    expect(taken).not.toContain("checks-repair");
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:failed", "check:passed"]);
+    const fixes = service.store.effects(run.runId).filter((e) => e.kind === "file_patch" && JSON.parse(e.intent_json).tool === "apply_fix");
+    expect(fixes.map((e) => JSON.parse(e.intent_json))).toEqual([{ path: "value.txt", tool: "apply_fix", checkId: "check", taskId: "T001" }]);
+    expect(fixes[0]?.status).toBe("applied");
+    // The fix belongs to T001: once the task is invalidated, undo restores the fixer's pre-image
+    // (the fixture writes the task's own edit without the journal).
+    service.store.transaction(() => service.store.taskStatus(run.runId, "T001", "invalidated"));
+    expect(uncommittedEdits(service.store, run.runId).map((e) => e.id)).toEqual(fixes.map((e) => e.id));
+    await service.undo(run.runId, { commandId: newId(), expectedRevision: (await service.get(run.runId)).revision });
+    expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("broken");
+  }, 30000);
+
+  test("a failure the fixer cannot resolve still becomes a repair task", async () => {
+    const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("still broken") }] };
+    const { start, complete, service, define } = setup({ broken: 1 }, fixable);
+    const preset = builtinPresets.get("quick-fix");
+    if (!preset) throw new Error("quick-fix preset missing");
+    define({ ...instantiatePreset(preset, fixable), id: "custom-fix", preset: "custom" });
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:failed", "check:failed", "check:passed"]);
+  }, 30000);
+
+  test("the v1 check stage runs the fixer before repairing", async () => {
+    const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("ready") }] };
+    const { start, complete, service, executor } = setup({ broken: 1 }, fixable);
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.implementations).toBe(1);
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+  }, 60000);
 
   test("a failed check is repaired even when a later required check is inconclusive", async () => {
     // The slow check times out until the value is fixed, like a suite that cannot finish while

@@ -10,16 +10,28 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
-import { CheckRunner } from "../verification/check-runner.js";
+import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
 import { validateEvidence } from "../verification/evidence.js";
-import { fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import {
+  type ReproOutcome,
+  reproAllows,
+  reproExecutables,
+  reproTool,
+  runRepro,
+} from "../verification/repro.js";
 import { validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
+import {
+  evaluateAutoApproval,
+  plannerApprovalLimits,
+  planScopeAdvice,
+  policyDecisions,
+} from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import {
@@ -44,12 +56,18 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "./initiatives/plan.js";
-import { mutationLeaseFor, type WorkspaceLeases, withinWorkflow } from "./leases.js";
+import {
+  commandMayBeRunning,
+  mutationLeaseFor,
+  type WorkspaceLeases,
+  withinWorkflow,
+} from "./leases.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
+import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun } from "./recovery.js";
-import { abortableDelay, isTransient, retryAfterMs, retryDelay } from "./retry.js";
+import { abortableDelay, accountRefusal, isTransient, retryAfterMs, retryDelay } from "./retry.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -69,6 +87,7 @@ import {
   ReasonCode,
   RefutationSchema,
   ReportSchema,
+  type Repro,
   ResearchSchema,
   type Review,
   ReviewSchema,
@@ -81,11 +100,14 @@ import {
 import {
   codeTaskCheckProblems,
   plannerSizing,
+  type SizingReport,
   sizePlan,
   sizingHistory,
   splitNote,
+  splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
+import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
@@ -213,6 +235,8 @@ export class WorkflowScheduler {
     this.checks = new CheckRunner(store, this.processes);
   }
   async drive(runId: string, outerSignal: AbortSignal): Promise<void> {
+    // A reroute between drives writes a new routing revision; read it again.
+    this.routing.delete(runId);
     const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
     // A worktree run holds the lease of its worktree; the project working copy stays free.
     this.mutation =
@@ -299,6 +323,8 @@ export class WorkflowScheduler {
           const profiles = ProfileSchema.array().parse(JSON.parse(run.profiles_json));
           const profile = profiles.find((p) => p.id === stage.profileId);
           let advance = true;
+          // A v2 stage that moved the run's position itself reports no outcome.
+          let rerouted = false;
           let repairFindings: {
             findings: Review["findings"];
             kind: "repair" | "convergence";
@@ -371,8 +397,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
+              // The run owns the feature ID; a spec author that renames it changes nothing.
               if (state.spec.featureId !== run.feature_id)
-                throw new WorkflowFault("OUTPUT_INVALID", "Spec feature ID differs from the run");
+                state.spec = { ...state.spec, featureId: run.feature_id };
               // An initiative decides which contracts a feature depends on, not the spec author.
               if (state.hostDependencies)
                 state.spec = { ...state.spec, dependencies: state.hostDependencies };
@@ -396,6 +423,9 @@ export class WorkflowScheduler {
                 state.research === null && SCOPING_PLANNERS.has(planner.id)
                   ? scopedPlanBudget(state.prompt, planner, policy)
                   : null;
+              const approvalLimits = plannerApprovalLimits(policy);
+              // Scope advice is given once; a plan that keeps the writes is approved by a person.
+              let scopeAdvised = false;
               const plan = PlanSchema.parse(
                 await this.call(
                   runId,
@@ -406,6 +436,7 @@ export class WorkflowScheduler {
                   {
                     checks: policy.checks,
                     profiles,
+                    ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
                       ? {
                           sizing: plannerSizing(
@@ -429,22 +460,26 @@ export class WorkflowScheduler {
                   // The planner sees package errors at submission and can correct them in place.
                   (output) => {
                     const parsed = PlanSchema.safeParse(output);
-                    return parsed.success
-                      ? [
-                          ...this.planProblems(runId, spec, parsed.data, policy, profiles),
-                          ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
-                        ]
-                      : [parsed.error.message];
+                    if (!parsed.success) return [parsed.error.message];
+                    const problems = [
+                      ...this.planProblems(runId, spec, parsed.data, policy, profiles),
+                      ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
+                    ];
+                    if (scopeAdvised) return problems;
+                    const advice = planScopeAdvice(policy, parsed.data.taskGraph);
+                    if (advice.length) scopeAdvised = true;
+                    return [...problems, ...advice];
                   },
                   scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
                 ),
               );
               state.plan = plan.markdown;
-              const graph = planGraph(spec, plan);
-              state.graph = graph;
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
+              const planned = planGraph(spec, plan);
+              const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
+              state.graph = graph;
               state.rootGraph = structuredClone(state.graph);
               state.manifest.planHash = hashBytes(state.plan);
               state.manifest.rootGraphHash = hashJson(state.graph);
@@ -527,38 +562,38 @@ export class WorkflowScheduler {
                 (analysis.verdict === "pass" ||
                   (analysis.verdict === "needs_revision" && onlyDeferred));
               const planOnly = state.analysisPassed ? [] : planOnlyFindings(findings);
-              if (!v2 && planOnly.length && state.analysisReplans === 0) {
-                const stages = WorkflowSchema.parse(
-                  JSON.parse(this.store.run(runId).definition_json),
-                ).stages;
-                const plan = stages.findIndex((stage) => stage.kind === "plan");
-                if (plan >= 0) {
+              const stages = this.stageKinds(runId, v2);
+              const plan = stages.findIndex((s) => s.kind === "plan");
+              if (planOnly.length && state.analysisReplans === 0 && plan >= 0) {
+                if (this.moveTo(state, stages, plan, v2)) {
                   // Gaps in the plan text go back to the planner once before a person is asked.
                   state.analysisReplans = 1;
                   state.prompt += `\nAnalysis findings on the plan; fix every one of them in plan.md and tasks.json:\n${canonical(planOnly.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
-                  state.stageIndex = plan;
                   advance = false;
+                  rerouted = v2 !== null;
                   break;
                 }
               }
               if (
-                !v2 &&
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
                 state.analysisReplans < 2
               ) {
-                const stages = WorkflowSchema.parse(
-                  JSON.parse(this.store.run(runId).definition_json),
-                ).stages;
                 const blockingFindings = findings.filter((f) => f.blocking);
-                // Findings a default settles go back to the stage they refer to before a person.
-                state.analysisReplans = 2;
-                state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
-                state.stageIndex = clarificationResumeIndex(stages, state.stageIndex, {
+                const asking = v2
+                  ? stages.findIndex((s) => s.id === v2.stage.id)
+                  : state.stageIndex;
+                const target = clarificationResumeIndex(stages, asking, {
                   findings: blockingFindings,
                 });
-                advance = false;
-                break;
+                if (target !== asking && this.moveTo(state, stages, target, v2)) {
+                  // Findings a default settles go back to the stage they refer to before a person.
+                  state.analysisReplans = 2;
+                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                  advance = false;
+                  rerouted = v2 !== null;
+                  break;
+                }
               }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
@@ -654,6 +689,8 @@ export class WorkflowScheduler {
                   deferredCriteria: state.spec.criteria
                     .filter((c) => c.method === "post-release")
                     .map((c) => c.id),
+                  // Defaults the agents chose instead of asking; approving accepts them.
+                  assumptions: state.spec.assumptions,
                   boundedCorrection: true,
                   // Granted walk-through capabilities are shown to the person; the frozen gates
                   // that hold them are part of the manifest the digest covers.
@@ -884,7 +921,8 @@ export class WorkflowScheduler {
                 review,
                 review.findings.filter(
                   (f) =>
-                    severities.includes(f.severity) || f.criterionIds.some((id) => failing.has(id)),
+                    (severities.includes(f.severity) && findingBlocks(f)) ||
+                    f.criterionIds.some((id) => failing.has(id)),
                 ),
               );
               if (findings.length) {
@@ -951,7 +989,13 @@ export class WorkflowScheduler {
           signal.throwIfAborted();
           await this.assertWorkspace(runId, state, policy, signal);
           const waiting = this.queued.length > 0;
-          if (v2 && state.position && !waiting && this.store.run(runId).status === "running") {
+          if (
+            v2 &&
+            state.position &&
+            !rerouted &&
+            !waiting &&
+            this.store.run(runId).status === "running"
+          ) {
             // The visit is decided; the next pass takes the transition that answers it.
             state.position.outcome = this.outcomeOf(v2.stage, repairFindings !== null);
             state.position.findings = repairFindings?.findings.map((f) => f.id) ?? [];
@@ -1038,6 +1082,49 @@ export class WorkflowScheduler {
       }
     }
   }
+  /**
+   * Once per task, an attempt that stopped at its step or token cap after editing files gets
+   * another with both caps raised by half, instead of blocking the run for a manual resume. Test
+   * tasks stopped at the cap with the work nearly done (runs 7df4e666, b0d7484c, 8e117dfa).
+   */
+  private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
+    if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
+    const attempt = this.store
+      .attempts(runId)
+      .filter((a) => a.step_id === stepId)
+      .at(-1);
+    const usage = attempt
+      ? this.store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`)
+      : undefined;
+    if (!usage) return false;
+    const record = JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord;
+    if (record.finalizedBy === null) return false;
+    state.taskContinuations[task.id] = 1;
+    state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
+    state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
+    return true;
+  }
+  /** The planned graph with its oversized test tasks split by file, recorded when it splits. */
+  private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
+    const report = sizePlan({
+      graph,
+      policy,
+      samples: sizingHistory(this.store.workspace, policy),
+      spent: this.store.run(runId).token_usage,
+    });
+    const split = splitTestTasks(graph, report);
+    if (!split) return graph;
+    const revision = this.store.state(runId).sizingReplans;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "sizing",
+        `sizing/split-${String(revision)}.json`,
+        canonical({ reasons: report.reasons, tasks: split.tasks.map((t) => t.id) }),
+      ),
+    );
+    return split;
+  }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
     runId: string,
@@ -1098,9 +1185,11 @@ export class WorkflowScheduler {
     if (!routing) return { models: [profile.model] };
     const stage = this.store.rootStage(runId, stepId);
     const staged = stage ? routing.stages[stage] : undefined;
-    const entry = staged ?? routing.profiles[profile.id];
+    const own = routing.profiles[profile.id];
+    const entry = staged ?? own;
+    // The frozen profile keeps its start model; a reroute changes only the record.
     return {
-      models: [staged?.model ?? profile.model, ...(entry?.fallback ?? [])],
+      models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
       ...(entry?.effort ? { effort: entry.effort } : {}),
     };
   }
@@ -1269,6 +1358,40 @@ export class WorkflowScheduler {
           ),
         );
       const wrote = this.store.effects(runId).some((effect) => effect.attempt_id === attempt);
+      const refusal = accountRefusal(error);
+      // Another model on the same provider shares the refused account; one elsewhere does not.
+      const provider = (model: string) => model.split("/")[0];
+      const elsewhere = refusal
+        ? route.models.findIndex(
+            (model, index) => index > fallbackIndex && provider(model) !== provider(profile.model),
+          )
+        : -1;
+      if (refusal && elsewhere > 0 && !signal.aborted && !wrote)
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          extra,
+          signal,
+          task,
+          0,
+          validate,
+          limits,
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            fallbackIndex: elsewhere,
+            primaryError: placement.primaryError ?? error,
+          },
+        );
+      if (refusal && !signal.aborted)
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
+          { reason: "provider_account" },
+        );
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
       // and once the chain has already failed over, the run stops instead of blocking on it.
@@ -1347,8 +1470,10 @@ export class WorkflowScheduler {
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       executionContract: {
         checks: policy.checks,
+        // An implementer works alone; the other agents' tools are only resent on every step.
         profiles: ProfileSchema.array()
           .parse(JSON.parse(this.store.run(runId).profiles_json))
+          .filter((p) => profile.context !== "implementation" || p.id === profile.id)
           .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
         policy: { allowedTools: policy.allowedTools, network: policy.network },
       },
@@ -1388,6 +1513,7 @@ export class WorkflowScheduler {
       const stages = WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
       const plan = stages.findIndex((stage) => stage.kind === "plan");
       if (plan >= 0) {
+        this.raiseBudget(runId, state, policy, report);
         state.sizingReplans = 1;
         state.prompt += `
 ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
@@ -1421,6 +1547,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     state.taskBudgets = Object.fromEntries(
       report.tasks.map((task) => [task.taskId, task.attemptTokens]),
     );
+    this.raiseBudget(runId, state, policy, report);
+    return "continue";
+  }
+  /**
+   * Grows the run budget to the sized price, up to the policy's ceiling. A plan sent back to be
+   * split is raised too: the price only grows with the re-plan, and a run on a provider with a
+   * high per-step cost otherwise ran out before its plan was accepted (expenses-py-r4).
+   */
+  private raiseBudget(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    report: SizingReport,
+  ): void {
     if (report.budgetAfter > policy.maxTotalTokens) {
       const before = hashJson(policy);
       const after = PolicySchema.parse({ ...policy, maxTotalTokens: report.budgetAfter });
@@ -1444,7 +1584,6 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       policy.maxTotalTokens = after.maxTotalTokens;
       state.manifest.policyHash = hashJson(after);
     }
-    return "continue";
   }
   /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   private wait(
@@ -1537,12 +1676,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   private evidenceContext(
     runId: string,
     state: RuntimeState,
-    options: { reads: boolean } = { reads: true },
+    options: { reads: boolean; commands?: boolean } = { reads: true },
   ): unknown[] {
     return this.store
       .evidence(runId)
       .filter((e) => e.snapshot_id === state.snapshotId && e.validity === "current")
       .filter((e) => options.reads || e.kind !== "read")
+      .filter((e) => options.commands !== false || e.kind !== "command")
       .map((e) => {
         const content = this.store.readArtifact(runId, e.artifact_id);
         // A read is replaced by what it read: its content is resent on every step of every later
@@ -1670,6 +1810,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
+      const preloaded = await preloadTaskFiles(root, task.writes);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -1679,7 +1820,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           this.requireProfile(profiles.find((p) => p.id === task.profileId)),
           {
             task,
-            evidence: this.evidenceContext(runId, state, { reads: false }),
+            // A planned task needs the earlier tasks' changes, not their check logs; a repair
+            // task gets the logs of the checks it fixes.
+            evidence: this.evidenceContext(runId, state, {
+              reads: false,
+              commands: task.origin !== "planned",
+            }),
+            ...(preloaded
+              ? {
+                  taskFiles: {
+                    content: preloaded,
+                    note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines. Edit them directly; read them again only for spans of an outlined file or to cite evidence.",
+                  },
+                }
+              : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
             ...(inherited.length
               ? {
@@ -1723,6 +1877,15 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.unresolved.length > 0 ||
         (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
       ) {
+        if (changed.length > 0 && this.continueAtCap(runId, state, child, task)) {
+          // The task is ready again and the next pass of the task loop continues it.
+          this.store.transaction(() => {
+            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+          });
+          return;
+        }
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
         throw new WorkflowFault(
           "OUTPUT_INVALID",
@@ -1869,17 +2032,25 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           if (outcome.kind === "fatal") continue;
           if (outcome.kind === "done") {
             if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+            delete state.taskCarry[entry.task.id];
           } else if (outcome.kind === "interrupted") {
-            lost.set(entry.task.id, outcome.reason);
+            const restart = !fatal && this.restartLostTask(runId, state, outcome);
+            if (restart && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
+            if (!restart) lost.set(entry.task.id, outcome.reason);
             this.store.transaction(() => {
               this.store.taskStatus(runId, entry.task.id, "interrupted");
               this.store.finishStep(runId, entry.child, "interrupted");
             });
           } else if (outcome.kind === "rejected") {
-            failure ??= outcome.error;
+            const again =
+              outcome.edits !== undefined &&
+              this.continueAtCap(runId, state, entry.child, entry.task);
+            if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
+            if (!again) failure ??= outcome.error;
             this.store.transaction(() => {
-              this.store.taskStatus(runId, entry.task.id, "blocked");
+              this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
               this.store.finishStep(runId, entry.child, "failed");
+              if (again) this.store.saveState(runId, state);
             });
           }
           await this.releaseTaskWorktree(runId, entry);
@@ -1907,6 +2078,43 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("OUTPUT_INVALID", "Task dependencies remain blocked", {
         reason: "dependency_failed",
       });
+  }
+  /**
+   * Decides whether a task whose worker was lost runs again in this drive, from the run worktree's
+   * current content and with the edits its worker left, instead of blocking the run. Each task
+   * gets one such restart per run. A lost worktree lease belongs to another owner now, and an
+   * effect of unknown outcome in the worktree needs recovery, so neither restarts.
+   */
+  private restartLostTask(
+    runId: string,
+    state: RuntimeState,
+    outcome: Extract<WorkerOutcome, { kind: "interrupted" }>,
+  ): boolean {
+    const { entry } = outcome;
+    if (outcome.leaseLost || (state.taskRestarts[entry.task.id] ?? 0) > 0) return false;
+    const unsettled = this.store
+      .effects(runId)
+      .some(
+        (e) =>
+          ["prepared", "unknown"].includes(e.status) && intentRoot(e.intent_json) === entry.path,
+      );
+    if (unsettled || commandMayBeRunning(this.store, runId)) return false;
+    this.store.transaction(() => {
+      state.taskRestarts[entry.task.id] = 1;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/restarts/${entry.task.id}.json`,
+        canonical({
+          taskId: entry.task.id,
+          stepId: entry.child,
+          reason: outcome.reason,
+          carriedPaths: outcome.edits?.changed ?? [],
+        }),
+      );
+      this.store.saveState(runId, state);
+    });
+    return true;
   }
   /**
    * Reserves the agent attempts of a whole batch before any task starts. The batch shrinks to the
@@ -2000,9 +2208,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const signal = controller.signal;
     if (runSignal.aborted) onRun();
     if (leaseSignal.aborted) onLease();
+    const known = new Set(this.store.effects(runId).map((e) => e.id));
+    let before: Record<string, string> | undefined;
     try {
-      const known = new Set(this.store.effects(runId).map((e) => e.id));
-      const before = await sourceManifest(root, generatedPaths(policy), signal);
+      before = await sourceManifest(root, generatedPaths(policy), signal);
+      const earlierEdits = await this.applyCarry(runId, state, entry, root);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2010,7 +2220,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           state,
           policy,
           entry.profile,
-          entry.extra,
+          earlierEdits && entry.extra && typeof entry.extra === "object"
+            ? { ...entry.extra, earlierEdits }
+            : entry.extra,
           signal,
           task,
           0,
@@ -2021,18 +2233,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         ),
       );
       const after = await sourceManifest(root, generatedPaths(policy), signal);
-      const journaled = this.store
-        .effects(runId)
-        .filter(
-          (e) =>
-            !known.has(e.id) &&
-            e.kind === "file_patch" &&
-            intentRoot(e.intent_json) === entry.path &&
-            ["applied", "reconciled"].includes(e.status) &&
-            e.before_hash !== e.after_hash,
-        )
-        .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-      const changed = [...new Set([...changedPaths(before, after), ...journaled])].sort();
+      const changed = this.workerChanges(runId, entry, known, before, after);
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
         return {
@@ -2052,6 +2253,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "rejected",
           entry,
+          ...(changed.length ? { edits: { before, changed } } : {}),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
@@ -2071,7 +2273,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (runSignal.aborted) return { kind: "fatal", entry, error: runSignal.reason ?? error };
       if (
         error instanceof WorkflowFault &&
-        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+        (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
+          error.details.reason === "provider_account")
       )
         return { kind: "fatal", entry, error };
       // The task's worker or its worktree lease is gone; the other tasks continue.
@@ -2080,16 +2283,69 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         !(error instanceof WorkflowFault) ||
         error.code === "WORKSPACE_BUSY" ||
         error.details.reason === "provider_unavailable";
+      // Another owner may hold the lease before the next heartbeat notices it.
+      const leaseLost =
+        leaseSignal.aborted || this.store.lease(entry.lease())?.owner_id !== this.leases.owner;
       if (lostWorker)
         return {
           kind: "interrupted",
           entry,
-          reason: error instanceof Error ? error.message : String(error),
+          leaseLost,
+          ...(!leaseLost && before
+            ? await this.lostWorkerEdits(runId, policy, entry, known, before)
+            : {}),
+          reason:
+            leaseSignal.aborted && !(error instanceof Error && error.message)
+              ? "its worktree lease was lost"
+              : error instanceof Error
+                ? error.message || error.name
+                : String(error),
         };
       return { kind: "rejected", entry, error };
     } finally {
       runSignal.removeEventListener("abort", onRun);
       leaseSignal.removeEventListener("abort", onLease);
+    }
+  }
+  /** The files a task's worker changed in its worktree: by its manifest and by the effect journal. */
+  private workerChanges(
+    runId: string,
+    entry: BatchEntry,
+    known: Set<string>,
+    before: Record<string, string>,
+    after: Record<string, string>,
+  ): string[] {
+    const journaled = this.store
+      .effects(runId)
+      .filter(
+        (e) =>
+          !known.has(e.id) &&
+          e.kind === "file_patch" &&
+          intentRoot(e.intent_json) === entry.path &&
+          ["applied", "reconciled"].includes(e.status) &&
+          e.before_hash !== e.after_hash,
+      )
+      .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+    return [...new Set([...changedPaths(before, after), ...journaled])].sort();
+  }
+  /** The edits a lost worker left in its worktree, which a restart of its task carries over. */
+  private async lostWorkerEdits(
+    runId: string,
+    policy: RunPolicy,
+    entry: BatchEntry,
+    known: Set<string>,
+    before: Record<string, string>,
+  ): Promise<{ edits?: { before: Record<string, string>; changed: string[] } }> {
+    try {
+      const after = await sourceManifest(
+        join(this.store.workspace, entry.path),
+        generatedPaths(policy),
+      );
+      const changed = this.workerChanges(runId, entry, known, before, after);
+      return changed.length ? { edits: { before, changed } } : {};
+    } catch {
+      // An unreadable worktree leaves nothing to carry; the restart starts from the base.
+      return {};
     }
   }
   /**
@@ -2337,6 +2593,59 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       ),
     );
   }
+  /**
+   * Keeps what a batch task's attempt changed before its worktree is removed: the content after
+   * the edit is stored like a pre-image, by hash, so the continuing attempt can get it back.
+   */
+  private carryEdits(
+    runId: string,
+    state: RuntimeState,
+    entry: BatchEntry,
+    edits: { before: Record<string, string>; changed: string[] },
+  ): void {
+    const root = join(this.store.workspace, entry.path);
+    this.store.transaction(() => {
+      state.taskCarry[entry.task.id] = Object.fromEntries(
+        edits.changed.map((path) => [
+          path,
+          {
+            before: edits.before[path] ?? null,
+            after: capturePreImage(this.store, runId, workspacePath(root, path)),
+          },
+        ]),
+      );
+      this.store.saveState(runId, state);
+    });
+  }
+  /**
+   * Puts a continued batch task's earlier edits into its new worktree, for each path the base has
+   * not changed since, and describes them for the prompt like the single-writer path does.
+   */
+  private async applyCarry(
+    runId: string,
+    state: RuntimeState,
+    entry: BatchEntry,
+    root: string,
+  ): Promise<{ paths: string[]; patch: string; note: string } | null> {
+    const carry = state.taskCarry[entry.task.id];
+    if (!carry) return null;
+    const applied: Record<string, string | null> = {};
+    for (const [path, { before, after }] of Object.entries(carry)) {
+      if (fileHash(workspacePath(root, path)) !== before) continue;
+      const content = after === null ? null : readKept(this.store, runId, after);
+      if (after !== null && content === null) continue;
+      // Journaled as the new attempt's own edit: its write tools accept the file as one they made.
+      this.journal.publish(runId, entry.attemptId, path, content, before, "file_patch", root);
+      applied[path] = before;
+    }
+    const paths = Object.keys(applied);
+    if (!paths.length) return null;
+    return {
+      paths,
+      patch: await this.taskPatch(runId, root, applied),
+      note: "These files already contain the edits in the patch, from an earlier attempt of this task in this run; keep what is correct. Read only the spans you still have to change.",
+    };
+  }
   /** Removes a settled task's worktree and releases its lease; a worktree with unsettled effects stays for recovery. */
   private async releaseTaskWorktree(runId: string, entry: BatchEntry): Promise<void> {
     if (!entry.path || entry.released) return;
@@ -2513,9 +2822,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
+    fixed = false,
   ): Promise<Review["findings"]> {
     await this.snapshot(runId, state, policy, signal);
     const failures: Review["findings"] = [];
+    const failedIds: string[] = [];
     // A failure is repaired first; the next pass reruns every check, the inconclusive one too.
     let inconclusive: string | undefined;
     for (const check of policy.checks) {
@@ -2530,6 +2841,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if (result.status === "failed" && check.required) {
+        failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
         if (!task)
@@ -2547,6 +2859,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         );
       }
     }
+    if (
+      failures.length &&
+      !fixed &&
+      (await this.applyFixers(runId, stepId, state, policy, failedIds, signal))
+    )
+      return this.runChecks(runId, stepId, state, policy, signal, true);
     if (!failures.length && inconclusive)
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
@@ -2560,6 +2878,98 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         findings: failures,
       });
     return failures;
+  }
+  /**
+   * Runs the fixer of each failed check that names one (`ruff check --fix`, `biome check --write`)
+   * on the files the run's tasks write, so findings a tool fixes mechanically cost no repair task.
+   * Each file is one journaled edit with its pre-image, attributed to the last task that writes
+   * it, so undo treats it like that task's own edits. Returns whether a file changed; the caller
+   * then takes a new snapshot and reruns its checks once, and only what remains is repaired.
+   */
+  private async applyFixers(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    failedIds: string[],
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const fixable = policy.checks.filter((c) => c.fix && failedIds.includes(c.id));
+    const tasks = state.graph?.tasks ?? [];
+    if (!fixable.length || !tasks.length) return false;
+    const root = runRoot(this.store.workspace, state);
+    const owners = new Map<string, string>();
+    for (const task of tasks)
+      for (const write of task.writes)
+        if (write.action === "delete") owners.delete(write.path);
+        else owners.set(write.path, task.id);
+    const paths = [...owners.keys()].filter((path) => fileHash(workspacePath(root, path)));
+    if (!paths.length) return false;
+    const lease = mutationLeaseFor(this.store.workspace, root);
+    const generated = generatedPaths(policy);
+    const before = await sourceManifest(root, generated, signal);
+    const attempt = this.store.beginHostAttempt(runId, stepId);
+    const scope = new ProcessScope();
+    let changed = false;
+    try {
+      for (const check of fixable) {
+        const fix = check.fix;
+        if (!fix) continue;
+        const executable = fix.executable === "bun" ? process.execPath : fix.executable;
+        for (const path of paths) {
+          signal.throwIfAborted();
+          this.leases.assert(lease);
+          const target = workspacePath(root, path);
+          const preImage = capturePreImage(this.store, runId, target);
+          const effectId = this.store.transaction(() =>
+            this.store.prepareEffect(
+              runId,
+              attempt,
+              "file_patch",
+              {
+                path,
+                tool: "apply_fix",
+                checkId: check.id,
+                taskId: owners.get(path),
+                ...rootField(this.store.workspace, root),
+              },
+              preImage,
+              null,
+            ),
+          );
+          try {
+            // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+            await executeCheckCommand(scope, executable, [...fix.args, path], {
+              cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+              env: buildCheckEnv(check),
+              timeoutMs: check.timeoutMs,
+              signal,
+            });
+            const after = fileHash(target);
+            this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+            if (after !== preImage) changed = true;
+          } catch (error) {
+            this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+            throw error;
+          }
+        }
+      }
+      const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
+        (path) => !owners.has(path),
+      );
+      if (outside.length)
+        throw new WorkflowFault(
+          "CAPABILITY_DENIED",
+          `A check fixer changed files outside the run's tasks: ${outside.join(", ")}`,
+        );
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      return changed;
+    } catch (error) {
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "failed", 0));
+      throw error;
+    } finally {
+      await scope.stop();
+    }
   }
   /** Stores a review and registers the findings that block; the others stay in the artifact. */
   private recordFindings(
@@ -2645,6 +3055,14 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const reviewSpec = state.spec;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
+    const executables = reproExecutables(policy.checks);
+    const repro = (r: Repro) =>
+      runRepro(this.processes, r, {
+        root: this.store.workspace,
+        executables,
+        generated: generatedPaths(policy),
+        signal,
+      });
     const runReviewer = async (reviewer: Reviewer) => {
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
@@ -2659,6 +3077,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           profile,
           { dimension: reviewer.dimension, evidence: this.evidenceContext(runId, state) },
           signal,
+          undefined,
+          0,
+          undefined,
+          undefined,
+          executables.length && profile.allowedTools.includes("run_repro")
+            ? () => ({ run_repro: reproTool(executables, repro) })
+            : undefined,
         ),
       );
       validateReview(
@@ -2683,12 +3108,33 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         if (outcome.status === "rejected") throw outcome.reason;
         const { reviewer, result } = outcome.value;
         state.reviews[reviewer.key] = result;
-        // Advisory reviewers and findings below the blocking severities are recorded, not repaired.
-        const blocking = reviewer.required
+        // Advisory reviewers, findings below the blocking severities and inferred notes are
+        // recorded, not repaired.
+        const candidates = reviewer.required
           ? result.findings.filter(
-              (f) => reviewer.blocking.includes(f.severity) && severities.includes(f.severity),
+              (f) =>
+                reviewer.blocking.includes(f.severity) &&
+                severities.includes(f.severity) &&
+                findingBlocks(f),
             )
           : [];
+        // A claim starts a correction only when its repro shows it (#155).
+        const outcomes = new Map<string, ReproOutcome>();
+        for (const finding of candidates)
+          if (finding.repro && executables.length)
+            outcomes.set(finding.id, await repro(finding.repro));
+        if (outcomes.size)
+          this.store.transaction(() =>
+            this.store.artifact(
+              runId,
+              "repro",
+              `reviews/repro-${newId()}.json`,
+              canonical({ dimension: reviewer.dimension, outcomes: Object.fromEntries(outcomes) }),
+            ),
+          );
+        const blocking = candidates.filter((f) =>
+          reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0),
+        );
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);
           owners.set(finding.id, reviewer);
@@ -2873,6 +3319,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     policy: RunPolicy,
     v2: { stage: Stage; gates: Gate[] },
     signal: AbortSignal,
+    fixed = false,
   ): Promise<Review["findings"]> {
     if (v2.stage.type !== "check") return [];
     await this.snapshot(runId, state, policy, signal);
@@ -2887,6 +3334,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       ...bound.filter((b) => !b.check.required),
     ];
     const failures: Review["findings"] = [];
+    const failedIds: string[] = [];
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
@@ -2902,6 +3350,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         inconclusive ??= check.id;
         continue;
       }
+      if (!result.reason) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
       const fallback = {
@@ -2923,6 +3372,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         ),
       );
     }
+    if (
+      failures.length &&
+      !fixed &&
+      (await this.applyFixers(runId, stepId, state, policy, failedIds, signal))
+    )
+      return this.runCheckStage(runId, stepId, state, policy, v2, signal, true);
     if (!failures.length && inconclusive)
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
@@ -3163,6 +3618,42 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       this.store.saveState(runId, state);
     });
   }
+  /** The stages of a run's definition with the mechanism each one runs. */
+  private stageKinds(
+    runId: string,
+    v2: { definition: WorkflowV2 } | null,
+  ): { id: string; kind: string }[] {
+    return v2
+      ? v2.definition.stages.map((s) => ({ id: s.id, kind: stageKind(s) ?? s.type }))
+      : WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
+  }
+  /**
+   * Sends the run back to an earlier stage outside the definition's transitions. A v2 run counts
+   * the visit; when that would pass the definition's visit limit the run stays and a person is
+   * asked instead.
+   */
+  private moveTo(
+    state: RuntimeState,
+    stages: readonly { id: string }[],
+    index: number,
+    v2: { definition: WorkflowV2 } | null,
+  ): boolean {
+    const target = stages[index];
+    if (!target) return false;
+    const position = state.position;
+    if (!v2 || !position) {
+      state.stageIndex = index;
+      return true;
+    }
+    if (position.total + 1 > v2.definition.limits.maxStageVisits) return false;
+    position.stageId = target.id;
+    position.outcome = null;
+    position.findings = [];
+    position.repairKind = null;
+    position.total++;
+    position.visits[target.id] = (position.visits[target.id] ?? 0) + 1;
+    return true;
+  }
   /** Completion of a run of a v2 definition. */
   private async acceptV2(
     runId: string,
@@ -3380,8 +3871,22 @@ type WorkerOutcome =
       checks: WorkerCheck[];
     }
   /** The task's result is refused: a change outside its writes, or no complete implementation. */
-  | { kind: "rejected"; entry: BatchEntry; error: unknown }
+  | {
+      kind: "rejected";
+      entry: BatchEntry;
+      error: unknown;
+      /** The files the attempt changed in its worktree, with the manifest before it. */
+      edits?: { before: Record<string, string>; changed: string[] };
+    }
   /** The task's worker or worktree lease was lost; only this task stops. */
-  | { kind: "interrupted"; entry: BatchEntry; reason: string }
+  | {
+      kind: "interrupted";
+      entry: BatchEntry;
+      reason: string;
+      /** Another owner took the task worktree's lease, so the worktree is not this run's to reuse. */
+      leaseLost: boolean;
+      /** The files the lost worker had changed in its worktree, with the manifest before it. */
+      edits?: { before: Record<string, string>; changed: string[] };
+    }
   /** The whole run stops: it was aborted or its budget is used up. */
   | { kind: "fatal"; entry: BatchEntry; error: unknown };

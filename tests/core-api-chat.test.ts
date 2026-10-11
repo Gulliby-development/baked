@@ -23,6 +23,7 @@ class ScriptedHost implements ChatAgentHost {
   scripts: Script[] = [];
   seen: { modelId: string; mode: string; messages: ModelMessage[] }[] = [];
   released: string[] = [];
+  suggestMentions?: ChatAgentHost["suggestMentions"];
   async agent(request: TurnAgentRequest) {
     const script = this.scripts.shift() ?? reply("ok");
     return {
@@ -142,6 +143,19 @@ describe("local API chat sessions", () => {
     const { call } = await setup();
     const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
     expect(health.capabilities).toContain("sessions");
+  });
+
+  test("mentions answers with the host's @ completions", async () => {
+    const { host, call } = await setup();
+    const asked: string[] = [];
+    host.suggestMentions = async (query: string) => {
+      asked.push(query);
+      return [{ kind: "file" as const, insert: "README.md", label: "README.md", detail: "file", indices: [] }];
+    };
+    const res = await call("/v1/mentions?q=read&limit=5");
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { mentions: { insert: string }[] }).mentions[0]?.insert).toBe("README.md");
+    expect(asked).toEqual(["read"]);
   });
 
   test("a turn streams text, tool calls and usage, and is saved where the terminal UI reads it", async () => {

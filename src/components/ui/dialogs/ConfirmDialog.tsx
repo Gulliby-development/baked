@@ -1,6 +1,6 @@
-import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import { useTheme } from "../../../core/theme/index.js";
+import { useKeyboard } from "../../../hooks/useTerminalEvents.js";
 import { useDialogStore } from "../../../stores/dialog.js";
 import { PremiumPopup } from "../PremiumPopup.js";
 
