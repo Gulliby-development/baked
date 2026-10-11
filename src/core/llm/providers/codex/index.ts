@@ -7,13 +7,14 @@ import {
   parseCodexLoginStatus,
   parseCodexModelListResult,
 } from "./client.js";
+import { createCodexNativeLanguageModel, getDefaultCodexSessions } from "./native.js";
 import {
   buildCodexSchema,
+  CodexCliRunner,
   createCodexLanguageModel,
   parseCodexResponse,
   serializeCodexPrompt,
 } from "./runner.js";
-import { getDefaultCodexRunner } from "./session.js";
 
 const GPT_55_INPUT_CONTEXT = 272_000;
 
@@ -41,17 +42,18 @@ export const codex: ProviderDefinition = {
   envVar: "",
   icon: "⌘",
   asciiIcon: "C",
-  description: "OpenAI Codex via the official CLI. Output appears when each turn finishes.",
+  description: "OpenAI Codex via the official CLI app-server, with your ChatGPT login.",
   noAuthLabel: "login required — Enter to authenticate",
   authErrorLabel: "login/session error",
-  badge: "non-streaming",
   onRequestAuth: async () => {
     const { requestCodexAuth } = await import("./auth.js");
     await requestCodexAuth();
   },
   createModel(modelId: string) {
     assertCodexReady();
-    return createCodexLanguageModel(modelId, getDefaultCodexRunner());
+    const exec = createCodexLanguageModel(modelId, new CodexCliRunner());
+    if (process.env.BAKED_CODEX_TRANSPORT === "exec") return exec;
+    return createCodexNativeLanguageModel(modelId, getDefaultCodexSessions(), exec);
   },
   async fetchModels() {
     const status = getCodexLoginStatus();
