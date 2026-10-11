@@ -22,6 +22,9 @@ export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `images` on chat messages (paste and drop in the composer). */
 export const IMAGES_CAPABILITY = "images";
 
+/** `/v1/graph*` (the Code graph section). */
+export const CODE_GRAPH_CAPABILITY = "code-graph";
+
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the
  * health answer could not be read, so the caller has to try the endpoint and treat 404 as "no".

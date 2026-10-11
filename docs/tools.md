@@ -75,3 +75,5 @@ src/services/auth/session.ts (→12)
 ```
 
 `+` marks an exported symbol, `(→12)` the number of dependent files, `[NEW]` a recently changed file. The summary after a name comes from `semanticSummaries` (`ast` by default: docstrings only). Files edited or mentioned in the conversation are boosted per turn. The index is SQLite (`repomap.db`) in `<project>/.baked/`; `/repo-map` configures it.
+
+The same graph can be viewed. `/graph` in the terminal shows a read-only summary: the biggest folders as bars and the most depended-on files with how many files use them. The desktop app's **Code graph** section draws it interactively ([desktop app](desktop/app.md#screens), [`/v1/graph`](desktop/api.md#code-graph)). Data and prose files (JSON, Markdown, YAML and similar) are left out of both.

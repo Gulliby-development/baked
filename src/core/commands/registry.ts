@@ -8,6 +8,7 @@ import { matchContextPrefix, register as registerContext } from "./context.js";
 import { expandCustomCommandInput, getCachedCustomCommands, listCustomCommands } from "./custom.js";
 import { register as registerDebug } from "./debug.js";
 import { matchGitPrefix, register as registerGit } from "./git.js";
+import { register as registerGraph } from "./graph.js";
 import { register as registerHooks } from "./hooks.js";
 import { matchNavPrefix, register as registerNavigation } from "./navigation.js";
 import { register as registerProjects } from "./projects.js";
@@ -23,6 +24,7 @@ registerGit(commandMap);
 registerConfig(commandMap);
 registerSession(commandMap);
 registerContext(commandMap);
+registerGraph(commandMap);
 registerDebug(commandMap);
 registerNavigation(commandMap);
 registerStorage(commandMap);
@@ -516,6 +518,13 @@ const COMMAND_DEFS: CommandDef[] = [
     category: "Intelligence",
     tags: ["reset"],
     hidden: true,
+  },
+  {
+    cmd: "/graph",
+    ic: "repomap",
+    desc: "Code graph at a glance: biggest groups and key files",
+    category: "Intelligence",
+    tags: ["dependencies", "imports", "structure", "map"],
   },
   {
     cmd: "/diagnose",

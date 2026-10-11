@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`) `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt) and `images` (`images` on chat messages). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt) and `images` (`images` on chat messages). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -271,6 +271,31 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
 
+## Code graph
+
+The graph the repository map builds (`.baked/repomap.db`), grouped for drawing. The server reads the database read-only, so a scan in progress never waits on it, and rebuilds its grouped copy when the database changes. The first request starts indexing when no chat or run has started it yet. The grouping is in `src/core/intelligence/code-graph-model.ts`; the terminal `/graph` view uses the same.
+
+| Method and path | Body or query | Result |
+| --- | --- | --- |
+| `POST /v1/graph` | `{expanded?: string[], tests?: boolean, typeEdges?: boolean, reveal?: path}` | `{state: "ready", indexing, view: GraphView}`; without an index `{state: "indexing" \| "empty", indexing}`, and `{state: "disabled"}` when `repoMap` is off. `indexing` is true while the index is still being built or refreshed, so clients poll |
+| `GET /v1/graph/file` | `?path=` | `{path, lines, symbols, exported, rank, key, test, usedBy, imports, usedByCount, importsCount, packages}`: the strongest links each way (`{path, weight, names}`, at most 8) and the external packages the file imports; 404 for a file that is not indexed |
+| `GET /v1/graph/link` | `?from=&to=` | `{from, to, weight, typeOnly, names, calls, callSites: [{caller, callee, line}], cochanges, mutual}`: why `from` depends on `to`; every imported name, up to 5 call sites, how often Git changed both together and whether `to` also depends on `from`. 404 when `from` does not import `to` |
+| `GET /v1/graph/search` | `?q=&limit=` | `{paths}`: indexed files whose path contains `q` (2 characters at least), best match first |
+
+`GraphView` is one level of the drawing. A project with at most 30 code files is `flat`: every file is a unit. Otherwise the top level holds up to about 16 units: the five most depended-on files (PageRank), the biggest folders, and piles for the rest. `expanded` lists the open folder and pile IDs (`d:<folder>`, `<owner>#files` for small files, `<owner>#dirs` for extra folders); each open one is a `frame` and its children are units whose `owner` is that frame. `reveal` opens the folders around a file and returns its unit ID as `revealed`.
+
+```ts
+interface GraphView {
+  flat: boolean; expanded: string[]; revealed: string | null;
+  units: { id; kind: "dir" | "file" | "pile" | "dirpile"; label; path; owner: string | null; lines; files; keys; tone: 0 | 1 | 2 | 3; key; test; symbols; rank; inside: { path; lines }[] }[];
+  frames: { id; kind; label; path; owner; depth; lines; files; keys; inside }[];
+  edges: { id; from; to; weight; pairs; typeOnly; calls; cochanges; mutual; top: LinkPair[] }[]; // summed between visible units
+  tones: { tone; label }[]; stats: { files; lines; symbols; links; calls }; hubs: { path; lines; rank }[];
+}
+```
+
+`tone` 0 to 2 cycle over the top-level folders by size and 3 marks tests. `key` is a file in the top 3% by rank. Each edge sums the file links between two visible units; `top` keeps its strongest file pairs. With `typeEdges: false` links into type-heavy files are left out, with `tests: false` test files.
+
 ## Screen map
 
 | Mockup | Endpoints |
@@ -288,6 +313,7 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Run memory | `GET\|POST /v1/workflow/memory` |
+| Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions` |

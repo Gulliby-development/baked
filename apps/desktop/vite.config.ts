@@ -12,5 +12,6 @@ export default defineConfig({
     emptyOutDir: true,
     target: "chrome130",
   },
-  server: { port: 5199, strictPort: true },
+  // The Code graph preview runs the core grouping (src/core/intelligence) in the browser.
+  server: { port: 5199, strictPort: true, fs: { allow: ["../.."] } },
 });
