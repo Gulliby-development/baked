@@ -261,7 +261,9 @@ export function buildGraphModel(snapshot: GraphSnapshot, projectName: string): G
     return snapshot.files[i]?.rank ?? 0;
   }
   const place = new Map<number, number>();
-  order.forEach((i, p) => place.set(i, p + 1));
+  order.forEach((i, p) => {
+    place.set(i, p + 1);
+  });
   const files: FileNode[] = [];
   const byPath = new Map<string, FileNode>();
   let lines = 0;
@@ -357,7 +359,9 @@ function assignTones(model: GraphModel): void {
   const dirsBySize = model.top
     .filter((u): u is DirNode => u.kind === "dir" && !isTestGroup(u))
     .sort((a, b) => b.lines - a.lines);
-  dirsBySize.forEach((d, i) => model.tones.set(d.id, i % 3));
+  dirsBySize.forEach((d, i) => {
+    model.tones.set(d.id, i % 3);
+  });
 }
 
 /** The colour group of a node: the tone of the top-level block it belongs to. */
@@ -382,7 +386,12 @@ function collapseChain(d: DirNode): { node: DirNode; label: string } {
   return { node, label };
 }
 
-function pileOf(model: GraphModel, owner: Group, what: "files" | "dirs", members: Node[]): PileNode {
+function pileOf(
+  model: GraphModel,
+  owner: Group,
+  what: "files" | "dirs",
+  members: Node[],
+): PileNode {
   const id = `${owner.id}#${what}`;
   const existing = model.byId.get(id);
   if (existing && existing.kind !== "dir" && existing.kind !== "file") return existing;
@@ -452,9 +461,12 @@ function groupOf(model: GraphModel, owner: Group, budget: number): Node[] {
   const restDirs = ds.slice(dirSlots);
   if (restDirs.length) out.push(pileOf(model, owner, "dirs", restDirs));
   const fileSlots = Math.max(3, budget - out.length - 1);
-  const big = fs.filter((f) => f.key || f.lines >= BIG_FILE_LINES || fs.length <= 4).slice(0, fileSlots);
+  const big = fs
+    .filter((f) => f.key || f.lines >= BIG_FILE_LINES || fs.length <= 4)
+    .slice(0, fileSlots);
   const minShown = Math.min(3, fs.length);
-  if (big.length < minShown) big.push(...fs.filter((f) => !big.includes(f)).slice(0, minShown - big.length));
+  if (big.length < minShown)
+    big.push(...fs.filter((f) => !big.includes(f)).slice(0, minShown - big.length));
   out.push(...big);
   const restFiles = fs.filter((f) => !big.includes(f));
   if (restFiles.length > 3) out.push(pileOf(model, owner, "files", restFiles));
@@ -465,7 +477,10 @@ function groupOf(model: GraphModel, owner: Group, budget: number): Node[] {
 
 function pileChildren(model: GraphModel, pile: PileNode): Node[] {
   if (pile.kind === "dirpile" || pile.members.length <= PILE_CAP) return pile.members;
-  return [...pile.members.slice(0, PILE_CAP), pileOf(model, pile, "files", pile.members.slice(PILE_CAP))];
+  return [
+    ...pile.members.slice(0, PILE_CAP),
+    pileOf(model, pile, "files", pile.members.slice(PILE_CAP)),
+  ];
 }
 
 function childrenOf(model: GraphModel, node: Node): Node[] {
@@ -572,7 +587,12 @@ function representative(w: Walked, visible: Set<string>, file: FileNode): string
 }
 
 /** Ids of the folders and piles that must be open for `path` to show as its own block. */
-function revealChain(model: GraphModel, path: string, expanded: Set<string>, tests: boolean): string | null {
+function revealChain(
+  model: GraphModel,
+  path: string,
+  expanded: Set<string>,
+  tests: boolean,
+): string | null {
   const file = model.byPath.get(path);
   if (!file) return null;
   for (let guard = 0; guard < 16; guard++) {
@@ -590,7 +610,9 @@ function revealChain(model: GraphModel, path: string, expanded: Set<string>, tes
 export function graphView(model: GraphModel, options: GraphViewOptions = {}): GraphView {
   const tests = options.tests ?? true;
   const typeEdges = options.typeEdges ?? true;
-  const expanded = new Set((options.expanded ?? []).filter((id) => model.byId.has(id) || id.includes("#")));
+  const expanded = new Set(
+    (options.expanded ?? []).filter((id) => model.byId.has(id) || id.includes("#")),
+  );
   // Piles are created lazily; make sure the ones named exist before walking.
   const revealed =
     options.reveal !== undefined ? revealChain(model, options.reveal, expanded, tests) : null;
@@ -754,7 +776,11 @@ export interface GraphFileDetail {
   importsCount: number;
 }
 
-export function graphFileDetail(model: GraphModel, path: string, limit = 8): GraphFileDetail | null {
+export function graphFileDetail(
+  model: GraphModel,
+  path: string,
+  limit = 8,
+): GraphFileDetail | null {
   const file = model.byPath.get(path);
   if (!file) return null;
   const meta = model.snapshot.files[file.index];
@@ -792,8 +818,22 @@ export function graphFileDetail(model: GraphModel, path: string, limit = 8): Gra
 export interface GraphOverview {
   flat: boolean;
   stats: GraphStats;
-  groups: { label: string; kind: GraphUnitKind; files: number; lines: number; keys: number; tone: number; test: boolean }[];
-  keyFiles: { path: string; lines: number; usedBy: number; imports: number; topTarget: string | null }[];
+  groups: {
+    label: string;
+    kind: GraphUnitKind;
+    files: number;
+    lines: number;
+    keys: number;
+    tone: number;
+    test: boolean;
+  }[];
+  keyFiles: {
+    path: string;
+    lines: number;
+    usedBy: number;
+    imports: number;
+    topTarget: string | null;
+  }[];
 }
 
 export function graphOverview(model: GraphModel, keyFiles = 8): GraphOverview {

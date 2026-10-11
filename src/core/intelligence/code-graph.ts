@@ -50,9 +50,11 @@ function openReadOnly(path: string): Database | null {
 
 function hasTable(db: Database, name: string): boolean {
   return (
-    db.query<{ n: number }, [string]>(
-      "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
-    ).get(name)?.n === 1
+    db
+      .query<{ n: number }, [string]>(
+        "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+      )
+      .get(name)?.n === 1
   );
 }
 
@@ -64,14 +66,23 @@ export function readGraphSnapshot(workspace: string): GraphSnapshot | null {
     if (!hasTable(db, "files") || !hasTable(db, "edges")) return null;
     const rows = db
       .query<
-        { id: number; path: string; language: string; line_count: number; symbol_count: number; pagerank: number },
+        {
+          id: number;
+          path: string;
+          language: string;
+          line_count: number;
+          symbol_count: number;
+          pagerank: number;
+        },
         []
       >("SELECT id, path, language, line_count, symbol_count, pagerank FROM files ORDER BY path")
       .all()
       .filter((r) => !NOT_CODE.has(r.language));
     if (rows.length === 0) return null;
     const index = new Map<number, number>();
-    rows.forEach((r, i) => index.set(r.id, i));
+    rows.forEach((r, i) => {
+      index.set(r.id, i);
+    });
     const exported = new Map<number, number>();
     for (const r of db
       .query<{ file_id: number; n: number }, []>(

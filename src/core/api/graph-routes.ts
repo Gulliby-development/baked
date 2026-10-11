@@ -5,15 +5,11 @@
  */
 import { z } from "zod";
 import {
-  graphFileDetail,
-  graphView,
-  searchGraphFiles,
-} from "../intelligence/code-graph-model.js";
-import {
   type CodeGraphCache,
   explainGraphLink,
   graphFilePackages,
 } from "../intelligence/code-graph.js";
+import { graphFileDetail, graphView, searchGraphFiles } from "../intelligence/code-graph-model.js";
 import type { RouteContext } from "./route-context.js";
 
 export interface GraphRouteContext extends RouteContext {
@@ -34,7 +30,10 @@ const ViewBody = z.strictObject({
 });
 const FileQuery = z.strictObject({ path: Path });
 const LinkQuery = z.strictObject({ from: Path, to: Path });
-const SearchQuery = z.strictObject({ q: z.string().max(200), limit: z.coerce.number().int().min(1).max(50).optional() });
+const SearchQuery = z.strictObject({
+  q: z.string().max(200),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
 
 /** Answers a code graph request, or returns null when the path is not one. */
 export async function graphRoute(ctx: GraphRouteContext): Promise<Response | null> {

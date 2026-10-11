@@ -60,8 +60,8 @@ import {
   writeTokenFile,
 } from "./auth.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
-import { graphRoute } from "./graph-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
+import { graphRoute } from "./graph-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { memoryRoute } from "./memory-routes.js";
 import type { RouteContext } from "./route-context.js";
