@@ -23,6 +23,17 @@ import type {
   ToolCall,
   ToolResult,
 } from "../../types/index.js";
+import {
+  checkpointTagName,
+  copyCheckpointTags,
+  ensureBaseSnapshot,
+  forkPoint,
+  RollbackError,
+  type RollbackReport,
+  rollbackToCheckpoint,
+} from "../checkpoints/fork.js";
+import { snapshotWorkspace } from "../checkpoints/snapshot.js";
+import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
@@ -150,7 +161,12 @@ export interface ChatAgentHost {
 
 export class ChatError extends Error {
   constructor(
-    readonly code: "NOT_FOUND" | "SESSION_BUSY" | "STALE_PROMPT" | "INVALID_REQUEST",
+    readonly code:
+      | "NOT_FOUND"
+      | "SESSION_BUSY"
+      | "STALE_PROMPT"
+      | "INVALID_REQUEST"
+      | "ROLLBACK_UNAVAILABLE",
     message: string,
   ) {
     super(message);
@@ -262,6 +278,26 @@ export class ChatSession {
 
   get messages(): ChatMessage[] {
     return this.tabMessages.get(this.tabId) ?? [];
+  }
+
+  /** The workspace snapshots of this conversation's checkpoints. */
+  get checkpointTags(): CheckpointTag[] {
+    return this.tab.checkpointTags ?? [];
+  }
+
+  /** The key of this conversation's snapshot tags; API sessions all share one tab id. */
+  get tagOwner(): string {
+    return this.tabId === API_TAB ? this.meta.id : this.tabId;
+  }
+
+  addCheckpointTag(tag: CheckpointTag): void {
+    const tags = [...this.checkpointTags.filter((t) => t.index !== tag.index), tag];
+    this.meta = {
+      ...this.meta,
+      tabs: this.meta.tabs.map((t) =>
+        t.id === this.tabId ? { ...t, checkpointTags: tags.sort((a, b) => a.index - b.index) } : t,
+      ),
+    };
   }
 
   private set messages(value: ChatMessage[]) {
@@ -497,7 +533,8 @@ export class ChatSession {
       timestamp: started,
     };
     const history = [...this.core, { role: "user" as const, content: text }];
-    this.messages = [...this.messages, userMessage];
+    const before = this.messages;
+    this.messages = [...before, userMessage];
     this.steered = [];
     this.emit({ type: "turn-start", turnId: turn.id, message: userMessage });
     this.emitSession();
@@ -529,6 +566,13 @@ export class ChatSession {
     };
 
     try {
+      const base = await ensureBaseSnapshot(
+        this.owner.workspace,
+        this.tagOwner,
+        before,
+        this.checkpointTags,
+      );
+      if (base) this.addCheckpointTag(base);
       const model = this.model;
       if (!model) throw new Error("No model configured");
       const { agent, contextWindow } = await this.owner.host.agent({
@@ -663,6 +707,12 @@ export class ChatSession {
           }
         : null;
     if (assistant) this.messages = [...this.messages, assistant];
+    if (assistant && extractFilesFromToolCalls(assistant).edited.length > 0) {
+      const index = buildTurns(this.messages).length;
+      const tag = checkpointTagName(this.tagOwner, index, text);
+      if (await snapshotWorkspace(this.owner.workspace, tag, `baked checkpoint ${String(index)}`))
+        this.addCheckpointTag({ index, anchorMessageId: userMessage.id, gitTag: tag });
+    }
     this.usage = {
       input: this.usage.input + usage.input,
       output: this.usage.output + usage.output,
@@ -737,6 +787,10 @@ export class ChatService {
     this.host = options.host;
     this.bufferSize = options.bufferSize ?? DEFAULT_BUFFER;
     this.store = new SessionManager(options.workspace);
+  }
+
+  get workspace(): string {
+    return this.options.workspace;
   }
 
   get defaultModel(): string | null {
@@ -829,23 +883,54 @@ export class ChatService {
     return session;
   }
 
-  /** A new session with the messages up to and including `atMessageId`, or all of them. */
-  async fork(idOrPrefix: string, atMessageId?: string): Promise<ChatSession> {
+  /**
+   * A new session with the messages up to and including `atMessageId`, or all of them. With
+   * `rollbackFiles` the workspace files the agent edited after that message's checkpoint are
+   * restored to the checkpoint (see `src/core/checkpoints/fork.ts`).
+   */
+  async fork(
+    idOrPrefix: string,
+    atMessageId?: string,
+    options: { rollbackFiles?: boolean; force?: boolean } = {},
+  ): Promise<{ session: ChatSession; rollback: RollbackReport | null }> {
     const source = this.get(idOrPrefix);
     const all = source.messages;
-    let messages = all;
-    if (atMessageId !== undefined) {
-      const index = all.findIndex((m) => m.id === atMessageId);
-      if (index < 0) throw new ChatError("NOT_FOUND", `Message ${atMessageId} not found`);
-      messages = all.slice(0, index + 1);
-    }
+    const point = forkPoint(all, atMessageId);
+    if (!point) throw new ChatError("NOT_FOUND", `Message ${atMessageId} not found`);
+    if (options.rollbackFiles && [...this.live.values()].some((s) => s.busy))
+      throw new ChatError("SESSION_BUSY", "Wait for running turns to finish before rolling back");
     const summary = source.summary();
-    return this.create({
+    const session = await this.create({
       title: `${summary.title} (fork)`,
       ...(summary.model ? { model: summary.model } : {}),
       mode: summary.mode,
-      messages: messages.map((m) => ({ ...m })),
+      messages: point.messages.map((m) => ({ ...m })),
     });
+    if (!options.rollbackFiles) return { session, rollback: null };
+    try {
+      const rollback = await rollbackToCheckpoint({
+        cwd: this.options.workspace,
+        messages: all,
+        checkpoint: point.checkpoint,
+        tags: source.checkpointTags,
+        backupTag: `baked/fork-backup-${session.id.slice(0, 8)}`,
+        force: options.force === true,
+      });
+      const copied = await copyCheckpointTags(
+        this.options.workspace,
+        source.checkpointTags,
+        point.checkpoint,
+        session.tagOwner,
+      );
+      for (const tag of copied) session.addCheckpointTag(tag);
+      await this.persist(session);
+      return { session, rollback };
+    } catch (err) {
+      this.live.delete(session.id);
+      this.store.deleteSession(session.id);
+      if (err instanceof RollbackError) throw new ChatError("ROLLBACK_UNAVAILABLE", err.message);
+      throw err;
+    }
   }
 
   delete(idOrPrefix: string): void {

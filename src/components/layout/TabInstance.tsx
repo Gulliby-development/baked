@@ -538,6 +538,7 @@ export const TabInstance = memo(function TabInstance({
       // Branch-on-submit: if viewing a past checkpoint, undo to that point (reverts files + messages)
       const cpStore = useCheckpointStore.getState();
       const viewingIdx = cpStore.getViewing(tabId);
+      let current = chat.messages;
       if (viewingIdx !== null) {
         if (branchingRef.current) return; // guard against double-submit during async undo
         branchingRef.current = true;
@@ -545,6 +546,7 @@ export const TabInstance = memo(function TabInstance({
           const undoResult = await cpStore.undoToCheckpoint(tabId, viewingIdx, cwd, chat.messages);
           const msgs = undoResult?.messages;
           if (msgs) {
+            current = msgs;
             chat.setMessages(msgs);
             try {
               const { rebuildCoreMessages } = await import("../../core/sessions/rebuild.js");
@@ -558,6 +560,8 @@ export const TabInstance = memo(function TabInstance({
           branchingRef.current = false;
         }
       }
+      // The first turn of a tab snapshots the workspace, so forks can roll back to before it
+      if (!chat.isLoading) await cpStore.ensureBaseTag(tabId, cwd, current);
       chat.handleSubmit(input, images);
 
       // Re-engage sticky scroll so new messages are visible

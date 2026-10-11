@@ -1,5 +1,8 @@
 import { relative } from "node:path";
 import { create } from "zustand";
+import { checkpointTagName, ensureBaseSnapshot } from "../core/checkpoints/fork.js";
+import { snapshotWorkspace } from "../core/checkpoints/snapshot.js";
+import { type CheckpointTag, extractFilesFromToolCalls } from "../core/checkpoints/turns.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
 import { run as gitRun } from "../core/git/status.js";
 import type { ChatMessage } from "../types/index.js";
@@ -62,79 +65,6 @@ export interface RedoResult {
   restoredFiles: string[];
 }
 
-// ── Constants ──
-
-const EDIT_TOOLS = new Set([
-  "edit_file",
-  "multi_edit",
-  "rename_file",
-  "rename_symbol",
-  "move_symbol",
-  "refactor",
-  "undo_edit",
-]);
-
-const READ_TOOLS = new Set([
-  "Read",
-  "bake_grep",
-  "navigate",
-  "Grep",
-  "Glob",
-  "bake_find",
-  "bake_analyze",
-  "analyze",
-]);
-
-function slugify(text: string, maxLen = 30): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, maxLen);
-}
-
-function makeTagName(tabId: string, index: number, prompt: string): string {
-  const slug = slugify(prompt);
-  return `baked/cp-${tabId.slice(0, 8)}-${String(index)}-${slug}`;
-}
-
-function extractFilesFromToolCalls(msg: ChatMessage): { read: string[]; edited: string[] } {
-  const read: string[] = [];
-  const edited: string[] = [];
-  if (!msg.toolCalls) return { read, edited };
-
-  for (const tc of msg.toolCalls) {
-    if (EDIT_TOOLS.has(tc.name) && tc.result?.success) {
-      const p = tc.args.path ?? tc.args.file;
-      if (typeof p === "string") edited.push(p);
-      // rename_file has from/to
-      if (typeof tc.args.from === "string") edited.push(tc.args.from);
-      if (typeof tc.args.to === "string" && tc.name === "rename_file") edited.push(tc.args.to);
-      // multi_edit path
-      if (tc.name === "multi_edit" && typeof tc.args.path === "string") {
-        if (!edited.includes(tc.args.path as string)) edited.push(tc.args.path as string);
-      }
-    }
-    if (READ_TOOLS.has(tc.name)) {
-      const p = tc.args.path ?? tc.args.file;
-      if (typeof p === "string") read.push(p);
-      // Read tool can have files array
-      if (Array.isArray(tc.args.files)) {
-        for (const f of tc.args.files) {
-          if (typeof f === "object" && f && typeof (f as { path?: string }).path === "string") {
-            read.push((f as { path: string }).path);
-          }
-        }
-      }
-    }
-    // dispatch results
-    if (tc.name === "dispatch" && tc.result?.filesEdited) {
-      for (const f of tc.result.filesEdited as string[]) edited.push(f);
-    }
-  }
-  return { read: [...new Set(read)], edited: [...new Set(edited)] };
-}
-
 // ── Store ──
 
 interface PerTab {
@@ -142,6 +72,8 @@ interface PerTab {
   viewing: number | null; // null = live
   redoStack: RedoEntry[];
   lastSyncedLen: number;
+  /** Snapshot of the workspace before the tab's first turn. */
+  baseTag?: CheckpointTag;
   /** Tags waiting to be applied — set by restoreTagsFromMeta before syncFromMessages runs */
   _pendingTags?: Array<{ index: number; anchorMessageId: string; gitTag: string }>;
 }
@@ -161,6 +93,10 @@ interface CheckpointState {
 
   // Git operations
   createGitTag(tabId: string, index: number, cwd: string): Promise<boolean>;
+  /** Snapshots the workspace before a turn when the tab has no snapshot yet. */
+  ensureBaseTag(tabId: string, cwd: string, messages: ChatMessage[]): Promise<void>;
+  /** Every snapshot of the tab (checkpoints, redo entries and the base), for saving and forks. */
+  snapshotTags(tabId: string): CheckpointTag[];
   undoToCheckpoint(
     tabId: string,
     index: number,
@@ -338,28 +274,12 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
     const cp = tab.checkpoints.find((c) => c.index === index);
     if (!cp || cp.gitTag) return false;
 
-    const tag = makeTagName(tabId, index, cp.prompt);
+    const tag = checkpointTagName(tabId, index, cp.prompt);
 
-    // Serialize git operations to prevent concurrent tabs from corrupting the tree
-    const ok = await withGitLock(cwd, async () => {
-      const add = await gitRun(["add", "-A"], cwd);
-      if (!add.ok) return false;
-
-      const commit = await gitRun(
-        ["commit", "-m", `baked-cp-${String(index)}`, "--allow-empty"],
-        cwd,
-      );
-      if (!commit.ok) return false;
-
-      const tagResult = await gitRun(["tag", tag], cwd);
-      if (!tagResult.ok) {
-        await gitRun(["reset", "HEAD~1", "--mixed"], cwd);
-        return false;
-      }
-
-      await gitRun(["reset", "HEAD~1", "--mixed"], cwd);
-      return true;
-    });
+    // Serialize with restores so a snapshot never sees a partially restored working tree
+    const ok = await withGitLock(cwd, () =>
+      snapshotWorkspace(cwd, tag, `baked-cp-${String(index)}`),
+    );
 
     if (!ok) return false;
 
@@ -375,6 +295,37 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
       };
     });
     return true;
+  },
+
+  async ensureBaseTag(tabId: string, cwd: string, messages: ChatMessage[]): Promise<void> {
+    const existing = get().snapshotTags(tabId);
+    const base = await withGitLock(cwd, () => ensureBaseSnapshot(cwd, tabId, messages, existing));
+    if (!base) return;
+    set((s) => {
+      const tab = s.tabs[tabId] ?? emptyTab();
+      if (base.index === 0) return { tabs: { ...s.tabs, [tabId]: { ...tab, baseTag: base } } };
+      const checkpoints = tab.checkpoints.map((c) =>
+        c.index === base.index && c.anchorMessageId === base.anchorMessageId && !c.gitTag
+          ? { ...c, gitTag: base.gitTag }
+          : c,
+      );
+      return { tabs: { ...s.tabs, [tabId]: { ...tab, checkpoints } } };
+    });
+  },
+
+  snapshotTags(tabId: string): CheckpointTag[] {
+    const tab = getTab(get().tabs, tabId);
+    const seen = new Set<string>();
+    const out: CheckpointTag[] = [];
+    const add = (cp: { index: number; anchorMessageId: string; gitTag: string | null }) => {
+      if (!cp.gitTag || seen.has(cp.gitTag)) return;
+      seen.add(cp.gitTag);
+      out.push({ index: cp.index, anchorMessageId: cp.anchorMessageId, gitTag: cp.gitTag });
+    };
+    if (tab.baseTag) add(tab.baseTag);
+    for (const cp of tab.checkpoints) add(cp);
+    for (const entry of tab.redoStack) add(entry.checkpoint);
+    return out;
   },
 
   async undoToCheckpoint(
@@ -442,6 +393,7 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
       tab.checkpoints
         .filter((c) => c.index < targetIndex && c.gitTag && !c.undone)
         .sort((a, b) => b.index - a.index)[0]?.gitTag ??
+      tab.baseTag?.gitTag ??
       null;
 
     // Serialize file restoration with the git lock so createGitTag can't
@@ -577,11 +529,13 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
     tabId: string,
     tags: Array<{ index: number; anchorMessageId: string; gitTag: string }>,
   ) {
+    const baseTag = tags.find((t) => t.index === 0);
+    const regular = tags.filter((t) => t.index !== 0);
     set((s) => {
-      const tab = s.tabs[tabId] ?? emptyTab();
+      const tab = { ...(s.tabs[tabId] ?? emptyTab()), ...(baseTag ? { baseTag } : {}) };
       // Apply to existing checkpoints if any
       const updated = tab.checkpoints.map((cp) => {
-        const saved = tags.find(
+        const saved = regular.find(
           (t) => t.anchorMessageId === cp.anchorMessageId || t.index === cp.index,
         );
         return saved ? { ...cp, gitTag: saved.gitTag } : cp;
@@ -590,7 +544,11 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
       return {
         tabs: {
           ...s.tabs,
-          [tabId]: { ...tab, checkpoints: updated, _pendingTags: tags },
+          [tabId]: {
+            ...tab,
+            checkpoints: updated,
+            ...(regular.length > 0 ? { _pendingTags: regular } : {}),
+          },
         },
       };
     });

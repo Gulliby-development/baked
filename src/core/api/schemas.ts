@@ -116,7 +116,11 @@ export const UpdateSessionBody = z
     mode: ChatModeSchema.optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: "Name a field to change" });
-export const ForkSessionBody = z.strictObject({ atMessageId: z.string().min(1).optional() });
+export const ForkSessionBody = z.strictObject({
+  atMessageId: z.string().min(1).optional(),
+  rollbackFiles: z.boolean().optional(),
+  force: z.boolean().optional(),
+});
 export const MessageBody = z.strictObject({ text: Text });
 export const PromptAnswerBody = z.union([
   z.strictObject({ approve: z.boolean() }),
