@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { chat } from "../../client/chat.js";
 import type { InitiativeView } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
+import { ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
 import { tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -55,27 +56,12 @@ function ModelSwitch({
   onDone: () => void;
 }) {
   const [model, setModel] = useState("");
-  const [models, setModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const open = canSwitchModel(view);
-  useEffect(() => {
-    if (!open) return;
-    let live = true;
-    chat.models(projectKey).then(
-      (result) =>
-        live &&
-        setModels(
-          result.providers.filter((p) => p.configured).flatMap((p) => p.models.map((m) => m.id)),
-        ),
-      () => undefined,
-    );
-    return () => {
-      live = false;
-    };
-  }, [projectKey, open]);
+  const loadModels = useCallback(() => chat.models(projectKey), [projectKey]);
+  const models = useModelCatalog(open ? loadModels : null);
   if (view.model === undefined) return null;
-  const listId = `initiative-models-${view.initiativeId}`;
   const inputId = `initiative-model-${view.initiativeId}`;
   const submit = async (): Promise<void> => {
     setBusy(true);
@@ -106,20 +92,13 @@ function ModelSwitch({
           <label htmlFor={inputId} className="text-[12px] text-dim-foreground">
             Switch the initiative to model
           </label>
-          <input
+          <ModelPicker
             id={inputId}
-            type="text"
-            list={listId}
             value={model}
-            placeholder="provider/model"
-            className="px-[10px] py-2"
-            onChange={(e) => setModel(e.target.value)}
+            onChange={setModel}
+            catalog={models.catalog}
+            error={models.error}
           />
-          <datalist id={listId}>
-            {models.map((id) => (
-              <option key={id} value={id} />
-            ))}
-          </datalist>
           {error && <Alert tone="error">{error}</Alert>}
           <Button
             type="submit"
