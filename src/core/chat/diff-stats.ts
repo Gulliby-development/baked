@@ -1,8 +1,9 @@
 /**
- * Per-session diff statistics for the local API (`GET /v1/sessions/ID/diff`): the files a chat
- * session edited, each with the lines it now adds and removes against the last commit. Git
- * measures the change, so a file shows what is still uncommitted, whoever made it; a file the
- * session edited and that was committed or reverted since shows as unchanged.
+ * Per-session diff statistics for the local API (`GET /v1/sessions/ID/diff`), the TUI status bar
+ * and headless `--json` output: the files a chat session edited, each with the lines it now adds
+ * and removes against the last commit. Git measures the change, so a file shows what is still
+ * uncommitted, whoever made it; a file the session edited and that was committed or reverted
+ * since shows as unchanged.
  */
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -40,19 +41,28 @@ export interface SessionDiffStats {
   totals: { files: number; added: number; removed: number };
 }
 
+/** The files one tool call writes, from its name and arguments. */
+export function toolCallEditPaths(
+  name: string,
+  args: Record<string, unknown> | undefined,
+): string[] {
+  if (!args) return [];
+  if (EDIT_TOOLS.has(name)) {
+    const path = args.path ?? args.file;
+    return typeof path === "string" ? [path] : [];
+  }
+  if (name === "rename_file")
+    return [args.from, args.to].filter((p): p is string => typeof p === "string");
+  return [];
+}
+
 /** The files a session's tool calls edited, as the tools named them. */
 export function editedFiles(messages: ChatMessage[]): string[] {
   const files = new Set<string>();
   for (const message of messages)
     for (const call of message.toolCalls ?? []) {
-      if (call.result?.success !== false && EDIT_TOOLS.has(call.name)) {
-        const path = call.args.path ?? call.args.file;
-        if (typeof path === "string") files.add(path);
-      }
-      if (call.name === "rename_file" && call.result?.success !== false) {
-        if (typeof call.args.from === "string") files.add(call.args.from);
-        if (typeof call.args.to === "string") files.add(call.args.to);
-      }
+      if (call.result?.success !== false)
+        for (const path of toolCallEditPaths(call.name, call.args)) files.add(path);
       for (const file of call.result?.filesEdited ?? []) files.add(file);
     }
   return [...files].sort();
@@ -159,4 +169,33 @@ export async function sessionDiffStats(
       removed: changed.reduce((sum, f) => sum + f.removed, 0),
     },
   };
+}
+
+/** "+12 −3 in 2 files": the session's totals, for status lines. */
+export function formatDiffTotals(stats: SessionDiffStats): string {
+  const { files, added, removed } = stats.totals;
+  return `+${String(added)} −${String(removed)} in ${String(files)} file${files === 1 ? "" : "s"}`;
+}
+
+/** One "+ADDED −REMOVED PATH" line per edited file, with its status when it is not a plain edit. */
+export function formatDiffStatLines(stats: SessionDiffStats): string[] {
+  const counts = stats.files.map((f) =>
+    f.binary ? "binary" : `+${String(f.added)} −${String(f.removed)}`,
+  );
+  const width = Math.max(0, ...counts.map((c) => c.length));
+  return stats.files.map((f, i) => {
+    const note = f.status === "modified" ? "" : ` (${f.status})`;
+    return `${(counts[i] ?? "").padEnd(width)}  ${f.path}${note}`;
+  });
+}
+
+/** The stat of `file` (as a tool named it) in `stats`, which `sessionDiffStats` measured in `workspace`. */
+export function findFileDiffStat(
+  stats: SessionDiffStats,
+  workspace: string,
+  file: string,
+): FileDiffStat | undefined {
+  const abs = resolve(workspace, file);
+  const rel = toPosix(relative(workspace, abs));
+  return stats.files.find((f) => f.path === rel || f.path === toPosix(abs));
 }

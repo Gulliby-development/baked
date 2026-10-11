@@ -22,7 +22,7 @@ baked --headless --chat                           # interactive multi-turn chat
 | `--system "..."` | Add system instructions |
 | `--include <file>` | Load a file into context first (repeatable) |
 | `--no-repomap` | Skip the repository scan |
-| `--diff` | List the files changed by the run |
+| `--diff` | List the files the session changed, with the lines each adds and removes |
 | `--save-session` | Save the conversation for a later `--session` |
 | `--session <id>` | Resume a saved session (an ID prefix is enough) |
 | `--quiet` | Suppress the header and footer on stderr |
@@ -30,6 +30,10 @@ baked --headless --chat                           # interactive multi-turn chat
 Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 
 `--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command.
+
+## Changed files
+
+When the session has edited files, the stderr footer ends with the totals (`+52 −3 in 3 files`), and `--diff` lists each file as `+ADDED −REMOVED PATH`, with `(added)`, `(deleted)`, `(unchanged)`, `(outside)` or `(unknown)` when it is not a plain edit. `--json` output, the `done` event and in `--chat` each `turn-done` event carry the same numbers as `diffStats`, the `SessionDiffStats` object of the [local API](desktop/api.md) (`{base, files: [{path, status, added, removed, binary?}], totals: {files, added, removed}}`). Git measures what is uncommitted in those files against `HEAD`, as in the [terminal UI](guide.md#changed-files). The session's files are the ones this run edited plus those a resumed session's saved tool calls name; a session saved by an earlier headless run stores only text, so its earlier edits are not included.
 
 ## Mentions and shell commands
 
