@@ -3,7 +3,7 @@
  * shell in a process group the run owns, driven through its standard input and output. It is a
  * pipe, not a pseudo-terminal, so the application sees no TTY.
  */
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { killTree, PROCESS_SCOPE_ENV, scopedProcesses } from "../../platform/index.js";
@@ -197,21 +197,64 @@ export function parseProcNetTcp(text: string, ipv6: boolean): Map<string, Listen
   return listeners;
 }
 
+/** Where the socket table cannot be read, the port rule is reported as not enforced. */
+export const PORTS_UNCHECKED =
+  "listenPorts could not be enforced: the listening sockets cannot be read on this system";
+
 /**
- * The TCP sockets the given processes listen on, or null where the process table cannot be read
- * this way (every platform but Linux).
+ * The TCP sockets the given processes and their descendants listen on, or null where the socket
+ * table cannot be read. Linux reads `/proc`; macOS asks `ps` and `lsof`; Windows asks PowerShell
+ * for the process table and `Get-NetTCPConnection`. Descendants are found by parent PID and, on
+ * POSIX, by process group; on Linux the caller also passes processes carrying the scope marker.
  */
-export function listeningSockets(pids: readonly number[]): Listener[] | null {
-  if (process.platform !== "linux") return null;
-  let table: Map<string, Listener>;
+export async function listeningSockets(pids: readonly number[]): Promise<Listener[] | null> {
+  if (process.platform === "linux") return linuxListeners(pids);
+  if (process.platform === "darwin") return darwinListeners(pids);
+  if (process.platform === "win32") return windowsListeners(pids);
+  return null;
+}
+
+/** The process table from `/proc/<pid>/stat`: parent and process group. */
+function linuxProcessTable(): ProcessRow[] {
+  const rows: ProcessRow[] = [];
+  let entries: string[];
   try {
-    table = new Map([
-      ...parseProcNetTcp(readFileSync("/proc/net/tcp", "utf8"), false),
-      ...parseProcNetTcp(readFileSync("/proc/net/tcp6", "utf8"), true),
-    ]);
+    entries = readdirSync("/proc");
   } catch {
-    return null;
+    return rows;
   }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      // The command name in parentheses may hold spaces; the fields after it are fixed.
+      const [, parent, group] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      rows.push({ pid: Number(entry), parent: Number(parent), group: Number(group) });
+    } catch {
+      // Exited meanwhile.
+    }
+  }
+  return rows;
+}
+
+function linuxListeners(roots: readonly number[]): Listener[] | null {
+  const pids = processFamily(roots, linuxProcessTable());
+  // A kernel without IPv6 has no tcp6 table; without either the sockets cannot be read.
+  const tables = [
+    ["/proc/net/tcp", false],
+    ["/proc/net/tcp6", true],
+  ] as const;
+  const table = new Map<string, Listener>();
+  let read = false;
+  for (const [path, ipv6] of tables) {
+    try {
+      for (const entry of parseProcNetTcp(readFileSync(path, "utf8"), ipv6)) table.set(...entry);
+      read = true;
+    } catch {
+      // Missing table.
+    }
+  }
+  if (!read) return null;
   const found: Listener[] = [];
   for (const pid of pids) {
     let descriptors: string[];
@@ -231,6 +274,159 @@ export function listeningSockets(pids: readonly number[]): Listener[] | null {
     }
   }
   return found;
+}
+
+interface CommandResult {
+  code: number | null;
+  stdout: string;
+}
+
+/** Runs a command without a shell; null when it cannot start or times out. */
+function capture(file: string, args: string[]): Promise<CommandResult | null> {
+  return new Promise((resolve) => {
+    execFile(
+      file,
+      args,
+      { encoding: "utf8", timeout: 10_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout) => {
+        if (!error) return resolve({ code: 0, stdout });
+        const code = (error as { code?: unknown }).code;
+        resolve(typeof code === "number" && !error.killed ? { code, stdout } : null);
+      },
+    );
+  });
+}
+
+/** A row of the process table: who started whom, and when (Windows) or in which group (POSIX). */
+export interface ProcessRow {
+  pid: number;
+  parent: number;
+  /** POSIX process group. */
+  group?: number;
+  /** Windows creation time, to skip a child of an earlier process whose PID was reused. */
+  started?: number;
+}
+
+/** The roots, their descendants and (POSIX) members of their process groups. */
+export function processFamily(roots: readonly number[], table: readonly ProcessRow[]): Set<number> {
+  const family = new Set(roots);
+  const byPid = new Map(table.map((row) => [row.pid, row]));
+  for (const row of table)
+    if (row.group !== undefined && family.has(row.group)) family.add(row.pid);
+  let grown = true;
+  while (grown) {
+    grown = false;
+    for (const row of table) {
+      if (family.has(row.pid) || !family.has(row.parent) || row.pid === row.parent) continue;
+      const parent = byPid.get(row.parent);
+      if (
+        row.started !== undefined &&
+        parent?.started !== undefined &&
+        row.started < parent.started
+      )
+        continue;
+      family.add(row.pid);
+      grown = true;
+    }
+  }
+  return family;
+}
+
+/** Whether a socket address only accepts local connections. */
+export function isLoopbackAddress(address: string): boolean {
+  const bare = address.replace(/^\[|\]$/g, "").toLowerCase();
+  return (
+    bare === "::1" ||
+    bare === "localhost" ||
+    bare.startsWith("127.") ||
+    bare.startsWith("::ffff:127.")
+  );
+}
+
+/** Parses `ps -A -o pid=,ppid=,pgid=`. */
+export function parsePsTable(text: string): ProcessRow[] {
+  const rows: ProcessRow[] = [];
+  for (const line of text.split("\n")) {
+    const [pid, parent, group] = line.trim().split(/\s+/).map(Number);
+    if (Number.isInteger(pid) && Number.isInteger(parent) && Number.isInteger(group))
+      rows.push({ pid: pid as number, parent: parent as number, group: group as number });
+  }
+  return rows;
+}
+
+/** Parses `lsof -nP -iTCP -sTCP:LISTEN -Fpn`: a `p<pid>` line, then `n<address>:<port>` lines. */
+export function parseLsofListeners(text: string): { pid: number; listener: Listener }[] {
+  const found: { pid: number; listener: Listener }[] = [];
+  let pid = 0;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1));
+    else if (line.startsWith("n") && pid) {
+      const name = line.slice(1).trim();
+      const colon = name.lastIndexOf(":");
+      const port = Number(name.slice(colon + 1));
+      if (colon < 0 || !Number.isInteger(port) || port <= 0) continue;
+      found.push({ pid, listener: { port, loopback: isLoopbackAddress(name.slice(0, colon)) } });
+    }
+  }
+  return found;
+}
+
+async function darwinListeners(pids: readonly number[]): Promise<Listener[] | null> {
+  const [ps, lsof] = await Promise.all([
+    capture("ps", ["-A", "-o", "pid=,ppid=,pgid="]),
+    capture("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"]),
+  ]);
+  // lsof exits 1 when nothing listens at all.
+  if (ps?.code !== 0 || !lsof || (lsof.code !== 0 && lsof.code !== 1)) return null;
+  const family = processFamily(pids, parsePsTable(ps.stdout));
+  return parseLsofListeners(lsof.stdout)
+    .filter((entry) => family.has(entry.pid))
+    .map((entry) => entry.listener);
+}
+
+/** Process rows (`P pid parent created`) and listeners (`L pid address port`) in one call. */
+const WINDOWS_SOCKETS_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { exit 3 }",
+  "Get-CimInstance Win32_Process | ForEach-Object { 'P {0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }",
+  "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object { 'L {0} {1} {2}' -f $_.OwningProcess, $_.LocalAddress, $_.LocalPort }",
+].join("; ");
+
+/** Parses the output of the Windows socket script. */
+export function parseWindowsSockets(text: string): {
+  table: ProcessRow[];
+  listeners: { pid: number; listener: Listener }[];
+} {
+  const table: ProcessRow[] = [];
+  const listeners: { pid: number; listener: Listener }[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const [kind, a, b, c] = line.trim().split(" ");
+    if (kind === "P") {
+      const [pid, parent, started] = [a, b, c].map(Number);
+      if (Number.isInteger(pid) && Number.isInteger(parent))
+        table.push({ pid: pid as number, parent: parent as number, started: started || undefined });
+    } else if (kind === "L" && a && b && c) {
+      const pid = Number(a);
+      const port = Number(c);
+      if (Number.isInteger(pid) && Number.isInteger(port))
+        listeners.push({ pid, listener: { port, loopback: isLoopbackAddress(b) } });
+    }
+  }
+  return { table, listeners };
+}
+
+async function windowsListeners(pids: readonly number[]): Promise<Listener[] | null> {
+  const result = await capture("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    WINDOWS_SOCKETS_SCRIPT,
+  ]);
+  if (result?.code !== 0) return null;
+  const { table, listeners } = parseWindowsSockets(result.stdout);
+  if (!table.length) return null;
+  const family = processFamily(pids, table);
+  return listeners.filter((entry) => family.has(entry.pid)).map((entry) => entry.listener);
 }
 
 /** Listeners outside the grant: a port not listed, or any address other than loopback. */
