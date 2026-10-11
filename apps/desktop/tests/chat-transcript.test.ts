@@ -275,4 +275,46 @@ describe("chat transcript", () => {
     });
     expect(failed.notice).toEqual({ kind: "error", text: "Compaction failed: model unavailable" });
   });
+
+  test("a plan review resolves with its action, the plan follows step updates and notes join the transcript", () => {
+    const first = { id: "1", label: "Move the counter", status: "pending" as const };
+    const second = { id: "2", label: "Test it", status: "pending" as const };
+    const plan = { title: "Per-model retries", depth: "light" as const, steps: [first, second], createdAt: 1 };
+    let state = fromDetail(detail({ mode: "plan", plan }));
+    expect(state.plan?.title).toBe("Per-model retries");
+    const bodies: ChatEventBody[] = [
+      {
+        type: "prompt",
+        prompt: {
+          id: "p1",
+          createdAt: 1,
+          kind: "plan-review",
+          title: plan.title,
+          depth: "light",
+          steps: [{ id: "1", label: "Move the counter" }],
+          planFile: ".baked/plans/p.md",
+          content: "# Per-model retries",
+        },
+      },
+      { type: "prompt-resolved", promptId: "p1", outcome: "approved", action: "execute" },
+      {
+        type: "notice",
+        message: { id: "n1", role: "system", content: "Plan accepted — executing.", timestamp: 2 },
+      },
+      { type: "plan", plan: { ...plan, steps: [{ ...first, status: "done" }, second] } },
+    ];
+    for (const event of numbered(bodies)) state = applyChatEvent(state, event);
+    expect(state.prompts[0]).toMatchObject({ outcome: "approved", action: "execute" });
+    expect(state.messages.map((m) => m.content)).toEqual(["Plan accepted — executing."]);
+    expect(state.plan?.steps.map((s) => s.status)).toEqual(["done", "pending"]);
+    // A replayed note is not added twice; a cleared plan disappears.
+    state = applyChatEvent(state, { ...bodies[2], seq: 99, at: 99 } as ChatEvent);
+    expect(state.messages).toHaveLength(1);
+    state = applyChatEvent(state, { type: "plan", plan: null, seq: 100, at: 100 });
+    expect(state.plan).toBeNull();
+  });
+
+  test("a session from an older server has no plan", () => {
+    expect(fromDetail(detail()).plan).toBeNull();
+  });
 });

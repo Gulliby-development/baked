@@ -17,6 +17,10 @@ export function promptSummary(prompt: ChatPrompt): string {
       return `The agent wants to fetch ${prompt.url}`;
     case "question":
       return prompt.question;
+    case "plan-review":
+      return `The agent proposes a plan: ${prompt.title} (${prompt.steps.length} ${
+        prompt.steps.length === 1 ? "step" : "steps"
+      })`;
   }
 }
 
@@ -28,7 +32,13 @@ export function ChatDetail({ item, onDone }: DetailProps) {
   );
   const action = useAction();
   const [text, setText] = useState("");
-  const send = (body: { approve: boolean } | { answer: string }, message: string): void =>
+  const send = (
+    body:
+      | { approve: boolean }
+      | { answer: string }
+      | { action: "execute" | "clear-execute" | "cancel" },
+    message: string,
+  ): void =>
     void action.run(async () => {
       await attentionApi.answerPrompt(item.projectKey, sessionId, item.requestId ?? "", body);
       onDone(message);
@@ -105,6 +115,39 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                   {openChat}
                 </div>
               </form>
+            ) : prompt.kind === "plan-review" ? (
+              <>
+                <p className="att-lede">{promptSummary(prompt)}</p>
+                <ol className="att-plan-steps">
+                  {prompt.steps.map((step) => (
+                    <li key={step.id}>{step.label}</li>
+                  ))}
+                </ol>
+                <p className="att-note">
+                  The chat <strong>{session.title}</strong> waits until you decide. Open the chat to
+                  read the whole plan or ask for changes.
+                </p>
+                <ActionError error={action.error} />
+                <div className="att-actions">
+                  <button
+                    type="button"
+                    className="btn-primary att-btn"
+                    disabled={action.busy}
+                    onClick={() => send({ action: "execute" }, "Plan accepted. The chat runs it.")}
+                  >
+                    Execute
+                  </button>
+                  <button
+                    type="button"
+                    className="btn att-btn"
+                    disabled={action.busy}
+                    onClick={() => send({ action: "cancel" }, "Plan cancelled.")}
+                  >
+                    Cancel plan
+                  </button>
+                  {openChat}
+                </div>
+              </>
             ) : (
               <>
                 <p className="att-lede">{promptSummary(prompt)}</p>

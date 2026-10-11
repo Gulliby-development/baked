@@ -7,8 +7,20 @@ import { bridge } from "./bridge.js";
  * Shapes mirror `src/core/chat/sessions.ts`; only the fields the chat screen reads are declared.
  */
 
-export type ChatMode = "default" | "architect" | "auto";
-export const CHAT_MODES: readonly ChatMode[] = ["default", "architect", "auto"];
+export type ChatMode = "default" | "architect" | "plan" | "auto";
+export const CHAT_MODES: readonly ChatMode[] = ["default", "architect", "plan", "auto"];
+/** How a plan review is answered; `revise` sends feedback with it. */
+export type PlanAction = "execute" | "clear-execute" | "revise" | "cancel";
+
+export type PlanStepStatus = "pending" | "active" | "done" | "skipped";
+
+/** The plan the agent proposed or is carrying out. */
+export interface ChatPlan {
+  title: string;
+  depth: "light" | "full";
+  steps: { id: string; label: string; status: PlanStepStatus }[];
+  createdAt: number;
+}
 export type SessionState = "idle" | "working" | "waiting";
 
 export interface SessionSummary {
@@ -85,6 +97,15 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       allowSkip: boolean;
       options: { label: string; value: string; description?: string }[];
     }
+  | {
+      kind: "plan-review";
+      title: string;
+      depth: "light" | "full";
+      steps: { id: string; label: string }[];
+      planFile: string;
+      /** The plan as Markdown. */
+      content: string;
+    }
 );
 
 export interface Usage {
@@ -107,6 +128,8 @@ export interface SessionDetail extends SessionSummary {
   usage: Usage;
   context: ContextFill | null;
   filesEdited: string[];
+  /** The plan being reviewed or carried out; older servers leave it out. */
+  plan?: ChatPlan | null;
   /** Subscribe to events after this sequence to miss nothing. */
   lastSeq: number;
 }
@@ -149,7 +172,9 @@ export type ChatEventBody =
     }
   | { type: "steering"; turnId: string; message: ChatMessage }
   | { type: "prompt"; prompt: ChatPrompt }
-  | { type: "prompt-resolved"; promptId: string; outcome: PromptOutcome }
+  | { type: "prompt-resolved"; promptId: string; outcome: PromptOutcome; action?: PlanAction }
+  | { type: "plan"; plan: ChatPlan | null }
+  | { type: "notice"; message: ChatMessage }
   | { type: "step"; turnId: string; step: number; usage: Usage }
   | {
       type: "turn-done";
@@ -246,6 +271,19 @@ export const chat = {
       "POST",
       `${sessionPath(id, "prompts")}/${encodeURIComponent(promptId)}`,
       { answer },
+    ),
+  /** Answers a plan review: carry it out (optionally with a fresh context), revise or cancel it. */
+  reviewPlan: (
+    key: string,
+    id: string,
+    promptId: string,
+    body: { action: PlanAction; feedback?: string },
+  ) =>
+    call<{ resolved: true }>(
+      key,
+      "POST",
+      `${sessionPath(id, "prompts")}/${encodeURIComponent(promptId)}`,
+      body,
     ),
   /** The capability groups of `GET /v1/health`; null when the answer could not be read. */
   capabilities: (key: string): Promise<string[] | null> =>

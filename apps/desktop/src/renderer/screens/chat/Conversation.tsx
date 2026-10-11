@@ -1,5 +1,11 @@
 import { useId, useState } from "react";
-import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
+import type {
+  ChatMessage,
+  ChatPlan,
+  InputContextItem,
+  PlanAction,
+  ToolCall,
+} from "../../client/chat.js";
 import { Markdown } from "./Markdown.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
@@ -282,21 +288,158 @@ const OUTCOMES = {
   skipped: "Skipped",
 } as const;
 
+const PLAN_OUTCOMES: Record<PlanAction, string> = {
+  execute: "Plan accepted",
+  "clear-execute": "Plan accepted with a fresh context",
+  revise: "Changes asked",
+  cancel: "Plan cancelled",
+};
+
+export interface PlanReview {
+  action: PlanAction;
+  feedback?: string;
+}
+
+/** A plan the agent proposed in plan mode, with the terminal UI's review choices. */
+function PlanReviewCard({
+  prompt,
+  busy,
+  onReview,
+}: {
+  prompt: Extract<TranscriptPrompt["prompt"], { kind: "plan-review" }>;
+  busy: boolean;
+  onReview: (id: string, review: PlanReview) => void;
+}) {
+  const [revising, setRevising] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const inputId = useId();
+  return (
+    <section className="prompt-card plan-review" aria-label="Review the plan">
+      <p className="prompt-title">Review the plan</p>
+      <p className="plan-meta muted">
+        {prompt.steps.length} {prompt.steps.length === 1 ? "step" : "steps"} ·{" "}
+        {prompt.depth === "full" ? "full plan with edits" : "light plan"} ·{" "}
+        <span className="mono">{prompt.planFile}</span>
+      </p>
+      <div className="plan-body">
+        <Markdown text={prompt.content} />
+      </div>
+      {revising ? (
+        <form
+          className="prompt-answer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (feedback.trim())
+              onReview(prompt.id, { action: "revise", feedback: feedback.trim() });
+          }}
+        >
+          <label htmlFor={inputId} className="sr-only">
+            What should change
+          </label>
+          <input
+            id={inputId}
+            type="text"
+            placeholder="What should change?"
+            value={feedback}
+            onChange={(event) => setFeedback(event.target.value)}
+          />
+          <button type="submit" className="btn-primary" disabled={busy || !feedback.trim()}>
+            Send
+          </button>
+          <button type="button" className="btn" onClick={() => setRevising(false)}>
+            Back
+          </button>
+        </form>
+      ) : (
+        <div className="prompt-actions">
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={busy}
+            onClick={() => onReview(prompt.id, { action: "execute" })}
+          >
+            Execute
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            title="Drops the conversation so far; the plan carries what the work needs."
+            onClick={() => onReview(prompt.id, { action: "clear-execute" })}
+          >
+            Clear context and execute
+          </button>
+          <button type="button" className="btn" disabled={busy} onClick={() => setRevising(true)}>
+            Revise
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => onReview(prompt.id, { action: "cancel" })}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const STEP_MARKS = { pending: "○", active: "◐", done: "✓", skipped: "–" } as const;
+
+/** The checklist of a plan being carried out. */
+function PlanChecklist({ plan }: { plan: ChatPlan }) {
+  const done = plan.steps.filter((s) => s.status === "done").length;
+  return (
+    <section className="plan-checklist" aria-label="Plan">
+      <p className="plan-checklist-title">
+        {plan.title}{" "}
+        <span className="muted">
+          {done}/{plan.steps.length}
+        </span>
+      </p>
+      <ol>
+        {plan.steps.map((step) => (
+          <li key={step.id} className={`plan-step ${step.status}`}>
+            <span className="plan-step-mark" aria-hidden="true">
+              {STEP_MARKS[step.status]}
+            </span>
+            <span className="sr-only">{step.status}: </span>
+            {step.label}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function PromptCard({
   entry,
   busy,
   onApprove,
   onAnswer,
+  onReviewPlan,
 }: {
   entry: TranscriptPrompt;
   busy: boolean;
   onApprove: (id: string, approve: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
+  onReviewPlan?: (id: string, review: PlanReview) => void;
 }) {
   const [text, setText] = useState("");
   const inputId = useId();
   const { prompt, outcome } = entry;
   if (outcome) {
+    if (prompt.kind === "plan-review")
+      return (
+        <p className={`prompt-resolved ${outcome}`}>
+          <span className="prompt-resolved-outcome">
+            {entry.action ? PLAN_OUTCOMES[entry.action] : OUTCOMES[outcome]}
+          </span>
+          <span className="prompt-resolved-subject">{prompt.title}</span>
+        </p>
+      );
     const subject =
       prompt.kind === "question"
         ? prompt.question
@@ -313,6 +456,10 @@ function PromptCard({
         <span className="prompt-resolved-subject">{subject}</span>
       </p>
     );
+  }
+  if (prompt.kind === "plan-review") {
+    if (!onReviewPlan) return null;
+    return <PlanReviewCard prompt={prompt} busy={busy} onReview={onReviewPlan} />;
   }
   if (prompt.kind === "question") {
     return (
@@ -407,6 +554,7 @@ export function Conversation({
   deciding,
   onApprove,
   onAnswer,
+  onReviewPlan,
   forking,
   onFork,
 }: {
@@ -414,6 +562,8 @@ export function Conversation({
   deciding: ReadonlySet<string>;
   onApprove: (id: string, approve: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
+  /** Answers a plan review; without it plan reviews are not shown. */
+  onReviewPlan?: (id: string, review: PlanReview) => void;
   forking?: boolean;
   /** Forks the session after `messageId`; absent while the session cannot be forked. */
   onFork?: (messageId: string, rollbackFiles: boolean) => void;
@@ -422,6 +572,9 @@ export function Conversation({
   const running = transcript.turnId !== null;
   const waiting = prompts.some((p) => p.outcome === undefined);
   const lastLive = live?.segments?.at(-1);
+  // The review card shows a proposed plan; the checklist follows one being carried out.
+  const reviewing = prompts.some((p) => p.prompt.kind === "plan-review");
+  const plan = transcript.plan && !reviewing ? transcript.plan : null;
   return (
     <>
       {messages.map((message) =>
@@ -448,6 +601,7 @@ export function Conversation({
           </p>
         ),
       )}
+      {plan && <PlanChecklist plan={plan} />}
       {live && (
         <Assistant
           message={live}
@@ -462,6 +616,7 @@ export function Conversation({
           busy={deciding.has(entry.prompt.id)}
           onApprove={onApprove}
           onAnswer={onAnswer}
+          {...(onReviewPlan ? { onReviewPlan } : {})}
         />
       ))}
       {pending.map((text, i) => (
