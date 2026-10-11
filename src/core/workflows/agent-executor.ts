@@ -370,6 +370,15 @@ export class NativeAgentExecutor implements AgentExecutor {
           // After the bounded corrections the scheduler rejects the result with these errors.
           if (errors.length && rejected < MAX_SEMANTIC_CORRECTIONS) {
             rejected++;
+            // The payload is the evidence when the attempt later ends without an accepted result.
+            this.store.transaction(() =>
+              this.store.artifact(
+                request.runId,
+                "diagnostic",
+                `attempts/${request.attemptId}/rejected-${String(rejected)}.json`,
+                canonical({ errors, submitted: parsed }),
+              ),
+            );
             return {
               accepted: false,
               errors,
@@ -509,11 +518,15 @@ export class NativeAgentExecutor implements AgentExecutor {
           `Profile ${request.profile.id} used ${String(usage.totalTokens)} tokens without submitting a result (attempt cap ${String(usage.maxTokens)})`,
         );
       if (submitted === undefined) {
-        // Nothing to reformat: a correction pass over empty text would invent a result.
+        // Nothing to reformat: a correction pass over empty text would invent a result. The
+        // scheduler repeats an attempt that ended at its step cap with more steps.
         if (!result.text.trim())
           throw new WorkflowFault(
             "OUTPUT_INVALID",
             `Profile ${request.profile.id} ended after ${result.steps.length} steps without submitting a result`,
+            usage.stopReason === "steps" || usage.stopReason === "no_submission"
+              ? { reason: "no_submission" }
+              : {},
           );
         try {
           submitted = schema.parse(JSON.parse(result.text));
@@ -522,7 +535,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             .attempts(request.runId)
             .find((a) => a.id === request.attemptId)?.step_id;
           if (!step) throw new WorkflowFault("OUTPUT_INVALID", "Result attempt missing");
-          const correctionPrompt = `Reformat this previous result using submit_result. Preserve its claims and evidence IDs. Do not implement or verify anything again.\n${result.text.slice(0, 256 * 1024)}`;
+          const correctionPrompt = `Reformat this previous result using submit_result. Preserve its claims and evidence IDs. Do not implement or verify anything again.${request.formatHints ? `\n${request.formatHints}` : ""}\n${result.text.slice(0, 256 * 1024)}`;
           const attempt = this.store.reserve(
             request.runId,
             step,

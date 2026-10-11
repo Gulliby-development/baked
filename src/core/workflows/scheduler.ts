@@ -12,7 +12,13 @@ import { validatePackage, workspacePath } from "../specs/validate.js";
 import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
-import { validateEvidence } from "../verification/evidence.js";
+import {
+  currentEvidence,
+  evidenceHandle,
+  resolveEvidenceIds,
+  validateEvidence,
+  validEvidenceNote,
+} from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
   type ReproOutcome,
@@ -21,7 +27,7 @@ import {
   reproTool,
   runRepro,
 } from "../verification/repro.js";
-import { validateReview } from "../verification/review.js";
+import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
@@ -46,6 +52,7 @@ import {
   scopedPlanBudget,
 } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
+import { coverageFinding } from "./coverage.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -69,6 +76,7 @@ import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun } from "./recovery.js";
 import { abortableDelay, accountRefusal, isTransient, retryAfterMs, retryDelay } from "./retry.js";
+import { buildReviewBundle, REVIEW_BUNDLE_PATH } from "./review-bundle.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -136,6 +144,7 @@ import {
   stageKind,
   stageProfileId,
 } from "./v2/runtime.js";
+import { contradictsFacts, type WorkspaceFacts, workspaceFacts } from "./workspace-facts.js";
 import {
   commitRunBranch,
   createTaskWorktree,
@@ -179,6 +188,12 @@ interface QueuedRequest {
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
+/** A SQLite failure is a host fault, never a model's invalid output. */
+function isStoreError(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof WorkflowFault) return false;
+  const code = (error as { code?: unknown }).code;
+  return error.name === "SQLiteError" || (typeof code === "string" && code.startsWith("SQLITE_"));
+}
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Characters of a task's unified diff kept in its diff evidence. */
@@ -336,7 +351,10 @@ export class WorkflowScheduler {
           switch (stage.kind) {
             case "research": {
               const researcher = this.requireProfile(profile);
-              const budget = researchBudget(state.prompt, researcher, policy);
+              const researchRoot = runRoot(this.store.workspace, state);
+              const budget = researchBudget(state.prompt, researcher, policy, (path) =>
+                existsSync(join(researchRoot, path)),
+              );
               const submitted = ResearchSchema.parse(
                 await this.call(
                   runId,
@@ -349,6 +367,7 @@ export class WorkflowScheduler {
                       namedPaths: budget.namedPaths,
                       maxSteps: budget.maxSteps,
                     },
+                    workspaceFacts: this.recordFacts(runId, researchRoot),
                   },
                   signal,
                   undefined,
@@ -385,7 +404,10 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  { featureId: run.feature_id },
+                  {
+                    featureId: run.feature_id,
+                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                  },
                   signal,
                   undefined,
                   0,
@@ -443,6 +465,7 @@ export class WorkflowScheduler {
                   {
                     checks: policy.checks,
                     profiles,
+                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
                       ? {
@@ -473,7 +496,9 @@ export class WorkflowScheduler {
                       ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
                     ];
                     if (scopeAdvised) return problems;
-                    const advice = planScopeAdvice(policy, parsed.data.taskGraph);
+                    const advice = planScopeAdvice(policy, parsed.data.taskGraph, (path) =>
+                      existsSync(join(runRoot(this.store.workspace, state), path)),
+                    );
                     if (advice.length) scopeAdvised = true;
                     return [...problems, ...advice];
                   },
@@ -487,6 +512,7 @@ export class WorkflowScheduler {
               const planned = planGraph(spec, plan);
               const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
               state.graph = graph;
+              state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
               state.rootGraph = structuredClone(state.graph);
               state.manifest.planHash = hashBytes(state.plan);
               state.manifest.rootGraphHash = hashJson(state.graph);
@@ -543,7 +569,10 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  { verifiedByRuntime: PLAN_CONSISTENCY_CHECKS },
+                  {
+                    verifiedByRuntime: PLAN_CONSISTENCY_CHECKS,
+                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                  },
                   signal,
                   undefined,
                   0,
@@ -560,6 +589,33 @@ export class WorkflowScheduler {
               );
               if (analysis.inputHash !== hashJson(state.manifest))
                 throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // The host adds a finding the model missed: a program was described and none is planned.
+              // A feature of an initiative has its boundary approved with the split, not the request.
+              const uncovered =
+                state.coverageRaised || state.hostDependencies
+                  ? null
+                  : coverageFinding(
+                      state.requestText || state.prompt,
+                      this.recordFacts(runId, runRoot(this.store.workspace, state)).kind,
+                      graph,
+                    );
+              if (uncovered) {
+                state.coverageRaised = true;
+                if (!analysis.findings.some((f) => f.id === uncovered.id))
+                  analysis.findings.push(uncovered);
+              }
+              // The host inventory outranks the model: a finding that a listed file does not exist is a note.
+              const facts = this.recordFacts(runId, runRoot(this.store.workspace, state));
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  finding.kind === "inconsistency" &&
+                  contradictsFacts(finding.description, facts)
+                ) {
+                  finding.blocking = false;
+                  finding.description = `Contradicted by the workspace facts (facts/workspace.json); kept as a note: ${finding.description}`;
+                }
+              }
               // Findings about check outcomes stay in the record as notes; checks run later.
               const findings = demoteDeferred(analysis.findings, (f) => f.description);
               const blocking = findings.some((f) => f.blocking);
@@ -675,6 +731,11 @@ export class WorkflowScheduler {
                         policyDecisions(this.store.artifacts(runId), (artifact) =>
                           this.store.readArtifact(runId, artifact.id),
                         ),
+                        {
+                          hostSplitTasks: state.hostSplitTasks,
+                          exists: (path) =>
+                            existsSync(join(runRoot(this.store.workspace, state), path)),
+                        },
                       );
                 const body = {
                   manifest: state.manifest,
@@ -774,6 +835,7 @@ export class WorkflowScheduler {
                     this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.artifactId),
                   );
               }
+              await this.addReviewBundle(runId, state, signal);
               const failures = await this.review(
                 runId,
                 stepId,
@@ -854,7 +916,31 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   { evidence: this.evidenceContext(runId, state) },
                   signal,
+                  undefined,
+                  0,
+                  (output) => {
+                    const parsed = ReviewSchema.safeParse(output);
+                    if (!parsed.success || !state.spec || !state.snapshotId) return [];
+                    return reviewProblems(
+                      this.store,
+                      runId,
+                      state.snapshotId,
+                      state.workspaceHash ?? "",
+                      state.spec,
+                      output as Review,
+                      false,
+                    );
+                  },
                 ),
+              );
+              completeReview(
+                this.store,
+                runId,
+                state.snapshotId,
+                state.workspaceHash,
+                state.spec,
+                review,
+                false,
               );
               const omitted = state.spec.criteria.filter(
                 (criterion) => !review.coverage.some((item) => item.criterionId === criterion.id),
@@ -1063,7 +1149,9 @@ export class WorkflowScheduler {
                   ? "tool_denied"
                   : code === "RECOVERY_REQUIRED"
                     ? "no_progress"
-                    : "invalid_output";
+                    : isStoreError(fault)
+                      ? "storage_failure"
+                      : "invalid_output";
         this.store.artifact(
           runId,
           "diagnostic",
@@ -1131,6 +1219,20 @@ export class WorkflowScheduler {
       ),
     );
     return split;
+  }
+  /**
+   * The host inventory of the workspace the run starts from. It is stored as `facts/workspace.json`
+   * (a new revision only when it changes) so every front end shows what the stages were told.
+   */
+  private recordFacts(runId: string, root: string): WorkspaceFacts {
+    const facts = workspaceFacts(root);
+    const content = canonical(facts);
+    const latest = this.store.latestArtifact(runId, "facts/workspace.json");
+    if (!latest || latest.content_hash !== hashBytes(content))
+      this.store.transaction(() =>
+        this.store.artifact(runId, "facts", "facts/workspace.json", content),
+      );
+    return facts;
   }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
@@ -1283,6 +1385,8 @@ export class WorkflowScheduler {
       fallbackIndex?: number;
       /** The primary model's failure, reported if every fallback model fails too. */
       primaryError?: unknown;
+      /** Set on the one retry that follows an attempt that ended at its step cap unsubmitted. */
+      stepRetry?: boolean;
     } = {},
   ): Promise<unknown> {
     const route = this.route(runId, stepId, stageProfile);
@@ -1318,6 +1422,9 @@ export class WorkflowScheduler {
           ? { attemptTokens: taskSize(state, task, "taskBudgets") }
           : {}),
         ...(validate ? { validate } : {}),
+        ...(this.formatHints(runId, state, profile.output)
+          ? { formatHints: this.formatHints(runId, state, profile.output) }
+          : {}),
         ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
         ...(route.effort ? { effort: route.effort } : {}),
       });
@@ -1399,6 +1506,47 @@ export class WorkflowScheduler {
           `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
           { reason: "provider_account" },
         );
+      // An attempt that used its steps without submitting and changed nothing is repeated once
+      // with half again as many steps; the same cap would repeat the same experiment (tasks grow
+      // the same way through `taskSteps`).
+      if (
+        error instanceof WorkflowFault &&
+        error.details.reason === "no_submission" &&
+        !placement.stepRetry &&
+        !signal.aborted &&
+        !wrote
+      ) {
+        const grown = (n: number) => Math.ceil(n * 1.5);
+        const steps =
+          limits?.maxSteps ??
+          (task ? taskSize(state, task, "taskSteps") : undefined) ??
+          Math.min(profile.maxSteps, policy.maxAgentSteps);
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          extra,
+          signal,
+          task,
+          0,
+          validate,
+          {
+            maxSteps: grown(steps),
+            maxTokens: limits?.maxTokens === undefined ? undefined : grown(limits.maxTokens),
+          },
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            ...(fallbackIndex ? { fallbackIndex } : {}),
+            ...(placement.primaryError !== undefined
+              ? { primaryError: placement.primaryError }
+              : {}),
+            stepRetry: true,
+          },
+        );
+      }
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
       // and once the chain has already failed over, the run stops instead of blocking on it.
@@ -1685,6 +1833,54 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     return current;
   }
   /**
+   * Adds one diff of the run's changes to the review snapshot, once per snapshot. Task diffs sit
+   * on the snapshot each task made, so only the last task's patch was current at review and
+   * reviewers read the other files whole (or wrote that they could not).
+   */
+  private async addReviewBundle(
+    runId: string,
+    state: RuntimeState,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!state.snapshotId) return;
+    const logicalPath = `${REVIEW_BUNDLE_PATH}${state.snapshotId}.json`;
+    if (this.store.latestArtifact(runId, logicalPath)) return;
+    const bundle = await buildReviewBundle(this.store, runId, runRoot(this.store.workspace, state));
+    signal.throwIfAborted();
+    if (bundle.changed.length === 0) return;
+    const snapshotId = state.snapshotId;
+    const criteria = Object.fromEntries(
+      (state.spec?.criteria ?? []).map((c) => [
+        c.id,
+        (state.graph?.tasks ?? []).filter((t) => t.criterionIds.includes(c.id)).map((t) => t.id),
+      ]),
+    );
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diff",
+        logicalPath,
+        canonical({
+          note: "One diff of every file the run changed, against its content before the run.",
+          changed: bundle.changed,
+          files: Object.fromEntries(
+            bundle.changed.map((path) => [path, state.expectedFiles?.[path] ?? null]),
+          ),
+          criteriaToTasks: criteria,
+          patch: bundle.patch,
+        }),
+      );
+      this.store.addEvidence(runId, "diff", snapshotId, artifact.id);
+    });
+  }
+  /** What a format correction of a review needs and cannot see: the hash and the citable ids. */
+  private formatHints(runId: string, state: RuntimeState, output: string): string | undefined {
+    if ((output !== "review" && output !== "convergence") || !state.snapshotId) return undefined;
+    return `snapshotHash is ${state.workspaceHash ?? ""}. ${validEvidenceNote(
+      currentEvidence(this.store, runId, state.snapshotId),
+    )}`;
+  }
+  /**
    * Current evidence handed to an agent with its content. An implementer does not need the
    * research-phase file reads (up to 16 KB each, resent on every step); it reads what it edits
    * itself and cites its own evidence. Reviewers and auditors get everything.
@@ -1694,18 +1890,23 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     state: RuntimeState,
     options: { reads: boolean; commands?: boolean } = { reads: true },
   ): unknown[] {
-    return this.store
-      .evidence(runId)
-      .filter((e) => e.snapshot_id === state.snapshotId && e.validity === "current")
+    const current = currentEvidence(this.store, runId, state.snapshotId ?? "");
+    // Short handles (E1..En) number every current entry, so an agent can cite them instead of
+    // copying a 36-character id; the host resolves them.
+    const handles = new Map(current.map((e, index) => [e.id, evidenceHandle(index)]));
+    return current
       .filter((e) => options.reads || e.kind !== "read")
       .filter((e) => options.commands !== false || e.kind !== "command")
       .map((e) => {
         const content = this.store.readArtifact(runId, e.artifact_id);
         // A read is replaced by what it read: its content is resent on every step of every later
         // agent, and cut at the limit it showed no file whole, so agents read the files again.
-        if (e.kind === "read") return { id: e.id, kind: e.kind, read: readSummary(content) };
+        const handle = handles.get(e.id);
+        if (e.kind === "read")
+          return { id: e.id, handle, kind: e.kind, read: readSummary(content) };
         return {
           id: e.id,
+          handle,
           kind: e.kind,
           content: content.slice(0, e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000),
         };
@@ -3084,6 +3285,10 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         signal,
       });
     const runReviewer = async (reviewer: Reviewer) => {
+      // A review of this very snapshot that an earlier, interrupted round finished is kept.
+      const kept = state.reviews[reviewer.key];
+      if (kept && kept.snapshotHash === reviewSnapshotHash && kept.verdict !== "inconclusive")
+        return { reviewer, result: kept };
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
@@ -3099,13 +3304,26 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           signal,
           undefined,
           0,
-          undefined,
+          (output) =>
+            ReviewSchema.safeParse(output).success
+              ? reviewProblems(
+                  this.store,
+                  runId,
+                  reviewSnapshotId,
+                  reviewSnapshotHash,
+                  reviewSpec,
+                  output as Review,
+                )
+              : [],
           undefined,
           executables.length && profile.allowedTools.includes("run_repro")
             ? () => ({ run_repro: reproTool(executables, repro) })
             : undefined,
         ),
       );
+      // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
+      // inconclusive, and the converge stage settles coverage.
+      completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, result);
       validateReview(
         this.store,
         runId,
@@ -3113,7 +3331,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         reviewSnapshotHash,
         reviewSpec,
         result,
-        reviewer.dimension === "correctness" && result.verdict === "pass",
+        false,
       );
       if (result.verdict === "inconclusive" && reviewer.required)
         throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
@@ -3124,6 +3342,16 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       const batch = await Promise.allSettled(
         reviewers.slice(offset, offset + policy.maxConcurrentReadAgents).map(runReviewer),
       );
+      // Reviews that finished are kept before a sibling's failure is raised, so a resume does not
+      // pay for them again.
+      const failed = batch.find((outcome) => outcome.status === "rejected");
+      if (failed) {
+        for (const outcome of batch)
+          if (outcome.status === "fulfilled")
+            state.reviews[outcome.value.reviewer.key] = outcome.value.result;
+        this.store.transaction(() => this.store.saveState(runId, state));
+        throw failed.reason;
+      }
       for (const outcome of batch) {
         if (outcome.status === "rejected") throw outcome.reason;
         const { reviewer, result } = outcome.value;
@@ -3177,6 +3405,10 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           { finding, evidence: this.evidenceContext(runId, state) },
           signal,
         ),
+      );
+      result.evidenceIds = resolveEvidenceIds(
+        currentEvidence(this.store, runId, state.snapshotId),
+        result.evidenceIds,
       );
       if (result.findingId !== finding.id)
         throw new WorkflowFault("OUTPUT_INVALID", "Skeptic returned another finding ID");

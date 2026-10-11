@@ -22,6 +22,9 @@ export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `images` on chat messages (paste and drop in the composer). */
 export const IMAGES_CAPABILITY = "images";
 
+/** `GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME` (the Skills section). */
+export const SKILLS_INSTALL_CAPABILITY = "skills-install";
+
 /** `/v1/graph*` (the Code graph section). */
 export const CODE_GRAPH_CAPABILITY = "code-graph";
 

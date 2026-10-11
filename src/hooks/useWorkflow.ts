@@ -14,6 +14,7 @@ import {
   saveProjectConfig,
 } from "../config/index.js";
 import { getIntelligenceClient } from "../core/intelligence/instance.js";
+import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
@@ -273,6 +274,7 @@ export function workflowRoutingApi(workspace: string): RoutingApi {
       } else if (routing) saveProjectConfig(workspace, { modelRouting: routing });
       else removeProjectConfigKeys(workspace, ["modelRouting"]);
     },
+    models: () => loadModelCatalog(),
   };
 }
 

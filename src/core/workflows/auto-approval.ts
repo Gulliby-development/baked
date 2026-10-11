@@ -26,6 +26,32 @@ type Write = TaskGraph["tasks"][number]["writes"][number];
 const alwaysHuman =
   /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
 
+/**
+ * Project manifests and tool configs. Creating one that does not exist yet is how a scaffold
+ * starts and changes nothing a person has reviewed; modifying one stays with a person.
+ */
+const manifestFile =
+  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|tsconfig[^/]*|biome[^/]*)$/i;
+
+/** Whether a write needs a person whatever the limits; `exists` tells which files are already there. */
+function needsPerson(write: Write, exists?: (path: string) => boolean): boolean {
+  if (!alwaysHuman.test(write.path)) return false;
+  return !(
+    write.action === "create" &&
+    exists !== undefined &&
+    manifestFile.test(write.path) &&
+    !exists(write.path)
+  );
+}
+
+/** What the host knows about the run's package that the graph does not say. */
+export interface ApprovalContext {
+  /** Whether a path exists in the workspace the tasks will write to. */
+  exists?: (path: string) => boolean;
+  /** Tasks the host added by splitting a planned task; the person approved the plan, not these. */
+  hostSplitTasks?: number;
+}
+
 /** Budget limits a renewal may keep or lower, never raise, unless the operator raised them. */
 const budgetKeys = [
   "maxConcurrentReadAgents",
@@ -59,13 +85,14 @@ export function evaluateAutoApproval(
   graph: TaskGraph,
   requests: RequestRow[],
   decisions: PolicyDecision[] = [],
+  context: ApprovalContext = {},
 ): AutoApprovalResult {
   const config = policy.autoApproval;
   if (!config) return { approval: null, reasons: [] };
   const writes = graph.tasks.flatMap((task) => task.writes);
   const common: string[] = [];
   for (const write of writes)
-    if (alwaysHuman.test(write.path)) common.push(`${write.path} always needs a person`);
+    if (needsPerson(write, context.exists)) common.push(`${write.path} always needs a person`);
   if (spec.criteria.some((criterion) => criterion.method === "post-release"))
     common.push("Deferring post-release criteria needs a person");
   const limitsHash = hashJson({ policy: policyBounds(policy) });
@@ -78,7 +105,7 @@ export function evaluateAutoApproval(
   }
   if (config.limits) {
     const limits = config.limits;
-    const problems = scopeProblems(limits, graph);
+    const problems = scopeProblems(limits, graph, context.hostSplitTasks ?? 0);
     if (policy.maxTotalTokens > limits.maxTotalTokens)
       problems.push(`the token budget ${policy.maxTotalTokens} exceeds ${limits.maxTotalTokens}`);
     if (!common.length && !problems.length)
@@ -91,11 +118,11 @@ export function evaluateAutoApproval(
 type Limits = NonNullable<NonNullable<RunPolicy["autoApproval"]>["limits"]>;
 
 /** Where a task graph leaves the limits' scope: task and file counts, paths and deletions. */
-function scopeProblems(limits: Limits, graph: TaskGraph): string[] {
+function scopeProblems(limits: Limits, graph: TaskGraph, hostSplitTasks = 0): string[] {
   const writes = graph.tasks.flatMap((task) => task.writes);
   const problems: string[] = [];
-  if (graph.tasks.length > limits.maxTasks)
-    problems.push(`${graph.tasks.length} tasks exceed ${limits.maxTasks}`);
+  const planned = graph.tasks.length - hostSplitTasks;
+  if (planned > limits.maxTasks) problems.push(`${planned} tasks exceed ${limits.maxTasks}`);
   const files = new Set(writes.map((write) => write.path.toLowerCase()));
   if (files.size > limits.maxFiles) problems.push(`${files.size} files exceed ${limits.maxFiles}`);
   const globs = limits.allowedPaths.map((pattern) => new Bun.Glob(pattern.toLowerCase()));
@@ -127,7 +154,7 @@ export function plannerApprovalLimits(policy: RunPolicy): {
     allowedPaths: limits.allowedPaths,
     allowDelete: limits.allowDelete,
     alwaysHuman:
-      "repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests, lockfiles, tool configs (tsconfig, biome), .env files and keys",
+      "repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed), lockfiles, tool configs (tsconfig, biome), .env files and keys",
   };
 }
 
@@ -135,12 +162,16 @@ export function plannerApprovalLimits(policy: RunPolicy): {
  * Why a submitted plan would not be approved within the limits. The planner gets these once as
  * advice: a plan that still needs such a write is accepted and goes to a person at approval.
  */
-export function planScopeAdvice(policy: RunPolicy, graph: TaskGraph): string[] {
+export function planScopeAdvice(
+  policy: RunPolicy,
+  graph: TaskGraph,
+  exists?: (path: string) => boolean,
+): string[] {
   const limits = policy.autoApproval?.limits;
   if (!limits) return [];
   const always = graph.tasks
     .flatMap((task) => task.writes)
-    .filter((write) => alwaysHuman.test(write.path))
+    .filter((write) => needsPerson(write, exists))
     .map((write) => `${write.path} always needs a person`);
   const problems = [...new Set([...always, ...scopeProblems(limits, graph)])];
   if (!problems.length) return [];

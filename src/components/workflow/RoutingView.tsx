@@ -1,4 +1,5 @@
 import { type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import type { ModelCatalog } from "../../core/llm/model-choices.js";
 import {
   type ModelRouting,
   mergeModelRouting,
@@ -24,6 +25,7 @@ import {
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { PremiumPopup } from "../ui/index.js";
 import { PopupViewport } from "../ui/PopupViewport.js";
+import { ModelPickList } from "./ModelPickList.js";
 
 export type { RoutingScope };
 
@@ -41,9 +43,11 @@ export interface RoutingApi {
   explain(workflowId: string, model: string | null): RouteExplanation;
   /** Writes one layer's `modelRouting`; undefined removes the section. */
   save(scope: RoutingScope, routing: ModelRouting | undefined): void;
+  /** The models of each provider for the model list; without it the fields only take typed IDs. */
+  models?(): Promise<ModelCatalog>;
 }
 
-export type RoutingMode = "browse" | "edit";
+export type RoutingMode = "browse" | "edit" | "pick";
 
 export const ROUTING_HINTS: Record<RoutingMode, { key: string; label: string }[]> = {
   browse: [
@@ -57,9 +61,16 @@ export const ROUTING_HINTS: Record<RoutingMode, { key: string; label: string }[]
   ],
   edit: [
     { key: "↑↓/Tab", label: "field" },
+    { key: "Enter", label: "model list" },
     { key: "←→", label: "effort" },
-    { key: "Enter", label: "save" },
+    { key: "Ctrl+S", label: "save" },
     { key: "Esc", label: "cancel" },
+  ],
+  pick: [
+    { key: "type", label: "filter" },
+    { key: "↑↓", label: "select" },
+    { key: "Enter", label: "choose" },
+    { key: "Esc", label: "back" },
   ],
 };
 
@@ -139,7 +150,12 @@ export function RoutingView({
   const [cursor, setCursor] = useState(0);
   const [form, setForm] = useState<Form | null>(null);
   const [formProblems, setFormProblems] = useState<string[]>([]);
-  const mode: RoutingMode = form ? "edit" : "browse";
+  const [picking, setPicking] = useState<"model" | "fallback" | null>(null);
+  const [catalog, setCatalog] = useState<{ data: ModelCatalog | null; error: string | null }>({
+    data: null,
+    error: null,
+  });
+  const mode: RoutingMode = picking ? "pick" : form ? "edit" : "browse";
   useEffect(() => onMode?.(mode), [mode, onMode]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: generation re-reads the saved files
@@ -163,6 +179,23 @@ export function RoutingView({
     }
   }, [api, workflow, model, generation]);
   const effective = mergeModelRouting(layers.global, layers.project);
+  const wantsModels = picking !== null && catalog.data === null && catalog.error === null;
+  useEffect(() => {
+    if (!wantsModels) return;
+    if (!api.models) {
+      setCatalog({ data: { providers: [] }, error: null });
+      return;
+    }
+    let live = true;
+    api.models().then(
+      (data) => live && setCatalog({ data, error: null }),
+      (err: unknown) =>
+        live && setCatalog({ data: null, error: err instanceof Error ? err.message : String(err) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [api, wantsModels]);
   const runModel = explained.data?.runModel ?? model ?? null;
 
   const rows = useMemo<Row[]>(() => {
@@ -277,8 +310,19 @@ export function RoutingView({
     ? ["name", "model", "effort", "fallback"]
     : ["model", "effort", "fallback"];
 
+  const pick = (id: string): void => {
+    setPicking(null);
+    setForm((f) => {
+      if (!f) return f;
+      if (picking === "model") return { ...f, model: id, field: "effort" };
+      const list = parseFallback(f.fallback);
+      const next = list.includes(id) ? list : [...list, id].slice(-3);
+      return { ...f, fallback: next.join(", ") };
+    });
+  };
+
   useKeyboard((evt) => {
-    if (!active) return;
+    if (!active || picking) return;
     const key = evt.name.toLowerCase();
     if (form) {
       if (key === "escape") {
@@ -298,6 +342,11 @@ export function RoutingView({
         const i = EFFORT_CHOICES.indexOf(form.effort);
         const step = key === "left" ? EFFORT_CHOICES.length - 1 : 1;
         setForm({ ...form, effort: EFFORT_CHOICES[(i + step) % EFFORT_CHOICES.length] ?? null });
+        return;
+      }
+      if (key === "return" && (form.field === "model" || form.field === "fallback")) {
+        evt.preventDefault();
+        setPicking(form.field);
         return;
       }
       if (key === "return" || (evt.ctrl && key === "s")) {
@@ -410,6 +459,41 @@ export function RoutingView({
       </box>
     );
 
+  if (form && picking) {
+    const target: RoutingTarget = form.isNew
+      ? { kind: "class", name: form.name.trim() || "NAME" }
+      : form.target;
+    // A class names a model, and fallback models are models, so only a route's model takes $class.
+    const withClasses = picking === "model" && target.kind !== "class";
+    const classes = withClasses ? routingClasses(layers.global, layers.project) : [];
+    const classDetails: Record<string, string> = {};
+    for (const name of classes) {
+      const r = resolved({ kind: "class", name });
+      if (r) classDetails[name] = resolvedText(r);
+    }
+    return (
+      <box flexDirection="column">
+        {header}
+        <ModelPickList
+          active={active}
+          catalog={catalog.data}
+          error={catalog.error}
+          classes={classes}
+          classDetails={classDetails}
+          title={
+            picking === "model"
+              ? `Model for modelRouting.${targetPath(target)}`
+              : `Add a fallback model (${parseFallback(form.fallback).length} of 3)`
+          }
+          width={width}
+          rows={bodyRows - headerRows}
+          onPick={pick}
+          onCancel={() => setPicking(null)}
+        />
+      </box>
+    );
+  }
+
   if (form) {
     const target: RoutingTarget = form.isNew
       ? { kind: "class", name: form.name.trim() || "NAME" }
@@ -489,6 +573,16 @@ export function RoutingView({
             width,
           )}
         </text>
+        {compact ? null : (
+          <text fg={t.textFaint}>
+            {clip(
+              api.models
+                ? "Enter on Model or Fallback opens the list of available models; you can also type an ID."
+                : "Type a model ID as provider/model.",
+              width,
+            )}
+          </text>
+        )}
         {formProblems.map((problem) => (
           <text key={problem} fg={t.error}>
             {`✗ ${problem}`}

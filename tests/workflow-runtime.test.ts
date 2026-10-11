@@ -8,6 +8,7 @@ import { WorkflowArtifacts } from "../src/core/workflows/artifacts.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
+import { WorkflowFault } from "../src/core/workflows/errors.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { RunStatus, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
@@ -254,6 +255,19 @@ describe("durable SDD runtime", () => {
     expect(service.store.addFinding(run.runId, { ...finding, id: "f-two" }, fingerprint(finding), b.id)).toBe(finding.id);
     expect(service.store.findings(run.runId)[0]?.status).toBe("open");
     expect(service.store.events(run.runId).filter((e) => e.type === "finding.recorded")).toHaveLength(2);
+  });
+  test("a later review repeating a finding id for a new finding gets a host id", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    const base = { id: "F1", kind: "correctness" as const, severity: "high" as const, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: ["evidence"], claim: "Round one", impact: "Breaks contract", suggestedFix: "Fix value" };
+    const a = service.store.artifact(run.runId, "review", "a.json", "{}");
+    const second = { ...base, claim: "Round two" };
+    const third = { ...base, claim: "Round three" };
+    expect(service.store.addFinding(run.runId, base, fingerprint(base), a.id)).toBe("F1");
+    service.store.findingStatus(run.runId, "F1", "resolved");
+    expect(service.store.addFinding(run.runId, second, fingerprint(second), a.id)).toBe("F1-2");
+    expect(service.store.addFinding(run.runId, third, fingerprint(third), a.id)).toBe("F1-3");
+    expect(service.store.findings(run.runId).map((f) => f.id)).toEqual(["F1", "F1-2", "F1-3"]);
+    expect(service.store.findings(run.runId).map((f) => JSON.parse(f.body_json).id)).toEqual(["F1", "F1-2", "F1-3"]);
   });
   test("manual criteria wait for a trusted snapshot-bound decision", async () => {
     const { service, executor } = setup();
@@ -516,6 +530,26 @@ describe("durable SDD runtime", () => {
     expect(resumed.reason).not.toBe("invalid_output");
     expect(service.store.state(run.runId).analysisPassed).toBe(true);
     expect(service.store.requests(run.runId).some((r) => r.kind === "approval" && r.status === "pending")).toBe(true);
+  });
+  test("an attempt that ends at its step cap without a submission is repeated once with 1.5x the steps", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const caps: number[] = [];
+    const executor = new (class extends FixtureExecutor {
+      override async execute(request: ExecutionRequest) {
+        if (request.profile.output === "research") {
+          caps.push(request.maxSteps);
+          if (caps.length === 1) throw new WorkflowFault("OUTPUT_INVALID", "ended without submitting a result", { reason: "no_submission" });
+        }
+        return super.execute(request);
+      }
+    })(root);
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } }, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    await service.drive(run.runId, new AbortController().signal);
+    expect(caps).toHaveLength(2);
+    expect(caps[1]).toBe(Math.ceil(caps[0]! * 1.5));
   });
   test("plan-time sizing raises the run budget to the price and passes each task its cap", async () => {
     const sized: RunPolicy = { ...policy, maxTotalTokens: 50_000, sizing: { maxRunTokens: 5_000_000 } };

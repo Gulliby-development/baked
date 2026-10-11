@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { RunSnapshot } from "../../../shared/api.js";
 import { chat } from "../../client/chat.js";
 import { errorText, type RollbackReport, undoRun } from "../../client/runs.js";
@@ -7,6 +7,7 @@ import { workflow } from "../../client/workflow.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
+import { ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
@@ -246,25 +247,11 @@ function Models({
   const run = data.status;
   const routing = data.artifacts.routing;
   const [model, setModel] = useState("");
-  const [models, setModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const stopped = STOPPED.has(run.status);
-  useEffect(() => {
-    if (!stopped) return;
-    let live = true;
-    chat.models(projectKey).then(
-      (result) =>
-        live &&
-        setModels(
-          result.providers.filter((p) => p.configured).flatMap((p) => p.models.map((m) => m.id)),
-        ),
-      () => undefined,
-    );
-    return () => {
-      live = false;
-    };
-  }, [projectKey, stopped]);
+  const loadModels = useCallback(() => chat.models(projectKey), [projectKey]);
+  const models = useModelCatalog(stopped ? loadModels : null);
   if (!routing) return null;
   const routed = Object.entries(routing.stages);
   const providerStop =
@@ -316,20 +303,13 @@ function Models({
           <label htmlFor="reroute-model" className={FIELD_LABEL}>
             Switch to model
           </label>
-          <input
+          <ModelPicker
             id="reroute-model"
-            type="text"
-            className={TEXT_INPUT}
-            list="reroute-models"
             value={model}
-            placeholder="provider/model"
-            onChange={(e) => setModel(e.target.value)}
+            onChange={setModel}
+            catalog={models.catalog}
+            error={models.error}
           />
-          <datalist id="reroute-models">
-            {models.map((id) => (
-              <option key={id} value={id} />
-            ))}
-          </datalist>
           {error && <Alert tone="error">{error}</Alert>}
           <Button
             type="submit"

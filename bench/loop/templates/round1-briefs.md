@@ -1,6 +1,6 @@
 # Round 1 briefs
 
-The owner approved these five apps on 2026-10-10. Round 1 of the loop uses each brief verbatim as `rounds/R01/apps/<app>/brief.md`, plus the three lines the reviewer adds to every brief (README, MIT LICENSE, cross-platform).
+The owner approved these five apps on 2026-10-10. Round 1 of the loop uses each brief verbatim as `rounds/R01/apps/<app>/brief.md`, plus what the reviewer adds to every brief: the fixed sentence "Build this application in full: the working program with its source code, automated tests, README.md and LICENSE. Do not reduce the task to documentation; the source code and tests are the main deliverable." (briefs written as noun phrases were narrowed to README + LICENSE by BAKED's spec stage in 4 of 5 round-1 apps; the benchmark scaffold already holds only a minimal project scaffold, so do not say the repository is empty), then the three lines (README, MIT LICENSE, cross-platform).
 
 ## envguard
 

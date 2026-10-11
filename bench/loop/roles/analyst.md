@@ -26,6 +26,13 @@ Go through the run in order and ask at each stage:
 5. **Workflow fit.** Was the workflow right for this task type? Would `quick`, `standard` or a split into an initiative have been cheaper or more reliable? Update `ledger/workflow-map.md` with the evidence (a row's confidence goes up with each measured run).
 6. **Provider effects.** Cost or behavior that differs by provider or model. Say what an adaptive mechanism would do; never propose a constant tuned to one provider.
 
+## Brownfield findings (update runs)
+
+For a run with `group: "update"`, tag every finding `brownfield` and add:
+
+- **Baseline vs after.** The repository's test count and result before the run (`run.json` `baseline`) and after: tests added, tests lost or changed, checks still green. Tokens per changed file (total tokens divided by files in the diff), compared with the other update runs of the round and earlier rounds.
+- **Respect for the existing code.** Did BAKED follow the repository's code style, naming, module layout and test conventions, or did it introduce its own? Did it touch files the brief did not name? Did it read the existing code before planning (research and plan stages), or re-derive what was there? Answer in a finding when the answer is no.
+
 ## A good finding
 
 - **Evidence:** run id, stage, attempt, the artifact or event, and numbers.

@@ -1,6 +1,7 @@
 {
   "app": "envguard",
   "round": 1,
+  "kind": "new | update",
   "pass": true,
   "checks": [
     { "name": "clean clone install", "command": "bun install", "exit": 0, "excerpt": "" },

@@ -84,7 +84,7 @@ A skill is a folder with a `SKILL.md` (frontmatter `name` and `description`, the
 | Global | `~/.baked/skills/`, `~/.agents/skills/`, `~/.claude/skills/` |
 | Project | `.baked/skills/`, `.agents/skills/`, `.claude/skills/` |
 
-A project skill wins over a global one with the same name; symlinked collections are deduplicated. `Ctrl+S` or `/skills` opens the manager: **Search** the [skills.sh](https://skills.sh) catalog (installed with `bunx skills`, `npx` as the fallback), **Installed** skills, and **Active** skills of this session, which can be toggled. An active skill's content goes into the system prompt, so keep `SKILL.md` short. With `agentFeatures.agentSkills` on, the agent can search, install and load skills itself; installing asks for approval.
+A project skill wins over a global one with the same name; symlinked collections are deduplicated. `Ctrl+S` or `/skills` opens the manager: **Search** the [skills.sh](https://skills.sh) catalog (installed with `bunx skills`, `npx` as the fallback), **Installed** skills, and **Active** skills of this session, which can be toggled. An active skill's content goes into the system prompt, so keep `SKILL.md` short. In the desktop app the project's **Skills** screen does the same: installed project and global skills with Open and Remove, and the skills.sh catalog with Install for this project or all projects. With `agentFeatures.agentSkills` on, the agent can search, install and load skills itself; installing asks for approval.
 
 Workflow agents use skills from `baked/skills/ID/SKILL.md` in the repository, frozen by hash; see the [runtime guide](workflows/runtime.md#import-export-and-retention).
 

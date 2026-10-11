@@ -38,7 +38,13 @@ import {
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
 import { deleteSecret, hasSecret, type SecretKey, setSecret } from "../secrets.js";
-import { listInstalledSkills } from "../skills/manager.js";
+import {
+  type InstalledSkill,
+  listInstalledSkills,
+  removeInstalledSkill,
+  type SkillCatalog,
+  skillCatalog,
+} from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { explainRoute, type RouteExplanation } from "../workflows/routing.js";
@@ -60,6 +66,8 @@ export interface SetupRouteContext extends RouteContext {
   configDir?: string;
   /** The home directory holding global commands and skills; tests point it elsewhere. */
   homeDir?: string;
+  /** The skills.sh catalog and installer; tests pass a fake one. */
+  skillCatalog?: SkillCatalog;
   /** Runs that froze `absolutePath` as an input and have not ended. */
   runsFreezing(absolutePath: string): string[];
 }
@@ -116,6 +124,23 @@ const RoutingBody = z.union([
     independentReview: z.enum(["off", "warn", "require"]).nullable(),
   }),
 ]);
+const SkillQuery = z.strictObject({ q: z.string().max(200).optional() });
+const SkillInstallBody = z.strictObject({
+  source: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._/@:-]*$/, "Send the catalog source, e.g. owner/repo"),
+  skillId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._/@:-]*$/, "Send the catalog skill ID"),
+  scope: z.enum(["project", "global"]),
+});
+const SKILL_ITEM = /^\/v1\/skills\/(project|global)\/([^/]+)$/;
 const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
 const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/;
@@ -217,25 +242,74 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     });
   }
 
+  const skillDirs = { cwd: workspace, ...(ctx.homeDir ? { home: ctx.homeDir } : {}) };
+  const installedSkills = () =>
+    listInstalledSkills(skillDirs)
+      .map(skillEntry)
+      .sort((a, b) => a.id.localeCompare(b.id));
+
   if (path === "/v1/skills") {
+    ctx.only("GET", "POST");
+    if (method === "GET") return ctx.json(200, { skills: installedSkills() });
+    const body = SkillInstallBody.parse(await ctx.readJson());
+    const catalog = ctx.skillCatalog ?? skillCatalog;
+    let result: Awaited<ReturnType<SkillCatalog["install"]>>;
+    try {
+      result = await catalog.install(body.source, body.skillId, body.scope === "global", skillDirs);
+    } catch (error) {
+      result = { installed: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!result.installed)
+      ctx.fail(422, "INSTALL_FAILED", result.error ?? `${body.skillId} was not installed`);
+    const skills = installedSkills();
+    return ctx.json(200, { skill: skills.find((s) => s.id === result.name) ?? null, skills });
+  }
+
+  if (path === "/v1/skills/catalog") {
     ctx.only("GET");
-    const skills = listInstalledSkills({
-      cwd: workspace,
-      ...(ctx.homeDir ? { home: ctx.homeDir } : {}),
-    });
-    return ctx.json(200, {
-      skills: skills
-        .map((skill) => {
-          const description = skillDescription(skill.path);
-          return {
-            id: skill.name,
-            scope: skill.scope,
-            path: skill.path,
-            ...(description ? { description } : {}),
-          };
-        })
-        .sort((a, b) => a.id.localeCompare(b.id)),
-    });
+    const { q } = ctx.query(SkillQuery);
+    const catalog = ctx.skillCatalog ?? skillCatalog;
+    try {
+      const found = await catalog.search(q ?? "");
+      return ctx.json(200, {
+        skills: found.map((skill) => ({
+          id: skill.id,
+          skillId: skill.skillId,
+          name: skill.name,
+          source: skill.source,
+          installs: skill.installs,
+        })),
+      });
+    } catch (error) {
+      ctx.fail(
+        502,
+        "CATALOG_UNAVAILABLE",
+        `The skills.sh catalog did not answer: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  const skillItem = SKILL_ITEM.exec(path);
+  if (skillItem) {
+    ctx.only("GET", "DELETE");
+    const scope = skillItem[1] as InstalledSkill["scope"];
+    let name = skillItem[2] ?? "";
+    try {
+      name = decodeURIComponent(name);
+    } catch {}
+    const skill = listInstalledSkills(skillDirs).find((s) => s.name === name && s.scope === scope);
+    if (!skill) ctx.fail(404, "NOT_FOUND", `No ${scope} skill named ${name} is installed`);
+    if (method === "GET") {
+      const content = readFileSync(skill.path, "utf8");
+      return ctx.json(200, { ...skillEntry(skill), content: content.slice(0, 256 * 1024) });
+    }
+    if (!removeInstalledSkill(skill))
+      ctx.fail(
+        409,
+        "NOT_REMOVABLE",
+        `${skill.path} is not in its own skill folder; remove it by hand`,
+      );
+    return ctx.json(200, { skills: installedSkills() });
   }
 
   if (path === "/v1/config") {
@@ -401,6 +475,16 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
 }
 
 /** The `description` of a SKILL.md front matter, if it has one. */
+function skillEntry(skill: InstalledSkill) {
+  const description = skillDescription(skill.path);
+  return {
+    id: skill.name,
+    scope: skill.scope,
+    path: skill.path,
+    ...(description ? { description } : {}),
+  };
+}
+
 function skillDescription(path: string): string | undefined {
   let text: string;
   try {

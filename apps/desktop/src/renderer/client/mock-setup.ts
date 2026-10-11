@@ -5,6 +5,7 @@
 import type { ApiResponse } from "../../shared/api.js";
 import type { MockRequest, MockRoute } from "./mock-routes.js";
 import type {
+  CatalogSkill,
   Check,
   CheckList,
   CheckRunResult,
@@ -609,6 +610,69 @@ const SKILLS: SkillEntry[] = [
   },
 ];
 
+const CATALOG: CatalogSkill[] = [
+  ["frontend-design", "anthropics/skills", 41200],
+  ["pdf", "anthropics/skills", 28900],
+  ["webapp-testing", "anthropics/skills", 17300],
+  ["vercel-react-best-practices", "vercel-labs/agent-skills", 15800],
+  ["supabase-postgres", "supabase/agent-skills", 6400],
+  ["sqlite-tuning", "oven-sh/skills", 2100],
+].map(([skillId, source, installs]) => ({
+  id: `${source}/${skillId}`,
+  skillId: String(skillId),
+  name: String(skillId),
+  source: String(source),
+  installs: Number(installs),
+}));
+
+const skillPath = (scope: SkillEntry["scope"], id: string) =>
+  scope === "project"
+    ? `C:\\Project\\BAKED\\.agents\\skills\\${id}\\SKILL.md`
+    : `C:\\Users\\you\\.agents\\skills\\${id}\\SKILL.md`;
+
+function skillRoutes(request: MockRequest) {
+  const { path, method, query } = request;
+  if (path === "/v1/skills/catalog" && method === "GET") {
+    const q = (query.get("q") ?? "").toLowerCase();
+    return response(200, {
+      skills: CATALOG.filter((c) => !q || c.skillId.includes(q) || c.source.includes(q)),
+    });
+  }
+  if (path === "/v1/skills" && method === "POST") {
+    const add = body<{ source: string; skillId: string; scope: SkillEntry["scope"] }>(request);
+    if (!add.skillId || !add.scope) return error(400, "INVALID_REQUEST", "Name a skill and scope");
+    if (add.skillId === "sqlite-tuning")
+      return error(422, "INSTALL_FAILED", "Package resolved but no SKILL.md found in it.");
+    const at = SKILLS.findIndex((s) => s.id === add.skillId && s.scope === add.scope);
+    const skill: SkillEntry = {
+      id: add.skillId,
+      scope: add.scope,
+      path: skillPath(add.scope, add.skillId),
+      description: `Installed from ${add.source ?? "skills.sh"}`,
+    };
+    if (at >= 0) SKILLS[at] = skill;
+    else SKILLS.push(skill);
+    SKILLS.sort((a, b) => a.id.localeCompare(b.id));
+    return response(200, { skill, skills: SKILLS });
+  }
+  const item = /^\/v1\/skills\/(project|global)\/([^/]+)$/.exec(path);
+  if (!item) return undefined;
+  const id = decodeURIComponent(item[2] ?? "");
+  const at = SKILLS.findIndex((s) => s.id === id && s.scope === item[1]);
+  const found = SKILLS[at];
+  if (!found) return error(404, "NOT_FOUND", `No ${item[1]} skill named ${id} is installed`);
+  if (method === "GET")
+    return response(200, {
+      ...found,
+      content: `---\nname: ${id}\ndescription: ${found.description ?? ""}\n---\n\n# ${id}\n\nUse this skill when the task touches ${id.replace("-", " ")}.\n\n1. Read the relevant files first.\n2. Follow the steps below.\n`,
+    });
+  if (method === "DELETE") {
+    SKILLS.splice(at, 1);
+    return response(200, { skills: SKILLS });
+  }
+  return undefined;
+}
+
 const WORKFLOW_STAGES: Record<string, string[]> = {
   sdd: ["research", "specify", "plan", "analyze", "implement", "review", "converge"],
   quick: ["plan", "implement", "review"],
@@ -949,6 +1013,8 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
 
 export const setupRoutes: MockRoute = (request) => {
   const { key, method, path } = request;
+  const skill = skillRoutes(request);
+  if (skill) return skill;
   const s = state(key);
   switch (`${method} ${path}`) {
     case "GET /v1/projects/current":

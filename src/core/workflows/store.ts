@@ -1173,7 +1173,9 @@ export class WorkflowStore {
     );
   }
   evidence(runId: string): EvidenceRow[] {
-    return this.db.query<EvidenceRow, [string]>("SELECT * FROM evidence WHERE run_id=?").all(runId);
+    return this.db
+      .query<EvidenceRow, [string]>("SELECT * FROM evidence WHERE run_id=? ORDER BY rowid")
+      .all(runId);
   }
   addEvidence(
     runId: string,
@@ -1280,12 +1282,17 @@ export class WorkflowStore {
       });
       return existing.id;
     }
+    // The model's ids are handles: a later round repeats short ids like F1 for new findings,
+    // so the host keeps the handle only while it is free and numbers it otherwise.
+    const taken = new Set(this.findings(runId).map((f) => f.id));
+    let id = finding.id;
+    for (let n = 2; taken.has(id); n++) id = `${finding.id}-${n}`;
     this.db.run(
       "INSERT INTO findings (run_id,id,fingerprint,body_json,status,created_at) VALUES (?,?,?,?,'open',?)",
-      [runId, finding.id, fingerprint, canonical(finding), Date.now()],
+      [runId, id, fingerprint, canonical({ ...finding, id }), Date.now()],
     );
-    this.emit(runId, { type: "finding.recorded", payload: { findingId: finding.id, artifactId } });
-    return finding.id;
+    this.emit(runId, { type: "finding.recorded", payload: { findingId: id, artifactId } });
+    return id;
   }
   findingStatus(
     runId: string,

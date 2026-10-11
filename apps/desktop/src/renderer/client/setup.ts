@@ -13,6 +13,7 @@ import {
   offers,
   ROUTING_CAPABILITY,
   RUN_MEMORY_CAPABILITY,
+  SKILLS_INSTALL_CAPABILITY,
 } from "./capabilities.js";
 
 // --- Working set (exists) -----------------------------------------------------------------------
@@ -145,6 +146,18 @@ export interface SkillEntry {
   scope: "project" | "global";
   path: string;
   description?: string;
+}
+
+export type SkillScope = SkillEntry["scope"];
+
+/** A skill of the skills.sh catalog. */
+export interface CatalogSkill {
+  id: string;
+  skillId: string;
+  name: string;
+  /** The repository it installs from, like `owner/repo`. */
+  source: string;
+  installs: number;
 }
 
 // --- Config and providers -----------------------------------------------------------------------
@@ -408,6 +421,31 @@ export const setup = {
     withCapability(key, LIBRARY_CAPABILITY, () =>
       call<{ skills: SkillEntry[] }>(key, "GET", "/v1/skills"),
     ),
+
+  /** Popular skills of the skills.sh catalog for an empty query. */
+  skillCatalog: (key: string, query: string) =>
+    withCapability(key, SKILLS_INSTALL_CAPABILITY, () =>
+      call<{ skills: CatalogSkill[] }>(
+        key,
+        "GET",
+        `/v1/skills/catalog${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`,
+      ),
+    ),
+  /** Installs through the `skills` CLI as `/skills` in the terminal does; 422 INSTALL_FAILED. */
+  installSkill: (key: string, skill: CatalogSkill, scope: SkillScope) =>
+    call<{ skill: SkillEntry | null; skills: SkillEntry[] }>(key, "POST", "/v1/skills", {
+      source: skill.source,
+      skillId: skill.skillId,
+      scope,
+    }),
+  skill: (key: string, scope: SkillScope, id: string) =>
+    call<SkillEntry & { content: string }>(
+      key,
+      "GET",
+      `/v1/skills/${scope}/${encodeURIComponent(id)}`,
+    ),
+  removeSkill: (key: string, scope: SkillScope, id: string) =>
+    call<{ skills: SkillEntry[] }>(key, "DELETE", `/v1/skills/${scope}/${encodeURIComponent(id)}`),
 
   config: (key: string) => call<ConfigView>(key, "GET", "/v1/config"),
   patchConfig: (

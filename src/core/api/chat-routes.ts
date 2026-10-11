@@ -9,8 +9,7 @@ import {
   MAX_IMAGE_BODY_BYTES,
 } from "../chat/images.js";
 import { ChatError, type ChatService } from "../chat/sessions.js";
-import { fetchProviderModels } from "../llm/models.js";
-import { checkProviders } from "../llm/provider.js";
+import { loadModelCatalog } from "../llm/model-catalog.js";
 import type { RouteContext } from "./route-context.js";
 import {
   CompactBody,
@@ -54,7 +53,7 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
   const { only } = ctx;
   if (path === "/v1/models") {
     only("GET");
-    return ctx.json(200, await models(ctx.query(ModelsQuery).provider));
+    return ctx.json(200, await loadModelCatalog(ctx.query(ModelsQuery).provider));
   }
   if (path === "/v1/mentions") {
     only("GET");
@@ -160,25 +159,4 @@ function checkedImages(inputs: ImageInput[]) {
     if (err instanceof ImageInputError) throw new ChatError("INVALID_REQUEST", err.message);
     throw err;
   }
-}
-
-async function models(only: string | undefined) {
-  const statuses = (await checkProviders()).filter((p) => only === undefined || p.id === only);
-  const providers = await Promise.all(
-    statuses.map(async (status) => {
-      const fetched = status.available ? await fetchProviderModels(status.id) : { models: [] };
-      return {
-        id: status.id,
-        name: status.name,
-        configured: status.available,
-        models: fetched.models.map((m) => ({
-          id: `${status.id}/${m.id}`,
-          name: m.name,
-          ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-        })),
-        ...("error" in fetched && fetched.error ? { error: fetched.error } : {}),
-      };
-    }),
-  );
-  return { providers };
 }

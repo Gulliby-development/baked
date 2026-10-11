@@ -94,9 +94,12 @@ describe("compactToolHistory", () => {
 
 describe("finalizeReason", () => {
   const base = { stepNumber: 2, maxSteps: 14, consumed: 0, lastStepTokens: 0, maxTokens: 1000 };
-  test("finalizes on the last allowed step", () => {
-    expect(finalizeReason({ ...base, stepNumber: 12 })).toBeNull();
+  test("finalizes two steps before the end so a rejected submission can be corrected", () => {
+    expect(finalizeReason({ ...base, stepNumber: 11 })).toBeNull();
+    expect(finalizeReason({ ...base, stepNumber: 12 })).toBe("steps");
     expect(finalizeReason({ ...base, stepNumber: 13 })).toBe("steps");
+    expect(finalizeReason({ ...base, maxSteps: 2, stepNumber: 0 })).toBeNull();
+    expect(finalizeReason({ ...base, maxSteps: 2, stepNumber: 1 })).toBe("steps");
   });
   test("finalizes while two more steps of the current size still fit", () => {
     expect(finalizeReason({ ...base, consumed: 500, lastStepTokens: 250 })).toBeNull();

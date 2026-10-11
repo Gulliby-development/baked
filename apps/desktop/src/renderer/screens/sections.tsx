@@ -10,6 +10,7 @@ import { RunsView } from "./runs/RunsView.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
 import { RunMemorySection } from "./setup/RunMemorySection.js";
+import { SkillsSection } from "./setup/SkillsSection.js";
 import { WorkingSetSection } from "./setup/WorkingSetSection.js";
 import { ProjectHome } from "./start/index.js";
 
@@ -28,6 +29,7 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   instructions: InstructionsSection,
   "working-set": WorkingSetSection,
   "run-memory": RunMemorySection,
+  skills: SkillsSection,
   initiatives: InitiativesSection,
   acceptance: AcceptanceSection,
   usage: UsageSection,
