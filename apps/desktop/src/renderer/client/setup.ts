@@ -309,6 +309,13 @@ export const setup = {
  * True when the backend has no such endpoint: an older `baked serve`. Other 404s, such as a folder
  * that is not a BAKED project yet, are errors the screen shows as they are.
  */
+/** The folder has no baked/project.json: project-only endpoints answer 404 "No project here". */
+export function isNoProject(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 404 && /^No project here/.test(error.message)
+  );
+}
+
 export function isMissingEndpoint(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
   if (error.status === 405) return true;

@@ -408,6 +408,46 @@ select {
   font: inherit;
 }
 
+/* Native selects and checkboxes drop the platform look for the ink outline and accent fill. */
+select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 12px;
+  cursor: pointer;
+}
+
+select:focus-visible,
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  background: var(--bg);
+  border: var(--border-w) solid var(--ink);
+  border-radius: 4px;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--fill-accent) var(--check) no-repeat center / 12px;
+}
+
+input[type="checkbox"]:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
