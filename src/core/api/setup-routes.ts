@@ -148,7 +148,7 @@ const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/;
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
 /** Reads a config file, with legacy keys under their current names. */
-function readJsonFile(path: string): Record<string, unknown> {
+export function readJsonFile(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
@@ -502,7 +502,7 @@ function skillDescription(path: string): string | undefined {
 }
 
 /** Makes `target` equal `source` while keeping the object every reader holds. */
-function replaceInPlace(target: AppConfig, source: AppConfig): void {
+export function replaceInPlace(target: AppConfig, source: AppConfig): void {
   const record = target as unknown as Record<string, unknown>;
   for (const key of Object.keys(record)) if (!(key in source)) delete record[key];
   Object.assign(record, source);
