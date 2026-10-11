@@ -501,6 +501,22 @@ describe("durable SDD runtime", () => {
     const question = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
     expect(question?.body_json).toContain("initiative");
   });
+  test("answering the plan-size question resumes at approval instead of blocking the run", async () => {
+    const sized: RunPolicy = { ...policy, maxTotalTokens: 60_000, sizing: { maxRunTokens: 100_000 } };
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: sized } }, new FixtureExecutor(root));
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: sized });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
+    const question = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
+    const waiting = service.store.run(run.runId);
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "answer", requestId: question!.id, answers: { "SIZING-1": "Continue within the ceiling" } });
+    const resumed = await service.drive(run.runId, new AbortController().signal);
+    expect(resumed.reason).not.toBe("invalid_output");
+    expect(service.store.state(run.runId).analysisPassed).toBe(true);
+    expect(service.store.requests(run.runId).some((r) => r.kind === "approval" && r.status === "pending")).toBe(true);
+  });
   test("plan-time sizing raises the run budget to the price and passes each task its cap", async () => {
     const sized: RunPolicy = { ...policy, maxTotalTokens: 50_000, sizing: { maxRunTokens: 5_000_000 } };
     const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));

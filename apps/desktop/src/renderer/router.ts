@@ -15,7 +15,24 @@ export const PROJECT_SECTIONS = [
 ] as const;
 export type ProjectSection = (typeof PROJECT_SECTIONS)[number];
 
-export type SettingsSection = "app" | "global";
+/** Settings pages: this app's own, then one page per part of `~/.baked/config.json`. */
+export const SETTINGS_SECTIONS = [
+  "app",
+  "providers",
+  "routing",
+  "commands",
+  "notifications",
+  "telemetry",
+] as const;
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+function settingsSection(name: string | undefined): SettingsSection {
+  // `global` was the single All projects page before it split into one page per part.
+  if (name === "global") return "providers";
+  return (SETTINGS_SECTIONS as readonly string[]).includes(name ?? "")
+    ? (name as SettingsSection)
+    : "app";
+}
 
 export type Route =
   | { name: "projects" }
@@ -28,7 +45,7 @@ export function parseRoute(hash: string): Route {
   const [head, a, b, c] = parts;
   if (head === "attention")
     return a && b ? { name: "attention", key: a, id: b } : { name: "attention" };
-  if (head === "settings") return { name: "settings", section: a === "global" ? "global" : "app" };
+  if (head === "settings") return { name: "settings", section: settingsSection(a) };
   if (head === "p" && a) {
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
       ? (b as ProjectSection)

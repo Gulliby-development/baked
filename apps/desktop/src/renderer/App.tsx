@@ -17,7 +17,7 @@ export function App() {
       <TitleBar />
       <div className="flex min-h-0 min-w-0 flex-1">
         <Sidebar route={route} />
-        <main className="min-w-0 flex-1 overflow-auto [&:has(>[data-chat])]:flex [&:has(>[data-chat])]:flex-col [&:has(>[data-chat])]:overflow-hidden">
+        <main className="relative min-w-0 flex-1 overflow-auto [&:has(>[data-chat])]:flex [&:has(>[data-chat])]:flex-col [&:has(>[data-chat])]:overflow-hidden">
           {isMock && (
             <Alert className="rounded-none border-0 border-b">
               Preview with sample data: no BAKED backend is connected.
