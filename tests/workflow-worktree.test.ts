@@ -18,6 +18,7 @@ import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
+import { worktreeView } from "../src/core/workflows/worktree.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy } from "./helpers/workflow-fixture.js";
 
@@ -408,6 +409,11 @@ describe("workflow worktree execution", () => {
     const worktree = store.state(run.runId).worktree;
     const tree = join(fx.root, worktree?.path ?? "missing");
     const identity = () => ({ commandId: newId(), expectedRevision: store.run(run.runId).revision });
+    expect(worktreeView(fx.root, store.state(run.runId))).toEqual({
+      path: worktree?.path ?? "",
+      branch: `baked/wf/${run.runId}`,
+      present: true,
+    });
     const busy = await refusal(fx.service.discardWorktree(run.runId, identity()));
     expect(busy.code).toBe("STALE_DECISION");
     expect(existsSync(tree)).toBe(true);
@@ -417,6 +423,8 @@ describe("workflow worktree execution", () => {
     expect(existsSync(join(fx.root, ".baked", "worktrees", run.runId))).toBe(false);
     expect(git(fx.root, "branch", "--list", `baked/wf/${run.runId}`)).toBe("");
     expect(store.artifacts(run.runId).some((a) => a.logical_path === "worktree/discarded.json")).toBe(true);
+    // The record stays for history; the run screens stop offering the discard.
+    expect(worktreeView(fx.root, store.state(run.runId))?.present).toBe(false);
     const again = await refusal(fx.service.discardWorktree(run.runId, identity()));
     expect(again.code).toBe("NOT_FOUND");
     // An inline run has no worktree to discard.
@@ -424,6 +432,7 @@ describe("workflow worktree execution", () => {
     await fx.service.cancel(inline.runId, { commandId: newId(), expectedRevision: store.run(inline.runId).revision });
     const none = await refusal(fx.service.discardWorktree(inline.runId, { commandId: newId(), expectedRevision: store.run(inline.runId).revision }));
     expect(none.code).toBe("NOT_FOUND");
+    expect(worktreeView(fx.root, store.state(inline.runId))).toBeNull();
   });
 
   test("the CLI requests worktree execution, the exclusion choice and discard", () => {

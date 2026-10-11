@@ -30,3 +30,75 @@ export function trayModel(items: AttentionItem[]): TrayModel {
     badge: blocking,
   };
 }
+
+/** The text of the taskbar overlay badge: the count up to 9, then "9+"; null clears the badge. */
+export function badgeLabel(count: number): string | null {
+  if (!Number.isFinite(count) || count < 1) return null;
+  return count > 9 ? "9+" : String(Math.floor(count));
+}
+
+/** 3x5 pixel glyphs of the badge digits and "+", one string per row. */
+const GLYPHS: Record<string, readonly string[]> = {
+  "0": ["###", "#.#", "#.#", "#.#", "###"],
+  "1": [".#.", "##.", ".#.", ".#.", "###"],
+  "2": ["###", "..#", "###", "#..", "###"],
+  "3": ["###", "..#", ".##", "..#", "###"],
+  "4": ["#.#", "#.#", "###", "..#", "..#"],
+  "5": ["###", "#..", "###", "..#", "###"],
+  "6": ["###", "#..", "###", "#.#", "###"],
+  "7": ["###", "..#", ".#.", ".#.", ".#."],
+  "8": ["###", "#.#", "###", "#.#", "###"],
+  "9": ["###", "#.#", "###", "..#", "###"],
+  "+": ["...", ".#.", "###", ".#.", "..."],
+};
+
+type Rgb = readonly [number, number, number];
+/** BAKED palette (src/renderer/styles/tokens.css): `--fill-accent`, `--ink` and `--on-fill`. */
+export const BADGE_FILL: Rgb = [0xff, 0x9d, 0x52];
+export const BADGE_RING: Rgb = [0x00, 0x00, 0x00];
+export const BADGE_TEXT: Rgb = [0x19, 0x14, 0x10];
+
+/**
+ * The Windows taskbar overlay badge as raw BGRA pixels for `nativeImage.createFromBitmap`: an
+ * orange disc with a black ring and the label in a pixel font. Windows has no badge count
+ * (`app.setBadgeCount` covers macOS and Unity only), so the count is drawn here.
+ */
+export function badgeBitmap(label: string, size = 32): Buffer {
+  const pixels = Buffer.alloc(size * size * 4);
+  const put = (x: number, y: number, [r, g, b]: Rgb): void => {
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    const at = (y * size + x) * 4;
+    pixels[at] = b;
+    pixels[at + 1] = g;
+    pixels[at + 2] = r;
+    pixels[at + 3] = 255;
+  };
+  const centre = (size - 1) / 2;
+  const radius = size / 2;
+  const ring = Math.max(1, Math.round(size / 16));
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const distance = Math.hypot(x - centre, y - centre);
+      if (distance <= radius - ring) put(x, y, BADGE_FILL);
+      else if (distance <= radius) put(x, y, BADGE_RING);
+    }
+  const chars = [...label].filter((c) => GLYPHS[c]);
+  if (!chars.length) return pixels;
+  // The largest whole scale whose text fits the disc, with one glyph pixel between characters.
+  const columns = chars.length * 4 - 1;
+  const room = Math.floor((size - 4 * ring) * 0.75);
+  const scale = Math.max(1, Math.min(Math.floor(room / columns), Math.floor(room / 5)));
+  const left = Math.round((size - columns * scale) / 2);
+  const top = Math.round((size - 5 * scale) / 2);
+  chars.forEach((char, i) => {
+    GLYPHS[char]?.forEach((row, gy) => {
+      [...row].forEach((cell, gx) => {
+        if (cell !== "#") return;
+        for (let dy = 0; dy < scale; dy++)
+          for (let dx = 0; dx < scale; dx++)
+            put(left + (i * 4 + gx) * scale + dx, top + gy * scale + dy, BADGE_TEXT);
+      });
+    });
+  });
+  return pixels;
+}

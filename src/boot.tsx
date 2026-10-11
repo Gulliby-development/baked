@@ -51,6 +51,17 @@ if (cliArgs[0] === "session") {
   process.exit(await runSessionCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "usage" || cliArgs[0] === "attention") {
+  const { runAttentionCli, runUsageCli } = await import("./headless/overview.js");
+  const run = cliArgs[0] === "usage" ? runUsageCli : runAttentionCli;
+  process.exit(await run(cliArgs.slice(1)));
+}
+
+if (cliArgs[0] === "login" || cliArgs[0] === "logout") {
+  const { runLoginCli } = await import("./headless/login.js");
+  process.exit(await runLoginCli(cliArgs[0], cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "serve") {
   const { runServeCli } = await import("./headless/serve.js");
   process.exit(await runServeCli(cliArgs.slice(1)));
@@ -66,6 +77,7 @@ const hasCli =
   cliArgs.includes("--list-providers") ||
   cliArgs.includes("--list-models") ||
   cliArgs.includes("--set-key") ||
+  cliArgs.includes("--remove-key") ||
   cliArgs.includes("--version") ||
   cliArgs.includes("-v") ||
   cliArgs.includes("--help") ||

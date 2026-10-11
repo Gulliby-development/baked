@@ -19,11 +19,19 @@ export const PLAN_MODE_CAPABILITY = "plan-mode";
 export const CHAT_UNDO_CAPABILITY = "chat-undo";
 /** `GET|POST /v1/workflow/memory` (the Run memory section). */
 export const RUN_MEMORY_CAPABILITY = "run-memory";
+/** `/v1/memory*` (the Chat memory section). */
+export const CHAT_MEMORY_CAPABILITY = "chat-memory";
 /** `images` on chat messages (paste and drop in the composer). */
 export const IMAGES_CAPABILITY = "images";
 
+/** Chat messages that start with a custom slash command expand on the server (the composer lists them). */
+export const CUSTOM_COMMANDS_CAPABILITY = "custom-commands";
+
 /** `GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME` (the Skills section). */
 export const SKILLS_INSTALL_CAPABILITY = "skills-install";
+
+/** `GET|PATCH /v1/settings` (the Chat settings pages). */
+export const SETTINGS_CAPABILITY = "settings";
 
 /** `/v1/graph*` (the Code graph section). */
 export const CODE_GRAPH_CAPABILITY = "code-graph";

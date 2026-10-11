@@ -83,6 +83,13 @@ describe("workflow panel formatting", () => {
     expect(keys(snapshot({ status: "completed" }))).toEqual(["fork", "undo"]);
     expect(keys(snapshot({ status: "created" }))).toEqual(["resume", "cancel"]);
   });
+  test("an ended run with its worktree on disk offers the discard", () => {
+    const discard = (s: RunSnapshot, worktree: boolean) =>
+      runActions(s, null, null, worktree).find((a) => a.action === "discard-worktree")?.key;
+    expect(discard(snapshot({ status: "failed" }), true)).toBe("D");
+    expect(discard(snapshot({ status: "cancelled" }), false)).toBeUndefined();
+    expect(discard(snapshot({ status: "paused" }), true)).toBeUndefined();
+  });
   test("a stopped run offers a switch to the tab's model", () => {
     const blocked = snapshot({ status: "blocked", reason: "provider_account" });
     expect(runActions(blocked, null, "codex/gpt-6-luna").find((a) => a.action === "reroute")?.key).toBe("M");

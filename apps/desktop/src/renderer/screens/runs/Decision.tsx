@@ -4,6 +4,7 @@ import {
   approveRequest,
   errorText,
   GROUP_B_CAPABILITY,
+  type RecoveryResolution,
   type RunRequest,
   runs,
 } from "../../client/runs.js";
@@ -20,6 +21,7 @@ import {
   type ClarificationBody,
   parse,
   questionsOf,
+  type RecoveryBody,
 } from "./requests.js";
 
 /** A request card: its heading and paragraphs carry the warning tone. */
@@ -203,6 +205,116 @@ function Approval({
   );
 }
 
+/** The outcomes of an interrupted effect, in the order and words of the terminal UI. */
+export const RESOLUTIONS: readonly { value: RecoveryResolution; label: string }[] = [
+  { value: "record-applied", label: "It ran and its effect is in place" },
+  { value: "record-not-applied", label: "It did not run or had no effect" },
+  { value: "retry", label: "Allow a new attempt" },
+  { value: "cancel", label: "Abandon it (all its processes are stopped)" },
+];
+
+/** What the interrupted effect was meant to do, from the request body, in one line. */
+export function effectSummary(body: RecoveryBody): string {
+  const intent = body.intent;
+  if (!intent || !Object.keys(intent).length) return "";
+  const text = JSON.stringify(intent);
+  return text.length > 400 ? `${text.slice(0, 399)}…` : text;
+}
+
+function Recovery({
+  projectKey,
+  data,
+  request,
+  onDone,
+}: {
+  projectKey: string;
+  data: RunData;
+  request: RunRequest;
+  onDone: () => Promise<void>;
+}) {
+  const body = parse<RecoveryBody>(request.body_json);
+  const [resolution, setResolution] = useState<RecoveryResolution | null>(null);
+  const [evidence, setEvidence] = useState("");
+  const { busy, error, decide } = useDecide(projectKey, onDone);
+  const run = data.status;
+  const effectId = body.effectId;
+  const intent = effectSummary(body);
+  const command = `baked workflow recover ${run.runId} --request ${request.id}`;
+  return (
+    <div className={DECISION}>
+      <h3>{body.delivery ? "A delivery step was interrupted" : "A command was interrupted"}</h3>
+      <p>
+        BAKED cannot tell whether it finished, and nothing is replayed automatically. Check what
+        happened, then record the outcome.
+      </p>
+      {effectId && (
+        <p className="font-mono text-[12px] break-all text-dim-foreground">
+          Effect {effectId}
+          {intent && `: ${intent}`}
+        </p>
+      )}
+      {!data.capabilities.includes(GROUP_B_CAPABILITY) || !effectId ? (
+        <p>
+          Resolve it in the terminal: <code className="font-mono">{command}</code>
+        </p>
+      ) : (
+        <form
+          className={STACK_FORM}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!resolution || !evidence.trim()) return;
+            void decide(() =>
+              runs.recover(projectKey, run, {
+                requestId: request.id,
+                effectId,
+                resolution,
+                evidence: evidence.trim(),
+              }),
+            );
+          }}
+        >
+          <fieldset className="m-0 flex flex-col border-0 p-0">
+            <legend className={FIELD_LABEL}>What happened</legend>
+            {RESOLUTIONS.map((r) => (
+              <label key={r.value} className={CHECK}>
+                <input
+                  type="radio"
+                  name={`recovery-${request.id}`}
+                  value={r.value}
+                  checked={resolution === r.value}
+                  onChange={() => setResolution(r.value)}
+                />
+                <span>{r.label}</span>
+              </label>
+            ))}
+          </fieldset>
+          <label htmlFor={`recovery-evidence-${request.id}`} className={FIELD_LABEL}>
+            What you checked (process stopped, files observed)
+          </label>
+          <textarea
+            id={`recovery-evidence-${request.id}`}
+            className={TEXTAREA}
+            rows={3}
+            value={evidence}
+            onChange={(e) => setEvidence(e.target.value)}
+          />
+          {error && <Alert tone="error">{error}</Alert>}
+          <div className={ROW_ACTIONS}>
+            <Button
+              type="submit"
+              variant="primary"
+              size="md"
+              disabled={busy || !resolution || !evidence.trim()}
+            >
+              Record outcome
+            </Button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 export function DecisionCard({
   projectKey,
   data,
@@ -275,15 +387,16 @@ export function DecisionCard({
           </p>
         </div>
       );
+    case "recovery":
+      return <Recovery projectKey={projectKey} data={data} request={request} onDone={onDone} />;
     default:
       return (
         <div className={DECISION}>
-          <h3>An effect needs a recovery decision</h3>
+          <h3>The run waits for a decision</h3>
           <p>
-            Resolve it in the terminal:{" "}
-            <code className="font-mono">
-              baked workflow recover {data.status.runId} --request {request.id}
-            </code>
+            This app does not know the request <code className="font-mono">{request.kind}</code>{" "}
+            yet. See it in the terminal:{" "}
+            <code className="font-mono">baked workflow status {data.status.runId}</code>
           </p>
         </div>
       );

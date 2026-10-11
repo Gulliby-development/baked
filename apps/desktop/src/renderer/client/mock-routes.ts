@@ -5,6 +5,7 @@ import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
 import { graphRoutes } from "./mock-graph.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
 import { activeRunIds, freezeInputChanged, RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
+import { settingsRoutes } from "./mock-settings.js";
 import { setupRoutes } from "./mock-setup.js";
 import { startRoutes } from "./mock-start.js";
 
@@ -102,6 +103,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   instructionSave,
   startRoutes,
   setupRoutes,
+  settingsRoutes,
   ...MOCK_CHAT_ROUTES,
   ...INSIGHTS_ROUTES,
   graphRoutes,

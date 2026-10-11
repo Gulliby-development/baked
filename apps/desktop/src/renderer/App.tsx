@@ -35,7 +35,9 @@ export function App() {
           {route.name === "project" && (
             <ProjectScreen projectKey={route.key} section={route.section} id={route.id} />
           )}
-          {route.name === "settings" && <SettingsScreen section={route.section} />}
+          {route.name === "settings" && (
+            <SettingsScreen section={route.section} page={route.page ?? null} />
+          )}
         </main>
       </div>
     </div>

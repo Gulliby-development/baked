@@ -18,7 +18,7 @@ import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
 import { addKnownProject, cliRunner, listKnownProjects } from "./baked-cli.js";
 import { readGitBranch } from "./git-branch.js";
-import { manageKnownProject } from "./project-actions.js";
+import { manageKnownProject, renameKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
@@ -56,6 +56,7 @@ const tray = new AppTray({
   show: () => showWindow(),
   showAttention: () => showWindow("#/attention"),
   quit: () => app.quit(),
+  window: () => window,
 });
 
 const attention = new AttentionHub((items, added) => {
@@ -195,6 +196,19 @@ function registerIpc(): void {
     if (action === "forget") rememberOpen();
     return supervisor.refresh();
   });
+  handle(IPC.renameProject, async (_e, key: string, name: string) => {
+    const project = supervisor.projects().find((p) => p.key === key);
+    if (!project) throw new Error("Unknown project");
+    if (typeof name !== "string") throw new Error("A project name is text");
+    const running = supervisor.projects().filter((p) => p.open && p.backend.kind === "running");
+    await renameKnownProject(
+      project.path,
+      name,
+      running.map((p) => (path, body) => supervisor.request(p.key, "POST", path, body)),
+      cliRunner(backendCommand()),
+    );
+    return supervisor.refresh();
+  });
   handle(IPC.request, (_e, key: string, method: HttpMethod, path: string, body?: unknown) =>
     supervisor.request(key, method, path, body),
   );
@@ -264,6 +278,7 @@ function createWindow(): void {
     },
   });
   window.once("ready-to-show", () => window?.show());
+  tray.refreshBadge();
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\//.test(url)) void shell.openExternal(url);
     return { action: "deny" };

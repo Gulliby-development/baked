@@ -25,6 +25,7 @@ export type WorkflowAction =
   | "pause"
   | "cancel"
   | "fork"
+  | "discard-worktree"
   | "extend"
   | { reroute: string }
   | Decision;
@@ -186,6 +187,7 @@ export class WorkflowClient extends WorkerClient {
     findings: (id: string) => this.views.get(id)?.findings ?? [],
     requests: (id: string) => this.views.get(id)?.requests ?? [],
     runModel: (id: string) => this.views.get(id)?.runModel ?? null,
+    worktree: (id: string) => this.views.get(id)?.worktree ?? null,
     routing: (id: string) => this.views.get(id)?.routing ?? null,
   };
   async command(

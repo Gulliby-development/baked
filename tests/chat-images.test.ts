@@ -202,7 +202,8 @@ describe("local API chat images", () => {
     });
     const stored = await until(
       async () => new SessionManager(fixture.root).loadSessionMessages(session.id),
-      (s) => s?.messages.length === 2,
+      // Messages and model messages are separate files; wait until both are written.
+      (s) => s?.messages.length === 2 && JSON.stringify(s.coreMessages[0] ?? "").includes(PNG),
     );
     expect(stored?.messages[0]?.images?.[0]?.base64).toBe(PNG);
     expect(JSON.stringify(stored?.coreMessages[0])).toContain(PNG);

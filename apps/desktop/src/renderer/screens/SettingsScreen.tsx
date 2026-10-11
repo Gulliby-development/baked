@@ -1,9 +1,11 @@
+import { SETTING_PAGES } from "../../../../../src/core/settings/schema.js";
 import type { AppSettings } from "../../shared/api.js";
 import { Segment, SegmentGroup } from "../components/ui/segmented.js";
 import { cn } from "../lib/cn.js";
 import { CHECK, FIELD, LABEL, LEDE, PAGE, PANEL, STACK } from "../lib/styles.js";
 import { href, type SettingsSection } from "../router.js";
 import { useDesktop } from "../store.js";
+import { ChatSettings } from "./setup/ChatSettings.js";
 import { GlobalSettings } from "./setup/GlobalSettings.js";
 
 /** A section link of the settings menu; the current one is raised with an ink outline. */
@@ -11,7 +13,7 @@ const NAV =
   "flex min-h-(--row) w-full cursor-pointer items-center gap-[10px] rounded-[6px] border-0 bg-transparent px-[10px] py-[6px] text-left text-[14px] text-soft-foreground no-underline hover:bg-hover hover:text-foreground aria-[current=page]:bg-selected aria-[current=page]:font-semibold aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_0_0_0_var(--border-w)_var(--ink),var(--shadow-sm)]";
 
 /** The All projects pages, one per part of `~/.baked/config.json`. */
-const GLOBAL_PAGES: [Exclude<SettingsSection, "app">, string][] = [
+const GLOBAL_PAGES: [Exclude<SettingsSection, "app" | "chat">, string][] = [
   ["providers", "Providers and keys"],
   ["routing", "Model routing"],
   ["commands", "Global commands"],
@@ -106,7 +108,15 @@ function AppSection() {
   );
 }
 
-export function SettingsScreen({ section }: { section: SettingsSection }) {
+export function SettingsScreen({
+  section,
+  page,
+}: {
+  section: SettingsSection;
+  /** The chat settings page, when `section` is `chat`. */
+  page: string | null;
+}) {
+  const chatPage = section === "chat" ? (page ?? SETTING_PAGES[0]?.id ?? null) : null;
   return (
     <div className="flex min-h-full min-w-0 flex-1">
       <nav
@@ -131,6 +141,20 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
         >
           Appearance and behavior
         </a>
+        <p className={cn(LABEL, "px-[10px] pt-4 pb-[2px]")}>Chat</p>
+        <span className="px-[10px] pt-0 pb-[6px] text-[12px] text-dim-foreground">
+          all projects or one project
+        </span>
+        {SETTING_PAGES.map((chatSettings) => (
+          <a
+            key={chatSettings.id}
+            className={NAV}
+            href={href({ name: "settings", section: "chat", page: chatSettings.id })}
+            aria-current={chatPage === chatSettings.id ? "page" : undefined}
+          >
+            {chatSettings.title}
+          </a>
+        ))}
         <p className={cn(LABEL, "px-[10px] pt-4 pb-[2px]")}>All projects</p>
         <span className="px-[10px] pt-0 pb-[6px] font-mono text-[12px] text-dim-foreground">
           ~/.baked/config.json
@@ -147,7 +171,13 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
         ))}
       </nav>
       <div className={cn(PAGE, "max-w-[900px] flex-1")}>
-        {section === "app" ? <AppSection /> : <GlobalSettings section={section} />}
+        {section === "app" ? (
+          <AppSection />
+        ) : section === "chat" ? (
+          <ChatSettings page={chatPage} />
+        ) : (
+          <GlobalSettings section={section} />
+        )}
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import type {
   RunDetailStatus,
   RunRequest,
   RunUsage,
+  RunWorktree,
   WorkflowEvent,
 } from "./runs.js";
 
@@ -48,6 +49,7 @@ interface MockRun {
   usage: RunUsage;
   /** A frozen input changed while the run was not driving; resuming is refused until revised. */
   inputChanged?: boolean;
+  worktree?: RunWorktree | null;
 }
 
 class Log {
@@ -842,6 +844,88 @@ function localeValidation(): MockRun {
   };
 }
 
+const worktreeOf = (runId: string): RunWorktree => ({
+  path: `.baked/worktrees/${runId}/main`,
+  branch: `baked/wf/${runId}`,
+  present: true,
+});
+
+/** A worktree run whose migration command was interrupted: it waits for a recovery decision. */
+function cacheWarmup(): MockRun {
+  const runId = "run-cache-warmup";
+  const log = new Log(runId, 90);
+  log.add("run.created", { featureId: "cache-warmup" }, 0);
+  for (const id of ["research", "specify", "plan", "analyze", "approve"])
+    log.stage(id, id === "approve" ? null : "claude-sonnet-5-5", "completed", 120);
+  log.stage("implement", "claude-sonnet-5-5", "running");
+  log.add("request.created", { requestId: "req-cache-recovery", kind: "recovery", digest: DIGEST });
+  log.add(
+    "run.state_changed",
+    { from: "running", to: "waiting", reason: "interrupted_effect", revision: 14 },
+    5,
+  );
+  return {
+    runId,
+    featureId: "cache-warmup",
+    status: "waiting",
+    reason: "interrupted_effect",
+    stageId: "implement",
+    revision: 14,
+    tokenUsage: 312_000,
+    activeMs: 1_500_000,
+    events: log.events,
+    artifacts: [
+      artifact(runId, 4, "estimates/start.json", "estimate", estimate(600_000, 300_000, 520_000)),
+    ],
+    requests: [
+      {
+        id: "req-cache-recovery",
+        kind: "recovery",
+        status: "pending",
+        digest: DIGEST,
+        body_json: JSON.stringify({
+          effectId: "eff-cache-migrate",
+          intent: { kind: "command", command: "bun run db:migrate", root: worktreeOf(runId).path },
+        }),
+      },
+    ],
+    usage: usage(["research", "specify", "plan", "implement"], ["claude-sonnet-5-5"]),
+    worktree: worktreeOf(runId),
+  };
+}
+
+/** A worktree run that failed its checks; its worktree is still on disk. */
+function exportCsv(): MockRun {
+  const runId = "run-export-csv";
+  const log = new Log(runId, 600);
+  log.add("run.created", { featureId: "export-csv" }, 0);
+  for (const id of ["research", "specify", "plan", "analyze", "approve", "implement"])
+    log.stage(id, id === "approve" ? null : "claude-sonnet-5-5", "completed", 150);
+  log.stage("checks", null, "failed");
+  log.add(
+    "run.state_changed",
+    { from: "running", to: "failed", reason: "checks_failed", revision: 21 },
+    5,
+  );
+  return {
+    runId,
+    featureId: "export-csv",
+    status: "failed",
+    reason: "checks_failed",
+    stageId: "checks",
+    revision: 21,
+    tokenUsage: 455_000,
+    activeMs: 2_100_000,
+    events: log.events,
+    artifacts: [
+      artifact(runId, 4, "estimates/start.json", "estimate", estimate(600_000, 300_000, 520_000)),
+    ],
+    requests: [],
+    usage: usage(["research", "specify", "plan", "implement"], ["claude-sonnet-5-5"]),
+    worktree: worktreeOf(runId),
+  };
+}
+
 let state: MockRun[] | null = null;
 const all = (): MockRun[] => {
   state ??= [
@@ -850,6 +934,8 @@ const all = (): MockRun[] => {
     settingsDarkMode(),
     themeContrast(),
     localeValidation(),
+    cacheWarmup(),
+    exportCsv(),
   ];
   return state;
 };
@@ -925,6 +1011,33 @@ export function activeRunIds(key: string): string[] {
     : [];
 }
 
+/** A new sample run from this one's spec and plan, waiting to start like a fork of the backend. */
+function forkOf(parent: MockRun): MockRun {
+  const runs = all();
+  let n = 1;
+  while (runs.some((r) => r.runId === `${parent.runId}-fork-${n}`)) n++;
+  const runId = `${parent.runId}-fork-${n}`;
+  const log = new Log(runId, 0);
+  log.add("run.created", { featureId: parent.featureId }, 0);
+  const run: MockRun = {
+    runId,
+    featureId: parent.featureId,
+    status: "created",
+    reason: "none",
+    stageId: null,
+    revision: 1,
+    tokenUsage: 0,
+    activeMs: 0,
+    events: log.events,
+    artifacts: [...parent.artifacts],
+    requests: [],
+    usage: usage([], []),
+    worktree: null,
+  };
+  runs.unshift(run);
+  return run;
+}
+
 const conflict = (code: string, message: string) => response(409, { error: { code, message } });
 
 /** A run action on the sample runs: changes their state the way the backend would, roughly. */
@@ -962,7 +1075,25 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
     case "answer":
     case "evidence":
     case "continue":
+    case "recover":
       decide(run, body, "accepted");
+      break;
+    case "fork":
+      if (!ENDED.includes(run.status) && run.status !== "blocked")
+        return conflict("STALE_DECISION", "Only a blocked or ended run can be forked");
+      return response(200, snapshot(forkOf(run)));
+    case "discard-worktree":
+      if (!ENDED.includes(run.status))
+        return conflict(
+          "STALE_DECISION",
+          `Only a completed, failed or cancelled run's worktree can be discarded; run ${run.runId} is ${run.status}. Cancel it first.`,
+        );
+      if (!run.worktree?.present)
+        return response(404, {
+          error: { code: "NOT_FOUND", message: `Run ${run.runId} has no worktree to discard` },
+        });
+      run.worktree = { ...run.worktree, present: false };
+      run.revision++;
       break;
     case "resume":
       if (run.inputChanged || run.reason === "input_changed")
@@ -1082,7 +1213,11 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
   if (method !== "GET") return undefined;
   switch (action) {
     case undefined:
-      return response<RunDetailStatus>(200, { ...snapshot(run), requests: run.requests });
+      return response<RunDetailStatus>(200, {
+        ...snapshot(run),
+        requests: run.requests,
+        worktree: run.worktree ?? null,
+      });
     case "usage":
       return response(200, run.usage);
     case "report":

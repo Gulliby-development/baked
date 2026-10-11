@@ -6,6 +6,11 @@ import type { ApiResponse } from "../../shared/api.js";
 import type { MockRequest, MockRoute } from "./mock-routes.js";
 import type {
   CatalogSkill,
+  ChatMemoryCleanupAction,
+  ChatMemoryEdit,
+  ChatMemoryEntry,
+  ChatMemorySettings,
+  ChatMemoryView,
   Check,
   CheckList,
   CheckRunResult,
@@ -688,10 +693,10 @@ function resolveRef(routing: ModelRouting | undefined, ref: string, runModel: st
     : { model: route.model, effort: route.effort ?? null, fallback: route.fallback ?? [] };
 }
 
-function explain(s: SetupState, workflowId: string): RouteExplanation {
+function explain(s: SetupState, workflowId: string, model?: string | null): RouteExplanation {
   const view = configView(s);
   const routing = view.effective.modelRouting;
-  const runModel = view.effective.defaultModel ?? "anthropic/claude-sonnet-5-5";
+  const runModel = model || view.effective.defaultModel || "anthropic/claude-sonnet-5-5";
   const roleOf: Record<string, string> = {
     research: "researcher",
     plan: "planner",
@@ -730,7 +735,11 @@ function explain(s: SetupState, workflowId: string): RouteExplanation {
       (st) => (st.stageId === "review" || st.stageId === "converge") && st.model === implement,
     )
     .map((st) => `${st.stageId} uses ${implement}, the model of the implementation`);
-  return { workflowId, runModel, stages, profiles: {}, warnings };
+  // Profiles without a route of their own keep the run model.
+  const profiles: RouteExplanation["profiles"] = Object.fromEntries(
+    [...new Set(Object.values(roleOf))].map((id) => [id, { model: runModel, source: "run model" }]),
+  );
+  return { workflowId, runModel, stages, profiles, warnings };
 }
 
 const MOCK_ROLES = [
@@ -1011,6 +1020,155 @@ function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; tex
   return response(200, { id: edit.id, ...memoryState(key) });
 }
 
+const chatMemories = new Map<string, { settings: ChatMemorySettings; all: ChatMemoryEntry[] }>();
+function chatMemoryState(key: string) {
+  let found = chatMemories.get(key);
+  if (!found) {
+    const at = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    const memory = (
+      id: string,
+      scope: ChatMemoryEntry["scope"],
+      category: ChatMemoryEntry["category"],
+      summary: string,
+      extra: Partial<ChatMemoryEntry> = {},
+    ): ChatMemoryEntry => ({
+      id,
+      scope,
+      category,
+      summary,
+      details: "",
+      topics: [],
+      source: "agent",
+      createdAt: at(40),
+      lastUsedAt: at(2),
+      useCount: 3,
+      pinned: false,
+      hidden: false,
+      ...extra,
+    });
+    found = {
+      settings: { writeScope: "project", readScope: "all", settingsScope: "project" },
+      all: [
+        memory(
+          "6f2a9c41-0d1e-4b7a-9a55-1c2d3e4f5a60",
+          "project",
+          "pref",
+          "Use bun for scripts and tests, never npm.",
+          {
+            source: "user",
+            pinned: true,
+            useCount: 14,
+            topics: ["tooling"],
+          },
+        ),
+        memory(
+          "b81e0f3d-77aa-4c19-8e02-5d6c7b8a9f10",
+          "project",
+          "gotcha",
+          "Desktop tests run outside a browser and get the mock bridge.",
+          {
+            details: "Set window = {} before importing the client so it picks the mock.",
+            topics: ["desktop", "tests"],
+          },
+        ),
+        memory(
+          "0c4d5e6f-1a2b-4c3d-8e9f-a0b1c2d3e4f5",
+          "global",
+          "pref",
+          "Keep commit subjects under 60 characters.",
+          { useCount: 9 },
+        ),
+        memory(
+          "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "project",
+          "context",
+          "The parser lived in src/old-parser.ts.",
+          {
+            lastUsedAt: at(120),
+            useCount: 0,
+          },
+        ),
+        memory(
+          "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+          "global",
+          "decision",
+          "Answers stay short.",
+          {
+            hidden: true,
+          },
+        ),
+      ],
+    };
+    chatMemories.set(key, found);
+  }
+  return found;
+}
+function chatMemoryView(key: string): ChatMemoryView {
+  const m = chatMemoryState(key);
+  return {
+    settings: { ...m.settings },
+    entries: m.all.filter((e) => !e.hidden),
+    hidden: m.all.filter((e) => e.hidden),
+    cleanupHint: null,
+  };
+}
+function editChatMemory(key: string, edit: Partial<ChatMemoryEdit>) {
+  const m = chatMemoryState(key);
+  if (edit.action === "purge") {
+    const before = m.all.length;
+    m.all = m.all.filter((e) => edit.scope !== "all" && e.scope !== edit.scope);
+    return response(200, { cleared: before - m.all.length, ...chatMemoryView(key) });
+  }
+  const target = edit as Partial<Extract<ChatMemoryEdit, { id: string }>>;
+  const entry = m.all.find((e) => e.id === target.id && e.scope === target.scope);
+  if (!entry) return error(404, "NOT_FOUND", `No ${target.scope ?? ""} memory ${target.id ?? ""}`);
+  if (target.action === "pin") entry.pinned = true;
+  else if (target.action === "unpin") entry.pinned = false;
+  else if (target.action === "hide") entry.hidden = true;
+  else if (target.action === "restore") entry.hidden = false;
+  else if (target.action === "edit") {
+    const summary = (target.summary ?? "").trim();
+    if (!summary) return error(400, "INVALID_REQUEST", "summary: Too small");
+    entry.summary = summary;
+    if (target.details !== undefined) entry.details = target.details;
+    if (target.category !== undefined) entry.category = target.category;
+    entry.hidden = false;
+  }
+  return response(200, chatMemoryView(key));
+}
+function chatMemoryCleanup(key: string) {
+  const stale = chatMemoryState(key).all.find((e) => !e.hidden && !e.pinned && e.useCount === 0);
+  return response(200, {
+    candidates: stale
+      ? [
+          {
+            id: stale.id,
+            scope: stale.scope,
+            kind: "dead",
+            summary: stale.summary,
+            detail: "src/old-parser.ts",
+          },
+        ]
+      : [],
+  });
+}
+function applyChatMemoryCleanup(key: string, actions: ChatMemoryCleanupAction[]) {
+  const m = chatMemoryState(key);
+  const applied = { hidden: 0, pinned: 0 };
+  for (const a of actions) {
+    const entry = m.all.find((e) => e.id === a.id && e.scope === a.scope);
+    if (!entry) continue;
+    if (a.action === "hide") {
+      entry.hidden = true;
+      applied.hidden++;
+    } else {
+      entry.pinned = true;
+      applied.pinned++;
+    }
+  }
+  return response(200, { applied, ...chatMemoryView(key) });
+}
+
 export const setupRoutes: MockRoute = (request) => {
   const { key, method, path } = request;
   const skill = skillRoutes(request);
@@ -1041,6 +1199,25 @@ export const setupRoutes: MockRoute = (request) => {
       return response(200, memoryState(key));
     case "POST /v1/workflow/memory":
       return editMemory(key, body<RunMemoryEdit & { id: string; text: string }>(request));
+    case "GET /v1/memory":
+      return response(200, chatMemoryView(key));
+    case "POST /v1/memory":
+      return editChatMemory(key, body<ChatMemoryEdit>(request));
+    case "PUT /v1/memory/settings": {
+      const m = chatMemoryState(key);
+      const change = body<ChatMemorySettings>(request);
+      if (!Object.keys(change).length)
+        return error(400, "INVALID_REQUEST", "body: Name at least one setting");
+      m.settings = { ...m.settings, ...change };
+      return response(200, chatMemoryView(key));
+    }
+    case "GET /v1/memory/cleanup":
+      return chatMemoryCleanup(key);
+    case "POST /v1/memory/cleanup":
+      return applyChatMemoryCleanup(
+        key,
+        body<{ actions: ChatMemoryCleanupAction[] }>(request).actions ?? [],
+      );
     case "GET /v1/workflow/gates":
       return response(200, gates(s));
     case "POST /v1/workflow/gates/confirm": {
@@ -1127,7 +1304,10 @@ export const setupRoutes: MockRoute = (request) => {
         Object.entries(WORKFLOW_STAGES).map(([id, stages]) => ({ id, stages })),
       );
     case "GET /v1/workflow/route":
-      return response(200, explain(s, request.query.get("workflow") ?? "sdd"));
+      return response(
+        200,
+        explain(s, request.query.get("workflow") ?? "sdd", request.query.get("model")),
+      );
     case "GET /v1/workflow/routing":
       return response(200, routingOverview(s, request.query.get("workflow")));
     case "PATCH /v1/workflow/routing": {
