@@ -108,7 +108,7 @@ Tabs coordinate through file claims. The first edit of a file claims it for that
 
 ## Git
 
-`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git branch`, `/git stash`. `/git co-author` toggles the co-author trailer.
+`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git branch`, `/git stash`. `/git co-author` toggles the co-author trailer. The menu also offers Force push (`git push --force-with-lease`) and Reset hard, each after a confirmation. The desktop app's Git section runs the same actions through `baked serve` (see [the desktop API](desktop/api.md#git)).
 
 ## Changed files
 
