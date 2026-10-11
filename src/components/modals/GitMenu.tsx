@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  getGitLog,
-  gitPull,
-  gitPush,
-  gitResetHard,
-  gitStash,
-  gitStashPop,
-} from "../../core/git/status.js";
+import { type GitMenuAction, runGitMenuAction } from "../../core/git/menu.js";
+import { getGitLog } from "../../core/git/status.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { selectHasDialog, useDialogStore } from "../../stores/dialog.js";
 import { confirm } from "../ui/dialogs/index.js";
@@ -81,42 +75,28 @@ export function GitMenu({ visible, cwd, onClose, onCommit, onSystemMessage, onRe
 
   const rows = buildGroupedRows(GROUPS, new Set(["actions"]));
 
+  const report = async (action: GitMenuAction, pending?: string): Promise<void> => {
+    onClose();
+    if (pending) onSystemMessage(pending);
+    const r = await runGitMenuAction(cwd, action);
+    onSystemMessage(r.message);
+    onRefresh();
+  };
+
   const run = async (action: string) => {
     switch (action) {
       case "commit":
         onClose();
         onCommit();
         return;
-      case "push": {
-        onClose();
-        onSystemMessage("Pushing...");
-        const r = await gitPush(cwd);
-        onSystemMessage(r.ok ? "Push complete." : `Push failed: ${r.output}`);
-        onRefresh();
-        return;
-      }
-      case "pull": {
-        onClose();
-        onSystemMessage("Pulling...");
-        const r = await gitPull(cwd);
-        onSystemMessage(r.ok ? "Pull complete." : `Pull failed: ${r.output}`);
-        onRefresh();
-        return;
-      }
-      case "stash": {
-        onClose();
-        const r = await gitStash(cwd);
-        onSystemMessage(r.ok ? "Changes stashed." : `Stash failed: ${r.output}`);
-        onRefresh();
-        return;
-      }
-      case "stash-pop": {
-        onClose();
-        const r = await gitStashPop(cwd);
-        onSystemMessage(r.ok ? "Stash popped." : `Stash pop failed: ${r.output}`);
-        onRefresh();
-        return;
-      }
+      case "push":
+        return report({ action: "push" }, "Pushing...");
+      case "pull":
+        return report({ action: "pull" }, "Pulling...");
+      case "stash":
+        return report({ action: "stash" });
+      case "stash-pop":
+        return report({ action: "stash-pop" });
       case "log": {
         onClose();
         const entries = await getGitLog(cwd, 20);
@@ -134,12 +114,7 @@ export function GitMenu({ visible, cwd, onClose, onCommit, onSystemMessage, onRe
           danger: true,
         });
         if (!ok) return;
-        onClose();
-        onSystemMessage("Force-pushing (with lease)…");
-        const r = await gitPush(cwd, ["--force-with-lease"]);
-        onSystemMessage(r.ok ? "Force push complete." : `Force push failed: ${r.output}`);
-        onRefresh();
-        return;
+        return report({ action: "force-push" }, "Force-pushing (with lease)…");
       }
       case "reset-hard": {
         const ok = await confirm({
@@ -149,12 +124,7 @@ export function GitMenu({ visible, cwd, onClose, onCommit, onSystemMessage, onRe
           danger: true,
         });
         if (!ok) return;
-        onClose();
-        onSystemMessage("Resetting working tree…");
-        const r = await gitResetHard(cwd);
-        onSystemMessage(r.ok ? "Reset complete." : `Reset failed: ${r.output}`);
-        onRefresh();
-        return;
+        return report({ action: "reset-hard" }, "Resetting working tree…");
       }
     }
   };

@@ -131,8 +131,10 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/instructions show` | Show an instruction file's content |
 | `/mode` | Switch Baked mode |
 | `/motion` | Full or reduced animation |
+| `/notifications` | System notifications and the webhook for runs that wait for you; `/notifications system on\|off`, `/notifications webhook URL\|off`, `/notifications blocking-only on\|off` ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 | `/reasoning` | Show or hide reasoning content |
 | `/settings` | Settings hub — all options in one place |
+| `/telemetry` | Turn anonymous usage telemetry on or off; `/telemetry on\|off` ([privacy](privacy.md)) |
 | `/theme` | Switch color theme (live preview) |
 | `/verbose` | Toggle verbose tool output |
 | `/verbose-tab` | Toggle verbose render for this tab — off folds tools into a rail, on shows raw stream |
@@ -187,5 +189,5 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
 | `baked session undo ID [--to N] [--force] [--json]`, `baked session redo ID [--force] [--json]` | Undo the last turn of a saved session with its file edits, or put the oldest undone turn back ([undoing a turn](headless.md#undoing-a-turn)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
-| `baked telemetry [--json]` | The locally recorded usage events ([privacy](privacy.md)) |
+| `baked telemetry [--json]`, `baked telemetry on\|off` | The locally recorded usage events, or turn recording on or off in the global config ([privacy](privacy.md)) |
 | `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |

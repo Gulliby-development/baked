@@ -663,6 +663,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["animation", "reduced motion", "accessibility"],
   },
   {
+    cmd: "/notifications",
+    ic: "info",
+    desc: "System notifications and the webhook for runs that wait for you",
+    category: "Settings",
+    tags: ["webhook", "alerts", "notify", "attention"],
+  },
+  {
     cmd: "/reasoning",
     ic: "brain",
     desc: "Show or hide reasoning content",
@@ -675,6 +682,13 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Settings hub — all options in one place",
     category: "Settings",
     tags: ["config", "preferences", "hub"],
+  },
+  {
+    cmd: "/telemetry",
+    ic: "info",
+    desc: "Turn anonymous usage telemetry on or off",
+    category: "Settings",
+    tags: ["privacy", "usage", "opt out", "tracking"],
   },
   {
     cmd: "/theme",
