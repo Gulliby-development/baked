@@ -26,6 +26,7 @@ export const TIPS: readonly Tip[] = [
   { text: "browse session history", hint: "Ctrl+P" },
   { text: "stash this draft for later", hint: "Alt+S" },
   { text: "pop your last stashed draft", hint: "Alt+P" },
+  { text: "write a long prompt in your own editor", hint: "Ctrl+X E" },
   { text: "type / to search slash commands" },
   { text: "press up arrow to recall a previous prompt" },
   { text: "git menu at your fingertips", hint: "Ctrl+G" },

@@ -67,12 +67,14 @@ Every turn is a checkpoint. `Ctrl+B` and `Ctrl+F` step back and forward; browsin
 | --- | --- |
 | `/checkpoint` | List checkpoints |
 | `/checkpoint N`, `/checkpoint live` | View checkpoint N, return to live |
-| `/checkpoint undo [N]` | Undo the last checkpoint, or back to N, including its file edits |
-| `/checkpoint redo` | Redo the last undo |
+| `/checkpoint undo [N]`, `/undo [N]` | Undo the last checkpoint, or back to N, including its file edits |
+| `/checkpoint redo`, `/redo` | Re-apply the oldest undone checkpoint: its messages come back and its files return to their state after that turn |
 | `/checkpoint fork [N] [--force]` | Continue from checkpoint N (the viewed one, or the latest) in a new tab, with the files rolled back to it |
 | `/checkpoint save` | Save the current state as a Git tag |
 
 Checkpoints with file edits are tagged in Git; undo restores only the files those checkpoints edited. Without Git, undo rewinds the conversation only. Each tab has its own checkpoint history.
+
+`/redo` steps forward one checkpoint at a time, in the order the turns ran, so `/undo 1` followed by `/redo` twice brings back turns 2 and 3. A file the redone turn deleted is deleted again, and folders it created are recreated. Files Git ignores are in no snapshot, so neither undo nor redo deletes them. Sending a new message clears the redo history.
 
 ### Forking a checkpoint
 
@@ -140,6 +142,12 @@ A mention that names nothing (an e-mail address, `@types/node`) stays plain text
 A message that starts with `!` runs the rest of its first line as a shell command in the project folder, for example `!git log -5`. Its output (up to 20 000 characters) goes into the context, and the first lines show under the message. Lines after the command are the question for the model: `!bun test` then `why does this fail?` on the next line. A bare `!command` sends the output with a short note, so the agent comments on it. The command goes through the same rules as the agent's `shell` tool: it does not run in `plan` or `architect` mode, `PreToolUse`/`PostToolUse` hooks for `shell` apply, forbidden paths are refused, and a destructive command (`rm -rf`, `git reset --hard`, ...) asks for approval in default mode and runs unasked in auto mode. When the command does not run and the message has nothing else, no turn starts. `Ctrl+X` stops a running command.
 
 A message with `@` or `!` typed while the agent works waits for the turn to end instead of steering it, so it is expanded like a new message.
+
+## Composing in an editor
+
+Press `Ctrl+X` and then `E` while the agent is idle, or run `/editor`, to write the message in your own editor. The current input (with collapsed pastes expanded) opens in a temporary `prompt.md`; save and quit to send it. Quitting with an error (`:cq` in Vim) or saving an empty file sends nothing and keeps the input as it was. While the agent works, `Ctrl+X` keeps stopping it, so use `/editor` to compose a message that queues for the end of the turn; `/editor` starts from an empty file.
+
+The editor is `$VISUAL`, then `$EDITOR`; the value can carry arguments, such as `code --wait` or `"C:\Program Files\Notepad++\notepad++.exe" -multiInst -nosession`. GUI editors need their wait flag so BAKED knows when you are done. Without either variable BAKED uses Notepad on Windows and the first of `nano`, `vim` or `vi` on macOS and Linux.
 
 ## Web search
 

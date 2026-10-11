@@ -2,6 +2,7 @@ import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@op
 import { decodePasteBytes, type PasteEvent, TextAttributes } from "@opentui/core";
 import { useRenderer } from "@opentui/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { editTextInEditor, onInputEditorRequest } from "../../core/chat/external-editor.js";
 import {
   type MentionSuggestion,
   mentionAtCursor,
@@ -48,6 +49,8 @@ interface Props {
   tabId: string;
   /** The repository graph for `@` symbol completions, when it is ready. */
   getRepoMap?: () => IntelligenceClient | undefined;
+  /** Show a one-line notice in the chat (editor errors and cancellations). */
+  onNotice?: (text: string) => void;
 }
 
 function getCommands(): Array<{ cmd: string; icon: string; desc: string }> {
@@ -168,6 +171,7 @@ export const InputBox = memo(function InputBox({
   onCycleTab,
   viewingCheckpoint,
   getRepoMap,
+  onNotice,
 }: Props) {
   const [value, setValue] = useState("");
   const valueRef = useRef(value);
@@ -492,6 +496,84 @@ export const InputBox = memo(function InputBox({
     setVisualLines(1);
   }, []);
 
+  /** Expand collapsed paste blocks back to the text they stand for. */
+  const expandPasteBlocks = useCallback((input: string) => {
+    let out = input;
+    for (const block of pasteBlocks.current) {
+      if (block.collapsed) out = out.replace(block.placeholder, block.text);
+    }
+    return out;
+  }, []);
+
+  /** Send finished input: run a slash command, queue during a turn, or submit. */
+  const dispatchInput = useCallback(
+    (finalInput: string) => {
+      // Sync pendingImages: only keep images whose [label] is still in the text
+      if (pendingImages.current.length > 0) {
+        pendingImages.current = pendingImages.current.filter((img) =>
+          finalInput.includes(`[${img.label}]`),
+        );
+      }
+
+      // During loading or compacting: slash commands execute immediately, messages queue
+      // Custom commands expand to prompts, so they queue like messages.
+      const runsNow =
+        finalInput.trim().startsWith("/") &&
+        !isCustomSlashInput(finalInput.trim(), cwd ?? getCwd());
+      if ((isLoading || isCompacting) && !runsNow) {
+        const queued = finalInput.trim();
+        const images = pendingImages.current.length > 0 ? [...pendingImages.current] : undefined;
+        resetInput();
+        onQueue?.(queued, images);
+        return;
+      }
+
+      const trimmed = finalInput.trim();
+      const images = pendingImages.current.length > 0 ? [...pendingImages.current] : undefined;
+      // Reset the input FIRST so React paints the empty box immediately,
+      // then submit, then defer the history write (SQLite INSERT) off the
+      // critical path — submitting a huge paste now feels instant.
+      resetInput();
+      onSubmit(trimmed, images);
+      setImmediate(() => pushHistory(trimmed));
+    },
+    [pushHistory, onSubmit, resetInput, isLoading, isCompacting, onQueue, cwd],
+  );
+
+  // Ctrl+X E and /editor: compose the current draft in $EDITOR and send what is saved.
+  const editorOpenRef = useRef(false);
+  const openInEditor = useCallback(
+    async (fresh: boolean) => {
+      const draft = fresh ? "" : expandPasteBlocks(valueRef.current);
+      const result = await editTextInEditor(draft, {
+        suspend: () => renderer.suspend(),
+        resume: () => {
+          renderer.resume();
+          renderer.requestRender();
+        },
+      });
+      if (result.status === "saved") {
+        pasteBlocks.current = [];
+        dispatchInput(result.text);
+        return;
+      }
+      onNotice?.(result.status === "error" ? result.message : `Editor closed: ${result.reason}`);
+    },
+    [renderer, expandPasteBlocks, dispatchInput, onNotice],
+  );
+
+  useEffect(() => {
+    return onInputEditorRequest((request) => {
+      if (!focused || editorOpenRef.current) return;
+      editorOpenRef.current = true;
+      openInEditor(request.fresh === true)
+        .catch((err) => onNotice?.(`Editor failed: ${toErrorMessage(err)}`))
+        .finally(() => {
+          editorOpenRef.current = false;
+        });
+    });
+  }, [focused, openInEditor, onNotice]);
+
   const handleSubmit = useCallback(
     (input: string) => {
       // Auto-select top fuzzy match when input is a slash command with no exact handler.
@@ -525,42 +607,7 @@ export const InputBox = memo(function InputBox({
       // ensures the image attachment lands before the message is sent
       if (keydownImageLoadingRef.current || pasteImageLoadingRef.current) return;
 
-      // Expand any collapsed paste blocks before submitting
-      let finalInput = input;
-      for (const block of pasteBlocks.current) {
-        if (block.collapsed) {
-          finalInput = finalInput.replace(block.placeholder, block.text);
-        }
-      }
-
-      // Sync pendingImages: only keep images whose [label] is still in the text
-      if (pendingImages.current.length > 0) {
-        pendingImages.current = pendingImages.current.filter((img) =>
-          finalInput.includes(`[${img.label}]`),
-        );
-      }
-
-      // During loading or compacting: slash commands execute immediately, messages queue
-      // Custom commands expand to prompts, so they queue like messages.
-      const runsNow =
-        finalInput.trim().startsWith("/") &&
-        !isCustomSlashInput(finalInput.trim(), cwd ?? getCwd());
-      if ((isLoading || isCompacting) && !runsNow) {
-        const queued = finalInput.trim();
-        const images = pendingImages.current.length > 0 ? [...pendingImages.current] : undefined;
-        resetInput();
-        onQueue?.(queued, images);
-        return;
-      }
-
-      const trimmed = finalInput.trim();
-      const images = pendingImages.current.length > 0 ? [...pendingImages.current] : undefined;
-      // Reset the input FIRST so React paints the empty box immediately,
-      // then submit, then defer the history write (SQLite INSERT) off the
-      // critical path — submitting a huge paste now feels instant.
-      resetInput();
-      onSubmit(trimmed, images);
-      setImmediate(() => pushHistory(trimmed));
+      dispatchInput(expandPasteBlocks(input));
     },
     [
       matches,
@@ -571,6 +618,8 @@ export const InputBox = memo(function InputBox({
       isLoading,
       isCompacting,
       onQueue,
+      dispatchInput,
+      expandPasteBlocks,
       hasMatchesForNav,
       showAutocomplete,
       hasMatches,
