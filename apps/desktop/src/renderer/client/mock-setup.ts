@@ -73,6 +73,64 @@ const STYLE_MD = `# Documentation style
 Technical and short: setup, behavior, architecture, troubleshooting.
 `;
 
+const CLAUDE_MD = `See AGENTS.md. Run bun run typecheck before every commit.
+`;
+
+/** The instruction sources the backend knows (INSTRUCTION_SOURCES in src/core/instructions.ts). */
+const SOURCES = [
+  {
+    id: "baked",
+    label: "baked.md",
+    files: ["baked.md", ".baked/baked.md", ".baked/instructions.md"],
+    defaultEnabled: true,
+  },
+  {
+    id: "claude",
+    label: "CLAUDE.md",
+    files: ["CLAUDE.md", ".claude/instructions.md"],
+    defaultEnabled: false,
+  },
+  {
+    id: "cursorrules",
+    label: ".cursorrules",
+    files: [".cursorrules", ".cursor/rules", ".cursor/rules.md"],
+    defaultEnabled: false,
+  },
+  {
+    id: "github-copilot",
+    label: "Copilot Instructions",
+    files: [".github/copilot-instructions.md"],
+    defaultEnabled: false,
+  },
+  {
+    id: "codex",
+    label: "AGENTS.md",
+    files: ["AGENTS.md", ".agents/instructions.md"],
+    defaultEnabled: false,
+  },
+];
+
+/** The instruction list as the backend answers it: files of switched-off sources unnumbered. */
+function instructionList(s: SetupState) {
+  const on = new Set(s.sourcesOn);
+  let order = 0;
+  const files = s.instructions.map((f) => {
+    const enabled = f.source === "project" || on.has(f.source);
+    return {
+      ...f,
+      order: enabled ? ++order : null,
+      enabled,
+      sourceLabel: SOURCES.find((src) => src.id === f.source)?.label ?? "baked/project.json",
+    };
+  });
+  return {
+    files,
+    sources: SOURCES.map((src) => ({ ...src, enabled: on.has(src.id) })),
+    sourcesScope: "project" as const,
+    promptBytes: files.filter((f) => f.enabled).reduce((sum, f) => sum + f.bytes + 40, 60),
+  };
+}
+
 const BAKED_MD = `Prefer small, reviewable changes. Explain trade-offs in one line.
 `;
 
@@ -122,6 +180,8 @@ interface ProjectGate {
 interface SetupState {
   summary: ProjectSummary;
   instructions: InstructionFile[];
+  /** The instruction sources switched on (`instructionFiles`). */
+  sourcesOn: string[];
   project: ConfigFile;
   projectGates: ProjectGate[];
   /** The latest on-demand result of each check, as the backend keeps it until it stops. */
@@ -213,26 +273,32 @@ function initialState(key: string): SetupState {
       },
       instructions: { files: ["docs/agent-notes.md", "../baked-docs/style.md"], skipped: [] },
     },
-    instructions: [
-      instruction(1, "AGENTS.md", `${root}\\AGENTS.md`, "codex", "project", AGENTS_MD),
-      instruction(2, "baked.md", "C:\\Users\\you\\baked.md", "baked", "global", BAKED_MD),
-      instruction(
-        3,
-        "docs/agent-notes.md",
-        `${root}\\docs\\agent-notes.md`,
-        "project",
-        "project",
-        NOTES_MD,
-      ),
-      instruction(
-        4,
-        "../baked-docs/style.md",
-        "C:\\Project\\baked-docs\\style.md",
-        "project",
-        "project",
-        STYLE_MD,
-      ),
-    ],
+    sourcesOn: ["baked", "codex"],
+    // The "client" sample project has no instruction files, to show the empty state.
+    instructions:
+      key === "client"
+        ? []
+        : [
+            instruction(1, "AGENTS.md", `${root}\\AGENTS.md`, "codex", "project", AGENTS_MD),
+            instruction(2, "baked.md", "C:\\Users\\you\\baked.md", "baked", "global", BAKED_MD),
+            instruction(
+              3,
+              "docs/agent-notes.md",
+              `${root}\\docs\\agent-notes.md`,
+              "project",
+              "project",
+              NOTES_MD,
+            ),
+            instruction(
+              4,
+              "../baked-docs/style.md",
+              "C:\\Project\\baked-docs\\style.md",
+              "project",
+              "project",
+              STYLE_MD,
+            ),
+            instruction(0, "CLAUDE.md", `${root}\\CLAUDE.md`, "claude", "project", CLAUDE_MD),
+          ],
     project: {
       workflows: {
         enabled: true,
@@ -1077,27 +1143,51 @@ export const setupRoutes: MockRoute = (request) => {
       });
     }
     case "GET /v1/projects/current/instructions":
-      return response(200, {
-        files: s.instructions,
-        promptBytes: s.instructions.reduce((sum, f) => sum + f.bytes + 40, 60),
-      });
+      return response(200, instructionList(s));
+    case "PUT /v1/projects/current/instructions/sources": {
+      const put = body<{ source: string; enabled: boolean }>(request);
+      const id = put.source ?? "";
+      if (!SOURCES.some((src) => src.id === id))
+        return error(404, "NOT_FOUND", `${id} is not an instruction source`);
+      s.sourcesOn = put.enabled
+        ? [...new Set([...s.sourcesOn, id])]
+        : s.sourcesOn.filter((on) => on !== id);
+      return response(200, instructionList(s));
+    }
     case "PUT /v1/projects/current/instructions": {
-      const put = body<{ path: string; content: string; expectedHash: string }>(request);
-      const at = s.instructions.findIndex((f) => f.path === put.path);
+      const put = body<{ path: string; content: string; expectedHash: string | null }>(request);
+      const path = put.path ?? "";
+      const at = s.instructions.findIndex((f) => f.path === path);
       const found = s.instructions[at];
-      if (!found) return error(404, "NOT_FOUND", `${put.path} is not an instruction file`);
-      if (found.hash !== put.expectedHash)
-        return error(409, "INPUT_CHANGED", `${put.path} changed since it was read`);
-      const updated = instruction(
-        found.order,
-        found.path,
-        found.absolutePath,
-        found.source,
-        found.scope,
-        put.content ?? "",
-      );
-      s.instructions[at] = updated;
-      return response(200, updated);
+      if (put.expectedHash === null) {
+        const source = SOURCES.find((src) => src.files.includes(path));
+        if (!source) return error(404, "NOT_FOUND", `${path} is not an instruction file name`);
+        if (found) return error(409, "INPUT_CHANGED", `${path} already exists`);
+        s.instructions.unshift(
+          instruction(
+            0,
+            path,
+            `${s.summary.root}\\${path}`,
+            source.id,
+            "project",
+            put.content ?? "",
+          ),
+        );
+      } else {
+        if (!found) return error(404, "NOT_FOUND", `${path} is not an instruction file`);
+        if (found.hash !== put.expectedHash)
+          return error(409, "INPUT_CHANGED", `${path} changed since it was read`);
+        s.instructions[at] = instruction(
+          0,
+          found.path,
+          found.absolutePath,
+          found.source,
+          found.scope,
+          put.content ?? "",
+        );
+      }
+      const saved = instructionList(s).files.find((f) => f.path === path);
+      return response(200, saved);
     }
     case "GET /v1/commands":
       return response(200, { commands: COMMANDS });

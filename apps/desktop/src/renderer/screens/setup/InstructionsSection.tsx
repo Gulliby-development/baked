@@ -3,6 +3,8 @@ import type { RunSnapshot } from "../../../shared/api.js";
 import { ApiError, api } from "../../client/api.js";
 import {
   type InstructionFile,
+  type InstructionList,
+  type InstructionSource,
   isMissingEndpoint,
   type SavedInstruction,
   setup,
@@ -11,6 +13,7 @@ import { workflow } from "../../client/workflow.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
+import { Switch } from "../../components/ui/switch.js";
 import { cn } from "../../lib/cn.js";
 import { STACK as COLUMN, LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
@@ -58,27 +61,40 @@ function Editor({
   file,
   activeRuns,
   onSaved,
+  onDiscard,
 }: {
   projectKey: string;
   file: InstructionFile;
   activeRuns: number;
   onSaved: (file: SavedInstruction) => void;
+  /** Drops a file that is not saved yet. */
+  onDiscard?: () => void;
 }) {
   const [text, setText] = useState(file.content);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const dirty = text !== file.content;
+  const isNew = file.hash === "";
+  const dirty = text !== file.content || (isNew && text.trim() !== "");
   const save = async (): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
-      onSaved(await setup.saveInstruction(projectKey, file.path, text, file.hash));
+      onSaved(
+        await setup.saveInstruction(
+          projectKey,
+          file.path,
+          text,
+          file.hash === "" ? null : file.hash,
+        ),
+      );
       setSaved(true);
     } catch (e) {
       setError(
         e instanceof ApiError && e.code === "INPUT_CHANGED"
-          ? `${file.path} changed on disk since it was opened. Reload to see the new version; your edits are still in the box.`
+          ? isNew
+            ? `${file.path} was created meanwhile. Reload to see it; your text is still in the box.`
+            : `${file.path} changed on disk since it was opened. Reload to see the new version; your edits are still in the box.`
           : errorText(e),
       );
     } finally {
@@ -90,18 +106,26 @@ function Editor({
       <div className={ROW}>
         <span className={`font-mono ${H}`}>{file.path}</span>
         <Tag>{file.scope === "global" ? "every project" : "this project"}</Tag>
+        {isNew && <Tag>new</Tag>}
+        {file.enabled === false && <Tag>off</Tag>}
         <span className="ml-auto" />
-        <Button
-          variant="secondary"
-          size="md"
-          disabled={!dirty || busy}
-          onClick={() => {
-            setText(file.content);
-            setSaved(false);
-          }}
-        >
-          Revert
-        </Button>
+        {onDiscard ? (
+          <Button variant="secondary" size="md" disabled={busy} onClick={onDiscard}>
+            Discard
+          </Button>
+        ) : (
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={!dirty || busy}
+            onClick={() => {
+              setText(file.content);
+              setSaved(false);
+            }}
+          >
+            Revert
+          </Button>
+        )}
         <Button variant="primary" size="md" disabled={!dirty || busy} onClick={() => void save()}>
           Save
         </Button>
@@ -121,6 +145,11 @@ function Editor({
         }}
       />
       {error && <Alert tone="error">{error}</Alert>}
+      {file.enabled === false && (
+        <span className={`${WARN} ${NOTE}`}>
+          Agents do not read this file: {file.sourceLabel ?? "its source"} is switched off below.
+        </span>
+      )}
       <span className={activeRuns > 0 && dirty ? `${WARN} ${NOTE}` : `text-dim-foreground ${NOTE}`}>
         {saveNote(activeRuns)}
         {saved && !dirty ? " Saved." : ""}
@@ -305,13 +334,83 @@ function FromSummary({ projectKey }: { projectKey: string }) {
   );
 }
 
+/** Starter text of a file created from the empty state. */
+const STARTER = "# Instructions for agents\n\n";
+
+/** A file the editor creates on save (`expectedHash: null`); its hash is empty until then. */
+function draftFile(path: string, source: string, label: string): InstructionFile {
+  return {
+    order: null,
+    path,
+    absolutePath: path,
+    source,
+    sourceLabel: label,
+    scope: "project",
+    enabled: true,
+    bytes: 0,
+    hash: "",
+    content: STARTER,
+  };
+}
+
+/** One switch per instruction source; files of a switched-off source stay listed but unread. */
+function Sources({
+  list,
+  busy,
+  onToggle,
+}: {
+  list: InstructionList;
+  busy: string | null;
+  onToggle: (source: InstructionSource, enabled: boolean) => void;
+}) {
+  if (!list.sources) return null;
+  return (
+    <section className={cn(PANEL, STACK)} aria-labelledby="instruction-sources">
+      <h2 id="instruction-sources" className={LABEL}>
+        Sources agents read
+      </h2>
+      <ul className={LIST}>
+        {list.sources.map((source) => {
+          const found = list.files.filter((f) => f.source === source.id).length;
+          const id = `source-${source.id}`;
+          return (
+            <li key={source.id} className={LINE}>
+              <Switch
+                id={id}
+                checked={source.enabled}
+                disabled={busy !== null}
+                onCheckedChange={(checked) => onToggle(source, checked)}
+              />
+              <label htmlFor={id} className={`${GROW} ${COLUMN}`}>
+                <span className="font-mono">{source.label}</span>
+                <span className={`text-dim-foreground ${NOTE}`}>{source.files.join(", ")}</span>
+              </label>
+              <span className="text-dim-foreground">
+                {found === 0 ? "no file" : found === 1 ? "1 file" : `${found} files`}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <span className={`text-dim-foreground ${NOTE}`}>
+        Saved as <span className="font-mono">instructionFiles</span> in the{" "}
+        {list.sourcesScope === "global" ? "global" : "project"} config. A run started earlier keeps
+        the files it froze.
+      </span>
+    </section>
+  );
+}
+
 export function InstructionsSection({ project }: SectionProps) {
   const key = project.key;
-  const [list, , setList] = useLoad(() => setup.instructions(key), [key]);
+  const [list, reloadList, setList] = useLoad(() => setup.instructions(key), [key]);
   const [runs, reloadRuns] = useLoad(() => api.runs(key, 50), [key]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [draft, setDraft] = useState<InstructionFile | null>(null);
   const [affected, setAffected] = useState<string[]>([]);
   const [unreported, setUnreported] = useState(false);
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const runItems = runs.state === "ready" ? runs.data.items : [];
   const activeRuns = runItems.filter((r) => ACTIVE.has(r.status)).length;
 
@@ -332,9 +431,123 @@ export function InstructionsSection({ project }: SectionProps) {
   if (list.state !== "ready") return <LoadState value={list} what="instruction files" />;
   const files = list.data.files;
   const current =
+    draft ??
     files.find((f) => f.absolutePath === selected) ??
-    files.find((f) => f.scope === "project") ??
+    files.find((f) => f.scope === "project" && f.enabled !== false) ??
     files[0];
+
+  const toggle = async (source: InstructionSource, enabled: boolean): Promise<boolean> => {
+    setSwitching(source.id);
+    setSwitchError(null);
+    try {
+      setList(await setup.setInstructionSource(key, source.id, enabled));
+      return true;
+    } catch (e) {
+      setSwitchError(
+        isMissingEndpoint(e)
+          ? "Switching sources from the app needs a newer BAKED; use /instructions in the terminal."
+          : errorText(e),
+      );
+      return false;
+    } finally {
+      setSwitching(null);
+    }
+  };
+
+  /** Opens the editor on a new file, switching its source on so agents read it once saved. */
+  const create = async (path: string, sourceId: string): Promise<void> => {
+    const source = list.data.sources?.find((s) => s.id === sourceId);
+    if (source && !source.enabled && !(await toggle(source, true))) return;
+    setDraft(draftFile(path, sourceId, source?.label ?? path));
+  };
+
+  const canCreate = list.data.sources !== undefined;
+  const fileList =
+    files.length === 0 && !draft ? (
+      <Empty className={STACK}>
+        <span>
+          No instruction files. Agents read <span className="font-mono">AGENTS.md</span> or{" "}
+          <span className="font-mono">baked.md</span> at the repository root, and files listed in{" "}
+          <span className="font-mono">baked/project.json</span>.
+        </span>
+        {canCreate && (
+          <span className="flex flex-wrap justify-center gap-2">
+            <Button
+              variant="primary"
+              size="md"
+              disabled={switching !== null}
+              onClick={() => void create("AGENTS.md", "codex")}
+            >
+              Create AGENTS.md
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={switching !== null}
+              onClick={() => void create("baked.md", "baked")}
+            >
+              Create baked.md
+            </Button>
+          </span>
+        )}
+      </Empty>
+    ) : (
+      <ol className={cn(PANEL, LIST, FLUSH)}>
+        {draft && (
+          <li>
+            <button type="button" className={GATE} aria-pressed>
+              <span className={`font-mono text-dim-foreground ${MARK}`}>+</span>
+              <span className={`${GROW} font-mono`}>{draft.path}</span>
+              <span className="text-dim-foreground">not saved yet</span>
+            </button>
+          </li>
+        )}
+        {files.map((file) => (
+          <li key={file.absolutePath}>
+            <button
+              type="button"
+              className={cn(GATE, file.enabled === false && "opacity-60")}
+              aria-pressed={file === current}
+              onClick={() => {
+                setDraft(null);
+                setSelected(file.absolutePath);
+              }}
+            >
+              <span className={`font-mono text-dim-foreground ${MARK}`}>{file.order ?? "–"}</span>
+              <span className={`${GROW} ${COLUMN}`}>
+                <span className="font-mono">{file.path}</span>
+                <span className={`text-dim-foreground ${NOTE}`}>
+                  {file.enabled === false
+                    ? `off: ${file.sourceLabel ?? file.source} is switched off`
+                    : instructionOrigin(file)}
+                </span>
+              </span>
+              <span className="font-mono text-dim-foreground">{kb(file.bytes)}</span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    );
+
+  const side = (
+    <>
+      <span className={`text-dim-foreground ${NOTE}`}>
+        {kb(list.data.promptBytes)} of instructions in every agent's prompt.
+        {list.data.sources ? (
+          ""
+        ) : (
+          <>
+            {" "}
+            Which file kinds are read (baked.md, AGENTS.md, CLAUDE.md, …) is set with{" "}
+            <span className="font-mono">instructionFiles</span> in config.
+          </>
+        )}
+      </span>
+      {switchError && <Alert tone="error">{switchError}</Alert>}
+      <Sources list={list.data} busy={switching} onToggle={(s, on) => void toggle(s, on)} />
+      <AlsoGiven projectKey={key} />
+    </>
+  );
 
   return (
     <div className={SETUP}>
@@ -346,64 +559,43 @@ export function InstructionsSection({ project }: SectionProps) {
         unreported={unreported}
         onChanged={reloadRuns}
       />
-      <div className={SPLIT}>
-        <div className={SPLIT_MAIN}>
-          {files.length === 0 ? (
-            <Empty>
-              No instruction files. Add <span className="font-mono">baked.md</span> or{" "}
-              <span className="font-mono">AGENTS.md</span> at the repository root, or list files in{" "}
-              <span className="font-mono">baked/project.json</span>.
-            </Empty>
-          ) : (
-            <ol className={cn(PANEL, LIST, FLUSH)}>
-              {files.map((file) => (
-                <li key={file.absolutePath}>
-                  <button
-                    type="button"
-                    className={GATE}
-                    aria-pressed={file === current}
-                    onClick={() => setSelected(file.absolutePath)}
-                  >
-                    <span className={`font-mono text-dim-foreground ${MARK}`}>{file.order}</span>
-                    <span className={`${GROW} ${COLUMN}`}>
-                      <span className="font-mono">{file.path}</span>
-                      <span className={`text-dim-foreground ${NOTE}`}>
-                        {instructionOrigin(file)}
-                      </span>
-                    </span>
-                    <span className="font-mono text-dim-foreground">{kb(file.bytes)}</span>
-                  </button>
-                </li>
-              ))}
-            </ol>
-          )}
-          <span className={`text-dim-foreground ${NOTE}`}>
-            {kb(list.data.promptBytes)} of instructions in every agent's prompt. Which file kinds
-            are read (baked.md, AGENTS.md, CLAUDE.md, …) is set with{" "}
-            <span className="font-mono">instructionFiles</span> in config.
-          </span>
-          <AlsoGiven projectKey={key} />
-        </div>
-        <div className="min-w-0 flex-[1_1_480px]">
-          {current && (
+      {current ? (
+        <div className={SPLIT}>
+          <div className={SPLIT_MAIN}>
+            {fileList}
+            {side}
+          </div>
+          <div className="min-w-0 flex-[1_1_480px]">
             <Editor
-              key={current.absolutePath}
+              key={draft ? `new:${draft.path}` : current.absolutePath}
               projectKey={key}
               file={current}
               activeRuns={activeRuns}
+              {...(draft ? { onDiscard: () => setDraft(null) } : {})}
               onSaved={({ affectedRuns, ...saved }) => {
-                setList({
-                  ...list.data,
-                  files: files.map((f) => (f.absolutePath === saved.absolutePath ? saved : f)),
-                });
+                if (draft) {
+                  setDraft(null);
+                  setSelected(saved.absolutePath);
+                  reloadList();
+                } else
+                  setList({
+                    ...list.data,
+                    files: files.map((f) => (f.absolutePath === saved.absolutePath ? saved : f)),
+                  });
                 if (affectedRuns) setAffected((ids) => [...new Set([...ids, ...affectedRuns])]);
                 else if (activeRuns > 0) setUnreported(true);
                 reloadRuns();
               }}
             />
-          )}
+          </div>
         </div>
-      </div>
+      ) : (
+        // Without files there is no editor column: the list and its panels take the full width.
+        <div className={STACK}>
+          {fileList}
+          {side}
+        </div>
+      )}
     </div>
   );
 }
