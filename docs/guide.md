@@ -103,7 +103,7 @@ Tabs coordinate through file claims. The first edit of a file claims it for that
 
 ## Context and compaction
 
-`/context` shows the context budget per section, cache hit rate and cost per model. When the conversation reaches 70% of the model's window (`compaction.triggerThreshold`), BAKED compacts it: older messages become a summary and the last few stay verbatim. The default `v2` strategy keeps a structured record of files, decisions and tool results as the conversation goes, so compaction usually needs no model call; `v1` asks the `compact` model for a prose summary. `/compact` runs it now and `/compact settings` changes the strategy.
+`/context` shows the context budget per section, cache hit rate and cost per model. When the conversation reaches 70% of the model's window (`compaction.triggerThreshold`), BAKED compacts it: older messages become a summary and the last few stay verbatim. The default `v2` strategy keeps a structured record of files, decisions and tool results as the conversation goes, so compaction usually needs no model call; `v1` asks the `compact` model for a prose summary. `/compact` runs it now and `/compact settings` changes the strategy. In the desktop app, **Compact now** in the chat's context panel does the same for a chat session.
 
 ## Repository graph
 

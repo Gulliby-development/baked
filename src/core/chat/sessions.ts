@@ -11,6 +11,10 @@
  * terminal UI waits for a key. Interrupting a turn denies its pending prompts. A message sent while
  * a turn runs is steered into the turn at its next step, or starts the next turn if the turn ends
  * first.
+ *
+ * Compacting a session ("Compact now") replaces its older model messages with a summary, as the
+ * terminal UI's `/compact` does; the transcript keeps every message and gains a note. Messages sent
+ * while it runs wait and start the next turn when it ends.
  */
 import type { ModelMessage } from "ai";
 import { logBackgroundError } from "../../stores/errors.js";
@@ -36,9 +40,12 @@ import {
 } from "../checkpoints/fork.js";
 import { snapshotWorkspace } from "../checkpoints/snapshot.js";
 import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
+import { type CompactResult, compactionBlocker, messageChars } from "../compaction/manual.js";
+import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
 import type { MentionSuggestion } from "./mention-suggest.js";
@@ -87,6 +94,8 @@ export interface SessionSummary {
   state: SessionState;
   model: string | null;
   mode: ChatMode;
+  /** True while a manual compaction runs; the state is then `working`. */
+  compacting: boolean;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -131,7 +140,20 @@ export type ChatEventBody =
       usage: Usage;
       durationMs: number;
     }
+  | { type: "compaction-start"; compactionId: string }
+  | {
+      type: "compaction-done";
+      compactionId: string;
+      status: CompactionStatus;
+      /** The note added to the transcript; null when the compaction failed or was interrupted. */
+      message: ChatMessage | null;
+      /** Model messages the summary replaced. */
+      compacted: number;
+      error?: string;
+      context: SessionDetail["context"];
+    }
   | { type: "session"; session: SessionSummary };
+export type CompactionStatus = "compacted" | "skipped" | "failed" | "interrupted";
 export type ChatEvent = ChatEventBody & { seq: number; at: number };
 
 /** The part of an agent stream result a turn reads; `createBakeAgent` agents satisfy it. */
@@ -164,6 +186,21 @@ export interface InputExpansionRequest {
   abortSignal: AbortSignal;
 }
 
+export interface CompactionRequest {
+  sessionId: string;
+  /** The session's model; the host may compact with the task router's `compact` model instead. */
+  modelId: string;
+  messages: ModelMessage[];
+  abortSignal: AbortSignal;
+}
+
+export interface CompactionResponse {
+  result: CompactResult;
+  /** Characters of the system prompt and context, for estimating the context fill afterwards. */
+  systemChars?: number;
+  contextWindow?: number;
+}
+
 /** Builds the agent of each turn; the API server uses a host backed by `createChatAgent`. */
 export interface ChatAgentHost {
   agent(request: TurnAgentRequest): Promise<{ agent: TurnAgent; contextWindow: number }>;
@@ -171,6 +208,8 @@ export interface ChatAgentHost {
   expandInput?(request: InputExpansionRequest): Promise<ExpandedChatInput>;
   /** `@` completions for a chat input, from the workspace files and the repository graph. */
   suggestMentions?(query: string, limit?: number): Promise<MentionSuggestion[]>;
+  /** Summarizes a session's older messages; without it, sessions cannot be compacted. */
+  compact?(request: CompactionRequest): Promise<CompactionResponse>;
   /** Frees what the host keeps for a session that is no longer loaded. */
   release(sessionId: string): void;
   dispose(): Promise<void>;
@@ -183,7 +222,9 @@ export class ChatError extends Error {
       | "SESSION_BUSY"
       | "STALE_PROMPT"
       | "INVALID_REQUEST"
-      | "ROLLBACK_UNAVAILABLE",
+      | "ROLLBACK_UNAVAILABLE"
+      | "NOTHING_TO_COMPACT"
+      | "NOT_SUPPORTED",
     message: string,
   ) {
     super(message);
@@ -234,8 +275,6 @@ function toolResultOf(output: unknown): ToolResult {
 /** Ends a turn before the model runs, without counting as a failure. */
 class SkipTurn extends Error {}
 
-const EDIT_TOOLS = new Set(["edit_file", "write_file", "create_file", "multi_edit"]);
-
 interface Pending {
   prompt: ChatPrompt;
   resolve: (value: boolean | string) => void;
@@ -245,6 +284,9 @@ interface TurnState {
   id: string;
   abort: AbortController;
 }
+
+/** Characters per token when estimating the context fill after a compaction, as the TUI does. */
+const CHARS_PER_TOKEN = 3;
 
 /** One loaded session: its messages, live turn, prompts and event buffer. */
 export class ChatSession {
@@ -257,6 +299,7 @@ export class ChatSession {
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
+  private compaction: TurnState | null = null;
   private turnDone: Promise<void> = Promise.resolve();
   private readonly prompts = new Map<string, Pending>();
   private queue: string[] = [];
@@ -333,12 +376,12 @@ export class ChatSession {
   }
 
   get busy(): boolean {
-    return this.turn !== null;
+    return this.turn !== null || this.compaction !== null;
   }
 
   get state(): SessionState {
     if (this.prompts.size > 0) return "waiting";
-    return this.turn ? "working" : "idle";
+    return this.busy ? "working" : "idle";
   }
 
   get pendingPrompts(): ChatPrompt[] {
@@ -360,17 +403,11 @@ export class ChatSession {
       state: this.state,
       model: this.model,
       mode: this.mode,
+      compacting: this.compaction !== null,
     };
   }
 
   detail(): SessionDetail {
-    const files = new Set<string>();
-    for (const message of this.messages)
-      for (const call of message.toolCalls ?? []) {
-        if (EDIT_TOOLS.has(call.name) && typeof call.args.path === "string")
-          files.add(call.args.path);
-        for (const file of call.result?.filesEdited ?? []) files.add(file);
-      }
     return {
       ...this.summary(),
       messages: this.messages,
@@ -378,7 +415,7 @@ export class ChatSession {
       queued: [...this.queue],
       usage: { ...this.usage },
       context: this.context,
-      filesEdited: [...files].sort(),
+      filesEdited: editedFiles(this.messages),
       lastSeq: this.seq,
     };
   }
@@ -424,9 +461,10 @@ export class ChatSession {
 
   /** Starts a turn, or steers the text into the running one. */
   send(text: string): { turnId: string; queued: boolean } {
-    if (this.turn) {
+    const running = this.turn ?? this.compaction;
+    if (running) {
       this.queue.push(text);
-      return { turnId: this.turn.id, queued: true };
+      return { turnId: running.id, queued: true };
     }
     if (!this.model)
       throw new ChatError(
@@ -440,10 +478,119 @@ export class ChatSession {
   }
 
   interrupt(): boolean {
+    if (this.compaction) {
+      this.compaction.abort.abort();
+      return true;
+    }
     if (!this.turn) return false;
     this.turn.abort.abort();
     this.denyPrompts();
     return true;
+  }
+
+  /** Line counts of the files this session edited, against the repository's last commit. */
+  diffStats(): Promise<SessionDiffStats> {
+    return sessionDiffStats(this.owner.workspace, editedFiles(this.messages));
+  }
+
+  /**
+   * Starts compacting the conversation. Refused while a turn runs, when the host cannot compact,
+   * and when the conversation is too short for a summary to save anything.
+   */
+  compact(): { compactionId: string } {
+    if (this.busy) throw new ChatError("SESSION_BUSY", "Wait for the running turn to finish");
+    const { host } = this.owner;
+    if (!host.compact) throw new ChatError("NOT_SUPPORTED", "This server cannot compact sessions");
+    const model = this.model;
+    if (!model)
+      throw new ChatError(
+        "INVALID_REQUEST",
+        "No model configured. Choose a model for the session or set defaultModel.",
+      );
+    const blocker = compactionBlocker(this.core, this.owner.keepRecent);
+    if (blocker) throw new ChatError("NOTHING_TO_COMPACT", blocker);
+    const compaction: TurnState = { id: crypto.randomUUID(), abort: new AbortController() };
+    this.compaction = compaction;
+    this.emit({ type: "compaction-start", compactionId: compaction.id });
+    this.emitSession();
+    this.turnDone = this.runCompaction(compaction, model, host.compact.bind(host)).catch(() => {});
+    return { compactionId: compaction.id };
+  }
+
+  private async runCompaction(
+    compaction: TurnState,
+    modelId: string,
+    compact: NonNullable<ChatAgentHost["compact"]>,
+  ): Promise<void> {
+    let status: CompactionStatus;
+    let note: string | null = null;
+    let compacted = 0;
+    let error: string | undefined;
+    try {
+      const response = await compact({
+        sessionId: this.meta.id,
+        modelId,
+        messages: [...this.core],
+        abortSignal: compaction.abort.signal,
+      });
+      const { result } = response;
+      if (compaction.abort.signal.aborted) status = "interrupted";
+      else if (result.status === "skipped") {
+        status = "skipped";
+        note = result.reason;
+      } else {
+        status = "compacted";
+        compacted = result.compacted;
+        this.core = result.messages;
+        const window = response.contextWindow ?? this.context?.windowTokens ?? 0;
+        if (window > 0) {
+          const used = Math.ceil(
+            ((response.systemChars ?? 0) + messageChars(result.messages)) / CHARS_PER_TOKEN,
+          );
+          this.context = {
+            usedTokens: used,
+            windowTokens: window,
+            percent: Math.round((used / window) * 100),
+          };
+        }
+        if (result.usage)
+          this.usage = {
+            input: this.usage.input + result.usage.inputTokens,
+            output: this.usage.output + result.usage.outputTokens,
+            cacheRead: this.usage.cacheRead + (result.usage.cacheReadTokens ?? 0),
+          };
+        note = `Compacted ${compacted} messages into a summary (${result.strategy} strategy).${
+          this.context ? ` Context is now about ${this.context.percent}%.` : ""
+        }`;
+      }
+    } catch (err) {
+      status = compaction.abort.signal.aborted ? "interrupted" : "failed";
+      if (status === "failed") error = errorText(err);
+    }
+    const message: ChatMessage | null = note
+      ? { id: crypto.randomUUID(), role: "system", content: note, timestamp: Date.now() }
+      : null;
+    if (message) this.messages = [...this.messages, message];
+    this.compaction = null;
+    await this.owner.persist(this);
+    this.emit({
+      type: "compaction-done",
+      compactionId: compaction.id,
+      status,
+      message,
+      compacted,
+      ...(error ? { error } : {}),
+      context: this.context,
+    });
+    this.emitSession();
+    // Messages sent while compacting start the next turn.
+    if (this.queue.length > 0 && status !== "interrupted") {
+      const first = this.queue.shift() ?? "";
+      const rest = this.queue;
+      this.queue = [];
+      this.send(first);
+      this.queue.push(...rest);
+    } else this.queue = [];
   }
 
   /** Resolves when the running turn, if any, has ended and been saved. */
@@ -847,6 +994,11 @@ export class ChatService {
     return this.options.workspace;
   }
 
+  /** Model messages a compaction keeps verbatim. */
+  get keepRecent(): number {
+    return this.options.config.compaction?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
+  }
+
   get defaultModel(): string | null {
     const model = this.options.config.defaultModel;
     return model && model !== "none" ? model : null;
@@ -865,6 +1017,7 @@ export class ChatService {
         state: "idle",
         model: null,
         mode: "default",
+        compacting: false,
       });
     }
     for (const session of this.live.values()) summaries.set(session.id, session.summary());

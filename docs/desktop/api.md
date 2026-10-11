@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`) and `routing` (`/v1/workflow/routing`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`) and `diff-stats` (`GET /v1/sessions/ID/diff`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -43,6 +43,7 @@ interface SessionSummary {
   state: SessionState;
   model: string | null;   // provider/model of the next turn; null when nothing is configured
   mode: Mode;
+  compacting: boolean;    // a manual compaction runs; state is then "working"
 }
 
 interface SessionDetail extends SessionSummary {
@@ -51,7 +52,7 @@ interface SessionDetail extends SessionSummary {
   queued: string[];         // messages waiting to be steered into the running turn
   usage: { input: number; output: number; cacheRead: number };   // whole session
   context: { usedTokens: number; windowTokens: number; percent: number } | null;
-  filesEdited: string[];    // workspace-relative paths edited in this session
+  filesEdited: string[];    // paths the session's edit tools wrote, as the tools named them
   lastSeq: number;          // subscribe to events with ?after=lastSeq to miss nothing
 }
 
@@ -95,11 +96,31 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `POST /v1/sessions/ID/messages` | `{text}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the text is steered into it at its next step |
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
+| `POST /v1/sessions/ID/compact` | `{}` | 202 `{compactionId}`; the compaction runs in the background and reports with `compaction-start` and `compaction-done`. 409 `SESSION_BUSY` while a turn or a compaction runs, 409 `NOTHING_TO_COMPACT` when the conversation is too short, 501 `NOT_SUPPORTED` when the server cannot compact |
+| `GET /v1/sessions/ID/diff` | | `SessionDiffStats` below |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
 | `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model` |
 | `GET /v1/mentions` | `?q=&limit=` (default 20, at most 50) | `{mentions: [{kind: "file" \| "directory" \| "symbol", insert, label, detail, indices}]}`: `@` completions for the composer; `insert` is the text after `@`, `indices` the matched characters of `label` |
 
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
+
+#### Compaction ("Compact now")
+
+`POST /v1/sessions/ID/compact` does what `/compact` does in the terminal UI, with the same code (`src/core/compaction/manual.ts`): the model messages before the last `compaction.keepRecent` (default 4) become one summary, written with the task router's `compact` model (the session's model when no route is set) and the configured `compaction.strategy`; `v2` rebuilds its working state from the saved messages first, any other strategy writes a full summary. The next turn sends the summary, an acknowledgement and the kept messages. The transcript (`messages`) keeps every message and gains a `system` message that says how many messages were compacted; `context` becomes an estimate until the next turn reports real numbers, and the summary's tokens count in `usage`. A message sent while the compaction runs is queued (`{turnId: compactionId, queued: true}`) and starts the next turn when it ends. `interrupt` stops a running compaction and keeps the conversation as it was. A compaction that cannot produce a summary of at least 50 characters is `skipped` and changes nothing.
+
+#### Diff statistics
+
+```ts
+interface SessionDiffStats {
+  base: "HEAD" | null;   // null outside a git repository: only file names are known
+  files: { path: string;   // workspace-relative with "/"; absolute when outside the project
+           status: "modified" | "added" | "deleted" | "unchanged" | "outside" | "unknown";
+           added: number; removed: number; binary?: boolean }[];
+  totals: { files: number; added: number; removed: number };   // files that are not unchanged or outside
+}
+```
+
+`GET /v1/sessions/ID/diff` measures the files in `filesEdited` against the last commit with git (`git diff --numstat HEAD`; a new untracked file counts all its lines as added). The numbers are what is uncommitted in those files now, whoever made the change; a file the session edited that was committed or reverted since is `unchanged`. Outside a git repository every file is `unknown` with zero counts.
 
 A message text with `@` mentions or a leading `!command` is expanded on the server before the model sees it, by the same code as the terminal UI ([user guide](../guide.md#mentions-and-shell-commands-in-the-input)): the stored user message keeps the typed text and lists what was attached in `inputContext`. A destructive `!` command asks with a `destructive` prompt in `default` mode, is denied in `architect` mode with every other command, and runs in `auto` mode. A message that is only a command that did not run ends its turn with `turn-done` `completed` and `message: null`. Text with `@` or `!` sent while a turn runs is not steered into it; it starts its own turn afterwards.
 
@@ -121,6 +142,8 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `prompt-resolved` | `promptId`, `outcome` (`approved`, `denied`, `answered`, `skipped`) |
 | `step` | `turnId`, `step`, `usage` (this turn so far) |
 | `turn-done` | `turnId`, `status` (`completed`, `interrupted`, `failed`), `error?`, `message` (the assistant `ChatMessage`, null when nothing was produced), `usage`, `durationMs` |
+| `compaction-start` | `compactionId` |
+| `compaction-done` | `compactionId`, `status` (`compacted`, `skipped`, `failed`, `interrupted`), `message` (the `system` `ChatMessage` added to the transcript, null when failed or interrupted), `compacted` (model messages summarized), `error?`, `context` |
 | `session` | `session` (`SessionSummary`) after a state, title, model or mode change |
 | `reset` | the requested sequence is no longer buffered or belongs to an earlier server start: fetch `GET /v1/sessions/ID` and continue from its `lastSeq` |
 
@@ -226,6 +249,6 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 
 ## Not in this contract yet
 
-- Plan mode and its plan review in chat, image attachments, manual compaction ("Compact now"), checkpoints and rewinding a chat, per-session diff statistics. The desktop hides these controls until a later version of this contract adds them.
+- Plan mode and its plan review in chat, image attachments, checkpoints and rewinding a chat. The desktop hides these controls until a later version of this contract adds them.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.

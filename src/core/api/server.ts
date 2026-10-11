@@ -101,6 +101,8 @@ export const CAPABILITIES = [
   "checks",
   "library",
   "routing",
+  "compaction",
+  "diff-stats",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;

@@ -9,6 +9,10 @@ export const CHECKS_CAPABILITY = "checks";
 export const LIBRARY_CAPABILITY = "library";
 /** `/v1/workflow/routing`. */
 export const ROUTING_CAPABILITY = "routing";
+/** `POST /v1/sessions/ID/compact` ("Compact now" in chat). */
+export const COMPACTION_CAPABILITY = "compaction";
+/** `GET /v1/sessions/ID/diff` (line counts of the files a chat changed). */
+export const DIFF_STATS_CAPABILITY = "diff-stats";
 
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the

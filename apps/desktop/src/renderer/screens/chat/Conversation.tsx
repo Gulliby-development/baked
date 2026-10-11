@@ -442,7 +442,11 @@ export function Conversation({
               />
             )}
           </div>
-        ) : null,
+        ) : (
+          <p key={message.id} className="chat-note">
+            {message.content}
+          </p>
+        ),
       )}
       {live && (
         <Assistant
@@ -470,6 +474,14 @@ export function Conversation({
             <span />
           </span>
           Working…
+        </p>
+      )}
+      {transcript.compacting && (
+        <p className="working" aria-live="polite">
+          <span className="spinner" aria-hidden="true">
+            <span />
+          </span>
+          Compacting the conversation…
         </p>
       )}
       {notice && (
