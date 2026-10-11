@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { type CatalogSkill, type SkillEntry, type SkillScope, setup } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
-import { Dialog, DialogContent, DialogFooter, DialogHeader } from "../../components/ui/dialog.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "../../components/ui/dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Input } from "../../components/ui/input.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
@@ -34,6 +40,7 @@ const SCOPES: [SkillScope, string, string][] = [
 ];
 
 const SEARCH_DELAY_MS = 300;
+const FOOTER = "flex flex-wrap justify-end gap-2";
 
 type Dialogs =
   | { kind: "view"; skill: SkillEntry }
@@ -47,8 +54,11 @@ function ViewSkill({ projectKey, skill }: { projectKey: string; skill: SkillEntr
   );
   return (
     <>
-      <DialogHeader title={skill.id}>
-        <span className="font-mono">{skill.path}</span>
+      <DialogHeader>
+        <DialogTitle>{skill.id}</DialogTitle>
+        <DialogDescription>
+          <span className="font-mono">{skill.path}</span>
+        </DialogDescription>
       </DialogHeader>
       {file.state === "ready" ? (
         <pre className="m-0 min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-base border-2 border-border bg-secondary-background p-3 font-mono text-[12px] wrap-anywhere">
@@ -78,9 +88,12 @@ function InstallSkill({
   const about = SCOPES.find(([s]) => s === scope)?.[2];
   return (
     <>
-      <DialogHeader title={`Install ${skill.skillId}`}>
-        From <span className="font-mono">{skill.source}</span> on skills.sh ·{" "}
-        {skill.installs.toLocaleString()} installs
+      <DialogHeader>
+        <DialogTitle>{`Install ${skill.skillId}`}</DialogTitle>
+        <DialogDescription>
+          From <span className="font-mono">{skill.source}</span> on skills.sh ·{" "}
+          {skill.installs.toLocaleString()} installs
+        </DialogDescription>
       </DialogHeader>
       <div className={STACK}>
         <span className={LABEL}>Who gets it</span>
@@ -104,14 +117,14 @@ function InstallSkill({
         </span>
       )}
       {error && <Alert tone="error">{error}</Alert>}
-      <DialogFooter>
+      <div className={FOOTER}>
         <Button variant="secondary" size="md" disabled={busy} onClick={onCancel}>
           Cancel
         </Button>
         <Button variant="primary" size="md" disabled={busy} onClick={() => onInstall(scope)}>
           {busy ? "Installing…" : "Install"}
         </Button>
-      </DialogFooter>
+      </div>
     </>
   );
 }
@@ -318,15 +331,18 @@ export function SkillsSection({ project }: SectionProps) {
           )}
           {dialog?.kind === "remove" && (
             <>
-              <DialogHeader title={`Remove ${dialog.skill.id}?`}>
-                Deletes the folder{" "}
-                <span className="font-mono">
-                  {dialog.skill.path.replace(/[\\/]SKILL\.md$/, "")}
-                </span>
-                {dialog.skill.scope === "global" ? " for every project." : " from this project."}
+              <DialogHeader>
+                <DialogTitle>{`Remove ${dialog.skill.id}?`}</DialogTitle>
+                <DialogDescription>
+                  Deletes the folder{" "}
+                  <span className="font-mono">
+                    {dialog.skill.path.replace(/[\\/]SKILL\.md$/, "")}
+                  </span>
+                  {dialog.skill.scope === "global" ? " for every project." : " from this project."}
+                </DialogDescription>
               </DialogHeader>
               {error && <Alert tone="error">{error}</Alert>}
-              <DialogFooter>
+              <div className={FOOTER}>
                 <Button variant="secondary" size="md" disabled={busy} onClick={close}>
                   Cancel
                 </Button>
@@ -343,7 +359,7 @@ export function SkillsSection({ project }: SectionProps) {
                 >
                   Remove
                 </Button>
-              </DialogFooter>
+              </div>
             </>
           )}
         </DialogContent>
