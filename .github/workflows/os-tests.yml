@@ -55,6 +55,7 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     name: test (${{ matrix.os }})
+    timeout-minutes: 40
     steps:
       - name: Skip
         if: needs.scope.outputs.run != 'true'
