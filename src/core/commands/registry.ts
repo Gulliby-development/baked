@@ -628,6 +628,13 @@ const COMMAND_DEFS: CommandDef[] = [
     suggested: true,
   },
   {
+    cmd: "/motion",
+    ic: "cog",
+    desc: "Full or reduced animation",
+    category: "Settings",
+    tags: ["animation", "reduced motion", "accessibility"],
+  },
+  {
     cmd: "/reasoning",
     ic: "brain",
     desc: "Show or hide reasoning content",

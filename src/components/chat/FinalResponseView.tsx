@@ -46,38 +46,29 @@ const DOTS_CYCLE = [".", "..", "...", "..", ".", ".."];
 const DOTS_PADDED = DOTS_CYCLE.map((d) => d.padEnd(3));
 
 const EXPLORE_PAIRS: [string, string][] = [
+  ["Reading the code…", "Read the code"],
   ["Scanning the codebase…", "Scanned the codebase"],
-  ["Reading the runes…", "Read the runes"],
-  ["Tracing the threads…", "Traced the threads"],
-  ["Mapping the terrain…", "Mapped the terrain"],
-  ["Gathering intel…", "Gathered intel"],
-  ["Following the trail…", "Followed the trail"],
+  ["Tracing the calls…", "Traced the calls"],
+  ["Gathering ingredients…", "Gathered the ingredients"],
+  ["Checking the recipe…", "Checked the recipe"],
   ["Consulting the index…", "Consulted the index"],
-  ["Scouting ahead…", "Scouted ahead"],
   ["Connecting the dots…", "Connected the dots"],
-  ["Parsing the signals…", "Parsed the signals"],
 ];
 
 const EDIT_PAIRS: [string, string][] = [
   ["Baking changes…", "Baked changes"],
-  ["Hammering code…", "Hammered code"],
-  ["Shaping the metal…", "Shaped the metal"],
-  ["Welding it together…", "Welded it together"],
-  ["Carving the solution…", "Carved the solution"],
+  ["Kneading the code…", "Kneaded the code"],
+  ["Shaping the dough…", "Shaped the dough"],
   ["Applying the fix…", "Applied the fix"],
-  ["Rewriting reality…", "Rewrote reality"],
-  ["Bending the code…", "Bent the code"],
-  ["Crafting the patch…", "Crafted the patch"],
-  ["Tempering the build…", "Tempered the build"],
+  ["Writing the patch…", "Wrote the patch"],
+  ["Scoring the crust…", "Scored the crust"],
 ];
 
 const DISPATCH_PAIRS: [string, string][] = [
-  ["Splitting into sparks…", "Sparks reunited"],
-  ["Deploying the swarm…", "Swarm returned"],
-  ["Lighting the embers…", "Embers cooled"],
-  ["Rallying the anvils…", "Anvils reported back"],
-  ["Spawning doppelgangers…", "Doppelgangers merged"],
   ["Dispatching agents…", "Agents returned"],
+  ["Splitting the batch…", "Batch came back"],
+  ["Filling the trays…", "Trays came back"],
+  ["Sharing the work…", "Work came back"],
 ];
 
 export interface FinalResponseTool {

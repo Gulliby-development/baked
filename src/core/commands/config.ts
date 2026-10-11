@@ -4,6 +4,7 @@ import { useUIStore } from "../../stores/ui.js";
 import type { AgentFeatures, AppConfig } from "../../types/index.js";
 import { icon } from "../icons.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
+import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -355,6 +356,34 @@ function handleReasoning(_input: string, ctx: CommandContext): void {
     },
     onScopeMove: (value, from, to) => {
       ctx.setShowReasoning(value === "on");
+      ctx.saveToScope(patch(value), to, from);
+    },
+  });
+}
+
+function handleMotion(_input: string, ctx: CommandContext): void {
+  const patch = (value: string) => ({ motion: value as MotionMode });
+  ctx.openCommandPicker({
+    title: "Motion",
+    icon: icon("cog"),
+    currentValue: getMotion(),
+    scopeEnabled: true,
+    initialScope: ctx.detectScope("motion"),
+    options: [
+      { value: "full", label: "Full", description: "animated bun, boot splash and busy meter" },
+      {
+        value: "reduced",
+        label: "Reduced",
+        description: "still frames, busy time updates once a second",
+      },
+    ],
+    onSelect: (value, scope) => {
+      setMotion(value as MotionMode);
+      ctx.saveToScope(patch(value), scope ?? "global");
+      sysMsg(ctx, `Motion ${value} (${scope ?? "global"})`);
+    },
+    onScopeMove: (value, from, to) => {
+      setMotion(value as MotionMode);
       ctx.saveToScope(patch(value), to, from);
     },
   });
@@ -830,6 +859,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/mode", handleMode);
   map.set("/verbose", handleVerbose);
   map.set("/reasoning", handleReasoning);
+  map.set("/motion", handleMotion);
   map.set("/compact settings", handleCompaction);
   map.set("/compaction", handleCompaction); // legacy alias
   map.set("/agent-features", handleAgentFeatures);

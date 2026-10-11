@@ -4,10 +4,17 @@ The terminal UI is started with `baked` in a project folder. One process works i
 
 ## The screen
 
-- **Header**: model, project name, Git branch, context budget, token usage and cost, and a badge such as `2 waiting in other projects`.
+- **Startup**: the oven logo beside the BAKED wordmark (the wordmark alone in narrow terminals) and a loaf that rises and browns as startup progresses, with the current step (`PROOFING`, `BAKING`, `READY`) and a progress bar. Exiting shows the loaf falling asleep while the session is saved.
+- **Empty chat**: the bun, BAKED's mascot, and a START HERE card with the first keys to try. Without a model, the card's first line says to press `Ctrl+L`.
+- **Header**: the oven mark, model, project name, Git branch, context budget, token usage and cost, and a badge such as `2 waiting in other projects`.
 - **Chat**: Markdown, highlighted code, live tool calls and diffs. A checkpoint rail on the right marks each turn.
 - **Input**: plain text or slash commands (type `/`). A multi-line paste collapses to its first line and a line count. Pasting an image from the clipboard attaches it as an `[image-N]` token; deleting the token removes the image. The desktop chat and `baked --headless --image` attach images the same way ([headless](headless.md#images)). Typing while the agent works queues a steering message that is injected at the next step, without aborting.
+- **Busy bar**: while the agent works or compacts, one line above the input shows `BAKING` (or `COMPACTING`), a moving meter, the current step, the elapsed time and `^X STOP`.
 - **Footer**: the main shortcuts.
+
+### Motion
+
+Brand animations run at five frames a second and use only block characters that every terminal font has. `/motion` switches between `full` and `reduced`; reduced shows still frames and updates the busy bar once a second. Setting `BAKED_REDUCED_MOTION=1` forces reduced motion, including the startup screen. Terminals without 24-bit colour get the 256-colour palette.
 
 ## Models and the task router
 

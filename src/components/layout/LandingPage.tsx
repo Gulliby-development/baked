@@ -3,10 +3,12 @@ import { icon } from "../../core/icons.js";
 import type { ProviderStatus } from "../../core/llm/provider.js";
 import type { PrerequisiteStatus } from "../../core/setup/prerequisites.js";
 import { useTheme } from "../../core/theme/index.js";
+import { BUN_WIDTH } from "../../core/utils/bake-art.js";
 import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { useMCPStore } from "../../stores/mcp.js";
 import { useRepoMapStore } from "../../stores/repomap.js";
-import { BakingLogo } from "./BakingLogo.js";
+import { BunMascot } from "../brand/BunMascot.js";
+import { BrutalBox } from "../ui/BrutalBox.js";
 
 // ── Status block — model on top (colored), info below (muted) ───────
 
@@ -97,6 +99,55 @@ function StatusBlock() {
   );
 }
 
+// ── Start card: what to do first ─────────────────────────────────────
+
+const CARD_WIDTH = 56;
+
+function KeyRow({ keys }: { keys: [string, string][] }) {
+  const tk = useTheme();
+  return (
+    <box flexDirection="row" height={1}>
+      {keys.map(([key, label]) => (
+        <text key={key} wrapMode="none">
+          <span fg={tk.bgApp} bg={tk.textPrimary}>{` ${key} `}</span>
+          <span fg={tk.textSecondary}>{` ${label}  `}</span>
+        </text>
+      ))}
+    </box>
+  );
+}
+
+function StartCard({ hasModel }: { hasModel: boolean }) {
+  const tk = useTheme();
+  return (
+    <BrutalBox width={CARD_WIDTH} height={5} title="START HERE">
+      {hasModel ? (
+        <KeyRow keys={[["Enter", "ask about this project or give a task"]]} />
+      ) : (
+        <text wrapMode="none">
+          <span fg={tk.bgApp} bg={tk.error}>
+            {" ^L "}
+          </span>
+          <span fg={tk.error}>{" No model yet: pick one to start"}</span>
+        </text>
+      )}
+      <KeyRow
+        keys={[
+          ["/", "commands"],
+          ["@", "attach a file"],
+          ["!", "run a command"],
+        ]}
+      />
+      <KeyRow
+        keys={[
+          ["^P", "resume a session"],
+          ["^K", "palette"],
+        ]}
+      />
+    </BrutalBox>
+  );
+}
+
 // ── Main landing page ───────────────────────────────────────────────
 
 interface LandingPageProps {
@@ -108,32 +159,34 @@ interface LandingPageProps {
 export function LandingPage({
   bootProviders: _bp,
   bootPrereqs: _bq,
-  activeModel: _am,
+  activeModel,
 }: LandingPageProps) {
   const tk = useTheme();
   const { width, height } = useTerminalDimensions();
   const columns = width ?? 80;
   const rows = height ?? 24;
 
-  const showBaking = columns >= 27 && rows >= 18;
-  const bakingCols = Math.min(88, columns - 2);
+  const showCard = columns >= CARD_WIDTH + 4 && rows >= 16;
+  const showBun = columns >= BUN_WIDTH + 2 && rows >= (showCard ? 20 : 14);
+  const hasModel = Boolean(activeModel && activeModel !== "none");
 
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} overflow="hidden">
-      {/* Flexible top spacer — absorbs extra height so the content
-          stack below always sits flush against the input. When the
-          input grows or the status block expands, this shrinks first. */}
+      {/* Flexible top spacer: absorbs extra height so the content stack below always sits
+          flush against the input. When the input grows, this shrinks first. */}
       <box flexGrow={1} flexShrink={1} minHeight={0} />
 
-      {/* ── Content — always anchored to the bottom ── */}
       <box flexDirection="column" alignItems="center" gap={0} flexShrink={0} zIndex={1}>
-        {showBaking ? (
-          <BakingLogo cols={bakingCols} />
+        {showBun && <BunMascot mood="idle" />}
+        {showCard ? (
+          <StartCard hasModel={hasModel} />
         ) : (
-          <text fg={tk.textMuted}>Ready for your next idea</text>
+          <text fg={hasModel ? tk.textMuted : tk.error}>
+            {hasModel ? "Ask anything · / for commands" : "No model yet · ^L to pick one"}
+          </text>
         )}
 
-        {/* ── Status line: only appears when something is wrong / loading ── */}
+        {/* Status line: only appears when something is wrong */}
         <StatusBlock />
       </box>
     </box>

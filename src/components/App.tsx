@@ -16,7 +16,7 @@ import { openProjectPicker } from "../core/commands/projects.js";
 import { handleCommand } from "../core/commands/registry.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
-import { icon, providerIcon, UI_ICONS } from "../core/icons.js";
+import { providerIcon, UI_ICONS } from "../core/icons.js";
 import { runIntelligenceHealthCheck } from "../core/intelligence/index.js";
 import {
   fetchGroupedModels,
@@ -32,7 +32,18 @@ import { SessionManager } from "../core/sessions/manager.js";
 import { getMissingRequired } from "../core/setup/prerequisites.js";
 import { useTheme } from "../core/theme/index.js";
 import { restoreSessionImages } from "../core/tools/show-image.js";
-import { pickWordmark } from "../core/utils/splash.js";
+import {
+  artPalette,
+  BUN_HEIGHT,
+  bunRows,
+  LOCKUP_WIDTH,
+  lockupRows,
+  ovenMarkCells,
+  SLAB_HEIGHT,
+  SLAB_WIDTH,
+  slabRows,
+} from "../core/utils/bake-art.js";
+import { setMotion } from "../core/utils/motion.js";
 import { CURRENT_VERSION } from "../core/version.js";
 import { getModeColor, getModeLabel } from "../hooks/useBakeMode.js";
 import type { ChatInstance, WorkspaceSnapshot } from "../hooks/useChat.js";
@@ -52,6 +63,7 @@ import { useToolsStore } from "../stores/tools.js";
 import { type ModalName, selectIsAnyModalOpen, useUIStore } from "../stores/ui.js";
 import type { AppConfig, ChatMessage, TaskRouter } from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
+import { artText } from "./brand/artText.js";
 import { ContextBar } from "./layout/ContextBar.js";
 import { Footer } from "./layout/Footer.js";
 import { ProjectIndicator } from "./layout/ProjectIndicator.js";
@@ -109,27 +121,13 @@ const DEFAULT_TASK_ROUTER: TaskRouter = {
 };
 
 const SHUTDOWN_STEPS = [
-  "quenching active flames",
-  "baking session to disk",
-  "sealing the vault",
-  "until next time, master baker",
+  "Stopping active work",
+  "Saving the session",
+  "Closing the project",
+  "See you next bake",
 ];
 
-// Linear interpolate two #rrggbb hex colors → #rrggbb. Mirrors boot.tsx.
-function lerpHex(a: string, b: string, tVal: number): string {
-  const ar = parseInt(a.slice(1, 3), 16);
-  const ag = parseInt(a.slice(3, 5), 16);
-  const ab = parseInt(a.slice(5, 7), 16);
-  const br = parseInt(b.slice(1, 3), 16);
-  const bg = parseInt(b.slice(3, 5), 16);
-  const bb = parseInt(b.slice(5, 7), 16);
-  const r = Math.round(ar + (br - ar) * tVal);
-  const g = Math.round(ag + (bg - ag) * tVal);
-  const bl = Math.round(ab + (bb - ab) * tVal);
-  const hex = (v: number) => v.toString(16).padStart(2, "0");
-  return `#${hex(r)}${hex(g)}${hex(bl)}`;
-}
-
+/** Exit screen: the BAKED slab over the bun falling asleep, then the saving steps. */
 function ShutdownSplash({
   phase,
   sessionId,
@@ -140,84 +138,35 @@ function ShutdownSplash({
   height: number;
 }) {
   const shortId = sessionId?.slice(0, 8);
-  const [tick, setTick] = useState(0);
-  const { width: termWidth } = useTerminalDimensions();
-
-  useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 80);
-    return () => clearInterval(timer);
-  }, []);
-
   const t = useTheme();
-  const wordmark = pickWordmark(termWidth ?? 80);
-  const wmW = wordmark[0]?.length ?? 0;
-
-  // Inverse of the boot warm-up: Baked cools. Start amber (hot
-  // from use) and fade down through warning → brandAlt → brand →
-  // brandDim over ~3s. One-shot — no loop.
-  const FADE_TICKS = 40; // 40 * 80ms = 3.2s
-  const fadeT = Math.min(1, tick / FADE_TICKS);
-  const stops = [t.amber, t.warning, t.brandAlt, t.brand, t.brandDim];
-  const scaled = fadeT * (stops.length - 1);
-  const i = Math.min(stops.length - 2, Math.floor(scaled));
-  const frac = scaled - i;
-  const wordmarkColor = lerpHex(stops[i] ?? t.brand, stops[i + 1] ?? t.brandDim, frac);
-
-  // Slow highlight sweep (same idea as boot, inverse direction — the
-  // ember trails off toward the left as Baked cools). 4.2s cycle,
-  // 3-cell bright band, tinted 55% toward #ffd68a (amber-cream).
-  const SWEEP_TICKS = 52;
-  const sweepT = (tick % SWEEP_TICKS) / SWEEP_TICKS;
-  const sweepX = Math.floor((1 - sweepT) * (wmW + 8)) - 4;
-  const warmColor = lerpHex(wordmarkColor, "#ffd68a", 0.55);
-
-  const renderRow = (line: string): React.ReactNode => {
-    const nodes: React.ReactNode[] = [];
-    let buffer = "";
-    let bufferColor = wordmarkColor;
-    const flush = (key: string) => {
-      if (!buffer) return;
-      nodes.push(
-        <span key={key} fg={bufferColor}>
-          {buffer}
-        </span>,
-      );
-      buffer = "";
-    };
-    for (let x = 0; x < line.length; x++) {
-      const ch = line.charAt(x);
-      if (ch === " ") {
-        const target = wordmarkColor;
-        if (target !== bufferColor) {
-          flush(`s-${x}`);
-          bufferColor = target;
-        }
-        buffer += " ";
-        continue;
-      }
-      const d = Math.abs(x - sweepX);
-      const target = d <= 1 ? warmColor : wordmarkColor;
-      if (target !== bufferColor) {
-        flush(`c-${x}`);
-        bufferColor = target;
-      }
-      buffer += ch;
-    }
-    flush("end");
-    return nodes;
-  };
+  const { width: termWidth } = useTerminalDimensions();
+  const palette = artPalette(t);
+  const roomy = (termWidth ?? 80) >= SLAB_WIDTH + 2 && height >= SLAB_HEIGHT + BUN_HEIGHT + 8;
+  // The bun closes its eyes once the session is saved.
+  const face = phase >= 1 ? "sleep" : "blink";
 
   return (
     <box flexDirection="column" height={height} justifyContent="center" alignItems="center">
-      {wordmark.map((line, idx) => (
-        <text
-          // biome-ignore lint/suspicious/noArrayIndexKey: wordmark rows are positional
-          key={idx}
-          attributes={TextAttributes.BOLD}
-        >
-          {renderRow(line)}
-        </text>
-      ))}
+      {roomy ? (
+        <>
+          <text
+            wrapMode="none"
+            content={artText(
+              ((termWidth ?? 80) >= LOCKUP_WIDTH + 2 ? lockupRows : slabRows)(
+                { letters: 5, pressed: false },
+                palette,
+              ),
+            )}
+          />
+          <box height={1} />
+          <text
+            wrapMode="none"
+            content={artText(bunRows({ bake: 1, rise: 1, face, steam: null }, palette))}
+          />
+        </>
+      ) : (
+        <text wrapMode="none" content={artText([ovenMarkCells(palette)])} />
+      )}
       <box height={1} />
       <box
         flexDirection="column"
@@ -228,13 +177,10 @@ function ShutdownSplash({
         {SHUTDOWN_STEPS.map((label, i) => {
           if (i > phase) return null;
           const active = i === phase;
-          const done = i < phase;
-          const dotColor = done ? t.textFaint : active ? wordmarkColor : t.textFaint;
-          const textColor = done ? t.textFaint : active ? t.textPrimary : t.textFaint;
           return (
             <text key={label}>
-              <span fg={dotColor}>·</span>
-              <span fg={textColor}> {label}</span>
+              <span fg={active ? t.brand : t.textFaint}>{active ? "■" : "□"}</span>
+              <span fg={active ? t.textPrimary : t.textFaint}> {label}</span>
             </text>
           );
         })}
@@ -243,7 +189,7 @@ function ShutdownSplash({
             <box height={1} />
             <text>
               <span fg={t.textMuted}>resume </span>
-              <span fg={wordmarkColor}>baked --session {shortId}</span>
+              <span fg={t.brand}>baked --session {shortId}</span>
             </text>
           </>
         )}
@@ -404,6 +350,7 @@ export function App({
     () => mergeConfigs(globalConfig, projConfig),
     [globalConfig, projConfig],
   );
+  useEffect(() => setMotion(effectiveConfig.motion), [effectiveConfig.motion]);
 
   const tabMgr = useTabs((survivingIds) => {
     // A tab was closed — immediately drop it from the on-disk session so it
@@ -1233,9 +1180,7 @@ export function App({
         flexDirection="row"
       >
         <box flexShrink={0} flexDirection="row" gap={0}>
-          <text fg={t.brand} attributes={TextAttributes.BOLD}>
-            {icon("ghost")} baked
-          </text>
+          <text wrapMode="none" content={artText([ovenMarkCells(artPalette(t))])} />
           <text fg={t.textFaint}> v{CURRENT_VERSION}</text>
         </box>
         <box gap={1} flexShrink={1} flexDirection="row" justifyContent="center" overflow="hidden">
