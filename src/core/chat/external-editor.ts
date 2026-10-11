@@ -70,6 +70,8 @@ export interface EditTextOptions extends ResolveEditorOptions {
   resume?: () => void;
   /** Runs the editor and resolves with its exit code; replaceable in tests. */
   run?: (invocation: { cmd: string; args: string[]; shell: boolean }) => Promise<number | null>;
+  /** The temporary file's name, so the editor picks the right syntax; `prompt.md` by default. */
+  fileName?: string;
 }
 
 function runInherited(invocation: {
@@ -103,7 +105,7 @@ export async function editTextInEditor(
     };
   }
   const dir = await mkdtemp(join(tmpDir(), "baked-input-"));
-  const file = join(dir, "prompt.md");
+  const file = join(dir, opts.fileName ?? "prompt.md");
   let suspended = false;
   try {
     await writeFile(file, text, "utf8");
@@ -155,4 +157,23 @@ export function requestInputEditor(request: EditorRequest = {}): void {
       fn(request);
     } catch {}
   }
+}
+
+/** Stops and restarts drawing the terminal UI around an editor; set by the running TUI. */
+export interface TerminalHandoff {
+  suspend: () => void;
+  resume: () => void;
+}
+let terminalHandoff: TerminalHandoff | null = null;
+
+/** Registers how to hand the terminal to an editor; returns the unregister function. */
+export function setTerminalHandoff(handoff: TerminalHandoff): () => void {
+  terminalHandoff = handoff;
+  return () => {
+    if (terminalHandoff === handoff) terminalHandoff = null;
+  };
+}
+
+export function currentTerminalHandoff(): TerminalHandoff | null {
+  return terminalHandoff;
 }
