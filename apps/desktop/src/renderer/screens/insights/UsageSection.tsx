@@ -26,9 +26,18 @@ import {
   type UsageSlice,
 } from "./usage-model.js";
 import { useLoad } from "./useLoad.js";
-import "../../styles/insights.css";
 
 const RANGES = [7, 30, 90] as const;
+
+/** Numeric table cells. */
+const NUM = "text-right";
+const LEGEND_ITEM = "flex items-center gap-[6px]";
+const SWATCH = "h-[10px] w-[10px] rounded-[2px]";
+const CACHED = "bg-[color-mix(in_srgb,var(--accent)_50%,var(--bg))]";
+const FRESH = "bg-[var(--accent)]";
+const OUTPUT = "bg-[var(--accent-soft)]";
+const UNSPLIT = "bg-[var(--line-strong)]";
+const PARTIAL = "text-[11px] text-[color:var(--warn)] no-underline";
 type Scope = { kind: "run"; runId: string } | { kind: "days"; days: number };
 
 /** Runs read one by one when the backend has no project usage summary. */
@@ -100,7 +109,7 @@ function Cost({ slice }: { slice: Pick<UsageSlice, "costUsd" | "unpricedTokens" 
   const unpriced = slice.unpricedTokens ?? 0;
   if (unpriced > 0 && unpriced >= slice.tokens && !slice.costUsd)
     return (
-      <abbr className="use-partial" title="No price is known for these tokens">
+      <abbr className={PARTIAL} title="No price is known for these tokens">
         not priced
       </abbr>
     );
@@ -108,7 +117,7 @@ function Cost({ slice }: { slice: Pick<UsageSlice, "costUsd" | "unpricedTokens" 
     <>
       {usd(slice.costUsd)}
       {unpriced > 0 && slice.costUsd !== null && (
-        <abbr className="use-partial" title={`${tokens(unpriced)} tokens could not be priced`}>
+        <abbr className={PARTIAL} title={`${tokens(unpriced)} tokens could not be priced`}>
           {" "}
           partial
         </abbr>
@@ -119,34 +128,37 @@ function Cost({ slice }: { slice: Pick<UsageSlice, "costUsd" | "unpricedTokens" 
 
 function Figure({ label, value, note }: { label: string; value: string; note: string }) {
   return (
-    <div className="card use-figure">
-      <span className="use-figure-label">{label}</span>
-      <span className="use-figure-value mono">{value}</span>
-      <span className="use-figure-note">{note}</span>
+    <div className="card flex flex-col gap-[6px]">
+      <span className="text-[12px] text-dim-foreground">{label}</span>
+      <span className="mono text-[26px] text-foreground">{value}</span>
+      <span className="text-[12px] text-muted-foreground">{note}</span>
     </div>
   );
 }
 
 function Legend({ output, unsplit }: { output: boolean; unsplit: boolean }) {
   return (
-    <ul className="use-legend" aria-label="Legend">
-      <li>
-        <span className="use-swatch use-cached" aria-hidden="true" />
+    <ul
+      className="my-0 mr-0 ml-auto flex list-none flex-wrap gap-4 p-0 text-[12px] text-muted-foreground"
+      aria-label="Legend"
+    >
+      <li className={LEGEND_ITEM}>
+        <span className={`${SWATCH} ${CACHED}`} aria-hidden="true" />
         cache reads
       </li>
-      <li>
-        <span className="use-swatch use-fresh" aria-hidden="true" />
+      <li className={LEGEND_ITEM}>
+        <span className={`${SWATCH} ${FRESH}`} aria-hidden="true" />
         {output ? "uncached input" : "uncached input and output"}
       </li>
       {output && (
-        <li>
-          <span className="use-swatch use-output" aria-hidden="true" />
+        <li className={LEGEND_ITEM}>
+          <span className={`${SWATCH} ${OUTPUT}`} aria-hidden="true" />
           output
         </li>
       )}
       {unsplit && (
-        <li>
-          <span className="use-swatch use-unsplit" aria-hidden="true" />
+        <li className={LEGEND_ITEM}>
+          <span className={`${SWATCH} ${UNSPLIT}`} aria-hidden="true" />
           not split
         </li>
       )}
@@ -159,8 +171,8 @@ function StageChart({ slices }: { slices: UsageSlice[] }) {
   const output = slices.some((s) => s.output !== null);
   const unsplit = slices.some((s) => s.unsplit > 0);
   return (
-    <section className="card use-chart" aria-labelledby="use-stage-title">
-      <div className="use-chart-head">
+    <section className="card flex flex-col gap-3" aria-labelledby="use-stage-title">
+      <div className="flex flex-wrap items-center gap-4">
         <h2 id="use-stage-title" className="label">
           Tokens by stage
         </h2>
@@ -169,50 +181,55 @@ function StageChart({ slices }: { slices: UsageSlice[] }) {
       {slices.length === 0 ? (
         <p className="muted">No agent attempts match these filters.</p>
       ) : (
-        <div className="use-bars">
+        <div className="grid grid-cols-[110px_minmax(0,1fr)_70px] items-center gap-x-3 gap-y-2 text-[13px]">
           {slices.map((s) => (
-            <div key={s.key} className="use-bar-row">
-              <span className="use-bar-label">{stageLabel(s.key)}</span>
-              <div className="use-bar-track" aria-hidden="true">
-                <div className="use-bar" style={{ width: `${(s.tokens / max) * 100}%` }}>
-                  <span className="use-cached" style={{ flexGrow: s.cached }} />
-                  <span className="use-fresh" style={{ flexGrow: s.fresh }} />
+            <div key={s.key} className="contents">
+              <span className="text-soft-foreground">{stageLabel(s.key)}</span>
+              <div className="min-w-0" aria-hidden="true">
+                <div
+                  className="flex h-[14px] min-w-[2px] gap-px"
+                  style={{ width: `${(s.tokens / max) * 100}%` }}
+                >
+                  <span className={`basis-0 ${CACHED}`} style={{ flexGrow: s.cached }} />
+                  <span className={`basis-0 ${FRESH}`} style={{ flexGrow: s.fresh }} />
                   {s.output !== null && (
-                    <span className="use-output" style={{ flexGrow: s.output }} />
+                    <span className={`basis-0 ${OUTPUT}`} style={{ flexGrow: s.output }} />
                   )}
                   {s.unsplit > 0 && (
-                    <span className="use-unsplit" style={{ flexGrow: s.unsplit }} />
+                    <span className={`basis-0 ${UNSPLIT}`} style={{ flexGrow: s.unsplit }} />
                   )}
                 </div>
               </div>
-              <span className="use-bar-value mono">{tokens(s.tokens)}</span>
+              <span className="mono text-right text-muted-foreground">{tokens(s.tokens)}</span>
             </div>
           ))}
         </div>
       )}
       {slices.length > 0 && (
-        <details className="use-table-fallback">
-          <summary>Show as a table</summary>
-          <table className="table">
+        <details>
+          <summary className="cursor-pointer text-[12px] text-muted-foreground">
+            Show as a table
+          </summary>
+          <table className="table mt-2">
             <thead>
               <tr>
                 <th>Stage</th>
-                <th className="num">Cache reads</th>
-                <th className="num">{output ? "Uncached input" : "Uncached input and output"}</th>
-                {output && <th className="num">Output</th>}
-                {unsplit && <th className="num">Not split</th>}
-                <th className="num">Total</th>
+                <th className={NUM}>Cache reads</th>
+                <th className={NUM}>{output ? "Uncached input" : "Uncached input and output"}</th>
+                {output && <th className={NUM}>Output</th>}
+                {unsplit && <th className={NUM}>Not split</th>}
+                <th className={NUM}>Total</th>
               </tr>
             </thead>
             <tbody className="mono">
               {slices.map((s) => (
                 <tr key={s.key}>
                   <td>{stageLabel(s.key)}</td>
-                  <td className="num">{tokens(s.cached)}</td>
-                  <td className="num">{tokens(s.fresh)}</td>
-                  {output && <td className="num">{s.output === null ? "–" : tokens(s.output)}</td>}
-                  {unsplit && <td className="num">{tokens(s.unsplit)}</td>}
-                  <td className="num">{tokens(s.tokens)}</td>
+                  <td className={NUM}>{tokens(s.cached)}</td>
+                  <td className={NUM}>{tokens(s.fresh)}</td>
+                  {output && <td className={NUM}>{s.output === null ? "–" : tokens(s.output)}</td>}
+                  {unsplit && <td className={NUM}>{tokens(s.unsplit)}</td>}
+                  <td className={NUM}>{tokens(s.tokens)}</td>
                 </tr>
               ))}
             </tbody>
@@ -242,14 +259,14 @@ function FigureCells({
   const known = (value: number | null): string => (value === null ? "–" : tokens(value));
   return (
     <>
-      <td className="num">{slice.attempts}</td>
-      <td className="num">{slice.runs}</td>
-      <td className="num">{tokens(slice.tokens)}</td>
-      {columns.input && <td className="num">{known(slice.input)}</td>}
-      <td className="num">{tokens(slice.cached)}</td>
-      {columns.output && <td className="num">{known(slice.output)}</td>}
+      <td className={NUM}>{slice.attempts}</td>
+      <td className={NUM}>{slice.runs}</td>
+      <td className={NUM}>{tokens(slice.tokens)}</td>
+      {columns.input && <td className={NUM}>{known(slice.input)}</td>}
+      <td className={NUM}>{tokens(slice.cached)}</td>
+      {columns.output && <td className={NUM}>{known(slice.output)}</td>}
       {columns.cost && (
-        <td className="num">
+        <td className={NUM}>
           <Cost slice={slice} />
         </td>
       )}
@@ -260,13 +277,13 @@ function FigureCells({
 function FigureHeads({ columns }: { columns: ReturnType<typeof columnsOf> }) {
   return (
     <>
-      <th className="num">Attempts</th>
-      <th className="num">Runs</th>
-      <th className="num">Tokens</th>
-      {columns.input && <th className="num">Input</th>}
-      <th className="num">Cache reads</th>
-      {columns.output && <th className="num">Output</th>}
-      {columns.cost && <th className="num">USD (estimate)</th>}
+      <th className={NUM}>Attempts</th>
+      <th className={NUM}>Runs</th>
+      <th className={NUM}>Tokens</th>
+      {columns.input && <th className={NUM}>Input</th>}
+      <th className={NUM}>Cache reads</th>
+      {columns.output && <th className={NUM}>Output</th>}
+      {columns.cost && <th className={NUM}>USD (estimate)</th>}
     </>
   );
 }
@@ -274,14 +291,14 @@ function FigureHeads({ columns }: { columns: ReturnType<typeof columnsOf> }) {
 function ModelTable({ slices }: { slices: UsageSlice[] }) {
   const columns = columnsOf(slices);
   return (
-    <section className="card use-models" aria-labelledby="use-model-title">
+    <section className="card flex flex-col gap-3" aria-labelledby="use-model-title">
       <h2 id="use-model-title" className="label">
         By model
       </h2>
       {slices.length === 0 ? (
         <p className="muted">No agent attempts match these filters.</p>
       ) : (
-        <div className="use-scroll">
+        <div className="overflow-x-auto">
           <table className="table">
             <thead>
               <tr>
@@ -292,7 +309,7 @@ function ModelTable({ slices }: { slices: UsageSlice[] }) {
             <tbody className="mono">
               {slices.map((s) => (
                 <tr key={s.key}>
-                  <td>{s.key}</td>
+                  <td className="text-foreground">{s.key}</td>
                   <FigureCells slice={s} columns={columns} />
                 </tr>
               ))}
@@ -307,11 +324,11 @@ function ModelTable({ slices }: { slices: UsageSlice[] }) {
 function StageModelTable({ slices }: { slices: StageModelSlice[] }) {
   const columns = columnsOf(slices);
   return (
-    <section className="card use-models" aria-labelledby="use-cross-title">
+    <section className="card flex flex-col gap-3" aria-labelledby="use-cross-title">
       <h2 id="use-cross-title" className="label">
         By stage and model
       </h2>
-      <div className="use-scroll">
+      <div className="overflow-x-auto">
         <table className="table">
           <thead>
             <tr>
@@ -323,7 +340,9 @@ function StageModelTable({ slices }: { slices: StageModelSlice[] }) {
           <tbody className="mono">
             {slices.map((s, i) => (
               <tr key={s.key}>
-                <td>{i > 0 && slices[i - 1]?.stage === s.stage ? "" : stageLabel(s.stage)}</td>
+                <td className="text-foreground">
+                  {i > 0 && slices[i - 1]?.stage === s.stage ? "" : stageLabel(s.stage)}
+                </td>
                 <td>{s.model}</td>
                 <FigureCells slice={s} columns={columns} />
               </tr>
@@ -348,7 +367,7 @@ function costNote(report: UsageReport, source: Source): string {
 function Figures({ report, source }: { report: UsageReport; source: Source }) {
   const split = report.inputTokens !== null && report.outputTokens !== null;
   return (
-    <div className="use-figures">
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
       <Figure
         label="Total tokens"
         value={tokens(report.totalTokens)}
@@ -444,8 +463,8 @@ export function UsageSection({ project, id }: SectionProps) {
     }
   }, [id]);
   return (
-    <div className="use-page">
-      <div className="use-toolbar">
+    <div className="flex flex-col gap-[18px]">
+      <div className="flex flex-wrap items-center gap-2">
         <fieldset className="seg-group">
           <legend className="sr-only">Range</legend>
           {id && (

@@ -8,11 +8,19 @@ import {
 } from "../../client/attention.js";
 import { projectHref } from "../../router.js";
 import {
+  ACTIONS,
   ActionError,
+  ASIDE,
+  BTN,
   DetailHeader,
+  FACTS,
   Fact,
+  LEDE,
+  LIST,
   Loading,
+  NOTE,
   RejectForm,
+  ROW,
   useAction,
   useLoad,
 } from "./common.js";
@@ -46,13 +54,13 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
           <>
             <DetailHeader
               item={item}
-              aside={<span className="att-aside">{operationsLine(plan.operations)}</span>}
+              aside={<span className={ASIDE}>{operationsLine(plan.operations)}</span>}
             />
-            <p className="att-lede">
+            <p className={LEDE}>
               Nothing in Git changes until you approve this exact plan. Your other uncommitted files
               stay as they are.
             </p>
-            <div className="att-facts">
+            <div className={FACTS}>
               <Fact label="Branch">
                 <span className="mono">{plan.branch ?? "–"}</span>
               </Fact>
@@ -65,35 +73,37 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                 {pr ? (pr.draft ? "Draft" : "Ready for review") : "None"}
               </Fact>
             </div>
-            <section className="card att-list" aria-label="Files in the commit">
+            <section className={LIST} aria-label="Files in the commit">
               <span className="label">Files in the commit</span>
               {(plan.files ?? []).map((line) => {
                 const file = deliveryFile(line);
                 return (
-                  <div key={line} className="att-row">
+                  <div key={line} className={ROW}>
                     <span className="mono">{file.path}</span>
                     <span className="muted">{file.action}</span>
                   </div>
                 );
               })}
               {(plan.excluded ?? []).map((excluded) => (
-                <div key={excluded.path} className="att-row muted">
+                <div key={excluded.path} className={`${ROW} muted`}>
                   <span className="mono">{excluded.path}</span>
                   <span>{exclusionReason(excluded.reason)}</span>
                 </div>
               ))}
             </section>
             {plan.userChanges?.length ? (
-              <p className="att-note">
+              <p className={NOTE}>
                 Left untouched: {plan.userChanges.length} other uncommitted{" "}
                 {plan.userChanges.length === 1 ? "file" : "files"} (
                 <span className="mono">{plan.userChanges.slice(0, 3).join(", ")}</span>
                 {plan.userChanges.length > 3 ? ", …" : ""}).
               </p>
             ) : null}
-            <section className="card att-list" aria-label="Commit message">
+            <section className={LIST} aria-label="Commit message">
               <span className="label">Commit message</span>
-              <span className="att-message">{plan.commitMessage ?? "–"}</span>
+              <span className="whitespace-pre-wrap text-[13px] text-soft-foreground">
+                {plan.commitMessage ?? "–"}
+              </span>
               {pr && pr.title !== plan.commitMessage && (
                 <span className="muted">
                   Pull request: {pr.title} ({pr.repository})
@@ -101,10 +111,10 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
               )}
             </section>
             <ActionError error={action.error} />
-            <div className="att-actions">
+            <div className={ACTIONS}>
               <button
                 type="button"
-                className="btn-primary att-btn"
+                className={`btn-primary ${BTN}`}
                 disabled={action.busy}
                 onClick={() =>
                   void action.run(async () => {
@@ -121,7 +131,7 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
               {pr && (
                 <button
                   type="button"
-                  className="btn att-btn"
+                  className={`btn ${BTN}`}
                   disabled={action.busy}
                   onClick={() =>
                     void action.run(async () => {
@@ -148,7 +158,7 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                   })
                 }
               />
-              <a className="btn att-btn" href={projectHref(item.projectKey, "runs", runId)}>
+              <a className={`btn ${BTN}`} href={projectHref(item.projectKey, "runs", runId)}>
                 Open run
               </a>
             </div>
