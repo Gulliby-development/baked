@@ -144,7 +144,12 @@ import {
   stageKind,
   stageProfileId,
 } from "./v2/runtime.js";
-import { contradictsFacts, type WorkspaceFacts, workspaceFacts } from "./workspace-facts.js";
+import {
+  contradictsFacts,
+  hasNoSource,
+  type WorkspaceFacts,
+  workspaceFacts,
+} from "./workspace-facts.js";
 import {
   commitRunBranch,
   createTaskWorktree,
@@ -496,8 +501,11 @@ export class WorkflowScheduler {
                       ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
                     ];
                     if (scopeAdvised) return problems;
-                    const advice = planScopeAdvice(policy, parsed.data.taskGraph, (path) =>
-                      existsSync(join(runRoot(this.store.workspace, state), path)),
+                    const advice = planScopeAdvice(
+                      policy,
+                      parsed.data.taskGraph,
+                      (path) => existsSync(join(runRoot(this.store.workspace, state), path)),
+                      this.baselineScaffold(runId, state),
                     );
                     if (advice.length) scopeAdvised = true;
                     return [...problems, ...advice];
@@ -733,6 +741,7 @@ export class WorkflowScheduler {
                         ),
                         {
                           hostSplitTasks: state.hostSplitTasks,
+                          scaffold: this.baselineScaffold(runId, state),
                           exists: (path) =>
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
@@ -1219,6 +1228,20 @@ export class WorkflowScheduler {
       ),
     );
     return split;
+  }
+  /** Whether the workspace the run started from held no source files (empty or a scaffold). */
+  private baselineScaffold(runId: string, state: RuntimeState): boolean {
+    const first = this.store
+      .artifacts(runId)
+      .find((artifact) => artifact.logical_path === "facts/workspace.json");
+    try {
+      const facts = first
+        ? (JSON.parse(this.store.readArtifact(runId, first.id)) as Pick<WorkspaceFacts, "kind">)
+        : workspaceFacts(runRoot(this.store.workspace, state));
+      return hasNoSource(facts);
+    } catch {
+      return false;
+    }
   }
   /**
    * The host inventory of the workspace the run starts from. It is stored as `facts/workspace.json`
