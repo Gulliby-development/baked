@@ -31,6 +31,7 @@ import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
+import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { ProcessScope } from "./process-scope.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { isTransient } from "./retry.js";
@@ -139,11 +140,11 @@ export class NativeAgentExecutor implements AgentExecutor {
         onApproveDestructive: async () => writer && request.task !== undefined,
       });
       // An attempt with host tools gets those and, from the registry, only read-only tools.
-      const rawTools = request.hostTools
+      const rawTools: Record<string, unknown> = request.hostTools
         ? Object.fromEntries(
             Object.entries(registryTools).filter(([name]) => pureWorkflowTools.has(name)),
           )
-        : registryTools;
+        : { ...registryTools, ...(await this.mcpTools(request.profile.allowedTools, policy)) };
       const guard = new WorkflowToolPolicy(
         this.store,
         this.leases,
@@ -156,11 +157,15 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
       const available: ToolSet = {};
       for (const [name, definition] of Object.entries(rawTools)) {
-        if (!request.profile.allowedTools.includes(name) || !policy.allowedTools.includes(name))
+        if (
+          !toolListAllows(request.profile.allowedTools, name) ||
+          !toolListAllows(policy.allowedTools, name)
+        )
           continue;
         const original = definition as Tool;
         if (!original.execute) continue;
         const execute = original.execute;
+        const mcp = isMcpToolName(name);
         available[name] = deriveTool(original, {
           ...(typeof original.description === "string"
             ? { description: withoutAstEditHint(original.description) }
@@ -169,9 +174,9 @@ export class NativeAgentExecutor implements AgentExecutor {
             const args = input as Record<string, unknown>;
             const normalized = { ...args };
             for (const key of ["path", "file", "from", "to"])
-              if (typeof args[key] === "string")
+              if (!mcp && typeof args[key] === "string")
                 normalized[key] = workspacePath(root, guard.path(args[key]));
-            if (Array.isArray(args.files))
+            if (!mcp && Array.isArray(args.files))
               normalized.files = args.files.map((f: unknown) =>
                 typeof f === "string"
                   ? workspacePath(root, guard.path(f))
@@ -586,6 +591,26 @@ export class NativeAgentExecutor implements AgentExecutor {
     } finally {
       context.dispose({ preserveSharedIO: true });
     }
+  }
+  /**
+   * MCP tools that both the profile and the run policy grant. Only the servers those grants name
+   * are connected; a server that fails to connect contributes no tools.
+   */
+  private async mcpTools(profileTools: readonly string[], policy: RunPolicy): Promise<ToolSet> {
+    const servers = grantedMcpServers(
+      this.config.mcpServers ?? [],
+      profileTools,
+      policy.allowedTools,
+    );
+    if (!servers.length) return {};
+    const { getMCPManager } = await import("../mcp/index.js");
+    const manager = getMCPManager();
+    await manager.ensureConnected(servers);
+    return Object.fromEntries(
+      Object.entries(manager.getTools()).filter(
+        ([name]) => toolListAllows(profileTools, name) && toolListAllows(policy.allowedTools, name),
+      ),
+    );
   }
   /** Resolves once the owned context has closed its databases, so its directory can be removed. */
   dispose(): Promise<void> {
