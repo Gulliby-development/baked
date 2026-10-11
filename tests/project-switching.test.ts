@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import {
   addKnownProject,
@@ -92,20 +92,23 @@ function known(path: string, over: Partial<KnownProject> = {}): KnownProject {
 }
 
 describe("badge aggregation", () => {
+  // Known projects hold resolved paths (a drive letter on Windows).
+  const at = (path: string) => resolve(path);
+
   test("reads pinned projects and the most recent others, never the current or missing ones", () => {
     const projects = [
-      known("/p/current", { lastOpenedAt: 100 }),
-      known("/p/pinned-old", { pinned: true, lastOpenedAt: 1 }),
-      known("/p/gone", { exists: false, lastOpenedAt: 99 }),
-      ...Array.from({ length: 12 }, (_, i) => known(`/p/r${i}`, { lastOpenedAt: 50 - i })),
+      known(at("/p/current"), { lastOpenedAt: 100 }),
+      known(at("/p/pinned-old"), { pinned: true, lastOpenedAt: 1 }),
+      known(at("/p/gone"), { exists: false, lastOpenedAt: 99 }),
+      ...Array.from({ length: 12 }, (_, i) => known(at(`/p/r${i}`), { lastOpenedAt: 50 - i })),
     ];
     const picked = badgeProjects(projects, "/p/current", 10).map((p) => p.path);
-    expect(picked[0]).toBe("/p/pinned-old");
+    expect(picked[0]).toBe(at("/p/pinned-old"));
     expect(picked).toHaveLength(11);
-    expect(picked).not.toContain("/p/current");
-    expect(picked).not.toContain("/p/gone");
-    expect(picked).toContain("/p/r9");
-    expect(picked).not.toContain("/p/r10");
+    expect(picked).not.toContain(at("/p/current"));
+    expect(picked).not.toContain(at("/p/gone"));
+    expect(picked).toContain(at("/p/r9"));
+    expect(picked).not.toContain(at("/p/r10"));
   });
 
   test("badge text", () => {
