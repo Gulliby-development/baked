@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages) and `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) and `settings` (`GET|PATCH /v1/settings`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -123,7 +123,7 @@ In `plan` mode the agent works as in the terminal UI's [plan mode](../guide.md#m
 | `POST /v1/sessions/ID/fork` | `{atMessageId?, rollbackFiles?, force?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent); with `rollbackFiles`, plus `rollback` (below). 409 `SESSION_BUSY` with `rollbackFiles` while any turn runs, 409 `ROLLBACK_UNAVAILABLE` when files need restoring and the workspace is not a Git repository or cannot be backed up |
 | `POST /v1/sessions/ID/undo` | `{toCheckpoint?, force?}` | `SessionDetail` plus `rollback` (below) after dropping the last turn, or every turn after checkpoint `toCheckpoint` (0 drops them all), and restoring the files they edited. 409 `SESSION_BUSY` while any turn of the project runs, 409 `NOTHING_TO_UNDO` without turns, 400 when `toCheckpoint` is not before the last turn, 409 `ROLLBACK_UNAVAILABLE` when the workspace cannot be backed up |
 | `POST /v1/sessions/ID/redo` | `{force?}` | `SessionDetail` plus `rollback` after putting back the oldest undone turn and restoring the files it edited to their state after that turn. 409 `SESSION_BUSY` as for undo, 409 `NOTHING_TO_REDO` when nothing was undone |
-| `POST /v1/sessions/ID/messages` | `{text?, images?}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the message is steered into it at its next step. A message needs text, images or both; 400 for invalid [images](#images) |
+| `POST /v1/sessions/ID/messages` | `{text?, images?}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the message is steered into it at its next step. A message needs text, images or both; 400 for invalid [images](#images). Text that starts with a [custom slash command](../custom-commands.md) (`/fix-ci lint`) is expanded first, here and on `POST /v1/sessions`; the stored message and `queued` hold the expanded prompt, and an unknown `/name` is sent as typed |
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}`, `{answer: string}` or, for a `plan-review`, `{action: "execute" \| "clear-execute" \| "revise" \| "cancel", feedback?: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended, 400 for a body that does not fit the prompt's kind or a `revise` without `feedback`. `answer: ""` skips a question that allows it |
 | `POST /v1/sessions/ID/compact` | `{}` | 202 `{compactionId}`; the compaction runs in the background and reports with `compaction-start` and `compaction-done`. 409 `SESSION_BUSY` while a turn or a compaction runs, 409 `NOTHING_TO_COMPACT` when the conversation is too short, 501 `NOT_SUPPORTED` when the server cannot compact |
@@ -198,7 +198,7 @@ The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/I
 
 ## Workflow runs (exists, gaps filled by B)
 
-Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `stages[]` with `id`, `type`, `consumes`, `produces` and `human` for a person's approval, and `loops[]` with `from`, `to`, `on` and `carries` for transitions back to the same or an earlier stage; schema 1 definitions are described through their v2 upgrade), `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers), `.../usage`, `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. `POST /v1/workflow/runs` also takes `modelStrict: true` (the run model overrides configured model routes) and the run view has `routing` with the effective model of each role and stage and the routing warnings. Quick tasks are runs started with `workflow: "quick"`. `POST /v1/workflow/runs` takes `issue` (a GitHub issue URL, `OWNER/NAME#N` or `#N`, as `--issue`); with it `feature` and `prompt` are optional, the request comes from the issue and the run's delivery pull request closes it ([starting from a GitHub issue](../workflows/runtime.md#starting-from-a-github-issue)).
+Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `stages[]` with `id`, `type`, `consumes`, `produces` and `human` for a person's approval, and `loops[]` with `from`, `to`, `on` and `carries` for transitions back to the same or an earlier stage; schema 1 definitions are described through their v2 upgrade), `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers, and `worktree`: `{path, branch, present}` for a worktree run, where `present` turns false once delivery or `discard-worktree` removed it, or null for a run in the working copy), `.../usage`, `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. `POST /v1/workflow/runs` also takes `modelStrict: true` (the run model overrides configured model routes) and the run view has `routing` with the effective model of each role and stage and the routing warnings. Quick tasks are runs started with `workflow: "quick"`. `POST /v1/workflow/runs` takes `issue` (a GitHub issue URL, `OWNER/NAME#N` or `#N`, as `--issue`); with it `feature` and `prompt` are optional, the request comes from the issue and the run's delivery pull request closes it ([starting from a GitHub issue](../workflows/runtime.md#starting-from-a-github-issue)).
 
 B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations. The CLI's `approve`, `answer` and `evidence` continue the run after the decision unless `--no-resume` is given; the API endpoints for the same decisions (`approve`, `answer`, `evidence`) only record it, and the client calls `resume`.
 
@@ -280,6 +280,39 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
 
+## Chat settings
+
+The chat settings the terminal UI edits in its pickers (`/provider-settings`, `/router`, `/model-scope`, `/tools`, `/web-search`, `/agent-features`, `/repo-map`, `/compaction`, `/timeouts`, `/context-window`) are described once in `src/core/settings/schema.ts`. The server validates changes against that schema and the desktop draws its settings pages from it, so a setting added there shows up on every surface. Unlike `PATCH /v1/config`, these routes check every value and write nested keys without replacing their neighbours.
+
+| Method and path | Body | Result |
+| --- | --- | --- |
+| `GET /v1/settings` | | `SettingsView` below |
+| `PATCH /v1/settings` | `{scope: "global" \| "project", set?: {[id]: value}, reset?: id[]}` | `SettingsView` after the change; the running server uses it at once. A `null` model or number unsets it. `reset` removes the setting from that scope's file, so the other scope or the default applies. A `secret` setting takes the key itself in `set` and is stored in the secret store (keychain or `secrets.json`) whatever the scope; `reset` deletes it. 400 `INVALID_SETTING` names the setting for an unknown ID, a value the schema refuses, or a scope the setting is not saved in |
+
+```ts
+interface SettingsView {
+  pages: { id; title; description; command }[];         // command: the terminal command for the same settings
+  settings: SettingDefinition[];                           // in display order
+  values: { [id]: { id; value; source: "project" | "global" | "default" | "env" | "keychain" | "file"; global?; project? } };
+  catalogs: { tools: { name; description }[] };            // choices of string-list settings
+}
+interface SettingDefinition {
+  id: string;            // dotted config path, e.g. "performance.effort"; a secret's store key, e.g. "brave-api-key"
+  page; section; label; help: string;
+  scopes: ("global" | "project")[];
+  enabledWhen?: { id; values: (string | boolean)[] };   // only meaningful while that setting has one of these values
+  type: "boolean" | "enum" | "number" | "model" | "string-list" | "model-list-map" | "model-number-map" | "secret";
+  default: unknown;
+  options?: { value; label; help? }[];                     // enum
+  min?; max?; step?; integer?; nullable?;                  // number; model-number-map has min and max
+  display?: { unit; factor };                              // number shown as value / factor, e.g. ms as s
+  catalog?: "tools";                                       // string-list
+  envVar?: string;                                         // secret: the environment variable that also supplies it
+}
+```
+
+A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`.
+
 ## Code graph
 
 The graph the repository map builds (`.baked/repomap.db`), grouped for drawing. The server reads the database read-only, so a scan in progress never waits on it, and rebuilds its grouped copy when the database changes. The first request starts indexing when no chat or run has started it yet. The grouping is in `src/core/intelligence/code-graph-model.ts`; the terminal `/graph` view uses the same.
@@ -314,12 +347,13 @@ interface GraphView {
 | Needs you | `GET /v1/attention` (stream) of every open project; answers go to the owning run, initiative or session |
 | Chat session | `/v1/sessions/*`, `GET /v1/models`, `GET /v1/mentions`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
 | Quick task, New run | `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET /v1/workflow/definitions`, `POST /v1/workflow/runs` |
-| Workflow run, Parallel writers | `GET /v1/workflow/runs/RUN_ID` and its events, artifacts, usage; approve, reject, answer, pause, resume, extend, reroute (the Model panel) |
+| Workflow run, Parallel writers | `GET /v1/workflow/runs/RUN_ID` and its events, artifacts, usage; approve, reject, answer, pause, resume, cancel, undo, extend, reroute (the Model panel); `recover` from the recovery card, `fork` and `discard-worktree` from the run controls |
 | AI acceptance gate | run snapshot requests and artifacts; `evidence` for manual criteria; resume to re-run |
 | Delivery (in Needs you) | `deliver`, `approve`, `deliver/execute` |
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
+| Settings: chat settings pages | `GET|PATCH /v1/settings`, `GET /v1/models` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Run memory | `GET\|POST /v1/workflow/memory` |
 | Chat memory | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |

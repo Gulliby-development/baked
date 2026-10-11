@@ -33,6 +33,7 @@ import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
 import { readRoutingSummary } from "../core/workflows/view.js";
+import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
@@ -261,6 +262,7 @@ export async function executeWorkflowCommand(
       return {
         ...(await service.get(runId)),
         requests: service.store.requests(runId),
+        worktree: worktreeView(service.workspace, service.store.state(runId)),
         routing: readRoutingSummary(service.store, runId),
       };
     case "list":

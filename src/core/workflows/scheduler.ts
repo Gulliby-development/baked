@@ -931,6 +931,7 @@ export class WorkflowScheduler {
                 profiles,
                 signal,
                 v2 ? this.v2Reviewers(runId, state, v2) : this.v1Reviewers(state, policy),
+                !v2 || v2.definition.stages.some((s) => s.type === "reflection"),
               );
               if (failures.length) {
                 repairFindings = { findings: failures, kind: "repair" };
@@ -1001,7 +1002,17 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  { evidence: this.evidenceContext(runId, state) },
+                  {
+                    evidence: this.evidenceContext(runId, state),
+                    ...(Object.keys(state.reviewGaps).length
+                      ? {
+                          evidenceGaps: {
+                            note: "A required reviewer could not establish these criteria from the code and the evidence. For each automated one, name the test or declared check that would establish it so a convergence task adds it; do not pass a criterion without evidence.",
+                            byReviewer: state.reviewGaps,
+                          },
+                        }
+                      : {}),
+                  },
                   signal,
                   undefined,
                   0,
@@ -1238,7 +1249,9 @@ export class WorkflowScheduler {
                     ? "no_progress"
                     : isStoreError(fault)
                       ? "storage_failure"
-                      : "invalid_output";
+                      : code === "STALE_DECISION" || code === "ARTIFACT_MISSING"
+                        ? "host_state"
+                        : "invalid_output";
         this.store.artifact(
           runId,
           "diagnostic",
@@ -2213,7 +2226,10 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
+        (result.outcome === "implemented" &&
+          changed.length === 0 &&
+          task.writes.length > 0 &&
+          !(await this.correctionSatisfied(runId, child, policy, task, result, signal, root)))
       ) {
         if (changed.length > 0 && this.continueAtCap(runId, state, child, task)) {
           // The task is ready again and the next pass of the task loop continues it.
@@ -2597,7 +2613,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" && changed.length === 0)
+        (result.outcome === "implemented" &&
+          changed.length === 0 &&
+          !(await this.correctionSatisfied(runId, entry.child, policy, task, result, signal, root)))
       )
         return {
           kind: "rejected",
@@ -3012,6 +3030,45 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     this.leases.releaseOne(entry.lease());
   }
   /** Runs one task check in `root` under its own host attempt. */
+  /**
+   * A corrective task whose attempt changed nothing is satisfied, not blocked, when the checks it
+   * was created for pass on the current files: a sibling task or an earlier correction already
+   * fixed the cause (zoneslot 51f9d664 T007 and md-site 93fbee70 T010 reported passing tests and
+   * stopped the run). The checks are the task's own and the ones its findings name.
+   */
+  private async correctionSatisfied(
+    runId: string,
+    child: string,
+    policy: RunPolicy,
+    task: Task,
+    result: { taskId: string; outcome: string; unresolved: string[] },
+    signal: AbortSignal,
+    root: string,
+  ): Promise<boolean> {
+    if (
+      task.origin === "planned" ||
+      result.taskId !== task.id ||
+      result.outcome !== "implemented" ||
+      result.unresolved.length > 0
+    )
+      return false;
+    const named = new Set(
+      this.store
+        .findings(runId)
+        .filter((f) => task.findingIds.includes(f.id))
+        .map((f) => /^Required check (\S+) failed$/.exec(JSON.parse(f.body_json).claim)?.[1])
+        .filter((id): id is string => Boolean(id)),
+    );
+    const checks = policy.checks.filter(
+      (c) => c.required && (named.has(c.id) || taskChecks(policy, task).some((t) => t.id === c.id)),
+    );
+    if (!checks.length) return false;
+    for (const check of checks) {
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status !== "passed") return false;
+    }
+    return true;
+  }
   private async runTaskCheck(
     runId: string,
     child: string,
@@ -3166,6 +3223,23 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       });
     }
   }
+  /**
+   * A finding "Required check X failed" is superseded by a later passing run of X: its evidence
+   * no longer describes the files. Closing it keeps a corrective task that the passing run made
+   * moot from being read as an open defect, whatever the other checks report.
+   */
+  private resolveCoveredFindings(runId: string, passedIds: string[]): void {
+    if (!passedIds.length) return;
+    const claims = new Set(passedIds.map((id) => `Required check ${id} failed`));
+    this.store.transaction(() => {
+      for (const finding of this.store.findings(runId))
+        if (
+          ["open", "confirmed"].includes(finding.status) &&
+          claims.has(JSON.parse(finding.body_json).claim)
+        )
+          this.store.findingStatus(runId, finding.id, "resolved");
+    });
+  }
   private async runChecks(
     runId: string,
     stepId: string,
@@ -3177,6 +3251,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     await this.snapshot(runId, state, policy, signal);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
+    const passedIds: string[] = [];
     // A failure is repaired first; the next pass reruns every check, the inconclusive one too.
     let inconclusive: string | undefined;
     for (const check of policy.checks) {
@@ -3189,6 +3264,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      if (result.status === "passed") passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if (result.status === "failed" && check.required) {
         failedIds.push(check.id);
@@ -3209,6 +3285,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         );
       }
     }
+    this.resolveCoveredFindings(runId, passedIds);
     if (
       failures.length &&
       !fixed &&
@@ -3438,6 +3515,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     profiles: AgentProfile[],
     signal: AbortSignal,
     reviewers: Reviewer[],
+    routeGaps = false,
   ): Promise<Review["findings"]> {
     if (!state.spec || !state.snapshotId || !state.workspaceHash)
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
@@ -3450,7 +3528,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const executables = reproExecutables(policy.checks);
     const repro = (r: Repro) =>
       runRepro(this.processes, r, {
-        root: this.store.workspace,
+        root: runRoot(this.store.workspace, state),
         executables,
         generated: generatedPaths(policy),
         signal,
@@ -3464,37 +3542,61 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
       const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
-      const result = ReviewSchema.parse(
-        await this.call(
-          runId,
-          child,
-          state,
-          policy,
-          profile,
-          { dimension: reviewer.dimension, evidence: this.evidenceContext(runId, state) },
-          signal,
-          undefined,
-          0,
-          (output) =>
-            ReviewSchema.safeParse(output).success
-              ? reviewProblems(
-                  this.store,
-                  runId,
-                  reviewSnapshotId,
-                  reviewSnapshotHash,
-                  reviewSpec,
-                  output as Review,
-                )
-              : [],
-          undefined,
-          executables.length && profile.allowedTools.includes("run_repro")
-            ? () => ({ run_repro: reproTool(executables, repro) })
-            : undefined,
-        ),
-      );
-      // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
-      // inconclusive, and the converge stage settles coverage.
-      completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, result);
+      const ask = async (extra: Record<string, unknown>): Promise<Review> => {
+        const answer = ReviewSchema.parse(
+          await this.call(
+            runId,
+            child,
+            state,
+            policy,
+            profile,
+            {
+              dimension: reviewer.dimension,
+              evidence: this.evidenceContext(runId, state),
+              ...extra,
+            },
+            signal,
+            undefined,
+            0,
+            (output) =>
+              ReviewSchema.safeParse(output).success
+                ? reviewProblems(
+                    this.store,
+                    runId,
+                    reviewSnapshotId,
+                    reviewSnapshotHash,
+                    reviewSpec,
+                    output as Review,
+                  )
+                : [],
+            undefined,
+            executables.length && profile.allowedTools.includes("run_repro")
+              ? () => ({ run_repro: reproTool(executables, repro) })
+              : undefined,
+          ),
+        );
+        // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
+        // inconclusive, and the converge stage settles coverage.
+        completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, answer);
+        return answer;
+      };
+      let result = await ask({});
+      if (result.verdict === "inconclusive" && reviewer.required) {
+        // One more question with the criteria it left open: a reviewer that sees the list often
+        // settles them, or says what evidence would (endfix 2295dbbd, AC-001 and AC-005).
+        const open = result.coverage.filter((c) => c.verdict === "inconclusive");
+        if (open.length) {
+          result = await ask({
+            inconclusiveCriteria: {
+              note: "Your review was inconclusive on these criteria. Settle each from the code and the evidence, using run_repro where it helps, or say in the explanation which test or check would establish it. Do not leave a criterion inconclusive without a reason.",
+              criteria: open.map((c) => ({
+                criterionId: c.criterionId,
+                explanation: c.explanation,
+              })),
+            },
+          });
+        }
+      }
       validateReview(
         this.store,
         runId,
@@ -3504,8 +3606,19 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result,
         false,
       );
-      if (result.verdict === "inconclusive" && reviewer.required)
-        throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
+      if (result.verdict === "inconclusive" && reviewer.required) {
+        // Criteria no review can establish go to the converge stage as evidence gaps, which adds
+        // a test or declared check as a convergence task; without such a stage, or when the
+        // verdict has no criterion behind it, the run blocks as before.
+        const gaps = result.coverage.filter((c) => c.verdict === "inconclusive");
+        if (!routeGaps || !gaps.length)
+          throw new WorkflowFault("OUTPUT_INVALID", `${reviewer.dimension} review inconclusive`);
+        state.reviewGaps[reviewer.key] = gaps.map((c) => ({
+          criterionId: c.criterionId,
+          explanation: c.explanation,
+        }));
+        result.verdict = result.findings.length ? "changes_requested" : "pass";
+      } else delete state.reviewGaps[reviewer.key];
       this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
       return { reviewer, result };
     };
@@ -3758,6 +3871,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     ];
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
+    const passedIds: string[] = [];
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
@@ -3768,6 +3882,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         attempts: result.attempts,
         flaky: result.flaky,
       });
+      if (result.status === "passed") passedIds.push(check.id);
       if (!check.required || result.status === "passed") continue;
       if (result.status === "inconclusive") {
         inconclusive ??= check.id;
@@ -3795,6 +3910,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         ),
       );
     }
+    this.resolveCoveredFindings(runId, passedIds);
     if (
       failures.length &&
       !fixed &&
