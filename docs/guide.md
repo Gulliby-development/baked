@@ -169,7 +169,7 @@ The agent can search the web and read pages; each search asks for approval. `/we
 A project is any folder BAKED was opened in. Each folder keeps its sessions and workflow runs in its own `.baked/`, so nothing moves when you switch.
 
 - **`/projects`** or **`Alt+O`** lists known folders with their sessions, active workflow runs and requests waiting for you. Pinned folders come first, then the most recently opened. `Enter` opens one; `Tab` opens its actions (resume a session, pin, rename, forget). **Open folder…** adds a path.
-- **`/project`** shows the current folder: name, path, working set (when `baked/project.json` exists), its sessions and workflow runs, and what waits for you.
+- **`/project`** shows the current folder: name, path, working set (when `baked/project.json` exists), its sessions and workflow runs, and what waits for you. **`/project rename NAME`** renames it in the picker, `baked projects` and the desktop app; without a name it restores the default.
 - **Switching** saves the session as an exit does and restarts BAKED in the other folder with `--cwd`. A workflow run executing in this process is paused first, after asking; resume it from `/workflow` later.
 - **Header badge**: requests waiting in the pinned folders and the 10 most recently opened, refreshed every 60 seconds.
 
