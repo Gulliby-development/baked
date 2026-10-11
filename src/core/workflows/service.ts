@@ -25,7 +25,7 @@ import {
   proposeExtension,
 } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
-import { clarificationResumeIndex } from "./clarification.js";
+import { answerInvalidatesAnalysis, clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import {
@@ -526,7 +526,7 @@ export class NativeWorkflowService implements WorkflowService {
             unknowns: research.unknowns.map((q) => ({ ...q, blocking: false })),
           });
         }
-        state.analysisPassed = false;
+        if (answerInvalidatesAnalysis(asking?.kind)) state.analysisPassed = false;
         const resume = clarificationResumeIndex(stages, askingIndex, body);
         if (!position) state.stageIndex = resume;
         else if (asking?.kind === "research") position.outcome = "passed";
