@@ -21,10 +21,9 @@ const COUNTED_CHATS = 200;
 
 const WORK: [ProjectSection, string, IconName][] = [
   ["overview", "Overview", "overview"],
+  ["initiatives", "Initiatives", "initiatives"],
   ["chat", "Chat", "chat"],
   ["runs", "Runs", "runs"],
-  ["initiatives", "Initiatives", "initiatives"],
-  ["acceptance", "Acceptance", "acceptance"],
   ["usage", "Usage", "usage"],
   ["graph", "Code graph", "graph"],
 ];
@@ -52,6 +51,11 @@ const AVATAR =
 const SUB_LINE = "truncate font-mono text-xs text-dim-foreground";
 
 const COUNT = "ml-auto font-mono text-xs text-dim-foreground";
+
+/** The indented list under a section (chats under Chat, Acceptance under Runs). */
+const NESTED = "ml-7 flex flex-col gap-0.5 border-l-2 border-border pl-1.5";
+
+const NESTED_ROW = "min-h-7 py-1 text-[13px]";
 
 const GROUP_LABEL = `${LABEL} px-2.5 pb-1.5`;
 
@@ -134,9 +138,9 @@ function SelectedProject({
             )}
           </a>
           {id === "chat" && (
-            <div className="ml-7 flex flex-col gap-0.5 border-l-2 border-border pl-1.5">
+            <div className={NESTED}>
               <a
-                className={cn(NAV, "min-h-7 py-1 text-[13px] font-heading text-foreground")}
+                className={cn(NAV, NESTED_ROW, "font-heading text-foreground")}
                 href={projectHref(project.key, "chat", "new")}
                 aria-current={current(chatId === "new")}
               >
@@ -146,7 +150,7 @@ function SelectedProject({
               {chats?.slice(0, SIDEBAR_CHATS).map((session) => (
                 <a
                   key={session.id}
-                  className={cn(NAV, "min-h-7 py-1 text-[13px]")}
+                  className={cn(NAV, NESTED_ROW)}
                   href={projectHref(project.key, "chat", session.id)}
                   aria-current={current(chatId === session.id)}
                   title={session.title}
@@ -155,6 +159,18 @@ function SelectedProject({
                   <span className="min-w-0 truncate">{session.title}</span>
                 </a>
               ))}
+            </div>
+          )}
+          {id === "runs" && (
+            <div className={NESTED}>
+              <a
+                className={cn(NAV, NESTED_ROW)}
+                href={projectHref(project.key, "acceptance")}
+                aria-current={current(section === "acceptance")}
+              >
+                <Icon name="acceptance" size={13} />
+                Acceptance
+              </a>
             </div>
           )}
         </Fragment>

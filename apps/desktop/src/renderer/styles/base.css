@@ -81,3 +81,32 @@ select:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
+
+/* Scrollbars: an ink-outlined block thumb inset from the page colour, accent-filled while dragged or hovered. */
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  background-clip: padding-box;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 2px var(--bg);
+}
+
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: var(--fill-accent);
+}
+
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-corner {
+  display: none;
+  background: transparent;
+}
