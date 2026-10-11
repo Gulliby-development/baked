@@ -105,6 +105,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | --- | --- |
 | `/context` | Context & system dashboard |
 | `/diagnose` | Health check — LSP, tree-sitter, semantic indexing |
+| `/graph` | Code graph at a glance: biggest groups and key files |
 | `/lsp` | Manage LSP servers — install, disable, enable |
 | `/lsp install` | Install & manage LSP servers (Mason registry) |
 | `/lsp restart` | Restart LSP servers (all or specific) |

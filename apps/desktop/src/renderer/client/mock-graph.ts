@@ -3,8 +3,9 @@ import type {
   GraphSnapshot,
   GraphSnapshotLink,
 } from "../../../../../src/core/intelligence/code-graph-model.js";
+import type { ApiResponse } from "../../shared/api.js";
 import type { GraphLinkAnswer, GraphRequest } from "./graph.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRequest, response } from "./mock-routes.js";
 
 /**
  * The code graph in the preview bridge. It runs the core grouping on sample data: the BAKED
@@ -230,7 +231,14 @@ function explain(model: GraphModel, from: string, to: string): GraphLinkAnswer |
   };
 }
 
-export const graphRoutes: MockRoute = async ({ key, method, path, query, body }) => {
+/** A function declaration, so mock-routes.ts can list it while this module is still loading. */
+export async function graphRoutes({
+  key,
+  method,
+  path,
+  query,
+  body,
+}: MockRequest): Promise<ApiResponse | undefined> {
   if (!path.startsWith("/v1/graph")) return undefined;
   const c = await loadCore();
   const model = await modelFor(key);
@@ -253,4 +261,4 @@ export const graphRoutes: MockRoute = async ({ key, method, path, query, body })
   if (method === "GET" && path === "/v1/graph/search")
     return response(200, { paths: c.searchGraphFiles(model, query.get("q") ?? "") });
   return undefined;
-};
+}
