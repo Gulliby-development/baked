@@ -50,6 +50,8 @@ interface Behavior {
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
+  /** Fields that replace those of the medium correctness finding a review requesting changes reports. */
+  reviewFinding?: { severity?: string; kind?: string; basis?: "spec" | "inferred" };
   /** Analyses that report one blocking finding before passing. */
   analysisFindings?: number;
   findingKind?: string;
@@ -113,7 +115,7 @@ class V2Executor implements AgentExecutor {
         output = this.behavior.reviewVerdict === "changes_requested"
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [],
-              findings: [{ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case" }],
+              findings: [{ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case", ...this.behavior.reviewFinding }],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Evidence checked" }], findings: [] };
         break;
@@ -362,6 +364,33 @@ describe("workflow v2 scheduler", () => {
     expect(final.status).toBe("blocked");
     expect(lastError(service, run.runId)).toContain("did not complete its implementation");
   }, 60000);
+
+  // Run de6cf1ab spent every repair round on ISO 8601 forms the spec never listed (#159).
+  test("an inferred review finding is a note and starts no correction", async () => {
+    const { start, complete, service, executor } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { basis: "inferred" },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.calls.filter((c) => c === "review")).toHaveLength(1);
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+    expect(service.store.findings(run.runId)).toHaveLength(0);
+  }, 30000);
+
+  test("an inferred security finding still starts a correction", async () => {
+    const { start, complete, service } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { kind: "security", basis: "inferred" },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.run(run.runId).repair_rounds).toBe(1);
+  }, 30000);
 
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {
     const { start, complete, service, define } = setup({ broken: 1 });

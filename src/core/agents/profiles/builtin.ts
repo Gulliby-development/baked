@@ -83,13 +83,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-author",
-    version: "1.4.0",
+    version: "1.5.0",
     description: "Write the specification",
     role: "spec-author",
     model: "$active",
     context: "specification",
     instructions:
-      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Return SpecSchema.",
+      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. When a requirement names a broad standard or format (a date-time standard, a URL or e-mail grammar, a Markdown flavor, a version scheme), state in the requirement or its criteria the forms the feature must accept, with an example of each, and the forms it may reject; reviewers treat forms the spec does not list as out of scope. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Return SpecSchema.",
     skills: [],
     allowedTools: ["read", "submit_artifact", "submit_result"],
     output: "spec",
@@ -161,13 +161,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "reviewer",
-    version: "1.2.0",
+    version: "1.3.0",
     description: "Correctness review",
     role: "reviewer",
     model: "$review",
     context: "review",
     instructions:
-      "Compare requirements, code and evidence. Report only findings you can prove. Do not change files. Mark unknown outcomes as inconclusive. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
+      "Compare requirements, code and evidence. Report only findings you can prove. Do not change files. Mark unknown outcomes as inconclusive. Give every finding a basis: spec when the request, a requirement or a criterion names the behavior or input that fails; inferred when it rests on a standard, convention or edge case the spec does not name, such as an ISO 8601 form the spec does not list when it only says ISO 8601. Inferred findings are kept as notes and start no correction unless they are critical, so judge the change by what the spec asks, not by everything a standard allows. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
     skills: [],
     allowedTools: ["read", "navigate", "submit_review", "submit_result"],
     output: "review",
@@ -193,13 +193,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-auditor",
-    version: "1.2.0",
+    version: "1.3.0",
     description: "Specification coverage review",
     role: "spec-auditor",
     model: "$review",
     context: "convergence",
     instructions:
-      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
+      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. A criterion passes when the behavior and inputs it names work: an edge case of a standard it only names (an ISO 8601 form it does not list) does not fail it, and is reported, if at all, as a finding with basis inferred. Give every other finding basis spec. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
     skills: [],
     allowedTools: ["read", "navigate", "bake_impact", "submit_review", "submit_result"],
     output: "convergence",

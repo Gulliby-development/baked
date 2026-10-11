@@ -13,7 +13,7 @@ import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance
 import { CheckRunner } from "../verification/check-runner.js";
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
 import { validateEvidence } from "../verification/evidence.js";
-import { fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import { validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
@@ -901,7 +901,8 @@ export class WorkflowScheduler {
                 review,
                 review.findings.filter(
                   (f) =>
-                    severities.includes(f.severity) || f.criterionIds.some((id) => failing.has(id)),
+                    (severities.includes(f.severity) && findingBlocks(f)) ||
+                    f.criterionIds.some((id) => failing.has(id)),
                 ),
               );
               if (findings.length) {
@@ -2971,10 +2972,14 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         if (outcome.status === "rejected") throw outcome.reason;
         const { reviewer, result } = outcome.value;
         state.reviews[reviewer.key] = result;
-        // Advisory reviewers and findings below the blocking severities are recorded, not repaired.
+        // Advisory reviewers, findings below the blocking severities and inferred notes are
+        // recorded, not repaired.
         const blocking = reviewer.required
           ? result.findings.filter(
-              (f) => reviewer.blocking.includes(f.severity) && severities.includes(f.severity),
+              (f) =>
+                reviewer.blocking.includes(f.severity) &&
+                severities.includes(f.severity) &&
+                findingBlocks(f),
             )
           : [];
         for (const finding of this.recordFindings(runId, result, blocking)) {
