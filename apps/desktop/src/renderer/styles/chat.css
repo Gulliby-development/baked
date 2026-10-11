@@ -758,6 +758,19 @@
   margin: 0;
 }
 
+.redo-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-4);
+}
+
+.redo-row q {
+  color: var(--text);
+}
+
 .notice {
   margin: 0;
   padding: 0 12px;

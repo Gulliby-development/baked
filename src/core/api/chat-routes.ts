@@ -14,6 +14,8 @@ import {
   MessageBody,
   ModelsQuery,
   PromptAnswerBody,
+  RedoBody,
+  RewindBody,
   SessionListQuery,
   UpdateSessionBody,
 } from "./schemas.js";
@@ -24,7 +26,7 @@ export interface ChatRouteContext extends RouteContext {
 
 const ID = "[A-Za-z0-9-]+";
 const SESSION = new RegExp(
-  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff)(?:/(${ID}))?)?$`,
+  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|checkpoints|rewind|redo)(?:/(${ID}))?)?$`,
 );
 
 export function chatErrorStatus(error: ChatError): number {
@@ -110,6 +112,11 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
     return ctx.json(200, await chat.get(id).diffStats());
   }
+  if (action === "checkpoints") {
+    only("GET");
+    if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
+    return ctx.json(200, chat.get(id).checkpoints());
+  }
   only("POST");
   if (action === "prompts") {
     if (!sub) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
@@ -122,6 +129,21 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     const body = ForkSessionBody.parse(await ctx.readJson());
     const { session, rollback } = await chat.fork(id, body.atMessageId, body);
     return ctx.json(201, { ...session.detail(), ...(rollback ? { rollback } : {}) });
+  }
+  if (action === "rewind") {
+    const body = RewindBody.parse(await ctx.readJson());
+    return ctx.json(
+      200,
+      await chat.get(id).rewind({
+        checkpoint: body.checkpoint,
+        rollbackFiles: body.rollbackFiles ?? true,
+        ...(body.force ? { force: true } : {}),
+      }),
+    );
+  }
+  if (action === "redo") {
+    const body = RedoBody.parse(await ctx.readJson());
+    return ctx.json(200, await chat.get(id).redoNext(body.force ? { force: true } : {}));
   }
   if (action === "compact") {
     CompactBody.parse(await ctx.readJson());

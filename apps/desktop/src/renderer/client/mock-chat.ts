@@ -6,6 +6,8 @@ import type {
   ChatMode,
   ChatPrompt,
   MessageSegment,
+  RedoTurn,
+  SessionCheckpoints,
   SessionDetail,
   SessionDiffStats,
   SessionSummary,
@@ -29,6 +31,8 @@ interface MockSession {
   listeners: Set<(event: ChatEvent) => void>;
   turn: MockTurn | null;
   queue: string[];
+  /** Turns a rewind dropped, oldest first. */
+  redo?: (RedoTurn & { messages: ChatMessage[] })[];
 }
 
 interface MockTurn {
@@ -476,6 +480,7 @@ async function script(session: MockSession, turn: MockTurn, text: string): Promi
 }
 
 async function startTurn(session: MockSession, text: string): Promise<string> {
+  session.redo = [];
   const turn: MockTurn = {
     id: nextId("turn"),
     cancelled: false,
@@ -634,8 +639,91 @@ function diffStats(session: MockSession): SessionDiffStats {
   };
 }
 
+/** The turns of a mock transcript: each non-steering user message starts one. */
+function turnsOf(messages: ChatMessage[]): { start: number; end: number }[] {
+  const turns: { start: number; end: number }[] = [];
+  messages.forEach((m, i) => {
+    if (m.role === "user" && !m.isSteering) turns.push({ start: i, end: i });
+    else {
+      const last = turns.at(-1);
+      if (last) last.end = i;
+    }
+  });
+  return turns;
+}
+
+const firstLine = (text: string): string => (text.split("\n")[0] ?? "").slice(0, 120);
+
+function checkpoints(session: MockSession): SessionCheckpoints {
+  const messages = session.transcript.messages;
+  return {
+    checkpoints: turnsOf(messages).map((turn, i) => ({
+      index: i + 1,
+      anchorMessageId: messages[turn.start]?.id ?? "",
+      endMessageId: messages[turn.end]?.id ?? "",
+      prompt: firstLine(messages[turn.start]?.content ?? ""),
+      startedAt: messages[turn.start]?.timestamp ?? 0,
+      filesEdited: [],
+      snapshot: true,
+    })),
+    redo: (session.redo ?? []).map(({ messages: _m, ...turn }) => turn),
+  };
+}
+
+function restored(session: MockSession, action: "rewind" | "redo", checkpoint: number) {
+  const messages = session.transcript.messages;
+  session.summary = { ...session.summary, messageCount: messages.length, updatedAt: Date.now() };
+  emit(session, { type: "rewind", action, checkpoint, redo: session.redo?.length ?? 0 });
+  return response(200, {
+    checkpoint,
+    rollback: null,
+    redo: checkpoints(session).redo,
+    session: detail(session),
+  });
+}
+
+function rewind(session: MockSession, body: unknown) {
+  if (session.turn || session.transcript.compacting)
+    return response(409, { error: { code: "SESSION_BUSY", message: "A turn is running." } });
+  const { checkpoint, rollbackFiles } = (body ?? {}) as {
+    checkpoint?: number;
+    rollbackFiles?: boolean;
+  };
+  const messages = session.transcript.messages;
+  const turns = turnsOf(messages);
+  if (typeof checkpoint !== "number" || checkpoint < 0 || checkpoint > turns.length)
+    return response(404, { error: { code: "NOT_FOUND", message: "No such checkpoint" } });
+  const first = turns[checkpoint];
+  if (first) {
+    const dropped = turns.slice(checkpoint).map((turn, i) => ({
+      index: checkpoint + i + 1,
+      anchorMessageId: messages[turn.start]?.id ?? "",
+      prompt: firstLine(messages[turn.start]?.content ?? ""),
+      filesRolledBack: rollbackFiles !== false,
+      messages: messages.slice(turn.start, turn.end + 1),
+    }));
+    session.redo = [...dropped, ...(session.redo ?? [])].sort((a, b) => a.index - b.index);
+    session.transcript = { ...session.transcript, messages: messages.slice(0, first.start) };
+  }
+  return restored(session, "rewind", checkpoint);
+}
+
+function redo(session: MockSession) {
+  if (session.turn || session.transcript.compacting)
+    return response(409, { error: { code: "SESSION_BUSY", message: "A turn is running." } });
+  const [next, ...rest] = session.redo ?? [];
+  if (!next)
+    return response(409, { error: { code: "NOTHING_TO_REDO", message: "Nothing to redo" } });
+  session.redo = rest;
+  session.transcript = {
+    ...session.transcript,
+    messages: [...session.transcript.messages, ...next.messages],
+  };
+  return restored(session, "redo", next.index);
+}
+
 const SESSION_PATH =
-  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork|compact|diff)(?:\/([A-Za-z0-9-]+))?)?$/;
+  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork|compact|diff|checkpoints|rewind|redo)(?:\/([A-Za-z0-9-]+))?)?$/;
 
 const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (path === "/v1/models" && method === "GET")
@@ -742,6 +830,9 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   }
   if (action === "compact") return compact(session);
   if (action === "diff") return response(200, diffStats(session));
+  if (action === "checkpoints") return response(200, checkpoints(session));
+  if (action === "rewind") return rewind(session, body);
+  if (action === "redo") return redo(session);
   const resolve = sub ? session.turn?.waiters.get(sub) : undefined;
   if (!sub || !resolve)
     return response(409, { error: { code: "STALE_PROMPT", message: "Not waiting" } });

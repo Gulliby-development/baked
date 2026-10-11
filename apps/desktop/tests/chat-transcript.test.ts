@@ -276,3 +276,27 @@ describe("chat transcript", () => {
     expect(failed.notice).toEqual({ kind: "error", text: "Compaction failed: model unavailable" });
   });
 });
+
+describe("rewind events", () => {
+  test("ask for a refetch, which replaces the messages", () => {
+    const start = fromDetail(
+      detail({
+        lastSeq: 4,
+        messages: [
+          { id: "u1", role: "user", content: "a", timestamp: 1 },
+          { id: "u2", role: "user", content: "b", timestamp: 2 },
+        ],
+      }),
+    );
+    const [event] = numbered([{ type: "rewind", action: "rewind", checkpoint: 1, redo: 1 }], 5);
+    if (!event) throw new Error("no event");
+    const marked = applyChatEvent(start, event);
+    expect(marked.needsReset).toBe(true);
+    const refetched = reduceTranscript(marked, {
+      type: "snapshot",
+      detail: detail({ lastSeq: 5, messages: [{ id: "u1", role: "user", content: "a", timestamp: 1 }] }),
+    });
+    expect(refetched.needsReset).toBe(false);
+    expect(refetched.messages.map((m) => m.id)).toEqual(["u1"]);
+  });
+});

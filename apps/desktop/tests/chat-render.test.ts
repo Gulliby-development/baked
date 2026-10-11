@@ -6,6 +6,7 @@ import {
   rememberForkReport,
   takeForkReport,
 } from "../src/renderer/screens/chat/fork.ts";
+import { rewindReportLines, turnIndexes } from "../src/renderer/screens/chat/rewind.ts";
 import { parseChatEvent } from "../src/renderer/screens/chat/transcript.ts";
 
 describe("tool titles", () => {
@@ -158,5 +159,45 @@ describe("fork reports", () => {
     rememberForkReport("s1", ["done"]);
     expect(takeForkReport("s1")).toEqual(["done"]);
     expect(takeForkReport("s1")).toBeNull();
+  });
+});
+
+describe("rewind reports", () => {
+  const session = {} as Parameters<typeof rewindReportLines>[1]["session"];
+  test("say what happened to the chat and the files", () => {
+    expect(rewindReportLines("redo", { checkpoint: 3, rollback: null, redo: [], session })).toEqual([
+      "Brought back turn #3. Files were left as they are.",
+    ]);
+    expect(
+      rewindReportLines("rewind", {
+        checkpoint: 1,
+        rollback: {
+          checkpoint: 1,
+          snapshot: "baked/cp-1",
+          backupTag: "baked/rewind-backup-1",
+          restored: ["/w/src/a.ts"],
+          removed: [],
+          skipped: [{ path: "/w/src/c.ts", reason: "has changes no checkpoint holds" }],
+        },
+        redo: [],
+        session,
+      }),
+    ).toEqual([
+      "Rewound the chat to checkpoint #1. Restored 1 file(s).",
+      "Left src/c.ts as it is: has changes no checkpoint holds.",
+      "The files from before the rewind are in Git tag baked/rewind-backup-1.",
+    ]);
+  });
+
+  test("number messages by the turn they belong to", () => {
+    const indexes = turnIndexes([
+      { id: "s", role: "system" },
+      { id: "u1", role: "user" },
+      { id: "a1", role: "assistant" },
+      { id: "st", role: "user", isSteering: true },
+      { id: "u2", role: "user" },
+      { id: "a2", role: "assistant" },
+    ]);
+    expect([...indexes.values()]).toEqual([0, 1, 1, 1, 2, 2]);
   });
 });

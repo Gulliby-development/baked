@@ -506,6 +506,51 @@ describe("local API chat sessions", () => {
     expect((await post(`/v1/sessions/${session.id}/compact`, { keep: 2 })).status).toBe(400);
   });
 
+  test("checkpoints list turns, rewind the chat in place and redo", async () => {
+    const { call, post, detail } = await setup();
+    const session = (await (await post("/v1/sessions", { text: "One" })).json()) as SessionDetail;
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Two" });
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("checkpoints");
+
+    const listed = (await (await call(`/v1/sessions/${session.id}/checkpoints`)).json()) as {
+      checkpoints: { index: number; prompt: string }[];
+      redo: unknown[];
+    };
+    expect(listed.checkpoints.map((c) => [c.index, c.prompt])).toEqual([
+      [1, "One"],
+      [2, "Two"],
+    ]);
+    expect(listed.redo).toEqual([]);
+
+    const rewound = await post(`/v1/sessions/${session.id}/rewind`, { checkpoint: 1, rollbackFiles: false });
+    expect(rewound.status).toBe(200);
+    const body = (await rewound.json()) as {
+      checkpoint: number;
+      rollback: unknown;
+      redo: { index: number; prompt: string }[];
+      session: SessionDetail;
+    };
+    expect(body.checkpoint).toBe(1);
+    expect(body.rollback).toBeNull();
+    expect(body.redo.map((r) => r.prompt)).toEqual(["Two"]);
+    expect(body.session.messages).toHaveLength(2);
+    expect((await detail(session.id)).messages).toHaveLength(2);
+
+    const redone = (await (await post(`/v1/sessions/${session.id}/redo`)).json()) as {
+      checkpoint: number;
+      session: SessionDetail;
+    };
+    expect(redone.checkpoint).toBe(2);
+    expect(redone.session.messages).toHaveLength(4);
+    expect((await post(`/v1/sessions/${session.id}/redo`)).status).toBe(409);
+    expect((await post(`/v1/sessions/${session.id}/rewind`, { checkpoint: 9 })).status).toBe(404);
+    expect((await post(`/v1/sessions/${session.id}/rewind`, {})).status).toBe(400);
+    expect((await post(`/v1/sessions/${session.id}/checkpoints`)).status).toBe(405);
+  });
+
   test("diff stats list the files the session edited", async () => {
     const { host, call, post, detail } = await setup();
     host.scripts.push(async function* () {

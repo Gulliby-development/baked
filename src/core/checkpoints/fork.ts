@@ -133,6 +133,11 @@ export interface RollbackInput {
   /** The whole conversation being forked, including the turns after the checkpoint. */
   messages: ChatMessage[];
   checkpoint: number;
+  /**
+   * The checkpoint the workspace files are at now; the last turn when absent. A `checkpoint` after
+   * it moves the files forward, as a redo does.
+   */
+  from?: number;
   tags: CheckpointTag[];
   /** The tag name for the backup snapshot taken before files change. */
   backupTag: string;
@@ -141,7 +146,10 @@ export interface RollbackInput {
   claimedBy?: (absPath: string) => string | null;
 }
 
-/** Restores the files edited after `checkpoint` to their content at that checkpoint. */
+/**
+ * Restores the files edited between `from` (the last turn by default) and `checkpoint` to their
+ * content at that checkpoint.
+ */
 export async function rollbackToCheckpoint(input: RollbackInput): Promise<RollbackReport> {
   const { cwd, checkpoint } = input;
   const report: RollbackReport = {
@@ -153,9 +161,11 @@ export async function rollbackToCheckpoint(input: RollbackInput): Promise<Rollba
     skipped: [],
   };
   const turns = buildTurns(input.messages);
+  const from = input.from ?? turns.length;
+  const [low, high] = from < checkpoint ? [from, checkpoint] : [checkpoint, from];
   const files = new Map<string, { abs: string }>();
   for (const turn of turns) {
-    if (turn.index <= checkpoint) continue;
+    if (turn.index <= low || turn.index > high) continue;
     for (const file of turn.filesEdited) {
       const abs = resolve(cwd, file);
       const rel = workspacePath(cwd, abs);
@@ -212,7 +222,9 @@ export async function rollbackToCheckpoint(input: RollbackInput): Promise<Rollba
   }
   if (plan.length === 0) return report;
 
-  if (!(await snapshotWorkspace(cwd, input.backupTag, `baked fork backup before #${checkpoint}`)))
+  if (
+    !(await snapshotWorkspace(cwd, input.backupTag, `baked backup before restoring #${checkpoint}`))
+  )
     throw new RollbackError("BACKUP_FAILED", "Could not snapshot the workspace before rollback");
   report.backupTag = input.backupTag;
 

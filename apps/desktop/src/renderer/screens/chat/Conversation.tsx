@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
 import { Markdown } from "./Markdown.js";
+import { turnIndexes } from "./rewind.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
 
@@ -195,41 +196,45 @@ function Assistant({
   );
 }
 
-function ForkAction({
-  disabled,
-  onFork,
-}: {
-  disabled: boolean;
-  onFork: (rollbackFiles: boolean) => void;
-}) {
-  const [open, setOpen] = useState(false);
+interface TurnAction {
+  label: string;
+  question: string;
+  run: (rollbackFiles: boolean) => void;
+}
+
+/** "Fork from here" and "Rewind to here" under an answer, each asking about the files first. */
+function TurnActions({ disabled, actions }: { disabled: boolean; actions: TurnAction[] }) {
+  const [open, setOpen] = useState<TurnAction | null>(null);
   if (!open)
     return (
       <div className="fork-row">
-        <button
-          type="button"
-          className="fork-link"
-          disabled={disabled}
-          onClick={() => setOpen(true)}
-        >
-          Fork from here
-        </button>
+        {actions.map((action) => (
+          <button
+            key={action.label}
+            type="button"
+            className="fork-link"
+            disabled={disabled}
+            onClick={() => setOpen(action)}
+          >
+            {action.label}
+          </button>
+        ))}
       </div>
     );
   const pick = (rollbackFiles: boolean) => {
-    setOpen(false);
-    onFork(rollbackFiles);
+    setOpen(null);
+    open.run(rollbackFiles);
   };
   return (
-    <fieldset className="fork-row fork-confirm" aria-label="Fork from here">
-      <span>Continue in a new chat from this point. Roll the files back too?</span>
+    <fieldset className="fork-row fork-confirm" aria-label={open.label}>
+      <span>{open.question}</span>
       <button type="button" className="btn" onClick={() => pick(false)}>
         Chat only
       </button>
       <button type="button" className="btn-primary" onClick={() => pick(true)}>
         Chat and files
       </button>
-      <button type="button" className="fork-link" onClick={() => setOpen(false)}>
+      <button type="button" className="fork-link" onClick={() => setOpen(null)}>
         Cancel
       </button>
     </fieldset>
@@ -409,6 +414,8 @@ export function Conversation({
   onAnswer,
   forking,
   onFork,
+  onRewind,
+  redo,
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
@@ -417,9 +424,32 @@ export function Conversation({
   forking?: boolean;
   /** Forks the session after `messageId`; absent while the session cannot be forked. */
   onFork?: (messageId: string, rollbackFiles: boolean) => void;
+  /** Rewinds this session to the end of checkpoint N; absent when the server cannot. */
+  onRewind?: (checkpoint: number, rollbackFiles: boolean) => void;
+  /** The turns a rewind dropped and the action that brings back the oldest. */
+  redo?: { prompts: string[]; run: () => void };
 }) {
   const { messages, live, prompts, pending, notice, thoughtMs } = transcript;
   const running = transcript.turnId !== null;
+  const turns = turnIndexes(messages);
+  const lastTurn = Math.max(0, ...turns.values());
+  const actionsFor = (message: ChatMessage): TurnAction[] => {
+    const out: TurnAction[] = [];
+    if (onFork)
+      out.push({
+        label: "Fork from here",
+        question: "Continue in a new chat from this point. Roll the files back too?",
+        run: (rollbackFiles) => onFork(message.id, rollbackFiles),
+      });
+    const turn = turns.get(message.id) ?? 0;
+    if (onRewind && turn > 0 && turn < lastTurn)
+      out.push({
+        label: "Rewind to here",
+        question: `Remove the ${lastTurn - turn} later turn(s) from this chat (you can redo them). Roll the files back too?`,
+        run: (rollbackFiles) => onRewind(turn, rollbackFiles),
+      });
+    return out;
+  };
   const waiting = prompts.some((p) => p.outcome === undefined);
   const lastLive = live?.segments?.at(-1);
   return (
@@ -435,11 +465,8 @@ export function Conversation({
         ) : message.role === "assistant" ? (
           <div key={message.id} className="assistant-turn">
             <Assistant message={message} thoughtMs={thoughtMs[message.id]} thinking={false} />
-            {onFork && !running && (
-              <ForkAction
-                disabled={forking === true}
-                onFork={(rollbackFiles) => onFork(message.id, rollbackFiles)}
-              />
+            {!running && actionsFor(message).length > 0 && (
+              <TurnActions disabled={forking === true} actions={actionsFor(message)} />
             )}
           </div>
         ) : (
@@ -464,6 +491,16 @@ export function Conversation({
           onAnswer={onAnswer}
         />
       ))}
+      {redo && redo.prompts.length > 0 && !running && (
+        <div className="redo-row" role="status">
+          <span>
+            {redo.prompts.length} rewound turn(s). Next: <q>{redo.prompts[0]}</q>
+          </span>
+          <button type="button" className="btn" disabled={forking === true} onClick={redo.run}>
+            Redo
+          </button>
+        </div>
+      )}
       {pending.map((text, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: pending texts can repeat
         <UserBubble key={`pending-${i}`} text={text} note="Sending…" />

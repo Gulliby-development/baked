@@ -6,7 +6,7 @@
  * alive by a lightweight tag under `refs/tags/baked/`.
  */
 import { spawn } from "node:child_process";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, stat, utimes } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpDir } from "../platform/index.js";
 import { buildSafeEnv } from "../spawn.js";
@@ -74,8 +74,16 @@ async function snapshot(cwd: string, tag: string, message: string): Promise<bool
   const dir = await mkdtemp(join(tmpDir(), "baked-snapshot-"));
   try {
     const tempIndex = join(dir, "index");
-    // Starting from the real index reuses its stat cache, so only changed files are hashed.
-    await copyFile(resolve(cwd, text(indexPath)), tempIndex).catch(() => {});
+    // Starting from the real index reuses its stat cache, so only changed files are hashed. The
+    // copy keeps the index's mtime: Git rehashes entries as old as the index ("racy" entries), and
+    // a fresh mtime would make it trust a stale entry for a file rewritten within the same tick.
+    const realIndex = resolve(cwd, text(indexPath));
+    await copyFile(realIndex, tempIndex)
+      .then(async () => {
+        const { atime, mtime } = await stat(realIndex);
+        await utimes(tempIndex, atime, mtime);
+      })
+      .catch(() => {});
     const env = { GIT_INDEX_FILE: tempIndex, ...SNAPSHOT_IDENTITY };
     if (!(await git(["add", "-A"], cwd, { env, timeout: 120_000 })).ok) return false;
     const tree = await git(["write-tree"], cwd, { env });

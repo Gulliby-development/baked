@@ -69,6 +69,7 @@ const EVENT_TYPES = new Set([
   "turn-done",
   "compaction-start",
   "compaction-done",
+  "rewind",
   "session",
 ]);
 
@@ -377,6 +378,9 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
     }
     case "session":
       return { ...state, session: event.session };
+    case "rewind":
+      // The messages changed under the transcript: refetch the session.
+      return { ...state, needsReset: true };
   }
 }
 

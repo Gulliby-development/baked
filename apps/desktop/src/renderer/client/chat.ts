@@ -170,6 +170,7 @@ export type ChatEventBody =
       error?: string;
       context: ContextFill | null;
     }
+  | { type: "rewind"; action: "rewind" | "redo"; checkpoint: number; redo: number }
   | { type: "session"; session: SessionSummary };
 
 /** A numbered session event, or `reset` when the client must refetch the session. */
@@ -191,6 +192,36 @@ export interface RollbackReport {
   restored: string[];
   removed: string[];
   skipped: { path: string; reason: string }[];
+}
+
+/** A turn a rewind dropped, which `POST /v1/sessions/ID/redo` brings back (oldest first). */
+export interface RedoTurn {
+  index: number;
+  anchorMessageId: string;
+  prompt: string;
+  filesRolledBack: boolean;
+}
+
+/** `GET /v1/sessions/ID/checkpoints`. */
+export interface SessionCheckpoints {
+  checkpoints: {
+    index: number;
+    anchorMessageId: string;
+    endMessageId: string;
+    prompt: string;
+    startedAt: number;
+    filesEdited: string[];
+    snapshot: boolean;
+  }[];
+  redo: RedoTurn[];
+}
+
+/** What `POST /v1/sessions/ID/rewind` and `/redo` did. */
+export interface RewindResult {
+  checkpoint: number;
+  rollback: RollbackReport | null;
+  redo: RedoTurn[];
+  session: SessionDetail;
 }
 
 export interface WorkingSetSummary {
@@ -230,6 +261,16 @@ export const chat = {
   compact: (key: string, id: string) =>
     call<{ compactionId: string }>(key, "POST", sessionPath(id, "compact"), {}),
   diff: (key: string, id: string) => call<SessionDiffStats>(key, "GET", sessionPath(id, "diff")),
+  checkpoints: (key: string, id: string) =>
+    call<SessionCheckpoints>(key, "GET", sessionPath(id, "checkpoints")),
+  /** Keeps the turns up to `checkpoint` in this session; later ones can be redone. */
+  rewind: (
+    key: string,
+    id: string,
+    body: { checkpoint: number; rollbackFiles?: boolean; force?: boolean },
+  ) => call<RewindResult>(key, "POST", sessionPath(id, "rewind"), body),
+  redo: (key: string, id: string, body: { force?: boolean } = {}) =>
+    call<RewindResult>(key, "POST", sessionPath(id, "redo"), body),
   interrupt: (key: string, id: string) =>
     call<{ interrupted: boolean }>(key, "POST", sessionPath(id, "interrupt"), {}),
   approve: (key: string, id: string, promptId: string, approve: boolean) =>

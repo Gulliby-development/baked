@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`) and `diff-stats` (`GET /v1/sessions/ID/diff`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`) and `checkpoints` (`/v1/sessions/ID/checkpoints`, `/rewind`, `/redo`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -98,6 +98,9 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
 | `POST /v1/sessions/ID/compact` | `{}` | 202 `{compactionId}`; the compaction runs in the background and reports with `compaction-start` and `compaction-done`. 409 `SESSION_BUSY` while a turn or a compaction runs, 409 `NOTHING_TO_COMPACT` when the conversation is too short, 501 `NOT_SUPPORTED` when the server cannot compact |
 | `GET /v1/sessions/ID/diff` | | `SessionDiffStats` below |
+| `GET /v1/sessions/ID/checkpoints` | | `{checkpoints: [Checkpoint], redo: [RedoTurn]}`, [below](#checkpoints-and-rewinding) |
+| `POST /v1/sessions/ID/rewind` | `{checkpoint, rollbackFiles?, force?}` | 200 `RewindResult`: keeps the turns up to checkpoint `checkpoint` (0 keeps none) in this session; `rollbackFiles` defaults to true. 404 unknown checkpoint, 409 `SESSION_BUSY` while this session runs a turn, a compaction or a restore (and, when files change, while any session does), 409 `ROLLBACK_UNAVAILABLE` as for fork |
+| `POST /v1/sessions/ID/redo` | `{force?}` | 200 `RewindResult`: brings back the oldest turn a rewind dropped. 409 `NOTHING_TO_REDO`, `SESSION_BUSY`, `ROLLBACK_UNAVAILABLE` |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
 | `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model` |
 | `GET /v1/mentions` | `?q=&limit=` (default 20, at most 50) | `{mentions: [{kind: "file" \| "directory" \| "symbol", insert, label, detail, indices}]}`: `@` completions for the composer; `insert` is the text after `@`, `indices` the matched characters of `label` |
@@ -122,6 +125,31 @@ interface SessionDiffStats {
 
 `GET /v1/sessions/ID/diff` measures the files in `filesEdited` against the last commit with git (`git diff --numstat HEAD`; a new untracked file counts all its lines as added). The numbers are what is uncommitted in those files now, whoever made the change; a file the session edited that was committed or reverted since is `unchanged`. Outside a git repository every file is `unknown` with zero counts.
 
+#### Checkpoints and rewinding
+
+```ts
+interface Checkpoint {
+  index: number;              // turn N, from 1; each user message that is not steering starts one
+  anchorMessageId: string;    // the user message that starts the turn
+  endMessageId: string;       // the turn's last message (fork at it to keep the whole turn)
+  prompt: string;             // first line of the prompt, at most 120 characters
+  startedAt: number;
+  filesEdited: string[];
+  snapshot: boolean;          // a workspace snapshot was taken at the end of the turn
+}
+interface RedoTurn { index: number; anchorMessageId: string; prompt: string; filesRolledBack: boolean }
+interface RewindResult {
+  checkpoint: number;           // the checkpoint rewound to, or the turn brought back
+  rollback: RollbackReport | null;   // the fork's report; null when no files were touched
+  redo: RedoTurn[];             // what is left to redo, oldest first
+  session: SessionDetail;
+}
+```
+
+`POST /v1/sessions/ID/rewind` rewinds the session in place, where a fork opens a new one. It keeps the turns up to and including checkpoint N and drops the later ones into the redo list. With `rollbackFiles` (the default) the files those turns edited go back to their content at checkpoint N, with the same code and safeguards as a fork with `rollbackFiles` (`src/core/checkpoints/rewind.ts` over `rollbackToCheckpoint`): a backup tag (`baked/rewind-backup-*`) first, and a file changed outside the agent is left in place unless `force` is set. `POST /v1/sessions/ID/redo` brings back the oldest dropped turn; when its rewind rolled the files back, the files that turn edited move forward to their content after it, with the same safeguards and a `baked/redo-backup-*` tag, and after a chat-only rewind the files are left alone. Redoing every dropped turn returns to where the rewind started. A rewind with files after a chat-only rewind also restores the files of the turns the chat-only one dropped.
+
+The model context is rebuilt from the kept messages, so a compaction made before the rewind no longer applies and `context` is null until the next turn reports it. The redo list lives in the server's memory: it is cleared when a new turn starts (the dropped turns' snapshots are forgotten too) and when the server stops; the rewound conversation itself is saved at once. Each rewind and redo sends a `rewind` event. The terminal UI does the same with `/undo` and `/redo` ([checkpoints](../guide.md#checkpoints)).
+
 A message text with `@` mentions or a leading `!command` is expanded on the server before the model sees it, by the same code as the terminal UI ([user guide](../guide.md#mentions-and-shell-commands-in-the-input)): the stored user message keeps the typed text and lists what was attached in `inputContext`. A destructive `!` command asks with a `destructive` prompt in `default` mode, is denied in `architect` mode with every other command, and runs in `auto` mode. A message that is only a command that did not run ends its turn with `turn-done` `completed` and `message: null`. Text with `@` or `!` sent while a turn runs is not steered into it; it starts its own turn afterwards.
 
 Each turn of an API session that edits files snapshots the workspace in a Git tag, and the first turn snapshots it before it starts; the tags are saved in the session's tab as `checkpointTags`, as the terminal UI saves them. A fork with `rollbackFiles` restores the files the agent edited after the fork point to the latest snapshot at or before it. The fork point of a message is the end of its turn, or the end of the previous turn when the message is the user prompt that starts a turn. `rollback` is `{checkpoint, snapshot, backupTag, restored: [path], removed: [path], skipped: [{path, reason}]}`: `restored` files were rewritten, `removed` ones did not exist at the checkpoint, and `backupTag` (null when nothing changed) holds the whole working tree from before the rollback. A file is skipped, not overwritten, when its current content is in none of the session's snapshots (changed outside the agent) unless `force` is set, and always when Git ignores it or it is outside the workspace. The fork gets copies of the snapshots up to its fork point, so it can be forked again. [Forking a checkpoint](../guide.md#forking-a-checkpoint) describes the same behavior in the terminal UI.
@@ -144,6 +172,7 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `turn-done` | `turnId`, `status` (`completed`, `interrupted`, `failed`), `error?`, `message` (the assistant `ChatMessage`, null when nothing was produced), `usage`, `durationMs` |
 | `compaction-start` | `compactionId` |
 | `compaction-done` | `compactionId`, `status` (`compacted`, `skipped`, `failed`, `interrupted`), `message` (the `system` `ChatMessage` added to the transcript, null when failed or interrupted), `compacted` (model messages summarized), `error?`, `context` |
+| `rewind` | `action` (`rewind` or `redo`), `checkpoint`, `redo` (turns left to redo): the messages changed, so fetch `GET /v1/sessions/ID` |
 | `session` | `session` (`SessionSummary`) after a state, title, model or mode change |
 | `reset` | the requested sequence is no longer buffered or belongs to an earlier server start: fetch `GET /v1/sessions/ID` and continue from its `lastSeq` |
 
@@ -249,6 +278,6 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 
 ## Not in this contract yet
 
-- Plan mode and its plan review in chat, image attachments, checkpoints and rewinding a chat. The desktop hides these controls until a later version of this contract adds them.
+- Plan mode and its plan review in chat, and image attachments. The desktop hides these controls until a later version of this contract adds them.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.

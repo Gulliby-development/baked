@@ -76,6 +76,8 @@ Checkpoints with file edits are tagged in Git; undo restores only the files thos
 
 `/redo` steps forward one checkpoint at a time, in the order the turns ran, so `/undo 1` followed by `/redo` twice brings back turns 2 and 3. A file the redone turn deleted is deleted again, and folders it created are recreated. Files Git ignores are in no snapshot, so neither undo nor redo deletes them. Sending a new message clears the redo history.
 
+The desktop app rewinds and redoes a chat in place with "Rewind to here" and "Redo" ([desktop app](desktop/app.md)); its rewind keeps the whole turn it rewinds to and leaves files changed outside the agent in place unless forced.
+
 ### Forking a checkpoint
 
 `/checkpoint fork N` opens a new tab with the conversation up to the end of checkpoint N and restores the files the agent edited after it to their state at N; the original tab keeps its whole history. Browse to a checkpoint with `Ctrl+B` and run `/checkpoint fork` to fork the one you are viewing. The working tree is shared, so the rollback is visible to every tab.

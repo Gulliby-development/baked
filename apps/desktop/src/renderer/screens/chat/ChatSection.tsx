@@ -10,8 +10,18 @@ import {
 } from "react";
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
-import { COMPACTION_CAPABILITY, DIFF_STATS_CAPABILITY } from "../../client/capabilities.js";
-import { type ChatMode, chat, isMissingChatApi, type SessionDiffStats } from "../../client/chat.js";
+import {
+  CHECKPOINTS_CAPABILITY,
+  COMPACTION_CAPABILITY,
+  DIFF_STATS_CAPABILITY,
+} from "../../client/capabilities.js";
+import {
+  type ChatMode,
+  chat,
+  isMissingChatApi,
+  type RedoTurn,
+  type SessionDiffStats,
+} from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -20,6 +30,7 @@ import { Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
 import { forkReportLines, rememberForkReport, takeForkReport } from "./fork.js";
 import { ChatHeader, type CompactControl } from "./Header.js";
+import { rewindReportLines } from "./rewind.js";
 import { emptyTranscript, isBusy, reduceTranscript } from "./transcript.js";
 
 const NEW = "new";
@@ -123,6 +134,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const [draftMode, setDraftMode] = useState<ChatMode>("default");
   const [forking, setForking] = useState(false);
   const [forkReport] = useState(() => (draft ? null : takeForkReport(sessionId)));
+  const [rewindReport, setRewindReport] = useState<string[] | null>(null);
+  const [redo, setRedo] = useState<RedoTurn[]>([]);
   // A task typed on the project home ("Ask in chat") starts the new session's composer.
   const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
   useEffect(() => {
@@ -188,6 +201,22 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   }, [key]);
   const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
+  const hasCheckpoints = capabilities?.includes(CHECKPOINTS_CAPABILITY) === true;
+
+  // The turns a rewind dropped live on the server; refetch them whenever the messages change.
+  const messageCount = transcript.messages.length;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch when the messages change
+  useEffect(() => {
+    if (draft || !hasCheckpoints) return;
+    let live = true;
+    chat.checkpoints(key, sessionId).then(
+      (result) => live && setRedo(result.redo),
+      () => live && setRedo([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, sessionId, draft, hasCheckpoints, messageCount]);
 
   // Line counts follow the edited files; a turn that ends may also have changed them on disk.
   const [diff, setDiff] = useState<SessionDiffStats | null>(null);
@@ -226,6 +255,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
 
   const send = async (text: string): Promise<boolean> => {
     setActionError(null);
+    setRewindReport(null);
     stick();
     if (draft) {
       try {
@@ -266,6 +296,24 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       .catch((e: unknown) => setActionError(message(e)))
       .finally(() => setForking(false));
   };
+
+  const restore = (work: () => ReturnType<typeof chat.redo>, action: "rewind" | "redo"): void => {
+    setForking(true);
+    setActionError(null);
+    setRewindReport(null);
+    work()
+      .then((result) => {
+        dispatch({ type: "snapshot", detail: result.session });
+        setRedo(result.redo);
+        setRewindReport(rewindReportLines(action, result));
+        chatSessionsChanged();
+      })
+      .catch((e: unknown) => setActionError(message(e)))
+      .finally(() => setForking(false));
+  };
+  const rewind = (checkpoint: number, rollbackFiles: boolean): void =>
+    restore(() => chat.rewind(key, sessionId, { checkpoint, rollbackFiles }), "rewind");
+  const redoNext = (): void => restore(() => chat.redo(key, sessionId), "redo");
 
   const decide = (promptId: string, work: () => Promise<unknown>): void => {
     setDeciding((s) => new Set(s).add(promptId));
@@ -370,9 +418,19 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             deciding={deciding}
             forking={forking}
             {...(draft ? {} : { onFork: fork })}
+            {...(!draft && hasCheckpoints
+              ? { onRewind: rewind, redo: { prompts: redo.map((r) => r.prompt), run: redoNext } }
+              : {})}
             onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
           />
+          {rewindReport && (
+            <div className="banner fork-report" role="status">
+              {rewindReport.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          )}
           {actionError && (
             <p className="notice error" role="alert">
               {actionError}

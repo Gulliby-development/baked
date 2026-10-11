@@ -123,6 +123,12 @@ export const ForkSessionBody = z.strictObject({
 });
 export const MessageBody = z.strictObject({ text: Text });
 export const CompactBody = z.strictObject({});
+export const RewindBody = z.strictObject({
+  checkpoint: z.number().int().min(0),
+  rollbackFiles: z.boolean().optional(),
+  force: z.boolean().optional(),
+});
+export const RedoBody = z.strictObject({ force: z.boolean().optional() });
 export const PromptAnswerBody = z.union([
   z.strictObject({ approve: z.boolean() }),
   z.strictObject({ answer: z.string().max(20_000) }),

@@ -140,6 +140,7 @@ export function createMockBridge(): DesktopBridge {
             "routing",
             "compaction",
             "diff-stats",
+            "checkpoints",
           ],
         });
       const url = new URL(path, "http://mock");

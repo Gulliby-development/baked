@@ -15,6 +15,9 @@
  * Compacting a session ("Compact now") replaces its older model messages with a summary, as the
  * terminal UI's `/compact` does; the transcript keeps every message and gains a note. Messages sent
  * while it runs wait and start the next turn when it ends.
+ *
+ * Rewinding a session keeps its turns up to a checkpoint, optionally rolling the files back, and
+ * keeps the dropped turns in memory until a redo brings them back or a new turn starts.
  */
 import type { ModelMessage } from "ai";
 import { logBackgroundError } from "../../stores/errors.js";
@@ -38,6 +41,14 @@ import {
   type RollbackReport,
   rollbackToCheckpoint,
 } from "../checkpoints/fork.js";
+import {
+  type CheckpointSummary,
+  listCheckpoints,
+  type RedoTurn,
+  RewindError,
+  redoTurn,
+  rewindConversation,
+} from "../checkpoints/rewind.js";
 import { snapshotWorkspace } from "../checkpoints/snapshot.js";
 import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
 import { type CompactResult, compactionBlocker, messageChars } from "../compaction/manual.js";
@@ -152,6 +163,14 @@ export type ChatEventBody =
       error?: string;
       context: SessionDetail["context"];
     }
+  | {
+      type: "rewind";
+      /** `rewind` dropped turns after `checkpoint`; `redo` brought turn `checkpoint` back. */
+      action: "rewind" | "redo";
+      checkpoint: number;
+      /** Turns a redo can still bring back. */
+      redo: number;
+    }
   | { type: "session"; session: SessionSummary };
 export type CompactionStatus = "compacted" | "skipped" | "failed" | "interrupted";
 export type ChatEvent = ChatEventBody & { seq: number; at: number };
@@ -224,6 +243,7 @@ export class ChatError extends Error {
       | "INVALID_REQUEST"
       | "ROLLBACK_UNAVAILABLE"
       | "NOTHING_TO_COMPACT"
+      | "NOTHING_TO_REDO"
       | "NOT_SUPPORTED",
     message: string,
   ) {
@@ -285,6 +305,19 @@ interface TurnState {
   abort: AbortController;
 }
 
+/** `GET /v1/sessions/ID/checkpoints`: the session's turns and the turns a redo can bring back. */
+export interface SessionCheckpoints {
+  checkpoints: CheckpointSummary[];
+  redo: { index: number; anchorMessageId: string; prompt: string; filesRolledBack: boolean }[];
+}
+
+export interface RewindOutcome {
+  checkpoint: number;
+  rollback: RollbackReport | null;
+  redo: SessionCheckpoints["redo"];
+  session: SessionDetail;
+}
+
 /** Characters per token when estimating the context fill after a compaction, as the TUI does. */
 const CHARS_PER_TOKEN = 3;
 
@@ -300,6 +333,10 @@ export class ChatSession {
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
   private compaction: TurnState | null = null;
+  /** True while a rewind or redo restores files. */
+  private restoring = false;
+  /** Turns a rewind dropped, oldest first; a new turn clears them. */
+  private redo: RedoTurn[] = [];
   private turnDone: Promise<void> = Promise.resolve();
   private readonly prompts = new Map<string, Pending>();
   private queue: string[] = [];
@@ -376,7 +413,7 @@ export class ChatSession {
   }
 
   get busy(): boolean {
-    return this.turn !== null || this.compaction !== null;
+    return this.turn !== null || this.compaction !== null || this.restoring;
   }
 
   get state(): SessionState {
@@ -491,6 +528,101 @@ export class ChatSession {
   /** Line counts of the files this session edited, against the repository's last commit. */
   diffStats(): Promise<SessionDiffStats> {
     return sessionDiffStats(this.owner.workspace, editedFiles(this.messages));
+  }
+
+  checkpoints(): SessionCheckpoints {
+    return {
+      checkpoints: listCheckpoints(this.messages, this.checkpointTags),
+      redo: this.redo.map(({ index, anchorMessageId, prompt, filesRolledBack }) => ({
+        index,
+        anchorMessageId,
+        prompt,
+        filesRolledBack,
+      })),
+    };
+  }
+
+  /**
+   * Keeps the turns up to `checkpoint` (0 keeps none); with `rollbackFiles` the files the dropped
+   * turns edited go back to their content at the checkpoint (see `src/core/checkpoints/rewind.ts`).
+   */
+  rewind(options: {
+    checkpoint: number;
+    rollbackFiles: boolean;
+    force?: boolean;
+  }): Promise<RewindOutcome> {
+    return this.restore("rewind", options.rollbackFiles, async (backupTag) => {
+      const result = await rewindConversation({
+        cwd: this.owner.workspace,
+        messages: this.messages,
+        redo: this.redo,
+        checkpoint: options.checkpoint,
+        tags: this.checkpointTags,
+        rollbackFiles: options.rollbackFiles,
+        backupTag,
+        ...(options.force ? { force: true } : {}),
+      });
+      return { ...result, checkpoint: options.checkpoint };
+    });
+  }
+
+  /** Brings back the oldest turn a rewind dropped, with its files when they were rolled back. */
+  redoNext(options: { force?: boolean } = {}): Promise<RewindOutcome> {
+    const filesMove = this.redo[0]?.filesRolledBack === true;
+    return this.restore("redo", filesMove, (backupTag) =>
+      redoTurn({
+        cwd: this.owner.workspace,
+        messages: this.messages,
+        redo: this.redo,
+        tags: this.checkpointTags,
+        backupTag,
+        ...(options.force ? { force: true } : {}),
+      }),
+    );
+  }
+
+  private async restore(
+    action: "rewind" | "redo",
+    touchesFiles: boolean,
+    work: (backupTag: string) => Promise<{
+      messages: ChatMessage[];
+      redo: RedoTurn[];
+      rollback: RollbackReport | null;
+      checkpoint: number;
+    }>,
+  ): Promise<RewindOutcome> {
+    if (this.busy) throw new ChatError("SESSION_BUSY", "Wait for the running turn to finish");
+    if (touchesFiles && this.owner.anyBusy())
+      throw new ChatError(
+        "SESSION_BUSY",
+        "Wait for running turns to finish before restoring files",
+      );
+    this.restoring = true;
+    try {
+      const result = await work(`baked/${action}-backup-${crypto.randomUUID().slice(0, 8)}`);
+      const changed = result.messages.length !== this.messages.length;
+      this.messages = result.messages;
+      this.redo = result.redo;
+      if (changed) {
+        this.core = rebuildCore(result.messages);
+        this.context = null;
+      }
+      await this.owner.persist(this);
+      this.emit({ type: "rewind", action, checkpoint: result.checkpoint, redo: this.redo.length });
+      return {
+        checkpoint: result.checkpoint,
+        rollback: result.rollback,
+        redo: this.checkpoints().redo,
+        session: this.detail(),
+      };
+    } catch (err) {
+      if (err instanceof RewindError) throw new ChatError(err.code, err.message);
+      if (err instanceof RollbackError) throw new ChatError("ROLLBACK_UNAVAILABLE", err.message);
+      throw err;
+    } finally {
+      this.restoring = false;
+      this.emitSession();
+    }
   }
 
   /**
@@ -724,6 +856,7 @@ export class ChatSession {
       timestamp: started,
       ...(inputContext ? { inputContext } : {}),
     };
+    if (this.redo.length > 0) this.dropRedo();
     const history = [...this.core, { role: "user" as const, content: modelText }];
     const before = this.messages;
     this.messages = [...before, userMessage];
@@ -938,6 +1071,19 @@ export class ChatSession {
     } else this.queue = [];
   }
 
+  /** Forgets the dropped turns and the snapshots of turns that no longer exist. */
+  private dropRedo(): void {
+    const turns = buildTurns(this.messages);
+    this.redo = [];
+    const tags = this.checkpointTags.filter(
+      (t) => t.index === 0 || turns[t.index - 1]?.anchorMessageId === t.anchorMessageId,
+    );
+    this.meta = {
+      ...this.meta,
+      tabs: this.meta.tabs.map((t) => (t.id === this.tabId ? { ...t, checkpointTags: tags } : t)),
+    };
+  }
+
   /** The state to save: the meta with this tab's model, mode and usage, and every tab's messages. */
   snapshot(): {
     meta: SessionMeta;
@@ -1138,6 +1284,11 @@ export class ChatService {
       if (err instanceof RollbackError) throw new ChatError("ROLLBACK_UNAVAILABLE", err.message);
       throw err;
     }
+  }
+
+  /** True while any loaded session runs a turn, a compaction or a restore. */
+  anyBusy(): boolean {
+    return [...this.live.values()].some((s) => s.busy);
   }
 
   delete(idOrPrefix: string): void {
