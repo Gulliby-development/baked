@@ -24,6 +24,12 @@ export interface CodexAppServerClient {
 export interface CodexAppServerConnection extends CodexAppServerClient {
   onNotification(listener: (method: string, params: unknown) => void): () => void;
   onClose(listener: (error: Error) => void): () => void;
+  /** Handles server-initiated requests; a listener returns true when it will respond. */
+  onServerRequest(
+    listener: (method: string, id: string | number, params: unknown) => boolean,
+  ): () => void;
+  respond(id: string | number, result: unknown): void;
+  respondError(id: string | number, message: string): void;
   readonly closed: boolean;
 }
 
@@ -190,6 +196,9 @@ export async function startCodexAppServerSession(
   >();
   const listeners = new Set<(method: string, params: unknown) => void>();
   const closeListeners = new Set<(error: Error) => void>();
+  const requestListeners = new Set<
+    (method: string, id: string | number, params: unknown) => boolean
+  >();
 
   const notifyClosed = (error: Error) => {
     for (const listener of [...closeListeners]) listener(error);
@@ -207,6 +216,7 @@ export async function startCodexAppServerSession(
     }
     pending.clear();
     listeners.clear();
+    requestListeners.clear();
     try {
       if (!child.killed) child.kill();
     } catch {}
@@ -248,8 +258,12 @@ export async function startCodexAppServerSession(
 
     // Server-initiated requests carry both an id and a method; only bare ids are responses.
     if (typeof message.method === "string" && message.id != null) {
+      const requestId = message.id as string | number;
+      for (const listener of [...requestListeners]) {
+        if (listener(message.method, requestId, message.params)) return;
+      }
       send({
-        id: message.id,
+        id: requestId,
         error: { code: -32601, message: `baked does not handle ${message.method}` },
       });
       return;
@@ -345,6 +359,16 @@ export async function startCodexAppServerSession(
         }
         closeListeners.add(listener);
         return () => closeListeners.delete(listener);
+      },
+      onServerRequest(listener) {
+        requestListeners.add(listener);
+        return () => requestListeners.delete(listener);
+      },
+      respond(id, result) {
+        if (!closed && !ended) send({ id, result });
+      },
+      respondError(id, message) {
+        if (!closed && !ended) send({ id, error: { code: -32000, message } });
       },
       get closed() {
         return closed || ended;

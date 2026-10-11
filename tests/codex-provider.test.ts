@@ -14,11 +14,15 @@ import {
 import type { CodexAppServerConnection } from "../src/core/llm/providers/codex/client.js";
 import {
   buildCodexPromptParts,
-  type CodexRunnerCall,
   CODEX_ADAPTER_CONFIG,
   codexConfigArgs,
 } from "../src/core/llm/providers/codex/runner.js";
-import { CodexSessionRunner } from "../src/core/llm/providers/codex/session.js";
+import {
+  buildCodexNativeRequest,
+  CodexAppServerSessions,
+  createCodexNativeLanguageModel,
+  renderCodexNativeInput,
+} from "../src/core/llm/providers/codex/native.js";
 
 const BASE_OPTIONS: LanguageModelV2CallOptions = {
   prompt: [
@@ -39,10 +43,10 @@ describe("codex provider", () => {
     expect(codex.name).toBe("Codex");
     expect(codex.envVar).toBe("");
     expect(codex.description).toContain("Codex");
-    expect(codex.description).toContain("turn finishes");
+    expect(codex.description).toContain("app-server");
     expect(codex.noAuthLabel).toBe("login required — Enter to authenticate");
     expect(codex.authErrorLabel).toBe("login/session error");
-    expect(codex.badge).toBe("non-streaming");
+    expect(codex.badge).toBeUndefined();
     expect(codex.onRequestAuth).toBeDefined();
     expect(codex.fallbackModels).toEqual([
       { id: "gpt-5.5", name: "GPT-5.5", contextWindow: 272_000 },
@@ -316,187 +320,315 @@ describe("codex provider", () => {
   });
 });
 
-interface FakeTurnReply {
-  text?: string;
-  status?: "completed" | "failed";
-  error?: string;
-  total?: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
-}
+class FakeCodex {
+  readonly requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  readonly responses: Array<{ id: string | number; result?: unknown; error?: string }> = [];
+  onTurnStart: (threadId: string, text: string) => void = () => {};
+  onRespond: (threadId: string, id: string | number, result: unknown) => void = () => {};
+  private readonly listeners = new Set<(method: string, params: unknown) => void>();
+  private readonly requestListeners = new Set<
+    (method: string, id: string | number, params: unknown) => boolean
+  >();
+  private threads = 0;
+  private turns = 0;
+  private nextServerRequest = 100;
+  private readonly requestThreads = new Map<string | number, string>();
+  turnIdFor = new Map<string, string>();
 
-function createFakeConnection(replies: FakeTurnReply[]) {
-  const listeners = new Set<(method: string, params: unknown) => void>();
-  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
-  let threadCount = 0;
-  let turnCount = 0;
-  const emit = (method: string, params: unknown) => {
-    for (const listener of [...listeners]) listener(method, params);
-  };
-  const connection: CodexAppServerConnection = {
+  readonly connection: CodexAppServerConnection = {
     closed: false,
-    async request(method, params) {
-      requests.push({ method, params });
+    request: async (method, params) => {
+      this.requests.push({ method, params });
       if (method === "thread/start") {
-        threadCount += 1;
-        return { thread: { id: `thread-${threadCount}` } };
+        this.threads += 1;
+        return { thread: { id: `thread-${this.threads}` } };
       }
       if (method === "turn/start") {
-        const reply = replies[turnCount] ?? { text: "{}" };
-        turnCount += 1;
-        const threadId = params.threadId;
-        const turnId = `turn-${turnCount}`;
-        queueMicrotask(() => {
-          if (reply.total) {
-            emit("thread/tokenUsage/updated", {
-              threadId,
-              turnId,
-              tokenUsage: {
-                total: {
-                  ...reply.total,
-                  reasoningOutputTokens: 0,
-                  totalTokens: reply.total.inputTokens + reply.total.outputTokens,
-                },
-              },
-            });
-          }
-          if (reply.text) {
-            emit("item/completed", { threadId, turnId, item: { type: "agentMessage", text: reply.text } });
-          }
-          emit("turn/completed", {
-            threadId,
-            turn: {
-              id: turnId,
-              status: reply.status ?? "completed",
-              error: reply.error ? { message: reply.error } : null,
-            },
-          });
-        });
+        this.turns += 1;
+        const threadId = String(params.threadId);
+        const turnId = `turn-${this.turns}`;
+        this.turnIdFor.set(threadId, turnId);
+        const input = params.input as Array<{ text: string }>;
+        queueMicrotask(() => this.onTurnStart(threadId, input[0]?.text ?? ""));
         return { turn: { id: turnId } };
       }
       return {};
     },
-    async waitForNotification() {
+    waitForNotification: async () => {
       throw new Error("not used");
     },
-    close() {},
-    onNotification(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+    close: () => {},
+    onNotification: (listener) => {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
     },
-    onClose() {
-      return () => {};
+    onClose: () => () => {},
+    onServerRequest: (listener) => {
+      this.requestListeners.add(listener);
+      return () => this.requestListeners.delete(listener);
+    },
+    respond: (id, result) => {
+      this.responses.push({ id, result });
+      const threadId = this.requestThreads.get(id) ?? "";
+      queueMicrotask(() => this.onRespond(threadId, id, result));
+    },
+    respondError: (id, error) => {
+      this.responses.push({ id, error });
     },
   };
-  return { connection, requests };
+
+  emit(method: string, params: Record<string, unknown>): void {
+    for (const listener of [...this.listeners]) listener(method, params);
+  }
+
+  text(threadId: string, itemId: string, text: string): void {
+    const turnId = this.turnIdFor.get(threadId);
+    this.emit("item/agentMessage/delta", { threadId, turnId, itemId, delta: text });
+    this.emit("item/completed", { threadId, turnId, item: { type: "agentMessage", id: itemId, text } });
+  }
+
+  usage(threadId: string, inputTokens: number, cachedInputTokens: number, outputTokens: number): void {
+    this.emit("thread/tokenUsage/updated", {
+      threadId,
+      tokenUsage: { total: { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens: 0 } },
+    });
+  }
+
+  complete(threadId: string, status = "completed", error?: string): void {
+    this.emit("turn/completed", {
+      threadId,
+      turn: { id: this.turnIdFor.get(threadId), status, error: error ? { message: error } : null },
+    });
+  }
+
+  toolCall(threadId: string, callId: string, tool: string, args: unknown): void {
+    const id = this.nextServerRequest++;
+    this.requestThreads.set(id, threadId);
+    for (const listener of [...this.requestListeners]) {
+      if (
+        listener("item/tool/call", id, {
+          threadId,
+          turnId: this.turnIdFor.get(threadId),
+          callId,
+          tool,
+          arguments: args,
+        })
+      )
+        return;
+    }
+  }
+
+  count(method: string): number {
+    return this.requests.filter((request) => request.method === method).length;
+  }
 }
 
-const STOP = JSON.stringify({ finishReason: "stop", reasoning: "", text: "done", toolCalls: [] });
+const READ_TOOL: NonNullable<LanguageModelV2CallOptions["tools"]> = [
+  {
+    type: "function",
+    name: "read_file",
+    description: "Read a file",
+    inputSchema: { type: "object", properties: { path: { type: "string" } } },
+  },
+];
 
-function callFor(options: LanguageModelV2CallOptions): CodexRunnerCall {
-  return {
-    modelId: "gpt-5.5",
-    prompt: serializeCodexPrompt(options),
-    parts: buildCodexPromptParts(options),
-    schema: buildCodexSchema(options),
-  };
-}
-
-const failingFallback = {
+const unusedFallback = createCodexLanguageModel("gpt-5.5", {
   async run(): Promise<never> {
     throw new Error("fallback should not run");
   },
-};
+});
 
-describe("codex app-server session runner", () => {
-  const first: LanguageModelV2CallOptions = BASE_OPTIONS;
-  const second: LanguageModelV2CallOptions = {
-    ...BASE_OPTIONS,
-    prompt: [
-      ...BASE_OPTIONS.prompt,
-      { role: "assistant", content: [{ type: "text", text: "done" }] },
-      { role: "user", content: [{ type: "text", text: "Now read tsconfig.json" }] },
-    ],
-  };
+async function readParts(stream: ReadableStream<{ type: string }>) {
+  const parts: Array<Record<string, unknown>> = [];
+  const reader = stream.getReader();
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    parts.push(next.value as Record<string, unknown>);
+  }
+  return parts;
+}
 
-  test("continues one thread and sends only the new messages", async () => {
-    const { connection, requests } = createFakeConnection([
-      { text: STOP, total: { inputTokens: 1000, cachedInputTokens: 0, outputTokens: 50 } },
-      { text: STOP, total: { inputTokens: 2200, cachedInputTokens: 900, outputTokens: 80 } },
+describe("codex app-server native model", () => {
+  const userPrompt: LanguageModelV2CallOptions["prompt"] = [
+    { role: "system", content: "You are baked." },
+    { role: "user", content: [{ type: "text", text: "Read a.txt" }] },
+  ];
+
+  function setup() {
+    const fake = new FakeCodex();
+    const sessions = new CodexAppServerSessions(async () => fake.connection);
+    const model = createCodexNativeLanguageModel("gpt-5.5", sessions, unusedFallback);
+    return { fake, model };
+  }
+
+  test("puts system messages into the thread instructions and registers tools", () => {
+    const request = buildCodexNativeRequest("gpt-5.5", { prompt: userPrompt, tools: READ_TOOL });
+    expect(request.instructions).toContain("You are baked.");
+    expect(request.conversation).toHaveLength(1);
+    expect(request.dynamicTools[0]).toMatchObject({ type: "function", name: "read_file" });
+    expect(renderCodexNativeInput(request.conversation, "")).toBe("Read a.txt");
+  });
+
+  test("streams text and reports usage from the thread totals", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => {
+      fake.text(threadId, "m1", "Hello");
+      fake.usage(threadId, 1000, 0, 20);
+      fake.complete(threadId);
+    };
+
+    const { stream } = await model.doStream({ prompt: userPrompt, tools: READ_TOOL });
+    const parts = await readParts(stream);
+
+    expect(parts.map((part) => part.type)).toEqual([
+      "stream-start",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "finish",
     ]);
-    const runner = new CodexSessionRunner(async () => connection, failingFallback);
-
-    await runner.run(callFor(first));
-    const result = await runner.run(callFor(second));
-
-    expect(requests.filter((request) => request.method === "thread/start")).toHaveLength(1);
-    const threadStart = requests.find((request) => request.method === "thread/start");
+    expect(parts.at(-1)).toMatchObject({
+      finishReason: "stop",
+      usage: { inputTokens: 1000, outputTokens: 20 },
+    });
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
     expect(threadStart?.params.ephemeral).toBe(true);
-    expect(String(threadStart?.params.baseInstructions)).toContain("AVAILABLE TOOLS");
-
-    const turns = requests.filter((request) => request.method === "turn/start");
-    expect(turns).toHaveLength(2);
-    const secondInput = JSON.stringify(turns[1]?.params.input);
-    expect(secondInput).toContain("Now read tsconfig.json");
-    expect(secondInput).not.toContain("Read package.json");
-    expect(secondInput).toContain("(continued)");
-    expect(result.usage).toMatchObject({ inputTokens: 1200, cachedInputTokens: 900, outputTokens: 30 });
-  });
-
-  test("starts a new thread when the transcript does not extend a known one", async () => {
-    const { connection, requests } = createFakeConnection([{ text: STOP }, { text: STOP }]);
-    const runner = new CodexSessionRunner(async () => connection, failingFallback);
-
-    await runner.run(callFor(first));
-    await runner.run(
-      callFor({
-        ...BASE_OPTIONS,
-        prompt: [
-          { role: "system", content: "You are baked." },
-          { role: "user", content: [{ type: "text", text: "Something else" }] },
-        ],
-      }),
-    );
-
-    expect(requests.filter((request) => request.method === "thread/start")).toHaveLength(2);
-  });
-
-  test("retries of the same step run on a fresh thread", async () => {
-    const { connection, requests } = createFakeConnection([{ text: STOP }, { text: STOP }]);
-    const runner = new CodexSessionRunner(async () => connection, failingFallback);
-
-    await runner.run(callFor(first));
-    await runner.run(callFor(first));
-
-    expect(requests.filter((request) => request.method === "thread/start")).toHaveLength(2);
-  });
-
-  test("surfaces a failed turn and drops its thread", async () => {
-    const { connection, requests } = createFakeConnection([
-      { status: "failed", error: "You've hit your usage limit" },
-      { text: STOP },
+    expect(String(threadStart?.params.baseInstructions)).toContain("You are baked.");
+    expect(threadStart?.params.dynamicTools).toEqual([
+      expect.objectContaining({ name: "read_file" }),
     ]);
-    const runner = new CodexSessionRunner(async () => connection, failingFallback);
+  });
 
-    await expect(runner.run(callFor(first))).rejects.toThrow("usage limit");
-    expect(requests.some((request) => request.method === "thread/unsubscribe")).toBe(true);
+  test("ends the step at a tool call and answers it on the next call in the same turn", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => fake.toolCall(threadId, "call-1", "read_file", { path: "a.txt" });
+
+    const first = await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    expect(first.finishReason).toBe("tool-calls");
+    expect(first.content).toEqual([
+      { type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: '{"path":"a.txt"}' },
+    ]);
+
+    let answered: unknown;
+    fake.onRespond = (threadId, _id, result) => {
+      answered = result;
+      fake.usage(threadId, 2200, 900, 40);
+      fake.text(threadId, "m2", "It says hello.");
+      fake.complete(threadId);
+    };
+    const second = await model.doGenerate({
+      prompt: [
+        ...userPrompt,
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: { path: "a.txt" } }],
+        },
+        {
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId: "call-1", toolName: "read_file", output: { type: "text", value: "hello" } },
+          ],
+        },
+      ],
+      tools: READ_TOOL,
+    });
+
+    expect(answered).toEqual({ contentItems: [{ type: "inputText", text: "hello" }], success: true });
+    expect(second.content).toEqual([{ type: "text", text: "It says hello." }]);
+    expect(second.usage).toMatchObject({ inputTokens: 2200, cachedInputTokens: 900 });
+    expect(fake.count("thread/start")).toBe(1);
+    expect(fake.count("turn/start")).toBe(1);
+  });
+
+  test("sends only the new user message as the next turn on the same thread", async () => {
+    const { fake, model } = setup();
+    const inputs: string[] = [];
+    fake.onTurnStart = (threadId, text) => {
+      inputs.push(text);
+      fake.text(threadId, `m${inputs.length}`, "Done.");
+      fake.complete(threadId);
+    };
+
+    await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    await model.doGenerate({
+      prompt: [
+        ...userPrompt,
+        { role: "assistant", content: [{ type: "text", text: "Done." }] },
+        { role: "user", content: [{ type: "text", text: "Now b.txt" }] },
+      ],
+      tools: READ_TOOL,
+    });
+
+    expect(inputs).toEqual(["Read a.txt", "Now b.txt"]);
+    expect(fake.count("thread/start")).toBe(1);
+  });
+
+  test("starts a new thread when the conversation does not extend a known one", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => {
+      fake.text(threadId, "m", "Done.");
+      fake.complete(threadId);
+    };
+
+    await model.doGenerate({ prompt: userPrompt, tools: READ_TOOL });
+    await model.doGenerate({
+      prompt: [
+        { role: "system", content: "You are baked." },
+        { role: "user", content: [{ type: "text", text: "Something else" }] },
+      ],
+      tools: READ_TOOL,
+    });
+
+    expect(fake.count("thread/start")).toBe(2);
+  });
+
+  test("surfaces a failed turn as a stream error", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => fake.complete(threadId, "failed", "You've hit your usage limit");
+
+    await expect(model.doGenerate({ prompt: userPrompt, tools: READ_TOOL })).rejects.toThrow(
+      "usage limit",
+    );
+  });
+
+  test("interrupts the turn when the step is aborted", async () => {
+    const { fake, model } = setup();
+    const controller = new AbortController();
+    fake.onTurnStart = (threadId) => {
+      fake.emit("item/agentMessage/delta", {
+        threadId,
+        turnId: fake.turnIdFor.get(threadId),
+        itemId: "m",
+        delta: "Working",
+      });
+      controller.abort();
+    };
+
+    await expect(
+      model.doGenerate({ prompt: userPrompt, tools: READ_TOOL, abortSignal: controller.signal }),
+    ).rejects.toThrow();
+    expect(fake.count("turn/interrupt")).toBe(1);
   });
 
   test("falls back to codex exec when app-server cannot start", async () => {
     let fallbackCalls = 0;
-    const runner = new CodexSessionRunner(
-      async () => {
-        throw new Error("app-server unavailable");
+    const fallback = createCodexLanguageModel("gpt-5.5", {
+      async run() {
+        fallbackCalls += 1;
+        return {
+          text: JSON.stringify({ finishReason: "stop", reasoning: "", text: "exec", toolCalls: [] }),
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        };
       },
-      {
-        async run() {
-          fallbackCalls += 1;
-          return { text: STOP, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } };
-        },
-      },
-    );
+    });
+    const sessions = new CodexAppServerSessions(async () => {
+      throw new Error("app-server unavailable");
+    });
+    const model = createCodexNativeLanguageModel("gpt-5.5", sessions, fallback);
 
-    await runner.run(callFor(first));
-    await runner.run(callFor(second));
-    expect(fallbackCalls).toBe(2);
+    const result = await model.doGenerate({ prompt: userPrompt });
+    expect(result.content).toEqual([{ type: "text", text: "exec" }]);
+    expect(fallbackCalls).toBe(1);
   });
 });
-

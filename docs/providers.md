@@ -49,9 +49,17 @@ For Claude models BAKED marks the system prompt and the newest message with Copi
 
 ## OpenAI Codex
 
-The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation: while a conversation only grows, each step sends just the new messages, so Codex reuses the same prompt cache key and the cached prefix. A compacted, edited or retried conversation starts a new thread. Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off, because BAKED sends its own.
+The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation, so Codex reuses the same prompt cache key and the cached prefix across steps. BAKED's system prompt becomes the thread's instructions; Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off.
 
-Output still appears when each step finishes. If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec`. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
+BAKED's tools are registered with Codex as native function tools, and replies stream as they are generated:
+
+- When the model calls a tool, the step ends with that call and Codex's turn waits. BAKED runs the tool (with the usual approvals) and the result goes back into the same turn.
+- Codex hands over one tool call at a time, so parallel calls from one model response arrive as consecutive steps.
+- A new user message starts a new turn on the same thread with only that message. A compacted, edited or retried conversation, or a changed tool list, starts a new thread with the conversation so far as a transcript.
+- Codex has no way to force a tool choice; BAKED asks for it in the turn text instead.
+- Token usage comes from Codex's thread totals, including cached input. The usage of a response that called tools is counted in the step after the tool result.
+
+The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
 
 ## Model fallback
 
