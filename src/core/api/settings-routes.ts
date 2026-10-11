@@ -16,8 +16,9 @@ import { configDir as defaultConfigDir } from "../platform/index.js";
 import { deleteSecret, hasSecret, setSecret } from "../secrets.js";
 import { planSettingsChange, SettingsChangeError, settingsView } from "../settings/values.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
+import { readConfigObject } from "../workflows/routing-config.js";
 import type { RouteContext } from "./route-context.js";
-import { readJsonFile, replaceInPlace } from "./setup-routes.js";
+import { replaceInPlace } from "./setup-routes.js";
 
 /** Where secret settings live; tests pass an in-memory one. */
 export interface SettingsSecretStore {
@@ -65,7 +66,7 @@ export async function settingsRoute(ctx: SettingsRouteContext): Promise<Response
   const secrets = ctx.secrets ?? systemSecrets;
   const layer = (file: string): Record<string, unknown> => {
     try {
-      return readJsonFile(file);
+      return readConfigObject(file);
     } catch (error) {
       return ctx.fail(409, "INPUT_CHANGED", error instanceof Error ? error.message : String(error));
     }

@@ -230,7 +230,7 @@ Each announcement goes to three places:
 }
 ```
 
-The desktop app edits the same settings under Settings, All projects, Run notifications.
+The desktop app edits the same settings under Settings, All projects, Run notifications. In the terminal app, `/notifications` shows them and opens a menu, and `/notifications system on|off`, `/notifications webhook URL|off` and `/notifications blocking-only on|off` change them in the global config; an idle workflow worker restarts to apply the change, and a worker driving a run applies it after BAKED restarts. Headers stay in the config file on both.
 
 ## Gates, budgets and estimates
 
@@ -578,6 +578,19 @@ Keys: ↑/↓ select, Tab switches between the global (`~/.baked/config.json`) a
 The edit form has Model (a `provider/model` ID, or `$class` outside a class), Effort (←/→: unset, `default`, `low`, `medium`, `high`, `xhigh`, `max`) and Fallback (up to three model IDs separated by commas). Enter on Model or Fallback opens the list of available models: the model names (`$active`, `$fast`, ... with the model each resolves to) first, for a route's Model only, then the models of each provider with a key or login, then the providers without one, greyed out with the reason. Typing filters the list, ↑/↓ and Enter choose, Esc returns to the form. A chosen model fills Model, or is added to Fallback (the oldest is dropped past three). When the text matches no listed model, "Use … as typed" puts it in the field as it is, and both fields can also be typed directly. Ctrl+S saves from any field, and Enter saves on Name and Effort; a route without effort or fallback models is written as a plain string. Before writing, the screen checks the route and the whole layer as a run start would: an empty model, a class naming another class, a class reference that neither layer defines (including removing a class that a route still uses), fallback models that are classes, repeat the primary model or exceed three, and anything the `modelRouting` schema rejects. A refused change is not written and the form lists why. Saving writes only the `modelRouting` section of the selected layer, and an emptied section is removed. New runs use the saved routing (an idle workflow worker restarts to read it); started runs keep the routing frozen in their `routing.json` until a [reroute](#switching-a-run-to-another-model).
 
 The desktop app shows and edits the same entries in Settings > Model routing, through `GET` and `PATCH /v1/workflow/routing` of the [local API](../desktop/api.md), with the same checks. Its Model and Fallback models fields offer the same list from `GET /v1/models`.
+
+Scripts and CI change the same entries with `baked workflow routing`, which runs the same checks and writes only the `modelRouting` section of the project config (or the global one with `--scope global`):
+
+```sh
+baked workflow routing set role:reviewer openai/gpt-5 --effort high --fallback anthropic/claude-sonnet-4-6
+baked workflow routing set '$coding' anthropic/claude-sonnet-4-6 --scope global
+baked workflow routing set stage:sdd/plan '$review'
+baked workflow routing clear role:reviewer
+baked workflow routing review require      # independentReview; unset removes it
+baked workflow routing show --json         # modelRouting of both files
+```
+
+A target is a class (`$name` or `class:name`), a role (`role:NAME`), a profile (`profile:ID`) or a stage (`stage:WORKFLOW/STAGE`). A refused change is not written; the reasons go to stderr (or `{saved: false, problems}` with `--json`) and the command exits 1. `--json` prints `{saved: true, file, modelRouting}` for a saved change.
 
 `baked workflow models [--model ID] [--provider ID] [--json]` prints what a route, `--route`, `--model`, a reroute or a fallback can name: the model names with the model each resolves to for the run model (`--model`, else `defaultModel`), then the models of each provider, and the providers without a key or login with that reason. `--json` prints `{runModel, classes: [{ref, model, source}], providers}`, where `providers` has the shape of `GET /v1/models`.
 
