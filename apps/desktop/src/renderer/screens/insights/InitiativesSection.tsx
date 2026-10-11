@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { chat } from "../../client/chat.js";
 import type { InitiativeView } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
@@ -8,6 +9,7 @@ import { tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import {
+  canSwitchModel,
   featureCounts,
   featureRow,
   initiativeLine,
@@ -89,19 +91,19 @@ function ModelSwitch({
     }
   };
   return (
-    <div className="ins-model">
-      <p className="small">
-        Model <span className="mono">{view.model ?? "default"}</span>
+    <div className="flex max-w-[360px] flex-col gap-1.5">
+      <p className="m-0 text-[12px]">
+        Model <span className="font-mono">{view.model ?? "default"}</span>
       </p>
       {open && (
         <form
-          className="stack-form"
+          className="flex flex-col gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (model.trim()) void submit();
           }}
         >
-          <label htmlFor={inputId} className="field-label">
+          <label htmlFor={inputId} className="text-[12px] text-dim-foreground">
             Switch the initiative to model
           </label>
           <input
@@ -110,6 +112,7 @@ function ModelSwitch({
             list={listId}
             value={model}
             placeholder="provider/model"
+            className="px-[10px] py-2"
             onChange={(e) => setModel(e.target.value)}
           />
           <datalist id={listId}>
@@ -117,14 +120,15 @@ function ModelSwitch({
               <option key={id} value={id} />
             ))}
           </datalist>
-          {error && <div className="banner error">{error}</div>}
-          <button
+          {error && <Alert tone="error">{error}</Alert>}
+          <Button
             type="submit"
-            className="btn"
+            variant="secondary"
+            size="md"
             disabled={busy || !model.trim() || model.trim() === view.model}
           >
             Switch model
-          </button>
+          </Button>
         </form>
       )}
     </div>
@@ -292,6 +296,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           })}
         </ol>
       )}
+      <ModelSwitch projectKey={projectKey} view={view} onDone={reload} />
       <p className="m-0 text-[12px] text-dim-foreground">
         Shared budget: {tokens(view.budget.used.tokens)} of{" "}
         {tokens(view.budget.limits.maxTotalTokens)} tokens · plan revision {view.planRevision}
