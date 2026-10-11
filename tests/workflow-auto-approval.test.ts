@@ -146,6 +146,24 @@ describe("auto approval", () => {
       expect(result.approval).toBeNull();
       expect(result.reasons.join("\n")).toContain(reason);
     });
+  const anywhere: RunPolicy = { ...limited, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["**"] } } };
+  const create = (path: string): Write => ({ path, action: "create" });
+  test("creating a manifest that is not there yet is approved, modifying or overwriting one is not", () => {
+    const absent = { exists: () => false };
+    expect(evaluateAutoApproval(anywhere, manifest, spec, graph([create("pyproject.toml"), create("tsconfig.json")]), [], [], absent).approval?.mode).toBe("limits");
+    expect(evaluateAutoApproval(anywhere, manifest, spec, graph([create("package.json")]), [], [], { exists: () => true }).reasons.join("\n")).toContain("package.json always needs a person");
+    expect(evaluateAutoApproval(anywhere, manifest, spec, graph([modify("package.json")]), [], [], absent).approval).toBeNull();
+    expect(evaluateAutoApproval(anywhere, manifest, spec, graph([create("package.json")]), []).approval).toBeNull();
+  });
+  test("creating a lock file, a CI file or project instructions still needs a person", () => {
+    for (const path of ["bun.lock", ".github/workflows/ci.yml", "AGENTS.md", ".env"])
+      expect(evaluateAutoApproval(anywhere, manifest, spec, graph([create(path)]), [], [], { exists: () => false }).approval).toBeNull();
+  });
+  test("tasks the host added by splitting do not count against the task limit", () => {
+    const three = graph([modify("src/a.ts")], [modify("src/b.ts")], [modify("src/c.ts")]);
+    expect(evaluateAutoApproval(limited, manifest, spec, three, [], [], { hostSplitTasks: 1 }).approval?.mode).toBe("limits");
+    expect(evaluateAutoApproval(limited, manifest, spec, three, [], [], { hostSplitTasks: 0 }).reasons.join("\n")).toContain("3 tasks exceed 2");
+  });
   test("glob matching ignores case like Windows paths", () => {
     expect(evaluateAutoApproval(limited, manifest, spec, graph([modify("SRC/A.ts")]), []).approval?.mode).toBe("limits");
   });

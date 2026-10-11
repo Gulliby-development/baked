@@ -476,7 +476,9 @@ export class WorkflowScheduler {
                       ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
                     ];
                     if (scopeAdvised) return problems;
-                    const advice = planScopeAdvice(policy, parsed.data.taskGraph);
+                    const advice = planScopeAdvice(policy, parsed.data.taskGraph, (path) =>
+                      existsSync(join(runRoot(this.store.workspace, state), path)),
+                    );
                     if (advice.length) scopeAdvised = true;
                     return [...problems, ...advice];
                   },
@@ -490,6 +492,7 @@ export class WorkflowScheduler {
               const planned = planGraph(spec, plan);
               const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
               state.graph = graph;
+              state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
               state.rootGraph = structuredClone(state.graph);
               state.manifest.planHash = hashBytes(state.plan);
               state.manifest.rootGraphHash = hashJson(state.graph);
@@ -678,6 +681,11 @@ export class WorkflowScheduler {
                         policyDecisions(this.store.artifacts(runId), (artifact) =>
                           this.store.readArtifact(runId, artifact.id),
                         ),
+                        {
+                          hostSplitTasks: state.hostSplitTasks,
+                          exists: (path) =>
+                            existsSync(join(runRoot(this.store.workspace, state), path)),
+                        },
                       );
                 const body = {
                   manifest: state.manifest,
