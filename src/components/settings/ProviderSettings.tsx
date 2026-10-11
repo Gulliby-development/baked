@@ -1,7 +1,7 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useState } from "react";
 import { getSupportedEfforts } from "../../core/llm/provider-options.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import type {
   AppConfig,
   ContextManagementConfig,

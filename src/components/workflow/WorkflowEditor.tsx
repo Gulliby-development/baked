@@ -1,4 +1,3 @@
-import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import type { PastRun } from "../../core/workflows/estimate.js";
@@ -42,6 +41,7 @@ import {
   validateEditor,
   withHistory,
 } from "../../core/workflows/v2/editor.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { Hint, PremiumPopup } from "../ui/index.js";
 
 /** Everything the editor needs from the outside, so it renders the same in tests and in the app. */

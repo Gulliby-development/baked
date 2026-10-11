@@ -1,4 +1,3 @@
-import { useKeyboard } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
@@ -13,6 +12,7 @@ import {
   pendingSplitApproval,
   summarizeInitiative,
 } from "../../core/workflows/initiatives/view-model.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, PremiumPopup, Section } from "../ui/index.js";
 import { errorHint, formatDuration, formatTokens } from "./format.js";

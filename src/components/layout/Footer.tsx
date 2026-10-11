@@ -1,8 +1,8 @@
-import { useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
 import { garble } from "../../core/utils/splash.js";
+import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 
 // Priority tiers:
 //   1 = always show (core actions, no git/quit/stop)

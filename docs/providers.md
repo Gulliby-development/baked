@@ -5,6 +5,7 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | Connection | Provider ID | Authentication |
 | --- | --- | --- |
 | Claude | `anthropic` | `ANTHROPIC_API_KEY` or `/keys` |
+| Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`), see below |
 | OpenAI API | `openai` | `OPENAI_API_KEY` or `/keys` |
 | OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`) |
 | GitHub Copilot | `copilot` | `COPILOT_API_KEY`, `/keys` or `--set-key copilot`, see below |
@@ -18,6 +19,18 @@ baked --list-models openai
 baked --set-key anthropic sk-ant-...
 ```
 
+## Claude Code
+
+The Claude Code connection runs Claude models through the official `claude` CLI and the account it is signed in to, so a Claude subscription works without an API key.
+
+1. Install Claude Code and make sure `claude` is on `PATH`. On Windows use the native build (`claude.exe`, `claude install`); the npm `claude.cmd` shim cannot be started directly. `BAKED_CLAUDE_CODE_PATH` points BAKED at another executable.
+2. Sign in with `/claude-code login` (it runs `claude auth login` and opens the browser) or run `claude auth login` in a terminal.
+3. Pick a model: `claude-code/opus`, `claude-code/sonnet`, `claude-code/haiku` or `claude-code/fable` follow the newest model of each family. Any model name Claude Code accepts also works, for example `claude-code/claude-opus-4-8` or `claude-code/sonnet[1m]` for the 1M context window where the plan allows it.
+
+BAKED keeps one `claude -p --input-format stream-json` process per conversation, with all of Claude Code's built-in tools, MCP servers, hooks, skills and project `CLAUDE.md` turned off. BAKED's tool list and adapter rules become the Claude Code system prompt, and each agent step sends only the messages added since the previous step. Claude Code puts its prompt-cache breakpoints on that growing conversation, so later steps read the earlier context from the cache; usage records cache reads and cache writes separately. A step whose transcript does not continue an open conversation (after compaction, a retry, or a changed tool list) starts a new process. Idle processes stop after 10 minutes, and at most four stay open.
+
+Replies arrive when each step finishes (no token streaming). The CLI ignores sampling settings such as temperature and maximum output tokens. Usage counts against the Claude Code plan limits; the cost BAKED shows is the API-price equivalent.
+
 ## GitHub Copilot
 
 The Copilot connection uses your Copilot subscription through the same API as the IDE extensions. It is not an official GitHub integration.
@@ -27,6 +40,10 @@ The Copilot connection uses your Copilot subscription through the same API as th
 3. Save it with `baked --set-key copilot <token>` or `/keys`.
 
 A 401 means the token was rotated; copy it again.
+
+## Prompt cache
+
+On the Claude API every agent loop (chat, subagents and workflow attempts) sends a cache breakpoint on the system prompt and Anthropic's request-level automatic breakpoint, which follows the newest message. Each step then reads the tools, the system prompt and the earlier steps from the cache instead of paying full price for them. `cache.ttl` ([configuration](configuration.md)) sets the lifetime of both: `5m` (default) or `1h`. Usage records cache reads and writes; costs price cache writes at the 5-minute write price.
 
 For Claude models BAKED marks the system prompt and the newest message with Copilot's `copilot_cache_control`, the cache marker the IDE extensions send, so later agent steps can read the conversation from the prompt cache. GPT models on Copilot rely on the upstream automatic prefix cache. Copilot bills premium requests rather than tokens, so the cache shortens responses and lowers the token counts BAKED records, not the Copilot bill.
 

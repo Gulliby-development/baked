@@ -4,6 +4,8 @@ import type { RunRequest } from "../../client/runs.js";
 export interface ApprovalBody {
   writes?: { path: string; action: string }[];
   checks?: { id: string }[];
+  /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
+  assumptions?: string[];
   executionMode?: "inline" | "worktree";
   worktree?: { path: string; branch: string; userChangesInScope: string[] };
   acceptance?: unknown;

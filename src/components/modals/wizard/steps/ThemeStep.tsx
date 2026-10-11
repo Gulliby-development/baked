@@ -1,9 +1,9 @@
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { loadConfig, saveGlobalConfig } from "../../../../config/index.js";
 import { applyTheme, listThemes, useTheme, useThemeStore } from "../../../../core/theme/index.js";
 import type { BorderStrength } from "../../../../core/theme/loader.js";
+import { useKeyboard, useTerminalDimensions } from "../../../../hooks/useTerminalEvents.js";
 import { VirtualList } from "../../../ui/index.js";
 import { fitPopupHeight } from "../../../ui/popup-geometry.js";
 import { Gap, Hr, StepHeader } from "../primitives.js";

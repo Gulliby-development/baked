@@ -1,9 +1,9 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { memo, type ReactNode, useCallback, useRef, useState } from "react";
 import { icon as iconFn } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { ThemeTokens } from "../../core/theme/tokens.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { Overlay } from "../layout/shared.js";
 import { PopupScroll } from "./FocusTarget.js";
 import { KeyCaps } from "./KeyCap.js";

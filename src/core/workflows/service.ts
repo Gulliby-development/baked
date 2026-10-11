@@ -218,6 +218,8 @@ export class NativeWorkflowService implements WorkflowService {
       sizingReplans: 0,
       analysisReplans: 0,
       taskContinuations: {},
+      taskRestarts: {},
+      taskCarry: {},
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
       report: null,

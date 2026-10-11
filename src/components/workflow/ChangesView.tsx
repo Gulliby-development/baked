@@ -1,8 +1,8 @@
-import { useKeyboard } from "@opentui/react";
 import { useEffect, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import type { RunFileDiff } from "../../core/workflows/run-diff.js";
 import type { FileChange } from "../../core/workflows/view.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { Hint } from "../ui/index.js";
 
 const MARK: Record<FileChange["action"], string> = { created: "+", modified: "~", deleted: "-" };

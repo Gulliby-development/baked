@@ -44,7 +44,12 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "./initiatives/plan.js";
-import { mutationLeaseFor, type WorkspaceLeases, withinWorkflow } from "./leases.js";
+import {
+  commandMayBeRunning,
+  mutationLeaseFor,
+  type WorkspaceLeases,
+  withinWorkflow,
+} from "./leases.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
@@ -659,6 +664,8 @@ export class WorkflowScheduler {
                   deferredCriteria: state.spec.criteria
                     .filter((c) => c.method === "post-release")
                     .map((c) => c.id),
+                  // Defaults the agents chose instead of asking; approving accepts them.
+                  assumptions: state.spec.assumptions,
                   boundedCorrection: true,
                   // Granted walk-through capabilities are shown to the person; the frozen gates
                   // that hold them are part of the manifest the digest covers.
@@ -1974,15 +1981,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           if (outcome.kind === "fatal") continue;
           if (outcome.kind === "done") {
             if (!fatal) await this.integrateTask(runId, state, policy, profiles, outcome, signal);
+            delete state.taskCarry[entry.task.id];
           } else if (outcome.kind === "interrupted") {
-            lost.set(entry.task.id, outcome.reason);
+            const restart = !fatal && this.restartLostTask(runId, state, outcome);
+            if (restart && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
+            if (!restart) lost.set(entry.task.id, outcome.reason);
             this.store.transaction(() => {
               this.store.taskStatus(runId, entry.task.id, "interrupted");
               this.store.finishStep(runId, entry.child, "interrupted");
             });
           } else if (outcome.kind === "rejected") {
             const again =
-              outcome.edited === true && this.continueAtCap(runId, state, entry.child, entry.task);
+              outcome.edits !== undefined &&
+              this.continueAtCap(runId, state, entry.child, entry.task);
+            if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
             if (!again) failure ??= outcome.error;
             this.store.transaction(() => {
               this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
@@ -2015,6 +2027,43 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("OUTPUT_INVALID", "Task dependencies remain blocked", {
         reason: "dependency_failed",
       });
+  }
+  /**
+   * Decides whether a task whose worker was lost runs again in this drive, from the run worktree's
+   * current content and with the edits its worker left, instead of blocking the run. Each task
+   * gets one such restart per run. A lost worktree lease belongs to another owner now, and an
+   * effect of unknown outcome in the worktree needs recovery, so neither restarts.
+   */
+  private restartLostTask(
+    runId: string,
+    state: RuntimeState,
+    outcome: Extract<WorkerOutcome, { kind: "interrupted" }>,
+  ): boolean {
+    const { entry } = outcome;
+    if (outcome.leaseLost || (state.taskRestarts[entry.task.id] ?? 0) > 0) return false;
+    const unsettled = this.store
+      .effects(runId)
+      .some(
+        (e) =>
+          ["prepared", "unknown"].includes(e.status) && intentRoot(e.intent_json) === entry.path,
+      );
+    if (unsettled || commandMayBeRunning(this.store, runId)) return false;
+    this.store.transaction(() => {
+      state.taskRestarts[entry.task.id] = 1;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/restarts/${entry.task.id}.json`,
+        canonical({
+          taskId: entry.task.id,
+          stepId: entry.child,
+          reason: outcome.reason,
+          carriedPaths: outcome.edits?.changed ?? [],
+        }),
+      );
+      this.store.saveState(runId, state);
+    });
+    return true;
   }
   /**
    * Reserves the agent attempts of a whole batch before any task starts. The batch shrinks to the
@@ -2108,9 +2157,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const signal = controller.signal;
     if (runSignal.aborted) onRun();
     if (leaseSignal.aborted) onLease();
+    const known = new Set(this.store.effects(runId).map((e) => e.id));
+    let before: Record<string, string> | undefined;
     try {
-      const known = new Set(this.store.effects(runId).map((e) => e.id));
-      const before = await sourceManifest(root, generatedPaths(policy), signal);
+      before = await sourceManifest(root, generatedPaths(policy), signal);
+      const earlierEdits = await this.applyCarry(runId, state, entry, root);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2118,7 +2169,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           state,
           policy,
           entry.profile,
-          entry.extra,
+          earlierEdits && entry.extra && typeof entry.extra === "object"
+            ? { ...entry.extra, earlierEdits }
+            : entry.extra,
           signal,
           task,
           0,
@@ -2129,18 +2182,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         ),
       );
       const after = await sourceManifest(root, generatedPaths(policy), signal);
-      const journaled = this.store
-        .effects(runId)
-        .filter(
-          (e) =>
-            !known.has(e.id) &&
-            e.kind === "file_patch" &&
-            intentRoot(e.intent_json) === entry.path &&
-            ["applied", "reconciled"].includes(e.status) &&
-            e.before_hash !== e.after_hash,
-        )
-        .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-      const changed = [...new Set([...changedPaths(before, after), ...journaled])].sort();
+      const changed = this.workerChanges(runId, entry, known, before, after);
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
         return {
@@ -2160,7 +2202,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "rejected",
           entry,
-          edited: changed.length > 0,
+          ...(changed.length ? { edits: { before, changed } } : {}),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
@@ -2190,10 +2232,17 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         !(error instanceof WorkflowFault) ||
         error.code === "WORKSPACE_BUSY" ||
         error.details.reason === "provider_unavailable";
+      // Another owner may hold the lease before the next heartbeat notices it.
+      const leaseLost =
+        leaseSignal.aborted || this.store.lease(entry.lease())?.owner_id !== this.leases.owner;
       if (lostWorker)
         return {
           kind: "interrupted",
           entry,
+          leaseLost,
+          ...(!leaseLost && before
+            ? await this.lostWorkerEdits(runId, policy, entry, known, before)
+            : {}),
           reason:
             leaseSignal.aborted && !(error instanceof Error && error.message)
               ? "its worktree lease was lost"
@@ -2205,6 +2254,47 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     } finally {
       runSignal.removeEventListener("abort", onRun);
       leaseSignal.removeEventListener("abort", onLease);
+    }
+  }
+  /** The files a task's worker changed in its worktree: by its manifest and by the effect journal. */
+  private workerChanges(
+    runId: string,
+    entry: BatchEntry,
+    known: Set<string>,
+    before: Record<string, string>,
+    after: Record<string, string>,
+  ): string[] {
+    const journaled = this.store
+      .effects(runId)
+      .filter(
+        (e) =>
+          !known.has(e.id) &&
+          e.kind === "file_patch" &&
+          intentRoot(e.intent_json) === entry.path &&
+          ["applied", "reconciled"].includes(e.status) &&
+          e.before_hash !== e.after_hash,
+      )
+      .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+    return [...new Set([...changedPaths(before, after), ...journaled])].sort();
+  }
+  /** The edits a lost worker left in its worktree, which a restart of its task carries over. */
+  private async lostWorkerEdits(
+    runId: string,
+    policy: RunPolicy,
+    entry: BatchEntry,
+    known: Set<string>,
+    before: Record<string, string>,
+  ): Promise<{ edits?: { before: Record<string, string>; changed: string[] } }> {
+    try {
+      const after = await sourceManifest(
+        join(this.store.workspace, entry.path),
+        generatedPaths(policy),
+      );
+      const changed = this.workerChanges(runId, entry, known, before, after);
+      return changed.length ? { edits: { before, changed } } : {};
+    } catch {
+      // An unreadable worktree leaves nothing to carry; the restart starts from the base.
+      return {};
     }
   }
   /**
@@ -2451,6 +2541,59 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         }),
       ),
     );
+  }
+  /**
+   * Keeps what a batch task's attempt changed before its worktree is removed: the content after
+   * the edit is stored like a pre-image, by hash, so the continuing attempt can get it back.
+   */
+  private carryEdits(
+    runId: string,
+    state: RuntimeState,
+    entry: BatchEntry,
+    edits: { before: Record<string, string>; changed: string[] },
+  ): void {
+    const root = join(this.store.workspace, entry.path);
+    this.store.transaction(() => {
+      state.taskCarry[entry.task.id] = Object.fromEntries(
+        edits.changed.map((path) => [
+          path,
+          {
+            before: edits.before[path] ?? null,
+            after: capturePreImage(this.store, runId, workspacePath(root, path)),
+          },
+        ]),
+      );
+      this.store.saveState(runId, state);
+    });
+  }
+  /**
+   * Puts a continued batch task's earlier edits into its new worktree, for each path the base has
+   * not changed since, and describes them for the prompt like the single-writer path does.
+   */
+  private async applyCarry(
+    runId: string,
+    state: RuntimeState,
+    entry: BatchEntry,
+    root: string,
+  ): Promise<{ paths: string[]; patch: string; note: string } | null> {
+    const carry = state.taskCarry[entry.task.id];
+    if (!carry) return null;
+    const applied: Record<string, string | null> = {};
+    for (const [path, { before, after }] of Object.entries(carry)) {
+      if (fileHash(workspacePath(root, path)) !== before) continue;
+      const content = after === null ? null : readKept(this.store, runId, after);
+      if (after !== null && content === null) continue;
+      // Journaled as the new attempt's own edit: its write tools accept the file as one they made.
+      this.journal.publish(runId, entry.attemptId, path, content, before, "file_patch", root);
+      applied[path] = before;
+    }
+    const paths = Object.keys(applied);
+    if (!paths.length) return null;
+    return {
+      paths,
+      patch: await this.taskPatch(runId, root, applied),
+      note: "These files already contain the edits in the patch, from an earlier attempt of this task in this run; keep what is correct. Read only the spans you still have to change.",
+    };
   }
   /** Removes a settled task's worktree and releases its lease; a worktree with unsettled effects stays for recovery. */
   private async releaseTaskWorktree(runId: string, entry: BatchEntry): Promise<void> {
@@ -3495,8 +3638,22 @@ type WorkerOutcome =
       checks: WorkerCheck[];
     }
   /** The task's result is refused: a change outside its writes, or no complete implementation. */
-  | { kind: "rejected"; entry: BatchEntry; error: unknown; edited?: boolean }
+  | {
+      kind: "rejected";
+      entry: BatchEntry;
+      error: unknown;
+      /** The files the attempt changed in its worktree, with the manifest before it. */
+      edits?: { before: Record<string, string>; changed: string[] };
+    }
   /** The task's worker or worktree lease was lost; only this task stops. */
-  | { kind: "interrupted"; entry: BatchEntry; reason: string }
+  | {
+      kind: "interrupted";
+      entry: BatchEntry;
+      reason: string;
+      /** Another owner took the task worktree's lease, so the worktree is not this run's to reuse. */
+      leaseLost: boolean;
+      /** The files the lost worker had changed in its worktree, with the manifest before it. */
+      edits?: { before: Record<string, string>; changed: string[] };
+    }
   /** The whole run stops: it was aborted or its budget is used up. */
   | { kind: "fatal"; entry: BatchEntry; error: unknown };

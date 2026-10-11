@@ -1,4 +1,5 @@
 import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
+
 /**
  * LlmSelector — model picker.
  *
@@ -11,13 +12,13 @@ import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
  *  - Fuzzy search auto-expands matching groups.
  */
 
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { frecencyScore, getFrecencyDB } from "../../core/history/index.js";
 import { providerIcon } from "../../core/icons.js";
 import { PROVIDER_CONFIGS, type ProviderModelInfo } from "../../core/llm/models.js";
 import { getProvider } from "../../core/llm/providers/index.js";
 import { useAllProviderModels } from "../../hooks/useAllProviderModels.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { isModelFree } from "../../stores/statusbar.js";
 import { useUIStore } from "../../stores/ui.js";
 import {

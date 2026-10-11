@@ -14,13 +14,18 @@ import { cleanStepMessages } from "../agents/stream-options.js";
 import { ContextManager } from "../context/manager.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { resolveModel } from "../llm/provider.js";
-import { buildProviderOptions, withRouteEffort } from "../llm/provider-options.js";
+import {
+  buildProviderOptions,
+  getEphemeralCache,
+  withAutomaticCache,
+  withRouteEffort,
+} from "../llm/provider-options.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
 import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
-import { CheckRunner } from "../verification/check-runner.js";
-import { sourceManifest } from "../verification/snapshot.js";
+import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
+import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
@@ -44,6 +49,7 @@ import {
   AttemptStepController,
   type AttemptUsageRecord,
   DEFAULT_MAX_ATTEMPT_TOKENS,
+  MIN_ATTEMPT_STEPS,
   type StepLike,
   stepTokens,
 } from "./step-budget.js";
@@ -286,6 +292,64 @@ export class NativeAgentExecutor implements AgentExecutor {
           },
         });
       }
+      const fixable = policy.checks.filter((c) => c.fix);
+      if (
+        !request.hostTools &&
+        request.profile.role === "implementer" &&
+        request.profile.allowedTools.includes("edit_file") &&
+        policy.allowedTools.includes("edit_file") &&
+        fixable.length > 0
+      ) {
+        const task = request.task;
+        available.apply_fix = tool({
+          description: `Run the automatic fixer of a check (${fixable.map((c) => c.id).join(", ")}) on each file this task writes, then run the check and return its result. Use it first for lint or format findings the fixer can resolve, then edit by hand only what remains.`,
+          inputSchema: z.object({ checkId: z.string() }).strict(),
+          execute: async ({ checkId }) => {
+            const check = fixable.find((c) => c.id === checkId);
+            if (!check?.fix || !task)
+              throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
+            const fix = check.fix;
+            const paths = task.writes
+              .filter((w) => w.action !== "delete" && fileHash(workspacePath(root, w.path)))
+              .map((w) => w.path);
+            const generated = generatedPaths(policy);
+            const before = await sourceManifest(root, generated, request.signal);
+            const scope = new ProcessScope();
+            try {
+              const outputs: string[] = [];
+              // One run per file, each recorded like an edit, so undo and rollback see it.
+              for (const path of paths)
+                await guard.execute("edit_file", { path }, async () => {
+                  const executable = fix.executable === "bun" ? process.execPath : fix.executable;
+                  const result = await executeCheckCommand(scope, executable, [...fix.args, path], {
+                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                    env: buildCheckEnv(check),
+                    timeoutMs: check.timeoutMs,
+                    signal: request.signal,
+                  });
+                  outputs.push(`${path}: exit ${String(result.exitCode)}`);
+                });
+              const after = await sourceManifest(root, generated, request.signal);
+              const outside = changedPaths(before, after).filter((p) => !paths.includes(p));
+              if (outside.length)
+                throw new WorkflowFault(
+                  "CAPABILITY_DENIED",
+                  `The ${check.id} fixer changed files outside the task: ${outside.join(", ")}`,
+                );
+              const checked = await new CheckRunner(this.store, scope).run(
+                request.runId,
+                request.attemptId,
+                check,
+                request.signal,
+                root,
+              );
+              return { fixed: outputs, check: checked };
+            } finally {
+              await scope.stop();
+            }
+          },
+        });
+      }
       const schema = outputSchemas[request.profile.output];
       if (!schema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
       let submitted: unknown;
@@ -320,13 +384,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
       // The attempt cap never exceeds what the run budget still allows, so an attempt started
       // close to the run limit finalizes and submits instead of failing on the run cap mid-loop.
+      const remaining = this.store.remainingTokens(request.runId, policy, request.attemptId);
       const budget = new AttemptStepController({
         maxSteps: request.maxSteps,
         maxTokens: Math.min(
           request.maxTokens ?? Number.POSITIVE_INFINITY,
           request.attemptTokens ?? policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS,
-          this.store.remainingTokens(request.runId, policy, request.attemptId),
+          remaining,
         ),
+        // Token caps come from history on whatever provider produced it; each attempt may still
+        // take a minimum number of steps at its own step cost, within what the run allows.
+        minSteps: Math.min(request.maxSteps, MIN_ATTEMPT_STEPS),
+        ceilingTokens: remaining,
         submitTools,
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
@@ -351,9 +420,16 @@ export class NativeAgentExecutor implements AgentExecutor {
       let lastCallUsage: LanguageModelUsage | undefined;
       let result: { steps: readonly StepLike[]; text: string; usage: Partial<LanguageModelUsage> };
       try {
+        // Anthropic prompt cache: a breakpoint after the tools and system prompt, and the
+        // automatic one after the newest message, so each step re-reads the earlier ones.
+        const cacheTtl = this.config.cache?.ttl ?? "5m";
         result = await generateText({
           model: resolveModel(request.profile.model),
-          instructions: request.profile.instructions,
+          instructions: {
+            role: "system",
+            content: request.profile.instructions,
+            providerOptions: getEphemeralCache(cacheTtl),
+          },
           prompt: request.prompt,
           tools: available,
           stopWhen: [
@@ -364,7 +440,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           maxRetries: 0,
           maxOutputTokens: request.profile.maxOutputTokens,
           abortSignal: request.signal,
-          providerOptions: provider.providerOptions,
+          providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
           headers: provider.headers,
           onStepEnd: (step) => {
             finished.push(step);

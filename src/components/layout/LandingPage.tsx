@@ -1,9 +1,9 @@
-import { useTerminalDimensions } from "@opentui/react";
 import { useEffect, useState } from "react";
 import { icon } from "../../core/icons.js";
 import type { ProviderStatus } from "../../core/llm/provider.js";
 import type { PrerequisiteStatus } from "../../core/setup/prerequisites.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { useMCPStore } from "../../stores/mcp.js";
 import { useRepoMapStore } from "../../stores/repomap.js";
 import { BakingLogo } from "./BakingLogo.js";

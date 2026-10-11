@@ -111,6 +111,14 @@ export const CheckSchema = z
     scope: z.enum(["task", "feature"]),
     envNames: UniqueStrings,
     writes: z.array(RelativePath),
+    /**
+     * A fixer for what the check reports, such as `ruff check --fix` or `biome check --write`.
+     * Implementers run it on their task's files with `apply_fix`; the file path is appended.
+     */
+    fix: z
+      .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -218,6 +226,10 @@ export const PolicySchema = z
   })
   .strict();
 export type ExecutionMode = "inline" | "worktree";
+export type ClarificationMode = "ask" | "assume";
+/** What a blocking question does under a policy; a policy without the field asks a person. */
+export const clarificationOf = (policy: { clarification?: ClarificationMode | undefined }) =>
+  policy.clarification ?? "ask";
 /** The execution mode of a policy; a policy without the field runs inline. */
 export const executionModeOf = (policy: { executionMode?: ExecutionMode | undefined }) =>
   policy.executionMode ?? "inline";
@@ -893,6 +905,8 @@ export interface StartRequest {
   executionMode?: ExecutionMode;
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
+  clarification?: ClarificationMode;
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.

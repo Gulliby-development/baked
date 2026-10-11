@@ -1,7 +1,8 @@
 import { decodePasteBytes, type PasteEvent } from "@opentui/core";
-import { useKeyboard, useRenderer } from "@opentui/react";
+import { useRenderer } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import { useTheme } from "../../../core/theme/index.js";
+import { useKeyboard } from "../../../hooks/useTerminalEvents.js";
 import { selectTopDialog, useDialogStore } from "../../../stores/dialog.js";
 import { PremiumPopup } from "../PremiumPopup.js";
 import { Search } from "../Search.js";
