@@ -227,6 +227,8 @@ export class NativeWorkflowService implements WorkflowService {
       instructionHashes.push({ source: PROJECT_MEMORY_ARTIFACT, hash: hashBytes(memory) });
     const state: RuntimeState = {
       prompt: request.prompt,
+      requestText: request.prompt,
+      coverageRaised: false,
       ownerLabel: request.ownerLabel,
       stageIndex: 0,
       manifest: {

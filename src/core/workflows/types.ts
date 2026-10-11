@@ -74,6 +74,10 @@ export const RuntimeStateSchema = z
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
     taskSteps: z.record(z.string(), z.number().int().positive()).default({}),
+    /** The request as the user wrote it; `prompt` grows with host notes and clarifications. */
+    requestText: z.string().default(""),
+    /** Whether the request-coverage finding was raised; it is raised once per run. */
+    coverageRaised: z.boolean().default(false),
     /** Tasks the host added by splitting oversized test tasks; they do not count against the auto-approval task limit. */
     hostSplitTasks: z.number().int().nonnegative().default(0),
     /** Times plan-time sizing sent the plan back to be split; it does so once. */
