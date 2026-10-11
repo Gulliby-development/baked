@@ -24,6 +24,8 @@ interface SessionResources {
   context: ContextManager;
   cache: SharedCacheRef;
   disposeCache: () => void;
+  /** The Baked map settings last applied to `context`, to apply a changed config only once. */
+  mapSettings?: string;
 }
 
 /**
@@ -72,12 +74,17 @@ export class BakeChatHost implements ChatAgentHost {
       const { getMCPManager } = await import("../mcp/index.js");
       await getMCPManager().connectAll(this.config.mcpServers);
     }
-    const { context, cache } = await this.resources(request.sessionId);
+    const resources = await this.resources(request.sessionId);
+    const { context, cache } = resources;
     context.setContextWindow(provider.contextWindow);
     context.setProjectInstructions(
       buildInstructionPrompt(loadInstructions(this.workspace, this.config.instructionFiles)),
     );
     context.setBakeMode(request.mode);
+    this.applyContextSettings(resources);
+    // The provider's prompt cache dies after its idle lifetime; map diffs kept past it only cost
+    // tokens, as in the terminal UI.
+    context.maybeReseedExpiredCache(this.config.cache?.ttl === "1h" ? 3_540_000 : 270_000);
     const agent = createChatAgent({
       config: this.config,
       cwd: this.workspace,
@@ -97,6 +104,29 @@ export class BakeChatHost implements ChatAgentHost {
     });
     const turnAgent: TurnAgent = agent;
     return { agent: turnAgent, contextWindow: provider.contextWindow };
+  }
+
+  /** Applies the config's task router and Baked map settings, which the settings API may change. */
+  private applyContextSettings(resources: SessionResources): void {
+    const { context } = resources;
+    const config = this.config;
+    context.setTaskRouter(config.taskRouter);
+    context.setRepoMapEnabled(config.repoMap !== false);
+    const map = JSON.stringify([
+      config.semanticSummaries,
+      config.semanticSummaryLimit,
+      config.semanticAutoRegen,
+      config.repoMapTokenBudget,
+    ]);
+    if (resources.mapSettings === map) return;
+    resources.mapSettings = map;
+    if (config.semanticSummaries !== undefined)
+      context.setSemanticSummaries(config.semanticSummaries).catch(() => {
+        // Summaries are best effort; the map works without them.
+      });
+    context.setSemanticSummaryLimit(config.semanticSummaryLimit);
+    context.setSemanticAutoRegen(config.semanticAutoRegen);
+    context.setRepoMapTokenBudget(config.repoMapTokenBudget);
   }
 
   /**

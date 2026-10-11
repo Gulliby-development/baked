@@ -163,6 +163,17 @@ The local HTTP API (`baked serve`, `src/core/api/`, built in parallel) will expo
 
 Terminal UI slash commands (`/add`, `/project`) are part of the project screen work, not this change.
 
+## Known projects
+
+Every folder BAKED was opened in is listed in `<configDir>/known-projects.json` (`src/core/projects/known.ts`), which the terminal picker, `baked projects` and the desktop app share. An entry can be pinned, forgotten (its sessions and runs stay in the folder) and renamed. A rename sets a display name of at most 120 characters for that entry only; it does not change `baked/project.json`. An empty name restores the default: the manifest name, else the folder name. Each surface renames through `renameKnownProject`:
+
+| Surface | How |
+| --- | --- |
+| Terminal UI | `/project rename NAME` for the current folder; `/projects`, then `Tab` and Rename… for any folder |
+| Shell | `baked projects rename [PATH] NAME` |
+| Local API | `POST /v1/projects/rename` with `{path, name}` (capability `project-rename`, see the [API](desktop/api.md#projects-and-project-setup-exists-extended-by-b)) |
+| Desktop | Rename… on a card in All projects |
+
 ## Decisions taken by default
 
 - Manifest in the checkout under `baked/`, plus a user registry for trust and multi-root lookup, rather than a registry-only model: a single-repo project then needs no setup outside the repository.

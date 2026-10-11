@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseHead, readGitBranch } from "../src/main/git-branch.ts";
-import { manageKnownProject, ProjectActionError } from "../src/main/project-actions.ts";
+import {
+  manageKnownProject,
+  ProjectActionError,
+  renameKnownProject,
+} from "../src/main/project-actions.ts";
 import {
   BADGE_FILL,
   BADGE_TEXT,
@@ -83,6 +87,28 @@ describe("project actions", () => {
         throw new Error("should not run");
       }),
     ).rejects.toBeInstanceOf(ProjectActionError);
+  });
+
+  test("a rename goes to the backend, or to the command with the name", async () => {
+    const posted: unknown[] = [];
+    const backend = async (path: string, body: unknown): Promise<ApiResponse> => {
+      posted.push([path, body]);
+      return { status: 200, body: { projects: [] } };
+    };
+    const calls: string[][] = [];
+    const cli = async (args: string[]): Promise<string> => {
+      calls.push(args);
+      return "";
+    };
+    expect(await renameKnownProject("/p", "Shop", [backend], cli)).toBe("api");
+    expect(posted).toEqual([["/v1/projects/rename", { path: "/p", name: "Shop" }]]);
+    const old = reply(404, {
+      error: { code: "NOT_FOUND", message: "No endpoint /v1/projects/rename" },
+    });
+    expect(await renameKnownProject("/p", "", [old], cli)).toBe("cli");
+    expect(calls).toEqual([["projects", "rename", "/p", ""]]);
+    const refused = reply(400, { error: { code: "INVALID_REQUEST", message: "Too long" } });
+    await expect(renameKnownProject("/p", "x", [refused], cli)).rejects.toThrow("Too long");
   });
 });
 

@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) and `settings` (`GET|PATCH /v1/settings`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) and `settings` (`GET|PATCH /v1/settings`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -249,6 +249,7 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 | Method and path | Body | Result |
 | --- | --- | --- |
 | `POST /v1/projects/pin`, `/unpin`, `/forget` | `{path}` (absolute) | the `GET /v1/projects` list; 404 for a folder that is not known |
+| `POST /v1/projects/rename` | `{path, name}` (absolute path; `name` at most 120 characters, trimmed) | the `GET /v1/projects` list with the new `name`; `""` restores the manifest or folder name. Only the shared list changes, not `baked/project.json`. 404 for a folder that is not known. Capability `project-rename` |
 | `GET /v1/projects/current/instructions` | | `{files: [{order, path, absolutePath, source, scope: "project" \| "global", bytes, hash, content}], promptBytes}`: the instruction files every chat and workflow agent reads, in order; `hash` is the SHA-256 of the file's bytes |
 | `PUT /v1/projects/current/instructions` | `{path, content, expectedHash}` | the file entry plus `affectedRuns` (IDs of runs that have not ended and froze this file); only a listed file can be written (404 otherwise; a project file wins over a global one with the same path), 409 `INPUT_CHANGED` when `expectedHash` no longer matches |
 | `GET /v1/workflow/checks` | | `{checks: [Check & {lastResult?}], workflowsEnabled}`: the commands runs use as evidence (`workflows.policy.checks`, project config first) |
@@ -306,7 +307,7 @@ interface SettingDefinition {
 }
 ```
 
-A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`.
+A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
 
 ## Code graph
 
@@ -337,7 +338,7 @@ interface GraphView {
 
 | Mockup | Endpoints |
 | --- | --- |
-| All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget` |
+| All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget\|rename` |
 | Project home | `GET /v1/projects/current`, `GET /v1/workflow/runs`, `GET /v1/attention`, `GET /v1/workflow/doctor` |
 | Needs you | `GET /v1/attention` (stream) of every open project; answers go to the owning run, initiative or session |
 | Chat session | `/v1/sessions/*`, `GET /v1/models`, `GET /v1/mentions`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
