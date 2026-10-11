@@ -5,9 +5,13 @@ import { newId } from "../src/core/workflows/store.js";
 import {
   answeredQuestion,
   collectProjectMemory,
+  editProjectMemory,
   PROJECT_MEMORY_ARTIFACT,
+  projectMemoryView,
   renderProjectMemory,
 } from "../src/core/workflows/project-memory.js";
+import { executeWorkflowCommand, formatProjectMemory } from "../src/headless/workflow.js";
+import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -123,5 +127,76 @@ describe("project memory across runs", () => {
     await completeRun(fixture, fixturePolicy, "Plain text");
     const off = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: { ...fixturePolicy, projectMemory: false } });
     expect(fixture.service.store.state(off.runId).projectMemory).toBeNull();
+  });
+});
+
+describe("editing project memory", () => {
+  test("notes, rewording, forgetting and restoring change what new runs read", async () => {
+    const fixture = workflowFixture({ executor: (root) => new AskingExecutor(root) });
+    cleanups.push(fixture.dispose);
+    const { service, executor } = fixture;
+    await completeRun(fixture, fixturePolicy, "Plain text, no newline");
+    const { store } = service;
+    let view = projectMemoryView(store, fixturePolicy);
+    expect(view.enabled).toBe(true);
+    const answer = view.entries.find((e) => e.kind === "answer");
+    const assumption = view.entries.find((e) => e.kind === "assumption");
+    const check = view.entries.find((e) => e.kind === "check");
+    if (!answer || !assumption || !check) throw new Error("Expected recorded entries");
+    // The policy's own check is listed but not sent.
+    expect(check.sent).toBe(false);
+    expect(answer.id).toMatch(/^a-[0-9a-f]{10}$/);
+
+    const note = editProjectMemory(store, { action: "add", text: "  Keep   values ASCII.  " });
+    editProjectMemory(store, { action: "edit", id: answer.id, text: "JSON with a trailing newline" });
+    editProjectMemory(store, { action: "forget", id: assumption.id });
+    expect(() => editProjectMemory(store, { action: "edit", id: check.id, text: "x" })).toThrow("cannot be reworded");
+    expect(() => editProjectMemory(store, { action: "forget", id: "a-0000000000" })).toThrow("No project memory entry");
+    expect(() => editProjectMemory(store, { action: "add", text: "   " })).toThrow("must not be empty");
+
+    view = projectMemoryView(store, fixturePolicy);
+    expect(view.entries[0]).toMatchObject({ id: note, kind: "note", text: "Keep values ASCII." });
+    expect(view.entries.find((e) => e.id === answer.id)).toMatchObject({ text: "JSON with a trailing newline", recorded: "Plain text, no newline" });
+    expect(view.hidden.map((e) => e.id)).toEqual([assumption.id]);
+    expect(view.rendered).toContain("Notes people keep for this project:\n- Keep values ASCII.");
+    expect(view.rendered).toContain("A: JSON with a trailing newline");
+    expect(view.rendered).not.toContain(ASSUMPTION);
+
+    // A new run captures the edited memory.
+    executor.prompts = {};
+    rmSync(join(fixture.root, "value.txt"));
+    const next = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: fixturePolicy });
+    const captured = store.readArtifact(next.runId, store.state(next.runId).projectMemory?.artifactId ?? "");
+    expect(captured).toContain("Keep values ASCII.");
+    expect(captured).not.toContain(ASSUMPTION);
+
+    editProjectMemory(store, { action: "restore", id: assumption.id });
+    editProjectMemory(store, { action: "restore", id: answer.id });
+    editProjectMemory(store, { action: "forget", id: note });
+    view = projectMemoryView(store, fixturePolicy);
+    expect(view.hidden).toEqual([]);
+    expect(view.entries.some((e) => e.kind === "note")).toBe(false);
+    expect(view.entries.find((e) => e.id === answer.id)?.text).toBe("Plain text, no newline");
+    expect(collectProjectMemory(store).assumptions.map((a) => a.text)).toEqual([ASSUMPTION]);
+    expect(projectMemoryView(store, { ...fixturePolicy, projectMemory: false }).enabled).toBe(false);
+  });
+
+  test("baked workflow memory lists and edits from the command line", async () => {
+    const fixture = workflowFixture();
+    cleanups.push(fixture.dispose);
+    const run = (argv: string[]) => executeWorkflowCommand(fixture.service, parseWorkflowArgs(["memory", ...argv]), signal());
+    const empty = (await run([])) as ReturnType<typeof projectMemoryView>;
+    expect(formatProjectMemory(empty)).toContain("Project memory is empty");
+    const added = (await run(["add", "--text", "Use tabs"])) as ReturnType<typeof projectMemoryView> & { id: string };
+    expect(added.entries.map((e) => e.text)).toEqual(["Use tabs"]);
+    expect(formatProjectMemory(added)).toContain(`${added.id}  note    Use tabs`);
+    await run(["edit", added.id, "--text", "Use spaces"]);
+    expect(((await run(["list"])) as ReturnType<typeof projectMemoryView>).entries[0]?.text).toBe("Use spaces");
+    await run(["forget", added.id]);
+    expect(((await run([])) as ReturnType<typeof projectMemoryView>).entries).toEqual([]);
+    expect(() => parseWorkflowArgs(["memory", "add"])).toThrow("requires --text");
+    expect(() => parseWorkflowArgs(["memory", "forget"])).toThrow("expects an entry ID");
+    expect(() => parseWorkflowArgs(["memory", "forget", "n-1", "--text", "x"])).toThrow("--text is not valid");
+    expect(() => parseWorkflowArgs(["memory", "drop", "n-1"])).toThrow("memory accepts");
   });
 });
