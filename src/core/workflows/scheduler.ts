@@ -1813,7 +1813,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
-      const preloaded = await preloadTaskFiles(root, task.writes);
+      const preloaded = await preloadTaskFiles(
+        root,
+        task.writes,
+        `${task.title}\n${task.description}`,
+      );
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -1833,7 +1837,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
               ? {
                   taskFiles: {
                     content: preloaded,
-                    note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines. Edit them directly; read them again only for spans of an outlined file or to cite evidence.",
+                    note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines followed by the spans of the symbols the task names. Edit them directly; read them again only for other spans of an outlined file or to cite evidence.",
                   },
                 }
               : {}),
