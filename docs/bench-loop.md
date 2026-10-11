@@ -9,7 +9,7 @@ The bench loop tunes BAKED by building small, useful apps with it, round after r
 3. **Build.** An implementer runs each of the 5 new apps and 3 fixed control apps (url-shortener, md-site, expenses-py) through `baked workflow run` with fixed settings (`--worktree --writers 3`, sizing, `clarification: assume`) and records tokens, steps, time, interventions and corrections.
 4. **Verify.** A verifier clones each app, follows only its README, runs its tests and a smoke test, and screenshots UI apps.
 5. **Analyze and scout.** An analyst turns each run into findings with a point fix and a broader option; a scout reads harness news once per round and keeps a map of task types to workflows.
-6. **Backlog and fix.** Findings become issues on the project board; a fixer implements up to 6 per round through ordinary pull requests.
+6. **Backlog and fix.** Findings become issues on the project board; a fixer implements up to 6 per round through ordinary pull requests. The backlog role also ranks scout ideas and puts the top one into the fix set as the round's broad feature; only things the owner alone can do or decide are labelled `needs-gulliby`.
 7. **Publish.** Apps that pass verification become public MIT repositories in `Gulliby-development` with a README, a one-shot SVG logo and CI on three operating systems. By default each round's batch waits for the owner's approval (`publish.mode: "approve-per-round"`); `"auto"` publishes without asking.
 8. **Report.** One round report and one row per run in a metrics ledger.
 

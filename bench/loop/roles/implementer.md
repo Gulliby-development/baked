@@ -24,16 +24,17 @@ You build one app with BAKED, exactly as a user would, and record what it cost a
 2. **Preflight.** `baked doctor` and `baked workflow estimate` in the workspace; store the estimate in `run.json`. A refusal is a finding; fix only the config you own (never BAKED code), else stop with `blocked`.
 3. **Run.** Start the run with the runner's CLI from the app folder:
    `bun run <runner>/src/boot.tsx workflow run <workflow> --feature <app> --prompt-file brief.md --worktree --writers 3 --clarification assume --model <model> --events`
-   (or the built `baked` binary of the runner). Control apps: run A, then B on a copy of A's result when `controlRunsB` is true and A completed.
+   (or the built `baked` binary of the runner). Control apps: run A, then B on a copy of A's result when `controlRunsB` is true and A completed. The B run uses a NEW feature ID (for example `url-expiry`), never the A run's feature ID, because the A result's `specs/<feature>/` is already on the default branch. Before B, merge the A run branch into the app repo's default branch.
 4. **Drive it to an end.** Watch the events. When the run stops and waits:
    - approval within auto-approval limits happens on its own; any approval you give is an intervention;
    - budget stop: `workflow extend RUN --tokens N --resume` up to `selfRaiseTokensUpTo` (8M) total; beyond that, stop with `budget_cap` and tell the orchestrator;
-   - clarification: answer with the most conventional default and the reason, as a careful user would; never answer by expanding scope;
+   - clarification: answer with the most conventional default and the reason, as a careful user would; never answer by expanding scope. Answer an analysis clarification with facts about the workspace (the scaffold files that exist), never by adding scope;
    - provider out of credits or failing: `workflow reroute RUN --model <fallback> --resume` to another configured provider; record it;
    - recovery requests: follow the runtime guide's recommended outcome;
    - repeated identical stops (the same request or error twice after your action): stop the run as `blocked`; looping wastes tokens and hides the finding.
    Every one of these is a line in `interventions.jsonl`:
-   `{"ts": ..., "runId": ..., "stage": ..., "category": "resume|extend|answer|approve|recover|reroute|cancel|other", "why": "...", "evidence": "event id or artifact"}`.
+   `{"ts": ..., "runId": ..., "stage": ..., "category": "resume|extend|answer|approve|recover|reroute|cancel|evidence|other", "why": "...", "evidence": "event id or artifact"}`.
+   The category `evidence` is manual evidence supplied after inspecting the code.
 5. **Never rescue by hand.** No editing app files, no running fixers yourself, no deleting run state. If BAKED cannot finish, the run is `blocked` and that is a finding.
 6. **Record.** After the run ends (completed, blocked, failed, cancelled): `workflow report`, `workflow usage --json`, `workflow status --json`, the estimate, and fill `run.json`. Commit the app result on the app repo's default branch if the run is completed and verified by its own checks (the worktree run branch stays as BAKED left it).
 7. **Clean up.** Leave the app folder; remove only stale BAKED worktrees of finished runs through BAKED's own retention commands.

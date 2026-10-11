@@ -35,7 +35,7 @@ Success is measured on the control apps across rounds: fewer interventions, fewe
 | 4 | Verify | `roles/verifier.md` | per app | `apps/<app>/verify.json`, screenshot for UI apps |
 | 5 | Analyze | `roles/analyst.md` | per app, right after verify | `apps/<app>/findings.md` |
 | 6 | Scout | `roles/scout.md` | once per round (parallel with phase 3) | `scout.md`, updates `ledger/workflow-map.md` |
-| 7 | Backlog | `roles/backlog.md` | once per round | issues on GitHub + board, `backlog.md` (fix set) |
+| 7 | Backlog | `roles/backlog.md` | once per round | issues on GitHub + board, `backlog.md` (fix set; scout ideas are ranked here, not by the owner) |
 | 8 | Fix | `roles/fixer.md` | per selected issue | merged PRs in `Gulliby-development/baked` |
 | 9 | Publish | `roles/publisher.md` | once per round, behind the publish gate | public repos, `publish.md` |
 | 10 | Report | this file | once per round | `report.md`, row in `ledger/metrics.csv`, summary to the owner |
@@ -208,7 +208,7 @@ Numbers across rounds mean something only if the inputs are fixed. These rules h
 - **Control apps are fixed.** Same prompts (`controls/`, verbatim from rounds 1–2), same workflow and settings (`runs.*`), same `referenceModel`, fresh folder each round. They are measurement fixtures, not products: they are never published (`publishControlApps: false`).
 - **Same settings for new apps,** except where `ledger/workflow-map.md` names another workflow for the app's task type. Each round may run at most one deliberate **experiment** (a different preset, setting or provider on one app), named in `round.json`, so a change of results can be attributed.
 - **Every metric row records** the BAKED commit, workflow, settings hash, provider and model per stage, and whether the run is a control, a new app or an experiment. Runs on different providers or before/after a provider-changing PR are reported in separate groups, never averaged together.
-- **Interventions are counted strictly.** Any action a person would have had to take (resume, extend, answer, approve outside auto-approval, recover, reroute, cancel, manual file edit) is one intervention with a category, even when the implementer takes it on its own. The implementer never edits app files by hand to rescue a run.
+- **Interventions are counted strictly.** Any action a person would have had to take (resume, extend, answer, approve outside auto-approval, recover, reroute, cancel, evidence supplied after inspecting the code, manual file edit) is one intervention with a category, even when the implementer takes it on its own. The implementer never edits app files by hand to rescue a run.
 
 ## Budgets
 
@@ -216,7 +216,7 @@ Numbers across rounds mean something only if the inputs are fixed. These rules h
 |---|---|---|
 | One BAKED run | starts at the policy budget; the implementer may raise it up to `selfRaiseTokensUpTo` (8M) on its own | above 8M only with the owner's OK; otherwise stop the run and record `budget_cap` |
 | All BAKED runs in a round | `roundRunTokens` 30M | finish runs in progress, skip unbuilt new apps (record them), go to phase 6 |
-| Fix work per round | `maxFixIssuesPerRound` 6 issues, at least `minBroadFeaturesPerRound` 1 broad feature when one is open | the rest stays on the board for later rounds |
+| Fix work per round | `maxFixIssuesPerRound` 6 issues, at least `minBroadFeaturesPerRound` 1 broad feature when one is open (the top-ranked `idea` counts; the backlog role ranks ideas, the owner does not pick) | the rest stays on the board for later rounds |
 | One fix PR | `maxPrAttemptsPerIssue` 3 CI rounds | leave the PR open with a comment on what fails, take the next issue |
 | Round wall clock | `maxWallClockHours` 30 | finish the current step, write the report with what is done |
 | Orchestrator and role tokens | not capped by the loop; the harness's own limits apply | if the harness is rate-limited, wait and resume, don't skip phases |
@@ -252,6 +252,7 @@ The publish gate never blocks the loop: a batch waiting for approval stays in `s
 **Pause and ask** (keep the session alive, report once, continue other phases that don't depend on the answer):
 - The device's permission mode refuses a command the loop needs.
 - A run needs more than 8M tokens.
+- An issue labelled `needs-gulliby` blocks work (accounts, money, organization settings). Scout ideas never wait for the owner; the backlog role triages them.
 - A finding is a security issue in BAKED itself (report it privately to the owner; don't file a public detail if the repo becomes public).
 
 **Change course instead of stopping:**

@@ -17,7 +17,7 @@ You decide whether an app works for a stranger who finds it on GitHub. BAKED's o
 1. **Clean clone.** `git clone` the app repo into a temporary folder. Follow the README's install steps literally. Missing or wrong steps fail.
 2. **Tests and static checks** from the README (tests, typecheck, lint). All green, no skipped tests added to get green.
 3. **Smoke test** of the real interface, 3–6 commands or actions taken from the README examples plus one error case from the brief:
-   - CLI: run each example, compare output and exit code with what the README claims;
+   - CLI: run each example, compare output and exit code with what the README claims. README examples are checked against real output; a mismatch fails the check. Round 2 examples: a `--json` example showing relative paths while the program prints absolute paths, and a `--summary` example with indentation the program does not print;
    - server: start it, call each documented endpoint, stop it;
    - web UI: `bun run build`, serve the build, open it with Playwright (the PC has Chromium), do the main action, check there are no console errors, take a 1280×800 screenshot of the main screen with realistic sample input.
 4. **Brief coverage.** Every feature, flag, exit code and error case the brief names exists. List gaps; a missing core feature fails, a missing minor detail is a finding but can pass.
