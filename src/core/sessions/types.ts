@@ -1,4 +1,4 @@
-import type { BakeMode } from "../../types/index.js";
+import type { BakeMode, ChatMessage } from "../../types/index.js";
 
 export interface TabMeta {
   workflowRunId?: string;
@@ -21,6 +21,11 @@ export interface TabMeta {
   messageRange: { startLine: number; endLine: number };
   /** Saved checkpoint git tags for session persistence */
   checkpointTags?: Array<{ index: number; anchorMessageId: string; gitTag: string }>;
+  /**
+   * Turns an undo dropped, oldest first, with their messages, so a redo can put them back. Cleared
+   * when a new turn starts.
+   */
+  redoTurns?: Array<{ index: number; anchorMessageId: string; messages: ChatMessage[] }>;
   /** Per-tab verbose render. false (default) = rail layout, true = raw stream. */
   verbose?: boolean;
 }

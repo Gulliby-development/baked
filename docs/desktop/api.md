@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`) and `routing` (`/v1/workflow/routing`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`) and `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -30,7 +30,7 @@ A session is a chat conversation stored in `.baked/sessions/ID/` of the project,
 ### Types
 
 ```ts
-type Mode = "default" | "architect" | "auto";            // "plan" is not offered over the API yet
+type Mode = "default" | "architect" | "plan" | "auto";   // "plan" needs the plan-mode capability
 type SessionState = "idle" | "working" | "waiting";        // waiting: a prompt waits for a person
 
 interface SessionSummary {
@@ -43,6 +43,7 @@ interface SessionSummary {
   state: SessionState;
   model: string | null;   // provider/model of the next turn; null when nothing is configured
   mode: Mode;
+  compacting: boolean;    // a manual compaction runs; state is then "working"
 }
 
 interface SessionDetail extends SessionSummary {
@@ -51,7 +52,9 @@ interface SessionDetail extends SessionSummary {
   queued: string[];         // messages waiting to be steered into the running turn
   usage: { input: number; output: number; cacheRead: number };   // whole session
   context: { usedTokens: number; windowTokens: number; percent: number } | null;
-  filesEdited: string[];    // workspace-relative paths edited in this session
+  filesEdited: string[];    // paths the session's edit tools wrote, as the tools named them
+  plan: Plan | null;        // the plan being reviewed or carried out
+  redo: { index: number; prompt: string }[];   // undone turns Redo puts back, oldest first
   lastSeq: number;          // subscribe to events with ?after=lastSeq to miss nothing
 }
 
@@ -77,10 +80,34 @@ type Prompt = { id: string; createdAt: number } & (
   | { kind: "fetch-page"; url: string }                          // approve or deny
   | { kind: "question"; question: string; allowSkip: boolean;
       options: { label: string; value: string; description?: string }[] }   // answer
+  | { kind: "plan-review"; title: string; depth: "light" | "full";
+      steps: { id: string; label: string }[];
+      planFile: string;     // relative to the project, e.g. .baked/plans/ID.md
+      content: string }     // the plan as Markdown; answer with an action
 );
+
+interface Plan {
+  title: string;
+  depth: "light" | "full";
+  steps: { id: string; label: string; status: "pending" | "active" | "done" | "skipped"; startedAt?: number }[];
+  createdAt: number;
+}
 ```
 
 In `default` and `architect` mode, writes outside the project, destructive commands, web searches and page fetches wait for a prompt answer, exactly as the terminal UI asks. `auto` approves them without asking. A prompt waits until it is answered or the turn is interrupted; interrupting denies every pending prompt.
+
+### Plan mode
+
+In `plan` mode the agent works as in the terminal UI's [plan mode](../guide.md#modes-and-plan-mode): it researches without editing and writes a plan to `.baked/plans/`, which waits as a `plan-review` prompt. The session's `plan` (and a `plan` event) shows the proposed plan. Answer the prompt with `{action}`:
+
+| `action` | Effect | `prompt-resolved` `outcome` |
+| --- | --- | --- |
+| `execute` | The turn ends as `completed`, the session switches to `default` mode, a `system` note "Plan accepted — executing." joins the transcript (`notice` event), and a new turn starts at once with the plan file's current text (edits made to the file during the review count); its user message in the transcript reads "Execute the plan: TITLE", while the model receives the whole plan. That turn keeps to the plan's tools and marks steps as it goes; each change is a `plan` event | `approved` |
+| `clear-execute` | As `execute`, but the conversation sent to the model starts over with the plan; the transcript keeps every message | `approved` |
+| `revise` | Needs `feedback` (text). The agent revises the plan in the same turn and asks again with a new prompt | `answered` |
+| `cancel` | The agent stops, the session switches to `default` mode and the note "Plan cancelled: TITLE" joins the transcript | `denied` |
+
+`prompt-resolved` of a plan review also carries `action`. Interrupting a turn while its plan waits for review ends the turn and keeps `plan` mode. A plan the agent makes in another mode is carried out without a review, as before. When a turn ends without an accepted plan, and when the turn that carried one out ends, `plan` becomes null.
 
 ### Endpoints
 
@@ -92,18 +119,44 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `PATCH /v1/sessions/ID` | `{title?, model?, mode?}` | `SessionSummary`; `model` and `mode` apply from the next turn |
 | `DELETE /v1/sessions/ID` | | 204; 409 `SESSION_BUSY` while a turn runs |
 | `POST /v1/sessions/ID/fork` | `{atMessageId?, rollbackFiles?, force?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent); with `rollbackFiles`, plus `rollback` (below). 409 `SESSION_BUSY` with `rollbackFiles` while any turn runs, 409 `ROLLBACK_UNAVAILABLE` when files need restoring and the workspace is not a Git repository or cannot be backed up |
+| `POST /v1/sessions/ID/undo` | `{toCheckpoint?, force?}` | `SessionDetail` plus `rollback` (below) after dropping the last turn, or every turn after checkpoint `toCheckpoint` (0 drops them all), and restoring the files they edited. 409 `SESSION_BUSY` while any turn of the project runs, 409 `NOTHING_TO_UNDO` without turns, 400 when `toCheckpoint` is not before the last turn, 409 `ROLLBACK_UNAVAILABLE` when the workspace cannot be backed up |
+| `POST /v1/sessions/ID/redo` | `{force?}` | `SessionDetail` plus `rollback` after putting back the oldest undone turn and restoring the files it edited to their state after that turn. 409 `SESSION_BUSY` as for undo, 409 `NOTHING_TO_REDO` when nothing was undone |
 | `POST /v1/sessions/ID/messages` | `{text}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the text is steered into it at its next step |
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
-| `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
+| `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}`, `{answer: string}` or, for a `plan-review`, `{action: "execute" \| "clear-execute" \| "revise" \| "cancel", feedback?: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended, 400 for a body that does not fit the prompt's kind or a `revise` without `feedback`. `answer: ""` skips a question that allows it |
+| `POST /v1/sessions/ID/compact` | `{}` | 202 `{compactionId}`; the compaction runs in the background and reports with `compaction-start` and `compaction-done`. 409 `SESSION_BUSY` while a turn or a compaction runs, 409 `NOTHING_TO_COMPACT` when the conversation is too short, 501 `NOT_SUPPORTED` when the server cannot compact |
+| `GET /v1/sessions/ID/diff` | | `SessionDiffStats` below |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
 | `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model` |
 | `GET /v1/mentions` | `?q=&limit=` (default 20, at most 50) | `{mentions: [{kind: "file" \| "directory" \| "symbol", insert, label, detail, indices}]}`: `@` completions for the composer; `insert` is the text after `@`, `indices` the matched characters of `label` |
 
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
 
+#### Compaction ("Compact now")
+
+`POST /v1/sessions/ID/compact` does what `/compact` does in the terminal UI, with the same code (`src/core/compaction/manual.ts`): the model messages before the last `compaction.keepRecent` (default 4) become one summary, written with the task router's `compact` model (the session's model when no route is set) and the configured `compaction.strategy`; `v2` rebuilds its working state from the saved messages first, any other strategy writes a full summary. The next turn sends the summary, an acknowledgement and the kept messages. The transcript (`messages`) keeps every message and gains a `system` message that says how many messages were compacted; `context` becomes an estimate until the next turn reports real numbers, and the summary's tokens count in `usage`. A message sent while the compaction runs is queued (`{turnId: compactionId, queued: true}`) and starts the next turn when it ends. `interrupt` stops a running compaction and keeps the conversation as it was. A compaction that cannot produce a summary of at least 50 characters is `skipped` and changes nothing.
+
+#### Diff statistics
+
+```ts
+interface SessionDiffStats {
+  base: "HEAD" | null;   // null outside a git repository: only file names are known
+  files: { path: string;   // workspace-relative with "/"; absolute when outside the project
+           status: "modified" | "added" | "deleted" | "unchanged" | "outside" | "unknown";
+           added: number; removed: number; binary?: boolean }[];
+  totals: { files: number; added: number; removed: number };   // files that are not unchanged or outside
+}
+```
+
+`GET /v1/sessions/ID/diff` measures the files in `filesEdited` against the last commit with git (`git diff --numstat HEAD`; a new untracked file counts all its lines as added). The numbers are what is uncommitted in those files now, whoever made the change; a file the session edited that was committed or reverted since is `unchanged`. Outside a git repository every file is `unknown` with zero counts.
+
 A message text with `@` mentions or a leading `!command` is expanded on the server before the model sees it, by the same code as the terminal UI ([user guide](../guide.md#mentions-and-shell-commands-in-the-input)): the stored user message keeps the typed text and lists what was attached in `inputContext`. A destructive `!` command asks with a `destructive` prompt in `default` mode, is denied in `architect` mode with every other command, and runs in `auto` mode. A message that is only a command that did not run ends its turn with `turn-done` `completed` and `message: null`. Text with `@` or `!` sent while a turn runs is not steered into it; it starts its own turn afterwards.
 
 Each turn of an API session that edits files snapshots the workspace in a Git tag, and the first turn snapshots it before it starts; the tags are saved in the session's tab as `checkpointTags`, as the terminal UI saves them. A fork with `rollbackFiles` restores the files the agent edited after the fork point to the latest snapshot at or before it. The fork point of a message is the end of its turn, or the end of the previous turn when the message is the user prompt that starts a turn. `rollback` is `{checkpoint, snapshot, backupTag, restored: [path], removed: [path], skipped: [{path, reason}]}`: `restored` files were rewritten, `removed` ones did not exist at the checkpoint, and `backupTag` (null when nothing changed) holds the whole working tree from before the rollback. A file is skipped, not overwritten, when its current content is in none of the session's snapshots (changed outside the agent) unless `force` is set, and always when Git ignores it or it is outside the workspace. The fork gets copies of the snapshots up to its fork point, so it can be forked again. [Forking a checkpoint](../guide.md#forking-a-checkpoint) describes the same behavior in the terminal UI.
+
+#### Undo and redo
+
+Undo and redo share their code with `/undo` and `/redo` in the terminal UI and `baked session undo|redo` (`src/core/checkpoints/undo.ts`). Undo rolls the files back exactly as a fork with `rollbackFiles` does, with the same `rollback` report, skipped files and backup tag (`baked/undo-backup-*`), then drops the undone turns from `messages` and rebuilds the model messages from what is left, so a compaction summary of the dropped part is gone. The undone turns are saved with the session (`redoTurns` in its tab) and listed in `redo`. Redo puts back the oldest one with its messages and restores the files that turn edited to the turn's own snapshot; a file whose current content is in no snapshot is skipped unless `force` is set. Starting a turn forgets the undone turns and deletes their snapshot tags. Outside a Git repository the conversation still rewinds and every edited file is reported in `skipped`. Each undo or redo emits a `rewind` event.
 
 ### Session events
 
@@ -117,10 +170,15 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `tool-call` | `turnId`, `toolCallId`, `tool`, `input` |
 | `tool-result` | `turnId`, `toolCallId`, `tool`, `success`, `output` (at most 4000 characters), `error?`, `filesEdited?` |
 | `steering` | `turnId`, `message` (the steered user `ChatMessage`) |
+| `rewind` | `action` (`undo` or `redo`), `checkpoint` (the checkpoint undone to, or the turn redone), `messageCount`: the transcript changed; fetch `GET /v1/sessions/ID` |
 | `prompt` | `prompt` (`Prompt`) |
-| `prompt-resolved` | `promptId`, `outcome` (`approved`, `denied`, `answered`, `skipped`) |
+| `prompt-resolved` | `promptId`, `outcome` (`approved`, `denied`, `answered`, `skipped`), `action?` (how a `plan-review` was answered) |
+| `plan` | `plan` (`Plan`, or null when it is cleared) when the agent proposes a plan or a step changes status |
+| `notice` | `message` (a `system` `ChatMessage` added to the transcript, such as "Plan accepted — executing."); it follows the `turn-done` of the turn it ends |
 | `step` | `turnId`, `step`, `usage` (this turn so far) |
 | `turn-done` | `turnId`, `status` (`completed`, `interrupted`, `failed`), `error?`, `message` (the assistant `ChatMessage`, null when nothing was produced), `usage`, `durationMs` |
+| `compaction-start` | `compactionId` |
+| `compaction-done` | `compactionId`, `status` (`compacted`, `skipped`, `failed`, `interrupted`), `message` (the `system` `ChatMessage` added to the transcript, null when failed or interrupted), `compacted` (model messages summarized), `error?`, `context` |
 | `session` | `session` (`SessionSummary`) after a state, title, model or mode change |
 | `reset` | the requested sequence is no longer buffered or belongs to an earlier server start: fetch `GET /v1/sessions/ID` and continue from its `lastSeq` |
 
@@ -226,6 +284,6 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 
 ## Not in this contract yet
 
-- Plan mode and its plan review in chat, image attachments, manual compaction ("Compact now"), checkpoints and rewinding a chat, per-session diff statistics. The desktop hides these controls until a later version of this contract adds them.
+- Image attachments and browsing the checkpoints of a chat. The desktop hides these controls until a later version of this contract adds them.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.

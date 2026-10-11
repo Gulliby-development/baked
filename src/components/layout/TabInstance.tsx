@@ -18,6 +18,7 @@ import { planFileName } from "../../core/tools/index.js";
 import { disposeTaskScope, setActiveTaskTab } from "../../core/tools/task-list.js";
 import { type ChatInstance, type TabState, useChat } from "../../hooks/useChat.js";
 import { useLandingTransition } from "../../hooks/useLandingTransition.js";
+import { useSessionDiffStats } from "../../hooks/useSessionDiffStats.js";
 import type { TabActivity } from "../../hooks/useTabs.js";
 import { useCheckpointStore } from "../../stores/checkpoints.js";
 import { useStatusBarStore } from "../../stores/statusbar.js";
@@ -244,6 +245,8 @@ export const TabInstance = memo(function TabInstance({
     });
     return unsub;
   }, [tabId, setTabActivity]);
+
+  const diffStats = useSessionDiffStats(chat.messages, cwd, chat.isLoading, visible);
 
   // ── Checkpoint sync ──
   useEffect(() => {
@@ -746,7 +749,7 @@ export const TabInstance = memo(function TabInstance({
         )}
         {changesExpanded && (
           <box flexDirection="column" width="20%">
-            <ChangesPanel messages={chat.messages} cwd={cwd} />
+            <ChangesPanel messages={chat.messages} cwd={cwd} stats={diffStats} />
           </box>
         )}
       </box>
@@ -780,7 +783,7 @@ export const TabInstance = memo(function TabInstance({
           )}
           {hasChangedFiles && (
             <box flexShrink={0} paddingX={1}>
-              <ChangedFilesBar messages={chat.messages} />
+              <ChangedFilesBar messages={chat.messages} stats={diffStats} />
             </box>
           )}
         </>
@@ -798,7 +801,7 @@ export const TabInstance = memo(function TabInstance({
           )}
           {(hasChangedFiles || chat.messageQueue.length > 0) && (
             <box flexShrink={0} paddingX={1} flexDirection="row" gap={1} height={1}>
-              {hasChangedFiles && <ChangedFilesBar messages={chat.messages} />}
+              {hasChangedFiles && <ChangedFilesBar messages={chat.messages} stats={diffStats} />}
               {chat.messageQueue.length > 0 &&
                 (() => {
                   const latest = chat.messageQueue[chat.messageQueue.length - 1]?.content ?? "";
@@ -851,6 +854,12 @@ export const TabInstance = memo(function TabInstance({
                 onCycleTab={onCycleTab}
                 viewingCheckpoint={checkpointViewing}
                 getRepoMap={getRepoMap}
+                onNotice={(content) =>
+                  chat.setMessages((prev) => [
+                    ...prev,
+                    { id: crypto.randomUUID(), role: "system", content, timestamp: Date.now() },
+                  ])
+                }
               />
             </box>
           </box>

@@ -1071,8 +1071,8 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
         .map(snapshot),
     });
   }
-  if (method === "GET" && path === "/v1/workflow/definitions")
-    return response(200, [{ id: "sdd", stages: SDD }]);
+  // Workflow definitions come from the start screen's fixtures, which carry the full summary
+  // (problems, execution) the New run form reads; their `sdd` stages match `SDD`.
   const match = /^\/v1\/workflow\/runs\/([^/]+)(?:\/([a-z-]+))?$/.exec(path);
   const run = match?.[1] ? find(decodeURIComponent(match[1])) : undefined;
   if (!match || !run) return undefined;

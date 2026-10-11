@@ -139,9 +139,14 @@ export interface RollbackInput {
   force?: boolean;
   /** The label of another tab editing the file, which leaves the file in place. */
   claimedBy?: (absPath: string) => string | null;
+  /** The turns whose edited files are restored; every turn after `checkpoint` when absent. */
+  editedIn?: number[];
 }
 
-/** Restores the files edited after `checkpoint` to their content at that checkpoint. */
+/**
+ * Restores the files edited after `checkpoint` (or in the `editedIn` turns) to their content at
+ * that checkpoint.
+ */
 export async function rollbackToCheckpoint(input: RollbackInput): Promise<RollbackReport> {
   const { cwd, checkpoint } = input;
   const report: RollbackReport = {
@@ -155,7 +160,7 @@ export async function rollbackToCheckpoint(input: RollbackInput): Promise<Rollba
   const turns = buildTurns(input.messages);
   const files = new Map<string, { abs: string }>();
   for (const turn of turns) {
-    if (turn.index <= checkpoint) continue;
+    if (input.editedIn ? !input.editedIn.includes(turn.index) : turn.index <= checkpoint) continue;
     for (const file of turn.filesEdited) {
       const abs = resolve(cwd, file);
       const rel = workspacePath(cwd, abs);

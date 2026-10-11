@@ -89,6 +89,14 @@ const DEFINITIONS: DefinitionSummary[] = [
   definition("review-only", "Review the current changes", ["review"], {
     worktreeRefusal: "A review reads the working copy, so it runs in place.",
   }),
+  definition("fix-ci", "Reproduce failing checks, research, plan, fix and rerun them", [
+    "reproduce",
+    "research",
+    "plan",
+    "approve",
+    "implement",
+    "verify",
+  ]),
 ];
 
 /** Stage samples per workflow: tokens in thousands and the routed model ("" runs on the host). */
@@ -100,6 +108,8 @@ const STAGE_SAMPLES: Record<string, [number, number, string]> = {
   approve: [0, 0, ""],
   implement: [240, 460, SONNET],
   checks: [0, 0, ""],
+  reproduce: [0, 0, ""],
+  verify: [0, 0, ""],
   review: [45, 90, GPT],
   converge: [30, 70, GPT],
   learn: [10, 20, HAIKU],

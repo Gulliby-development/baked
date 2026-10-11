@@ -9,20 +9,32 @@ import {
 } from "react";
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
-import { type ChatMode, chat, isMissingChatApi } from "../../client/chat.js";
+import {
+  CHAT_UNDO_CAPABILITY,
+  COMPACTION_CAPABILITY,
+  DIFF_STATS_CAPABILITY,
+  PLAN_MODE_CAPABILITY,
+} from "../../client/capabilities.js";
+import {
+  CHAT_MODES,
+  type ChatMode,
+  chat,
+  isMissingChatApi,
+  type SessionDiffStats,
+} from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { Alert } from "../../components/ui/alert.js";
-import { buttonVariants } from "../../components/ui/button.js";
+import { Button, buttonVariants } from "../../components/ui/button.js";
 import { emptyClass } from "../../components/ui/empty.js";
 import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
-import { Composer } from "./Composer.js";
+import { BASE_MODES, Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
-import { forkReportLines, rememberForkReport, takeForkReport } from "./fork.js";
-import { ChatHeader } from "./Header.js";
-import { emptyTranscript, isBusy, reduceTranscript } from "./transcript.js";
+import { forkReportLines, rememberForkReport, rewindReportLines, takeForkReport } from "./fork.js";
+import { ChatHeader, type CompactControl, type RewindControl } from "./Header.js";
+import { emptyTranscript, isBusy, reduceTranscript, turnCount } from "./transcript.js";
 
 const NEW = "new";
 
@@ -133,6 +145,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const [draftMode, setDraftMode] = useState<ChatMode>("default");
   const [forking, setForking] = useState(false);
   const [forkReport] = useState(() => (draft ? null : takeForkReport(sessionId)));
+  const [rewinding, setRewinding] = useState(false);
+  const [rewindReport, setRewindReport] = useState<string[] | null>(null);
   // A task typed on the project home ("Ask in chat") starts the new session's composer.
   const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
   useEffect(() => {
@@ -159,8 +173,13 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
         stop = chat.subscribe(key, sessionId, detail.lastSeq, (event) => {
           if (!live) return;
           dispatch(event);
-          // The saved session carries context fill and edited files the events leave out.
-          if (event.type === "turn-done") {
+          // The saved session carries context fill and edited files the events leave out, and
+          // the messages an undo or redo from another window left.
+          if (
+            event.type === "turn-done" ||
+            event.type === "compaction-done" ||
+            event.type === "rewind"
+          ) {
             refresh();
             chatSessionsChanged();
           }
@@ -187,6 +206,38 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     if (transcript.needsReset) setGeneration((g) => g + 1);
   }, [transcript.needsReset]);
 
+  // Capabilities decide whether "Compact now" and line counts show; older servers have neither.
+  const [capabilities, setCapabilities] = useState<string[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    chat.capabilities(key).then((caps) => live && setCapabilities(caps));
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
+  const canRewind = capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
+  const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
+  const modes: readonly ChatMode[] =
+    capabilities?.includes(PLAN_MODE_CAPABILITY) === true ? CHAT_MODES : BASE_MODES;
+
+  // Line counts follow the edited files; a turn that ends may also have changed them on disk.
+  const [diff, setDiff] = useState<SessionDiffStats | null>(null);
+  const editedKey = transcript.filesEdited.join("\n");
+  const turnRunning = transcript.turnId !== null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch when edits or turns change
+  useEffect(() => {
+    if (draft || !hasDiffStats || turnRunning) return;
+    let live = true;
+    chat.diff(key, sessionId).then(
+      (stats) => live && setDiff(stats),
+      () => live && setDiff(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, sessionId, draft, hasDiffStats, editedKey, turnRunning]);
+
   const busy = !draft && isBusy(transcript);
   const canStop = busy;
 
@@ -207,6 +258,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
 
   const send = async (text: string): Promise<boolean> => {
     setActionError(null);
+    setRewindReport(null);
     stick();
     if (draft) {
       try {
@@ -271,6 +323,56 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     chat.update(key, sessionId, changes).catch((e: unknown) => setActionError(message(e)));
   };
 
+  const compact = (): void => {
+    setActionError(null);
+    stick();
+    chat.compact(key, sessionId).catch((e: unknown) => setActionError(message(e)));
+  };
+  const compactControl: CompactControl | undefined =
+    canCompact && !draft
+      ? {
+          run: compact,
+          disabled: transcript.compacting
+            ? "Compacting…"
+            : busy
+              ? "Available when the turn ends."
+              : null,
+        }
+      : undefined;
+
+  const rewind = (action: "undo" | "redo"): void => {
+    if (
+      action === "undo" &&
+      !window.confirm(
+        "Undo the last turn? It is dropped from the chat and the files it edited are restored; files changed since then stay as they are. Redo puts it back until you send a new message.",
+      )
+    )
+      return;
+    setRewinding(true);
+    setActionError(null);
+    (action === "undo" ? chat.undo(key, sessionId) : chat.redo(key, sessionId))
+      .then((detail) => {
+        dispatch({ type: "snapshot", detail });
+        setRewindReport(rewindReportLines(action, detail.rollback));
+        chatSessionsChanged();
+      })
+      .catch((e: unknown) => setActionError(message(e)))
+      .finally(() => setRewinding(false));
+  };
+  const turns = turnCount(transcript);
+  const nextRedo = transcript.redo[0] ?? null;
+  const rewindBlocked = rewinding ? "Working…" : busy ? "Available when the turn ends." : null;
+  const rewindControl: RewindControl | undefined =
+    canRewind && !draft
+      ? {
+          undo: () => rewind("undo"),
+          redo: () => rewind("redo"),
+          undoDisabled: rewindBlocked ?? (turns === 0 ? "Nothing to undo." : null),
+          redoDisabled: rewindBlocked ?? (nextRedo ? null : "Nothing to redo."),
+          redoPrompt: nextRedo?.prompt ?? null,
+        }
+      : undefined;
+
   const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
   const loadMentions = useCallback(
     (query: string) => chat.mentions(key, query).then((result) => result.mentions),
@@ -305,6 +407,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               usage: transcript.usage,
               model: session?.model ?? null,
               filesEdited: transcript.filesEdited,
+              diff,
+              ...(compactControl ? { compact: compactControl } : {}),
+              ...(rewindControl ? { rewind: rewindControl } : {}),
             })}
       />
       <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
@@ -329,6 +434,20 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               ))}
             </Alert>
           )}
+          {rewindReport && (
+            <Alert role="status" className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                {rewindReport.map((line) => (
+                  <p key={line} className="m-0">
+                    {line}
+                  </p>
+                ))}
+              </div>
+              <Button variant="secondary" size="md" onClick={() => setRewindReport(null)}>
+                Dismiss
+              </Button>
+            </Alert>
+          )}
           <Conversation
             transcript={transcript}
             deciding={deciding}
@@ -336,6 +455,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             {...(draft ? {} : { onFork: fork })}
             onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
+            onReviewPlan={(id, review) =>
+              decide(id, () => chat.reviewPlan(key, sessionId, id, review))
+            }
           />
           {actionError && (
             <p className="m-0 px-3 py-0 text-[13px] text-[var(--err)]" role="alert">
@@ -356,6 +478,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           onStop={interrupt}
           onModel={(model) => update({ model })}
           onMode={(mode) => update({ mode })}
+          modes={modes}
           loadModels={loadModels}
           loadMentions={loadMentions}
         />

@@ -19,6 +19,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 | `Ctrl+D` | Cycle mode |
 | `Ctrl+B` / `Ctrl+F` | Previous / next checkpoint |
 | `Ctrl+X` | Stop the agent |
+| `Ctrl+X` then `E` (while the agent is idle) | Open the input in your editor and send what you save; see [composing in an editor](guide.md#composing-in-an-editor) |
 | `Ctrl+O` | Expand or collapse code and reasoning |
 | `Ctrl+C` | Copy the selection, or exit |
 | `Meta+R` (`Alt+R` on Linux) | Error log |
@@ -27,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -36,6 +37,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/project` | This project: sessions, workflow runs, what waits for you |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
+| `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |
 | `/stash` (`/drafts`) | Browse stashed drafts (restore, delete) |
 | `/compact` | Compact — run, settings, logs |
 | `/compact logs` | View compaction events |
@@ -53,8 +55,8 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/session rename` | Rename current session |
 | `/session plan` | Toggle plan mode (research & plan only) |
 | `/checkpoint` | Browse checkpoints — undo, redo, save |
-| `/checkpoint undo` | Undo last checkpoint (revert files) |
-| `/checkpoint redo` | Redo last undone checkpoint |
+| `/checkpoint undo` (`/undo`) | Undo last checkpoint (revert files) |
+| `/checkpoint redo` (`/redo`) | Redo last undone checkpoint |
 | `/checkpoint fork` | Fork a checkpoint into a new tab (rolls back files): `/checkpoint fork [N] [--force]` |
 | `/checkpoint save` | Force save current state as git tag |
 | `/checkpoint live` | Back to live view |
@@ -175,6 +177,7 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked doctor` | Checks before a workflow run: keys, routed models, check commands, Git, budget |
 | `baked serve [--port N] [--allow-origin ORIGIN]` | Local HTTP API on 127.0.0.1 for the desktop app ([local API](workflows/runtime.md#local-api-baked-serve)) |
 | `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
+| `baked session undo ID [--to N] [--force] [--json]`, `baked session redo ID [--force] [--json]` | Undo the last turn of a saved session with its file edits, or put the oldest undone turn back ([undoing a turn](headless.md#undoing-a-turn)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
 | `baked telemetry [--json]` | The locally recorded usage events ([privacy](privacy.md)) |
 | `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |

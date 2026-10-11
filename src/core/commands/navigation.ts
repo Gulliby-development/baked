@@ -1,6 +1,7 @@
 import type { CommandPickerOption } from "../../components/modals/CommandPicker.js";
 import { confirm, openSelect } from "../../components/ui/dialogs/index.js";
 import { useUIStore } from "../../stores/ui.js";
+import { requestInputEditor } from "../chat/external-editor.js";
 import { getCwd } from "../cwd.js";
 import { emitDraftRestore, getStashDB } from "../history/index.js";
 import { icon } from "../icons.js";
@@ -149,6 +150,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/tab rename", handleRename);
   map.set("/wizard", handleWizard);
   map.set("/stash", handleStash);
+  map.set("/editor", () => requestInputEditor({ fresh: true }));
   map.set("/drafts", handleStash);
 }
 

@@ -50,6 +50,7 @@ import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { outputTail } from "./gates.js";
 import {
   InitiativePlanSchema,
   MAX_FEATURES,
@@ -181,6 +182,8 @@ const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
 /** Characters of a task's unified diff kept in its diff evidence. */
 const MAX_PATCH_CHARS = 48_000;
+/** Lines of a failed check's output handed to a stage that does not write, such as research. */
+const HANDOFF_OUTPUT_LINES = 120;
 
 /** What one read evidence looked at: the tool, the paths or symbols it named and its size. */
 function readSummary(content: string): { tool: string; targets: string[]; bytes: number } {
@@ -3569,8 +3572,17 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       else if (findings.length) {
         // A loop to a stage that does not write hands the findings to that stage as input; a
         // later review raises them again if they still hold.
+        // A failed check hands over the end of its output: the stage has no tool to read evidence.
         state.prompt += `\nFindings of the ${v2.stage.id} stage to address:\n${canonical(
-          findings.map((f) => ({ claim: f.claim, impact: f.impact, fix: f.suggestedFix })),
+          findings.map((f) => {
+            const output = this.commandOutput(runId, f.evidenceIds);
+            return {
+              claim: f.claim,
+              impact: f.impact,
+              fix: f.suggestedFix,
+              ...(output ? { output } : {}),
+            };
+          }),
         )}`;
         for (const finding of findings) this.store.findingStatus(runId, finding.id, "resolved");
       }
@@ -3617,6 +3629,24 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       position.repairKind = null;
       this.store.saveState(runId, state);
     });
+  }
+  /** The last lines of the command output behind a finding's evidence, or null when it has none. */
+  private commandOutput(runId: string, evidenceIds: readonly string[]): string | null {
+    const ids = new Set(evidenceIds);
+    const tails: string[] = [];
+    for (const row of this.store.evidence(runId)) {
+      if (row.kind !== "command" || !ids.has(row.id)) continue;
+      try {
+        const body = JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as {
+          output?: unknown;
+        };
+        if (typeof body.output === "string" && body.output.trim())
+          tails.push(outputTail(body.output, HANDOFF_OUTPUT_LINES));
+      } catch {
+        // Redacted or missing evidence hands over the finding without output.
+      }
+    }
+    return tails.length ? tails.join("\n") : null;
   }
   /** The stages of a run's definition with the mechanism each one runs. */
   private stageKinds(
@@ -3666,7 +3696,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     assertFrozenInputs(state);
     dependencyContracts(this.store, state);
     await this.assertWorkspace(runId, state, policy, signal);
-    const writes = definition.stages.some((s) => s.type === "tasks");
+    // A run that ends before any tasks stage, such as Fix CI when the checks already pass, changed
+    // nothing and has no approved plan to accept.
+    const writes = definition.stages.some(
+      (s) => s.type === "tasks" && (state.position?.visits[s.id] ?? 0) > 0,
+    );
     const acceptable = (): void => {
       if (writes) assertAcceptanceV2(this.store, runId, state, policy, definition, gates);
       else if (this.store.requests(runId).some(blocksRun))

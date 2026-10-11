@@ -1,8 +1,12 @@
-import { relative } from "node:path";
 import { create } from "zustand";
-import { checkpointTagName, ensureBaseSnapshot } from "../core/checkpoints/fork.js";
+import {
+  checkpointTagName,
+  ensureBaseSnapshot,
+  type RollbackReport,
+} from "../core/checkpoints/fork.js";
 import { snapshotWorkspace } from "../core/checkpoints/snapshot.js";
 import { type CheckpointTag, extractFilesFromToolCalls } from "../core/checkpoints/turns.js";
+import { type RedoTurn, redoTurn, TurnUndoError, undoTurns } from "../core/checkpoints/undo.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
 import { run as gitRun } from "../core/git/status.js";
 import type { ChatMessage } from "../types/index.js";
@@ -39,30 +43,41 @@ export interface Checkpoint {
 }
 
 /**
- * Redo entry — holds the messages that were dropped by an undo so they can be
- * restored. Kept separate from Checkpoint so the live checkpoint list never
- * retains historical message arrays.
+ * Redo entry: a turn an undo dropped, with its messages, and its checkpoint (which keeps the
+ * turn's snapshot tag). Kept apart from the checkpoint list so that list never holds old messages.
  */
 interface RedoEntry {
   checkpoint: Checkpoint;
-  droppedMessages: ChatMessage[];
-}
-
-export interface FileConflict {
-  path: string;
-  ownerTabId: string;
-  ownerTabLabel: string;
+  turn: RedoTurn;
 }
 
 export interface UndoResult {
   messages: ChatMessage[];
-  restoredFiles: string[];
-  conflicts: FileConflict[];
+  rollback: RollbackReport;
 }
 
-export interface RedoResult {
-  messages: ChatMessage[];
-  restoredFiles: string[];
+export type RedoResult = UndoResult;
+
+/** A checkpoint for a turn known only from its messages, such as a redo turn read from a session. */
+function checkpointOf(turn: RedoTurn, gitTag: string | null): Checkpoint {
+  const prompt = turn.messages[0]?.content ?? "";
+  const edited = new Set<string>();
+  for (const m of turn.messages)
+    if (m.role === "assistant") for (const f of extractFilesFromToolCalls(m).edited) edited.add(f);
+  return {
+    index: turn.index,
+    promptPreview: prompt.split("\n")[0]?.slice(0, 60) ?? "",
+    prompt,
+    anchorMessageId: turn.anchorMessageId,
+    startedAt: turn.messages[0]?.timestamp ?? 0,
+    durationMs: 0,
+    filesRead: [],
+    filesEdited: [...edited],
+    lineDelta: [0, 0],
+    gitTag,
+    status: "done",
+    undone: true,
+  };
 }
 
 // ── Store ──
@@ -97,13 +112,23 @@ interface CheckpointState {
   ensureBaseTag(tabId: string, cwd: string, messages: ChatMessage[]): Promise<void>;
   /** Every snapshot of the tab (checkpoints, redo entries and the base), for saving and forks. */
   snapshotTags(tabId: string): CheckpointTag[];
+  /** Undoes the turns after checkpoint `index`; null when there is no such turn to undo. */
   undoToCheckpoint(
     tabId: string,
     index: number,
     cwd: string,
     liveMessages: ChatMessage[],
+    options?: { force?: boolean },
   ): Promise<UndoResult | null>;
-  redo(tabId: string, cwd: string, liveMessages: ChatMessage[]): Promise<RedoResult | null>;
+  /** Puts back the oldest undone turn; null when there is none. */
+  redo(
+    tabId: string,
+    cwd: string,
+    liveMessages: ChatMessage[],
+    options?: { force?: boolean },
+  ): Promise<RedoResult | null>;
+  /** The undone turns, oldest first, for saving with the session. */
+  redoTurns(tabId: string): RedoTurn[];
   canRedo(tabId: string): boolean;
   getRedoCount(tabId: string): number;
 
@@ -111,6 +136,7 @@ interface CheckpointState {
   restoreTagsFromMeta(
     tabId: string,
     tags: Array<{ index: number; anchorMessageId: string; gitTag: string }>,
+    redoTurns?: RedoTurn[],
   ): void;
   skipCleanup(tabId: string): void;
   shouldSkipCleanup(tabId: string): boolean;
@@ -216,7 +242,10 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
 
     // Clear redo stack if new checkpoints appeared (user sent a new message after undo)
     const hasNewCheckpoints = checkpoints.some(
-      (cp) => !cp.undone && !tab.checkpoints.find((p) => p.anchorMessageId === cp.anchorMessageId),
+      (cp) =>
+        !cp.undone &&
+        !tab.checkpoints.find((p) => p.anchorMessageId === cp.anchorMessageId) &&
+        !tab.redoStack.some((e) => e.turn.anchorMessageId === cp.anchorMessageId),
     );
     const redoStack = hasNewCheckpoints ? [] : tab.redoStack;
 
@@ -333,178 +362,121 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
     targetIndex: number,
     cwd: string,
     liveMessages: ChatMessage[],
+    options: { force?: boolean } = {},
   ): Promise<UndoResult | null> {
     const tab = getTab(get().tabs, tabId);
-    const targetCp = tab.checkpoints.find((c) => c.index === targetIndex);
-    if (!targetCp) return null;
-
-    // Collect all checkpoints after target that will be undone
-    const toUndo = tab.checkpoints.filter((c) => c.index > targetIndex && !c.undone);
-    if (toUndo.length === 0) return null;
-
-    // Slice messages at the target anchor. Everything after is "dropped" —
-    // stashed into the redo stack so a subsequent redo can restore them.
-    const anchorIdx = liveMessages.findIndex((m) => m.id === targetCp.anchorMessageId);
-    const messages = anchorIdx >= 0 ? liveMessages.slice(0, anchorIdx + 1) : liveMessages;
-    const droppedMessages = anchorIdx >= 0 ? liveMessages.slice(anchorIdx + 1) : [];
-
-    // Bucket dropped messages by which undone checkpoint they belonged to,
-    // so each RedoEntry only holds its own slice (not cumulative).
-    const redoBuckets = new Map<string, ChatMessage[]>();
-    for (const cp of toUndo) redoBuckets.set(cp.anchorMessageId, []);
-    {
-      let activeAnchor: string | null = null;
-      for (const m of droppedMessages) {
-        if (m.role === "user" && !m.isSteering) {
-          // Start of a new undone checkpoint's messages
-          if (redoBuckets.has(m.id)) activeAnchor = m.id;
-        }
-        if (activeAnchor) {
-          const bucket = redoBuckets.get(activeAnchor);
-          if (bucket) bucket.push(m);
-        }
-      }
-    }
-
-    // Collect all files that need reverting
-    const filesToRevert = new Set<string>();
-    for (const cp of toUndo) {
-      for (const f of cp.filesEdited) filesToRevert.add(f);
-    }
-
-    // Check conflicts with other tabs
     const coordinator = getWorkspaceCoordinator();
-    const conflicts: FileConflict[] = [];
-    for (const filePath of filesToRevert) {
-      const fileConflicts = coordinator.getConflicts(tabId, [filePath]);
-      for (const c of fileConflicts) {
-        conflicts.push({
-          path: c.path,
-          ownerTabId: c.ownerTabId,
-          ownerTabLabel: c.ownerTabLabel,
-        });
-      }
+    let result: Awaited<ReturnType<typeof undoTurns>>;
+    try {
+      // Serialized with snapshots so createGitTag never sees a partially restored working tree.
+      result = await withGitLock(cwd, () =>
+        undoTurns({
+          cwd,
+          messages: liveMessages,
+          redo: tab.redoStack.map((e) => e.turn),
+          toCheckpoint: targetIndex,
+          tags: get().snapshotTags(tabId),
+          backupTag: `baked/undo-backup-${crypto.randomUUID().slice(0, 8)}`,
+          ...(options.force ? { force: true } : {}),
+          claimedBy: (path) => coordinator.getConflicts(tabId, [path])[0]?.ownerTabLabel ?? null,
+        }),
+      );
+    } catch (err) {
+      if (err instanceof TurnUndoError) return null;
+      throw err;
     }
 
-    // Restore files — use target's tag, or fall back to the nearest prior tagged
-    // checkpoint, or HEAD if no tags exist (e.g. undoing to a chat-only checkpoint).
-    const restoreTag =
-      targetCp.gitTag ??
-      tab.checkpoints
-        .filter((c) => c.index < targetIndex && c.gitTag && !c.undone)
-        .sort((a, b) => b.index - a.index)[0]?.gitTag ??
-      tab.baseTag?.gitTag ??
-      null;
-
-    // Serialize file restoration with the git lock so createGitTag can't
-    // snapshot a partially-restored working tree.
-    const restoredFiles: string[] = [];
-    if (filesToRevert.size > 0) {
-      await withGitLock(cwd, async () => {
-        const { writeFile, unlink } = await import("node:fs/promises");
-        const ref = restoreTag ?? "HEAD";
-        for (const absPath of filesToRevert) {
-          const relPath = relative(cwd, absPath);
-          const result = await gitRun(["show", `${ref}:${relPath}`], cwd, 10_000);
-          if (result.ok) {
-            await writeFile(absPath, result.stdout);
-            restoredFiles.push(absPath);
-          } else {
-            // File didn't exist at restore point — it was created by the undone
-            // checkpoint(s) (new file or rename target). Remove it.
-            try {
-              await unlink(absPath);
-              restoredFiles.push(absPath);
-            } catch {
-              // Already gone or permission error — best effort
-            }
-          }
-        }
-      });
-    }
-
-    // Use functional updater — async file I/O above may have allowed syncFromMessages to run
+    // Use functional updater: syncFromMessages may have run during the file I/O above.
     set((s) => {
       const freshTab = s.tabs[tabId] ?? emptyTab();
-      const newCheckpoints = freshTab.checkpoints.map((cp) =>
-        cp.index > targetIndex ? { ...cp, undone: true } : cp,
-      );
-      const newEntries: RedoEntry[] = toUndo.map((cp) => ({
-        checkpoint: { ...cp },
-        droppedMessages: redoBuckets.get(cp.anchorMessageId) ?? [],
-      }));
-      // Redo stack: sorted ascending by index for FIFO redo order
-      const newRedoStack = [...freshTab.redoStack, ...newEntries].sort(
-        (a, b) => a.checkpoint.index - b.checkpoint.index,
+      const known = new Map<string, RedoEntry>();
+      for (const e of freshTab.redoStack) known.set(e.turn.anchorMessageId, e);
+      const redoStack = result.redo.map(
+        (turn): RedoEntry =>
+          known.get(turn.anchorMessageId) ?? {
+            turn,
+            checkpoint: {
+              ...(freshTab.checkpoints.find((c) => c.anchorMessageId === turn.anchorMessageId) ??
+                checkpointOf(turn, null)),
+              undone: true,
+            },
+          },
       );
       return {
         tabs: {
           ...s.tabs,
           [tabId]: {
             ...freshTab,
-            checkpoints: newCheckpoints,
-            redoStack: newRedoStack,
+            checkpoints: freshTab.checkpoints.map((cp) =>
+              cp.index > targetIndex ? { ...cp, undone: true } : cp,
+            ),
+            redoStack,
             viewing: null,
           },
         },
       };
     });
-
-    return { messages, restoredFiles, conflicts };
+    return { messages: result.messages, rollback: result.rollback };
   },
 
-  async redo(tabId: string, cwd: string, liveMessages: ChatMessage[]): Promise<RedoResult | null> {
+  async redo(
+    tabId: string,
+    cwd: string,
+    liveMessages: ChatMessage[],
+    options: { force?: boolean } = {},
+  ): Promise<RedoResult | null> {
     const tab = getTab(get().tabs, tabId);
-    if (tab.redoStack.length === 0) return null;
-
-    // Pop the FIRST undone entry (FIFO — redo in chronological order)
-    const toRedo = tab.redoStack[0];
-    if (!toRedo) return null;
-    const redoCp = toRedo.checkpoint;
-
-    // Restore files to the redo checkpoint's state.
-    // Unlike undo, redo MUST use the checkpoint's own tag — a prior tag would
-    // restore to the state BEFORE this checkpoint's edits, which is wrong.
-    const allFiles = new Set(redoCp.filesEdited);
-    const restoredFiles: string[] = [];
-    if (redoCp.gitTag && allFiles.size > 0) {
-      await withGitLock(cwd, async () => {
-        const { writeFile } = await import("node:fs/promises");
-        for (const absPath of allFiles) {
-          const relPath = relative(cwd, absPath);
-          const result = await gitRun(["show", `${redoCp.gitTag}:${relPath}`], cwd, 10_000);
-          if (result.ok) {
-            await writeFile(absPath, result.stdout);
-            restoredFiles.push(absPath);
-          }
-        }
-      });
+    const next = tab.redoStack[0];
+    if (!next) return null;
+    const coordinator = getWorkspaceCoordinator();
+    let result: Awaited<ReturnType<typeof redoTurn>>;
+    try {
+      result = await withGitLock(cwd, () =>
+        redoTurn({
+          cwd,
+          messages: liveMessages,
+          redo: tab.redoStack.map((e) => e.turn),
+          tags: get().snapshotTags(tabId),
+          backupTag: `baked/redo-backup-${crypto.randomUUID().slice(0, 8)}`,
+          ...(options.force ? { force: true } : {}),
+          claimedBy: (path) => coordinator.getConflicts(tabId, [path])[0]?.ownerTabLabel ?? null,
+        }),
+      );
+    } catch (err) {
+      if (err instanceof TurnUndoError) return null;
+      throw err;
     }
 
-    // Messages = current live + this redo entry's dropped messages
-    const messages = [...liveMessages, ...toRedo.droppedMessages];
-
-    // Use functional updater for consistency after async I/O
     set((s) => {
       const freshTab = s.tabs[tabId] ?? emptyTab();
-      const newCheckpoints = freshTab.checkpoints.map((cp) =>
-        cp.anchorMessageId === redoCp.anchorMessageId ? { ...cp, undone: false } : cp,
-      );
-      const newRedoStack = freshTab.redoStack.slice(1); // FIFO: remove from front
+      const redone = { ...next.checkpoint, undone: false };
+      // The redone turn counts as known, so the next sync does not take it for a new turn.
+      const checkpoints = [
+        ...freshTab.checkpoints.filter(
+          (cp) => cp.index < redone.index && cp.anchorMessageId !== redone.anchorMessageId,
+        ),
+        redone,
+        ...freshTab.checkpoints.filter((cp) => cp.index > redone.index),
+      ];
       return {
         tabs: {
           ...s.tabs,
           [tabId]: {
             ...freshTab,
-            checkpoints: newCheckpoints,
-            redoStack: newRedoStack,
+            checkpoints,
+            redoStack: freshTab.redoStack.filter(
+              (e) => e.turn.anchorMessageId !== next.turn.anchorMessageId,
+            ),
             viewing: null,
           },
         },
       };
     });
+    return { messages: result.messages, rollback: result.rollback };
+  },
 
-    return { messages, restoredFiles };
+  redoTurns(tabId: string): RedoTurn[] {
+    return getTab(get().tabs, tabId).redoStack.map((e) => e.turn);
   },
 
   canRedo(tabId: string): boolean {
@@ -528,11 +500,26 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
   restoreTagsFromMeta(
     tabId: string,
     tags: Array<{ index: number; anchorMessageId: string; gitTag: string }>,
+    redoTurns: RedoTurn[] = [],
   ) {
     const baseTag = tags.find((t) => t.index === 0);
-    const regular = tags.filter((t) => t.index !== 0);
+    const redoAnchors = new Set(redoTurns.map((t) => t.anchorMessageId));
+    const regular = tags.filter((t) => t.index !== 0 && !redoAnchors.has(t.anchorMessageId));
+    const redoStack = redoTurns.map(
+      (turn): RedoEntry => ({
+        turn,
+        checkpoint: checkpointOf(
+          turn,
+          tags.find((t) => t.anchorMessageId === turn.anchorMessageId)?.gitTag ?? null,
+        ),
+      }),
+    );
     set((s) => {
-      const tab = { ...(s.tabs[tabId] ?? emptyTab()), ...(baseTag ? { baseTag } : {}) };
+      const tab = {
+        ...(s.tabs[tabId] ?? emptyTab()),
+        ...(baseTag ? { baseTag } : {}),
+        ...(redoStack.length > 0 ? { redoStack } : {}),
+      };
       // Apply to existing checkpoints if any
       const updated = tab.checkpoints.map((cp) => {
         const saved = regular.find(

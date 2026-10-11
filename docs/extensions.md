@@ -32,7 +32,7 @@ BAKED connects to MCP servers and offers their tools next to the built-in ones a
 | `timeout` | Per tool call, in ms (default 30000) |
 | `disabled` | Keep the entry but do not connect |
 
-Servers connect at startup, at most 5 at a time; a failed one is retried 3 times with backoff, and a crashed `stdio` server restarts. `/mcp` shows status and tools: type to filter, `Ctrl+A` adds, `Ctrl+D` deletes, `Ctrl+T` toggles, `Ctrl+R` retries, `Tab` switches to the tool browser. Headless runs connect the same servers.
+Servers connect at startup, at most 5 at a time; a failed one is retried 3 times with backoff, and a crashed `stdio` server restarts. `/mcp` shows status and tools: type to filter, `Ctrl+A` adds, `Ctrl+D` deletes, `Ctrl+T` toggles, `Ctrl+R` retries, `Tab` switches to the tool browser. Headless runs connect the same servers. Workflow agents use MCP tools only where a profile and the run policy grant them ([MCP tools](workflows/runtime.md#mcp-tools)).
 
 ## Hooks
 

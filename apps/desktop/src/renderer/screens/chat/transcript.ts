@@ -2,10 +2,13 @@ import type { StreamEvent } from "../../../shared/api.js";
 import type {
   ChatEvent,
   ChatMessage,
+  ChatPlan,
   ChatPrompt,
   ContextFill,
   MessageSegment,
+  PlanAction,
   PromptOutcome,
+  RedoTurn,
   SessionDetail,
   SessionSummary,
   ToolCall,
@@ -22,6 +25,8 @@ export interface TranscriptPrompt {
   prompt: ChatPrompt;
   /** Set once the prompt was answered; resolved prompts stay visible until the turn ends. */
   outcome?: PromptOutcome;
+  /** How a plan review was answered. */
+  action?: PlanAction;
 }
 
 export interface Transcript {
@@ -46,6 +51,12 @@ export interface Transcript {
   thoughtMs: Record<string, number[]>;
   /** When the reasoning segment that is streaming now started. */
   thinkingSince: number | null;
+  /** A manual compaction ("Compact now") is running. */
+  compacting: boolean;
+  /** The plan being reviewed or carried out, with its step statuses. */
+  plan: ChatPlan | null;
+  /** Turns an undo dropped that Redo puts back, oldest first. */
+  redo: RedoTurn[];
 }
 
 export type TranscriptAction =
@@ -61,10 +72,15 @@ const EVENT_TYPES = new Set([
   "tool-call",
   "tool-result",
   "steering",
+  "rewind",
   "prompt",
   "prompt-resolved",
+  "plan",
+  "notice",
   "step",
   "turn-done",
+  "compaction-start",
+  "compaction-done",
   "session",
 ]);
 
@@ -107,12 +123,27 @@ export function emptyTranscript(): Transcript {
     notice: null,
     thoughtMs: {},
     thinkingSince: null,
+    compacting: false,
+    plan: null,
+    redo: [],
   };
 }
 
 export function fromDetail(detail: SessionDetail, previous?: Transcript): Transcript {
-  const { messages, prompts, queued, usage, context, filesEdited, lastSeq, ...session } = detail;
-  const working = session.state !== "idle";
+  const {
+    messages,
+    prompts,
+    queued,
+    usage,
+    context,
+    filesEdited,
+    lastSeq,
+    plan,
+    redo,
+    ...session
+  } = detail;
+  const compacting = session.compacting === true;
+  const working = session.state !== "idle" && !compacting;
   return {
     ...emptyTranscript(),
     session,
@@ -122,8 +153,11 @@ export function fromDetail(detail: SessionDetail, previous?: Transcript): Transc
     context,
     filesEdited,
     lastSeq,
+    plan: plan ?? null,
     // A turn that runs while the page loads: its finished message arrives with `turn-done`.
     turnId: working ? "running" : null,
+    compacting,
+    redo: redo ?? [],
     ...(previous?.session?.id === session.id
       ? { pending: previous.pending, thoughtMs: previous.thoughtMs, notice: previous.notice }
       : {}),
@@ -302,6 +336,9 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
         pending: removeFirst(state.pending, event.message.content),
       };
     }
+    case "rewind":
+      // The screen refetches the session, which carries the rewound messages.
+      return state;
     case "prompt":
       if (state.prompts.some((p) => p.prompt.id === event.prompt.id)) return state;
       return { ...state, prompts: [...state.prompts, { prompt: event.prompt }] };
@@ -309,9 +346,16 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
       return {
         ...state,
         prompts: state.prompts.map((p) =>
-          p.prompt.id === event.promptId ? { ...p, outcome: event.outcome } : p,
+          p.prompt.id === event.promptId
+            ? { ...p, outcome: event.outcome, ...(event.action ? { action: event.action } : {}) }
+            : p,
         ),
       };
+    case "plan":
+      return { ...state, plan: event.plan };
+    case "notice":
+      if (state.messages.some((m) => m.id === event.message.id)) return state;
+      return { ...state, messages: [...state.messages, event.message] };
     case "step":
       return { ...state, turnUsage: event.usage };
     case "turn-done": {
@@ -344,6 +388,30 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
         session: stopped.session ? { ...stopped.session, state: "idle" } : null,
       };
     }
+    case "compaction-start":
+      return {
+        ...state,
+        compacting: true,
+        notice: null,
+        session: state.session ? { ...state.session, state: "working", compacting: true } : null,
+      };
+    case "compaction-done": {
+      const message = event.message;
+      const known = message !== null && state.messages.some((m) => m.id === message.id);
+      return {
+        ...state,
+        compacting: false,
+        messages: message && !known ? [...state.messages, message] : state.messages,
+        context: event.context ?? state.context,
+        notice:
+          event.status === "failed"
+            ? { kind: "error", text: `Compaction failed: ${event.error ?? "unknown error"}` }
+            : event.status === "interrupted"
+              ? { kind: "interrupted", text: "Compaction stopped." }
+              : null,
+        session: state.session ? { ...state.session, state: "idle", compacting: false } : null,
+      };
+    }
     case "session":
       return { ...state, session: event.session };
   }
@@ -374,7 +442,16 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
   }
 }
 
-/** True while a turn runs or waits for a prompt answer. */
+/** The number of turns in the transcript: user messages that are not steering. */
+export function turnCount(state: Transcript): number {
+  return state.messages.filter((m) => m.role === "user" && !m.isSteering).length;
+}
+
+/** True while a turn runs, waits for a prompt answer, or the session is being compacted. */
 export function isBusy(state: Transcript): boolean {
-  return state.turnId !== null || (state.session !== null && state.session.state !== "idle");
+  return (
+    state.turnId !== null ||
+    state.compacting ||
+    (state.session !== null && state.session.state !== "idle")
+  );
 }

@@ -8,6 +8,7 @@ import {
   liveId,
   reduceTranscript,
   type Transcript,
+  turnCount,
 } from "../src/renderer/screens/chat/transcript.ts";
 
 const USAGE = { input: 10, output: 5, cacheRead: 0 };
@@ -234,5 +235,101 @@ describe("chat transcript", () => {
       at: 1,
     });
     expect(state.notice).toEqual({ kind: "error", text: "Provider unavailable" });
+  });
+
+  test("a compaction keeps the session busy, adds its note and updates the context", () => {
+    let state = fromDetail(detail({ context: { usedTokens: 900, windowTokens: 1000, percent: 90 } }));
+    state = applyChatEvent(state, { type: "compaction-start", compactionId: "c1", seq: 1, at: 1 });
+    expect(state.compacting).toBe(true);
+    expect(isBusy(state)).toBe(true);
+    expect(state.turnId).toBeNull();
+    state = applyChatEvent(state, {
+      type: "compaction-done",
+      compactionId: "c1",
+      status: "compacted",
+      compacted: 6,
+      context: { usedTokens: 200, windowTokens: 1000, percent: 20 },
+      message: { id: "n1", role: "system", content: "Compacted 6 messages", timestamp: 2 },
+      seq: 2,
+      at: 2,
+    });
+    expect(state.compacting).toBe(false);
+    expect(state.messages.map((m) => m.id)).toEqual(["n1"]);
+    expect(state.context?.percent).toBe(20);
+    expect(isBusy(state)).toBe(false);
+  });
+
+  test("a session loaded while compacting shows the compaction, not a turn", () => {
+    const state = fromDetail(detail({ state: "working", compacting: true }));
+    expect(state.compacting).toBe(true);
+    expect(state.turnId).toBeNull();
+    const failed = applyChatEvent(state, {
+      type: "compaction-done",
+      compactionId: "c1",
+      status: "failed",
+      error: "model unavailable",
+      compacted: 0,
+      context: null,
+      message: null,
+      seq: 1,
+      at: 1,
+    });
+    expect(failed.notice).toEqual({ kind: "error", text: "Compaction failed: model unavailable" });
+  });
+
+  test("a plan review resolves with its action, the plan follows step updates and notes join the transcript", () => {
+    const first = { id: "1", label: "Move the counter", status: "pending" as const };
+    const second = { id: "2", label: "Test it", status: "pending" as const };
+    const plan = { title: "Per-model retries", depth: "light" as const, steps: [first, second], createdAt: 1 };
+    let state = fromDetail(detail({ mode: "plan", plan }));
+    expect(state.plan?.title).toBe("Per-model retries");
+    const bodies: ChatEventBody[] = [
+      {
+        type: "prompt",
+        prompt: {
+          id: "p1",
+          createdAt: 1,
+          kind: "plan-review",
+          title: plan.title,
+          depth: "light",
+          steps: [{ id: "1", label: "Move the counter" }],
+          planFile: ".baked/plans/p.md",
+          content: "# Per-model retries",
+        },
+      },
+      { type: "prompt-resolved", promptId: "p1", outcome: "approved", action: "execute" },
+      {
+        type: "notice",
+        message: { id: "n1", role: "system", content: "Plan accepted — executing.", timestamp: 2 },
+      },
+      { type: "plan", plan: { ...plan, steps: [{ ...first, status: "done" }, second] } },
+    ];
+    for (const event of numbered(bodies)) state = applyChatEvent(state, event);
+    expect(state.prompts[0]).toMatchObject({ outcome: "approved", action: "execute" });
+    expect(state.messages.map((m) => m.content)).toEqual(["Plan accepted — executing."]);
+    expect(state.plan?.steps.map((s) => s.status)).toEqual(["done", "pending"]);
+    // A replayed note is not added twice; a cleared plan disappears.
+    state = applyChatEvent(state, { ...bodies[2], seq: 99, at: 99 } as ChatEvent);
+    expect(state.messages).toHaveLength(1);
+    state = applyChatEvent(state, { type: "plan", plan: null, seq: 100, at: 100 });
+    expect(state.plan).toBeNull();
+  });
+
+  test("a session from an older server has no plan", () => {
+    expect(fromDetail(detail()).plan).toBeNull();
+  });
+});
+
+describe("undo and redo", () => {
+  test("the redo stack and the turn count come from the session", () => {
+    const messages = [
+      { id: "u1", role: "user" as const, content: "One", timestamp: 1 },
+      { id: "a1", role: "assistant" as const, content: "ok", timestamp: 2 },
+      { id: "s1", role: "user" as const, content: "also", timestamp: 3, isSteering: true },
+    ];
+    const t = fromDetail(detail({ messages, redo: [{ index: 2, prompt: "Two" }] }));
+    expect(t.redo).toEqual([{ index: 2, prompt: "Two" }]);
+    expect(turnCount(t)).toBe(1);
+    expect(fromDetail(detail()).redo).toEqual([]);
   });
 });

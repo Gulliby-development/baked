@@ -74,6 +74,14 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       allowSkip: boolean;
       options: { label: string; value: string; description?: string }[];
     }
+  | {
+      kind: "plan-review";
+      title: string;
+      depth: "light" | "full";
+      steps: { id: string; label: string }[];
+      planFile: string;
+      content: string;
+    }
 );
 
 export interface SessionPrompts {
@@ -186,7 +194,10 @@ export const attentionApi = {
     key: string,
     sessionId: string,
     promptId: string,
-    body: { approve: boolean } | { answer: string },
+    body:
+      | { approve: boolean }
+      | { answer: string }
+      | { action: "execute" | "clear-execute" | "cancel" },
   ) =>
     call<{ resolved: true }>(
       key,

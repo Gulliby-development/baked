@@ -8,6 +8,10 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # @opentui/core pins web-tree-sitter 0.25.10 and 0.27 indexes nothing (#277).
+      - dependency-name: web-tree-sitter
+        versions: [">=0.26.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

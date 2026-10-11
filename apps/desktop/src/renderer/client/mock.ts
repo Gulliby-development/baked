@@ -138,6 +138,10 @@ export function createMockBridge(): DesktopBridge {
             "checks",
             "library",
             "routing",
+            "compaction",
+            "diff-stats",
+            "plan-mode",
+            "chat-undo",
           ],
         });
       const url = new URL(path, "http://mock");

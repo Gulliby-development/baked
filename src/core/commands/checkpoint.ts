@@ -8,6 +8,7 @@ import {
   type RollbackReport,
   rollbackToCheckpoint,
 } from "../checkpoints/fork.js";
+import { defaultUndoCheckpoint } from "../checkpoints/undo.js";
 import { getWorkspaceCoordinator } from "../coordination/WorkspaceCoordinator.js";
 import { icon } from "../icons.js";
 import { rebuildCoreMessages } from "../sessions/rebuild.js";
@@ -84,54 +85,69 @@ function handleCheckpointLive(_input: string, ctx: CommandContext): void {
   sysMsg(ctx, "Back to live view.");
 }
 
+/** `/undo [N] [--force]`: drops the turns after checkpoint N (the last turn by default). */
 async function handleCheckpointUndo(input: string, ctx: CommandContext): Promise<void> {
   const tabId = ctx.tabMgr.activeTabId;
   const store = useCheckpointStore.getState();
-  const checkpoints = store.tabs[tabId]?.checkpoints ?? [];
-
-  // Determine target index
-  const numMatch = input.match(/\/checkpoint\s+undo\s+(\d+)/);
-  let targetIndex: number;
-
-  if (numMatch) {
-    targetIndex = parseInt(numMatch[1] ?? "0", 10);
-  } else {
-    // Undo the last checkpoint — target is second-to-last active
-    const active = checkpoints.filter((c) => !c.undone);
-    if (active.length <= 1) {
-      sysMsg(ctx, "Nothing to undo.");
-      return;
-    }
-    targetIndex = active[active.length - 2]?.index ?? 1;
+  if (ctx.chat.isLoading) {
+    sysMsg(ctx, "Wait for the turn to finish before undoing.");
+    return;
   }
-
-  const result = await store.undoToCheckpoint(tabId, targetIndex, ctx.cwd, ctx.chat.messages);
+  const numMatch = input.match(/^\/(?:checkpoint\s+)?undo\s+(\d+)/);
+  const targetIndex = numMatch
+    ? parseInt(numMatch[1] ?? "0", 10)
+    : defaultUndoCheckpoint(ctx.chat.messages);
+  if (targetIndex === null) {
+    sysMsg(ctx, "Nothing to undo.");
+    return;
+  }
+  let result: Awaited<ReturnType<typeof store.undoToCheckpoint>>;
+  try {
+    result = await store.undoToCheckpoint(tabId, targetIndex, ctx.cwd, ctx.chat.messages, {
+      force: /\s--force\b/.test(input),
+    });
+  } catch (err) {
+    sysMsg(ctx, `Undo failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
   if (!result) {
     sysMsg(ctx, `Cannot undo to checkpoint #${String(targetIndex)}.`);
     return;
   }
-
   ctx.chat.setMessages(result.messages);
   ctx.chat.setCoreMessages(rebuildCoreMessages(result.messages));
-  const conflictNote =
-    result.conflicts.length > 0 ? ` (${String(result.conflicts.length)} conflict(s) skipped)` : "";
+  ctx.refreshGit();
   sysMsg(
     ctx,
-    `Undone to checkpoint #${String(targetIndex)}. Restored ${String(result.restoredFiles.length)} file(s).${conflictNote}`,
+    `Undone to checkpoint #${String(targetIndex)}. ${rollbackSummary(result.rollback, ctx.cwd)}`,
   );
 }
 
-async function handleCheckpointRedo(_input: string, ctx: CommandContext): Promise<void> {
+/** `/redo [--force]`: puts back the oldest undone turn. */
+async function handleCheckpointRedo(input: string, ctx: CommandContext): Promise<void> {
   const tabId = ctx.tabMgr.activeTabId;
   const store = useCheckpointStore.getState();
-  const result = await store.redo(tabId, ctx.cwd, ctx.chat.messages);
+  if (ctx.chat.isLoading) {
+    sysMsg(ctx, "Wait for the turn to finish before redoing.");
+    return;
+  }
+  let result: Awaited<ReturnType<typeof store.redo>>;
+  try {
+    result = await store.redo(tabId, ctx.cwd, ctx.chat.messages, {
+      force: /\s--force\b/.test(input),
+    });
+  } catch (err) {
+    sysMsg(ctx, `Redo failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
   if (!result) {
     sysMsg(ctx, "Nothing to redo.");
     return;
   }
   ctx.chat.setMessages(result.messages);
   ctx.chat.setCoreMessages(rebuildCoreMessages(result.messages));
-  sysMsg(ctx, `Redo applied. Restored ${String(result.restoredFiles.length)} file(s).`);
+  ctx.refreshGit();
+  sysMsg(ctx, `Redo applied. ${rollbackSummary(result.rollback, ctx.cwd)}`);
 }
 
 async function handleCheckpointSave(_input: string, ctx: CommandContext): Promise<void> {
@@ -156,7 +172,7 @@ async function handleCheckpointSave(_input: string, ctx: CommandContext): Promis
   }
 }
 
-function forkSummary(report: RollbackReport, cwd: string): string {
+function rollbackSummary(report: RollbackReport, cwd: string): string {
   const rel = (p: string) => relative(cwd, p) || p;
   const parts = [`Restored ${String(report.restored.length)} file(s)`];
   if (report.removed.length > 0) parts.push(`removed ${String(report.removed.length)}`);
@@ -230,7 +246,10 @@ async function handleCheckpointFork(input: string, ctx: CommandContext): Promise
   const copied = await copyCheckpointTags(ctx.cwd, tags, point.checkpoint, newId);
   if (copied.length > 0) store.restoreTagsFromMeta(newId, copied);
   ctx.refreshGit();
-  sysMsg(ctx, `Forked checkpoint #${String(index)} into ${label}. ${forkSummary(report, ctx.cwd)}`);
+  sysMsg(
+    ctx,
+    `Forked checkpoint #${String(index)} into ${label}. ${rollbackSummary(report, ctx.cwd)}`,
+  );
 }
 
 export function register(map: Map<string, CommandHandler>): void {
@@ -238,6 +257,8 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/checkpoint live", handleCheckpointLive);
   map.set("/checkpoint undo", handleCheckpointUndo as CommandHandler);
   map.set("/checkpoint redo", handleCheckpointRedo as CommandHandler);
+  map.set("/undo", handleCheckpointUndo as CommandHandler);
+  map.set("/redo", handleCheckpointRedo as CommandHandler);
   map.set("/checkpoint save", handleCheckpointSave as CommandHandler);
   map.set("/checkpoint list", handleCheckpointList as CommandHandler);
   map.set("/checkpoint fork", handleCheckpointFork as CommandHandler);
@@ -245,7 +266,10 @@ export function register(map: Map<string, CommandHandler>): void {
 
 export function matchCheckpointPrefix(cmd: string): CommandHandler | null {
   if (/^\/checkpoint\s+\d+$/.test(cmd)) return handleCheckpointView;
-  if (/^\/checkpoint\s+undo\s+\d+$/.test(cmd)) return handleCheckpointUndo as CommandHandler;
+  if (/^\/(checkpoint\s+)?undo(\s+\d+)?(\s+--force)?$/.test(cmd))
+    return handleCheckpointUndo as CommandHandler;
+  if (/^\/(checkpoint\s+)?redo(\s+--force)?$/.test(cmd))
+    return handleCheckpointRedo as CommandHandler;
   if (/^\/checkpoint\s+fork(\s+\d+)?(\s+--force)?$/.test(cmd))
     return handleCheckpointFork as CommandHandler;
   return null;

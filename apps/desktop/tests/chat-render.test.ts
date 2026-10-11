@@ -4,6 +4,7 @@ import { toolDiff, toolTitle } from "../src/renderer/screens/chat/tools.ts";
 import {
   forkReportLines,
   rememberForkReport,
+  rewindReportLines,
   takeForkReport,
 } from "../src/renderer/screens/chat/fork.ts";
 import { parseChatEvent } from "../src/renderer/screens/chat/transcript.ts";
@@ -158,5 +159,37 @@ describe("fork reports", () => {
     rememberForkReport("s1", ["done"]);
     expect(takeForkReport("s1")).toEqual(["done"]);
     expect(takeForkReport("s1")).toBeNull();
+  });
+});
+
+describe("undo and redo reports", () => {
+  const report = {
+    checkpoint: 1,
+    snapshot: "baked/cp-1",
+    backupTag: "baked/undo-backup-1",
+    restored: ["/w/src/a.ts"],
+    removed: [],
+    skipped: [{ path: "/w/local.env", reason: "ignored by Git, so no snapshot holds it" }],
+  };
+
+  test("name the checkpoint or turn, the files and the backup tag", () => {
+    expect(rewindReportLines("undo", report)).toEqual([
+      "Undid the chat back to checkpoint #1: restored 1 file(s).",
+      "Left w/local.env as it is: ignored by Git, so no snapshot holds it.",
+      "The files from before the undo are in Git tag baked/undo-backup-1.",
+    ]);
+    expect(rewindReportLines("redo", { ...report, checkpoint: 2, skipped: [], backupTag: null })).toEqual([
+      "Redid turn #2: restored 1 file(s).",
+    ]);
+  });
+
+  test("the rewind event is parsed", () => {
+    expect(
+      parseChatEvent({
+        id: "7",
+        event: "rewind",
+        data: JSON.stringify({ action: "undo", checkpoint: 1, messageCount: 2, seq: 7, at: 5 }),
+      }),
+    ).toMatchObject({ type: "rewind", action: "undo", seq: 7 });
   });
 });

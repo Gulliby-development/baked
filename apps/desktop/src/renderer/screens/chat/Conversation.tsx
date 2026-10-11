@@ -1,5 +1,11 @@
 import { useId, useState } from "react";
-import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
+import type {
+  ChatMessage,
+  ChatPlan,
+  InputContextItem,
+  PlanAction,
+  ToolCall,
+} from "../../client/chat.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
@@ -33,6 +39,7 @@ const OUTCOME_TONE: Record<string, string> = {
   approved: "text-[var(--ok)]",
   denied: "text-[var(--err)]",
 };
+const RESOLVED = "m-0 px-3 py-0 flex gap-2 text-[13px] text-dim-foreground min-w-0";
 
 function Chevron({ open }: { open: boolean }) {
   return (
@@ -340,21 +347,171 @@ const OUTCOMES = {
   skipped: "Skipped",
 } as const;
 
+const PLAN_OUTCOMES: Record<PlanAction, string> = {
+  execute: "Plan accepted",
+  "clear-execute": "Plan accepted with a fresh context",
+  revise: "Changes asked",
+  cancel: "Plan cancelled",
+};
+
+export interface PlanReview {
+  action: PlanAction;
+  feedback?: string;
+}
+
+/** A plan the agent proposed in plan mode, with the terminal UI's review choices. */
+function PlanReviewCard({
+  prompt,
+  busy,
+  onReview,
+}: {
+  prompt: Extract<TranscriptPrompt["prompt"], { kind: "plan-review" }>;
+  busy: boolean;
+  onReview: (id: string, review: PlanReview) => void;
+}) {
+  const [revising, setRevising] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const inputId = useId();
+  return (
+    <section
+      className={`${PROMPT_CARD} gap-[10px] bg-fill-info text-main-foreground`}
+      aria-label="Review the plan"
+    >
+      <p className={PROMPT_TITLE}>Review the plan</p>
+      <p className="m-0 text-[12px] text-main-foreground">
+        {prompt.steps.length} {prompt.steps.length === 1 ? "step" : "steps"} ·{" "}
+        {prompt.depth === "full" ? "full plan with edits" : "light plan"} ·{" "}
+        <span className="font-mono">{prompt.planFile}</span>
+      </p>
+      <div className="max-h-[420px] overflow-auto px-3 py-[10px] border-2 border-border rounded-base bg-raised text-foreground">
+        <Markdown text={prompt.content} />
+      </div>
+      {revising ? (
+        <form
+          className={ROW}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (feedback.trim())
+              onReview(prompt.id, { action: "revise", feedback: feedback.trim() });
+          }}
+        >
+          <label htmlFor={inputId} className="sr-only">
+            What should change
+          </label>
+          <input
+            id={inputId}
+            type="text"
+            className="flex-1 min-w-[200px]"
+            placeholder="What should change?"
+            value={feedback}
+            onChange={(event) => setFeedback(event.target.value)}
+          />
+          <Button type="submit" variant="primary" size="md" disabled={busy || !feedback.trim()}>
+            Send
+          </Button>
+          <Button variant="secondary" size="md" onClick={() => setRevising(false)}>
+            Back
+          </Button>
+        </form>
+      ) : (
+        <div className={ROW}>
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy}
+            onClick={() => onReview(prompt.id, { action: "execute" })}
+          >
+            Execute
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            title="Drops the conversation so far; the plan carries what the work needs."
+            onClick={() => onReview(prompt.id, { action: "clear-execute" })}
+          >
+            Clear context and execute
+          </Button>
+          <Button variant="secondary" size="md" disabled={busy} onClick={() => setRevising(true)}>
+            Revise
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            onClick={() => onReview(prompt.id, { action: "cancel" })}
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const STEP_MARKS = { pending: "○", active: "◐", done: "✓", skipped: "–" } as const;
+const STEP_TONE = {
+  pending: undefined,
+  active: "font-semibold",
+  done: "text-muted-foreground",
+  skipped: undefined,
+} as const;
+
+/** The checklist of a plan being carried out. */
+function PlanChecklist({ plan }: { plan: ChatPlan }) {
+  const done = plan.steps.filter((s) => s.status === "done").length;
+  return (
+    <section
+      className="px-[14px] py-[10px] border-2 border-border rounded-base bg-raised shadow-sm-hard"
+      aria-label="Plan"
+    >
+      <p className="m-0 mb-[6px] font-bold">
+        {plan.title}{" "}
+        <span className="text-dim-foreground">
+          {done}/{plan.steps.length}
+        </span>
+      </p>
+      <ol className="m-0 p-0 list-none flex flex-col gap-1 text-[13px]">
+        {plan.steps.map((step) => (
+          <li key={step.id} className={STEP_TONE[step.status]}>
+            <span className="inline-block w-[1.4em] font-mono" aria-hidden="true">
+              {STEP_MARKS[step.status]}
+            </span>
+            <span className="sr-only">{step.status}: </span>
+            {step.label}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function PromptCard({
   entry,
   busy,
   onApprove,
   onAnswer,
+  onReviewPlan,
 }: {
   entry: TranscriptPrompt;
   busy: boolean;
   onApprove: (id: string, approve: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
+  onReviewPlan?: (id: string, review: PlanReview) => void;
 }) {
   const [text, setText] = useState("");
   const inputId = useId();
   const { prompt, outcome } = entry;
   if (outcome) {
+    if (prompt.kind === "plan-review")
+      return (
+        <p className={RESOLVED}>
+          <span className={`flex-none font-medium ${OUTCOME_TONE[outcome] ?? ""}`}>
+            {entry.action ? PLAN_OUTCOMES[entry.action] : OUTCOMES[outcome]}
+          </span>
+          <span className="truncate">{prompt.title}</span>
+        </p>
+      );
     const subject =
       prompt.kind === "question"
         ? prompt.question
@@ -366,13 +523,17 @@ function PromptCard({
               ? prompt.query
               : prompt.url;
     return (
-      <p className="m-0 px-3 py-0 flex gap-2 text-[13px] text-dim-foreground min-w-0">
+      <p className={RESOLVED}>
         <span className={`flex-none font-medium ${OUTCOME_TONE[outcome] ?? ""}`}>
           {OUTCOMES[outcome]}
         </span>
         <span className="truncate">{subject}</span>
       </p>
     );
+  }
+  if (prompt.kind === "plan-review") {
+    if (!onReviewPlan) return null;
+    return <PlanReviewCard prompt={prompt} busy={busy} onReview={onReviewPlan} />;
   }
   if (prompt.kind === "question") {
     return (
@@ -476,6 +637,7 @@ export function Conversation({
   deciding,
   onApprove,
   onAnswer,
+  onReviewPlan,
   forking,
   onFork,
 }: {
@@ -483,6 +645,8 @@ export function Conversation({
   deciding: ReadonlySet<string>;
   onApprove: (id: string, approve: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
+  /** Answers a plan review; without it plan reviews are not shown. */
+  onReviewPlan?: (id: string, review: PlanReview) => void;
   forking?: boolean;
   /** Forks the session after `messageId`; absent while the session cannot be forked. */
   onFork?: (messageId: string, rollbackFiles: boolean) => void;
@@ -491,6 +655,9 @@ export function Conversation({
   const running = transcript.turnId !== null;
   const waiting = prompts.some((p) => p.outcome === undefined);
   const lastLive = live?.segments?.at(-1);
+  // The review card shows a proposed plan; the checklist follows one being carried out.
+  const reviewing = prompts.some((p) => p.prompt.kind === "plan-review");
+  const plan = transcript.plan && !reviewing ? transcript.plan : null;
   return (
     <>
       {messages.map((message) =>
@@ -511,8 +678,16 @@ export function Conversation({
               />
             )}
           </div>
-        ) : null,
+        ) : (
+          <p
+            key={message.id}
+            className="self-center m-0 px-3 py-1 border-2 border-dashed border-border rounded-base text-[12px] text-muted-foreground text-center"
+          >
+            {message.content}
+          </p>
+        ),
       )}
+      {plan && <PlanChecklist plan={plan} />}
       {live && (
         <Assistant
           message={live}
@@ -527,6 +702,7 @@ export function Conversation({
           busy={deciding.has(entry.prompt.id)}
           onApprove={onApprove}
           onAnswer={onAnswer}
+          {...(onReviewPlan ? { onReviewPlan } : {})}
         />
       ))}
       {pending.map((text, i) => (
@@ -542,6 +718,17 @@ export function Conversation({
             <span className={SPINNER_RING} />
           </span>
           Working…
+        </p>
+      )}
+      {transcript.compacting && (
+        <p
+          className={`${NOTICE} flex items-center gap-[10px] text-dim-foreground`}
+          aria-live="polite"
+        >
+          <span className={SPINNER} aria-hidden="true">
+            <span className={SPINNER_RING} />
+          </span>
+          Compacting the conversation…
         </p>
       )}
       {notice && (

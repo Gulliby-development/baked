@@ -3,6 +3,7 @@ import { workspacePath } from "../specs/validate.js";
 import { fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
+import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { capturePreImage, createdByRunLineage } from "./rollback.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
@@ -35,11 +36,17 @@ export class WorkflowToolPolicy {
   validate(name: string, args: Record<string, unknown>): string | null {
     if (this.store.run(this.runId).status !== "running")
       throw new WorkflowFault("CAPABILITY_DENIED", "Run is not executing");
-    if (!this.profile.allowedTools.includes(name) || !this.policy.allowedTools.includes(name))
+    if (
+      !toolListAllows(this.profile.allowedTools, name) ||
+      !toolListAllows(this.policy.allowedTools, name)
+    )
       throw new WorkflowFault(
         "CAPABILITY_DENIED",
         `Tool ${name} is not allowed by profile and run policy`,
       );
+    // An MCP tool acts outside the workspace through its server; the grant in both the profile
+    // and the approved policy is its approval. Its arguments are the server's, not workspace paths.
+    if (isMcpToolName(name)) return null;
     for (const field of ["path", "file", "from", "to"])
       if (typeof args[field] === "string") this.path(args[field]);
     if (Array.isArray(args.files))

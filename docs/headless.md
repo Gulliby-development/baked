@@ -22,7 +22,7 @@ baked --headless --chat                           # interactive multi-turn chat
 | `--system "..."` | Add system instructions |
 | `--include <file>` | Load a file into context first (repeatable) |
 | `--no-repomap` | Skip the repository scan |
-| `--diff` | List the files changed by the run |
+| `--diff` | List the files the session changed, with the lines each adds and removes |
 | `--save-session` | Save the conversation for a later `--session` |
 | `--session <id>` | Resume a saved session (an ID prefix is enough) |
 | `--quiet` | Suppress the header and footer on stderr |
@@ -30,6 +30,10 @@ baked --headless --chat                           # interactive multi-turn chat
 Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 
 `--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command.
+
+## Changed files
+
+When the session has edited files, the stderr footer ends with the totals (`+52 −3 in 3 files`), and `--diff` lists each file as `+ADDED −REMOVED PATH`, with `(added)`, `(deleted)`, `(unchanged)`, `(outside)` or `(unknown)` when it is not a plain edit. `--json` output, the `done` event and in `--chat` each `turn-done` event carry the same numbers as `diffStats`, the `SessionDiffStats` object of the [local API](desktop/api.md) (`{base, files: [{path, status, added, removed, binary?}], totals: {files, added, removed}}`). Git measures what is uncommitted in those files against `HEAD`, as in the [terminal UI](guide.md#changed-files). The session's files are the ones this run edited plus those a resumed session's saved tool calls name; a session saved by an earlier headless run stores only text, so its earlier edits are not included.
 
 ## Mentions and shell commands
 
@@ -52,6 +56,16 @@ baked --headless --session <new-id> "try the other approach"
 `baked session fork ID` saves a new session with the active conversation of session `ID` and prints its id. `--at MESSAGE_ID` keeps the messages up to and including that message, `--checkpoint N` up to the end of checkpoint (turn) N; without either the whole conversation is copied. `--rollback-files` also restores the files the agent edited after that point to their state there, with the same safeguards as `/checkpoint fork` in the terminal UI ([forking a checkpoint](guide.md#forking-a-checkpoint)): a backup tag first, and files changed since the agent last touched them are left as they are unless `--force`. `--json` prints `{sessionId, title, messageCount, checkpoint, rollback}`, where `rollback` is the report described in the [local API](desktop/api.md). The command exits 1 when the session, message or checkpoint does not exist, or when files need restoring and the project is not a Git repository.
 
 Headless runs do not snapshot the workspace, so a session made only with `--save-session` can be forked but its files cannot be rolled back.
+
+## Undoing a turn
+
+```sh
+baked session undo <id>            # drop the last turn and restore the files it edited
+baked session undo <id> --to 1     # keep only checkpoint 1
+baked session redo <id>            # put the oldest undone turn back
+```
+
+`baked session undo ID` drops the last turn of the active conversation of session `ID` (with `--to N`, every turn after checkpoint N; `--to 0` drops them all) and restores the files those turns edited, with the safeguards of `/undo` in the terminal UI ([checkpoints](guide.md#checkpoints)): a backup tag first, and files changed since the agent last wrote them are left as they are unless `--force`. The undone turns are saved with the session; `baked session redo ID` puts back the oldest one and restores the files it edited. After a new message in the session they can no longer be put back. `--json` prints `{sessionId, action, checkpoint, messageCount, redoCount, rollback}`. The command exits 1 when the session does not exist or there is nothing to undo or redo.
 
 ## Approvals
 

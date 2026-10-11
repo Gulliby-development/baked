@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { startApiServer } from "../src/core/api/server.js";
+import type { SessionDiffStats } from "../src/core/chat/diff-stats.js";
 import {
   type ChatAgentHost,
+  type CompactionRequest,
+  type CompactionResponse,
   type ChatEvent,
   ChatService,
   type SessionDetail,
   type TurnAgentRequest,
 } from "../src/core/chat/sessions.js";
+import { assembleCompacted, splitForCompaction } from "../src/core/compaction/manual.js";
 import { SessionManager } from "../src/core/sessions/manager.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -24,6 +28,7 @@ class ScriptedHost implements ChatAgentHost {
   seen: { modelId: string; mode: string; messages: ModelMessage[] }[] = [];
   released: string[] = [];
   suggestMentions?: ChatAgentHost["suggestMentions"];
+  compact?: (request: CompactionRequest) => Promise<CompactionResponse>;
   async agent(request: TurnAgentRequest) {
     const script = this.scripts.shift() ?? reply("ok");
     return {
@@ -351,7 +356,7 @@ describe("local API chat sessions", () => {
       mode: "auto",
     });
     expect(await patched.json()).toMatchObject({ title: "Renamed", model: "anthropic/claude-test", mode: "auto" });
-    expect((await send("PATCH", `/v1/sessions/${session.id}`, { mode: "plan" })).status).toBe(400);
+    expect((await send("PATCH", `/v1/sessions/${session.id}`, { mode: "review" })).status).toBe(400);
     expect((await send("PATCH", `/v1/sessions/${session.id}`, {})).status).toBe(400);
     await post(`/v1/sessions/${session.id}/messages`, { text: "Again" });
     await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
@@ -373,10 +378,47 @@ describe("local API chat sessions", () => {
     expect(host.released).toContain(fork.id);
   });
 
+  test("undo and redo rewind the conversation over the API", async () => {
+    const { host, call, post, detail } = await setup();
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("chat-undo");
+    const session = (await (await post("/v1/sessions", { text: "One" })).json()) as SessionDetail;
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Two" });
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
+
+    const stream = call(`/v1/sessions/${session.id}/events?after=${(await detail(session.id)).lastSeq}`);
+    const undone = await post(`/v1/sessions/${session.id}/undo`);
+    expect(undone.status).toBe(200);
+    const body = (await undone.json()) as SessionDetail & { rollback: { checkpoint: number } };
+    expect(body.messages.map((m) => m.content)).toEqual(["One", "ok"]);
+    expect(body.redo).toEqual([{ index: 2, prompt: "Two" }]);
+    expect(body.rollback.checkpoint).toBe(1);
+    const seen = await events(await stream, (e) => e.type === "rewind");
+    expect(seen.at(-1)).toMatchObject({ type: "rewind", action: "undo", checkpoint: 1, messageCount: 2 });
+
+    expect((await post(`/v1/sessions/${session.id}/undo`, { toCheckpoint: 5 })).status).toBe(400);
+    const redone = (await (await post(`/v1/sessions/${session.id}/redo`)).json()) as SessionDetail;
+    expect(redone.messages.map((m) => m.content)).toEqual(["One", "ok", "Two", "ok"]);
+    const nothing = await post(`/v1/sessions/${session.id}/redo`);
+    expect(nothing.status).toBe(409);
+    expect(((await nothing.json()) as { error: { code: string } }).error.code).toBe("NOTHING_TO_REDO");
+
+    host.scripts.push(async function* ({ signal }) {
+      await untilAborted(signal);
+    });
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Hold" });
+    await until(() => detail(session.id), (d) => d.state === "working");
+    const busy = await post(`/v1/sessions/${session.id}/undo`);
+    expect(busy.status).toBe(409);
+    expect(((await busy.json()) as { error: { code: string } }).error.code).toBe("SESSION_BUSY");
+    await post(`/v1/sessions/${session.id}/interrupt`);
+  });
+
   test("errors: unknown sessions and prompts, bad bodies, busy deletes and a stale event cursor", async () => {
     const { host, call, post, detail } = await setup();
     expect((await call("/v1/sessions/nope")).status).toBe(404);
-    expect((await post("/v1/sessions", { mode: "plan" })).status).toBe(400);
+    expect((await post("/v1/sessions", { mode: "review" })).status).toBe(400);
     expect((await post("/v1/sessions", { model: "no-provider" })).status).toBe(400);
     host.scripts.push(async function* ({ signal }) {
       await untilAborted(signal);
@@ -405,5 +447,245 @@ describe("local API chat sessions", () => {
     expect(after.messages[1]?.content).toBe("Partial");
     await post(`/v1/sessions/${session.id}/messages`, { text: "Again" });
     await until(() => detail(session.id), (d) => d.messages.length === 4);
+  });
+  test("compaction replaces older messages with a summary and the next turn starts from it", async () => {
+    const { host, call, post, detail } = await setup();
+    const seenCompact: CompactionRequest[] = [];
+    host.compact = async (request) => {
+      seenCompact.push(request);
+      const { older, recent } = splitForCompaction(request.messages, 4);
+      const summary = `Summary of ${older.length} messages. ${"x".repeat(60)}`;
+      return {
+        result: { status: "compacted", messages: assembleCompacted(summary, recent), summary, compacted: older.length, strategy: "v1", usage: { inputTokens: 50, outputTokens: 10 } },
+        systemChars: 300,
+        contextWindow: 1000,
+      };
+    };
+    const session = (await (await post("/v1/sessions", { text: "One" })).json()) as SessionDetail;
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("compaction");
+
+    // Two messages are too few to summarize.
+    const short = await post(`/v1/sessions/${session.id}/compact`);
+    expect(short.status).toBe(409);
+    expect(((await short.json()) as { error: { code: string } }).error.code).toBe("NOTHING_TO_COMPACT");
+
+    for (const text of ["Two", "Three"]) {
+      await post(`/v1/sessions/${session.id}/messages`, { text });
+      await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.at(-1)?.role === "assistant" && d.messages.length % 2 === 0 && d.messages.some((m) => m.content === text));
+    }
+    const before = await detail(session.id);
+    const stream = call(`/v1/sessions/${session.id}/events?after=${before.lastSeq}`);
+    const started = await post(`/v1/sessions/${session.id}/compact`);
+    expect(started.status).toBe(202);
+    const { compactionId } = (await started.json()) as { compactionId: string };
+    const seen = await events(await stream, (e) => e.type === "compaction-done");
+    expect(seen.map((e) => e.type).filter((t) => t.startsWith("compaction"))).toEqual(["compaction-start", "compaction-done"]);
+    const done = seen.at(-1);
+    if (done?.type !== "compaction-done") throw new Error("No compaction-done");
+    expect(done).toMatchObject({ compactionId, status: "compacted", compacted: 2, context: { usedTokens: expect.any(Number), windowTokens: 1000 } });
+    expect(done.message?.role).toBe("system");
+    expect(seenCompact[0]?.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+
+    const after = await until(() => detail(session.id), (d) => d.state === "idle" && !d.compacting);
+    expect(after.messages.at(-1)?.content).toContain("Compacted 2 messages");
+    expect(after.usage).toMatchObject({ input: 350, output: 70 });
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Four" });
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.at(-1)?.role === "assistant" && d.messages.some((m) => m.content === "Four"));
+    const sent = host.seen.at(-1)?.messages ?? [];
+    expect(sent.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant", "user"]);
+    expect(String(sent[0]?.content)).toContain("Summary of 2 messages");
+    expect(sent[1]?.content).toBe("Continuing.");
+  });
+
+  test("a message sent while compacting waits and starts the next turn; interrupt and busy errors", async () => {
+    const { host, post, detail } = await setup();
+    let release: () => void = () => {};
+    host.compact = async (request) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        request.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      const { recent } = splitForCompaction(request.messages, 4);
+      const summary = "y".repeat(80);
+      return { result: { status: "compacted", messages: assembleCompacted(summary, recent), summary, compacted: 2, strategy: "v2" } };
+    };
+    const session = (await (await post("/v1/sessions", { text: "One" })).json()) as SessionDetail;
+    for (const text of ["Two", "Three"]) {
+      await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.at(-1)?.role === "assistant");
+      await post(`/v1/sessions/${session.id}/messages`, { text });
+    }
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 6);
+
+    expect((await post(`/v1/sessions/${session.id}/compact`)).status).toBe(202);
+    const busy = await until(() => detail(session.id), (d) => d.compacting);
+    expect(busy.state).toBe("working");
+    const again = await post(`/v1/sessions/${session.id}/compact`);
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as { error: { code: string } }).error.code).toBe("SESSION_BUSY");
+    const queued = await post(`/v1/sessions/${session.id}/messages`, { text: "After" });
+    expect(((await queued.json()) as { queued: boolean }).queued).toBe(true);
+    release();
+    const after = await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.at(-1)?.role === "assistant" && d.messages.some((m) => m.content === "After"));
+    expect(after.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant", "system", "user", "assistant"]);
+
+    // Interrupting a compaction keeps the conversation as it was.
+    expect((await post(`/v1/sessions/${session.id}/compact`)).status).toBe(202);
+    await until(() => detail(session.id), (d) => d.compacting);
+    expect(((await (await post(`/v1/sessions/${session.id}/interrupt`)).json()) as { interrupted: boolean }).interrupted).toBe(true);
+    const stopped = await until(() => detail(session.id), (d) => !d.compacting && d.state === "idle");
+    expect(stopped.messages).toHaveLength(9);
+
+    host.compact = undefined;
+    const unsupported = await post(`/v1/sessions/${session.id}/compact`);
+    expect(unsupported.status).toBe(501);
+    expect((await post(`/v1/sessions/${session.id}/compact`, { keep: 2 })).status).toBe(400);
+  });
+
+  test("plan mode reviews the plan as a prompt; accepting it runs the plan outside plan mode", async () => {
+    const { host, call, post, detail, fixture } = await setup();
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("plan-mode");
+    const plan = {
+      title: "Add a flag",
+      depth: "light" as const,
+      steps: [
+        { id: "1", label: "Parse it", status: "pending" as const },
+        { id: "2", label: "Test it", status: "pending" as const },
+      ],
+      createdAt: 1,
+    };
+    const actions: string[] = [];
+    // The planning turn: proposes the plan, is revised once, then accepted.
+    host.scripts.push(async function* ({ request, signal }) {
+      request.callbacks.onPlanCreate(plan);
+      actions.push(await request.callbacks.onPlanReview(plan, ".baked/plans/p.md", "# Add a flag v1"));
+      request.callbacks.onPlanCreate(plan);
+      await Bun.write(`${fixture.root}/.baked/plans/p.md`, "# Add a flag v2 (edited)");
+      actions.push(await request.callbacks.onPlanReview(plan, ".baked/plans/p.md", "# Add a flag v2"));
+      yield { type: "text-delta", text: "Planned." };
+      await untilAborted(signal);
+    });
+    // The execution turn carries out the plan.
+    host.scripts.push(async function* ({ request }) {
+      request.callbacks.onPlanStepUpdate("1", "done");
+      yield { type: "text-delta", text: "Executed." };
+      yield step();
+    });
+    const session = (await (await post("/v1/sessions", { mode: "plan", text: "Add --dry-run" })).json()) as SessionDetail;
+    expect(session.mode).toBe("plan");
+    const stream = call(`/v1/sessions/${session.id}/events?after=0`);
+
+    const first = await until(() => detail(session.id), (d) => d.prompts.length === 1);
+    const review = first.prompts[0];
+    expect(review).toMatchObject({
+      kind: "plan-review",
+      title: "Add a flag",
+      depth: "light",
+      steps: [{ id: "1", label: "Parse it" }, { id: "2", label: "Test it" }],
+      planFile: ".baked/plans/p.md",
+      content: "# Add a flag v1",
+    });
+    expect(first.plan?.title).toBe("Add a flag");
+    const url = `/v1/sessions/${session.id}/prompts/${review?.id}`;
+    expect((await post(url, { approve: true })).status).toBe(400);
+    expect((await post(url, { action: "revise" })).status).toBe(400);
+    expect((await post(url, { action: "revise", feedback: "Also document it" })).status).toBe(200);
+
+    const second = await until(() => detail(session.id), (d) => d.prompts.length === 1 && d.prompts[0]?.id !== review?.id);
+    expect((await post(`/v1/sessions/${session.id}/prompts/${second.prompts[0]?.id}`, { action: "execute" })).status).toBe(200);
+
+    const seen = await events(await stream, (e) => e.type === "turn-done" && e.message?.content === "Executed.");
+    expect(actions).toEqual(["Also document it", "execute"]);
+    const resolved = seen.filter((e) => e.type === "prompt-resolved");
+    expect(resolved).toEqual([
+      expect.objectContaining({ outcome: "answered", action: "revise" }),
+      expect.objectContaining({ outcome: "approved", action: "execute" }),
+    ]);
+    const dones = seen.filter((e) => e.type === "turn-done");
+    expect(dones.map((e) => e.type === "turn-done" && e.status)).toEqual(["completed", "completed"]);
+    expect(seen.find((e) => e.type === "notice")).toMatchObject({ message: { role: "system", content: "Plan accepted — executing." } });
+    const planEvents = seen.filter((e) => e.type === "plan");
+    expect(planEvents.at(-2)).toMatchObject({ plan: { steps: [{ id: "1", status: "done" }, { id: "2", status: "pending" }] } });
+    expect(planEvents.at(-1)).toMatchObject({ plan: null });
+
+    // The plan turn ran in plan mode; the execution turn in default mode with the edited plan.
+    expect(host.seen.map((s) => s.mode)).toEqual(["plan", "default"]);
+    const execution = String(host.seen[1]?.messages.at(-1)?.content);
+    expect(execution).toContain("Execute this plan.");
+    expect(execution).toContain("# Add a flag v2 (edited)");
+    const after = await until(() => detail(session.id), (d) => d.state === "idle");
+    expect(after.mode).toBe("default");
+    expect(after.plan).toBeNull();
+    expect(after.messages.map((m) => m.role)).toEqual(["user", "assistant", "system", "user", "assistant"]);
+    expect(after.messages[3]?.content).toBe("Execute the plan: Add a flag");
+  });
+
+  test("cancelling a plan review leaves plan mode; interrupting it keeps plan mode", async () => {
+    const { host, post, detail } = await setup();
+    const plan = { title: "Rename", depth: "full" as const, steps: [{ id: "1", label: "Do", status: "pending" as const }], createdAt: 1 };
+    let action: string | undefined;
+    host.scripts.push(async function* ({ request }) {
+      action = await request.callbacks.onPlanReview(plan, ".baked/plans/missing.md", "# Rename");
+      yield { type: "text-delta", text: "Waiting." };
+      yield step();
+    });
+    const session = (await (await post("/v1/sessions", { mode: "plan", text: "Rename it" })).json()) as SessionDetail;
+    const waiting = await until(() => detail(session.id), (d) => d.prompts.length === 1);
+    await post(`/v1/sessions/${session.id}/prompts/${waiting.prompts[0]?.id}`, { action: "cancel" });
+    const cancelled = await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 3);
+    expect(action).toBe("cancel");
+    expect(cancelled.mode).toBe("default");
+    expect(cancelled.messages.at(-1)).toMatchObject({ role: "system", content: "Plan cancelled: Rename" });
+
+    host.scripts.push(async function* ({ request, signal }) {
+      action = await request.callbacks.onPlanReview(plan, ".baked/plans/missing.md", "# Rename");
+      await untilAborted(signal);
+    });
+    const again = (await (await post("/v1/sessions", { mode: "plan", text: "Rename it" })).json()) as SessionDetail;
+    await until(() => detail(again.id), (d) => d.prompts.length === 1);
+    await post(`/v1/sessions/${again.id}/interrupt`);
+    const interrupted = await until(() => detail(again.id), (d) => d.state === "idle");
+    expect(action).toBe("cancel");
+    expect(interrupted.mode).toBe("plan");
+    expect(interrupted.messages.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  test("a plan made outside plan mode goes ahead without a review", async () => {
+    const { host, post, detail } = await setup();
+    let action: string | undefined;
+    host.scripts.push(async function* ({ request }) {
+      action = await request.callbacks.onPlanReview(
+        { title: "T", depth: "light", steps: [], createdAt: 1 },
+        ".baked/plans/t.md",
+        "# T",
+      );
+      yield step();
+    });
+    const session = (await (await post("/v1/sessions", { text: "Go" })).json()) as SessionDetail;
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length >= 1);
+    expect(action).toBe("execute");
+  });
+
+  test("diff stats list the files the session edited", async () => {
+    const { host, call, post, detail } = await setup();
+    host.scripts.push(async function* () {
+      yield { type: "tool-call", toolCallId: "c1", toolName: "edit_file", input: { path: "a.ts" } };
+      yield { type: "tool-result", toolCallId: "c1", toolName: "edit_file", output: { success: true, output: "ok" } };
+      yield { type: "tool-call", toolCallId: "c2", toolName: "edit_file", input: { path: "b.ts" } };
+      yield { type: "tool-result", toolCallId: "c2", toolName: "edit_file", output: { success: false, output: "", error: "no match" } };
+      yield step();
+    });
+    const session = (await (await post("/v1/sessions", { text: "Edit" })).json()) as SessionDetail;
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+    const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("diff-stats");
+    const res = await call(`/v1/sessions/${session.id}/diff`);
+    expect(res.status).toBe(200);
+    const stats = (await res.json()) as SessionDiffStats;
+    expect(stats.files.map((f) => f.path)).toEqual(["a.ts"]);
+    expect(stats.totals.files).toBe(stats.files.filter((f) => f.status !== "unchanged").length);
+    expect((await post(`/v1/sessions/${session.id}/diff`)).status).toBe(405);
   });
 });

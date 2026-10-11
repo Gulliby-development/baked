@@ -1,15 +1,20 @@
 import type { AppConfig } from "../../types/index.js";
 import type { SharedCacheRef } from "../agents/subagent-tools.js";
+import { compactConversation } from "../compaction/manual.js";
 import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { resolveModel } from "../llm/provider.js";
 import { buildProviderOptions } from "../llm/provider-options.js";
+import { resolveTaskModel } from "../llm/task-router.js";
+import { emitCacheReset } from "../tools/file-events.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
 import { type ExpandedChatInput, expandChatInput } from "./input-expansion.js";
 import { type MentionSuggestion, suggestMentions } from "./mention-suggest.js";
 import type {
   ChatAgentHost,
+  CompactionRequest,
+  CompactionResponse,
   InputExpansionRequest,
   TurnAgent,
   TurnAgentRequest,
@@ -79,6 +84,7 @@ export class BakeChatHost implements ChatAgentHost {
       modelId: request.modelId,
       model,
       mode: request.mode,
+      planExecution: request.planExecution,
       contextManager: context,
       providerOptions: provider.providerOptions,
       headers: provider.headers,
@@ -91,6 +97,40 @@ export class BakeChatHost implements ChatAgentHost {
     });
     const turnAgent: TurnAgent = agent;
     return { agent: turnAgent, contextWindow: provider.contextWindow };
+  }
+
+  /**
+   * Compacts a session as the terminal UI's `/compact` does: with the task router's `compact`
+   * model, the configured strategy, and a context manager that forgets what the summary replaced.
+   */
+  async compact(request: CompactionRequest): Promise<CompactionResponse> {
+    const modelId = resolveTaskModel("compact", this.config.taskRouter, request.modelId);
+    const provider = await buildProviderOptions(modelId, this.config);
+    const result = await compactConversation({
+      core: request.messages,
+      config: this.config.compaction,
+      modelId,
+      model: resolveModel(modelId),
+      providerOptions: provider.providerOptions,
+      ...(provider.headers ? { headers: provider.headers } : {}),
+      abortSignal: request.abortSignal,
+    });
+    if (result.status !== "compacted") return { result };
+    const { context } = await this.resources(request.sessionId);
+    emitCacheReset();
+    const tracked = context.getTrackedFiles();
+    context.resetForCompaction();
+    for (const file of tracked.edited) {
+      try {
+        context.onFileChanged(file);
+      } catch {
+        // The file may have been deleted since.
+      }
+    }
+    for (const file of tracked.mentioned) context.trackMentionedFile(file);
+    const systemChars = (await context.getContextBreakdown()).reduce((sum, s) => sum + s.chars, 0);
+    const window = (await buildProviderOptions(request.modelId, this.config)).contextWindow;
+    return { result, systemChars, contextWindow: window };
   }
 
   async expandInput(request: InputExpansionRequest): Promise<ExpandedChatInput> {

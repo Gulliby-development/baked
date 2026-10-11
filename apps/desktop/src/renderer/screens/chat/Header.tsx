@@ -3,14 +3,16 @@ import type { DesktopProject } from "../../../shared/api.js";
 import {
   type ContextFill,
   chat,
+  type SessionDiffStats,
   type SessionState,
   type SessionSummary,
   type Usage,
 } from "../../client/chat.js";
 import { Icon } from "../../components/Icon.js";
-import { buttonVariants } from "../../components/ui/button.js";
+import { Button, buttonVariants } from "../../components/ui/button.js";
 import { Dot, type DotTone } from "../../components/ui/dot.js";
 import { ago, tokens } from "../../format.js";
+import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { shortModel } from "./Composer.js";
@@ -140,15 +142,65 @@ function Ring({ percent }: { percent: number }) {
   );
 }
 
+/** "Compact now" in the context panel; `disabled` says why it cannot run, if it cannot. */
+export interface CompactControl {
+  run: () => void;
+  disabled: string | null;
+}
+
+/** Undo and Redo in the header; each `disabled` says why the action cannot run, if it cannot. */
+export interface RewindControl {
+  undo: () => void;
+  redo: () => void;
+  undoDisabled: string | null;
+  redoDisabled: string | null;
+  /** The prompt of the turn Redo puts back. */
+  redoPrompt: string | null;
+}
+
+const REWIND_CHIP = `${CHIP} disabled:cursor-default disabled:bg-raised disabled:text-soft-foreground disabled:opacity-50 disabled:shadow-none disabled:hover:bg-raised disabled:hover:text-soft-foreground disabled:hover:shadow-none`;
+
+function RewindChips({ rewind }: { rewind: RewindControl }) {
+  return (
+    <>
+      <button
+        type="button"
+        className={REWIND_CHIP}
+        disabled={rewind.undoDisabled !== null}
+        title={rewind.undoDisabled ?? "Undo the last turn: drop it and restore the files it edited"}
+        onClick={rewind.undo}
+      >
+        <Icon name="undo" size={13} />
+        Undo
+      </button>
+      <button
+        type="button"
+        className={REWIND_CHIP}
+        disabled={rewind.redoDisabled !== null}
+        title={
+          rewind.redoDisabled ??
+          `Redo${rewind.redoPrompt ? ` "${rewind.redoPrompt}"` : " the undone turn"} and its file edits`
+        }
+        onClick={rewind.redo}
+      >
+        <Icon name="redo" size={13} />
+        Redo
+      </button>
+    </>
+  );
+}
+
 /** Context fill; expands on hover or focus with the breakdown the API gives. */
 function ContextChip({
   context,
   usage,
   model,
+  compact,
 }: {
   context: ContextFill | null;
   usage: Usage;
   model: string | null;
+  compact?: CompactControl | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -227,6 +279,22 @@ function ContextChip({
             <span>Model</span>
             <span className="font-mono">{shortModel(model)}</span>
           </div>
+          {compact && (
+            <div className="mt-[10px] flex flex-col items-start gap-1">
+              <Button
+                size="sm"
+                variant="neutral"
+                disabled={compact.disabled !== null}
+                onClick={compact.run}
+              >
+                Compact now
+              </Button>
+              <p className={cn(MENU_NOTE, "m-0")}>
+                {compact.disabled ??
+                  "Summarizes the older messages to free context; recent ones stay as they are."}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -249,6 +317,78 @@ function FilesChip({ files }: { files: string[] }) {
             </li>
           ))}
         </ul>
+      )}
+    </Popover>
+  );
+}
+
+const STATUS_NOTE: Record<string, string> = {
+  added: "new",
+  deleted: "deleted",
+  unchanged: "no change now",
+  outside: "outside the project",
+  unknown: "",
+};
+
+/** Lines added and removed in the files the chat edited, against the last commit. */
+function DiffChip({ diff }: { diff: SessionDiffStats }) {
+  if (diff.files.length === 0) return null;
+  const { totals } = diff;
+  const counted = diff.base !== null;
+  return (
+    <Popover
+      label="Changes"
+      align="right"
+      buttonLabel={`${totals.files} files changed${counted ? `, ${totals.added} lines added, ${totals.removed} removed` : ""}`}
+      button={
+        counted ? (
+          <>
+            <span className="font-mono text-[var(--ok)]">+{totals.added}</span>
+            <span className="font-mono text-[var(--err)]">−{totals.removed}</span>
+            <span>
+              {totals.files} file{totals.files === 1 ? "" : "s"}
+            </span>
+          </>
+        ) : (
+          `${totals.files} file${totals.files === 1 ? "" : "s"} changed`
+        )
+      }
+    >
+      {() => (
+        <>
+          <p className={LABEL}>{counted ? "Changes since the last commit" : "Files edited"}</p>
+          <ul className="m-0 p-0 list-none flex flex-col gap-1 text-[12px] min-w-[300px] max-w-[460px]">
+            {diff.files.map((file) => (
+              <li
+                key={file.path}
+                className={cn(
+                  "flex items-baseline gap-2",
+                  (file.status === "unchanged" || file.status === "outside") &&
+                    "text-dim-foreground",
+                )}
+              >
+                <span className="font-mono flex-1 min-w-0 truncate" title={file.path}>
+                  {file.path}
+                </span>
+                {STATUS_NOTE[file.status] ? (
+                  <span className="text-dim-foreground">{STATUS_NOTE[file.status]}</span>
+                ) : null}
+                {counted && file.status !== "unchanged" && file.status !== "outside" && (
+                  <span className="font-mono">
+                    {file.binary ? (
+                      "binary"
+                    ) : (
+                      <>
+                        <span className="text-[var(--ok)]">+{file.added}</span>{" "}
+                        <span className="text-[var(--err)]">−{file.removed}</span>
+                      </>
+                    )}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </Popover>
   );
@@ -282,6 +422,9 @@ export function ChatHeader({
   usage,
   model,
   filesEdited,
+  diff,
+  compact,
+  rewind,
 }: {
   project: DesktopProject;
   title: string;
@@ -290,6 +433,10 @@ export function ChatHeader({
   usage?: Usage;
   model?: string | null;
   filesEdited?: string[];
+  /** Line counts when the server offers them; the edited file names are shown otherwise. */
+  diff?: SessionDiffStats | null;
+  compact?: CompactControl;
+  rewind?: RewindControl;
 }) {
   return (
     <header className="flex flex-wrap items-center gap-[10px] px-6 py-[10px] border-b-2 border-b-border bg-background">
@@ -305,9 +452,17 @@ export function ChatHeader({
       </span>
       <SessionMenu project={project} title={title} currentId={sessionId} />
       <div className="ml-auto flex flex-wrap gap-[6px] [@media(max-width:720px)]:ml-0">
-        {usage && <ContextChip context={context ?? null} usage={usage} model={model ?? null} />}
-        {filesEdited && <FilesChip files={filesEdited} />}
+        {usage && (
+          <ContextChip
+            context={context ?? null}
+            usage={usage}
+            model={model ?? null}
+            compact={compact}
+          />
+        )}
+        {diff ? <DiffChip diff={diff} /> : filesEdited && <FilesChip files={filesEdited} />}
         <WorkingSetChip project={project} />
+        {rewind && <RewindChips rewind={rewind} />}
         {sessionId !== null && (
           <a className={CHIP} href={projectHref(project.key, "chat", "new")}>
             <Icon name="plus" size={13} />

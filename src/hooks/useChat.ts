@@ -29,6 +29,13 @@ import {
   extractFromUserMessage,
   WorkingStateManager,
 } from "../core/compaction/index.js";
+import {
+  assembleCompacted,
+  messageChars,
+  rehydrateWorkingState,
+  splitForCompaction,
+  v1CompactionPrompt,
+} from "../core/compaction/manual.js";
 import type { ContextManager } from "../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
 import { getCwd } from "../core/cwd.js";
@@ -762,27 +769,7 @@ export function useChat({
   const didRehydrate = useRef(false);
   if (!didRehydrate.current && workingStateRef.current && initialState?.coreMessages?.length) {
     didRehydrate.current = true;
-    const wsm = workingStateRef.current;
-    for (const msg of initialState.coreMessages) {
-      if (msg.role === "user") {
-        extractFromUserMessage(wsm, msg);
-      } else if (msg.role === "assistant" && Array.isArray(msg.content)) {
-        extractFromAssistantMessage(wsm, msg);
-        for (const part of msg.content) {
-          if (typeof part === "object" && "type" in part && part.type === "tool-call") {
-            const tc = part as { toolName: string; input: Record<string, unknown> };
-            extractFromToolCall(wsm, tc.toolName, tc.input);
-          }
-        }
-      } else if (msg.role === "tool" && Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (typeof part === "object" && "type" in part && part.type === "tool-result") {
-            const tr = part as { toolName: string; output: unknown };
-            extractFromToolResult(wsm, tr.toolName, tr.output);
-          }
-        }
-      }
-    }
+    rehydrateWorkingState(workingStateRef.current, initialState.coreMessages);
   }
   const prevCompactionStrategy = useRef(effectiveConfig.compaction?.strategy);
 
@@ -912,18 +899,10 @@ export function useChat({
         const compactionCfg = effectiveConfig.compaction;
         const isV2 = compactionCfg?.strategy === "v2";
         const KEEP_RECENT = compactionCfg?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
-        let keepStart = Math.max(0, currentCore.length - KEEP_RECENT);
-        // Never split between assistant tool-call and its tool-result pair
-        while (keepStart > 0 && currentCore[keepStart]?.role === "tool") {
-          keepStart--;
-        }
-        // After ackMsg (assistant), recentMessages must start with "user" to maintain alternation.
-        // If it starts with "assistant", back up one more to include the preceding user message.
-        if (keepStart > 0 && currentCore[keepStart]?.role === "assistant") {
-          keepStart--;
-        }
-        const olderMessages = currentCore.slice(0, keepStart);
-        const recentMessages = currentCore.slice(keepStart);
+        const { older: olderMessages, recent: recentMessages } = splitForCompaction(
+          currentCore,
+          KEEP_RECENT,
+        );
 
         if (olderMessages.length < 2) {
           isCompactingRef.current = false;
@@ -1045,33 +1024,6 @@ export function useChat({
 
           wsm.reset();
         } else {
-          const formatMessage = (m: ModelMessage, charLimit: number) => {
-            const role = m.role;
-            if (typeof m.content === "string") {
-              return `${role}: ${m.content.slice(0, charLimit)}`;
-            }
-            if (Array.isArray(m.content)) {
-              const parts = m.content
-                .map((p) => {
-                  if (typeof p === "object" && p !== null) {
-                    if ("text" in p)
-                      return String((p as { text: string }).text).slice(0, charLimit);
-                    if ("type" in p && (p as { type: string }).type === "tool-result") {
-                      const tr = p as { toolName?: string; result?: unknown };
-                      const resultStr = tr.result != null ? JSON.stringify(tr.result) : "null";
-                      return `[tool-result: ${tr.toolName ?? "unknown"} → ${resultStr.slice(0, 8000)}]`;
-                    }
-                  }
-                  return JSON.stringify(p).slice(0, 3000);
-                })
-                .join("\n");
-              return `${role}: ${parts}`;
-            }
-            return `${role}: [complex content]`;
-          };
-
-          const convoText = olderMessages.map((m) => formatMessage(m, 6000)).join("\n\n");
-
           const compactStartedAt = Date.now();
           const v1Result = await generateText({
             model,
@@ -1082,43 +1034,7 @@ export function useChat({
               ? { providerOptions }
               : {}),
             ...(headers ? { headers } : {}),
-            prompt: [
-              "You are summarizing the older portion of a coding assistant conversation.",
-              "The most recent messages will be preserved verbatim — focus on summarizing what came before.",
-              "Output ONLY the structured summary below. Do not include any meta-commentary about the summarization process.",
-              "",
-              "Create a structured summary with these sections:",
-              "",
-              "## Environment",
-              "Project type, key technologies, working directory, any config details mentioned.",
-              "",
-              "## Files Touched",
-              "Every file path that was read, edited, or created. For EDITS: include the specific old→new changes (function signatures, variable names, logic). For READS: note key content found.",
-              "",
-              "## Tool Results",
-              "Key tool results that inform future decisions: grep matches, test output, diagnostics, build errors. Include literal output where it matters — don't just say 'tests passed', say which tests and any warnings.",
-              "",
-              "## Key Decisions",
-              "Architectural choices, design patterns chosen, trade-offs discussed.",
-              "",
-              "## Work Completed",
-              "What was accomplished. Include specific function names, variable names, code patterns.",
-              "",
-              "## Errors & Resolutions",
-              "Problems encountered and how they were resolved. Include the actual error messages.",
-              "",
-              "## Current State",
-              "What was being worked on at the end of this section. What remains to be done.",
-              planContext
-                ? `\n${planContext}\nINCLUDE the plan progress above VERBATIM in ## Current State so the agent knows which steps are done/active/pending.`
-                : "",
-              "",
-              "Be thorough — preserve specific details (file contents, error messages, code changes).",
-              "CRITICAL: Preserve specific details from tool results (file contents, error messages, test output). Generic summaries like 'edited file X' are useless — include WHAT was changed.",
-              "",
-              "CONVERSATION TO SUMMARIZE:",
-              convoText,
-            ].join("\n"),
+            prompt: v1CompactionPrompt(olderMessages, planContext),
           });
           summary = v1Result.text;
           const v1u = v1Result.usage;
@@ -1161,60 +1077,8 @@ export function useChat({
           return;
         }
 
-        const summaryMsg: ModelMessage = {
-          role: "user" as const,
-          content: summary,
-        };
-
-        const ackMsg: ModelMessage = {
-          role: "assistant" as const,
-          content: "Continuing.",
-        };
-
-        // Structural validation of recentMessages.
-        // After compaction, messages may have broken invariants:
-        // 1. Orphaned tool_result at the start (no preceding assistant with tool_use)
-        // 2. Two user messages in a row after ackMsg (assistant) + recentMessages[0] (user skipped, next is user)
-        // 3. tool messages in the middle without their assistant counterpart
-        //
-        // Fix: drop leading tool messages, then ensure alternation is valid.
-        let validStart = 0;
-        for (let i = 0; i < recentMessages.length; i++) {
-          if (recentMessages[i]?.role === "tool") {
-            validStart = i + 1;
-          } else {
-            break;
-          }
-        }
-        // After ackMsg (assistant), next must be user or tool-with-assistant.
-        // If recentMessages starts with assistant, drop it to avoid assistant→assistant.
-        if (
-          validStart < recentMessages.length &&
-          recentMessages[validStart]?.role === "assistant"
-        ) {
-          validStart++;
-        }
-        const validRecent = validStart > 0 ? recentMessages.slice(validStart) : recentMessages;
-
-        // Final pass: strip any remaining orphaned tool messages throughout.
-        // A tool message is valid only if preceded by an assistant message.
-        const sanitized: typeof validRecent = [];
-        for (const msg of validRecent) {
-          if (msg.role === "tool") {
-            const prev = sanitized[sanitized.length - 1];
-            if (prev?.role !== "assistant") continue; // drop orphan
-          }
-          sanitized.push(msg);
-        }
-
-        // If sanitization removed everything, keep at least one recent user message
-        // to maintain valid conversation structure.
-        if (sanitized.length === 0) {
-          const lastUser = recentMessages.findLast((m) => m.role === "user");
-          if (lastUser) sanitized.push(lastUser);
-        }
-
-        const newMessages = [summaryMsg, ackMsg, ...sanitized];
+        const newMessages = assembleCompacted(summary, recentMessages);
+        const sanitized = newMessages.slice(2);
         setCoreMessages(newMessages);
         emitCacheReset(); // Old read results are gone — allow re-reads
         const trackedFiles = contextManager.getTrackedFiles();
@@ -1229,15 +1093,7 @@ export function useChat({
         for (const f of trackedFiles.mentioned) contextManager.trackMentionedFile(f);
         reprimeContextFromMessages(contextManager, sanitized);
 
-        const newCoreChars = newMessages.reduce((sum, m) => {
-          if (typeof m.content === "string") return sum + m.content.length;
-          if (Array.isArray(m.content)) {
-            return (
-              sum + m.content.reduce((s: number, p: unknown) => s + JSON.stringify(p).length, 0)
-            );
-          }
-          return sum;
-        }, 0);
+        const newCoreChars = messageChars(newMessages);
         const afterChars = systemChars + newCoreChars;
         const afterPct = Math.round((afterChars / charsPerToken / contextWindow) * 100);
         const estimatedTokens = Math.ceil(afterChars / charsPerToken);

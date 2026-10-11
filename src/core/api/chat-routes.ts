@@ -7,13 +7,16 @@ import { fetchProviderModels } from "../llm/models.js";
 import { checkProviders } from "../llm/provider.js";
 import type { RouteContext } from "./route-context.js";
 import {
+  CompactBody,
   CreateSessionBody,
   ForkSessionBody,
   MentionsQuery,
   MessageBody,
   ModelsQuery,
   PromptAnswerBody,
+  RedoSessionBody,
   SessionListQuery,
+  UndoSessionBody,
   UpdateSessionBody,
 } from "./schemas.js";
 
@@ -23,7 +26,7 @@ export interface ChatRouteContext extends RouteContext {
 
 const ID = "[A-Za-z0-9-]+";
 const SESSION = new RegExp(
-  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts)(?:/(${ID}))?)?$`,
+  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|undo|redo)(?:/(${ID}))?)?$`,
 );
 
 export function chatErrorStatus(error: ChatError): number {
@@ -32,6 +35,8 @@ export function chatErrorStatus(error: ChatError): number {
       return 404;
     case "INVALID_REQUEST":
       return 400;
+    case "NOT_SUPPORTED":
+      return 501;
     default:
       return 409;
   }
@@ -102,6 +107,11 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
       return () => {};
     });
   }
+  if (action === "diff") {
+    only("GET");
+    if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
+    return ctx.json(200, await chat.get(id).diffStats());
+  }
   only("POST");
   if (action === "prompts") {
     if (!sub) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
@@ -114,6 +124,18 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     const body = ForkSessionBody.parse(await ctx.readJson());
     const { session, rollback } = await chat.fork(id, body.atMessageId, body);
     return ctx.json(201, { ...session.detail(), ...(rollback ? { rollback } : {}) });
+  }
+  if (action === "undo" || action === "redo") {
+    const session = chat.get(id);
+    const result =
+      action === "undo"
+        ? await session.undo(UndoSessionBody.parse(await ctx.readJson()))
+        : await session.redo(RedoSessionBody.parse(await ctx.readJson()));
+    return ctx.json(200, { ...session.detail(), rollback: result.rollback });
+  }
+  if (action === "compact") {
+    CompactBody.parse(await ctx.readJson());
+    return ctx.json(202, chat.get(id).compact());
   }
   if (action === "messages") {
     const body = MessageBody.parse(await ctx.readJson());
