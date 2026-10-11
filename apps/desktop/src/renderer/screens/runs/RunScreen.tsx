@@ -3,7 +3,11 @@ import type { RunSnapshot } from "../../../shared/api.js";
 import { chat } from "../../client/chat.js";
 import { errorText, type RollbackReport, undoRun } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
 import { tokens, usd } from "../../format.js";
+import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
 import { DecisionCard, FIELD_LABEL, STACK_FORM, TEXT_INPUT } from "./Decision.js";
 import { GateView } from "./GateView.js";
@@ -102,9 +106,9 @@ function Controls({
         </span>
       )}
       {canUndo && (
-        <button
-          type="button"
-          className="btn"
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy}
           onClick={() => {
             if (
@@ -116,32 +120,32 @@ function Controls({
           }}
         >
           Undo edits
-        </button>
+        </Button>
       )}
       {run.status === "running" && (
-        <button
-          type="button"
-          className="btn"
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy}
           onClick={() => void act(() => workflow.pause(projectKey, run))}
         >
           Pause
-        </button>
+        </Button>
       )}
       {(run.status === "paused" || run.status === "created") && (
-        <button
-          type="button"
-          className="btn"
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy}
           onClick={() => void act(() => workflow.resume(projectKey, run))}
         >
           Resume
-        </button>
+        </Button>
       )}
       {!ended && (
-        <button
-          type="button"
-          className="btn"
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy}
           onClick={() => {
             if (window.confirm(`Cancel ${run.featureId}? A cancelled run cannot continue.`))
@@ -149,7 +153,7 @@ function Controls({
           }}
         >
           Cancel run
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -233,10 +237,10 @@ function Budget({
             placeholder={limit ? String(Math.round(limit * 1.5)) : "1200000"}
             onChange={(e) => setExtra(e.target.value)}
           />
-          {error && <div className="banner error">{error}</div>}
-          <button type="submit" className="btn-primary" disabled={busy}>
+          {error && <Alert tone="error">{error}</Alert>}
+          <Button type="submit" variant="primary" size="md" disabled={busy}>
             Extend and resume
-          </button>
+          </Button>
         </form>
       )}
     </Panel>
@@ -304,13 +308,13 @@ function Models({
   return (
     <Panel title="Model">
       <p className="text-[12px]">
-        Run model <span className="mono">{routing.runModel}</span>
+        Run model <span className="font-mono">{routing.runModel}</span>
       </p>
       {routed.length > 0 && (
         <ul className={SMALL_SUB}>
           {routed.map(([stage, entry]) => (
             <li key={stage}>
-              {stage}: <span className="mono">{entry.model}</span>
+              {stage}: <span className="font-mono">{entry.model}</span>
             </li>
           ))}
         </ul>
@@ -346,16 +350,17 @@ function Models({
               <option key={id} value={id} />
             ))}
           </datalist>
-          {error && <div className="banner error">{error}</div>}
-          <button
+          {error && <Alert tone="error">{error}</Alert>}
+          <Button
             type="submit"
-            className="btn"
+            variant="secondary"
+            size="md"
             disabled={busy || !model.trim() || model.trim() === routing.runModel}
           >
             {run.status === "blocked" || run.status === "paused"
               ? "Switch and resume"
               : "Switch model"}
-          </button>
+          </Button>
         </form>
       )}
     </Panel>
@@ -366,14 +371,14 @@ function Activity({ trace }: { trace: RunTrace }) {
   const lines = trace.activity.slice(-12).reverse();
   return (
     <Panel title="Activity">
-      {lines.length === 0 && <p className="muted text-[12px]">No events yet.</p>}
+      {lines.length === 0 && <p className="text-[12px] text-dim-foreground">No events yet.</p>}
       <ol
         className="m-0 flex list-none flex-col gap-2 p-0 text-[13px] text-muted-foreground"
         aria-live="polite"
       >
         {lines.map((line) => (
           <li key={line.seq}>
-            <span className="mono muted">{clock(line.at)}</span>{" "}
+            <span className="font-mono text-dim-foreground">{clock(line.at)}</span>{" "}
             <span className={line.tone ? TONE_TEXT[line.tone] : undefined}>{line.text}</span>
           </li>
         ))}
@@ -436,7 +441,9 @@ function ArtifactCards({
         >
           <span className="font-semibold text-foreground">{c.name}</span>
           <span className={SMALL_SUB}>{c.line}</span>
-          <span className={`text-[12px] ${c.tone ? TONE_TEXT[c.tone] : "muted"}`}>{c.note}</span>
+          <span className={cn("text-[12px]", c.tone ? TONE_TEXT[c.tone] : "text-dim-foreground")}>
+            {c.note}
+          </span>
         </button>
       ))}
     </div>
@@ -556,7 +563,7 @@ function RunBody({
                   onCriteria={() => setTab("criteria")}
                 />
               ))}
-              {pending.length === 0 && <div className="empty">Nothing waits for you here.</div>}
+              {pending.length === 0 && <Empty>Nothing waits for you here.</Empty>}
               <ArtifactCards data={data} trace={trace} go={setTab} />
               {data.artifacts.spec && <SpecView data={data} preview />}
             </>
@@ -596,10 +603,10 @@ export function RunScreen({ projectKey, runId }: { projectKey: string; runId: st
       <nav className="text-[13px] text-dim-foreground" aria-label="Breadcrumb">
         <a href={projectHref(projectKey, "runs")}>All runs</a>
         <span aria-hidden="true"> / </span>
-        <span className="mono">{runId}</span>
+        <span className="font-mono">{runId}</span>
       </nav>
-      {error && <div className="banner error">{error}</div>}
-      {!data && !error && <div className="muted">Loading run…</div>}
+      {error && <Alert tone="error">{error}</Alert>}
+      {!data && !error && <div className="text-dim-foreground">Loading run…</div>}
       {data && (
         <RunBody key={runId} projectKey={projectKey} data={data} trace={trace} refresh={refresh} />
       )}

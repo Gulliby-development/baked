@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { approveRequest, GROUP_B_CAPABILITY, runs } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
 import {
   type AcceptanceDecision,
   type GateCriterion,
@@ -71,7 +76,9 @@ function Observation({
   if (!requestId) return null;
   if (!data.capabilities.includes(GROUP_B_CAPABILITY))
     return (
-      <span className="muted text-[12px]">Recording observations here needs a newer BAKED.</span>
+      <span className="text-[12px] text-dim-foreground">
+        Recording observations here needs a newer BAKED.
+      </span>
     );
   const id = `obs-${criterion.key}`;
   const mark = (accepted: boolean) =>
@@ -89,24 +96,24 @@ function Observation({
         placeholder="What you saw"
         onChange={(e) => setText(e.target.value)}
       />
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
       <div className={ROW_ACTIONS}>
-        <button
-          type="button"
-          className="btn-primary"
+        <Button
+          variant="primary"
+          size="md"
           disabled={busy || !text.trim()}
           onClick={() => mark(true)}
         >
           Mark passed
-        </button>
-        <button
-          type="button"
-          className="btn"
+        </Button>
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy || !text.trim()}
           onClick={() => mark(false)}
         >
           Mark failed
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -131,8 +138,8 @@ function TestDecision({
       <h3>Keep the acceptance test for {decision.gateId}?</h3>
       <p>
         The walk-through {decision.verdict} and the drafted test passed {decision.stableRuns} runs
-        in a row. Keeping it adds <span className="mono">{decision.testPath}</span> as a command
-        gate; the run does not wait for this decision.
+        in a row. Keeping it adds <span className="font-mono">{decision.testPath}</span> as a
+        command gate; the run does not wait for this decision.
       </p>
       <details>
         <summary>Show the test</summary>
@@ -148,11 +155,11 @@ function TestDecision({
         value={reason}
         onChange={(e) => setReason(e.target.value)}
       />
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
       <div className={ROW_ACTIONS}>
-        <button
-          type="button"
-          className="btn-primary"
+        <Button
+          variant="primary"
+          size="md"
           disabled={busy}
           onClick={() =>
             void decide(
@@ -166,10 +173,10 @@ function TestDecision({
           }
         >
           Keep test
-        </button>
-        <button
-          type="button"
-          className="btn"
+        </Button>
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy || !reason.trim()}
           onClick={() =>
             void decide(
@@ -179,7 +186,7 @@ function TestDecision({
           }
         >
           Discard
-        </button>
+        </Button>
       </div>
     </section>
   );
@@ -215,9 +222,9 @@ export function GateView({
     null;
   if (view.total === 0)
     return (
-      <div className="empty">
+      <Empty>
         No acceptance criteria yet. They come with the spec and the AI acceptance gates.
-      </div>
+      </Empty>
     );
   const tone =
     view.passed === view.total
@@ -247,19 +254,19 @@ export function GateView({
       ))}
       <div className="flex flex-wrap gap-6">
         <section aria-label="Criteria" className={COLUMN}>
-          <h3 className="label">Acceptance criteria</h3>
+          <h3 className={LABEL}>Acceptance criteria</h3>
           <ul className="m-0 flex list-none flex-col gap-[10px] p-0">
             {view.criteria.map((c) => (
               <li key={c.key} className={CRITERION_TONE[TONE[c.verdict]]?.card}>
                 <span
-                  className={`mono ${CRITERION_TONE[TONE[c.verdict]]?.mark}`}
+                  className={cn("font-mono", CRITERION_TONE[TONE[c.verdict]]?.mark)}
                   aria-hidden="true"
                 >
                   {MARK[c.verdict]}
                 </span>
                 <div className="flex min-w-0 flex-1 flex-col gap-[6px]">
                   <span>
-                    <span className="mono muted">{c.label}.</span> {c.text}
+                    <span className="font-mono text-dim-foreground">{c.label}.</span> {c.text}
                     <span className="sr-only">, {c.verdict}</span>
                   </span>
                   {c.note && <span className={SUB}>{c.note}</span>}
@@ -283,14 +290,12 @@ export function GateView({
           </ul>
         </section>
         <section aria-label="Evidence" className={COLUMN}>
-          <h3 className="label">{chosen ? `Evidence for ${chosen.label}` : "Evidence"}</h3>
-          {!chosen && (
-            <div className="empty">The AI acceptance walk-through records steps as evidence.</div>
-          )}
+          <h3 className={LABEL}>{chosen ? `Evidence for ${chosen.label}` : "Evidence"}</h3>
+          {!chosen && <Empty>The AI acceptance walk-through records steps as evidence.</Empty>}
           {chosen && (
             <>
               <figure className="m-0 flex h-full flex-col overflow-hidden rounded-[var(--radius-lg)] border-2 border-border bg-background shadow-shadow">
-                <div className="mono border-b-2 border-border px-3 py-2 text-[12px] text-dim-foreground">
+                <div className="border-b-2 border-border px-3 py-2 font-mono text-[12px] text-dim-foreground">
                   {chosen.url ?? "terminal"}
                 </div>
                 <pre className="m-0 max-h-[320px] min-h-[160px] overflow-auto whitespace-pre-wrap bg-[var(--bg-sunken)] p-3 font-mono text-[12px] leading-[1.5] text-muted-foreground">
@@ -300,7 +305,7 @@ export function GateView({
                   {chosen.steps.at(-1)?.observation}
                 </figcaption>
               </figure>
-              <ol className={`${CODE} flex list-none flex-col gap-[6px]`}>
+              <ol className={cn(CODE, "flex list-none flex-col gap-[6px]")}>
                 {chosen.steps.map((s) => (
                   <li key={s.stepId}>
                     <div>{s.action}</div>

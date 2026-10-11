@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import type { RunState } from "../../../shared/api.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL, PANEL } from "../../lib/styles.js";
 import { STATUS_TEXT, STATUS_TONE } from "./model.js";
 
 /** Text in a status colour, by tone; the empty tone keeps the inherited colour. */
@@ -51,7 +53,7 @@ export function Meter({
     <div className="flex flex-col gap-[6px]">
       <div className="flex justify-between gap-[10px] text-[13px] text-soft-foreground">
         <span>{label}</span>
-        <span className="mono">{text}</span>
+        <span className="font-mono">{text}</span>
       </div>
       {share !== null && (
         <div className="h-[6px] rounded-[3px] bg-hover" aria-hidden="true">
@@ -75,8 +77,8 @@ export function Panel({
   className?: string;
 }) {
   return (
-    <section className={`card flex flex-col gap-[10px] ${className ?? ""}`} aria-label={title}>
-      <h3 className="label">{title}</h3>
+    <section className={cn(PANEL, "flex flex-col gap-[10px]", className)} aria-label={title}>
+      <h3 className={LABEL}>{title}</h3>
       {children}
     </section>
   );
