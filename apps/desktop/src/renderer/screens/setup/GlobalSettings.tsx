@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { bridge } from "../../client/bridge.js";
 import {
   type CliLogin,
@@ -13,6 +13,7 @@ import { Dot } from "../../components/ui/dot.js";
 import { Empty } from "../../components/ui/empty.js";
 import { cn } from "../../lib/cn.js";
 import { CHECK, STACK as COLUMN, LEDE, PANEL } from "../../lib/styles.js";
+import type { SettingsSection } from "../../router.js";
 import { useDesktop } from "../../store.js";
 import { commandLabel, signInView } from "./logic.js";
 import { type RoutingProject, RoutingSection } from "./RoutingSection.js";
@@ -21,7 +22,6 @@ import {
   errorText,
   FLUSH,
   GROW,
-  H2,
   LINE,
   LINE_LOOSE,
   LIST,
@@ -298,14 +298,7 @@ function ProviderRow({
 function Providers({ projectKey }: { projectKey: string }) {
   const [providers, reload] = useLoad(() => setup.providers(projectKey), [projectKey]);
   return (
-    <section className={STACK} aria-labelledby="providers">
-      <h2 id="providers" className={H2}>
-        Providers and keys
-      </h2>
-      <p className={LEDE}>
-        Keys live in the system keychain or the environment, never in config files, and are never
-        shown here.
-      </p>
+    <section className={STACK} aria-label="Providers">
       {providers.state === "ready" ? (
         <ul className={cn(PANEL, LIST, FLUSH)}>
           {providers.data.providers.map((p) => (
@@ -324,15 +317,7 @@ function GlobalCommands({ projectKey }: { projectKey: string }) {
   const global =
     commands.state === "ready" ? commands.data.commands.filter((c) => c.scope === "global") : [];
   return (
-    <section className={STACK} aria-labelledby="commands">
-      <h2 id="commands" className={H2}>
-        Global commands
-      </h2>
-      <p className={LEDE}>
-        Markdown prompt templates in <span className="font-mono">~/.baked/commands/</span>, offered
-        as slash commands in every project: <span className="font-mono">fix-ci.md</span> becomes{" "}
-        <span className="font-mono">/fix-ci</span>.
-      </p>
+    <section className={STACK} aria-label="Global commands">
       {commands.state !== "ready" ? (
         <LoadState value={commands} what="the command list" />
       ) : global.length === 0 ? (
@@ -361,10 +346,7 @@ function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; 
   const enabled = config.global.telemetry !== false;
   const url = config.effective.telemetryUrl;
   return (
-    <section className={STACK} aria-labelledby="telemetry">
-      <h2 id="telemetry" className={H2}>
-        Telemetry
-      </h2>
+    <section className={STACK} aria-label="Telemetry">
       <div className={cn(PANEL, STACK)}>
         <label className={CHECK}>
           <input
@@ -410,15 +392,8 @@ function Notifications({
   const valid = /^https?:\/\/\S+$/i.test(value.trim());
   const save = (next: NotificationsConfig): Promise<boolean> => patch({ notifications: next });
   return (
-    <section className={STACK} aria-labelledby="notifications">
-      <h2 id="notifications" className={H2}>
-        Run notifications
-      </h2>
+    <section className={STACK} aria-label="Run notifications">
       <div className={cn(PANEL, STACK)}>
-        <span className={cn("text-dim-foreground", NOTE)}>
-          When a run waits for an approval, an answer or a budget extension. This app's own
-          notifications are in the tray menu.
-        </span>
         <label className={CHECK}>
           <input
             type="checkbox"
@@ -498,22 +473,46 @@ function Notifications({
   );
 }
 
-/** In-page targets; buttons rather than `#id` links, which the hash router would take. */
-const TOC = [
-  ["providers", "Providers and keys"],
-  ["routing", "Model routing"],
-  ["commands", "Global commands"],
-  ["notifications", "Run notifications"],
-  ["telemetry", "Telemetry"],
-] as const;
+type GlobalSection = Exclude<SettingsSection, "app">;
 
-export function GlobalSettings() {
+/** Title and one-line explanation of each All projects page. */
+const PAGES: Record<GlobalSection, { title: string; lede: ReactNode }> = {
+  providers: {
+    title: "Providers and keys",
+    lede: "Sign in to the services that run the models, or give them an API key. Keys live in the system keychain or the environment, never in config files, and are never shown here.",
+  },
+  routing: {
+    title: "Model routing",
+    lede: "Which model does which job. Pick a default model for a kind of agent or a workflow step; anything left empty uses the model you choose when you start a run.",
+  },
+  commands: {
+    title: "Global commands",
+    lede: (
+      <>
+        Your own slash commands for every project: Markdown prompt templates in{" "}
+        <span className="font-mono">~/.baked/commands/</span>.{" "}
+        <span className="font-mono">fix-ci.md</span> becomes{" "}
+        <span className="font-mono">/fix-ci</span>.
+      </>
+    ),
+  },
+  notifications: {
+    title: "Run notifications",
+    lede: "How you hear that a run waits for an approval, an answer or a budget extension. This app's own notifications are under This app and in the tray menu.",
+  },
+  telemetry: {
+    title: "Telemetry",
+    lede: "Anonymous usage stats that help improve BAKED.",
+  },
+};
+
+export function GlobalSettings({ section }: { section: GlobalSection }) {
   const { projects } = useDesktop();
   const host = projects.find((p) => p.backend.kind === "running");
   if (!host)
     return (
       <>
-        <h1>All projects</h1>
+        <h1>{PAGES[section].title}</h1>
         <Empty>
           Open a project to see these settings: any project's backend reads them from{" "}
           <span className="font-mono">~/.baked/config.json</span>.
@@ -523,14 +522,23 @@ export function GlobalSettings() {
   const running = projects
     .filter((p) => p.backend.kind === "running")
     .map((p) => ({ key: p.key, name: p.name }));
-  return <GlobalSettingsFor projectKey={host.key} projectName={host.name} projects={running} />;
+  return (
+    <GlobalSettingsFor
+      section={section}
+      projectKey={host.key}
+      projectName={host.name}
+      projects={running}
+    />
+  );
 }
 
 function GlobalSettingsFor({
+  section,
   projectKey,
   projectName,
   projects,
 }: {
+  section: GlobalSection;
   projectKey: string;
   projectName: string;
   /** Running projects; model routing resolves through the one picked there. */
@@ -552,11 +560,14 @@ function GlobalSettingsFor({
       setBusy(false);
     }
   };
+  const page = PAGES[section];
+  const needsConfig = section === "notifications" || section === "telemetry";
   return (
     <div className={SETUP}>
       <div className={cn(COLUMN, "gap-1")}>
-        <h1>All projects</h1>
-        <span className={LEDE}>
+        <h1>{page.title}</h1>
+        <p className={LEDE}>{page.lede}</p>
+        <span className={cn("text-dim-foreground", NOTE)}>
           Shared by every project on this computer, in{" "}
           <span className="font-mono">
             {config.state === "ready" ? config.data.paths.global : "~/.baked/config.json"}
@@ -564,36 +575,22 @@ function GlobalSettingsFor({
           . <Tag>read through {projectName}</Tag>
         </span>
       </div>
-      <nav className="flex flex-wrap gap-x-4 gap-y-1" aria-label="On this page">
-        {TOC.map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            className="cursor-pointer border-0 bg-transparent px-0 py-[2px] [font-family:inherit] [font-weight:inherit] [line-height:inherit] text-[13px] text-[var(--accent)] hover:text-[var(--accent-soft)]"
-            onClick={() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" })}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
       {error && <Alert tone="error">{error}</Alert>}
-      <Providers projectKey={projectKey} />
-      {config.state === "ready" ? (
-        <>
-          <RoutingSection projects={projects} />
-          <GlobalCommands projectKey={projectKey} />
-          <Notifications config={config.data} patch={patch} busy={busy} />
-          <Telemetry config={config.data} patch={patch} busy={busy} />
-        </>
-      ) : config.state === "missing" ? (
-        <>
+      {section === "providers" && <Providers projectKey={projectKey} />}
+      {section === "routing" && <RoutingSection projects={projects} />}
+      {section === "commands" && <GlobalCommands projectKey={projectKey} />}
+      {needsConfig &&
+        (config.state === "ready" ? (
+          section === "notifications" ? (
+            <Notifications config={config.data} patch={patch} busy={busy} />
+          ) : (
+            <Telemetry config={config.data} patch={patch} busy={busy} />
+          )
+        ) : config.state === "missing" ? (
           <NeedsNewer what="notifications or telemetry" />
-          <RoutingSection projects={projects} />
-          <GlobalCommands projectKey={projectKey} />
-        </>
-      ) : (
-        <LoadState value={config} what="the global config" />
-      )}
+        ) : (
+          <LoadState value={config} what="the global config" />
+        ))}
     </div>
   );
 }

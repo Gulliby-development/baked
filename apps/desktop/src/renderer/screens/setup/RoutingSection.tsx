@@ -13,7 +13,13 @@ import {
 import { Alert } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
-import { Card, CardContent } from "../../components/ui/card.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "../../components/ui/dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Input } from "../../components/ui/input.js";
 import { Label } from "../../components/ui/label.js";
@@ -27,20 +33,24 @@ import {
   TableRow,
 } from "../../components/ui/table.js";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs.js";
+import { Hint } from "../../components/ui/tooltip.js";
 import { cn } from "../../lib/cn.js";
 import { STACK as COLUMN, LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import {
+  CLASS_HINTS,
   classSuggestions,
   describeResolved,
   describeRoute,
   draftOf,
   EFFORT_CHOICES,
+  effortLabel,
   layerValue,
   parseFallback,
+  plainName,
   routingGroups,
   unresolvedText,
 } from "./routing-logic.js";
-import { errorText, GROW, H2, LoadState, NOTE, OK, ROW, STACK, useLoad, WARN } from "./shared.js";
+import { errorText, GROW, LoadState, NOTE, OK, ROW, STACK, useLoad, WARN } from "./shared.js";
 
 export interface RoutingProject {
   key: string;
@@ -55,6 +65,9 @@ const LAYERS: { scope: RoutingScope; label: string }[] = [
   { scope: "project", label: "This project" },
 ];
 const REVIEW_MODES: (IndependentReview | null)[] = [null, "off", "warn", "require"];
+
+const LAYER_HINT =
+  "All projects writes ~/.baked/config.json and applies everywhere. This project writes the project's own .baked/config.json, which wins over All projects for that project, route by route.";
 
 /**
  * Settings > Model routing: every route of `modelRouting` (classes, roles, a workflow's stages,
@@ -95,19 +108,16 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
   const layerName = scope === "global" ? "All projects" : (project?.name ?? "this project");
 
   return (
-    <section className={STACK} aria-labelledby="routing">
-      <h2 id="routing" className={H2}>
-        Model routing
-      </h2>
+    <section className={STACK} aria-label="Model routing">
       <p className={LEDE}>
-        Which model each class, role, stage and profile uses. All projects share{" "}
-        <span className="font-mono">~/.baked/config.json</span>; a project's own{" "}
-        <span className="font-mono">.baked/config.json</span> overrides it route by route. New runs
-        use the change; started runs keep their routing.
+        New runs use a change; runs already started keep the models they began with.
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
-          <span className={LABEL}>Layer</span>
+          <span className={cn(LABEL, "flex items-center")}>
+            Save changes to
+            <Hint label="where changes are saved">{LAYER_HINT}</Hint>
+          </span>
           <Tabs
             value={scope}
             onValueChange={(value) => {
@@ -226,32 +236,45 @@ function RoutingTables({
   onChange: (change: RoutingChange, what: string) => Promise<void>;
 }) {
   const editingPath = editing && "row" in editing ? editing.row.path : null;
-  const form = (target: RoutingTarget, row: RoutingRow | null) => (
-    <RouteForm
-      key={row?.path ?? "new-class"}
-      view={view}
-      row={row}
-      target={target}
-      scope={scope}
-      busy={busy}
-      problems={problems}
-      onCancel={() => onEdit(null)}
-      onSave={({ name, ...route }, create) =>
-        void onChange(
-          { target: create ? { kind: "class", name } : target, route, create },
-          `Saved ${create ? `classes.${name}` : (row?.path ?? "")}`,
-        )
-      }
-    />
-  );
+  const row = editing && "row" in editing ? editing.row : null;
   return (
     <>
       {view.error && <Alert tone="error">{view.error}</Alert>}
       {!editing && problems.length > 0 && <Refused problems={problems} />}
+      <Dialog open={editing !== null} onOpenChange={(open) => !open && onEdit(null)}>
+        {editing && (
+          <RouteForm
+            key={row?.path ?? "new-class"}
+            view={view}
+            row={row}
+            target={row?.target ?? { kind: "class", name: "" }}
+            scope={scope}
+            busy={busy}
+            problems={problems}
+            onCancel={() => onEdit(null)}
+            onSave={({ name, ...route }, create) =>
+              void onChange(
+                {
+                  target: create || !row ? { kind: "class", name } : row.target,
+                  route,
+                  create,
+                },
+                `Saved ${create ? `$${name}` : row ? plainName(row) : ""}`,
+              )
+            }
+          />
+        )}
+      </Dialog>
       {routingGroups(view).map((group) => (
         <div key={group.id} className="flex flex-col gap-2">
           <div className="flex flex-col">
-            <h3 className={LABEL}>{group.title}</h3>
+            <h3 className="m-0 flex items-center gap-1 text-[15px] font-semibold">
+              {group.title}
+              <Hint label={group.title}>{group.hint}</Hint>
+              <span className="font-mono text-[11px] font-normal text-dim-foreground">
+                {group.term}
+              </span>
+            </h3>
             <span className={cn("text-dim-foreground", NOTE)}>{group.note}</span>
           </div>
           {group.rows.length === 0 ? (
@@ -262,14 +285,22 @@ function RoutingTables({
             <Table aria-label={group.title}>
               <TableHeader>
                 <TableRow>
-                  <TableHead>{group.id === "classes" ? "Class" : "Name"}</TableHead>
+                  <TableHead>Name</TableHead>
                   <TableHead className={cn(scope === "global" && "text-foreground")}>
                     All projects
                   </TableHead>
                   <TableHead className={cn(scope === "project" && "text-foreground")}>
                     This project
                   </TableHead>
-                  <TableHead>Resolves to</TableHead>
+                  <TableHead>
+                    <span className="inline-flex items-center">
+                      New runs use
+                      <Hint label="what new runs use">
+                        The model a new run picks for this entry once both files and the fallbacks
+                        are combined, with the setting that chose it underneath.
+                      </Hint>
+                    </span>
+                  </TableHead>
                   <TableHead>
                     <span className="sr-only">Actions</span>
                   </TableHead>
@@ -293,24 +324,18 @@ function RoutingTables({
               </TableBody>
             </Table>
           )}
-          {editing && "row" in editing && group.rows.includes(editing.row)
-            ? form(editing.row.target, editing.row)
-            : null}
-          {group.id === "classes" &&
-            (editing && "newClass" in editing ? (
-              form({ kind: "class", name: "" }, null)
-            ) : (
-              <div>
-                <Button
-                  variant="neutral"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => onEdit({ newClass: true })}
-                >
-                  Add class
-                </Button>
-              </div>
-            ))}
+          {group.id === "classes" && (
+            <div>
+              <Button
+                variant="neutral"
+                size="sm"
+                disabled={busy}
+                onClick={() => onEdit({ newClass: true })}
+              >
+                Add model name
+              </Button>
+            </div>
+          )}
         </div>
       ))}
       <IndependentReviewRow view={view} scope={scope} busy={busy} onChange={onChange} />
@@ -361,7 +386,19 @@ function RouteRow({
       aria-current={selected ? "true" : undefined}
       className={cn(selected && "bg-secondary-background shadow-[inset_4px_0_0_var(--color-main)]")}
     >
-      <TableCell className="font-mono">{row.label}</TableCell>
+      <TableCell>
+        {row.target.kind === "class" ? (
+          <span className="inline-flex items-center font-mono">
+            {row.label}
+            {CLASS_HINTS[row.label] && <Hint label={row.label}>{CLASS_HINTS[row.label]}</Hint>}
+          </span>
+        ) : (
+          <span className="flex flex-col">
+            <span>{plainName(row)}</span>
+            <span className="font-mono text-[11px] text-muted-foreground">{row.label}</span>
+          </span>
+        )}
+      </TableCell>
       <RouteCell value={describeRoute(row.global)} active={scope === "global"} />
       <RouteCell value={describeRoute(row.project)} active={scope === "project"} />
       <TableCell className="font-mono text-xs whitespace-normal [overflow-wrap:anywhere]">
@@ -381,7 +418,7 @@ function RouteRow({
             size="sm"
             disabled={busy}
             onClick={onEdit}
-            aria-label={`Edit ${row.target.kind} ${row.label}`}
+            aria-label={`Edit ${plainName(row)}`}
           >
             Edit
           </Button>
@@ -391,7 +428,7 @@ function RouteRow({
               size="sm"
               disabled={busy}
               onClick={onClear}
-              aria-label={`Clear ${row.target.kind} ${row.label}`}
+              aria-label={`Clear ${plainName(row)}`}
             >
               Clear
             </Button>
@@ -436,90 +473,123 @@ function RouteForm({
     onSave({ name: name.trim(), model, effort, fallback: parseFallback(fallback) }, create);
   };
   const id = (field: string) => `route-${field}`;
+  const layer = scope === "global" ? "All projects" : "This project";
+  const file = scope === "global" ? "~/.baked/config.json" : ".baked/config.json";
   return (
-    <Card>
-      <CardContent>
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={submit}
-          aria-label={row ? `Route ${row.path}` : "New class"}
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-heading">
-              {row ? <span className="font-mono">modelRouting.{row.path}</span> : "New class"}
-            </span>
-            <Badge tone={scope === "global" ? "info" : "accent"}>
-              {scope === "global" ? "All projects" : "This project"}
-            </Badge>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-[1fr_2fr_auto]">
-            {create && (
-              <div className="flex flex-col gap-1">
-                <Label htmlFor={id("name")}>Class name</Label>
-                <Input
-                  id={id("name")}
-                  className="font-mono"
-                  value={name}
-                  placeholder="deep"
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-            )}
-            <div className={cn("flex flex-col gap-1", !create && "sm:col-span-2")}>
-              <Label htmlFor={id("model")}>Model</Label>
-              <Input
-                id={id("model")}
-                className="font-mono"
-                value={model}
-                list={isClass ? undefined : id("classes")}
-                placeholder={isClass ? "provider/model" : "provider/model or $class"}
-                onChange={(e) => setModel(e.target.value)}
-              />
-              {!isClass && (
-                <datalist id={id("classes")}>
-                  {classSuggestions(view).map((c) => (
-                    <option key={c} value={c} />
-                  ))}
-                </datalist>
-              )}
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor={id("effort")}>Effort</Label>
-              <select
-                id={id("effort")}
-                value={effort ?? ""}
-                onChange={(e) => setEffort((e.target.value || null) as Effort | null)}
-              >
-                {EFFORT_CHOICES.map((value) => (
-                  <option key={value ?? "unset"} value={value ?? ""}>
-                    {value ?? "inherit"}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>{row ? `Model for ${plainName(row)}` : "New model name"}</DialogTitle>
+        <DialogDescription>
+          Saved to{" "}
+          <Badge tone={scope === "global" ? "info" : "accent"} className="align-middle">
+            {layer}
+          </Badge>{" "}
+          in <span className="font-mono">{file}</span>
+          {row && (
+            <>
+              {" "}
+              as <span className="font-mono whitespace-nowrap">modelRouting.{row.path}</span>
+            </>
+          )}
+          .
+        </DialogDescription>
+      </DialogHeader>
+      <form
+        className="flex flex-col gap-4"
+        onSubmit={submit}
+        aria-label={row ? `Route ${row.path}` : "New class"}
+      >
+        {create && (
           <div className="flex flex-col gap-1">
-            <Label htmlFor={id("fallback")}>Fallback models, in order (up to 3)</Label>
+            <Label htmlFor={id("name")} className="flex items-center">
+              Name
+              <Hint label="the name">
+                Used as $name by roles, steps and profiles. Letters, digits and dashes.
+              </Hint>
+            </Label>
             <Input
-              id={id("fallback")}
+              id={id("name")}
               className="font-mono"
-              value={fallback}
-              placeholder="none"
-              onChange={(e) => setFallback(e.target.value)}
+              value={name}
+              placeholder="deep"
+              onChange={(e) => setName(e.target.value)}
             />
           </div>
-          {problems.length > 0 && <Refused problems={problems} />}
-          <div className="flex gap-2">
-            <Button type="submit" disabled={busy}>
-              Save
-            </Button>
-            <Button type="button" variant="neutral" onClick={onCancel}>
-              Cancel
-            </Button>
+        )}
+        <div className="grid gap-4 sm:grid-cols-[2fr_1fr]">
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={id("model")} className="flex items-center">
+              Model
+              <Hint label="the model">
+                A model ID as provider/model, such as anthropic/claude-sonnet-5-5
+                {isClass ? "." : ", or a model name ($fast, $review…) from the first table."}
+              </Hint>
+            </Label>
+            <Input
+              id={id("model")}
+              className="font-mono"
+              value={model}
+              list={isClass ? undefined : id("classes")}
+              placeholder={isClass ? "provider/model" : "provider/model or $name"}
+              onChange={(e) => setModel(e.target.value)}
+            />
+            {!isClass && (
+              <datalist id={id("classes")}>
+                {classSuggestions(view).map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            )}
           </div>
-        </form>
-      </CardContent>
-    </Card>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={id("effort")} className="flex items-center">
+              Effort
+              <Hint label="effort">
+                How hard the model thinks before answering: low is fastest and cheapest, max is the
+                most thorough. Inherit leaves it to the next setting (the class or the profile);
+                model default uses the model's own setting.
+              </Hint>
+            </Label>
+            <select
+              id={id("effort")}
+              value={effort ?? ""}
+              onChange={(e) => setEffort((e.target.value || null) as Effort | null)}
+            >
+              {EFFORT_CHOICES.map((value) => (
+                <option key={value ?? "unset"} value={value ?? ""}>
+                  {effortLabel(value)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label htmlFor={id("fallback")} className="flex items-center">
+            Fallback models
+            <Hint label="fallback models">
+              Up to three model IDs, tried in order when the main model fails or its provider runs
+              out of credits. Separate them with commas.
+            </Hint>
+          </Label>
+          <Input
+            id={id("fallback")}
+            className="font-mono"
+            value={fallback}
+            placeholder="none"
+            onChange={(e) => setFallback(e.target.value)}
+          />
+        </div>
+        {problems.length > 0 && <Refused problems={problems} />}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="neutral" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={busy}>
+            Save
+          </Button>
+        </div>
+      </form>
+    </DialogContent>
   );
 }
 
@@ -551,10 +621,17 @@ function IndependentReviewRow({
   return (
     <div className={cn(PANEL, ROW)}>
       <span className={cn(GROW, COLUMN)}>
-        <span>Independent review</span>
+        <span className="flex items-center">
+          Independent review
+          <Hint label="independent review">
+            A second model catches mistakes the first one is blind to. This decides what happens
+            when a reviewer would use the same model as the code it reviews: off allows it, warn
+            records a warning, require refuses to start the run. Inherit uses the other file's
+            choice.
+          </Hint>
+        </span>
         <span className={cn("text-dim-foreground", NOTE)}>
-          When a reviewer would use a model the implementation also uses: off ignores it, warn
-          records a warning, require refuses the start. In effect:{" "}
+          Reviewers should use a different model than the work they review. In effect:{" "}
           <span className="font-mono">{view.independentReview.effective}</span>.
         </span>
       </span>

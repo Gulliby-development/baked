@@ -10,6 +10,15 @@ import { GlobalSettings } from "./setup/GlobalSettings.js";
 const NAV =
   "flex min-h-(--row) w-full cursor-pointer items-center gap-[10px] rounded-[6px] border-0 bg-transparent px-[10px] py-[6px] text-left text-[14px] text-soft-foreground no-underline hover:bg-hover hover:text-foreground aria-[current=page]:bg-selected aria-[current=page]:font-semibold aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_0_0_0_var(--border-w)_var(--ink),var(--shadow-sm)]";
 
+/** The All projects pages, one per part of `~/.baked/config.json`. */
+const GLOBAL_PAGES: [Exclude<SettingsSection, "app">, string][] = [
+  ["providers", "Providers and keys"],
+  ["routing", "Model routing"],
+  ["commands", "Global commands"],
+  ["notifications", "Run notifications"],
+  ["telemetry", "Telemetry"],
+];
+
 function Toggle({ label, field }: { label: string; field: keyof AppSettings }) {
   const { settings, updateSettings } = useDesktop();
   if (!settings) return null;
@@ -126,16 +135,19 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
         <span className="px-[10px] pt-0 pb-[6px] font-mono text-[12px] text-dim-foreground">
           ~/.baked/config.json
         </span>
-        <a
-          className={NAV}
-          href={href({ name: "settings", section: "global" })}
-          aria-current={section === "global" ? "page" : undefined}
-        >
-          Providers and model routing
-        </a>
+        {GLOBAL_PAGES.map(([page, label]) => (
+          <a
+            key={page}
+            className={NAV}
+            href={href({ name: "settings", section: page })}
+            aria-current={section === page ? "page" : undefined}
+          >
+            {label}
+          </a>
+        ))}
       </nav>
       <div className={cn(PAGE, "max-w-[900px] flex-1")}>
-        {section === "app" ? <AppSection /> : <GlobalSettings />}
+        {section === "app" ? <AppSection /> : <GlobalSettings section={section} />}
       </div>
     </div>
   );
