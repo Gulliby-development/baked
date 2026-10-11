@@ -542,6 +542,9 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       return exitCode;
     }
     service = new NativeWorkflowService(cwd, config, undefined, readonly);
+    // A run started from an interactive terminal notifies the person when it waits; scripts that
+    // read the output do not.
+    if (service.attention) service.attention.systemNotifications = process.stdout.isTTY === true;
     let lastSeq = 0;
     const existingRun = ["run", "quick"].includes(args.command) ? undefined : args.positional[0];
     if (existingRun && args.flags.events) lastSeq = service.store.snapshot(existingRun).eventSeq;
@@ -591,6 +594,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   } finally {
     eventController.abort();
     await Promise.allSettled(streams);
+    await service?.attention?.flush();
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
     service?.close();

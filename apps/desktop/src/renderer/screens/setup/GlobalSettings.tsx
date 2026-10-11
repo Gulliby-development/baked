@@ -538,11 +538,122 @@ function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; 
   );
 }
 
+interface NotificationsConfig {
+  system?: boolean;
+  webhook?: { url?: string; headers?: Record<string, string>; blockingOnly?: boolean };
+}
+
+/** `notifications` of the global config: terminal notifications and the run attention webhook. */
+function Notifications({
+  config,
+  patch,
+  busy,
+}: {
+  config: ConfigView;
+  patch: Patch;
+  busy: boolean;
+}) {
+  const current = (config.global.notifications ?? {}) as NotificationsConfig;
+  const url = current.webhook?.url ?? "";
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = draft ?? url;
+  const valid = /^https?:\/\/\S+$/i.test(value.trim());
+  const save = (next: NotificationsConfig): Promise<boolean> => patch({ notifications: next });
+  return (
+    <section className="setup-section" aria-labelledby="notifications">
+      <h2 id="notifications" className="setup-h2">
+        Run notifications
+      </h2>
+      <div className="card setup-stack">
+        <span className="muted setup-note">
+          When a run waits for an approval, an answer or a budget extension. This app's own
+          notifications are in the tray menu.
+        </span>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={current.system !== false}
+            disabled={busy}
+            onChange={(e) => void save({ ...current, system: e.target.checked })}
+          />
+          Desktop notifications from the terminal app and the CLI
+        </label>
+        <form
+          className="setup-add"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (valid)
+              void save({ ...current, webhook: { ...current.webhook, url: value.trim() } }).then(
+                (ok) => ok && setDraft(null),
+              );
+          }}
+        >
+          <label htmlFor="notifications-webhook" className="sr-only">
+            Webhook URL
+          </label>
+          <input
+            id="notifications-webhook"
+            type="text"
+            className="mono"
+            autoComplete="off"
+            placeholder="https://example.com/hook"
+            value={value}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={busy || !valid || value.trim() === url}
+          >
+            Save
+          </button>
+          {url && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => {
+                const { webhook: _removed, ...rest } = current;
+                void save(rest).then((ok) => ok && setDraft(null));
+              }}
+            >
+              Remove
+            </button>
+          )}
+        </form>
+        {url && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={current.webhook?.blockingOnly === true}
+              disabled={busy}
+              onChange={(e) =>
+                void save({
+                  ...current,
+                  webhook: { ...current.webhook, blockingOnly: e.target.checked },
+                })
+              }
+            />
+            Only requests the run waits for (skip advisory acceptance decisions)
+          </label>
+        )}
+        <span className="muted setup-note">
+          {url
+            ? `Each waiting run is posted once to ${url} as JSON: run, feature, request kind, never its content.`
+            : "No webhook: nothing is sent."}{" "}
+          Headers such as a token go in notifications.webhook.headers of the config file.
+        </span>
+      </div>
+    </section>
+  );
+}
+
 /** In-page targets; buttons rather than `#id` links, which the hash router would take. */
 const TOC = [
   ["providers", "Providers and keys"],
   ["routing", "Model routing"],
   ["commands", "Global commands"],
+  ["notifications", "Run notifications"],
   ["telemetry", "Telemetry"],
 ] as const;
 
@@ -620,6 +731,7 @@ function GlobalSettingsFor({
             config={config.data}
           />
           <GlobalCommands projectKey={projectKey} />
+          <Notifications config={config.data} patch={patch} busy={busy} />
           <Telemetry config={config.data} patch={patch} busy={busy} />
         </>
       ) : config.state === "missing" ? (

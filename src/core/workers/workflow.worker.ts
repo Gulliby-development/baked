@@ -334,6 +334,8 @@ const ctx = createWorkerHandler(
       false,
       new SharedRootContext(() => rootContext(workspace, appConfig)),
     );
+    // The terminal app is where the person is, so a run that starts waiting raises a notification.
+    if (service.attention) service.attention.systemNotifications = true;
     // Events are appended inside transactions; notify after the current task so readers see them.
     const changed = new Set<string>();
     service.store.onEvent = (event) => {

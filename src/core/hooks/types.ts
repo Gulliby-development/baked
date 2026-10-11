@@ -22,7 +22,9 @@ export type HookEventName =
   | "PostCompact"
   | "SubagentStart"
   | "SubagentStop"
-  | "Notification";
+  | "Notification"
+  /** A workflow run waits for a person: a request, or a blocked run. Matcher: the kind. */
+  | "RunAttention";
 
 // ── Hook handler types ───────────────────────────────────────────────
 
@@ -94,6 +96,18 @@ export interface HookInput {
   tool_response?: unknown;
   /** Tool call ID from the model. */
   tool_use_id?: string;
+  /** What a `RunAttention` hook is told about the run that waits. */
+  run_attention?: {
+    run_id: string;
+    feature_id: string;
+    /** Null for a blocked run. */
+    request_id: string | null;
+    /** The request kind, or the reason of a blocked run. */
+    kind: string;
+    /** False for an advisory acceptance decision, which the run does not wait for. */
+    blocking: boolean;
+    status: string;
+  };
 }
 
 // ── Hook output (JSON returned by command via stdout) ────────────────

@@ -157,6 +157,33 @@ Some packages always go to a person, whatever the setting. These are writes unde
 
 An automatic approval is stored on the same approval request with the same digest a person would sign. Its actor is `auto-approval`, and its answer contains the mode and a hash of the limits. The event log shows `Decision accepted (auto approval)`. When auto approval declines, the request stays pending for a person, and `autoApproval.declined` in its body lists why.
 
+### Notifications when a run waits
+
+A run that starts waiting for a person is announced once: a pending request (approval, clarification, manual evidence, recovery, checkpoint, delivery) or a run that becomes blocked, such as one whose token budget ran out and needs `workflow extend`. The process that drives the run announces it: the terminal app, `baked workflow run|resume` or `baked serve`. The database records each announced request in `attention_notices`, so a request is announced once even when several processes share the workspace; a run blocked again later is announced again. Requests already waiting when BAKED is upgraded are not announced.
+
+Each announcement goes to three places:
+
+- **A `RunAttention` hook** ([extensions](../extensions.md#hooks)), matched against the request kind or the blocked reason. Its stdin adds `run_attention`: `run_id`, `feature_id`, `request_id` (null for a blocked run), `kind`, `blocking` and `status`.
+- **A webhook**, only when `notifications.webhook.url` is set. It receives one `POST` with a JSON body; it carries no request body, prompt or file content:
+
+  ```json
+  {"event": "run.attention", "project": "shop", "workspace": "/home/me/shop", "runId": "...",
+   "featureId": "checkout", "requestId": "...", "kind": "approval", "blocking": true,
+   "status": "waiting", "message": "Waiting for approval", "createdAt": "2026-10-11T08:00:00.000Z"}
+  ```
+
+  `headers` adds request headers, such as an authorization token; `blockingOnly: true` skips advisory acceptance decisions (`blocking: false`), which the run does not wait for. Only `http://` and `https://` URLs are used. A failed delivery is logged and not retried.
+- **A native desktop notification** from the terminal app and from `baked workflow` run in an interactive terminal, for blocking items only: `osascript` on macOS, `notify-send` on Linux (when installed) and a PowerShell toast on Windows. `notifications.system: false` turns it off. `baked serve` shows none: the desktop app raises its own from `GET /v1/attention`.
+
+```json
+"notifications": {
+  "system": true,
+  "webhook": { "url": "https://example.com/baked", "headers": { "authorization": "Bearer ..." }, "blockingOnly": false }
+}
+```
+
+The desktop app edits the same settings under Settings, All projects, Run notifications.
+
 ## Gates, budgets and estimates
 
 ### Gates window

@@ -14,6 +14,7 @@ import { migration004 } from "./migrations/004.js";
 import { migration005 } from "./migrations/005.js";
 import { migration006 } from "./migrations/006.js";
 import { migration007 } from "./migrations/007.js";
+import { migration008 } from "./migrations/008.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -186,6 +187,7 @@ const MIGRATIONS = [
   { version: 5, sql: migration005 },
   { version: 6, sql: migration006 },
   { version: 7, sql: migration007 },
+  { version: 8, sql: migration008 },
 ] as const;
 
 export class WorkflowStore {
@@ -193,6 +195,8 @@ export class WorkflowStore {
   readonly path: string;
   /** Observes appended events; invoked before the surrounding transaction commits. */
   onEvent: ((event: WorkflowEvent) => void) | null = null;
+  /** Further observers of appended events, called like `onEvent`; see `observe`. */
+  private readonly observers = new Set<(event: WorkflowEvent) => void>();
   constructor(
     readonly workspace: string,
     readonly readonly = false,
@@ -592,7 +596,13 @@ export class WorkflowStore {
     ]);
     this.db.run("UPDATE runs SET event_seq=? WHERE id=?", [seq, runId]);
     this.onEvent?.(value);
+    for (const observer of this.observers) observer(value);
     return value;
+  }
+  /** Adds an observer of appended events next to `onEvent`; the returned function removes it. */
+  observe(observer: (event: WorkflowEvent) => void): () => void {
+    this.observers.add(observer);
+    return () => this.observers.delete(observer);
   }
   events(id: string, after = 0, limit = 200): WorkflowEvent[] {
     return this.db
@@ -774,6 +784,27 @@ export class WorkflowStore {
          ORDER BY created_at, run_id, request_id`,
       )
       .all();
+  }
+  /**
+   * The attention rows nobody announced yet, each marked announced in the same transaction, so of
+   * several processes sharing the database exactly one announces a request. A blocked run is keyed
+   * by the event that blocked it, so a run blocked again later is announced again.
+   */
+  claimAttention(): AttentionRow[] {
+    const blockedBy = this.db.query<{ seq: number | null }, [string]>(
+      "SELECT MAX(seq) AS seq FROM events WHERE run_id=? AND type='run.state_changed'",
+    );
+    return this.transaction(() =>
+      this.attention().filter((row) => {
+        const key = row.request_id
+          ? `request:${row.request_id}`
+          : `blocked:${row.run_id}:${String(blockedBy.get(row.run_id)?.seq ?? 0)}`;
+        return (
+          this.db.run("INSERT OR IGNORE INTO attention_notices VALUES (?,?)", [key, Date.now()])
+            .changes === 1
+        );
+      }),
+    );
   }
   tasks(runId: string): TaskRow[] {
     return this.db
