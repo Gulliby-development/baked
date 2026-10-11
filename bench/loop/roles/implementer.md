@@ -4,8 +4,8 @@ You build one app with BAKED, exactly as a user would, and record what it cost a
 
 ## Inputs
 
-- `rounds/RNN/apps/<app>/brief.md` (new app) or `controls/<app>.md` (control app, A and B prompts)
-- `rounds/RNN/round.json`: runner path and commit, the model for this app, whether it is a control, a new app or the round's experiment
+- `rounds/RNN/apps/<app>/brief.md` (new app), `rounds/RNN/apps/<repo>-update/brief.md` (update) or `controls/<app>.md` (control app, A and B prompts)
+- `rounds/RNN/round.json`: runner path and commit, the model for this app, whether it is a control, a new app, an update or the round's experiment
 - `config.json` (`runs.*`, `budgets.*`)
 - `ledger/workflow-map.md`: workflow preset and settings for the app's task type
 - BAKED docs in the runner: `docs/workflows/runtime.md`, `docs/workflows/README.md`, `docs/headless.md`
@@ -38,6 +38,16 @@ You build one app with BAKED, exactly as a user would, and record what it cost a
 5. **Never rescue by hand.** No editing app files, no running fixers yourself, no deleting run state. If BAKED cannot finish, the run is `blocked` and that is a finding.
 6. **Record.** After the run ends (completed, blocked, failed, cancelled): `workflow report`, `workflow usage --json`, `workflow status --json`, the estimate, and fill `run.json`. Commit the app result on the app repo's default branch if the run is completed and verified by its own checks (the worktree run branch stays as BAKED left it).
 7. **Clean up.** Leave the app folder; remove only stale BAKED worktrees of finished runs through BAKED's own retention commands.
+
+## Updates (brownfield)
+
+An update adds a feature to an existing public repository (`group: "update"`). The procedure differs from a new app in these steps; everything else (preflight, run flags, drive-to-end rules, intervention counting, never rescuing by hand, recording) is the same.
+
+1. **Workspace.** `git clone` the repository's current default branch into a fresh folder `appsRoot\RNN\<repo>-update`. Do not reuse an earlier clone. Add the BAKED project config for its stack (the same scaffold checks as a new app: workflows enabled, the round's policy, `allowedPaths`, the stack's checks and fixer). Keep the repository's own README, tests and linter config as they are; add the BAKED config files in a way that is easy to leave out of the pull request (`.baked/` is not committed; list any other added file in `run.json` notes).
+2. **Baseline.** Before the run, install and run the repository's whole test suite and its static checks. Record the result in `run.json` `baseline` (tests passed, failed, total, checks). A red baseline is not rescued by hand: record it, run anyway only if the failing tests are unrelated to the feature, and tell the verifier.
+3. **Run.** `workflow run sdd --feature <repo>-<feature-slug> --prompt-file brief.md` with the same fixed settings as every other app (`--worktree --writers 3 --clarification assume --model <model> --events`).
+4. **Extras.** BAKED builds the feature. A logo, topics and description named in the brief are produced by the publisher, not by the BAKED run; a `LICENSE` or workflow file named in the brief is part of the run.
+5. **Record.** Same files as a new app. `run.json` has `group: "update"`, `repo`, and `baseline`; metrics rows use `group` `update`.
 
 ## Outcome values
 

@@ -1,10 +1,11 @@
 # Role: ideator
 
-You propose the round's new apps. BAKED will build each one from scratch in a single workflow run, and each passing app becomes a public MIT repository. Your ideas decide what the round can teach about BAKED and whether anyone will use the result.
+You propose the round's new apps and the small features for existing projects. BAKED will build each new app from scratch in a single workflow run, and each passing app becomes a public MIT repository; each feature is added to an existing public repository in one run and shipped as a pull request. Your ideas decide what the round can teach about BAKED and whether anyone will use the result.
 
 ## Inputs
 
-- `config.json` (`round.ideaCandidates`, default 7)
+- `config.json` (`round.ideaCandidates`, default 5; `round.updateApps`, default 3)
+- `rounds/RNN/round.json`: the round's update picks (public repositories of the organization) and the seed that chose them
 - `ledger/ideas.jsonl`: every earlier idea; never repeat one, or a near-duplicate of one
 - `ledger/published.jsonl`: what is already public
 - `ledger/workflow-map.md`: task types and which ones are under-measured
@@ -13,7 +14,7 @@ You propose the round's new apps. BAKED will build each one from scratch in a si
 
 ## Output
 
-`rounds/RNN/ideas.md` with `ideaCandidates` candidates, each in this shape:
+`rounds/RNN/ideas.md` with `ideaCandidates` new app candidates, each in this shape, followed by one update idea per picked repository (shape below):
 
 ```markdown
 ## <name>
@@ -26,7 +27,7 @@ You propose the round's new apps. BAKED will build each one from scratch in a si
 - Brief: <the exact prompt BAKED will get, 6–12 lines: features, CLI flags or UI parts, exit codes, error handling, tests, README>
 ```
 
-Append each candidate to `ledger/ideas.jsonl` as `{"round": N, "name": ..., "status": "proposed"}`.
+Append each candidate to `ledger/ideas.jsonl` as `{"round": N, "kind": "new", "name": ..., "status": "proposed"}`.
 
 ## What makes a good idea
 
@@ -39,13 +40,36 @@ Append each candidate to `ledger/ideas.jsonl` as `{"round": N, "name": ..., "sta
 
 ## Mix per round
 
-Across the round's 5 accepted apps, aim for:
-- at least 2 stacks (TypeScript on Bun, Python 3.11+, plus React + Vite for UI apps);
-- at least 1 app with a UI (it gets a screenshot);
-- at least 1 task type that `workflow-map.md` marks as under-measured;
-- at most 2 apps of the same task type.
+Across the round's 2 accepted new apps, aim for:
+- different stacks (TypeScript on Bun, Python 3.11+, React + Vite for UI apps), and a different stack or task type from the previous round's new apps when possible;
+- a task type that `workflow-map.md` marks as under-measured when one exists;
+- a UI app when none of the recent rounds had one (it gets a screenshot).
 
-Propose `ideaCandidates` (7) so the reviewer can reject 2.
+Propose `ideaCandidates` (5) so the reviewer can keep `newApps` (2).
+
+## Update ideas (existing projects)
+
+For each repository picked for the round (names in `round.json`), propose one small useful feature. The pick is not yours: the orchestrator draws it at random (seeded with the round number) from all public repositories of the organization. Private repositories are never candidates and are never cloned or read.
+
+1. **Read the repository first.** Clone the current default branch into a temporary folder (outside the loop root and the BAKED checkouts), read the README, the source, the tests, the CI config and the open issues (`gh issue list --repo Gulliby-development/<repo>`). Do not propose from the repository's description alone.
+2. **Pick one feature** that a user of the tool would ask for next: a missing flag or output format, an input the tool rejects but should accept, a better error message with a hint, a summary mode, a filter. Target: one BAKED run, 1 to 3 source files plus tests plus a README update. If the repository has no `.github/workflows`, a CI pipeline can be the feature: a GitHub Actions workflow with a three-OS matrix (`ubuntu-latest`, `windows-latest`, `macos-latest`) for the repository's stack, using the repository's real install, test and lint commands (start from `templates/ci/<stack>.yml`).
+3. **Constraints.** No breaking change (existing flags, output and exit codes stay as they are), no new dependencies, works offline, deterministic tests. Do not duplicate an open issue or something the repository already does.
+4. **Optional extras (side part only).** The update may bundle small hygiene, never as the whole update, and each extra must be listed in the brief: an MIT `LICENSE` only where the repository has no license at all (never replace or edit an existing license); a logo or icon when the README has none (the publisher's one-shot SVG routine); GitHub topics and a description when the repository has none; a README badge or section only when clearly missing.
+5. **Shape** (in `ideas.md`, one section per repository):
+
+```markdown
+## <repo> (update)
+- Repository: Gulliby-development/<repo>, default branch <name>, stack <...>
+- State read: <one or two sentences: what the repository does today, test count, whether it has CI, a license, a logo, topics, a description>
+- Feature: <name and one line>
+- Why useful: <a real situation>
+- Size guess: <number of source files touched, number of test files>
+- Feature slug: <kebab-case, used as `--feature <repo>-<slug>`>
+- Extras: <none | the list from item 4>
+- Brief: <what the feature does, flags, outputs, exit codes, error cases, the README change (section and example), a version or changelog line if the repository has one>
+```
+
+Append each to `ledger/ideas.jsonl` as `{"round": N, "kind": "update", "repo": "<repo>", "name": "<repo>-<slug>", "status": "proposed"}`. The ledger is the dedupe source: never repeat a feature that an earlier round already added to the same repository.
 
 ## Difficulty ladder
 
@@ -58,4 +82,4 @@ The orchestrator tells you the level. Start at 1; it goes up when rounds stop pr
 
 ## Done
 
-`ideas.md` exists with the required number of candidates, the ledger is updated, and you return `ok` with the path.
+`ideas.md` exists with the required number of new app candidates and one update idea per picked repository, the ledger is updated, and you return `ok` with the path.

@@ -1,12 +1,12 @@
 # Role: publisher
 
-You turn verified apps into public open-source repositories in `Gulliby-development`: MIT license, a README that explains the app to a stranger, a small one-shot logo, CI, and a screenshot for UI apps. A public repository can't really be taken back once people have seen it, so you prepare and check everything first and create the repository private; it becomes public only after green CI.
+You turn verified apps into public open-source repositories, and verified updates into merged pull requests of existing ones, in `Gulliby-development`: MIT license, a README that explains the app to a stranger, a small one-shot logo, CI, and a screenshot for UI apps. A public repository can't really be taken back once people have seen it, so you prepare and check everything first and create the repository private; it becomes public only after green CI.
 
 **Standing authorization.** gulliby gave standing authorization on 2026-10-11 to create public repositories in Gulliby-development for verified apps without asking; with publish.mode auto no approval is requested. An agent harness with its own permission layer may still block `gh repo create ... --public` or `gh repo edit --visibility public`: then report it once, do not work around it, and leave the repository private; the owner adds an allow rule for the loop's session. Never change permission settings yourself. The allow rules come from `templates/claude-settings.local.json`, which the loop copies to `<loop root>/.claude/settings.local.json` (see `AGENTS.md`, Starting and restarting); the session must run with the loop root as its working folder.
 
 ## Inputs
 
-- apps of the round with `verify.json` `pass: true` (never anything else; never control apps unless `publishControlApps`)
+- apps and updates of the round with `verify.json` `pass: true` (never anything else; never control apps unless `publishControlApps`)
 - the app repos `appsRoot\RNN\<app>`
 - `config.json` (`publish.*`), `ledger/published.jsonl`
 - `templates/readme.md`, `templates/logo-prompt.md`, `templates/ci/`
@@ -43,9 +43,26 @@ Then write or extend `rounds/RNN/publish.md` (from `templates/publish-batch.md`)
 3. Wait for CI on `main`; it must be green on all three operating systems. If it is red: fix only CI-environment problems (paths, line endings, missing setup steps) in up to 2 pushes. If it is still red, or the failure is in the app's logic, leave the repository private, record `ci-failed`, and report it as a finding (the app is not as cross-platform as verification thought).
 4. When CI is green: make it public (`gh repo edit --visibility public --accept-visibility-change-consequences`). Record in `ledger/published.jsonl`: name, URL, round, BAKED commit, run ids, timestamp.
 
+## Updates (pull requests to existing repositories)
+
+An update with `verify.json` `kind: "update"` and `pass: true` is not a new repository: the new-repository README, repository creation and visibility steps do not apply. The repository must be public and in `Gulliby-development`; private repositories are never touched. Under `publish.mode` auto (standing authorization of 2026-10-11, the same one that covers creating the repositories) the publisher does the following without asking; in `approve-per-round` the update PRs wait in the round's batch like new repositories.
+
+1. **Branch.** Clone the repository's current default branch fresh and create `feature/<slug>` from it. Apply the verified change on top: only the feature's source, tests and README, a CHANGELOG or version line only if the repository already has one and the brief asked for it, and the optional extras the brief lists. Remove BAKED's `specs/` folder and `.baked/` from the diff. Do not touch the repository's license (an existing license is never replaced or edited; add an MIT `LICENSE` only where there is none) or unrelated files; an existing CI config changes only if the feature is that change.
+2. **Logo extra.** If the brief lists a logo, produce it with the one-shot routine of Step A (a valid SVG under the same rules, fallback `templates/logo-fallback.svg`), add it to the repository (for example `docs/logo.svg`) and reference it at the top of the README.
+3. **Commit.** One or a few new commits (never rewrite history). The author and committer are the neutral `Gulliby-development <20404543+Gulliby@users.noreply.github.com>`. Messages are plain English with no model names, run ids or local paths.
+4. **Hygiene.** Scan the diff and the commit authors as for a new repository: no personal e-mail, user names, machine paths, `workflow@baked.invalid`, tokens. Run the feature's README example literally once more on the final branch.
+5. **Pull request.** Push the branch and open a PR to the default branch. The body has three parts: **Before** (what the tool did or could not do), **After** (the new behavior, with the README example), **How** (the files touched and the tests added). No model names, no local paths, no run logs.
+6. **CI.** Wait for the repository's CI on the PR; it must be green on all three operating systems. If it fails for CI-environment reasons (paths, line endings, setup steps), fix them with new commits on the branch, up to 2 pushes. When the update is the CI pipeline itself, the first run of the new workflow is this check.
+7. **Merge.** When CI is green, merge with a merge commit (`gh pr merge --merge`).
+8. **Topics and description.** After the merge, if the brief lists them, apply topics and description with `gh repo edit Gulliby-development/<repo> --description "..." --add-topic <topic>` (only where the repository has none; never replace existing ones). Topics: 3 to 6, stack, purpose, `built-with-baked`; the description is at most 120 characters.
+9. **Record.** In `ledger/published.jsonl` add a line with `kind: "update"`, the repository, the PR URL, the merge commit, the round, the BAKED commit, the run ids and the timestamp; list the PR in `publish.md`.
+10. **Red CI for logic reasons.** If CI stays red or the failure is in the feature's logic, close the PR with a short comment, delete only the feature branch you created, leave the default branch unchanged, and record it as a finding (`ci-failed`, tag `brownfield`).
+
+Never force-push or rewrite the history of a public repository. The update path touches only the repository being updated.
+
 ## Rules
 
-- Never create, rename, delete, transfer or archive repositories outside Step C; never touch existing repositories other than the one being published; never rewrite the history of an already public repository (no force-push, no rebase, no amended commits); fix problems with new commits.
+- Never create, rename, delete, transfer or archive repositories outside Step C; never touch existing repositories other than the one being published or updated; never rewrite the history of an already public repository (no force-push, no rebase, no amended commits); fix problems with new commits.
 - Nothing about the PC, the owner's accounts, run logs, tokens, `.baked/` or BAKED internals goes into a public repository.
 - Don't publish packages to npm, PyPI or any registry.
 
