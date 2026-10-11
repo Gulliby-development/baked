@@ -13,7 +13,9 @@ for (const key of ["LOCALAPPDATA", "APPDATA"]) if (process.env[key] !== undefine
 process.env.XDG_CONFIG_HOME = join(profile, ".config");
 
 // Workflow tests drive whole runs with real check processes; on a loaded CI runner they take
-// several seconds, so Bun's 5 s default fails them at random.
+// several seconds, so Bun's 5 s default fails them at random. A preload's setDefaultTimeout
+// reaches only the first test file of a run, so `bun run test` passes `--timeout 30000` for the
+// whole suite; this call still covers a single file run with `bun test tests/<file>`.
 setDefaultTimeout(30_000);
 
 afterAll(() => {

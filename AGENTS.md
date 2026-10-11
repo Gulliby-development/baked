@@ -66,7 +66,7 @@ CI runs these on every pull request to `main`; run them before merging:
 ```sh
 bun run lint
 bun run typecheck
-bun test
+bun run test
 bun run build
 ```
 

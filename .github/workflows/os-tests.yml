@@ -1,6 +1,6 @@
 name: OS tests
 
-# Runs `bun test` on Windows and macOS; `CI / check` runs it on Linux for every pull request.
+# Runs `bun run test` on Windows and macOS; `CI / check` runs it on Linux for every pull request.
 # Windows and macOS runners cost 2x and 10x Linux minutes in a private repository, so these run
 # on pull requests that touch platform-sensitive code (process, path, shell, filesystem and key
 # store handling, the workflow runtime, the test setup), nightly against main, and on demand.
@@ -73,4 +73,4 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Test
         if: needs.scope.outputs.run == 'true'
-        run: bun test
+        run: bun run test

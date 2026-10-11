@@ -85,7 +85,7 @@ Prompts and code go only to the model provider you configure. Anonymous usage ev
 ```sh
 bun run lint
 bun run typecheck
-bun test
+bun run test
 bun run build
 ```
 
