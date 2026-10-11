@@ -134,7 +134,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/session history: Ctrl+D in the picker"],
     cli: ["baked session delete"],
     api: ["/v1/sessions/:id: DELETE"],
-    desktop: gap(405),
+    desktop: ["project/chat: Delete chat in the chat menu"],
   },
   {
     id: "session-export",
@@ -142,8 +142,8 @@ export const FEATURES: readonly Feature[] = [
     title: "Export a chat (Markdown, JSON, clipboard)",
     tui: ["/session export", "/session export json", "/session export clipboard"],
     cli: ["baked session export"],
-    api: gap(405),
-    desktop: gap(405),
+    api: ["/v1/sessions/:id/export: Markdown or JSON"],
+    desktop: ["project/chat: Export as Markdown or JSON in the chat menu"],
   },
   {
     id: "session-diagnostics",
