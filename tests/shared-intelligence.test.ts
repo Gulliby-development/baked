@@ -147,7 +147,14 @@ describe("intelligence relay", () => {
 
   test("a root built on a borrowed client neither scans nor closes the owner's worker", async () => {
     const extra = await borrowIntelligence(dir, (request) => relay.handle(request));
-    const root = await ContextManager.createAsync(dir, undefined, { intelligence: extra.client });
+    // Other test files turn the repository map off for the whole process.
+    const noRepoMap = process.env.BAKED_NO_REPOMAP;
+    delete process.env.BAKED_NO_REPOMAP;
+    const root = await ContextManager.createAsync(dir, undefined, {
+      intelligence: extra.client,
+    }).finally(() => {
+      if (noRepoMap !== undefined) process.env.BAKED_NO_REPOMAP = noRepoMap;
+    });
     expect(root.isRepoMapReady()).toBe(true);
     await root.dispose({ preserveSharedIO: true });
     expect(await owner.findSymbol("add")).not.toBeNull();
