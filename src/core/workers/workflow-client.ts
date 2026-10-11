@@ -183,6 +183,7 @@ export class WorkflowClient extends WorkerClient {
     requests: (id: string) => this.views.get(id)?.requests ?? [],
     runModel: (id: string) => this.views.get(id)?.runModel ?? null,
     worktree: (id: string) => this.views.get(id)?.worktree ?? null,
+    routing: (id: string) => this.views.get(id)?.routing ?? null,
   };
   async command(
     argv: string[],

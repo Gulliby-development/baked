@@ -588,6 +588,25 @@ describe("durable SDD runtime", () => {
     expect(tasks[1]!.findingIds).toHaveLength(2);
     expect(tasks[1]!.description).toContain(`Finding ${tasks[1]!.findingIds[1]}`);
   });
+  // zoneslot 51f9d664 T007 and md-site 93fbee70 T010: the repair attempt reported passing tests and
+  // changed no file because a sibling had fixed the cause; the run blocked instead of continuing.
+  test("a corrective task that changes nothing is satisfied when the checks it was made for pass", async () => {
+    const marker = join(mkdtempSync(join(tmpdir(), "baked-marker-")), "seen");
+    const flaky: RunPolicy = {
+      ...policy,
+      checks: [{ ...policy.checks[0]!, args: ["-e", `const fs = require('node:fs'); if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }`] }],
+    };
+    const root = mkdtempSync(join(tmpdir(), "baked-workflow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: flaky } }, new FixtureExecutor(root));
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: flaky });
+    await service.drive(run.runId, new AbortController().signal);
+    await approve(service, run.runId);
+    expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
+    const tasks = service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { id: string; origin: string });
+    expect(tasks.map((t) => t.origin)).toEqual(["planned", "repair"]);
+  });
   test("stale approval and manual source changes never execute implementation", async () => {
     const { service, root, executor } = setup(); const { run } = await start(service);
     const waiting = await service.drive(run.runId, new AbortController().signal);

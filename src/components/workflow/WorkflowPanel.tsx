@@ -635,6 +635,7 @@ export function WorkflowPanel({
                 stages={stages}
                 budget={service.store.budget(runId)}
                 estimate={service.store.estimate(runId)}
+                routing={service.store.routing(runId)}
                 events={service.store.events(runId)}
                 tasks={tasks}
                 findings={findings}
