@@ -1,4 +1,5 @@
 import { useTheme } from "../../core/theme/index.js";
+import type { RoutingSummary } from "../../core/workflows/routing.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { FindingRow, TaskRow } from "../../core/workflows/store.js";
 import type { BudgetView, EstimateView, RunDetails, StageView } from "../../core/workflows/view.js";
@@ -60,6 +61,7 @@ export function RunOverview({
   stages,
   budget,
   estimate,
+  routing,
   events,
   tasks,
   findings,
@@ -73,6 +75,7 @@ export function RunOverview({
   stages: StageView[];
   budget: BudgetView | null;
   estimate: EstimateView | null;
+  routing: RoutingSummary | null;
   events: WorkflowEvent[];
   tasks: TaskRow[];
   findings: FindingRow[];
@@ -173,6 +176,19 @@ export function RunOverview({
         ].join("  ·  ")}
       </text>
       {model ? <text fg={t.textFaint}>{`Model: ${model}`}</text> : null}
+      {routing?.effective.length ? (
+        <text fg={t.textFaint} wrapMode="word">
+          {`Models by role: ${routing.effective
+            .filter((row) => !row.target.startsWith("stage "))
+            .map((row) => `${row.target} ${row.model}`)
+            .join(" · ")}`}
+        </text>
+      ) : null}
+      {(routing?.warnings ?? []).slice(0, 2).map((warning) => (
+        <Hint key={warning} kind="warn">
+          {warning}
+        </Hint>
+      ))}
       <box height={1} />
       <text fg={t.textSecondary} attributes={1}>
         Activity

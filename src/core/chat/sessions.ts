@@ -60,6 +60,7 @@ import {
   TurnUndoError,
   undoTurns,
 } from "../checkpoints/undo.js";
+import { expandCustomCommandInput } from "../commands/custom.js";
 import { type CompactResult, compactionBlocker, messageChars } from "../compaction/manual.js";
 import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
 import { SessionManager } from "../sessions/manager.js";
@@ -593,9 +594,15 @@ export class ChatSession {
   }
 
   /** Starts a turn, or steers the text and images into the running one. */
-  send(text: string, images?: ImageAttachment[]): { turnId: string; queued: boolean } {
+  send(typed: string, images?: ImageAttachment[]): { turnId: string; queued: boolean } {
+    // Custom slash commands expand before queueing, as in the terminal UI, so steered and
+    // queued messages carry the same prompt as a direct one.
+    const text = this.owner.expandCommand(typed);
+    return this.submit(images && images.length > 0 ? { text, images } : { text });
+  }
+
+  private submit(input: QueuedInput): { turnId: string; queued: boolean } {
     if (this.rewinding) throw new ChatError("SESSION_BUSY", "Wait for the undo or redo to finish");
-    const input: QueuedInput = images && images.length > 0 ? { text, images } : { text };
     const running = this.turn ?? this.compaction;
     if (running) {
       this.queue.push(input);
@@ -613,7 +620,7 @@ export class ChatSession {
   }
 
   private sendQueued(input: QueuedInput): void {
-    this.send(input.text, input.images);
+    this.submit(input);
   }
 
   interrupt(): boolean {
@@ -1236,7 +1243,7 @@ export class ChatSession {
       const queued = this.queue;
       this.queue = [];
       this.executingPlan = notice.execute.plan;
-      this.send(notice.execute.prompt);
+      this.submit({ text: notice.execute.prompt });
       this.queue.push(...queued);
       return;
     }
@@ -1327,6 +1334,8 @@ export interface ChatServiceOptions {
   config: AppConfig;
   host: ChatAgentHost;
   bufferSize?: number;
+  /** The home directory holding global custom commands; tests point it elsewhere. */
+  homeDir?: string;
 }
 
 /** The sessions of one workspace that the API serves; loaded sessions stay in memory. */
@@ -1345,6 +1354,18 @@ export class ChatService {
 
   get workspace(): string {
     return this.options.workspace;
+  }
+
+  /**
+   * Expands a message that invokes a custom slash command from `.baked/commands`, reading the
+   * file fresh; other text is returned as typed.
+   */
+  expandCommand(text: string): string {
+    const home = this.options.homeDir;
+    return (
+      expandCustomCommandInput(text, this.workspace, undefined, home ? { home } : {})?.prompt ??
+      text
+    );
   }
 
   /** Refuses a file rollback while any loaded session runs a turn that may be editing files. */

@@ -12,6 +12,8 @@ import {
   independentReviewMode,
   routedProfiles,
   routingRecord,
+  shadowedModelWarnings,
+  strictRoutingConfig,
 } from "./routing.js";
 import { GATES_ARTIFACT } from "./scheduler.js";
 import {
@@ -69,7 +71,7 @@ export interface PreparedStart {
  */
 export async function prepareStart(
   workspace: string,
-  config: AppConfig,
+  configured: AppConfig,
   request: Pick<
     StartRequest,
     | "model"
@@ -80,8 +82,10 @@ export async function prepareStart(
     | "executionMode"
     | "maxConcurrentWriters"
     | "clarification"
+    | "modelStrict"
   >,
 ): Promise<PreparedStart> {
+  const config = request.modelStrict ? strictRoutingConfig(configured) : configured;
   const model = request.model ?? config.defaultModel;
   if (!model?.trim() || model.trim() === "none")
     throw new WorkflowFault("INVALID_DEFINITION", "Select a model before starting a workflow");
@@ -113,6 +117,11 @@ export async function prepareStart(
     request.routes,
   );
   const profiles = registry.list().map((p) => p.profile);
+  if (request.modelStrict) routing.strict = true;
+  else if (request.model?.trim() && request.model.trim() !== "none") {
+    const shadowed = shadowedModelWarnings(routing, profiles);
+    if (shadowed.length) routing.warnings = shadowed;
+  }
   const outputs: Record<string, string> = {
     research: "research",
     specify: "spec",
@@ -199,7 +208,7 @@ export async function prepareStart(
         "INVALID_DEFINITION",
         `${warnings.join("\n")}\nmodelRouting.independentReview is "require"; route the reviewers to another model`,
       );
-    if (warnings.length) routing.warnings = warnings;
+    if (warnings.length) routing.warnings = [...(routing.warnings ?? []), ...warnings];
   }
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};

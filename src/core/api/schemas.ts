@@ -30,6 +30,8 @@ export const StartBody = z
     writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
+    /** The run model overrides configured model routes, as `--model-strict`. */
+    modelStrict: z.boolean().optional(),
   })
   .refine((body) => body.issue !== undefined || (body.feature && body.prompt), {
     message: "feature and prompt are required without issue",
@@ -69,6 +71,7 @@ export const PreRunQuery = z.strictObject({
   workflow: SafeId.optional(),
   model: z.string().min(1).optional(),
   route: z.string().min(1).optional(),
+  modelStrict: z.enum(["true", "false"]).optional(),
   worktree: z.enum(["true", "false"]).optional(),
   writers: z.string().regex(/^\d+$/).optional(),
   confirmAutoApproval: z.string().min(1).optional(),

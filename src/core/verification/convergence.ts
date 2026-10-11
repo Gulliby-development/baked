@@ -168,6 +168,10 @@ export function correctionBase(
   };
 }
 
+/** A finding of a failed check run: it names the check and cites that run's evidence. */
+const checkRunFinding = (finding: Pick<Review["findings"][number], "claim" | "evidenceIds">) =>
+  /^Required check \S+ failed$/.test(finding.claim) && finding.evidenceIds.length > 0;
+
 export function appendCorrections(
   store: WorkflowStore,
   runId: string,
@@ -209,8 +213,13 @@ export function appendCorrections(
     );
   let next = Math.max(...state.graph.tasks.map((t) => Number(t.id.slice(1)))) + 1;
   // Findings against the same task and file become one corrective task: each task reads the
-  // files again from scratch, so three failed checks of one task were three full rereads.
-  const groups = new Map<string, { base: Task; findings: Review["findings"] }>();
+  // files again from scratch, so three failed checks of one task were three full rereads. The
+  // findings of one failing check run (they cite the same evidence) of tasks with one profile
+  // become one task that may write every implicated file: one run is one failure to fix, and a
+  // task per file (md-site c0456d78, four tasks for one failing test run) paid for the same
+  // reading four times and left the later tasks with nothing to change.
+  const groups = new Map<string, { base: Task; bases: Task[]; findings: Review["findings"] }>();
+  const runGroups = new Map<string, string>();
   for (const finding of findings) {
     const predecessor = state.repairPredecessors[finding.id];
     const base =
@@ -222,7 +231,13 @@ export function appendCorrections(
         "Correction requires writes outside the approved task scope",
       );
     state.repairPredecessors[finding.id] = base.id;
-    const key = `${base.id}\n${finding.file ?? ""}`;
+    const fileKey = `${base.id}\n${finding.file ?? ""}`;
+    let key = fileKey;
+    if (checkRunFinding(finding)) {
+      const run = `${finding.evidenceIds[0]}:${base.profileId}`;
+      key = groups.has(fileKey) ? fileKey : (runGroups.get(run) ?? fileKey);
+      runGroups.set(run, key);
+    }
     const existing = groups.get(key);
     const group = existing
       ? {
@@ -231,19 +246,28 @@ export function appendCorrections(
             criterionIds: unique([...existing.base.criterionIds, ...base.criterionIds]),
             requirementIds: unique([...existing.base.requirementIds, ...base.requirementIds]),
           },
+          bases: existing.bases.some((b) => b.id === base.id)
+            ? existing.bases
+            : [...existing.bases, base],
           findings: existing.findings,
         }
-      : { base, findings: [] as Review["findings"] };
+      : { base, bases: [base], findings: [] as Review["findings"] };
     group.findings.push(finding);
     groups.set(key, group);
   }
   const root = state.rootGraph;
-  const additions = [...groups.values()].map(({ base, findings: grouped }) => {
+  const additions = [...groups.values()].map(({ base, bases, findings: grouped }) => {
     const ids = grouped.map((f) => f.id);
     return {
       ...base,
-      writes: correctionWrites(base, root, state.expectedFiles),
-      checkIds: correctionChecks(base, root),
+      writes: [
+        ...new Map(
+          bases
+            .flatMap((b) => correctionWrites(b, root, state.expectedFiles))
+            .map((write) => [write.path, write] as const),
+        ).values(),
+      ],
+      checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id: `T${String(next++).padStart(3, "0")}`,
       title: `Correct ${ids.join(", ")}`,
       description: grouped
