@@ -1,7 +1,7 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useState } from "react";
 import { getGitDiff, getGitStatus, gitAdd, gitCommit } from "../../core/git/status.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { Hint, PremiumPopup, Section, Toggle, VSpacer } from "../ui/index.js";
 import { fitPopupWidth } from "../ui/popup-geometry.js";
 

@@ -1,6 +1,6 @@
 import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { decodePasteBytes, type PasteEvent, TextAttributes } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useRenderer } from "@opentui/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCommandDefs, isCustomSlashInput, isDefHidden } from "../../core/commands/registry.js";
 import { getCwd } from "../../core/cwd.js";
@@ -14,6 +14,7 @@ import {
 } from "../../core/history/index.js";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { logBackgroundError } from "../../stores/errors.js";
 import { useUIStore } from "../../stores/ui.js";
 import type { ImageAttachment } from "../../types/index.js";

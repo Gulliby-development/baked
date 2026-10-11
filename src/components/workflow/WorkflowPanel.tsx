@@ -1,10 +1,10 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { UndoResult } from "../../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../../core/workflows/defaults.js";
 import type { StartRunInput } from "../../core/workflows/view.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   reloadWorkflowSession,
   useWorkflow,

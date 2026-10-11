@@ -1,6 +1,6 @@
-import { useKeyboard } from "@opentui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../../../core/theme/index.js";
+import { useKeyboard } from "../../../hooks/useTerminalEvents.js";
 import { selectTopDialog, useDialogStore } from "../../../stores/dialog.js";
 import { fuzzyFilterGroups, tokenMatches } from "../fuzzy.js";
 import { GroupedList, type GroupedListGroup } from "../GroupedList.js";

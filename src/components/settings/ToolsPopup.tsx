@@ -1,6 +1,6 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
 import { getToolCatalog } from "../../core/tools/constants.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   buildGroupedRows,
   type GroupedItem,

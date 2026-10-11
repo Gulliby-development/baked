@@ -443,11 +443,6 @@ export async function start(opts: StartOptions): Promise<void> {
     r.setTerminalTitle("baked");
   } catch {}
 
-  // 20+ components use useKeyboard/useOnResize concurrently — raise the
-  // default EventEmitter limit (10) to suppress spurious leak warnings.
-  r.setMaxListeners(30);
-  r.keyInput.setMaxListeners(30);
-
   // Register custom renderables for JSX usage
   {
     const { extend } = await import("@opentui/react");

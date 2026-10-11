@@ -1,8 +1,8 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BackendProbeResult, HealthCheckResult } from "../../core/intelligence/router.js";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { SPINNER_FRAMES, useSpinnerFrameRef } from "../layout/shared.js";
 import { InfoLine, type InfoLineData, PremiumPopup, Section } from "../ui/index.js";
 import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";

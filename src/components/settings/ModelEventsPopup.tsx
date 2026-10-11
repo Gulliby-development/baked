@@ -1,4 +1,5 @@
 import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
+
 /**
  * ModelEventsPopup — opt-in debug view for per-call LLM telemetry.
  *
@@ -12,10 +13,10 @@ import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
  * site (main loop + subagents) and stays a no-op while off.
  */
 
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   aggregateModelEvents,
   type ModelCallEvent,

@@ -1,7 +1,7 @@
-import { useKeyboard } from "@opentui/react";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { selectTopDialog, useDialogStore } from "../../stores/dialog.js";
 import { Overlay } from "../layout/shared.js";
 import { AlertDialog } from "./dialogs/AlertDialog.js";
