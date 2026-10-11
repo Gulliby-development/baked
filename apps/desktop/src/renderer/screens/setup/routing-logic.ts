@@ -61,7 +61,11 @@ export const EFFORT_CHOICES: readonly (Effort | null)[] = [
 export interface RoutingGroup {
   id: "classes" | "roles" | "stages" | "profiles";
   title: string;
+  /** The key of `modelRouting` the group edits, shown next to the plain title. */
+  term: string;
   note: string;
+  /** A longer explanation for the hover hint. */
+  hint: string;
   rows: RoutingRow[];
 }
 
@@ -70,29 +74,59 @@ export function routingGroups(view: RoutingOverview): RoutingGroup[] {
   return [
     {
       id: "classes",
-      title: "Classes",
-      note: "Named models that roles, stages and profiles refer to as $name.",
+      title: "Model names",
+      term: "classes",
+      note: "Short names for models, used elsewhere as $name.",
+      hint: "A class is a nickname for a model, such as $fast or $review. Roles, steps and profiles can use $name instead of a full model ID, so one change here moves all of them. The built-in ones fall back to the model you start the run with.",
       rows: view.classes,
     },
     {
       id: "roles",
-      title: "Roles",
-      note: "The model each kind of agent uses, unless a stage or profile route says otherwise.",
+      title: "Agent roles",
+      term: "roles",
+      note: "The model each kind of agent uses.",
+      hint: "Every agent in a workflow has a role: researcher, spec author, planner, implementer, reviewer and so on. A model set here is used by every agent with that role, unless a workflow step or a profile below says otherwise.",
       rows: view.roles,
     },
     {
       id: "stages",
-      title: `Stages of ${view.workflowId ?? "—"}`,
-      note: "A stage route wins over the roles of every agent in that stage.",
+      title: `Workflow steps of ${view.workflowId ?? "—"}`,
+      term: "stages",
+      note: "A model for every agent in one step of this workflow.",
+      hint: "A stage is one step of a workflow, such as research, spec, plan, implement or review. A model set here wins over the roles and profiles of every agent working in that step.",
       rows: view.stages,
     },
     {
       id: "profiles",
-      title: "Profiles",
-      note: "A profile route wins over the profile's own model.",
+      title: "Agent profiles",
+      term: "profiles",
+      note: "Replaces the model a ready-made agent brings with it.",
+      hint: "A profile is a ready-made agent (its instructions, tools and usual model). A model set here replaces the profile's own model wherever the workflow uses it; a step route still wins.",
       rows: view.profiles,
     },
   ];
+}
+
+/** What the built-in classes are for. */
+export const CLASS_HINTS: Readonly<Record<string, string>> = {
+  $active: "The model you start the run with: the chat tab's model or --model.",
+  $fast: "Quick, cheap work such as the quick planner. Unset, it is the run model.",
+  $coding: "Writing code. Unset, it uses the /router Code slot, then the run model.",
+  $review: "Reviewing work. Unset, it uses the /router Review slot, then the run model.",
+};
+
+/** A readable name for a row: `spec-author` becomes `Spec author`; classes keep `$name`. */
+export function plainName(row: RoutingRow): string {
+  if (row.target.kind === "class") return row.label;
+  const words = row.label.replace(/[-_]+/g, " ").trim();
+  return words ? words[0]?.toUpperCase() + words.slice(1) : row.label;
+}
+
+/** How each effort choice reads in the form. */
+export function effortLabel(effort: Effort | null): string {
+  if (effort === null) return "inherit";
+  if (effort === "default") return "model default";
+  return effort;
 }
 
 /** What a row's own value is in a layer, for the cell of that layer. */
