@@ -50,10 +50,16 @@ interface Behavior {
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
+  /** Analyses that report one blocking finding before passing. */
+  analysisFindings?: number;
+  findingKind?: string;
+  findingRefs?: string[];
 }
 
 class V2Executor implements AgentExecutor {
   calls: string[] = [];
+  prompts: string[] = [];
+  analyses = 0;
   /** Set by setup; a capped attempt records its usage the way the agent executor does. */
   service?: NativeWorkflowService;
   maxTokens: number[] = [];
@@ -62,6 +68,7 @@ class V2Executor implements AgentExecutor {
   constructor(private root: string, private behavior: Behavior = {}) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
+    this.prompts.push(request.prompt);
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
       inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] };
     };
@@ -86,7 +93,9 @@ class V2Executor implements AgentExecutor {
         break;
       }
       case "analysis":
-        output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
+        output = ++this.analyses <= (this.behavior.analysisFindings ?? 0)
+          ? { schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision", findings: [{ id: "F1", kind: this.behavior.findingKind ?? "coverage", refs: this.behavior.findingRefs ?? ["tasks.json"], description: "Task order unclear", blocking: true }] }
+          : { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       case "implementation":
         this.implementations++;
@@ -264,6 +273,44 @@ describe("workflow v2 scheduler", () => {
     const run = await start("quick-fix");
     expect((await complete(run.runId)).status).toBe("completed");
     expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check"]);
+  }, 30000);
+
+  test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
+    const { start, drive, service, executor } = setup({ analysisFindings: 1 });
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Analysis findings on the plan");
+    expect(service.store.state(run.runId).position?.visits.plan).toBe(2);
+  }, 30000);
+
+  test("under clarification: assume a spec finding from analysis goes back to specify", async () => {
+    const { start, drive, service, executor } = setup(
+      { analysisFindings: 1, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] },
+      { ...policy, clarification: "assume" },
+    );
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+    expect(executor.prompts[4]).toContain("Assumed:");
+    expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+    const position = service.store.state(run.runId).position;
+    expect(position?.visits.specify).toBe(2);
+    expect(position?.stageId).toBe("approve");
+  }, 30000);
+
+  test("under clarification: assume a finding that survives the loop-backs goes to a person", async () => {
+    const { start, drive, executor } = setup({ analysisFindings: 3 }, { ...policy, clarification: "assume" });
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("clarification");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis", "plan", "analysis"]);
+  }, 30000);
+
+  test("without clarification: assume a spec finding from analysis goes to a person", async () => {
+    const { start, drive, executor } = setup({ analysisFindings: 1, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] });
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("clarification");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis"]);
   }, 30000);
 
   // Runs de6cf1ab and 2fa658c0 used up their repair rounds on ever deeper medium findings while
