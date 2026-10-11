@@ -31,4 +31,4 @@ BAKED runner: <commit> · reference model: <provider/model> · experiment: <none
 Run tokens: <used> / <roundRunTokens> · wall clock: <h> · fix PRs: <n>
 
 ## Waiting on the owner
-<publish batch, large ideas needing a pick, runs above 8M, blockers>
+<publish batch, `needs-gulliby` items, runs above 8M, blockers>

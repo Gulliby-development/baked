@@ -37,7 +37,7 @@ Verdicts: **accept** (all pass), **revise** (fixable in the brief: list exact ch
 1. Score every candidate.
 2. Accept the best `newApps` by usefulness first, then by what they test.
 3. If fewer than `newApps` are accepted, return `revise` with the list of what is missing (e.g. "need one UI app, one Python app"). The ideator gets one more call with your review. After 2 revise loops, accept what you have and record the shortfall; the round runs with fewer new apps.
-4. Write the final briefs. Add to each, unchanged across rounds:
+4. Write the final briefs. Add to each, unchanged across rounds, first this fixed sentence (briefs written as noun phrases were narrowed to README + LICENSE by BAKED's spec stage in 4 of 5 round-1 apps): "Build this application in full: the working program with its source code, automated tests, README.md and LICENSE. Do not reduce the task to documentation; the source code and tests are the main deliverable." Do not say that the repository starts empty: the benchmark scaffold already holds package.json or pyproject.toml, a linter config, .gitignore and a heading-only README; if the brief mentions the starting state, say it holds only a minimal project scaffold. Then these three lines:
    - "Write a README.md: what it is, who it is for, install, usage with examples, development (how to run tests)."
    - "Use an MIT LICENSE file." (the publisher replaces holder and year)
    - "Keep the project cross-platform (Windows, macOS, Linux)."
