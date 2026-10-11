@@ -140,4 +140,5 @@ export type HeadlessAction =
   | { type: "list-providers" }
   | { type: "list-models"; provider?: string }
   | { type: "set-key"; provider: string; key: string }
+  | { type: "remove-key"; provider: string }
   | { type: "version" };

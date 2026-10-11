@@ -29,10 +29,16 @@ ${BOLD}Management:${RST}
   baked --list-providers                             Show providers + status
   baked --list-models [provider]                     Show available models
   baked --set-key <provider> <key>                   Save an API key
+  baked --remove-key <provider>                      Remove a saved API key
+  baked login|logout <codex|claude-code>             Sign a subscription CLI in or out
   baked --version                                    Show version
 
 ${BOLD}Automation:${RST}
   baked workflow <command>                           Durable workflow runs (see --help)
+  baked usage [--days N] [--group-by stage,model]    Token use and cost across runs
+  baked attention [--json]                           What waits for a person in this project
+  baked session list [--json]                        Saved sessions of this project
+  baked session delete <id>                          Delete a saved session
   baked session fork <id> [--rollback-files]         Fork a saved session (see --help)
   baked session undo|redo <id>                       Undo or redo a turn of a saved session
   baked serve [--port N] [--allow-origin ORIGIN]     Local workflow API on 127.0.0.1
@@ -65,6 +71,15 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       process.exit(EXIT_ERROR);
     }
     return { type: "set-key", provider, key };
+  }
+
+  if (argv.includes("--remove-key")) {
+    const provider = argv[argv.indexOf("--remove-key") + 1];
+    if (!provider || provider.startsWith("--")) {
+      process.stderr.write(`${RED()}Error:${RST} --remove-key requires <provider>\n`);
+      process.exit(EXIT_ERROR);
+    }
+    return { type: "remove-key", provider };
   }
 
   if (argv.includes("--help") || argv.includes("-h")) {

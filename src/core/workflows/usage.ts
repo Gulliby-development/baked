@@ -211,7 +211,8 @@ function addAttempt(totals: UsageTotals, attempt: AttemptUsageRow): void {
  * UTC day of the attempt's start.
  */
 export function usageSummary(
-  store: WorkflowStore,
+  /** Null for a workspace without a workflow database, which has no usage. */
+  store: WorkflowStore | null,
   options: {
     days: number;
     groupBy: UsageDimension[];
@@ -224,34 +225,35 @@ export function usageSummary(
   const groups = new Map<string, UsageSummary["groups"][number] & { runIds: Set<string> }>();
   const runIds = new Set<string>();
   const totals = emptyTotals();
-  for (const runId of store.runIdsWithAttemptsSince(since)) {
-    const started = new Map(store.attempts(runId).map((a) => [a.id, a.started_at]));
-    for (const attempt of runUsage(store, runId, options.stage, undefined, options.model)
-      .attempts) {
-      const at = started.get(attempt.attemptId) ?? 0;
-      if (at < since) continue;
-      const values: Record<UsageDimension, string> = {
-        model: attempt.model ?? "(host)",
-        stage: attempt.stage,
-        day: new Date(at).toISOString().slice(0, 10),
-      };
-      const keys: Partial<Record<UsageDimension, string>> = {};
-      for (const dimension of options.groupBy) keys[dimension] = values[dimension];
-      const key = options.groupBy.map((dimension) => values[dimension]).join(" / ");
-      const entry = groups.get(key) ?? {
-        ...emptyTotals(),
-        key,
-        keys,
-        runs: 0,
-        runIds: new Set<string>(),
-      };
-      entry.runIds.add(runId);
-      addAttempt(entry, attempt);
-      groups.set(key, entry);
-      runIds.add(runId);
-      addAttempt(totals, attempt);
+  if (store)
+    for (const runId of store.runIdsWithAttemptsSince(since)) {
+      const started = new Map(store.attempts(runId).map((a) => [a.id, a.started_at]));
+      for (const attempt of runUsage(store, runId, options.stage, undefined, options.model)
+        .attempts) {
+        const at = started.get(attempt.attemptId) ?? 0;
+        if (at < since) continue;
+        const values: Record<UsageDimension, string> = {
+          model: attempt.model ?? "(host)",
+          stage: attempt.stage,
+          day: new Date(at).toISOString().slice(0, 10),
+        };
+        const keys: Partial<Record<UsageDimension, string>> = {};
+        for (const dimension of options.groupBy) keys[dimension] = values[dimension];
+        const key = options.groupBy.map((dimension) => values[dimension]).join(" / ");
+        const entry = groups.get(key) ?? {
+          ...emptyTotals(),
+          key,
+          keys,
+          runs: 0,
+          runIds: new Set<string>(),
+        };
+        entry.runIds.add(runId);
+        addAttempt(entry, attempt);
+        groups.set(key, entry);
+        runIds.add(runId);
+        addAttempt(totals, attempt);
+      }
     }
-  }
   const list = [...groups.values()].map(({ runIds: ids, ...entry }) => ({
     ...entry,
     runs: ids.size,
