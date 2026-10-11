@@ -93,8 +93,8 @@ bun test tests/feature-parity.test.ts
 | Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
-| Instruction files: view and edit content | **Gap** [#406](https://github.com/Gulliby-development/baked/issues/406) | `baked project show` | `/v1/projects/current/instructions` | `project/instructions` |
-| Instruction files: switch on or off | `/instructions` | Not needed: set instructionFiles in config.json | **Gap** [#406](https://github.com/Gulliby-development/baked/issues/406) | **Gap** [#406](https://github.com/Gulliby-development/baked/issues/406) |
+| Instruction files: view and edit content | `/instructions show`, `/instructions edit` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/instructions` |
+| Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/instructions` |
 | Long-term chat memory: browse, pin, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/chat-memory` |
 | Run memory: view and edit what runs learned | `/workflow` | `baked workflow memory` | `/v1/workflow/memory` | `project/run-memory` |
 
@@ -159,7 +159,7 @@ bun test tests/feature-parity.test.ts
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#402](https://github.com/Gulliby-development/baked/issues/402): MCP servers: list, add, edit, reconnect, tools
 - [#405](https://github.com/Gulliby-development/baked/issues/405): Delete a session; Export a chat (Markdown, JSON, clipboard)
-- [#406](https://github.com/Gulliby-development/baked/issues/406): Instruction files: view and edit content; Instruction files: switch on or off
+- [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Storage cleanup, model events and the error log
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
