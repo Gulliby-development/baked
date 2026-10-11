@@ -5,8 +5,10 @@ import {
   describeResolved,
   describeRoute,
   draftOf,
+  effortLabel,
   layerValue,
   parseFallback,
+  plainName,
   routingGroups,
   unresolvedText,
 } from "../src/renderer/screens/setup/routing-logic.ts";
@@ -55,10 +57,10 @@ describe("model routing section", () => {
 
   test("lists the groups of the TUI screen and each layer's value", () => {
     expect(routingGroups(view).map((g) => g.title)).toEqual([
-      "Classes",
-      "Roles",
-      "Stages of sdd",
-      "Profiles",
+      "Model names",
+      "Agent roles",
+      "Workflow steps of sdd",
+      "Agent profiles",
     ]);
     const both = row({ global: "a/b", project: "$deep" });
     expect(layerValue(both, "global")).toBe("a/b");
@@ -72,5 +74,13 @@ describe("model routing section", () => {
   test("an older backend without the routing capability is told apart", () => {
     expect(offers(["setup"], ROUTING_CAPABILITY)).toBe(false);
     expect(offers(["setup", "routing"], ROUTING_CAPABILITY)).toBe(true);
+  });
+
+  test("rows and efforts read in plain words", () => {
+    expect(plainName(row({ label: "spec-author" }))).toBe("Spec author");
+    expect(plainName(row({ target: { kind: "class", name: "fast" }, label: "$fast" }))).toBe("$fast");
+    expect(effortLabel(null)).toBe("inherit");
+    expect(effortLabel("default")).toBe("model default");
+    expect(effortLabel("xhigh")).toBe("xhigh");
   });
 });

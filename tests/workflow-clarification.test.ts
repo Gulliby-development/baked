@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import {
+  answerInvalidatesAnalysis,
   clarificationResumeIndex,
   deferredBlockingProblems,
   deferredToChecks,
@@ -95,6 +96,10 @@ describe("research budget", () => {
 });
 
 describe("clarification resume point", () => {
+  test("only an answer to the approval stage keeps the analysis verdict", () => {
+    expect(answerInvalidatesAnalysis("approve")).toBe(false);
+    for (const kind of ["research", "specify", "analyze", "plan", undefined]) expect(answerInvalidatesAnalysis(kind)).toBe(true);
+  });
   const stages = sddWorkflow.stages;
   const at = (id: string) => stages.findIndex((s) => s.id === id);
   test("research continues with specify, specify repeats itself", () => {

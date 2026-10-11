@@ -111,17 +111,45 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
     window.location.hash = at;
   };
 
+  const heading = (
+    <>
+      <h1 className="mx-0 mt-0 mb-1 text-[20px] font-semibold">Needs you</h1>
+      <p className={LEDE}>
+        Everything in every open project that waits for a person. Each item opens in its own
+        project; new ones also arrive as system notifications.
+      </p>
+    </>
+  );
+  const answered = notice && (
+    <Alert className="border-[color:var(--ok)]" role="status">
+      {notice.text}
+    </Alert>
+  );
+
+  // Nothing waits anywhere: one full-width column instead of a list beside an empty detail pane.
+  if (groups.total === 0)
+    return (
+      <section
+        className="flex min-h-full max-w-[900px] min-w-0 flex-col gap-[10px] px-7 py-[22px]"
+        aria-label="Waiting items"
+        aria-live="polite"
+      >
+        {heading}
+        {answered}
+        {itemId && !notice && (
+          <p className="text-dim-foreground">This item was answered or is no longer waiting.</p>
+        )}
+        <Empty className="mt-2">Nothing waits for you in the open projects.</Empty>
+      </section>
+    );
+
   return (
     <div className="flex min-h-full min-w-0 flex-wrap">
       <section
         className="flex max-w-[480px] flex-[1_1_360px] flex-col gap-[10px] border-r-[3px] border-r-border px-5 py-[22px]"
         aria-label="Waiting items"
       >
-        <h1 className="mx-0 mt-0 mb-1 text-[20px] font-semibold">Needs you</h1>
-        <p className={LEDE}>
-          Everything in every open project that waits for a person. Each item opens in its own
-          project; new ones also arrive as system notifications.
-        </p>
+        {heading}
         {groups.projects.length > 0 && (
           <fieldset
             className="mx-0 mt-0 mb-1 flex min-w-0 flex-wrap gap-[6px] border-0 p-0"
@@ -175,11 +203,7 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
         aria-label="Selected item"
         aria-live="polite"
       >
-        {notice && (
-          <Alert className="border-[color:var(--ok)]" role="status">
-            {notice.text}
-          </Alert>
-        )}
+        {answered}
         {selected && Detail ? (
           <Detail
             key={`${selected.projectKey}:${attentionItemId(selected)}`}

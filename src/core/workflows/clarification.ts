@@ -116,6 +116,15 @@ export function planOnlyFindings<T extends { kind: string; refs: string[]; block
 }
 
 /**
+ * An answer invalidates the analysis verdict unless it answers the approval stage. The only
+ * question approve raises is the plan-size one (SIZING-1), which does not change the spec or the
+ * plan; clearing the flag blocked the run at approve (cronsay 15eb3204).
+ */
+export function answerInvalidatesAnalysis(askingKind: string | undefined): boolean {
+  return askingKind !== "approve";
+}
+
+/**
  * The stage to continue from after the user answers a clarification raised at `askingIndex`.
  * The answer is appended to the request, so completed outputs stay valid unless they are the
  * ones the questions were about:

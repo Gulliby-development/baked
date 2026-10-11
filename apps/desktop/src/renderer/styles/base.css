@@ -8,6 +8,8 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* The window never scrolls: screens scroll inside <main>. */
+  overflow: hidden;
 }
 
 body {
@@ -80,4 +82,83 @@ input[type="checkbox"]:disabled,
 select:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* Where Chromium supports a customizable select, its option list drops the platform look (and its
+   blue highlight) for the ink outline, with the accent fill on the hovered and focused option. */
+@supports (appearance: base-select) {
+  select,
+  ::picker(select) {
+    appearance: base-select;
+  }
+
+  select::picker-icon {
+    display: none;
+  }
+
+  ::picker(select) {
+    margin-block: 4px;
+    padding: 4px;
+    background: var(--bg);
+    border: var(--border-w) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    color: var(--text);
+  }
+
+  option {
+    min-height: 30px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  option:checked {
+    font-weight: 600;
+  }
+
+  option:hover,
+  option:focus-visible {
+    background: var(--fill-accent);
+    color: var(--on-fill);
+    outline: none;
+  }
+
+  option::checkmark {
+    color: var(--accent);
+  }
+
+  option:hover::checkmark,
+  option:focus-visible::checkmark {
+    color: var(--on-fill);
+  }
+}
+
+/* Scrollbars: an ink-outlined block thumb inset from the page colour, accent-filled while dragged or hovered. */
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  background-clip: padding-box;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 2px var(--bg);
+}
+
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: var(--fill-accent);
+}
+
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-corner {
+  display: none;
+  background: transparent;
 }
