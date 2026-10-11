@@ -371,6 +371,22 @@ export interface AppConfig {
   telemetryUrl?: string;
   /** Set once the one-time telemetry first-run notice has been shown. */
   telemetryNoticeShown?: boolean;
+  /** How BAKED announces a workflow run that waits for a person. */
+  notifications?: NotificationsConfig;
+}
+
+/** Announcements of workflow runs that wait for a person; see `src/core/workflows/attention-notify.ts`. */
+export interface NotificationsConfig {
+  /** Native desktop notifications from the terminal app and the CLI. Default: true. */
+  system?: boolean;
+  /** Unset by default: nothing is sent. Receives one JSON POST per waiting request or blocked run. */
+  webhook?: {
+    url: string;
+    /** Extra request headers, such as an authorization token. */
+    headers?: Record<string, string>;
+    /** Skip advisory acceptance decisions, which the run does not wait for. Default: false. */
+    blockingOnly?: boolean;
+  };
 }
 
 export interface RetryConfig {

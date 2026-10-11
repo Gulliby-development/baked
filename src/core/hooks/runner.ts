@@ -300,13 +300,20 @@ function runCommandHook(
   });
 }
 
-/** Get matching hook rules for an event + optional tool name. */
-function getMatchingRules(event: HookEventName, toolName?: string, cwd?: string): HookRule[] {
+/** Get matching hook rules for an event + optional tool name or other matcher target. */
+function getMatchingRules(
+  event: HookEventName,
+  toolName?: string,
+  cwd?: string,
+  matchTarget?: string,
+): HookRule[] {
   if (_disabledEvents.has(event)) return [];
   const hooks = getHooks(cwd);
   const rules = hooks[event];
   if (!rules || rules.length === 0) return [];
 
+  if (matchTarget !== undefined)
+    return rules.filter((rule) => matchesToolName(rule.matcher, matchTarget));
   if (!toolName) return rules;
 
   return rules.filter((rule) => matchesToolName(rule.matcher, toolName));
@@ -330,6 +337,10 @@ export interface RunHooksOptions {
   cwd?: string;
   /** Abort signal — kills hook processes on Ctrl+X. */
   abortSignal?: AbortSignal;
+  /** What the matcher is tested against for events without a tool, such as a request kind. */
+  matchTarget?: string;
+  /** The waiting run, for `RunAttention`. */
+  runAttention?: HookInput["run_attention"];
 }
 
 /**
@@ -344,7 +355,7 @@ export interface RunHooksOptions {
  */
 export async function runHooks(opts: RunHooksOptions): Promise<HookResult> {
   const cwd = opts.cwd ?? process.cwd();
-  const rules = getMatchingRules(opts.event, opts.toolName, cwd);
+  const rules = getMatchingRules(opts.event, opts.toolName, cwd, opts.matchTarget);
 
   if (rules.length === 0) {
     return { ok: true, blocked: false };
@@ -358,6 +369,7 @@ export async function runHooks(opts: RunHooksOptions): Promise<HookResult> {
     ...(opts.toolInput ? { tool_input: opts.toolInput } : {}),
     ...(opts.toolResponse !== undefined ? { tool_response: opts.toolResponse } : {}),
     ...(opts.toolCallId ? { tool_use_id: opts.toolCallId } : {}),
+    ...(opts.runAttention ? { run_attention: opts.runAttention } : {}),
   };
 
   const combinedContext: string[] = [];
