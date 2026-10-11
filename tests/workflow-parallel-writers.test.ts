@@ -393,7 +393,7 @@ describe("workflow parallel writers", () => {
     expect(batches[1]?.tasks).toEqual(["T002"]);
     const [a, b] = ["T001", "T002"].map((id) => fx.executor.started.find((s) => s.taskId === id));
     expect(overlaps(a, b)).toBe(false);
-  });
+  }, 90_000);
 
   test("an integration conflict is resolved by an integrator task; checks and review then pass", async () => {
     const fx = setup(

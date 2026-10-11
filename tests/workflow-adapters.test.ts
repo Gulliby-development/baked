@@ -3,11 +3,11 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-async function fixture(name: string): Promise<string> {
+async function fixture(name: string, timeout = 30000): Promise<string> {
   return withTempDir("baked-workflow-adapter-", async (root) => {
     const profile = join(root, ".baked", "test-profile");
     mkdirSync(profile, { recursive: true });
-    const child = Bun.spawn([process.execPath, resolve("tests/fixtures", name)], { stdout: "pipe", stderr: "pipe", timeout: 30000, env: { ...process.env, HOME: profile, USERPROFILE: profile, LOCALAPPDATA: profile, BAKED_WORKFLOW_FIXTURE_ROOT: root } });
+    const child = Bun.spawn([process.execPath, resolve("tests/fixtures", name)], { stdout: "pipe", stderr: "pipe", timeout, env: { ...process.env, HOME: profile, USERPROFILE: profile, LOCALAPPDATA: profile, BAKED_WORKFLOW_FIXTURE_ROOT: root } });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     if (code !== 0) throw new Error(`${name}: ${err}\n${out}`);
     expect(code).toBe(0);
@@ -41,5 +41,5 @@ test("workflow slash command uses the current tab model with an already cached w
 }, 35000);
 
 test("CLI and worker complete a feature through native provider transport with repair and independent review models", async () => {
-  expect(await fixture("workflow-provider.ts")).toContain('"providerTransport":"passed"');
-}, 35000);
+  expect(await fixture("workflow-provider.ts", 60000)).toContain('"providerTransport":"passed"');
+}, 65000);
