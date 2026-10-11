@@ -12,6 +12,7 @@ import {
   budgetLimitText,
   runActions,
   stageGlyph,
+  stageText,
 } from "../src/components/workflow/format.js";
 import { orderRuns } from "../src/components/workflow/RunList.js";
 import { formatWorkflowResult } from "../src/core/commands/workflow.js";
@@ -113,6 +114,8 @@ describe("workflow panel formatting", () => {
     const stage = { id: "plan", kind: "plan", status: "running" as const, generation: 0 };
     expect(stageGlyph(stage, true, "paused")).toBe("‖");
     expect(stageGlyph(stage, true, "running")).toBe("▶");
+    expect(stageText({ ...stage, produces: "plan" }, true, "▶")).toBe("[▶ Plan → plan]");
+    expect(stageText({ ...stage, produces: "plan", generation: 1 }, false, "✓")).toBe("✓ Plan×2");
     const base = { schemaVersion: 1 as const, eventId: "e", runId: "run", seq: 1, at: new Date().toISOString() };
     expect(eventText({ ...base, type: "run.state_changed", payload: { from: "paused", to: "paused", reason: "user_pause", revision: 2 } }, stages)).toBeNull();
   });

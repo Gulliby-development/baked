@@ -12,6 +12,7 @@ import {
   worktreeRefusal,
 } from "./definition.js";
 import { type GateLibrary, loadGateLibrary } from "./library.js";
+import { type WorkflowLine, workflowLine } from "./line.js";
 import fixCi from "./presets/fix-ci.json" with { type: "json" };
 import full from "./presets/full.json" with { type: "json" };
 import quick from "./presets/quick.json" with { type: "json" };
@@ -64,6 +65,8 @@ export interface DefinitionSummary {
   preset: string | null;
   description: string;
   stages: string[];
+  /** The stages with their contracts and the repair loops, for front ends that draw the workflow. */
+  line: WorkflowLine;
   writes: boolean;
   problems: string[];
   /** The execution mode the definition asks for; null leaves it to the policy. */
@@ -127,6 +130,7 @@ export function listDefinitions(workspace: string, policy: RunPolicy): Definitio
       preset: loaded.schemaVersion === 2 ? loaded.definition.preset : null,
       description: v2.description,
       stages: v2.stages.map((s) => s.id),
+      line: workflowLine(v2),
       writes: v2.stages.some((s) => s.effects === "workspace-write"),
       problems: validateDefinition(v2, library),
       execution: v2.execution ?? null,
@@ -151,6 +155,7 @@ export function listDefinitions(workspace: string, policy: RunPolicy): Definitio
           preset: null,
           description: "",
           stages: [],
+          line: { stages: [], loops: [] },
           writes: false,
           problems: [error instanceof Error ? error.message : String(error)],
           execution: null,

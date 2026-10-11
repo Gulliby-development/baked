@@ -13,7 +13,7 @@ import {
   headline,
   lastModel,
   stageGlyph,
-  stageLabel,
+  stageText,
 } from "./format.js";
 
 const ACTIVITY_ROWS = 8;
@@ -43,10 +43,9 @@ export function StagePipeline({
                 : stage.status === "completed" || stage.status === "skipped"
                   ? t.success
                   : t.textFaint;
-        const label = `${glyph} ${stageLabel(stage.kind)}${stage.generation > 0 ? `×${stage.generation + 1}` : ""}`;
         return (
           <span key={stage.id} fg={fg}>
-            {isCurrent ? `[${label}]` : label}
+            {stageText(stage, isCurrent, glyph)}
             {i < stages.length - 1 ? <span fg={t.textSubtle}>{" › "}</span> : null}
           </span>
         );

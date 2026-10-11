@@ -341,6 +341,30 @@ describe("definitions on disk", () => {
     expect(listed.find((d) => d.id === "spike")?.writes).toBe(false);
     expect(listed.find((d) => d.id === "review-only")?.worktreeRefusal).toContain("runs inline");
     expect(listed.find((d) => d.id === "standard")?.worktreeRefusal).toBeNull();
+    expect(listed.find((d) => d.id === "bad")?.line).toEqual({ stages: [], loops: [] });
+  });
+
+  test("each summary carries the workflow as a line of contracts with its repair loops", () => {
+    const root = workspace();
+    const standard = listDefinitions(root, policy).find((d) => d.id === "standard");
+    expect(standard?.line.stages.map((s) => `${s.id}:${s.type}>${s.produces}`)).toEqual([
+      "research:agent>research",
+      "specify:agent>spec",
+      "plan:agent>plan",
+      "analyze:agent>analysis",
+      "approve:approval>decision",
+      "implement:tasks>implementation",
+      "checks:check>gates",
+      "review:review>review",
+    ]);
+    expect(standard?.line.stages.find((s) => s.id === "analyze")?.consumes).toEqual(["spec", "plan"]);
+    expect(standard?.line.stages.filter((s) => s.human).map((s) => s.id)).toEqual(["approve"]);
+    expect(standard?.line.loops).toEqual([
+      { from: "checks", to: "implement", on: "failed", carries: "gates" },
+      { from: "review", to: "implement", on: "changes_requested", carries: "review" },
+    ]);
+    // Schema 1 definitions are drawn through their v2 upgrade.
+    expect(listDefinitions(root, policy).find((d) => d.id === "sdd")?.line.stages.length).toBeGreaterThan(0);
   });
 });
 

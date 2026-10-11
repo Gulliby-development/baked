@@ -4,11 +4,14 @@ import type {
   DefinitionSummary,
   DoctorCheck,
   DoctorReport,
+  LineLoop,
+  LineStage,
   PreRunEstimate,
   ProjectSummary,
   RoutedProfile,
   RunPolicy,
   TokenRange,
+  WorkflowLine,
 } from "./start.js";
 
 /** Sample answers for the project home, the new run form and the quick task form. */
@@ -18,6 +21,49 @@ const SONNET = "anthropic/claude-sonnet-5-5";
 const OPUS = "anthropic/claude-opus-5-5";
 const HAIKU = "anthropic/claude-haiku-5-5";
 const GPT = "openai/gpt-5.1";
+
+/** Each sample stage's role and contracts, as the core's `workflowLine` reports them. */
+const LINE_STAGES: Record<string, [LineStage["type"], string[], string]> = {
+  research: ["agent", ["request"], "research"],
+  specify: ["agent", ["request", "research"], "spec"],
+  plan: ["agent", ["request", "spec"], "plan"],
+  analyze: ["agent", ["spec", "plan"], "analysis"],
+  approve: ["approval", ["spec", "plan", "analysis"], "decision"],
+  implement: ["tasks", ["spec", "plan", "decision"], "implementation"],
+  reproduce: ["check", ["request"], "gates"],
+  checks: ["check", ["implementation"], "gates"],
+  verify: ["check", ["implementation"], "gates"],
+  review: ["review", ["spec", "implementation", "gates"], "review"],
+  converge: ["reflection", ["spec", "review"], "convergence"],
+  learn: ["learn", ["review", "convergence"], "report"],
+  report: ["agent", ["research"], "report"],
+};
+
+export function mockLine(stages: string[]): WorkflowLine {
+  const made = new Set(["request"]);
+  const line = stages.map((id) => {
+    const [type, consumes, produces] = LINE_STAGES[id] ?? ["agent", ["request"], id];
+    const stage = {
+      id,
+      type,
+      consumes: consumes.filter((c) => made.has(c)),
+      produces,
+      human: type === "approval",
+    };
+    made.add(produces);
+    return stage;
+  });
+  const write = stages.indexOf("implement");
+  const loops: LineLoop[] = [];
+  for (const [from, on, carries] of [
+    ["checks", "failed", "gates"],
+    ["verify", "failed", "gates"],
+    ["review", "changes_requested", "review"],
+  ] as const)
+    if (write >= 0 && stages.indexOf(from) > write)
+      loops.push({ from, to: "implement", on, carries });
+  return { stages: line, loops };
+}
 
 function definition(
   id: string,
@@ -31,6 +77,7 @@ function definition(
     preset: id === "sdd" ? null : id,
     description,
     stages,
+    line: mockLine(stages),
     writes: !["spike", "review-only"].includes(id),
     problems: [],
     execution: null,

@@ -7,6 +7,66 @@
 @import "./tokens.css" layer(base);
 @import "./base.css" layer(base);
 
+/* Motion of the workflow conveyor (screens/runs/Conveyor.tsx). The tray keyframes read their path
+   from custom properties the component sets; every use pairs with `motion-reduce:animate-none`. */
+@theme {
+  --animate-belt: belt-roll 700ms linear infinite;
+  --animate-forming: forming 900ms linear infinite;
+  --animate-nudge: nudge 1.2s ease-in-out infinite;
+  --animate-tray: tray-forward 1.1s ease-in-out forwards;
+  --animate-tray-back: tray-repair 1.8s ease-in-out forwards;
+  --animate-lane: lane-dash 600ms linear infinite;
+  --animate-pulse-dot: pulse-dot 1s ease-in-out infinite;
+
+  @keyframes belt-roll {
+    to {
+      background-position: 18px 0;
+    }
+  }
+  @keyframes forming {
+    to {
+      background-position: 16px 0;
+    }
+  }
+  @keyframes nudge {
+    50% {
+      transform: translateY(-3px);
+    }
+  }
+  @keyframes tray-forward {
+    from {
+      transform: translate(var(--tray-from), 0);
+    }
+    to {
+      transform: translate(var(--tray-to), 0);
+    }
+  }
+  @keyframes tray-repair {
+    0% {
+      transform: translate(var(--tray-from), 0);
+    }
+    20% {
+      transform: translate(var(--tray-from), var(--tray-drop));
+    }
+    80% {
+      transform: translate(var(--tray-to), var(--tray-drop));
+    }
+    100% {
+      transform: translate(var(--tray-to), 0);
+    }
+  }
+  @keyframes lane-dash {
+    to {
+      stroke-dashoffset: -22;
+    }
+  }
+  @keyframes pulse-dot {
+    50% {
+      transform: scale(1.35);
+    }
+  }
+}
+
 /* The neobrutalism.dev token names, mapped onto BAKED's palette (tokens.css). */
 @theme inline {
   --color-main: var(--fill-accent);
