@@ -7,7 +7,7 @@ import type { SectionProps } from "../sections.js";
 import { GateView } from "./GateView.js";
 import { useBriefs, useRun } from "./load.js";
 import { StatusPill } from "./parts.js";
-import "../../styles/runs.css";
+import { RUN_TITLE, RUN_TITLE_ROW } from "./RunScreen.js";
 
 const ACCEPTANCE_KINDS = new Set(["manual_evidence", "acceptance"]);
 
@@ -16,9 +16,9 @@ function RunGate({ projectKey, runId }: { projectKey: string; runId: string }) {
   if (error) return <div className="banner error">{error}</div>;
   if (!data) return <div className="muted">Loading acceptance…</div>;
   return (
-    <div className="gate-page">
-      <div className="run-title-row">
-        <h2 className="run-title">
+    <div className="flex flex-col gap-4">
+      <div className={RUN_TITLE_ROW}>
+        <h2 className={RUN_TITLE}>
           Acceptance: {data.artifacts.spec?.title ?? data.status.featureId}
         </h2>
         <StatusPill status={data.status.status} />
@@ -60,8 +60,11 @@ export function AcceptanceSection({ project, id }: SectionProps) {
   );
   const checking = list !== null && briefs.size < list.length;
   return (
-    <div className="acceptance">
-      <nav className="acceptance-list" aria-label="Runs with acceptance results">
+    <div className="flex flex-wrap items-start gap-5">
+      <nav
+        className="flex max-w-[300px] flex-[1_1_220px] flex-col gap-2"
+        aria-label="Runs with acceptance results"
+      >
         {error && <div className="banner error">{error}</div>}
         {!list && !error && <div className="muted">Loading runs…</div>}
         {shown.map((run) => {
@@ -69,13 +72,13 @@ export function AcceptanceSection({ project, id }: SectionProps) {
           return (
             <a
               key={run.runId}
-              className="item"
+              className="item no-underline aria-[current=page]:border-border aria-[current=page]:bg-hover aria-[current=page]:shadow-sm-hard"
               href={projectHref(project.key, "acceptance", run.runId)}
               aria-current={id === run.runId ? "page" : undefined}
             >
               <span className="stack">
-                <span className="item-title">{brief?.title ?? run.featureId}</span>
-                <span className="small muted">
+                <span className="text-foreground">{brief?.title ?? run.featureId}</span>
+                <span className="muted text-[12px]">
                   <span className="mono">{run.featureId}</span>
                   {waiting.has(run.runId) ? " · needs you" : ""}
                   {brief?.updatedAt ? ` · ${ago(Date.parse(brief.updatedAt))}` : ""}
@@ -84,12 +87,12 @@ export function AcceptanceSection({ project, id }: SectionProps) {
             </a>
           );
         })}
-        {checking && <div className="small muted">Checking runs…</div>}
+        {checking && <div className="muted text-[12px]">Checking runs…</div>}
         {list && !checking && shown.length === 0 && (
           <div className="empty">No run has acceptance results yet.</div>
         )}
       </nav>
-      <div className="acceptance-detail">
+      <div className="min-w-0 flex-[999_1_520px]">
         {id ? (
           <RunGate key={id} projectKey={project.key} runId={id} />
         ) : (

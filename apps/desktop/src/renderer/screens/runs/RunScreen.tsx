@@ -5,11 +5,11 @@ import { errorText, type RollbackReport, undoRun } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
 import { tokens, usd } from "../../format.js";
 import { projectHref } from "../../router.js";
-import { DecisionCard } from "./Decision.js";
+import { DecisionCard, FIELD_LABEL, STACK_FORM, TEXT_INPUT } from "./Decision.js";
 import { GateView } from "./GateView.js";
 import { type RunData, useRun } from "./load.js";
 import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
-import { Meter, Panel, StatusPill } from "./parts.js";
+import { Meter, Panel, StatusPill, TONE_TEXT } from "./parts.js";
 import {
   ChangesView,
   ChecksView,
@@ -22,7 +22,6 @@ import {
 import { blockingRequests } from "./requests.js";
 import { TasksTab } from "./TasksTab.js";
 import { UndoReport } from "./UndoReport.js";
-import "../../styles/runs.css";
 
 const TABS = [
   "overview",
@@ -47,6 +46,22 @@ const TAB_LABEL: Record<Tab, string> = {
   criteria: "Criteria",
   findings: "Findings",
 };
+
+export const RUN_TITLE_ROW = "flex flex-wrap items-center gap-3";
+export const RUN_TITLE = "m-0 text-[20px] font-semibold";
+const SMALL_SUB = "text-[12px] text-muted-foreground";
+const WARN_NOTE = "text-[12px] text-[var(--warn)]";
+const STAGE = "rounded-[6px] px-[10px] py-[6px]";
+const STAGE_STATE: Record<string, string> = {
+  done: `${STAGE} bg-[color-mix(in_srgb,var(--ok)_14%,var(--bg))] text-[var(--ok)]`,
+  current: `${STAGE} bg-selected text-foreground outline outline-[color:var(--accent)]`,
+  waiting: `${STAGE} bg-[color-mix(in_srgb,var(--warn)_16%,var(--bg))] text-[var(--warn)] outline outline-[color:var(--warn)]`,
+  failed: `${STAGE} bg-[color-mix(in_srgb,var(--err)_14%,var(--bg))] text-[var(--err)]`,
+  skipped: `${STAGE} bg-raised text-dim-foreground line-through`,
+  pending: `${STAGE} bg-raised text-dim-foreground`,
+};
+const TAB =
+  "cursor-pointer border-x-0 border-t-0 border-b-2 border-b-transparent bg-transparent px-[2px] py-[10px] text-[14px] text-muted-foreground [font-family:inherit] [font-style:inherit] [font-weight:inherit] [line-height:inherit] hover:text-foreground aria-selected:border-b-[color:var(--accent)] aria-selected:text-foreground";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
@@ -80,9 +95,9 @@ function Controls({
   const canUndo = run.status !== "created" && run.status !== "running";
   if (ended && !canUndo) return null;
   return (
-    <div className="run-controls">
+    <div className="ml-auto flex flex-wrap items-center gap-2">
       {error && (
-        <span className="err-text small" role="alert">
+        <span className="text-[12px] text-[var(--err)]" role="alert">
           {error}
         </span>
       )}
@@ -192,26 +207,27 @@ function Budget({
       />
       <Meter label="Active time" value={run.activeMs} limit={null} text={duration(run.activeMs)} />
       {estimate && (
-        <p className="small sub-text">
+        <p className={SMALL_SUB}>
           Estimate at start: {tokens(estimate.tokens.low)}–{tokens(estimate.tokens.high)} tokens
           {estimate.costUsd ? `, ${usd(estimate.costUsd.low)}–${usd(estimate.costUsd.high)}` : ""}.
         </p>
       )}
       {exhausted && (
         <form
-          className="stack-form"
+          className={STACK_FORM}
           onSubmit={(e) => {
             e.preventDefault();
             void extend();
           }}
         >
-          <p className="warn-text small">The run stopped on its budget.</p>
-          <label htmlFor="extend-tokens" className="field-label">
+          <p className={WARN_NOTE}>The run stopped on its budget.</p>
+          <label htmlFor="extend-tokens" className={FIELD_LABEL}>
             New token limit (empty: BAKED proposes one)
           </label>
           <input
             id="extend-tokens"
             type="text"
+            className={TEXT_INPUT}
             inputMode="numeric"
             value={extra}
             placeholder={limit ? String(Math.round(limit * 1.5)) : "1200000"}
@@ -287,11 +303,11 @@ function Models({
   };
   return (
     <Panel title="Model">
-      <p className="small">
+      <p className="text-[12px]">
         Run model <span className="mono">{routing.runModel}</span>
       </p>
       {routed.length > 0 && (
-        <ul className="small sub-text">
+        <ul className={SMALL_SUB}>
           {routed.map(([stage, entry]) => (
             <li key={stage}>
               {stage}: <span className="mono">{entry.model}</span>
@@ -301,24 +317,25 @@ function Models({
       )}
       {stopped && (
         <form
-          className="stack-form"
+          className={STACK_FORM}
           onSubmit={(e) => {
             e.preventDefault();
             if (model.trim()) void reroute();
           }}
         >
           {providerStop && (
-            <p className="warn-text small">
+            <p className={WARN_NOTE}>
               The provider stopped this run. Switch it to another model to continue; completed work
               stays.
             </p>
           )}
-          <label htmlFor="reroute-model" className="field-label">
+          <label htmlFor="reroute-model" className={FIELD_LABEL}>
             Switch to model
           </label>
           <input
             id="reroute-model"
             type="text"
+            className={TEXT_INPUT}
             list="reroute-models"
             value={model}
             placeholder="provider/model"
@@ -349,12 +366,15 @@ function Activity({ trace }: { trace: RunTrace }) {
   const lines = trace.activity.slice(-12).reverse();
   return (
     <Panel title="Activity">
-      {lines.length === 0 && <p className="small muted">No events yet.</p>}
-      <ol className="activity" aria-live="polite">
+      {lines.length === 0 && <p className="muted text-[12px]">No events yet.</p>}
+      <ol
+        className="m-0 flex list-none flex-col gap-2 p-0 text-[13px] text-muted-foreground"
+        aria-live="polite"
+      >
         {lines.map((line) => (
           <li key={line.seq}>
             <span className="mono muted">{clock(line.at)}</span>{" "}
-            <span className={line.tone ? `${line.tone}-text` : undefined}>{line.text}</span>
+            <span className={line.tone ? TONE_TEXT[line.tone] : undefined}>{line.text}</span>
           </li>
         ))}
       </ol>
@@ -406,12 +426,17 @@ function ArtifactCards({
   }
   if (!cards.length) return null;
   return (
-    <div className="art-cards">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
       {cards.map((c) => (
-        <button key={c.name} type="button" className="art-card" onClick={() => go(c.tab)}>
-          <span className="art-name">{c.name}</span>
-          <span className="small sub-text">{c.line}</span>
-          <span className={`small ${c.tone ? `${c.tone}-text` : "muted"}`}>{c.note}</span>
+        <button
+          key={c.name}
+          type="button"
+          className="flex cursor-pointer flex-col gap-[6px] rounded-[var(--radius-lg)] border-2 border-border bg-background p-[14px] text-left text-soft-foreground shadow-sm-hard [font:inherit] hover:bg-hover"
+          onClick={() => go(c.tab)}
+        >
+          <span className="font-semibold text-foreground">{c.name}</span>
+          <span className={SMALL_SUB}>{c.line}</span>
+          <span className={`text-[12px] ${c.tone ? TONE_TEXT[c.tone] : "muted"}`}>{c.note}</span>
         </button>
       ))}
     </div>
@@ -422,11 +447,11 @@ function Stages({ data, trace }: { data: RunData; trace: RunTrace }) {
   const stages = pipeline(data.stages, trace, data.status);
   const MARK = { done: "✓", current: "⟳", waiting: "⚑", failed: "✗", skipped: "–", pending: "·" };
   return (
-    <ol className="stages" aria-label="Stages">
+    <ol className="m-0 flex list-none flex-wrap gap-[6px] p-0 text-[13px]" aria-label="Stages">
       {stages.map((s) => (
         <li
           key={s.id}
-          className={`stage ${s.state}`}
+          className={STAGE_STATE[s.state]}
           aria-current={s.state === "current" || s.state === "waiting" ? "step" : undefined}
         >
           <span aria-hidden="true">{MARK[s.state]}</span> {s.label}
@@ -473,14 +498,16 @@ function RunBody({
   ].filter(Boolean);
   const tabs = TABS.filter((t) => t !== "decision" || pending.length > 0 || tab === "decision");
   return (
-    <div className="run">
-      <header className="run-head">
-        <div className="run-title-row">
-          <h2 className="run-title">{title}</h2>
+    <div className="flex flex-col">
+      <header className="flex flex-col gap-[14px] border-b-2 border-border">
+        <div className={RUN_TITLE_ROW}>
+          <h2 className={RUN_TITLE}>{title}</h2>
           <StatusPill status={run.status}>
             {run.status === "running" && run.stageId ? ` · ${run.stageId}` : ""}
           </StatusPill>
-          {meta.length > 0 && <span className="meta">{meta.join(" · ")}</span>}
+          {meta.length > 0 && (
+            <span className="font-mono text-[12px] text-dim-foreground">{meta.join(" · ")}</span>
+          )}
           <Controls
             projectKey={projectKey}
             run={run}
@@ -489,7 +516,7 @@ function RunBody({
           />
         </div>
         <Stages data={data} trace={trace} />
-        <div className="tabs" role="tablist" aria-label="Run sections">
+        <div className="flex flex-wrap gap-[22px]" role="tablist" aria-label="Run sections">
           {tabs.map((t) => (
             <button
               key={t}
@@ -498,17 +525,24 @@ function RunBody({
               id={`tab-${t}`}
               aria-selected={tab === t}
               aria-controls="run-tabpanel"
-              className="tab"
+              className={TAB}
               onClick={() => setTab(t)}
             >
               {TAB_LABEL[t]}
-              {count[t] ? <span className="tab-count"> {count[t]}</span> : null}
+              {count[t] ? (
+                <span className="font-mono text-[12px] text-dim-foreground"> {count[t]}</span>
+              ) : null}
             </button>
           ))}
         </div>
       </header>
-      <div className="run-body">
-        <div className="run-main" role="tabpanel" id="run-tabpanel" aria-labelledby={`tab-${tab}`}>
+      <div className="flex flex-wrap gap-6 pt-[22px]">
+        <div
+          className="flex min-w-0 flex-[999_1_480px] flex-col gap-[18px]"
+          role="tabpanel"
+          id="run-tabpanel"
+          aria-labelledby={`tab-${tab}`}
+        >
           {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
           {tab === "decision" && (
             <>
@@ -545,7 +579,7 @@ function RunBody({
           )}
           {tab === "findings" && <FindingsView data={data} trace={trace} />}
         </div>
-        <aside className="run-side" aria-label="Run status">
+        <aside className="flex flex-[1_1_280px] flex-col gap-[18px]" aria-label="Run status">
           <Budget projectKey={projectKey} data={data} onDone={refresh} />
           <Models projectKey={projectKey} data={data} onDone={refresh} />
           <Activity trace={trace} />
@@ -559,7 +593,7 @@ export function RunScreen({ projectKey, runId }: { projectKey: string; runId: st
   const { data, trace, error, refresh } = useRun(projectKey, runId);
   return (
     <>
-      <nav className="crumbs" aria-label="Breadcrumb">
+      <nav className="text-[13px] text-dim-foreground" aria-label="Breadcrumb">
         <a href={projectHref(projectKey, "runs")}>All runs</a>
         <span aria-hidden="true"> / </span>
         <span className="mono">{runId}</span>

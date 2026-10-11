@@ -86,7 +86,7 @@ function Editor({
       </label>
       <textarea
         id="instruction-text"
-        className="setup-text mono"
+        className="setup-text mono font-sans"
         rows={22}
         spellCheck={false}
         value={text}

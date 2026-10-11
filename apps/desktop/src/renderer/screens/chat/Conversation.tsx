@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import type { ChatMessage, ToolCall } from "../../client/chat.js";
 import { Markdown } from "./Markdown.js";
+import { CHIP } from "./Popover.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
 
@@ -86,7 +87,7 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
   const hidden = diff.lines.length - lines.length;
   return (
     <figure className="diff-card" aria-label={`Changes to ${diff.path}`}>
-      <figcaption className="diff-head">
+      <figcaption className="diff-head px-[12px]! py-[10px]! text-muted-foreground!">
         <Status call={call} />
         <span className="mono diff-path">{diff.path}</span>
         {diff.created && <span className="muted">new file</span>}
@@ -95,7 +96,7 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
         {(hidden > 0 || all) && (
           <button
             type="button"
-            className="chip small"
+            className={`${CHIP} small`}
             aria-expanded={all}
             onClick={() => setAll((v) => !v)}
           >
@@ -252,7 +253,10 @@ function PromptCard({
   }
   if (prompt.kind === "question") {
     return (
-      <section className="prompt-card question" aria-label="Question">
+      <section
+        className="prompt-card question gap-[6px]! text-soft-foreground!"
+        aria-label="Question"
+      >
         <p className="prompt-title">{prompt.question}</p>
         {prompt.options.length > 0 && (
           <div className="suggestions">

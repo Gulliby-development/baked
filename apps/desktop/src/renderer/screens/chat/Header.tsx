@@ -11,7 +11,7 @@ import { Icon } from "../../components/Icon.js";
 import { ago, tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import { shortModel } from "./Composer.js";
-import { Popover } from "./Popover.js";
+import { CHIP, Popover } from "./Popover.js";
 
 const STATE_TONE: Record<SessionState, string> = { idle: "", working: "busy", waiting: "warn" };
 
@@ -153,7 +153,7 @@ function ContextChip({
     <div className="popover-root">
       <button
         type="button"
-        className="chip"
+        className={CHIP}
         aria-expanded={open}
         aria-controls={id}
         onMouseEnter={show}
@@ -249,7 +249,7 @@ function WorkingSetChip({ project }: { project: DesktopProject }) {
   }, [project.key]);
   if (count === null) return null;
   return (
-    <a className="chip" href={projectHref(project.key, "working-set")}>
+    <a className={CHIP} href={projectHref(project.key, "working-set")}>
       working set · {count}
     </a>
   );
@@ -286,7 +286,7 @@ export function ChatHeader({
         {filesEdited && <FilesChip files={filesEdited} />}
         <WorkingSetChip project={project} />
         {sessionId !== null && (
-          <a className="chip" href={projectHref(project.key, "chat", "new")}>
+          <a className={CHIP} href={projectHref(project.key, "chat", "new")}>
             <Icon name="plus" size={13} />
             New chat
           </a>

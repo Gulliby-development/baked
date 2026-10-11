@@ -139,6 +139,7 @@ export function Composer({
         Message BAKED
       </label>
       <textarea
+        className="rounded-base px-[10px] py-2"
         id="chat-prompt"
         ref={area}
         rows={2}

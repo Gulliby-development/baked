@@ -12,7 +12,7 @@ export function App() {
   const route = useRoute();
   const { error } = useDesktop();
   return (
-    <div className="frame">
+    <div className="frame m-0 overflow-hidden rounded-[var(--radius-lg)] border-2 border-border bg-background shadow-shadow">
       <TitleBar />
       <div className="shell">
         <Sidebar route={route} />
