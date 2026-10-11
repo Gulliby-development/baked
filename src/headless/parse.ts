@@ -17,6 +17,7 @@ ${BOLD}Usage:${RST}
   baked --headless --cwd <dir> <prompt>              Set working directory
   baked --headless --system "instructions" <prompt>  Inject system prompt
   baked --headless --include <file> <prompt>         Pre-load file into context
+  baked --headless --image <file> <prompt>           Attach an image (PNG, JPEG, GIF, WebP)
   baked --headless --no-repomap <prompt>             Skip repo map scan
   baked --headless --diff <prompt>                   Show files changed after run
   baked --headless --session <id> <prompt>           Resume a previous session
@@ -89,6 +90,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
   let diff = false;
   let render = process.stdout.isTTY ?? false;
   const include: string[] = [];
+  const images: string[] = [];
   const promptParts: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -132,6 +134,8 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       noRepomap = true;
     } else if (arg === "--include" && argv[i + 1]) {
       include.push(argv[++i] as string);
+    } else if (arg === "--image" && argv[i + 1]) {
+      images.push(argv[++i] as string);
     } else if (arg === "--diff") {
       diff = true;
     } else if (arg === "--render") {
@@ -193,6 +197,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       system,
       noRepomap,
       include: include.length > 0 ? include : undefined,
+      images: images.length > 0 ? images : undefined,
       diff,
       render,
     },

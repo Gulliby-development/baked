@@ -5,10 +5,12 @@ import type {
   ChatMessage,
   ChatMode,
   ChatPrompt,
+  ImageUpload,
   MessageSegment,
   SessionDetail,
   SessionDiffStats,
   SessionSummary,
+  StoredImage,
   ToolCall,
 } from "./chat.js";
 import { type MockRoute, type MockStream, response } from "./mock-routes.js";
@@ -530,7 +532,21 @@ async function script(session: MockSession, turn: MockTurn, text: string): Promi
   );
 }
 
-async function startTurn(session: MockSession, text: string): Promise<string> {
+/** Images as the server stores them: labelled in order. */
+function stored(images: ImageUpload[] | undefined): StoredImage[] | undefined {
+  if (!images || images.length === 0) return undefined;
+  return images.map((img, i) => ({
+    label: `image-${i + 1}`,
+    base64: img.data,
+    mediaType: img.mediaType,
+  }));
+}
+
+async function startTurn(
+  session: MockSession,
+  text: string,
+  images?: StoredImage[],
+): Promise<string> {
   const turn: MockTurn = {
     id: nextId("turn"),
     cancelled: false,
@@ -542,7 +558,7 @@ async function startTurn(session: MockSession, text: string): Promise<string> {
   emit(session, {
     type: "turn-start",
     turnId: turn.id,
-    message: user(nextId("m"), text, Date.now()),
+    message: { ...user(nextId("m"), text, Date.now()), ...(images ? { images } : {}) },
   });
   emitSession(session);
   void (async () => {
@@ -606,7 +622,7 @@ function interrupt(session: MockSession): boolean {
 
 function create(
   key: string,
-  body: { title?: string; model?: string; mode?: ChatMode; text?: string },
+  body: { title?: string; model?: string; mode?: ChatMode; text?: string; images?: ImageUpload[] },
 ) {
   const now = Date.now();
   const text = body.text?.trim();
@@ -633,7 +649,8 @@ function create(
     queue: [],
   };
   sessions.set(summary.id, session);
-  if (text) void startTurn(session, text);
+  const images = stored(body.images);
+  if (text || images) void startTurn(session, text ?? "", images);
   return session;
 }
 
@@ -769,13 +786,17 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   }
   if (action === "messages") {
     session.undone = [];
-    const text = String((body as { text?: unknown } | null)?.text ?? "").trim();
-    if (!text) return response(400, { error: { code: "INVALID_REQUEST", message: "Empty text" } });
+    const sent = (body ?? {}) as { text?: unknown; images?: ImageUpload[] };
+    const text = String(sent.text ?? "").trim();
+    const images = stored(sent.images);
+    if (!text && !images)
+      return response(400, { error: { code: "INVALID_REQUEST", message: "Send text or images" } });
+    // The mock steers queued text only.
     if (session.turn) {
       session.queue.push(text);
       return response(202, { turnId: session.turn.id, queued: true });
     }
-    return response(202, { turnId: await startTurn(session, text), queued: false });
+    return response(202, { turnId: await startTurn(session, text, images), queued: false });
   }
   if (action === "interrupt") return response(200, { interrupted: interrupt(session) });
   if (action === "fork") {

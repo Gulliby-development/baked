@@ -21,6 +21,7 @@ baked --headless --chat                           # interactive multi-turn chat
 | `--cwd <dir>` | Work in another folder |
 | `--system "..."` | Add system instructions |
 | `--include <file>` | Load a file into context first (repeatable) |
+| `--image <file>` | Attach a PNG, JPEG, GIF or WebP image to the prompt (repeatable, at most 4); see [Images](#images) |
 | `--no-repomap` | Skip the repository scan |
 | `--diff` | List the files the session changed, with the lines each adds and removes |
 | `--save-session` | Save the conversation for a later `--session` |
@@ -34,6 +35,10 @@ Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 ## Changed files
 
 When the session has edited files, the stderr footer ends with the totals (`+52 −3 in 3 files`), and `--diff` lists each file as `+ADDED −REMOVED PATH`, with `(added)`, `(deleted)`, `(unchanged)`, `(outside)` or `(unknown)` when it is not a plain edit. `--json` output, the `done` event and in `--chat` each `turn-done` event carry the same numbers as `diffStats`, the `SessionDiffStats` object of the [local API](desktop/api.md) (`{base, files: [{path, status, added, removed, binary?}], totals: {files, added, removed}}`). Git measures what is uncommitted in those files against `HEAD`, as in the [terminal UI](guide.md#changed-files). The session's files are the ones this run edited plus those a resumed session's saved tool calls name; a session saved by an earlier headless run stores only text, so its earlier edits are not included.
+
+## Images
+
+`--image` attaches image files to the prompt (not in `--chat`), with the limits of the [local API](desktop/api.md#images): at most 4, PNG, JPEG, GIF or WebP by their file header. A file over 3.5 MiB is re-encoded as JPEG with the same tools the terminal UI uses for pasted images (`sips` on macOS, ffmpeg or ImageMagick elsewhere); without one, the run stops with exit code 1. `--save-session` stores the images with the user message, so a resumed session sends them again.
 
 ## Mentions and shell commands
 

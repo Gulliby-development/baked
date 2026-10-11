@@ -104,6 +104,7 @@ export const CAPABILITIES = [
   "compaction",
   "diff-stats",
   "chat-undo",
+  "images",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -434,10 +435,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     return json(status, { error: { code, message: redactSecrets(message) } }, origin);
   };
 
-  async function readJson(req: Request): Promise<unknown> {
+  async function readJson(req: Request, raisedLimit?: number): Promise<unknown> {
+    const limit = Math.max(raisedLimit ?? 0, maxBodyBytes);
     const declared = req.headers.get("content-length");
-    if (declared !== null && Number(declared) > maxBodyBytes)
-      throw new ApiError(413, "PAYLOAD_TOO_LARGE", `Request body exceeds ${maxBodyBytes} bytes`);
+    if (declared !== null && Number(declared) > limit)
+      throw new ApiError(413, "PAYLOAD_TOO_LARGE", `Request body exceeds ${limit} bytes`);
     if (!/^application\/json\b/i.test(req.headers.get("content-type") ?? ""))
       throw new ApiError(415, "UNSUPPORTED_MEDIA_TYPE", "Send the body as application/json");
     if (!req.body) throw new ApiError(400, "INVALID_REQUEST", "Request body is required");
@@ -448,9 +450,9 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maxBodyBytes) {
+      if (total > limit) {
         await reader.cancel();
-        throw new ApiError(413, "PAYLOAD_TOO_LARGE", `Request body exceeds ${maxBodyBytes} bytes`);
+        throw new ApiError(413, "PAYLOAD_TOO_LARGE", `Request body exceeds ${limit} bytes`);
       }
       chunks.push(value);
     }
@@ -739,7 +741,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       path,
       method,
       json: (status, body) => json(status, body, origin),
-      readJson: () => readJson(req),
+      readJson: (maxBytes) => readJson(req, maxBytes),
       query: (schema) => queryOf(url, schema),
       fail: (status, code, message) => {
         throw new ApiError(status, code, message);

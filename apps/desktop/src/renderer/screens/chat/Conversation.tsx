@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
-import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
+import type { ChatMessage, InputContextItem, StoredImage, ToolCall } from "../../client/chat.js";
+import { storedImageUrl } from "./images.js";
 import { Markdown } from "./Markdown.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
@@ -236,19 +237,64 @@ function ForkAction({
   );
 }
 
+/** Thumbnails of a message's images; a click opens the image at full size. */
+function BubbleImages({ images }: { images: StoredImage[] }) {
+  const [open, setOpen] = useState<StoredImage | null>(null);
+  return (
+    <>
+      <ul className="bubble-images" aria-label="Attached images">
+        {images.map((image) => (
+          <li key={image.label}>
+            <button
+              type="button"
+              className="bubble-image"
+              aria-label={`Open ${image.label}`}
+              onClick={() => setOpen(image)}
+            >
+              <img src={storedImageUrl(image)} alt={image.label} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {open && (
+        <dialog
+          open
+          className="image-viewer"
+          aria-label={open.label}
+          onClick={() => setOpen(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              setOpen(null);
+            }
+          }}
+        >
+          <img src={storedImageUrl(open)} alt={open.label} />
+          <button type="button" className="btn" ref={(el) => el?.focus()}>
+            Close
+          </button>
+        </dialog>
+      )}
+    </>
+  );
+}
+
 function UserBubble({
   text,
   note,
   context,
+  images,
 }: {
   text: string;
   note?: string;
   context?: InputContextItem[];
+  images?: StoredImage[];
 }) {
   return (
     <div className={`user-bubble${note === "Sending…" ? " pending" : ""}`}>
       {note && <span className="bubble-note">{note}</span>}
       {text}
+      {images && images.length > 0 && <BubbleImages images={images} />}
       {context && context.length > 0 && (
         <ul className="input-context" aria-label="Attached context">
           {context.map((item, i) => (
@@ -431,6 +477,7 @@ export function Conversation({
             text={message.content}
             {...(message.isSteering ? { note: "Sent while working" } : {})}
             {...(message.inputContext ? { context: message.inputContext } : {})}
+            {...(message.images ? { images: message.images } : {})}
           />
         ) : message.role === "assistant" ? (
           <div key={message.id} className="assistant-turn">

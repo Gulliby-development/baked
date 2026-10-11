@@ -13,7 +13,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Conventions
 
-- JSON bodies, `Content-Type: application/json`, at most 1 MiB. Methods: `GET`, `POST`, `PATCH`, `DELETE`.
+- JSON bodies, `Content-Type: application/json`, at most 1 MiB (20 MiB for `POST /v1/sessions` and `POST /v1/sessions/ID/messages`, which carry [images](#images)). Methods: `GET`, `POST`, `PATCH`, `DELETE`.
 - Errors: `{"error":{"code":"...","message":"..."}}` with the HTTP status. Codes in use: `INVALID_REQUEST` 400, `UNAUTHORIZED` 401, `CAPABILITY_DENIED`/`ORIGIN_REJECTED` 403, `NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405, `REVISION_CONFLICT`/`COMMAND_CONFLICT`/`STALE_DECISION`/`WORKSPACE_BUSY`/`INPUT_CHANGED`/`RUN_TERMINAL`/`SESSION_BUSY`/`STALE_PROMPT` 409, `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `HOST_REJECTED` 421, `INTERNAL` 500, `SHUTTING_DOWN` 503. Messages have secrets redacted.
 - Workflow and initiative mutations carry `commandId` (client-chosen, safe id) and `expectedRevision`; a retry with the same `commandId` returns the first result.
 - Streams are Server-Sent Events. Each event has `id:` (a sequence number), the client resumes with `Last-Event-ID` or `?after=`, and the server sends `: keep-alive` comments every 15 s. A client that asks only for `application/json` gets a JSON page instead of a stream where noted.
@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`) and `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`) and `images` (`images` on chat messages). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -70,6 +70,8 @@ interface ChatMessage {          // as stored in messages.jsonl (src/types/index
   isSteering?: boolean;          // a user message sent while the turn ran
   inputContext?: { kind: "file" | "directory" | "symbol" | "command"; ref: string;
                    ok: boolean; summary: string; output?: string }[];   // what @ and ! attached
+  images?: { label: string; base64: string;                             // user messages: attached images
+             mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp" }[];
 }
 
 type Prompt = { id: string; createdAt: number } & (
@@ -89,14 +91,14 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | Method and path | Body or query | Result |
 | --- | --- | --- |
 | `GET /v1/sessions` | `?limit=` (default 50) | `{sessions: SessionSummary[]}`, most recently updated first |
-| `POST /v1/sessions` | `{title?, model?, mode?, text?}` | 201 `SessionDetail`; with `text` the first turn starts at once |
+| `POST /v1/sessions` | `{title?, model?, mode?, text?, images?}` | 201 `SessionDetail`; with `text` or `images` the first turn starts at once |
 | `GET /v1/sessions/ID` | | `SessionDetail` |
 | `PATCH /v1/sessions/ID` | `{title?, model?, mode?}` | `SessionSummary`; `model` and `mode` apply from the next turn |
 | `DELETE /v1/sessions/ID` | | 204; 409 `SESSION_BUSY` while a turn runs |
 | `POST /v1/sessions/ID/fork` | `{atMessageId?, rollbackFiles?, force?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent); with `rollbackFiles`, plus `rollback` (below). 409 `SESSION_BUSY` with `rollbackFiles` while any turn runs, 409 `ROLLBACK_UNAVAILABLE` when files need restoring and the workspace is not a Git repository or cannot be backed up |
 | `POST /v1/sessions/ID/undo` | `{toCheckpoint?, force?}` | `SessionDetail` plus `rollback` (below) after dropping the last turn, or every turn after checkpoint `toCheckpoint` (0 drops them all), and restoring the files they edited. 409 `SESSION_BUSY` while any turn of the project runs, 409 `NOTHING_TO_UNDO` without turns, 400 when `toCheckpoint` is not before the last turn, 409 `ROLLBACK_UNAVAILABLE` when the workspace cannot be backed up |
 | `POST /v1/sessions/ID/redo` | `{force?}` | `SessionDetail` plus `rollback` after putting back the oldest undone turn and restoring the files it edited to their state after that turn. 409 `SESSION_BUSY` as for undo, 409 `NOTHING_TO_REDO` when nothing was undone |
-| `POST /v1/sessions/ID/messages` | `{text}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the text is steered into it at its next step |
+| `POST /v1/sessions/ID/messages` | `{text?, images?}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the message is steered into it at its next step. A message needs text, images or both; 400 for invalid [images](#images) |
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
 | `POST /v1/sessions/ID/compact` | `{}` | 202 `{compactionId}`; the compaction runs in the background and reports with `compaction-start` and `compaction-done`. 409 `SESSION_BUSY` while a turn or a compaction runs, 409 `NOTHING_TO_COMPACT` when the conversation is too short, 501 `NOT_SUPPORTED` when the server cannot compact |
@@ -110,6 +112,12 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 #### Compaction ("Compact now")
 
 `POST /v1/sessions/ID/compact` does what `/compact` does in the terminal UI, with the same code (`src/core/compaction/manual.ts`): the model messages before the last `compaction.keepRecent` (default 4) become one summary, written with the task router's `compact` model (the session's model when no route is set) and the configured `compaction.strategy`; `v2` rebuilds its working state from the saved messages first, any other strategy writes a full summary. The next turn sends the summary, an acknowledgement and the kept messages. The transcript (`messages`) keeps every message and gains a `system` message that says how many messages were compacted; `context` becomes an estimate until the next turn reports real numbers, and the summary's tokens count in `usage`. A message sent while the compaction runs is queued (`{turnId: compactionId, queued: true}`) and starts the next turn when it ends. `interrupt` stops a running compaction and keeps the conversation as it was. A compaction that cannot produce a summary of at least 50 characters is `skipped` and changes nothing.
+
+#### Images
+
+`images` on `POST /v1/sessions` and `POST /v1/sessions/ID/messages` is a list of `{mediaType, data}`: `data` is the image as plain base64 (no `data:` prefix) and `mediaType` one of `image/png`, `image/jpeg`, `image/gif` or `image/webp`. A message carries at most 4 images of at most 3.5 MiB each (decoded), the size providers accept once encoded, and the file header must match `mediaType`; anything else is refused with 400 `INVALID_REQUEST` naming the image. The server does not resize: clients scale down or re-encode larger images first (the desktop re-encodes them as JPEG).
+
+The user message stores the images like the terminal UI stores pasted ones (`images` on `ChatMessage`, labelled `image-1`, `image-2`… in order, saved in `messages.jsonl`), and the model receives them as image parts after the text. Images sent while a turn runs are steered into it with the text; messages queued together keep all their images, relabelled in order. A session's model messages rebuilt after an undo or from an older save keep the stored images. Whether the model can read images is up to the chosen model; a provider that rejects them fails the turn with its error.
 
 #### Diff statistics
 
@@ -257,6 +265,6 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 
 ## Not in this contract yet
 
-- Plan mode and its plan review in chat, image attachments, and browsing the checkpoints of a chat. The desktop hides these controls until a later version of this contract adds them.
+- Plan mode and its plan review in chat, and browsing the checkpoints of a chat. The desktop hides these controls until a later version of this contract adds them.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.

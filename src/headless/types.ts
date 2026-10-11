@@ -16,6 +16,8 @@ export interface HeadlessRunOptions {
   system?: string;
   noRepomap?: boolean;
   include?: string[];
+  /** Image files attached to the prompt. */
+  images?: string[];
   diff?: boolean;
   render?: boolean;
 }

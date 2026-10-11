@@ -2,6 +2,7 @@ import type { ModelMessage, TextPart, ToolCallPart } from "ai";
 import { modelMessageSchema } from "ai";
 import { z } from "zod/v4";
 import type { ChatMessage } from "../../types/index.js";
+import { fitsModel, userContent } from "../chat/images.js";
 
 const coreArraySchema = z.array(modelMessageSchema);
 
@@ -19,7 +20,8 @@ export function rebuildCoreMessages(messages: ChatMessage[]): ModelMessage[] {
   for (const msg of messages) {
     if (msg.role === "system") continue;
     if (msg.role === "user") {
-      core.push({ role: "user", content: msg.content });
+      // Images the terminal UI stored above the provider limit were only sent recompressed.
+      core.push({ role: "user", content: userContent(msg.content, msg.images?.filter(fitsModel)) });
     } else if (msg.role === "assistant") {
       if (msg.toolCalls && msg.toolCalls.length > 0) {
         const parts: Array<TextPart | ToolCallPart> = [];

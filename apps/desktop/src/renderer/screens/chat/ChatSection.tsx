@@ -14,8 +14,15 @@ import {
   CHAT_UNDO_CAPABILITY,
   COMPACTION_CAPABILITY,
   DIFF_STATS_CAPABILITY,
+  IMAGES_CAPABILITY,
 } from "../../client/capabilities.js";
-import { type ChatMode, chat, isMissingChatApi, type SessionDiffStats } from "../../client/chat.js";
+import {
+  type ChatMode,
+  chat,
+  type ImageUpload,
+  isMissingChatApi,
+  type SessionDiffStats,
+} from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -24,6 +31,7 @@ import { Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
 import { forkReportLines, rememberForkReport, rewindReportLines, takeForkReport } from "./fork.js";
 import { ChatHeader, type CompactControl, type RewindControl } from "./Header.js";
+import { pendingText } from "./images.js";
 import { emptyTranscript, isBusy, reduceTranscript, turnCount } from "./transcript.js";
 
 const NEW = "new";
@@ -200,6 +208,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
   const canRewind = capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
+  const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
 
   // Line counts follow the edited files; a turn that ends may also have changed them on disk.
   const [diff, setDiff] = useState<SessionDiffStats | null>(null);
@@ -236,14 +245,15 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
 
   const { scroller, onScroll, stick } = useStickToBottom(transcript);
 
-  const send = async (text: string): Promise<boolean> => {
+  const send = async (text: string, images: ImageUpload[]): Promise<boolean> => {
     setActionError(null);
     setRewindReport(null);
     stick();
     if (draft) {
       try {
         const created = await chat.create(key, {
-          text,
+          ...(text ? { text } : {}),
+          ...(images.length > 0 ? { images } : {}),
           mode: draftMode,
           ...(draftModel ? { model: draftModel } : {}),
         });
@@ -255,12 +265,14 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
         return false;
       }
     }
-    dispatch({ type: "local-send", text });
+    // The pending bubble shows the text; images appear once the server echoes the message.
+    const shown = pendingText(text, images.length);
+    dispatch({ type: "local-send", text: shown });
     try {
-      await chat.send(key, sessionId, text);
+      await chat.send(key, sessionId, text, images);
       return true;
     } catch (error) {
-      dispatch({ type: "local-send-failed", text });
+      dispatch({ type: "local-send-failed", text: shown });
       setActionError(message(error));
       return false;
     }
@@ -453,6 +465,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           onMode={(mode) => update({ mode })}
           loadModels={loadModels}
           loadMentions={loadMentions}
+          acceptsImages={acceptsImages}
         />
       </div>
     </div>

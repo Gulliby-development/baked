@@ -2,7 +2,13 @@
  * The chat endpoints of the local API: `/v1/sessions`, `/v1/models` and `/v1/mentions`. The contract is
  * `docs/desktop/api.md`; the sessions themselves live in `ChatService`.
  */
-import type { ChatError, ChatService } from "../chat/sessions.js";
+import {
+  acceptImages,
+  type ImageInput,
+  ImageInputError,
+  MAX_IMAGE_BODY_BYTES,
+} from "../chat/images.js";
+import { ChatError, type ChatService } from "../chat/sessions.js";
 import { fetchProviderModels } from "../llm/models.js";
 import { checkProviders } from "../llm/provider.js";
 import type { RouteContext } from "./route-context.js";
@@ -63,13 +69,14 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
       const { limit } = ctx.query(SessionListQuery);
       return ctx.json(200, { sessions: chat.list(limit ? Number(limit) : undefined) });
     }
-    const body = CreateSessionBody.parse(await ctx.readJson());
+    const body = CreateSessionBody.parse(await ctx.readJson(MAX_IMAGE_BODY_BYTES));
+    const images = body.images ? checkedImages(body.images) : undefined;
     const session = await chat.create({
       ...(body.title ? { title: body.title } : {}),
       ...(body.model ? { model: body.model } : {}),
       ...(body.mode ? { mode: body.mode } : {}),
     });
-    if (body.text) session.send(body.text);
+    if (body.text || images) session.send(body.text ?? "", images);
     return ctx.json(201, session.detail());
   }
   const match = SESSION.exec(path);
@@ -138,11 +145,21 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     return ctx.json(202, chat.get(id).compact());
   }
   if (action === "messages") {
-    const body = MessageBody.parse(await ctx.readJson());
-    return ctx.json(202, chat.get(id).send(body.text));
+    const body = MessageBody.parse(await ctx.readJson(MAX_IMAGE_BODY_BYTES));
+    const images = body.images ? checkedImages(body.images) : undefined;
+    return ctx.json(202, chat.get(id).send(body.text, images));
   }
   // interrupt
   return ctx.json(200, { interrupted: chat.get(id).interrupt() });
+}
+
+function checkedImages(inputs: ImageInput[]) {
+  try {
+    return acceptImages(inputs);
+  } catch (err) {
+    if (err instanceof ImageInputError) throw new ChatError("INVALID_REQUEST", err.message);
+    throw err;
+  }
 }
 
 async function models(only: string | undefined) {
