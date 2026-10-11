@@ -4,6 +4,7 @@ import { isMissingEndpoint } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Empty } from "../../components/ui/empty.js";
 import { cn } from "../../lib/cn.js";
+import { href } from "../../router.js";
 import { LoadState } from "../insights/LoadState.js";
 import type { SectionProps } from "../sections.js";
 import { GraphEngine } from "./engine.js";
@@ -223,11 +224,19 @@ export function GraphSection({ project }: SectionProps) {
               : "Nothing to draw yet"}
         </strong>
         <span>
-          {loaded.answer.state === "indexing"
-            ? "BAKED is reading the code to build its graph. The graph appears here when the first pass is done."
-            : loaded.answer.state === "disabled"
-              ? "Turn the repository map back on in settings (repoMap) to see the graph."
-              : "The index has no code files. Add code to the project and open this page again."}
+          {loaded.answer.state === "indexing" ? (
+            "BAKED is reading the code to build its graph. The graph appears here when the first pass is done."
+          ) : loaded.answer.state === "disabled" ? (
+            <>
+              Turn the Baked map back on in{" "}
+              <a href={href({ name: "settings", section: "chat", page: "baked-map" })}>
+                Settings → Baked map
+              </a>{" "}
+              to see the graph.
+            </>
+          ) : (
+            "The index has no code files. Add code to the project and open this page again."
+          )}
         </span>
       </Empty>
     );

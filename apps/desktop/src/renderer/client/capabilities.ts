@@ -25,6 +25,9 @@ export const IMAGES_CAPABILITY = "images";
 /** `GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME` (the Skills section). */
 export const SKILLS_INSTALL_CAPABILITY = "skills-install";
 
+/** `GET|PATCH /v1/settings` (the Chat settings pages). */
+export const SETTINGS_CAPABILITY = "settings";
+
 /** `/v1/graph*` (the Code graph section). */
 export const CODE_GRAPH_CAPABILITY = "code-graph";
 
