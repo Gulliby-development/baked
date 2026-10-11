@@ -3083,10 +3083,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   }
   /** Runs one task check in `root` under its own host attempt. */
   /**
-   * A corrective task whose attempt changed nothing is satisfied, not blocked, when the checks it
-   * was created for pass on the current files: a sibling task or an earlier correction already
-   * fixed the cause (zoneslot 51f9d664 T007 and md-site 93fbee70 T010 reported passing tests and
-   * stopped the run). The checks are the task's own and the ones its findings name.
+   * A task whose attempt changed nothing is satisfied, not blocked, when the checks it was created
+   * for pass on the current files: a sibling task or an earlier correction already fixed the
+   * cause (zoneslot 51f9d664 T007 and md-site 93fbee70 T010 reported passing tests and stopped the
+   * run). The checks are the task's own and the ones its findings name. A planned task counts
+   * only on a rerun (generation above 0): a repair invalidated it though it was already correct
+   * (md-site 2707d602 T004 generation 3 blocked the run), while a first run that changed nothing
+   * did not do its work.
    */
   private async correctionSatisfied(
     runId: string,
@@ -3097,8 +3100,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     signal: AbortSignal,
     root: string,
   ): Promise<boolean> {
+    const rerun = (this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0) > 0;
     if (
-      task.origin === "planned" ||
+      (task.origin === "planned" && !rerun) ||
       result.taskId !== task.id ||
       result.outcome !== "implemented" ||
       result.unresolved.length > 0
