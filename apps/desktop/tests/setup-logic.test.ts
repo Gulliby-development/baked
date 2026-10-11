@@ -13,8 +13,6 @@ import type {
 import {
   checkDraft,
   checkResultText,
-  classRoute,
-  classRows,
   commandLabel,
   draftToCheck,
   frozenRunState,
@@ -221,31 +219,5 @@ describe("runs that froze a changed file", () => {
       "paused; resuming needs a revised plan",
     );
     expect(frozenRunState({ status: "completed" }).canRevise).toBe(false);
-  });
-});
-
-describe("model classes", () => {
-  test("lists built-in classes first and who references each", () => {
-    const rows = classRows({
-      classes: { deep: { model: "a/opus", effort: "high", fallback: ["b/gpt"] }, fast: "a/haiku" },
-      roles: { planner: "$deep", researcher: "$fast", reviewer: "b/gpt" },
-      workflows: { sdd: { stages: { plan: { model: "$deep" } } } },
-    });
-    expect(rows.map((r) => r.name)).toEqual(["active", "fast", "coding", "review", "deep"]);
-    expect(rows.find((r) => r.name === "deep")).toEqual({
-      name: "deep",
-      model: "a/opus",
-      effort: "high",
-      fallback: ["b/gpt"],
-      usedBy: ["planner", "sdd plan"],
-      builtin: false,
-    });
-    expect(rows.find((r) => r.name === "active")?.model).toBeNull();
-  });
-
-  test("stores a bare model when nothing else is set", () => {
-    expect(classRoute("a/m", "default", [])).toBe("a/m");
-    expect(classRoute("a/m", "low", [])).toEqual({ model: "a/m", effort: "low" });
-    expect(classRoute("a/m", "default", ["b/n"])).toEqual({ model: "a/m", fallback: ["b/n"] });
   });
 });

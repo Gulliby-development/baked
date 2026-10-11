@@ -7,6 +7,8 @@
 export const CHECKS_CAPABILITY = "checks";
 /** `/v1/commands` and `/v1/skills`. */
 export const LIBRARY_CAPABILITY = "library";
+/** `/v1/workflow/routing`. */
+export const ROUTING_CAPABILITY = "routing";
 
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the
