@@ -33,6 +33,7 @@ import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
+import { MemoryManager } from "../memory/manager.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
@@ -55,6 +56,7 @@ import {
   removeTokenFile,
   writeTokenFile,
 } from "./auth.js";
+import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { graphRoute } from "./graph-routes.js";
@@ -108,6 +110,7 @@ export const CAPABILITIES = [
   "plan-mode",
   "chat-undo",
   "run-memory",
+  "chat-memory",
   "images",
   "code-graph",
   "skills-install",
@@ -736,6 +739,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
+      (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
       (await graphRoute({
         ...ctx,
         workspace: service.workspace,
@@ -1038,6 +1042,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   }
 
   let stopping: Promise<void> | undefined;
+  let ownMemory: MemoryManager | null = null;
+  /**
+   * The memory store chat sessions use: the shared root's once chat started it, so scope changes
+   * reach running sessions; until then one of the API's own, which reads and writes the same files.
+   */
+  const chatMemory = async (): Promise<MemoryManager> => {
+    if (service.rootContext.started && !options.configDir) {
+      const root = await service.rootContext.get().catch(() => null);
+      if (root) return root.getMemoryManager();
+    }
+    ownMemory ??= new MemoryManager(service.workspace, options.configDir);
+    return ownMemory;
+  };
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
       shutdown.abort(new Error("API server shutdown"));
@@ -1048,6 +1065,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         await Promise.race([server.stop(true), Bun.sleep(STOP_WAIT_MS)]);
         await Promise.allSettled([...drives]);
         await chat.shutdown();
+        ownMemory?.close();
         await service.shutdown();
         if (options.ownsService) {
           // Waits for the shared code-intelligence worker to stop its language servers.

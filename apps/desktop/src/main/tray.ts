@@ -1,18 +1,24 @@
 import { join } from "node:path";
-import { app, Menu, nativeImage, Tray } from "electron";
+import { app, type BrowserWindow, Menu, nativeImage, Tray } from "electron";
 import type { AttentionItem } from "../shared/api.js";
-import { trayModel } from "./tray-model.js";
+import { badgeBitmap, badgeLabel, trayModel } from "./tray-model.js";
 
 export interface TrayActions {
   show(): void;
   showAttention(): void;
   quit(): void;
+  /** The main window, whose taskbar button carries the Windows overlay badge. */
+  window(): BrowserWindow | null;
 }
+
+const BADGE_SIZE = 32;
 
 /** The tray icon of a hidden window, and the dock or taskbar badge of blocking items. */
 export class AppTray {
   private tray: Tray | null = null;
   private items: AttentionItem[] = [];
+  /** The overlay label last set on the window, so an unchanged count does not redraw it. */
+  private overlay: { window: BrowserWindow; label: string | null } | null = null;
 
   constructor(private readonly actions: TrayActions) {}
 
@@ -39,10 +45,37 @@ export class AppTray {
     this.render();
   }
 
+  /** Sets the badge again, for a window created after the last update. */
+  refreshBadge(): void {
+    this.renderBadge(trayModel(this.items).badge);
+  }
+
+  private renderBadge(count: number): void {
+    // Supported on macOS and on Linux desktops with Unity launcher badges.
+    if (process.platform !== "win32") {
+      app.setBadgeCount(count);
+      return;
+    }
+    // Windows has no badge count: the taskbar button gets a drawn overlay icon instead.
+    const window = this.actions.window();
+    if (!window || window.isDestroyed()) return;
+    const label = badgeLabel(count);
+    if (this.overlay?.window === window && this.overlay.label === label) return;
+    this.overlay = { window, label };
+    if (!label) {
+      window.setOverlayIcon(null, "");
+      return;
+    }
+    const icon = nativeImage.createFromBitmap(badgeBitmap(label, BADGE_SIZE), {
+      width: BADGE_SIZE,
+      height: BADGE_SIZE,
+    });
+    window.setOverlayIcon(icon, `${count} need you`);
+  }
+
   private render(): void {
     const model = trayModel(this.items);
-    // Supported on macOS and on Linux desktops with Unity launcher badges.
-    app.setBadgeCount(model.badge);
+    this.renderBadge(model.badge);
     if (!this.tray) return;
     this.tray.setToolTip(model.tooltip);
     this.tray.setContextMenu(
