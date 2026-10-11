@@ -201,17 +201,28 @@ export function createWorkerHandler(
 type EventListener = (data: unknown) => void;
 type CallbackHandler = (data: unknown) => Promise<unknown>;
 
+/** The part of a `Worker` a client uses; a relay implements it to reach a worker owned elsewhere. */
+export interface WorkerLike {
+  onmessage: ((e: MessageEvent) => void) | null;
+  onerror: ((e: ErrorEvent) => void) | null;
+  postMessage(message: unknown): void;
+  addEventListener(type: "close", listener: () => void): void;
+  terminate(): void;
+  unref(): void;
+}
+
 export class WorkerClient {
-  protected worker: Worker;
+  protected worker: WorkerLike;
   private pending = new Map<
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
   private nextId = 0;
   private eventListeners = new Map<string, Set<EventListener>>();
+  private eventTaps = new Set<(event: string, data: unknown) => void>();
   private callbackHandlers = new Map<string, CallbackHandler>();
   private disposed = false;
-  private workerPath: string;
+  private workerPath: string | (() => WorkerLike);
   private initConfig?: Record<string, unknown>;
   private workerOpts?: { smol?: boolean };
   private restartCount = 0;
@@ -221,8 +232,9 @@ export class WorkerClient {
   onRpcStart?: () => void;
   onRpcEnd?: (error?: boolean) => void;
 
+  /** `workerPath` is a worker script, or a factory for a transport to a worker owned elsewhere. */
   constructor(
-    workerPath: string,
+    workerPath: string | (() => WorkerLike),
     initConfig?: Record<string, unknown>,
     workerOpts?: { smol?: boolean },
   ) {
@@ -232,8 +244,11 @@ export class WorkerClient {
     this.worker = this.spawnWorker();
   }
 
-  private spawnWorker(): Worker {
-    const w = new Worker(this.workerPath, this.workerOpts);
+  private spawnWorker(): WorkerLike {
+    const w: WorkerLike =
+      typeof this.workerPath === "string"
+        ? new Worker(this.workerPath, this.workerOpts)
+        : this.workerPath();
     w.unref();
     w.onmessage = (e: MessageEvent<WorkerOutbound | CallbackRequest>) => this.handleMessage(e.data);
     w.onerror = (e: ErrorEvent) => this.handleWorkerError(e);
@@ -328,6 +343,12 @@ export class WorkerClient {
     this.eventListeners.get(event)?.delete(fn);
   }
 
+  /** Observes every event the worker emits; returns the function that stops observing. */
+  tapEvents(fn: (event: string, data: unknown) => void): () => void {
+    this.eventTaps.add(fn);
+    return () => this.eventTaps.delete(fn);
+  }
+
   registerCallback(name: string, handler: CallbackHandler): void {
     this.callbackHandlers.set(name, handler);
   }
@@ -355,6 +376,11 @@ export class WorkerClient {
       }
 
       case "event": {
+        for (const tap of this.eventTaps) {
+          try {
+            tap(msg.event, msg.data);
+          } catch {}
+        }
         const fns = this.eventListeners.get(msg.event);
         if (fns) {
           for (const fn of fns) {
