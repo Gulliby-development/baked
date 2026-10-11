@@ -134,6 +134,14 @@
   min-height: 26px;
 }
 
+.chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+  background: var(--bg-raised);
+  color: var(--text-2);
+  box-shadow: none;
+}
+
 .ring-track {
   stroke: var(--line);
 }
@@ -756,6 +764,17 @@
 
 .fork-report p {
   margin: 0;
+}
+
+.rewind-report {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.rewind-report > div {
+  flex: 1;
+  min-width: 0;
 }
 
 .notice {

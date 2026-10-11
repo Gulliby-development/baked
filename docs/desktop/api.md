@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`) and `diff-stats` (`GET /v1/sessions/ID/diff`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`) and `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -53,6 +53,7 @@ interface SessionDetail extends SessionSummary {
   usage: { input: number; output: number; cacheRead: number };   // whole session
   context: { usedTokens: number; windowTokens: number; percent: number } | null;
   filesEdited: string[];    // paths the session's edit tools wrote, as the tools named them
+  redo: { index: number; prompt: string }[];   // undone turns Redo puts back, oldest first
   lastSeq: number;          // subscribe to events with ?after=lastSeq to miss nothing
 }
 
@@ -93,6 +94,8 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `PATCH /v1/sessions/ID` | `{title?, model?, mode?}` | `SessionSummary`; `model` and `mode` apply from the next turn |
 | `DELETE /v1/sessions/ID` | | 204; 409 `SESSION_BUSY` while a turn runs |
 | `POST /v1/sessions/ID/fork` | `{atMessageId?, rollbackFiles?, force?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent); with `rollbackFiles`, plus `rollback` (below). 409 `SESSION_BUSY` with `rollbackFiles` while any turn runs, 409 `ROLLBACK_UNAVAILABLE` when files need restoring and the workspace is not a Git repository or cannot be backed up |
+| `POST /v1/sessions/ID/undo` | `{toCheckpoint?, force?}` | `SessionDetail` plus `rollback` (below) after dropping the last turn, or every turn after checkpoint `toCheckpoint` (0 drops them all), and restoring the files they edited. 409 `SESSION_BUSY` while any turn of the project runs, 409 `NOTHING_TO_UNDO` without turns, 400 when `toCheckpoint` is not before the last turn, 409 `ROLLBACK_UNAVAILABLE` when the workspace cannot be backed up |
+| `POST /v1/sessions/ID/redo` | `{force?}` | `SessionDetail` plus `rollback` after putting back the oldest undone turn and restoring the files it edited to their state after that turn. 409 `SESSION_BUSY` as for undo, 409 `NOTHING_TO_REDO` when nothing was undone |
 | `POST /v1/sessions/ID/messages` | `{text}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the text is steered into it at its next step |
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
@@ -126,6 +129,10 @@ A message text with `@` mentions or a leading `!command` is expanded on the serv
 
 Each turn of an API session that edits files snapshots the workspace in a Git tag, and the first turn snapshots it before it starts; the tags are saved in the session's tab as `checkpointTags`, as the terminal UI saves them. A fork with `rollbackFiles` restores the files the agent edited after the fork point to the latest snapshot at or before it. The fork point of a message is the end of its turn, or the end of the previous turn when the message is the user prompt that starts a turn. `rollback` is `{checkpoint, snapshot, backupTag, restored: [path], removed: [path], skipped: [{path, reason}]}`: `restored` files were rewritten, `removed` ones did not exist at the checkpoint, and `backupTag` (null when nothing changed) holds the whole working tree from before the rollback. A file is skipped, not overwritten, when its current content is in none of the session's snapshots (changed outside the agent) unless `force` is set, and always when Git ignores it or it is outside the workspace. The fork gets copies of the snapshots up to its fork point, so it can be forked again. [Forking a checkpoint](../guide.md#forking-a-checkpoint) describes the same behavior in the terminal UI.
 
+#### Undo and redo
+
+Undo and redo share their code with `/undo` and `/redo` in the terminal UI and `baked session undo|redo` (`src/core/checkpoints/undo.ts`). Undo rolls the files back exactly as a fork with `rollbackFiles` does, with the same `rollback` report, skipped files and backup tag (`baked/undo-backup-*`), then drops the undone turns from `messages` and rebuilds the model messages from what is left, so a compaction summary of the dropped part is gone. The undone turns are saved with the session (`redoTurns` in its tab) and listed in `redo`. Redo puts back the oldest one with its messages and restores the files that turn edited to the turn's own snapshot; a file whose current content is in no snapshot is skipped unless `force` is set. Starting a turn forgets the undone turns and deletes their snapshot tags. Outside a Git repository the conversation still rewinds and every edited file is reported in `skipped`. Each undo or redo emits a `rewind` event.
+
 ### Session events
 
 Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences are per session and per server start; the server keeps the latest 5000 events of each session in memory.
@@ -138,6 +145,7 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `tool-call` | `turnId`, `toolCallId`, `tool`, `input` |
 | `tool-result` | `turnId`, `toolCallId`, `tool`, `success`, `output` (at most 4000 characters), `error?`, `filesEdited?` |
 | `steering` | `turnId`, `message` (the steered user `ChatMessage`) |
+| `rewind` | `action` (`undo` or `redo`), `checkpoint` (the checkpoint undone to, or the turn redone), `messageCount`: the transcript changed; fetch `GET /v1/sessions/ID` |
 | `prompt` | `prompt` (`Prompt`) |
 | `prompt-resolved` | `promptId`, `outcome` (`approved`, `denied`, `answered`, `skipped`) |
 | `step` | `turnId`, `step`, `usage` (this turn so far) |
@@ -249,6 +257,6 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 
 ## Not in this contract yet
 
-- Plan mode and its plan review in chat, image attachments, checkpoints and rewinding a chat. The desktop hides these controls until a later version of this contract adds them.
+- Plan mode and its plan review in chat, image attachments, and browsing the checkpoints of a chat. The desktop hides these controls until a later version of this contract adds them.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.

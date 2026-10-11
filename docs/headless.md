@@ -57,6 +57,16 @@ baked --headless --session <new-id> "try the other approach"
 
 Headless runs do not snapshot the workspace, so a session made only with `--save-session` can be forked but its files cannot be rolled back.
 
+## Undoing a turn
+
+```sh
+baked session undo <id>            # drop the last turn and restore the files it edited
+baked session undo <id> --to 1     # keep only checkpoint 1
+baked session redo <id>            # put the oldest undone turn back
+```
+
+`baked session undo ID` drops the last turn of the active conversation of session `ID` (with `--to N`, every turn after checkpoint N; `--to 0` drops them all) and restores the files those turns edited, with the safeguards of `/undo` in the terminal UI ([checkpoints](guide.md#checkpoints)): a backup tag first, and files changed since the agent last wrote them are left as they are unless `--force`. The undone turns are saved with the session; `baked session redo ID` puts back the oldest one and restores the files it edited. After a new message in the session they can no longer be put back. `--json` prints `{sessionId, action, checkpoint, messageCount, redoCount, rollback}`. The command exits 1 when the session does not exist or there is nothing to undo or redo.
+
 ## Approvals
 
 There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.

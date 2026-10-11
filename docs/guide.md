@@ -67,14 +67,14 @@ Every turn is a checkpoint. `Ctrl+B` and `Ctrl+F` step back and forward; browsin
 | --- | --- |
 | `/checkpoint` | List checkpoints |
 | `/checkpoint N`, `/checkpoint live` | View checkpoint N, return to live |
-| `/checkpoint undo [N]`, `/undo [N]` | Undo the last checkpoint, or back to N, including its file edits |
-| `/checkpoint redo`, `/redo` | Re-apply the oldest undone checkpoint: its messages come back and its files return to their state after that turn |
+| `/checkpoint undo [N] [--force]`, `/undo [N] [--force]` | Undo the last turn, or every turn after checkpoint N, including their file edits |
+| `/checkpoint redo [--force]`, `/redo [--force]` | Re-apply the oldest undone turn: its messages come back and its files return to their state after that turn |
 | `/checkpoint fork [N] [--force]` | Continue from checkpoint N (the viewed one, or the latest) in a new tab, with the files rolled back to it |
 | `/checkpoint save` | Save the current state as a Git tag |
 
-Checkpoints with file edits are tagged in Git; undo restores only the files those checkpoints edited. Without Git, undo rewinds the conversation only. Each tab has its own checkpoint history.
+Checkpoints with file edits are tagged in Git; undo restores only the files the undone turns edited, with the safeguards of a fork ([below](#forking-a-checkpoint)): a `baked/undo-backup-*` tag first, and a file changed since the agent last wrote it is left as it is, and reported, unless `--force`. `/undo 0` undoes every turn. Without Git, undo rewinds the conversation only and lists the files it could not restore. Each tab has its own checkpoint history.
 
-`/redo` steps forward one checkpoint at a time, in the order the turns ran, so `/undo 1` followed by `/redo` twice brings back turns 2 and 3. A file the redone turn deleted is deleted again, and folders it created are recreated. Files Git ignores are in no snapshot, so neither undo nor redo deletes them. Sending a new message clears the redo history.
+`/redo` steps forward one turn at a time, in the order the turns ran, so `/undo 1` followed by `/redo` twice brings back turns 2 and 3. A file the redone turn deleted is deleted again, and folders it created are recreated. Files Git ignores are in no snapshot, so neither undo nor redo deletes them. The undone turns are saved with the session, so `/redo` works after resuming it; sending a new message clears them. The same undo and redo are **Undo** and **Redo** in the desktop chat and `baked session undo|redo` on the [command line](headless.md#undoing-a-turn).
 
 ### Forking a checkpoint
 
