@@ -15,6 +15,7 @@ import { migration005 } from "./migrations/005.js";
 import { migration006 } from "./migrations/006.js";
 import { migration007 } from "./migrations/007.js";
 import { migration008 } from "./migrations/008.js";
+import { migration009 } from "./migrations/009.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -154,6 +155,14 @@ export interface CheckDetailRow {
   validity: string;
   artifact_id: string;
 }
+export interface MemoryEditRow {
+  id: string;
+  note: number;
+  hidden: number;
+  text: string | null;
+  created_at: number;
+  updated_at: number;
+}
 export interface StepRow {
   id: string;
   stage_id: string;
@@ -188,6 +197,7 @@ const MIGRATIONS = [
   { version: 6, sql: migration006 },
   { version: 7, sql: migration007 },
   { version: 8, sql: migration008 },
+  { version: 9, sql: migration009 },
 ] as const;
 
 export class WorkflowStore {
@@ -314,6 +324,31 @@ export class WorkflowStore {
         "SELECT id,status,policy_json FROM runs WHERE status<>'created' ORDER BY created_at DESC, rowid DESC LIMIT ?",
       )
       .all(limit);
+  }
+  /** People's changes to project memory, oldest first; empty on a database older than them. */
+  memoryEdits(): MemoryEditRow[] {
+    const table = this.db
+      .query("SELECT name FROM sqlite_master WHERE name='project_memory_edits'")
+      .get();
+    if (!table) return [];
+    return this.db
+      .query<MemoryEditRow, []>("SELECT * FROM project_memory_edits ORDER BY created_at, rowid")
+      .all();
+  }
+  /** Records a change to a project memory entry; a row that changes nothing is removed. */
+  saveMemoryEdit(edit: Pick<MemoryEditRow, "id" | "note" | "hidden" | "text">): void {
+    const now = Date.now();
+    if (!edit.note && !edit.hidden && edit.text === null) {
+      this.db.run("DELETE FROM project_memory_edits WHERE id=?", [edit.id]);
+      return;
+    }
+    this.db.run(
+      "INSERT INTO project_memory_edits (id,note,hidden,text,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET hidden=excluded.hidden, text=excluded.text, updated_at=excluded.updated_at",
+      [edit.id, edit.note, edit.hidden, edit.text, now, now],
+    );
+  }
+  deleteMemoryEdit(id: string): void {
+    this.db.run("DELETE FROM project_memory_edits WHERE id=?", [id]);
   }
   private applyMigrations(from: number): void {
     for (const migration of MIGRATIONS.slice(from)) {

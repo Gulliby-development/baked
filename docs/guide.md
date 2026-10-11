@@ -117,7 +117,7 @@ On startup BAKED indexes files, symbols and imports with tree-sitter, ranks file
 
 ## Memory
 
-The agent stores preferences, decisions and pitfalls in SQLite: `<project>/.baked/memory.db` for the project and `memory.db` in the global data directory for preferences across projects. Before each turn up to 3 relevant memories are injected. `/memory` browses, pins, hides and restores them and sets the read and write scopes. Deletes are soft. `memory.embeddingModel` in config switches from the built-in offline embedder to a provider model.
+The agent stores preferences, decisions and pitfalls in SQLite: `<project>/.baked/memory.db` for the project and `memory.db` in the global data directory for preferences across projects. Before each turn up to 3 relevant memories are injected. `/memory` browses, pins, hides and restores them and sets the read and write scopes. Its Runs tab shows the [project memory of workflow runs](workflows/runtime.md#viewing-and-editing-project-memory) and lets you add notes, reword, forget and restore entries. Deletes are soft. `memory.embeddingModel` in config switches from the built-in offline embedder to a provider model.
 
 ## Skills and instruction files
 
