@@ -1039,6 +1039,28 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
   return response(200, snapshot(run));
 }
 
+/** A short stand-in for `runReport` (src/core/workflows/run-report.ts). */
+function mockReport(run: MockRun): string {
+  return [
+    `# ${run.featureId}`,
+    "",
+    `Run \`${run.runId}\` · status **${run.status}**`,
+    "",
+    "## Usage",
+    "",
+    `${run.tokenUsage.toLocaleString("en-US")} tokens.`,
+    "",
+    "| Stage | Attempts | Tokens |",
+    "| --- | --- | --- |",
+    ...run.usage.stages.map((s) => `| ${s.stage} | ${s.attempts} | ${s.tokens} |`),
+    "",
+    "## Artifacts",
+    "",
+    ...run.artifacts.map((a) => `- \`${a.entry.path}\` (${a.entry.kind})`),
+    "",
+  ].join("\n");
+}
+
 const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
   if (key !== PROJECT) return undefined;
   if (method === "GET" && path === "/v1/workflow/runs") {
@@ -1063,6 +1085,8 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
       return response<RunDetailStatus>(200, { ...snapshot(run), requests: run.requests });
     case "usage":
       return response(200, run.usage);
+    case "report":
+      return response(200, { runId: run.runId, markdown: mockReport(run) });
     case "artifacts": {
       const file = query.get("file");
       if (!file)

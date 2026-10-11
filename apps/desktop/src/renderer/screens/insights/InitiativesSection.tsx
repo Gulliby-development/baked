@@ -39,6 +39,98 @@ const FEATURE_TONE: Record<Tone, string> = {
 const PANEL =
   "px-[14px] py-3 rounded-[var(--radius-lg)] border-[length:var(--border-w)] border-solid";
 
+/**
+ * The initiative's model and a switch to another one: features started later use it, its stopped
+ * runs move to it with finished work kept, and the initiative continues.
+ */
+function ModelSwitch({
+  projectKey,
+  view,
+  onDone,
+}: {
+  projectKey: string;
+  view: InitiativeView;
+  onDone: () => void;
+}) {
+  const [model, setModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const open = canSwitchModel(view);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    chat.models(projectKey).then(
+      (result) =>
+        live &&
+        setModels(
+          result.providers.filter((p) => p.configured).flatMap((p) => p.models.map((m) => m.id)),
+        ),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [projectKey, open]);
+  if (view.model === undefined) return null;
+  const listId = `initiative-models-${view.initiativeId}`;
+  const inputId = `initiative-model-${view.initiativeId}`;
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await insights.rerouteInitiative(projectKey, view, model.trim());
+      setModel("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      onDone();
+    }
+  };
+  return (
+    <div className="ins-model">
+      <p className="small">
+        Model <span className="mono">{view.model ?? "default"}</span>
+      </p>
+      {open && (
+        <form
+          className="stack-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (model.trim()) void submit();
+          }}
+        >
+          <label htmlFor={inputId} className="field-label">
+            Switch the initiative to model
+          </label>
+          <input
+            id={inputId}
+            type="text"
+            list={listId}
+            value={model}
+            placeholder="provider/model"
+            onChange={(e) => setModel(e.target.value)}
+          />
+          <datalist id={listId}>
+            {models.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          {error && <div className="banner error">{error}</div>}
+          <button
+            type="submit"
+            className="btn"
+            disabled={busy || !model.trim() || model.trim() === view.model}
+          >
+            Switch model
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   const { state, reload } = useLoad(() => insights.initiative(projectKey, id), [projectKey, id]);
   const [busy, setBusy] = useState(false);

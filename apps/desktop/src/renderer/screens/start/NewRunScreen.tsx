@@ -103,6 +103,7 @@ export function NewRunScreen({ project }: SectionProps) {
   const key = project.key;
   const [prompt, setPrompt] = useState(() => takeDraft("run", key));
   const [featureEdit, setFeatureEdit] = useState<string | null>(null);
+  const [issue, setIssue] = useState("");
   const [workflow, setWorkflow] = useState("sdd");
   const [budget, setBudget] = useState<BudgetPreset>("standard");
   const [worktree, setWorktree] = useState(false);
@@ -133,9 +134,11 @@ export function NewRunScreen({ project }: SectionProps) {
     [definitions.value, workflow],
   );
   const worktreeRefusal = definition?.worktreeRefusal ?? null;
-  const feature = featureEdit ?? featureSlug(prompt);
-  const featureValid = isFeatureId(feature);
-  const canStart = prompt.trim().length > 0 && featureValid && !launcher.starting;
+  const fromIssue = issue.trim() !== "";
+  // With an issue and no feature typed, the core names the feature after the issue.
+  const feature = featureEdit ?? (fromIssue ? "" : featureSlug(prompt));
+  const featureValid = isFeatureId(feature) || (fromIssue && feature === "");
+  const canStart = (prompt.trim().length > 0 || fromIssue) && featureValid && !launcher.starting;
 
   const pickWorkflow = (next: DefinitionSummary): void => {
     setWorkflow(next.id);
@@ -158,8 +161,9 @@ export function NewRunScreen({ project }: SectionProps) {
     if (!canStart) return;
     const scaled = policyFor(budget, policy.policy);
     void launcher.run({
-      feature,
-      prompt: prompt.trim(),
+      ...(feature ? { feature } : {}),
+      ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
+      ...(fromIssue ? { issue: issue.trim() } : {}),
       workflow,
       ...(scaled ? { policy: scaled } : {}),
       ...(model ? { model } : {}),
@@ -202,7 +206,7 @@ export function NewRunScreen({ project }: SectionProps) {
             type="text"
             className="max-w-[520px] aria-[invalid=true]:border-[color:var(--err)]"
             value={feature}
-            placeholder="derived from the goal"
+            placeholder={fromIssue ? "issue-N-title, from the issue" : "derived from the goal"}
             aria-invalid={feature !== "" && !featureValid}
             aria-describedby="new-run-feature-hint"
             onChange={(e) => setFeatureEdit(e.target.value)}

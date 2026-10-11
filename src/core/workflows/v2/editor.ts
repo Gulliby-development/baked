@@ -51,7 +51,7 @@ export const DEFAULT_AUTO_LIMITS: NonNullable<WorkflowV2["autoApproval"]> = {
   enabled: true,
   maxTasks: 3,
   maxFiles: 5,
-  allowedPaths: ["src/**", "tests/**"],
+  allowedPaths: ["src/**", "tests/**", "docs/**"],
   allowDelete: false,
   allowNewDependencies: false,
   maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens,

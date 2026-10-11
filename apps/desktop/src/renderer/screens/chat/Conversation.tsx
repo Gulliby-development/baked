@@ -412,6 +412,7 @@ export function Conversation({
             key={message.id}
             text={message.content}
             {...(message.isSteering ? { note: "Sent while working" } : {})}
+            {...(message.inputContext ? { context: message.inputContext } : {})}
           />
         ) : message.role === "assistant" ? (
           <Assistant

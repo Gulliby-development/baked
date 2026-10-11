@@ -83,13 +83,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-author",
-    version: "1.4.0",
+    version: "1.5.0",
     description: "Write the specification",
     role: "spec-author",
     model: "$active",
     context: "specification",
     instructions:
-      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Return SpecSchema.",
+      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. When a requirement names a broad standard or format (a date-time standard, a URL or e-mail grammar, a Markdown flavor, a version scheme), state in the requirement or its criteria the forms the feature must accept, with an example of each, and the forms it may reject; reviewers treat forms the spec does not list as out of scope. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Return SpecSchema.",
     skills: [],
     allowedTools: ["read", "submit_artifact", "submit_result"],
     output: "spec",
@@ -99,13 +99,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "planner",
-    version: "1.4.0",
+    version: "1.5.0",
     description: "Plan and task dependencies",
     role: "planner",
     model: "$active",
     context: "planning",
     instructions:
-      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel.",
+      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel. When extra.approvalLimits is present, the host approves the plan without a person only within it: at most maxTasks tasks and maxFiles distinct files, every write under allowedPaths, no deletions unless allowDelete, nothing in alwaysHuman. Plan within it whenever the requirements allow; write a file outside it only when the requirements need that file.",
     skills: [],
     allowedTools: [
       "read",
@@ -122,13 +122,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "quick-planner",
-    version: "1.0.0",
+    version: "1.1.0",
     description: "Find the files and plan a small change",
     role: "planner",
     model: "$fast",
     context: "planning",
     instructions:
-      "There is no research stage: find the files yourself, then plan. Start from the paths the request names (extra.researchScope.namedPaths) and read them together in one read call; use bake_find or bake_impact only for their direct callers and tests. Do not survey the repository. Plan the smallest change that does the request: one task, more only when files must change in a fixed order, never more than three. Keep each plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision DEC-001 that references FR-001 is enough. Every task lists FR-001 and AC-001. Take checks from the policy under approval and do not plan verification-only tasks. Submit as soon as the files to change are known; extra.researchScope.maxSteps is a hard limit.",
+      "There is no research stage: find the files yourself, then plan. Start from the paths the request names (extra.researchScope.namedPaths) and read them together in one read call; use bake_find or bake_impact only for their direct callers and tests. Do not survey the repository. Plan the smallest change that does the request: one task, more only when files must change in a fixed order, never more than three. Keep each plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision DEC-001 that references FR-001 is enough. Every task lists FR-001 and AC-001. Take checks from the policy under approval and do not plan verification-only tasks. When extra.approvalLimits is present, keep the writes within it unless the request needs a file outside it. Submit as soon as the files to change are known; extra.researchScope.maxSteps is a hard limit.",
     skills: [],
     allowedTools: ["read", "bake_find", "bake_impact", "navigate", "submit_result"],
     output: "plan",
@@ -161,13 +161,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "reviewer",
-    version: "1.2.0",
+    version: "1.3.0",
     description: "Correctness review",
     role: "reviewer",
     model: "$review",
     context: "review",
     instructions:
-      "Compare requirements, code and evidence. Report only findings you can prove. Do not change files. Mark unknown outcomes as inconclusive. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
+      "Compare requirements, code and evidence. Report only findings you can prove. Do not change files. Mark unknown outcomes as inconclusive. Give every finding a basis: spec when the request, a requirement or a criterion names the behavior or input that fails; inferred when it rests on a standard, convention or edge case the spec does not name, such as an ISO 8601 form the spec does not list when it only says ISO 8601. Inferred findings are kept as notes and start no correction unless they are critical, so judge the change by what the spec asks, not by everything a standard allows. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
     skills: [],
     allowedTools: ["read", "navigate", "submit_review", "submit_result"],
     output: "review",
@@ -193,13 +193,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-auditor",
-    version: "1.2.0",
+    version: "1.3.0",
     description: "Specification coverage review",
     role: "spec-auditor",
     model: "$review",
     context: "convergence",
     instructions:
-      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
+      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. A criterion passes when the behavior and inputs it names work: an edge case of a standard it only names (an ISO 8601 form it does not list) does not fail it, and is reported, if at all, as a finding with basis inferred. Give every other finding basis spec. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call.",
     skills: [],
     allowedTools: ["read", "navigate", "bake_impact", "submit_review", "submit_result"],
     output: "convergence",

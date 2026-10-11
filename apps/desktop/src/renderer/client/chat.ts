@@ -3,7 +3,7 @@ import { ApiError, call } from "./api.js";
 import { bridge } from "./bridge.js";
 
 /**
- * Chat sessions over `/v1/sessions/*` and `GET /v1/models` (docs/desktop/api.md, group A).
+ * Chat sessions over `/v1/sessions/*`, `GET /v1/models` and `GET /v1/mentions` (docs/desktop/api.md, group A).
  * Shapes mirror `src/core/chat/sessions.ts`; only the fields the chat screen reads are declared.
  */
 
@@ -51,6 +51,25 @@ export interface ChatMessage {
   segments?: MessageSegment[];
   durationMs?: number;
   isSteering?: boolean;
+  /** What the message's `@` mentions and `!` command attached. */
+  inputContext?: InputContextItem[];
+}
+
+export interface InputContextItem {
+  kind: "file" | "directory" | "symbol" | "command";
+  ref: string;
+  ok: boolean;
+  summary: string;
+  output?: string;
+}
+
+/** One `@` completion; `insert` is the text that follows the `@`. */
+export interface MentionSuggestion {
+  kind: "file" | "directory" | "symbol";
+  insert: string;
+  label: string;
+  detail: string;
+  indices: number[];
 }
 
 export type ChatPrompt = { id: string; createdAt: number } & (
@@ -178,6 +197,12 @@ export const chat = {
       { answer },
     ),
   models: (key: string) => call<{ providers: ModelProvider[] }>(key, "GET", "/v1/models"),
+  mentions: (key: string, query: string) =>
+    call<{ mentions: MentionSuggestion[] }>(
+      key,
+      "GET",
+      `/v1/mentions?q=${encodeURIComponent(query)}&limit=20`,
+    ),
   /** The project summary of `GET /v1/projects/current`, read for the working set chip. */
   project: (key: string) => call<WorkingSetSummary>(key, "GET", "/v1/projects/current"),
   /** Follows a session's events after `afterSeq`; returns the unsubscribe function. */

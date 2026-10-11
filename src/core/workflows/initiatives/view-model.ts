@@ -94,6 +94,13 @@ export const InitiativeActionSchema = z.discriminatedUnion("kind", [
       featureId: z.string().min(1),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("reroute"),
+      expectedRevision: z.number().int().min(0),
+      model: z.string().min(1),
+    })
+    .strict(),
   z.object({ kind: z.literal("drive") }).strict(),
 ]);
 /** A command of the TUI, bound to the revision of the view the person saw. */
@@ -118,12 +125,14 @@ const CONTINUABLE: readonly InitiativeView["next"]["kind"][] = [
 
 /**
  * The commands the core accepts for this view right now. `driving` says whether this process is
- * already advancing the initiative; `feature` is the feature selected in the detail view.
+ * already advancing the initiative; `feature` is the feature selected in the detail view; `model`
+ * is the chat tab's model, offered as the initiative's new model when it differs.
  */
 export function initiativeActions(
   view: InitiativeView,
   driving: boolean,
   feature: FeatureView | null = null,
+  model: string | null = null,
 ): InitiativeActionOption[] {
   const options: InitiativeActionOption[] = [];
   const expectedRevision = view.revision;
@@ -171,13 +180,28 @@ export function initiativeActions(
       action: { kind: "replan", expectedRevision, featureId: feature.id },
       confirm: `Re-plan ${feature.id}? Its current run ${feature.runId} is superseded and the feature runs again from research; results of other features stay. Y confirms; N keeps it.`,
     });
+  const running = view.features.some((f) => f.runStatus === "running");
+  if (
+    model &&
+    model !== "none" &&
+    model !== view.model &&
+    !driving &&
+    !running &&
+    !initiativeIsTerminal(view)
+  )
+    options.push({
+      key: "M",
+      label: "switch model",
+      action: { kind: "reroute", expectedRevision, model },
+      confirm: `Switch initiative ${view.initiativeId} from ${view.model ?? "the default model"} to ${model} and continue? Features started from now on use it, and its stopped runs move to it; finished work stays. Y confirms; N keeps the current model.`,
+    });
   return options;
 }
 
 /**
- * Executes a TUI command through the initiative service. Approve and resume only record the
- * decision; the caller drives the initiative afterwards, as `baked workflow initiative approve`
- * and `resume` do.
+ * Executes a TUI command through the initiative service. Approve, resume and reroute only record
+ * the decision; the caller drives the initiative afterwards, as `baked workflow initiative approve`,
+ * `resume` and `reroute --resume` do.
  */
 export async function applyInitiativeAction(
   initiatives: InitiativeService,
@@ -202,6 +226,11 @@ export async function applyInitiativeAction(
       return { view: await initiatives.pause(id, command), drive: false };
     case "replan":
       return { view: await initiatives.replan(id, command, action.featureId), drive: false };
+    case "reroute":
+      return {
+        view: await initiatives.reroute(id, command, { model: action.model, resume: true }),
+        drive: true,
+      };
   }
 }
 

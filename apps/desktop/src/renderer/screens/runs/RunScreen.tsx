@@ -14,6 +14,7 @@ import { GateView } from "./GateView.js";
 import { type RunData, useRun } from "./load.js";
 import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
 import { Meter, Panel, StatusPill, TONE_TEXT } from "./parts.js";
+import { ReportView } from "./ReportView.js";
 import {
   ChangesView,
   ChecksView,
@@ -37,6 +38,7 @@ const TABS = [
   "checks",
   "criteria",
   "findings",
+  "report",
 ] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABEL: Record<Tab, string> = {
@@ -49,6 +51,7 @@ const TAB_LABEL: Record<Tab, string> = {
   checks: "Checks",
   criteria: "Criteria",
   findings: "Findings",
+  report: "Report",
 };
 
 export const RUN_TITLE_ROW = "flex flex-wrap items-center gap-3";
@@ -585,6 +588,9 @@ function RunBody({
             <GateView projectKey={projectKey} data={data} trace={trace} onDone={refresh} />
           )}
           {tab === "findings" && <FindingsView data={data} trace={trace} />}
+          {tab === "report" && (
+            <ReportView projectKey={projectKey} runId={run.runId} stamp={run.eventSeq} />
+          )}
         </div>
         <aside className="flex flex-[1_1_280px] flex-col gap-[18px]" aria-label="Run status">
           <Budget projectKey={projectKey} data={data} onDone={refresh} />

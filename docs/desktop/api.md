@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`) and `library` (`/v1/commands`, `/v1/skills`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`) and `routing` (`/v1/workflow/routing`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -66,6 +66,8 @@ interface ChatMessage {          // as stored in messages.jsonl (src/types/index
             | { type: "reasoning"; content: string; id: string })[];   // render order
   durationMs?: number;
   isSteering?: boolean;          // a user message sent while the turn ran
+  inputContext?: { kind: "file" | "directory" | "symbol" | "command"; ref: string;
+                   ok: boolean; summary: string; output?: string }[];   // what @ and ! attached
 }
 
 type Prompt = { id: string; createdAt: number } & (
@@ -95,8 +97,11 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
 | `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model` |
+| `GET /v1/mentions` | `?q=&limit=` (default 20, at most 50) | `{mentions: [{kind: "file" \| "directory" \| "symbol", insert, label, detail, indices}]}`: `@` completions for the composer; `insert` is the text after `@`, `indices` the matched characters of `label` |
 
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
+
+A message text with `@` mentions or a leading `!command` is expanded on the server before the model sees it, by the same code as the terminal UI ([user guide](../guide.md#mentions-and-shell-commands-in-the-input)): the stored user message keeps the typed text and lists what was attached in `inputContext`. A destructive `!` command asks with a `destructive` prompt in `default` mode, is denied in `architect` mode with every other command, and runs in `auto` mode. A message that is only a command that did not run ends its turn with `turn-done` `completed` and `message: null`. Text with `@` or `!` sent while a turn runs is not steered into it; it starts its own turn afterwards.
 
 ### Session events
 
@@ -125,7 +130,7 @@ The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/I
 
 ## Workflow runs (exists, gaps filled by B)
 
-Exists: `GET /v1/workflow/definitions`, `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers), `.../usage`, `.../artifacts`, `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. Quick tasks are runs started with `workflow: "quick"`.
+Exists: `GET /v1/workflow/definitions`, `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers), `.../usage`, `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. Quick tasks are runs started with `workflow: "quick"`. `POST /v1/workflow/runs` takes `issue` (a GitHub issue URL, `OWNER/NAME#N` or `#N`, as `--issue`); with it `feature` and `prompt` are optional, the request comes from the issue and the run's delivery pull request closes it ([starting from a GitHub issue](../workflows/runtime.md#starting-from-a-github-issue)).
 
 B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations.
 
@@ -145,6 +150,8 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `GET /v1/workflow/gates` | | `gates`: gates with `required`, `scope`, `source`, `confirmed`, plus `problems` |
 | `POST /v1/workflow/gates/confirm` | `{ids?: string[], all?: true}` | `gates confirm` |
 | `GET /v1/workflow/route` | `?workflow=&model=&route=` | `route`: who runs each stage and why |
+| `GET /v1/workflow/routing` | `?workflow=&model=` | `{layers: {global, project}, workflows, workflowId, runModel, classes, roles, stages, profiles, independentReview: {global, project, effective}, warnings, error}`. Each of `classes`, `roles`, `stages` (of `workflowId`, `sdd` by default) and `profiles` is a list of rows `{target, path, label, global, project, resolved}`: `target` is `{kind: "class", name}`, `{kind: "role", role}`, `{kind: "profile", id}` or `{kind: "stage", workflowId, stageId}`, `path` the key under `modelRouting`, `global` and `project` the route each layer's own file sets (or null), and `resolved` `{model, source, effort?, fallback?}` what a run would use, or null. Routes resolve with the server's running config; `error` says why stages and profiles could not be explained (no run model, unknown workflow) |
+| `PATCH /v1/workflow/routing` | `{scope: "global" \| "project", target, route: {model, effort?, fallback?} \| null, create?, workflow?, model?}` or `{scope, independentReview: "off" \| "warn" \| "require" \| null, workflow?, model?}` | as `GET`. Sets one route of the layer's `modelRouting` (a model ID, or `$class` outside a class), or removes it with `route: null`; `create: true` adds a class that must not exist yet. The change is checked as a run start would check the merged routing; a refused one answers 422 `ROUTING_REFUSED` with every reason in `problems` (an empty model, a class naming a class, a class reference no layer defines, including removing a class still in use, fallback models that are classes, repeat the primary or exceed three, schema errors) and writes nothing. Only the `modelRouting` section of the file changes, and an emptied one is removed. New runs use it; started runs keep their frozen routing |
 | `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated: `stage,model`), `model?` (`(host)` for host attempts), `stage?` | `{days, since, groupBy: string[], filters, runs, attempts, tokens, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens, groups: [{key, keys: {model?, stage?, day?}, runs, attempts, tokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens}]}` over every attempt started in the window. `key` joins the group's values with ` / `. Stage keys are stage IDs (`plan`, `task-T001`, `checks`), days are UTC dates. `costUsd` is estimated from the price table (uncached input, cache reads, cache writes and output; attempts recorded before cache writes were report 0 writes); `unpricedTokens` are tokens of attempts it could not price (no per-step usage, or a model without a price) |
 
 ## Initiatives (B)
@@ -163,6 +170,7 @@ The `baked workflow initiative` commands over HTTP. Mutations take `commandId` a
 | `POST /v1/initiatives/ID/approve`, `/reject` | `requestId` and `digest`, or `requestId` and `reason` | same; approve drives in the background |
 | `POST /v1/initiatives/ID/resume`, `/pause` | | same; resume drives in the background |
 | `POST /v1/initiatives/ID/extend` | `tokens?`, `calls?`, `timeMs?` | `extend` |
+| `POST /v1/initiatives/ID/reroute` | `model`, `resume?` | `reroute`; with `resume: true` it drives in the background |
 
 Initiative requests also appear in `GET /v1/attention` with `source: "initiative"` and `initiativeId`.
 
@@ -185,7 +193,11 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 Changing a file a run froze (an instruction file, a gate or a skill) does not pause the run at once. A run that is driving stops at its next step as `blocked` with reason `input_changed`, which `/v1/attention` shows; resuming a waiting or paused run is refused with 409 `INPUT_CHANGED`. To continue with the new text, stage a candidate (`POST /v1/workflow/runs/RUN_ID/candidate` with only `commandId`) and apply it with `revise`; the plan is approved again before the run resumes. `cancel` or `fork` are the other ways out.
 | `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`: both files as stored and the merged config the server runs with. Provider keys live in the secret store, not here, but values the user put in these files themselves (an MCP server's `env`) are returned as written |
 | `PATCH /v1/config` | `{scope: "global" \| "project", set?: object, remove?: string[]}` | as `GET`; `set` replaces top-level keys, `remove` deletes them; the running server uses the new config at once. Model routing, fallbacks, workflow policy (checks, budget presets), default model and mode live here |
-| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| null, keyUrl?}]}`; `acceptsKey` is false for providers signed in another way (Copilot, Codex, Claude Code) |
+| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| null, keyUrl?, signIn?}]}`; `acceptsKey` is false for providers signed in another way (Copilot, Codex, Claude Code). `signIn` is present for providers that sign in through their own CLI (`claude-code`, `codex`): `{installed, loggedIn, message, command, login: Login \| null}`, where `command` is the terminal command that does the same and `login` the current or last sign-in this server started |
+| `POST /v1/providers/ID/login` | | 202 `{login: Login}`: starts the CLI's own login (`claude auth login`, or Codex's ChatGPT browser login), which opens the browser on this computer; while one runs, returns it instead of starting another. A CLI that is missing fails at once, one that is already signed in succeeds at once. `Login` is `{provider, state: "running" \| "succeeded" \| "failed" \| "cancelled", lines: string[], url?, error?, startedAt, endedAt?}`: `lines` are the CLI's progress lines (the last 200), `url` the sign-in page it printed or returned. 404 for a provider that does not sign in through a CLI |
+| `GET /v1/providers/ID/login` | | `{login: Login \| null}`; poll it while `state` is `running` |
+| `DELETE /v1/providers/ID/login` | | `{login: Login \| null}`; stops a running sign-in (`state: "cancelled"`) |
+| `POST /v1/providers/ID/logout` | | `{ok, message}`: runs the CLI's own logout (`claude auth logout`, `codex logout`) |
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
 
@@ -196,14 +208,15 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget` |
 | Project home | `GET /v1/projects/current`, `GET /v1/workflow/runs`, `GET /v1/attention`, `GET /v1/workflow/doctor` |
 | Needs you | `GET /v1/attention` (stream) of every open project; answers go to the owning run, initiative or session |
-| Chat session | `/v1/sessions/*`, `GET /v1/models`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
+| Chat session | `/v1/sessions/*`, `GET /v1/models`, `GET /v1/mentions`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
 | Quick task, New run | `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET /v1/workflow/definitions`, `POST /v1/workflow/runs` |
 | Workflow run, Parallel writers | `GET /v1/workflow/runs/RUN_ID` and its events, artifacts, usage; approve, reject, answer, pause, resume, extend, reroute (the Model panel) |
 | AI acceptance gate | run snapshot requests and artifacts; `evidence` for manual criteria; resume to re-run |
 | Delivery (in Needs you) | `deliver`, `approve`, `deliver/execute` |
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
-| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET /v1/workflow/route`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET /v1/models` |
+| Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
+| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions` |

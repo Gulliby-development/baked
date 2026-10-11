@@ -7,7 +7,7 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | Claude | `anthropic` | `ANTHROPIC_API_KEY` or `/keys` |
 | Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`), see below |
 | OpenAI API | `openai` | `OPENAI_API_KEY` or `/keys` |
-| OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`) |
+| OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), or Sign in in the desktop app's settings |
 | GitHub Copilot | `copilot` | `COPILOT_API_KEY`, `/keys` or `--set-key copilot`, see below |
 | GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys` |
 
@@ -24,7 +24,7 @@ baked --set-key anthropic sk-ant-...
 The Claude Code connection runs Claude models through the official `claude` CLI and the account it is signed in to, so a Claude subscription works without an API key.
 
 1. Install Claude Code and make sure `claude` is on `PATH`. On Windows use the native build (`claude.exe`, `claude install`); the npm `claude.cmd` shim cannot be started directly. `BAKED_CLAUDE_CODE_PATH` points BAKED at another executable.
-2. Sign in with `/claude-code login` (it runs `claude auth login` and opens the browser) or run `claude auth login` in a terminal.
+2. Sign in with `/claude-code login` (it runs `claude auth login` and opens the browser), with Sign in under Settings > All projects > Providers and keys in the desktop app, or run `claude auth login` in a terminal.
 3. Pick a model: `claude-code/opus`, `claude-code/sonnet`, `claude-code/haiku` or `claude-code/fable` follow the newest model of each family. Any model name Claude Code accepts also works, for example `claude-code/claude-opus-4-8` or `claude-code/sonnet[1m]` for the 1M context window where the plan allows it.
 
 BAKED keeps one `claude -p --input-format stream-json` process per conversation, with all of Claude Code's built-in tools, MCP servers, hooks, skills and project `CLAUDE.md` turned off. BAKED's tool list and adapter rules become the Claude Code system prompt, and each agent step sends only the messages added since the previous step. Claude Code puts its prompt-cache breakpoints on that growing conversation, so later steps read the earlier context from the cache; usage records cache reads and cache writes separately. A step whose transcript does not continue an open conversation (after compaction, a retry, or a changed tool list) starts a new process. Idle processes stop after 10 minutes, and at most four stay open.
@@ -49,9 +49,17 @@ For Claude models BAKED marks the system prompt and the newest message with Copi
 
 ## OpenAI Codex
 
-The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation: while a conversation only grows, each step sends just the new messages, so Codex reuses the same prompt cache key and the cached prefix. A compacted, edited or retried conversation starts a new thread. Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off, because BAKED sends its own.
+The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation, so Codex reuses the same prompt cache key and the cached prefix across steps. BAKED's system prompt becomes the thread's instructions; Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off.
 
-Output still appears when each step finishes. If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec`. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
+BAKED's tools are registered with Codex as native function tools, and replies stream as they are generated:
+
+- When the model calls a tool, the step ends with that call and Codex's turn waits. BAKED runs the tool (with the usual approvals) and the result goes back into the same turn.
+- Codex hands over one tool call at a time, so parallel calls from one model response arrive as consecutive steps.
+- A new user message starts a new turn on the same thread with only that message. A compacted, edited or retried conversation, or a changed tool list, starts a new thread with the conversation so far as a transcript.
+- Codex has no way to force a tool choice; BAKED asks for it in the turn text instead.
+- Token usage comes from Codex's thread totals, including cached input. The usage of a response that called tools is counted in the step after the tool result.
+
+The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
 
 ## Model fallback
 

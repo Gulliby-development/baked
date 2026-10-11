@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
@@ -11,8 +11,10 @@ import type { PullRequestProvider } from "../core/workflows/delivery-provider.js
 import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { uniqueFeatureId } from "../core/workflows/feature-id.js";
+import { issueStart } from "../core/workflows/issue-source.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
+import { runReport } from "../core/workflows/run-report.js";
 import {
   type Decision,
   PolicySchema,
@@ -159,6 +161,19 @@ export async function executeWorkflowCommand(
           ? jsonFile("policy")
           : (service.config.workflows?.policy ?? defaultWorkflowPolicy),
       );
+      const typed = args.flags["prompt-file"]
+        ? readFlagFile("prompt-file")
+        : typeof args.flags.prompt === "string"
+          ? args.flags.prompt
+          : undefined;
+      const fromIssue =
+        typeof args.flags.issue === "string"
+          ? await issueStart(service.store.workspace, service.config, {
+              reference: args.flags.issue,
+              ...(typed !== undefined ? { prompt: typed } : {}),
+              ...(typeof args.flags.feature === "string" ? { featureId: args.flags.feature } : {}),
+            })
+          : null;
       const run = await service.start({
         commandId: stringFlag(args, "command-id", newId()),
         workflowId: stringFlag(
@@ -166,10 +181,9 @@ export async function executeWorkflowCommand(
           "workflow",
           args.positional[0] ?? service.config.workflows?.defaultWorkflow ?? "sdd",
         ),
-        featureId: stringFlag(args, "feature"),
-        prompt: args.flags["prompt-file"]
-          ? readFlagFile("prompt-file")
-          : stringFlag(args, "prompt"),
+        featureId: fromIssue?.featureId ?? stringFlag(args, "feature"),
+        prompt: fromIssue?.prompt ?? typed ?? stringFlag(args, "prompt"),
+        ...(fromIssue ? { issue: fromIssue.issue } : {}),
         policy,
         ownerLabel: stringFlag(args, "owner", "CLI"),
         ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
@@ -390,6 +404,14 @@ export async function executeWorkflowCommand(
         typeof args.flags.top === "string" ? Number(args.flags.top) : undefined,
         typeof args.flags.model === "string" ? args.flags.model : undefined,
       );
+    case "report": {
+      const markdown = runReport(service.store, runId);
+      if (typeof args.flags.output !== "string") return { runId, markdown };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, markdown);
+      return { runId, path, bytes: Buffer.byteLength(markdown) };
+    }
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),
@@ -473,9 +495,15 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
     const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
-    const readonly = ["status", "list", "artifacts", "export", "export-progress", "usage"].includes(
-      args.command,
-    );
+    const readonly = [
+      "status",
+      "list",
+      "artifacts",
+      "export",
+      "export-progress",
+      "usage",
+      "report",
+    ].includes(args.command);
     if (args.command === "profiles") {
       process.stdout.write(
         `${JSON.stringify(routedProfiles(cwd, config, modelFlag(args, config)).list(), null, 2)}\n`,
@@ -514,6 +542,9 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       return exitCode;
     }
     service = new NativeWorkflowService(cwd, config, undefined, readonly);
+    // A run started from an interactive terminal notifies the person when it waits; scripts that
+    // read the output do not.
+    if (service.attention) service.attention.systemNotifications = process.stdout.isTTY === true;
     let lastSeq = 0;
     const existingRun = ["run", "quick"].includes(args.command) ? undefined : args.positional[0];
     if (existingRun && args.flags.events) lastSeq = service.store.snapshot(existingRun).eventSeq;
@@ -531,6 +562,11 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       );
     });
     await Promise.all(streams);
+    // The report prints as Markdown so it can be piped into a file or a pull request.
+    if (args.command === "report" && !args.flags.json && !args.flags.output) {
+      process.stdout.write((result as { markdown: string }).markdown);
+      return 0;
+    }
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
     return ["run", "quick", "resume"].includes(args.command) ||
       (["revise", "extend", "reroute"].includes(args.command) && args.flags.resume === true)
@@ -558,6 +594,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   } finally {
     eventController.abort();
     await Promise.allSettled(streams);
+    await service?.attention?.flush();
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
     service?.close();

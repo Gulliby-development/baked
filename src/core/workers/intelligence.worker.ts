@@ -166,6 +166,14 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
   searchSymbolsFts: (query: unknown, limit: unknown) =>
     requireRepoMap().searchSymbolsFts(query as string, limit as number | undefined),
   getFileSymbols: (relPath: unknown) => requireRepoMap().getFileSymbols(relPath as string),
+  findSymbolDefinitions: (query: unknown, limit: unknown) =>
+    requireRepoMap().findSymbolDefinitions(query as string, limit as number | undefined),
+  getSymbolReferences: (name: unknown, relPath: unknown, limit: unknown) =>
+    requireRepoMap().getSymbolReferences(
+      name as string,
+      relPath as string,
+      limit as number | undefined,
+    ),
   getFileSymbolRanges: (relPath: unknown) =>
     requireRepoMap().getFileSymbolRanges(relPath as string),
   getEnclosingSymbols: (relPath: unknown) =>

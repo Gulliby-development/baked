@@ -5,6 +5,7 @@
  * initiative owns no execution of its own: it starts, rebases and drives ordinary runs, and its
  * readiness rules are the existing `contractHash` dependency mechanism.
  */
+import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { type AcceptedContract, acceptedContract } from "../dependencies.js";
@@ -16,7 +17,7 @@ import {
   type RunSnapshot,
   SafeId,
 } from "../schemas.js";
-import type { NativeWorkflowService } from "../service.js";
+import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
 import { newId } from "../store.js";
 import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
@@ -64,6 +65,16 @@ export interface InitiativeStartRequest {
   autoApprovalConfirmation?: string | null;
   model?: string;
   ownerLabel: string;
+}
+
+/** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
+export interface RerouteResult {
+  featureId: string | null;
+  runId: string;
+  result: "rerouted" | "unchanged" | "skipped";
+  /** The run model before, for a rerouted run. */
+  from?: string;
+  reason?: string;
 }
 
 export type FeatureState =
@@ -151,6 +162,8 @@ export interface InitiativeView {
   goals: string[];
   completionCriteria: string[];
   workflowId: string;
+  /** The model feature runs start with; null uses the configured default model. */
+  model: string | null;
   featureAutoApproval: InitiativeSettings["featureAutoApproval"];
   decompose: { runId: string; status: string; reason: string } | null;
   features: FeatureView[];
@@ -471,6 +484,112 @@ export class InitiativeService {
     });
   }
 
+  /**
+   * Moves the initiative to another model: feature runs it starts from now on use `model`, and
+   * its open runs that are stopped (the decompose run and current feature runs) are rerouted like
+   * `baked workflow reroute`, with the same checks and `run.rerouted` events. Every run is checked
+   * before any is written, so a refused model changes nothing. With `resume`, rerouted runs that
+   * are blocked and a paused initiative continue; the caller then drives the initiative. A split
+   * waiting for approval is proposed again, since its approval digest covers the model.
+   */
+  async reroute(
+    id: string,
+    command: CommandIdentity,
+    request: { model: string; resume?: boolean },
+  ): Promise<InitiativeView> {
+    SafeId.parse(command.commandId);
+    const model = request.model.trim();
+    const resume = request.resume === true;
+    const body = { action: "reroute", model, resume };
+    const full = JSON.parse(JSON.stringify({ initiativeId: id, ...command, ...body })) as unknown;
+    const previous = this.store.previousCommand<InitiativeView>(command.commandId, full);
+    if (previous) return previous;
+    if (!model || model === "none")
+      throw new WorkflowFault("INVALID_DEFINITION", "Select a model to switch the initiative to");
+    const row = this.store.get(id);
+    if (row.status === "completed" || row.status === "refused")
+      throw new WorkflowFault(
+        "STALE_DECISION",
+        `An initiative that is ${row.status} cannot switch models`,
+      );
+    if (row.revision !== command.expectedRevision)
+      throw new WorkflowFault("REVISION_CONFLICT", "Initiative revision changed", {
+        expected: command.expectedRevision,
+        actual: row.revision,
+      });
+    if (this.active.has(id))
+      throw new WorkflowFault(
+        "WORKSPACE_BUSY",
+        "The initiative is executing; pause it before switching its model",
+      );
+    const runs = this.currentRuns(id);
+    const busy = runs.filter((r) => this.workflows.store.run(r.runId).status === "running");
+    if (busy.length)
+      throw new WorkflowFault(
+        "WORKSPACE_BUSY",
+        `Run ${busy.map((r) => r.runId).join(", ")} is executing; pause the initiative before switching its model`,
+      );
+    const results: RerouteResult[] = [];
+    const planned: { run: (typeof runs)[number]; plan: PlannedReroute }[] = [];
+    for (const run of runs) {
+      if (!this.workflows.store.latestArtifact(run.runId, ROUTING_ARTIFACT)) {
+        results.push({ ...run, result: "skipped", reason: "started before routing was recorded" });
+        continue;
+      }
+      const plan = await this.workflows.planReroute(run.runId, { model });
+      if (plan) planned.push({ run, plan });
+      else results.push({ ...run, result: "unchanged", reason: "already uses this model" });
+    }
+    if (!planned.length && this.store.settings(row).model === model)
+      throw new WorkflowFault("INVALID_DEFINITION", "The initiative already uses this model");
+    const derived = (runId: string, step: string): string =>
+      `ir-${hashJson({ commandId: command.commandId, runId, step }).slice(0, 48)}`;
+    for (const { run, plan } of planned) {
+      const before = this.workflows.store.run(run.runId);
+      const after = this.workflows.commitReroute(
+        run.runId,
+        { commandId: derived(run.runId, "reroute"), expectedRevision: before.revision },
+        { model },
+        plan,
+      );
+      const result: RerouteResult = { ...run, result: "rerouted", from: plan.before.runModel };
+      // The switch stands even when the run cannot continue yet; its next drive reports why.
+      if (resume && after.status === "blocked")
+        await this.workflows
+          .resume(run.runId, {
+            commandId: derived(run.runId, "resume"),
+            expectedRevision: after.revision,
+          })
+          .catch((err: unknown) => {
+            result.reason = `not resumed: ${err instanceof Error ? err.message : String(err)}`;
+          });
+      results.push(result);
+    }
+    return this.command(id, command, body, () => {
+      const current = this.store.get(id);
+      const settings = this.store.settings(current);
+      this.store.setSettings(id, { ...settings, model });
+      this.store.emit(id, "initiative.rerouted", {
+        model: { from: settings.model, to: model },
+        runs: results,
+      });
+      // The split approval digest covers the model; a pending approval is asked again.
+      const pending = this.store.requests(id).some((r) => r.status === "pending");
+      if (pending && current.plan_revision)
+        this.propose(
+          id,
+          this.store.plan(this.store.revision(id, current.plan_revision)),
+          "user",
+          null,
+        );
+      if (resume && current.status === "paused")
+        this.store.setStatus(
+          id,
+          current.approved_plan_revision === null ? "decomposing" : "active",
+        );
+    });
+  }
+
   // --- Execution ---------------------------------------------------------------------------
 
   /**
@@ -764,6 +883,7 @@ export class InitiativeService {
       goals: plan?.goals ?? [],
       completionCriteria: plan?.completionCriteria ?? [],
       workflowId: settings.workflowId,
+      model: settings.model,
       featureAutoApproval: settings.featureAutoApproval,
       decompose: decompose
         ? { runId: decompose.id, status: decompose.status, reason: decompose.reason }
@@ -1045,6 +1165,18 @@ export class InitiativeService {
         throw new WorkflowFault("INVALID_REFERENCE", `No accepted contract of ${dependency} yet`);
       return { feature: { id: dependency }, contract };
     });
+  }
+
+  /** Open runs a reroute moves: the decompose run and current feature runs, superseded excluded. */
+  private currentRuns(id: string): { featureId: string | null; runId: string }[] {
+    const row = this.store.get(id);
+    return [
+      ...(row.decompose_run_id ? [{ featureId: null, runId: row.decompose_run_id }] : []),
+      ...this.store
+        .links(id)
+        .filter((l) => l.superseded_at === null)
+        .map((l) => ({ featureId: l.feature_id, runId: l.run_id })),
+    ].filter((r) => !terminalStates.includes(this.workflows.store.run(r.runId).status));
   }
 
   /** Runs of the initiative that are not terminal: the decompose run and current feature runs. */

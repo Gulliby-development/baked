@@ -65,6 +65,8 @@ mock.module("../../src/hooks/useWorkflow.js", () => ({
   useWorkflowRuns: () => ({ runs, info, enabled: true, error: null, reload: () => {} }),
   workflowSession: () => ({ start: async () => snapshot }),
   reloadWorkflowSession: async () => true,
+  existingWorkflowSession: () => null,
+  workflowRoutingApi: () => ({ load: () => ({ global: undefined, project: undefined, workflows: ["sdd"] }), explain: () => { throw new Error("no run model"); }, save: () => {} }),
   workflowGatesApi: () => ({ load: () => defaultWorkflowPolicy.checks.length ? defaultWorkflowPolicy.checks : [{ id: "tests", executable: "bun", args: ["run", "test"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] }], save: async () => {}, suggest: () => [], run: async () => ({ status: "passed", exitCode: 0, durationMs: 10, outputTail: "", truncated: false }) }),
   // The editor reads and writes a temp workspace; user gate and profile folders are temp folders too.
   workflowEditorApi: () => {
@@ -158,6 +160,8 @@ for (const [width, height] of [[120, 40], [80, 24], [50, 20]]) {
     assert((await frame("gates-back")).includes("finished-feature"), "Esc leaves the gate window for the run list");
     // E on the workflow field of the new-run form opens the editor; Esc returns to the form.
     await act(async () => view.mockInput.pressKey("n"));
+    // Description, GitHub issue and feature ID come before the workflow field.
+    await act(async () => view.mockInput.pressTab());
     await act(async () => view.mockInput.pressTab());
     await act(async () => view.mockInput.pressTab());
     await act(async () => view.mockInput.pressKey("e"));

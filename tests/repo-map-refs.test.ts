@@ -180,3 +180,19 @@ describe("call graph", () => {
     }
   });
 });
+
+describe("symbol lookup for @ mentions", () => {
+  it("findSymbolDefinitions returns the line range of a definition", () => {
+    const defs = repoMap.findSymbolDefinitions("formatDate");
+    expect(defs[0]).toMatchObject({ name: "formatDate", path: "src/utils.ts", line: 1 });
+    expect(defs[0]?.endLine).toBeGreaterThanOrEqual(3);
+    expect(repoMap.findSymbolDefinitions("noSuchSymbol")).toEqual([]);
+  });
+
+  it("getSymbolReferences lists call sites and importers", () => {
+    const refs = repoMap.getSymbolReferences("formatDate", "src/utils.ts");
+    expect(refs.calls.some((c) => c.path === "src/app.ts" && c.caller === "renderTimestamp")).toBe(true);
+    expect(refs.calls.some((c) => c.path === "src/unrelated.ts")).toBe(false);
+    expect(refs.importers).toContain("src/app.ts");
+  });
+});

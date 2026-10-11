@@ -192,6 +192,8 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       : merged.compaction;
     const retry = layer.retry ? { ...merged.retry, ...layer.retry } : merged.retry;
     const mcpServers = mergeMCPServers(merged.mcpServers, layer.mcpServers);
+    // Merged before the spread below replaces merged.modelRouting with the layer's own.
+    const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
     merged = {
       ...merged,
       ...layer,
@@ -204,7 +206,6 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       retry,
       mcpServers,
     };
-    const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
     if (routing) merged.modelRouting = routing;
   }
   if (merged.workflows) merged.workflows = WorkflowConfigSchema.parse(merged.workflows);

@@ -4,6 +4,8 @@ import { z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { parseWorkflowArgs } from "../../headless/workflow-parse.js";
 import type { AppConfig } from "../../types/index.js";
+import { ContextManager } from "../context/manager.js";
+import { SharedRootContext } from "../context/shared-root.js";
 import { setCwd } from "../cwd.js";
 import { installGlobalFetch } from "../llm/http-agent.js";
 import { scaledPolicy } from "../workflows/budget.js";
@@ -16,6 +18,7 @@ import {
   applyInitiativeAction,
   type InitiativeListView,
 } from "../workflows/initiatives/view-model.js";
+import { issueStart } from "../workflows/issue-source.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
 import { ROLLBACK_ARTIFACT_KIND, type RollbackReport } from "../workflows/rollback.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
@@ -36,6 +39,12 @@ import {
   readWorkflowSummaries,
   readWorkflowViewIfChanged,
 } from "../workflows/view.js";
+import {
+  borrowIntelligence,
+  INTELLIGENCE_RELAY_CALLBACK,
+  type IntelligenceRelayRequest,
+  type IntelligenceRelayTransport,
+} from "./intelligence-relay.js";
 import { createWorkerHandler } from "./rpc.js";
 import type { UndoResult } from "./workflow-client.js";
 
@@ -54,9 +63,12 @@ function currentInitiatives(): InitiativeService {
   initiatives ??= new InitiativeService(current());
   return initiatives;
 }
+/** The main thread's intelligence worker, when run steps borrow it. */
+let relay: IntelligenceRelayTransport | undefined;
 async function close(): Promise<void> {
   for (const controller of controllers.values()) controller.abort(new Error("Workflow shutdown"));
   await service?.shutdown();
+  await service?.rootContext.dispose();
   service?.close();
   service = undefined;
   initiatives = undefined;
@@ -83,8 +95,10 @@ function driveInitiative(id: string): void {
 const StartInput = z
   .object({
     workflowId: SafeId,
-    featureId: SafeId,
-    prompt: z.string().min(1),
+    // Empty with an issue: the core names the feature after it.
+    featureId: z.union([SafeId, z.literal("")]),
+    prompt: z.string(),
+    issue: z.string().min(1).max(500).optional(),
     model: z.string().min(1),
     budget: BudgetPreset,
     executionMode: z.enum(["inline", "worktree"]).optional(),
@@ -160,11 +174,19 @@ const ctx = createWorkerHandler(
       const id = SafeId.parse(requestId);
       const request = StartInput.parse(input);
       const runtime = current();
+      const fromIssue = request.issue
+        ? await issueStart(runtime.workspace, runtime.config, {
+            reference: request.issue,
+            ...(request.prompt ? { prompt: request.prompt } : {}),
+            ...(request.featureId ? { featureId: request.featureId } : {}),
+          })
+        : null;
       const run = await runtime.start({
         commandId: id,
         workflowId: request.workflowId,
-        featureId: request.featureId,
-        prompt: request.prompt,
+        featureId: fromIssue?.featureId ?? SafeId.parse(request.featureId),
+        prompt: fromIssue?.prompt ?? request.prompt ?? "",
+        ...(fromIssue ? { issue: fromIssue.issue } : {}),
         policy: scaledPolicy(
           runtime.config.workflows?.policy ?? defaultWorkflowPolicy,
           request.budget,
@@ -292,6 +314,9 @@ const ctx = createWorkerHandler(
       const workflows = current().config.workflows;
       if (workflows) workflows.policy = { ...workflows.policy, checks: parsed };
     },
+    intelligenceEvent: (event, data) => {
+      if (typeof event === "string") relay?.emit(event, data);
+    },
     abort: (requestId) => {
       controllers.get(SafeId.parse(requestId))?.abort(new Error("Command aborted"));
     },
@@ -300,7 +325,17 @@ const ctx = createWorkerHandler(
   async (config) => {
     if (typeof config.workspace !== "string") throw new Error("Missing workflow workspace");
     setCwd(config.workspace, { changeProcess: false });
-    service = new NativeWorkflowService(config.workspace, config.config as AppConfig);
+    const workspace = config.workspace;
+    const appConfig = config.config as AppConfig;
+    service = new NativeWorkflowService(
+      workspace,
+      appConfig,
+      undefined,
+      false,
+      new SharedRootContext(() => rootContext(workspace, appConfig)),
+    );
+    // The terminal app is where the person is, so a run that starts waiting raises a notification.
+    if (service.attention) service.attention.systemNotifications = true;
     // Events are appended inside transactions; notify after the current task so readers see them.
     const changed = new Set<string>();
     service.store.onEvent = (event) => {
@@ -317,6 +352,29 @@ const ctx = createWorkerHandler(
   },
   close,
 );
+
+/**
+ * Run steps borrow the terminal UI's intelligence worker, so the process keeps one repository map
+ * and one set of language servers. Without one for this workspace (another workspace, or a host
+ * that serves no relay), the root starts a worker of its own.
+ */
+async function rootContext(workspace: string, config: AppConfig): Promise<ContextManager> {
+  const repoMapEnabled = config.repoMap !== false;
+  try {
+    const borrowed = await borrowIntelligence(workspace, (request: IntelligenceRelayRequest) =>
+      // The borrowing client applies its own timeout to each call.
+      ctx.requestCallback(INTELLIGENCE_RELAY_CALLBACK, request, 24 * 60 * 60_000),
+    );
+    relay = borrowed.transport;
+    return await ContextManager.createAsync(workspace, undefined, {
+      repoMapEnabled,
+      intelligence: borrowed.client,
+    });
+  } catch {
+    relay = undefined;
+    return ContextManager.createAsync(workspace, undefined, { repoMapEnabled });
+  }
+}
 
 /** What the new-run form shows for each workflow; a listing that fails shows nothing. */
 function definitionSummaries(

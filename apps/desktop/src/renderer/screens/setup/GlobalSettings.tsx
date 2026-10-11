@@ -1,52 +1,156 @@
-import { type FormEvent, useState } from "react";
+import { useEffect, useState } from "react";
+import { bridge } from "../../client/bridge.js";
 import {
+  type CliLogin,
+  type CliSignIn,
   type ConfigView,
-  EFFORTS,
-  type Effort,
-  type IndependentReview,
-  type ModelRouting,
   type ProviderStatus,
   setup,
 } from "../../client/setup.js";
-import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
-import { Dot } from "../../components/ui/dot.js";
-import { Empty } from "../../components/ui/empty.js";
-import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
-import { cn } from "../../lib/cn.js";
-import { CHECK, STACK as COLUMN, LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
 import { useDesktop } from "../../store.js";
-import { type ClassRow, classRoute, classRows, commandLabel, splitList } from "./logic.js";
-import {
-  ACTIONS,
-  ADD,
-  errorText,
-  FIELD_HALF,
-  FL,
-  FLUSH,
-  FORM,
-  GROW,
-  H2,
-  LINE,
-  LINE_LOOSE,
-  LIST,
-  LoadState,
-  NeedsNewer,
-  NOTE,
-  OK,
-  PAIR,
-  ROW,
-  SETUP,
-  STACK,
-  Tag,
-  useLoad,
-  WARN,
-} from "./shared.js";
-
-const CELL = "min-w-[140px] whitespace-normal";
+import { commandLabel, signInView } from "./logic.js";
+import { type RoutingProject, RoutingSection } from "./RoutingSection.js";
+import { errorText, LoadState, NeedsNewer, Tag, useLoad } from "./shared.js";
 
 /** Writes top-level keys of the global config; resolves to whether it worked. */
 type Patch = (set: Record<string, unknown>) => Promise<boolean>;
+
+const LOGIN_POLL_MS = 1000;
+const LOGIN_LINES_SHOWN = 8;
+
+/**
+ * Sign-in for a provider that runs through its own CLI: the backend starts the CLI's login, which
+ * opens the browser; this polls its progress and offers the sign-in page in case none opened.
+ */
+function CliSignInControls({
+  projectKey,
+  provider,
+  signIn,
+  onChanged,
+}: {
+  projectKey: string;
+  provider: ProviderStatus;
+  signIn: CliSignIn;
+  onChanged: () => void;
+}) {
+  const [login, setLogin] = useState<CliLogin | null>(signIn.login);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const running = login?.state === "running";
+
+  useEffect(() => {
+    if (!running) return;
+    let live = true;
+    const timer = setInterval(() => {
+      setup.login(projectKey, provider.id).then(
+        ({ login: next }) => {
+          if (!live) return;
+          setLogin(next);
+          if (next?.state !== "running") onChanged();
+        },
+        (e: unknown) => live && setError(errorText(e)),
+      );
+    }, LOGIN_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [running, projectKey, provider.id, onChanged]);
+
+  const act = async (work: () => Promise<void>): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await work();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const view = signInView({ ...signIn, login });
+  const shown = login?.lines.slice(-LOGIN_LINES_SHOWN) ?? [];
+
+  return (
+    <>
+      {view.action === "sign-in" && (
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() =>
+            void act(async () => {
+              const started = (await setup.startLogin(projectKey, provider.id)).login;
+              setLogin(started);
+              onChanged();
+            })
+          }
+        >
+          Sign in
+        </Button>
+      )}
+      {view.action === "cancel" && login?.url && (
+        <Button
+          size="sm"
+          variant="neutral"
+          onClick={() => void bridge.openExternal(login.url ?? "")}
+        >
+          Open sign-in page
+        </Button>
+      )}
+      {view.action === "cancel" && (
+        <Button
+          size="sm"
+          variant="neutral"
+          disabled={busy}
+          onClick={() =>
+            void act(async () => {
+              setLogin((await setup.cancelLogin(projectKey, provider.id)).login);
+              onChanged();
+            })
+          }
+        >
+          Cancel
+        </Button>
+      )}
+      {view.action === "sign-out" && (
+        <Button
+          size="sm"
+          variant="neutral"
+          disabled={busy}
+          onClick={() =>
+            void act(async () => {
+              const result = await setup.logout(projectKey, provider.id);
+              if (!result.ok) throw new Error(result.message);
+              setLogin(null);
+              onChanged();
+            })
+          }
+        >
+          Sign out
+        </Button>
+      )}
+      {view.action === "install" && (
+        <span className="muted setup-note setup-full">
+          Install the {provider.name} CLI, then sign in here or run{" "}
+          <code className="mono">{signIn.command}</code> in a terminal.
+        </span>
+      )}
+      {running && shown.length > 0 && (
+        <pre className="setup-login-log mono setup-full" aria-live="polite">
+          {shown.join("\n")}
+        </pre>
+      )}
+      {login?.state === "failed" && (
+        <div className="banner error setup-full">
+          {login.error ?? "Sign-in failed."} You can also run{" "}
+          <code className="mono">{signIn.command}</code> in a terminal.
+        </div>
+      )}
+      {error && <div className="banner error setup-full">{error}</div>}
+    </>
+  );
+}
 
 function ProviderRow({
   projectKey,
@@ -77,44 +181,54 @@ function ProviderRow({
   };
   const inputId = `key-${provider.id}`;
   return (
-    <li className={LINE_LOOSE}>
-      <Dot tone={provider.configured ? "ok" : ""} aria-hidden="true" />
-      <span className={`${GROW} ${COLUMN}`}>
+    <li className="setup-line setup-wrap-line">
+      <span className={`dot ${provider.configured ? "ok" : ""}`} aria-hidden="true" />
+      <span className="setup-grow stack">
         <span>{provider.name}</span>
-        <span className={`text-dim-foreground ${NOTE}`}>
-          {provider.configured
-            ? provider.source === "env"
-              ? "configured · key from an environment variable"
-              : provider.source === "app"
-                ? "configured · key saved by BAKED"
-                : "configured"
-            : "not configured"}
-          {!provider.acceptsKey && " · signs in without an API key"}
+        <span className="muted setup-note">
+          {provider.signIn
+            ? signInView(provider.signIn).note
+            : provider.configured
+              ? provider.source === "env"
+                ? "configured · key from an environment variable"
+                : provider.source === "app"
+                  ? "configured · key saved by BAKED"
+                  : "configured"
+              : "not configured"}
+          {!provider.acceptsKey && !provider.signIn && " · signs in without an API key"}
         </span>
       </span>
+      {provider.signIn && (
+        <CliSignInControls
+          projectKey={projectKey}
+          provider={provider}
+          signIn={provider.signIn}
+          onChanged={onChanged}
+        />
+      )}
       {provider.keyUrl && !provider.configured && (
         <a href={provider.keyUrl} target="_blank" rel="noreferrer">
           Get a key
         </a>
       )}
       {provider.acceptsKey && !editing && (
-        <Button variant="secondary" size="md" onClick={() => setEditing(true)}>
+        <button type="button" className="btn" onClick={() => setEditing(true)}>
           {provider.source === "app" ? "Replace key" : "Set key"}
-        </Button>
+        </button>
       )}
       {provider.acceptsKey && provider.source === "app" && !editing && (
-        <Button
-          variant="secondary"
-          size="md"
+        <button
+          type="button"
+          className="btn"
           disabled={busy}
           onClick={() => void run(() => setup.removeProviderKey(projectKey, provider.id))}
         >
           Remove key
-        </Button>
+        </button>
       )}
       {editing && (
         <form
-          className={`${ADD} basis-full`}
+          className="setup-add setup-full"
           onSubmit={(e) => {
             e.preventDefault();
             if (value.trim())
@@ -127,25 +241,21 @@ function ProviderRow({
           <input
             id={inputId}
             type="password"
-            className="min-h-[34px] rounded-base border-2 border-border bg-[var(--bg)] px-[10px] text-foreground [font-family:inherit] [font-size:inherit] [font-weight:inherit] [line-height:inherit]"
+            className="mono"
             autoComplete="off"
             placeholder="Paste the API key"
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
-          <Button type="submit" variant="primary" size="md" disabled={busy || !value.trim()}>
+          <button type="submit" className="btn-primary" disabled={busy || !value.trim()}>
             Save
-          </Button>
-          <Button variant="secondary" size="md" onClick={() => setEditing(false)}>
+          </button>
+          <button type="button" className="btn" onClick={() => setEditing(false)}>
             Cancel
-          </Button>
+          </button>
         </form>
       )}
-      {error && (
-        <Alert tone="error" className="basis-full">
-          {error}
-        </Alert>
-      )}
+      {error && <div className="banner error setup-full">{error}</div>}
     </li>
   );
 }
@@ -153,16 +263,16 @@ function ProviderRow({
 function Providers({ projectKey }: { projectKey: string }) {
   const [providers, reload] = useLoad(() => setup.providers(projectKey), [projectKey]);
   return (
-    <section className={STACK} aria-labelledby="providers">
-      <h2 id="providers" className={H2}>
+    <section className="setup-section" aria-labelledby="providers">
+      <h2 id="providers" className="setup-h2">
         Providers and keys
       </h2>
-      <p className={LEDE}>
+      <p className="lede">
         Keys live in the system keychain or the environment, never in config files, and are never
         shown here.
       </p>
       {providers.state === "ready" ? (
-        <ul className={cn(PANEL, LIST, FLUSH)}>
+        <ul className="card setup-list setup-flush">
           {providers.data.providers.map((p) => (
             <ProviderRow key={p.id} projectKey={projectKey} provider={p} onChanged={reload} />
           ))}
@@ -174,367 +284,34 @@ function Providers({ projectKey }: { projectKey: string }) {
   );
 }
 
-function ClassEditor({
-  row,
-  onSave,
-  onRemove,
-  onCancel,
-  busy,
-}: {
-  row: ClassRow | null;
-  onSave: (name: string, model: string, effort: Effort, fallback: string[]) => void;
-  onRemove: (() => void) | null;
-  onCancel: () => void;
-  busy: boolean;
-}) {
-  const [name, setName] = useState(row?.name ?? "");
-  const [model, setModel] = useState(row?.model ?? "");
-  const [effort, setEffort] = useState<Effort>(row?.effort ?? "default");
-  const [fallback, setFallback] = useState(row?.fallback.join(", ") ?? "");
-  const submit = (e: FormEvent): void => {
-    e.preventDefault();
-    onSave(name.trim(), model.trim(), effort, splitList(fallback));
-  };
-  return (
-    <form className={cn(PANEL, FORM)} onSubmit={submit} aria-label="Model class">
-      <div className={PAIR}>
-        <div className={FIELD_HALF}>
-          <label htmlFor="class-name">Class</label>
-          <input
-            id="class-name"
-            type="text"
-            value={name}
-            disabled={row !== null}
-            placeholder="deep"
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-        <div className={FIELD_HALF}>
-          <label htmlFor="class-effort">Effort</label>
-          <select
-            id="class-effort"
-            value={effort}
-            onChange={(e) => setEffort(e.target.value as Effort)}
-          >
-            {EFFORTS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-      <div className={FL}>
-        <label htmlFor="class-model">Model</label>
-        <input
-          id="class-model"
-          type="text"
-          value={model}
-          placeholder="anthropic/claude-opus-5-5"
-          onChange={(e) => setModel(e.target.value)}
-        />
-      </div>
-      <div className={FL}>
-        <label htmlFor="class-fallback">Fallback models, in order (up to 3)</label>
-        <input
-          id="class-fallback"
-          type="text"
-          value={fallback}
-          placeholder="none"
-          onChange={(e) => setFallback(e.target.value)}
-        />
-      </div>
-      <div className={ACTIONS}>
-        <Button
-          type="submit"
-          variant="primary"
-          size="md"
-          disabled={busy || !model.trim() || !name.trim()}
-        >
-          Save
-        </Button>
-        <Button variant="secondary" size="md" onClick={onCancel}>
-          Cancel
-        </Button>
-        {onRemove && (
-          <Button variant="secondary" size="md" disabled={busy} onClick={onRemove}>
-            Remove from config
-          </Button>
-        )}
-      </div>
-    </form>
-  );
-}
-
-function Routing({
-  config,
-  patch,
-  busy,
-  setError,
-}: {
-  config: ConfigView;
-  patch: Patch;
-  busy: boolean;
-  setError: (message: string | null) => void;
-}) {
-  const routing: ModelRouting = config.global.modelRouting ?? {};
-  const rows = classRows(routing);
-  const [editing, setEditing] = useState<string | null>(null);
-  const runModel = config.effective.defaultModel;
-  const saveRouting = async (next: ModelRouting): Promise<void> => {
-    if (await patch({ modelRouting: next })) setEditing(null);
-  };
-  const review: IndependentReview =
-    routing.independentReview ?? (config.global.modelRouting ? "warn" : "off");
-  const describe = (row: ClassRow): string => {
-    if (row.model) return row.model;
-    if (row.name === "active") return `tab model${runModel ? ` · ${runModel}` : ""}`;
-    return "run model (not set)";
-  };
-  const editingRow = editing === "+" ? null : (rows.find((r) => r.name === editing) ?? null);
-  return (
-    <section className={STACK} aria-labelledby="routing">
-      <h2 id="routing" className={H2}>
-        Model routing
-      </h2>
-      <p className={LEDE}>
-        Defaults for every project; a project can override them in its own{" "}
-        <span className="font-mono">.baked/config.json</span>.
-      </p>
-      <h3 className={LABEL}>Classes</h3>
-      <div className={cn(PANEL, FLUSH)}>
-        <table className={TABLE}>
-          <thead>
-            <tr>
-              <th>Class</th>
-              <th>Model</th>
-              <th>Effort</th>
-              <th>Fallback</th>
-              <th>Used by</th>
-              <th>
-                <span className="sr-only">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody className="font-mono">
-            {rows.map((row) => (
-              <tr key={row.name}>
-                <td>${row.name}</td>
-                <td className={row.model ? CELL : `${CELL} text-dim-foreground`}>
-                  {describe(row)}
-                </td>
-                <td>{row.effort}</td>
-                <td className={CELL}>{row.fallback.length ? row.fallback.join(", ") : "–"}</td>
-                <td className={CELL}>{row.usedBy.length ? row.usedBy.join(", ") : "–"}</td>
-                <td>
-                  <Button
-                    variant="secondary"
-                    size="md"
-                    onClick={() => setEditing(row.name)}
-                    aria-label={`Edit $${row.name}`}
-                  >
-                    Edit
-                  </Button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {editing === null ? (
-        <div>
-          <Button variant="secondary" size="md" onClick={() => setEditing("+")}>
-            Add class
-          </Button>
-        </div>
-      ) : (
-        <ClassEditor
-          key={editing}
-          row={editingRow}
-          busy={busy}
-          onCancel={() => setEditing(null)}
-          onRemove={
-            editingRow?.model
-              ? () => {
-                  const classes = { ...routing.classes };
-                  delete classes[editingRow.name];
-                  void saveRouting({ ...routing, classes });
-                }
-              : null
-          }
-          onSave={(name, model, effort, fallback) => {
-            if (!/^[a-z][a-z0-9-]{0,31}$/.test(name)) {
-              setError(
-                "Class names are lowercase letters, digits and '-', starting with a letter.",
-              );
-              return;
-            }
-            if (model.startsWith("$")) {
-              setError("A class names a model, not another class.");
-              return;
-            }
-            if (fallback.length > 3) {
-              setError("Up to three fallback models.");
-              return;
-            }
-            void saveRouting({
-              ...routing,
-              classes: { ...routing.classes, [name]: classRoute(model, effort, fallback) },
-            });
-          }}
-        />
-      )}
-      <div className={cn(PANEL, ROW)}>
-        <span className={`${GROW} ${COLUMN}`}>
-          <span>Independent review</span>
-          <span className={`text-dim-foreground ${NOTE}`}>
-            What happens when a reviewer would run on a model the implementation also uses.
-          </span>
-        </span>
-        <SegmentGroup aria-label="Independent review">
-          {(["off", "warn", "require"] as const).map((mode) => (
-            <Segment
-              key={mode}
-              aria-pressed={review === mode}
-              disabled={busy}
-              onClick={() => void saveRouting({ ...routing, independentReview: mode })}
-            >
-              {mode}
-            </Segment>
-          ))}
-        </SegmentGroup>
-      </div>
-    </section>
-  );
-}
-
-function RouteExplanation({
-  projectKey,
-  projectName,
-  config,
-}: {
-  projectKey: string;
-  projectName: string;
-  config: ConfigView;
-}) {
-  const [definitions] = useLoad(() => setup.definitions(projectKey), [projectKey]);
-  const [workflow, setWorkflow] = useState("sdd");
-  const configKey = JSON.stringify(config.effective.modelRouting ?? null);
-  const [route] = useLoad(
-    () => setup.route(projectKey, workflow),
-    [projectKey, workflow, configKey],
-  );
-  const ids =
-    definitions.state === "ready"
-      ? definitions.data.map((d) => d.id)
-      : ["sdd", "quick", "standard"];
-  const override = config.project.modelRouting;
-  return (
-    <section className={STACK} aria-labelledby="route">
-      <div className={ROW}>
-        <h3 id="route" className={`${LABEL} ${GROW}`}>
-          Who runs each stage of {workflow}
-        </h3>
-        <label htmlFor="route-workflow" className="sr-only">
-          Workflow
-        </label>
-        <select id="route-workflow" value={workflow} onChange={(e) => setWorkflow(e.target.value)}>
-          {ids.map((id) => (
-            <option key={id} value={id}>
-              {id}
-            </option>
-          ))}
-        </select>
-      </div>
-      {route.state === "ready" ? (
-        <>
-          <div className={cn(PANEL, FLUSH)}>
-            <table className={TABLE}>
-              <thead>
-                <tr>
-                  <th>Stage</th>
-                  <th>Model</th>
-                  <th>Chosen by</th>
-                </tr>
-              </thead>
-              <tbody>
-                {route.data.stages.map((stage) => (
-                  <tr key={stage.stageId}>
-                    <td>{stage.stageId}</td>
-                    <td className="font-mono">
-                      {stage.model ?? (
-                        <span className="text-dim-foreground">each agent's profile</span>
-                      )}
-                      {stage.effort && stage.effort !== "default" ? ` · ${stage.effort}` : ""}
-                    </td>
-                    <td className="text-dim-foreground">{stage.source ?? "profiles"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {route.data.warnings.length ? (
-            <ul className={`m-0 list-none p-0 ${WARN} ${NOTE}`}>
-              {route.data.warnings.map((w) => (
-                <li key={w}>! {w}</li>
-              ))}
-            </ul>
-          ) : (
-            <span className={`${OK} ${NOTE}`}>
-              ✓ Reviewers use a different model from the implementer.
-            </span>
-          )}
-          <span className={`text-dim-foreground ${NOTE}`}>
-            As routed for {projectName}, with run model{" "}
-            <span className="font-mono">{route.data.runModel}</span>.
-          </span>
-        </>
-      ) : (
-        <LoadState value={route} what="the route explanation" />
-      )}
-      {override && (
-        <div className={cn(PANEL, ROW)}>
-          <Dot tone="warn" aria-hidden="true" />
-          <span className={GROW}>
-            {projectName} overrides model routing in its own{" "}
-            <span className="font-mono">.baked/config.json</span>; the table above includes it.
-          </span>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function GlobalCommands({ projectKey }: { projectKey: string }) {
   const [commands] = useLoad(() => setup.commands(projectKey), [projectKey]);
   const global =
     commands.state === "ready" ? commands.data.commands.filter((c) => c.scope === "global") : [];
   return (
-    <section className={STACK} aria-labelledby="commands">
-      <h2 id="commands" className={H2}>
+    <section className="setup-section" aria-labelledby="commands">
+      <h2 id="commands" className="setup-h2">
         Global commands
       </h2>
-      <p className={LEDE}>
-        Markdown prompt templates in <span className="font-mono">~/.baked/commands/</span>, offered
-        as slash commands in every project: <span className="font-mono">fix-ci.md</span> becomes{" "}
-        <span className="font-mono">/fix-ci</span>.
+      <p className="lede">
+        Markdown prompt templates in <span className="mono">~/.baked/commands/</span>, offered as
+        slash commands in every project: <span className="mono">fix-ci.md</span> becomes{" "}
+        <span className="mono">/fix-ci</span>.
       </p>
       {commands.state !== "ready" ? (
         <LoadState value={commands} what="the command list" />
       ) : global.length === 0 ? (
-        <Empty>No global commands.</Empty>
+        <div className="empty">No global commands.</div>
       ) : (
-        <ul className={cn(PANEL, LIST, FLUSH)}>
+        <ul className="card setup-list setup-flush">
           {global.map((c) => (
-            <li key={c.path} className={LINE}>
-              <span className="font-mono">
+            <li key={c.path} className="setup-line">
+              <span className="mono">
                 {commandLabel(c.name)}
-                {c.argumentHint ? (
-                  <span className="text-dim-foreground"> {c.argumentHint}</span>
-                ) : null}
+                {c.argumentHint ? <span className="muted"> {c.argumentHint}</span> : null}
               </span>
-              <span className={`text-dim-foreground ${GROW}`}>{c.description}</span>
-              <span className={`font-mono text-dim-foreground ${NOTE}`}>{c.path}</span>
+              <span className="muted setup-grow">{c.description}</span>
+              <span className="mono muted setup-note">{c.path}</span>
             </li>
           ))}
         </ul>
@@ -547,12 +324,12 @@ function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; 
   const enabled = config.global.telemetry !== false;
   const url = config.effective.telemetryUrl;
   return (
-    <section className={STACK} aria-labelledby="telemetry">
-      <h2 id="telemetry" className={H2}>
+    <section className="setup-section" aria-labelledby="telemetry">
+      <h2 id="telemetry" className="setup-h2">
         Telemetry
       </h2>
-      <div className={cn(PANEL, STACK)}>
-        <label className={CHECK}>
+      <div className="card setup-stack">
+        <label className="check">
           <input
             type="checkbox"
             checked={enabled}
@@ -561,7 +338,7 @@ function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; 
           />
           Record anonymous usage stats (version, OS, surface)
         </label>
-        <span className={`text-dim-foreground ${NOTE}`}>
+        <span className="muted setup-note">
           {!enabled
             ? "Nothing is recorded."
             : url
@@ -574,11 +351,122 @@ function Telemetry({ config, patch, busy }: { config: ConfigView; patch: Patch; 
   );
 }
 
+interface NotificationsConfig {
+  system?: boolean;
+  webhook?: { url?: string; headers?: Record<string, string>; blockingOnly?: boolean };
+}
+
+/** `notifications` of the global config: terminal notifications and the run attention webhook. */
+function Notifications({
+  config,
+  patch,
+  busy,
+}: {
+  config: ConfigView;
+  patch: Patch;
+  busy: boolean;
+}) {
+  const current = (config.global.notifications ?? {}) as NotificationsConfig;
+  const url = current.webhook?.url ?? "";
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = draft ?? url;
+  const valid = /^https?:\/\/\S+$/i.test(value.trim());
+  const save = (next: NotificationsConfig): Promise<boolean> => patch({ notifications: next });
+  return (
+    <section className="setup-section" aria-labelledby="notifications">
+      <h2 id="notifications" className="setup-h2">
+        Run notifications
+      </h2>
+      <div className="card setup-stack">
+        <span className="muted setup-note">
+          When a run waits for an approval, an answer or a budget extension. This app's own
+          notifications are in the tray menu.
+        </span>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={current.system !== false}
+            disabled={busy}
+            onChange={(e) => void save({ ...current, system: e.target.checked })}
+          />
+          Desktop notifications from the terminal app and the CLI
+        </label>
+        <form
+          className="setup-add"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (valid)
+              void save({ ...current, webhook: { ...current.webhook, url: value.trim() } }).then(
+                (ok) => ok && setDraft(null),
+              );
+          }}
+        >
+          <label htmlFor="notifications-webhook" className="sr-only">
+            Webhook URL
+          </label>
+          <input
+            id="notifications-webhook"
+            type="text"
+            className="mono"
+            autoComplete="off"
+            placeholder="https://example.com/hook"
+            value={value}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={busy || !valid || value.trim() === url}
+          >
+            Save
+          </button>
+          {url && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => {
+                const { webhook: _removed, ...rest } = current;
+                void save(rest).then((ok) => ok && setDraft(null));
+              }}
+            >
+              Remove
+            </button>
+          )}
+        </form>
+        {url && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={current.webhook?.blockingOnly === true}
+              disabled={busy}
+              onChange={(e) =>
+                void save({
+                  ...current,
+                  webhook: { ...current.webhook, blockingOnly: e.target.checked },
+                })
+              }
+            />
+            Only requests the run waits for (skip advisory acceptance decisions)
+          </label>
+        )}
+        <span className="muted setup-note">
+          {url
+            ? `Each waiting run is posted once to ${url} as JSON: run, feature, request kind, never its content.`
+            : "No webhook: nothing is sent."}{" "}
+          Headers such as a token go in notifications.webhook.headers of the config file.
+        </span>
+      </div>
+    </section>
+  );
+}
+
 /** In-page targets; buttons rather than `#id` links, which the hash router would take. */
 const TOC = [
   ["providers", "Providers and keys"],
   ["routing", "Model routing"],
   ["commands", "Global commands"],
+  ["notifications", "Run notifications"],
   ["telemetry", "Telemetry"],
 ] as const;
 
@@ -589,21 +477,27 @@ export function GlobalSettings() {
     return (
       <>
         <h1>All projects</h1>
-        <Empty>
+        <div className="empty">
           Open a project to see these settings: any project's backend reads them from{" "}
-          <span className="font-mono">~/.baked/config.json</span>.
-        </Empty>
+          <span className="mono">~/.baked/config.json</span>.
+        </div>
       </>
     );
-  return <GlobalSettingsFor projectKey={host.key} projectName={host.name} />;
+  const running = projects
+    .filter((p) => p.backend.kind === "running")
+    .map((p) => ({ key: p.key, name: p.name }));
+  return <GlobalSettingsFor projectKey={host.key} projectName={host.name} projects={running} />;
 }
 
 function GlobalSettingsFor({
   projectKey,
   projectName,
+  projects,
 }: {
   projectKey: string;
   projectName: string;
+  /** Running projects; model routing resolves through the one picked there. */
+  projects: RoutingProject[];
 }) {
   const [config, , setConfig] = useLoad(() => setup.config(projectKey), [projectKey]);
   const [busy, setBusy] = useState(false);
@@ -622,45 +516,42 @@ function GlobalSettingsFor({
     }
   };
   return (
-    <div className={SETUP}>
-      <div className={cn(COLUMN, "gap-1")}>
+    <div className="setup">
+      <div className="stack" style={{ gap: 4 }}>
         <h1>All projects</h1>
-        <span className={LEDE}>
+        <span className="lede">
           Shared by every project on this computer, in{" "}
-          <span className="font-mono">
+          <span className="mono">
             {config.state === "ready" ? config.data.paths.global : "~/.baked/config.json"}
           </span>
           . <Tag>read through {projectName}</Tag>
         </span>
       </div>
-      <nav className="flex flex-wrap gap-x-4 gap-y-1" aria-label="On this page">
+      <nav className="setup-toc" aria-label="On this page">
         {TOC.map(([id, label]) => (
           <button
             key={id}
             type="button"
-            className="cursor-pointer border-0 bg-transparent px-0 py-[2px] [font-family:inherit] [font-weight:inherit] [line-height:inherit] text-[13px] text-[var(--accent)] hover:text-[var(--accent-soft)]"
+            className="setup-toc-link"
             onClick={() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" })}
           >
             {label}
           </button>
         ))}
       </nav>
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && <div className="banner error">{error}</div>}
       <Providers projectKey={projectKey} />
       {config.state === "ready" ? (
         <>
-          <Routing config={config.data} patch={patch} busy={busy} setError={setError} />
-          <RouteExplanation
-            projectKey={projectKey}
-            projectName={projectName}
-            config={config.data}
-          />
+          <RoutingSection projects={projects} />
           <GlobalCommands projectKey={projectKey} />
+          <Notifications config={config.data} patch={patch} busy={busy} />
           <Telemetry config={config.data} patch={patch} busy={busy} />
         </>
       ) : config.state === "missing" ? (
         <>
-          <NeedsNewer what="model routing, global commands or telemetry" />
+          <NeedsNewer what="notifications or telemetry" />
+          <RoutingSection projects={projects} />
           <GlobalCommands projectKey={projectKey} />
         </>
       ) : (

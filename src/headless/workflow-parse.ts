@@ -26,6 +26,7 @@ const commands = [
   "recover",
   "candidate",
   "usage",
+  "report",
   "extend",
   "reroute",
   "continue",
@@ -106,6 +107,8 @@ const flags = new Set([
   "route",
   "resume",
   "clarification",
+  "issue",
+  "output",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -149,6 +152,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "writers",
     "route",
     "clarification",
+    "issue",
   ],
   quick: [
     "feature",
@@ -184,6 +188,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top"],
+  report: ["output"],
   extend: [
     "tokens",
     "calls",
@@ -310,10 +315,13 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "INVALID_DEFINITION",
         "Specify at most one workflow ID, positional or --workflow",
       );
-    if (Number(!!result.flags.prompt) + Number(!!result.flags["prompt-file"]) !== 1)
+    const prompts = Number(!!result.flags.prompt) + Number(!!result.flags["prompt-file"]);
+    if (result.flags.issue ? prompts > 1 : prompts !== 1)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "Specify exactly one of --prompt or --prompt-file",
+        result.flags.issue
+          ? "Specify at most one of --prompt or --prompt-file with --issue"
+          : "Specify exactly one of --prompt, --prompt-file or --issue",
       );
   }
   if (
@@ -348,6 +356,10 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 export const workflowHelp = `baked workflow <command> [options]
 
 run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume]
+run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
+  --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
+  and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
+  Closes #N, so merging it closes the issue. #N reads the origin remote's repository
   --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
@@ -404,6 +416,9 @@ estimate [WORKFLOW] (same options as doctor)
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
 usage RUN_ID [--model ID] [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
+report RUN_ID [--output FILE] [--json]
+  One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
+  tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
@@ -417,7 +432,7 @@ discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
-  replan, extend; see baked workflow initiative --help
+  replan, extend, reroute; see baked workflow initiative --help
 
 Management mutations accept --command-id UUID for idempotent retries.
 All commands accept --help. Workflows require an explicit workflows.enabled opt-in.

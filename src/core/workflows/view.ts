@@ -36,8 +36,12 @@ export const BudgetPreset = z.enum(BUDGET_PRESETS);
 export type { BudgetPresetId };
 export interface StartRunInput {
   workflowId: string;
+  /** Empty with `issue` lets the core name the feature `issue-N-TITLE`. */
   featureId: string;
+  /** With `issue`, extra instructions added to the issue's text; may be empty. */
   prompt: string;
+  /** A GitHub issue URL, `owner/name#N` or `#N`, as `workflow run --issue`. */
+  issue?: string;
   model: string;
   budget: BudgetPresetId;
   /** Requested execution mode, as `workflow run --worktree`; omitted, the definition's applies. */
@@ -311,7 +315,8 @@ function detailsOf(store: WorkflowStore, runId: string): RunDetails {
       }) ?? [],
   };
 }
-function changesOf(store: WorkflowStore, runId: string): FileChange[] {
+/** Files the run changed, from its effect journal, with drift against the workspace. */
+export function changesOf(store: WorkflowStore, runId: string): FileChange[] {
   const root = runRoot(store.workspace, store.state(runId));
   const byPath = new Map<string, FileChange & { before: string | null; after: string | null }>();
   for (const effect of store.effects(runId)) {

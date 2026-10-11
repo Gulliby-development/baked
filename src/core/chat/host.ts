@@ -1,11 +1,19 @@
 import type { AppConfig } from "../../types/index.js";
 import type { SharedCacheRef } from "../agents/subagent-tools.js";
 import { ContextManager } from "../context/manager.js";
+import { SharedRootContext } from "../context/shared-root.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { resolveModel } from "../llm/provider.js";
 import { buildProviderOptions } from "../llm/provider-options.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
-import type { ChatAgentHost, TurnAgent, TurnAgentRequest } from "./sessions.js";
+import { type ExpandedChatInput, expandChatInput } from "./input-expansion.js";
+import { type MentionSuggestion, suggestMentions } from "./mention-suggest.js";
+import type {
+  ChatAgentHost,
+  InputExpansionRequest,
+  TurnAgent,
+  TurnAgentRequest,
+} from "./sessions.js";
 
 interface SessionResources {
   context: ContextManager;
@@ -16,23 +24,27 @@ interface SessionResources {
 /**
  * Builds chat turns with the same agent as the terminal UI. The repository map, memory and MCP
  * servers are started once, on the first turn, and shared by every session; each session gets its
- * own context manager and file cache.
+ * own context manager and file cache. Given the workflow service's root context, chat and workflow
+ * runs share one code-intelligence worker and one set of language servers.
  */
 export class BakeChatHost implements ChatAgentHost {
-  private parent: Promise<ContextManager> | undefined;
+  private readonly root: SharedRootContext;
+  private readonly ownsRoot: boolean;
   private readonly sessions = new Map<string, SessionResources>();
   private mcpConnected = false;
 
+  /** Without `root`, the host creates a root of its own and disposes it with the host. */
   constructor(
     private readonly workspace: string,
     private readonly config: AppConfig,
-  ) {}
+    root?: SharedRootContext,
+  ) {
+    this.root = root ?? SharedRootContext.forWorkspace(workspace, config);
+    this.ownsRoot = !root;
+  }
 
   private parentContext(): Promise<ContextManager> {
-    this.parent ??= ContextManager.createAsync(this.workspace, undefined, {
-      repoMapEnabled: this.config.repoMap !== false && process.env.BAKED_NO_REPOMAP !== "1",
-    });
-    return this.parent;
+    return this.root.get();
   }
 
   private async resources(sessionId: string): Promise<SessionResources> {
@@ -81,6 +93,29 @@ export class BakeChatHost implements ChatAgentHost {
     return { agent: turnAgent, contextWindow: provider.contextWindow };
   }
 
+  async expandInput(request: InputExpansionRequest): Promise<ExpandedChatInput> {
+    const { context } = await this.resources(request.sessionId);
+    const expanded = await expandChatInput(request.text, {
+      cwd: this.workspace,
+      mode: request.mode,
+      ...(context.isRepoMapReady() ? { repoMap: context.getRepoMap() } : {}),
+      onApproveDestructive: request.onApproveDestructive,
+      tabId: request.sessionId,
+      abortSignal: request.abortSignal,
+    });
+    for (const f of expanded.files) context.trackMentionedFile(f);
+    return expanded;
+  }
+
+  async suggestMentions(query: string, limit?: number): Promise<MentionSuggestion[]> {
+    const parent = await this.parentContext();
+    return suggestMentions(query, {
+      cwd: this.workspace,
+      ...(parent.isRepoMapReady() ? { repoMap: parent.getRepoMap() } : {}),
+      ...(limit ? { limit } : {}),
+    });
+  }
+
   release(sessionId: string): void {
     const resources = this.sessions.get(sessionId);
     if (!resources) return;
@@ -95,8 +130,6 @@ export class BakeChatHost implements ChatAgentHost {
       const { disposeMCPManager } = await import("../mcp/index.js");
       await disposeMCPManager();
     }
-    const parent = this.parent;
-    this.parent = undefined;
-    if (parent) await (await parent).dispose();
+    if (this.ownsRoot) await this.root.dispose();
   }
 }

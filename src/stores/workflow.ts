@@ -26,7 +26,14 @@ export function applyWorkflowEvent(
   return { snapshot, lastSeq: event.seq };
 }
 
-export type WorkflowScreen = "home" | "run" | "new" | "gates" | "editor" | "initiatives";
+export type WorkflowScreen =
+  | "home"
+  | "run"
+  | "new"
+  | "gates"
+  | "editor"
+  | "initiatives"
+  | "routing";
 /** Compact status shown outside the panel while a run is tracked in this tab session. */
 export interface WorkflowBadge {
   runId: string;
@@ -51,6 +58,8 @@ interface WorkflowUIState {
   showHome: () => void;
   showNew: (prompt?: string, workflow?: string | null) => void;
   showGates: () => void;
+  /** The model routing screen: classes, roles, stages and profiles of `modelRouting`. */
+  showRouting: () => void;
   /** The definition the editor window shows, and the screen Esc returns to. */
   editorId: string | null;
   editorReturn: "home" | "new";
@@ -87,6 +96,7 @@ export const useWorkflowStore = create<WorkflowUIState>((set) => ({
     })),
   showHome: () => set({ screen: "home" }),
   showGates: () => set({ screen: "gates" }),
+  showRouting: () => set({ screen: "routing" }),
   editorId: null,
   editorReturn: "home",
   showEditor: (id, from = "home") => set({ screen: "editor", editorId: id, editorReturn: from }),

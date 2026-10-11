@@ -10,21 +10,29 @@ const Command = z.object({
 });
 const PositiveInt = z.number().int().min(1);
 
-export const StartBody = z.strictObject({
-  commandId: SafeId,
-  feature: SafeId,
-  prompt: z.string().min(1),
-  workflow: SafeId.optional(),
-  /** A run policy object, as the CLI reads from `--policy FILE`. */
-  policy: z.unknown().optional(),
-  model: z.string().min(1).optional(),
-  owner: z.string().min(1).max(200).optional(),
-  confirmAutoApproval: z.string().min(1).optional(),
-  worktree: z.boolean().optional(),
-  writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
-  /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
-  clarification: z.enum(["ask", "assume"]).optional(),
-});
+export const StartBody = z
+  .strictObject({
+    commandId: SafeId,
+    /** Optional with `issue`, which names the feature `issue-N-TITLE`. */
+    feature: SafeId.optional(),
+    /** Optional with `issue`; with it, extra instructions added to the issue's text. */
+    prompt: z.string().min(1).optional(),
+    /** A GitHub issue URL, `owner/name#N` or `#N`, as `--issue`; delivery closes the issue. */
+    issue: z.string().min(1).max(500).optional(),
+    workflow: SafeId.optional(),
+    /** A run policy object, as the CLI reads from `--policy FILE`. */
+    policy: z.unknown().optional(),
+    model: z.string().min(1).optional(),
+    owner: z.string().min(1).max(200).optional(),
+    confirmAutoApproval: z.string().min(1).optional(),
+    worktree: z.boolean().optional(),
+    writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
+    /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
+    clarification: z.enum(["ask", "assume"]).optional(),
+  })
+  .refine((body) => body.issue !== undefined || (body.feature && body.prompt), {
+    message: "feature and prompt are required without issue",
+  });
 export const CommandBody = Command.strict();
 export const ApproveBody = Command.extend({
   requestId: SafeId,
@@ -116,6 +124,10 @@ export const PromptAnswerBody = z.union([
 ]);
 export const SessionListQuery = z.strictObject({ limit: z.string().regex(/^\d+$/).optional() });
 export const ModelsQuery = z.strictObject({ provider: z.string().min(1).optional() });
+export const MentionsQuery = z.strictObject({
+  q: z.string().max(200).optional(),
+  limit: z.string().regex(/^\d+$/).optional(),
+});
 
 export const ContinueBody = Command.extend({ requestId: SafeId }).strict();
 export const EvidenceBody = Command.extend({

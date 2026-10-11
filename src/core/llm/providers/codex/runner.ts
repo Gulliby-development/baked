@@ -46,11 +46,14 @@ interface SerializedTool {
   inputSchema: JSONSchema7;
 }
 
-type PromptArrayContent = Exclude<LanguageModelV2CallOptions["prompt"][number]["content"], string>;
+export type PromptArrayContent = Exclude<
+  LanguageModelV2CallOptions["prompt"][number]["content"],
+  string
+>;
 type PromptPart = PromptArrayContent[number];
-type ToolResultPromptPart = Extract<PromptPart, { type: "tool-result" }>;
+export type ToolResultPromptPart = Extract<PromptPart, { type: "tool-result" }>;
 
-function getFunctionTools(options: LanguageModelV2CallOptions): SerializedTool[] {
+export function getFunctionTools(options: LanguageModelV2CallOptions): SerializedTool[] {
   return (options.tools ?? []).flatMap((tool) => {
     if (tool.type !== "function") return [];
     return [
@@ -70,7 +73,7 @@ function renderDataValue(data: unknown): string {
   return String(data);
 }
 
-function renderToolResult(output: ToolResultPromptPart): string {
+export function renderToolResult(output: ToolResultPromptPart): string {
   switch (output.output.type) {
     case "text":
     case "error-text":
@@ -91,7 +94,7 @@ function renderToolResult(output: ToolResultPromptPart): string {
   }
 }
 
-function renderMessageContent(content: PromptArrayContent): string {
+export function renderMessageContent(content: PromptArrayContent): string {
   return content
     .map((part: PromptPart) => {
       switch (part.type) {
@@ -303,7 +306,7 @@ export function parseCodexResponse(text: string): ParsedCodexResponse {
   return { content, finishReason: "stop" };
 }
 
-function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
+export function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
   const warnings: LanguageModelV2CallWarning[] = [];
   for (const setting of [
     "maxOutputTokens",

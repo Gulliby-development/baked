@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
-import type { ContextManager } from "../context/manager.js";
+import { SharedRootContext } from "../context/shared-root.js";
 import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
@@ -15,6 +15,7 @@ import { validatePackage } from "../specs/validate.js";
 import { hostDiff } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
+import { AttentionNotifier } from "./attention-notify.js";
 import {
   type BudgetLimits,
   budgetUsage,
@@ -50,6 +51,7 @@ import {
   independenceWarnings,
   independentReviewMode,
   type RerouteRequest,
+  type RouteChange,
   rerouteRecord,
   routeChanges,
 } from "./routing.js";
@@ -97,6 +99,25 @@ import {
 } from "./v2/runtime.js";
 import { removeRunWorktree, runRoot } from "./worktree.js";
 
+/** A checked reroute that is not written yet (`planReroute`). */
+export interface PlannedReroute {
+  before: RoutingRecord;
+  after: RoutingRecord;
+  changes: RouteChange[];
+}
+
+/** The stored command body of a reroute; a replay with the same command ID must match it. */
+function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRequest) {
+  const model = request.model?.trim() || undefined;
+  return {
+    runId,
+    ...command,
+    action: "reroute",
+    model: model ?? null,
+    routes: request.routes ?? {},
+  };
+}
+
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
   readonly leases: WorkspaceLeases;
@@ -110,20 +131,29 @@ export class NativeWorkflowService implements WorkflowService {
    * the native executor calls providers, so a service given its own executor checks nothing.
    */
   providerReady: DoctorDeps["providerReady"] | null;
+  /**
+   * The process's root context, created on first use. The native executor builds each step's
+   * context on it, and `baked serve` gives it to the chat host too. The service disposes it on close.
+   */
+  readonly rootContext: SharedRootContext;
+  /** Announces runs that start waiting for a person; null on a read-only service. */
+  readonly attention: AttentionNotifier | null;
   constructor(
     readonly workspace: string,
     readonly config: AppConfig,
     executor?: AgentExecutor,
     readonly = false,
-    parentContext?: ContextManager,
+    rootContext?: SharedRootContext,
   ) {
+    this.rootContext = rootContext ?? SharedRootContext.forWorkspace(workspace, config);
     this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
+    this.attention = readonly ? null : new AttentionNotifier(this.store, workspace, config);
     this.scheduler = new WorkflowScheduler(
       this.store,
       this.leases,
-      executor ?? new NativeAgentExecutor(this.store, this.leases, config, parentContext),
+      executor ?? new NativeAgentExecutor(this.store, this.leases, config, this.rootContext),
     );
   }
   private enabled(): void {
@@ -244,6 +274,7 @@ export class NativeWorkflowService implements WorkflowService {
       worktree: null,
       gateResults: {},
       acceptance: {},
+      issue: request.issue ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -961,21 +992,26 @@ export class NativeWorkflowService implements WorkflowService {
     request: RerouteRequest,
   ): Promise<RunSnapshot> {
     this.enabled();
+    const previous = this.store.previousCommand(
+      command.commandId,
+      rerouteBody(runId, command, request),
+    );
+    if (previous) return previous;
+    const planned = await this.planReroute(runId, request);
+    if (!planned)
+      throw new WorkflowFault("INVALID_DEFINITION", "The run already uses these models");
+    return this.commitReroute(runId, command, request, planned);
+  }
+  /**
+   * The routing record a reroute would write, after the same checks as `reroute`; nothing is
+   * written. Null when the run already uses these models. An initiative plans every run first, so
+   * one refused model leaves all of them unchanged.
+   */
+  async planReroute(runId: string, request: RerouteRequest): Promise<PlannedReroute | null> {
+    this.enabled();
     const model = request.model?.trim() || undefined;
     const routes = request.routes ?? {};
-    const body = { runId, ...command, action: "reroute", model: model ?? null, routes };
-    const previous = this.store.previousCommand(command.commandId, body);
-    if (previous) return previous;
-    const assertStopped = (): void => {
-      const status = this.store.run(runId).status;
-      assertMutable(status);
-      if (status === "running" || this.active.has(runId))
-        throw new WorkflowFault(
-          "WORKSPACE_BUSY",
-          "The run is executing; pause it before switching its models",
-        );
-    };
-    assertStopped();
+    this.assertReroutable(runId);
     if (!model && !Object.keys(routes).length)
       throw new WorkflowFault("INVALID_DEFINITION", "Name a model (--model ID) or stage routes");
     if (model === "none")
@@ -1003,8 +1039,7 @@ export class NativeWorkflowService implements WorkflowService {
       { model, routes },
     );
     const changes = routeChanges(before, after);
-    if (!changes.length && after.runModel === before.runModel)
-      throw new WorkflowFault("INVALID_DEFINITION", "The run already uses these models");
+    if (!changes.length && after.runModel === before.runModel) return null;
     const warnings: string[] = [];
     const independence = independentReviewMode(this.config);
     if (independence !== "off") {
@@ -1038,8 +1073,19 @@ export class NativeWorkflowService implements WorkflowService {
       warnings.push(...checks.filter((check) => check.status === "warn").map(checkLine));
     }
     if (warnings.length) after.warnings = warnings;
-    return this.store.command(runId, command, body, () => {
-      assertStopped();
+    return { before, after, changes };
+  }
+  /** Writes a planned reroute: the new routing revision and its `run.rerouted` event. */
+  commitReroute(
+    runId: string,
+    command: CommandIdentity,
+    request: RerouteRequest,
+    planned: PlannedReroute,
+  ): RunSnapshot {
+    this.enabled();
+    const { before, after, changes } = planned;
+    return this.store.command(runId, command, rerouteBody(runId, command, request), () => {
+      this.assertReroutable(runId);
       const artifact = this.store.artifact(runId, "routing", ROUTING_ARTIFACT, canonical(after));
       this.store.emit(runId, {
         type: "run.rerouted",
@@ -1050,6 +1096,15 @@ export class NativeWorkflowService implements WorkflowService {
         },
       });
     });
+  }
+  private assertReroutable(runId: string): void {
+    const status = this.store.run(runId).status;
+    assertMutable(status);
+    if (status === "running" || this.active.has(runId))
+      throw new WorkflowFault(
+        "WORKSPACE_BUSY",
+        "The run is executing; pause it before switching its models",
+      );
   }
   async fork(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
     this.enabled();
@@ -1287,6 +1342,8 @@ export class NativeWorkflowService implements WorkflowService {
       );
     this.leases.release();
     this.scheduler.dispose();
+    void this.rootContext.dispose().catch(() => {});
+    this.attention?.dispose();
     this.store.close();
   }
 }

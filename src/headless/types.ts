@@ -1,4 +1,4 @@
-import type { BakeMode, InteractiveCallbacks } from "../types/index.js";
+import type { BakeMode, InputContextItem, InteractiveCallbacks } from "../types/index.js";
 
 export interface HeadlessRunOptions {
   prompt: string;
@@ -74,6 +74,8 @@ export type HeadlessEvent =
   | { type: "warning"; message: string }
   | { type: "error"; error: string }
   | { type: "reasoning"; content: string }
+  /** What a prompt's `@` mentions and `!` command attached, before the turn starts. */
+  | { type: "input-context"; items: InputContextItem[] }
   | {
       type: "ask-user";
       callbackId: string;

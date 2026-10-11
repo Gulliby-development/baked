@@ -100,6 +100,7 @@ export const CAPABILITIES = [
   "initiatives",
   "checks",
   "library",
+  "routing",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -310,10 +311,11 @@ function startArgs(raw: unknown): WorkflowArgs {
   const body = StartBody.parse(raw);
   const flags: WorkflowArgs["flags"] = {
     "command-id": body.commandId,
-    feature: body.feature,
-    prompt: body.prompt,
     owner: body.owner ?? "API",
   };
+  if (body.feature) flags.feature = body.feature;
+  if (body.prompt) flags.prompt = body.prompt;
+  if (body.issue) flags.issue = body.issue;
   if (body.workflow) flags.workflow = body.workflow;
   if (body.model) flags.model = body.model;
   if (body.confirmAutoApproval) flags["confirm-auto-approval"] = body.confirmAutoApproval;
@@ -385,7 +387,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     new ChatService({
       workspace: service.workspace,
       config: service.config,
-      host: new BakeChatHost(service.workspace, service.config),
+      host: new BakeChatHost(service.workspace, service.config, service.rootContext),
     });
   const initiatives = new InitiativeService(service);
   /** The latest on-demand result of each check. */
@@ -954,7 +956,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
-    if (action === "usage" || action === "artifacts") {
+    if (action === "usage" || action === "artifacts" || action === "report") {
       only("GET");
       const file = action === "artifacts" ? url.searchParams.get("file") : null;
       return json(
@@ -1048,7 +1050,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         await Promise.allSettled([...drives]);
         await chat.shutdown();
         await service.shutdown();
-        if (options.ownsService) service.close();
+        if (options.ownsService) {
+          // Waits for the shared code-intelligence worker to stop its language servers.
+          await service.rootContext.dispose();
+          service.close();
+        }
       } finally {
         removeTokenFile(tokenFile);
       }

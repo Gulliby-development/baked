@@ -25,6 +25,7 @@ const subcommands = [
   "pause",
   "replan",
   "extend",
+  "reroute",
 ] as const;
 export type InitiativeCommand = (typeof subcommands)[number];
 export interface InitiativeArgs {
@@ -66,8 +67,9 @@ const commandFlags: Record<InitiativeCommand, string[]> = {
   pause: mutation,
   replan: ["feature", ...mutation],
   extend: ["tokens", "calls", "time-ms", ...mutation],
+  reroute: ["model", "resume", ...mutation],
 };
-const booleanFlags = new Set(["json", "help", "tiered-approval"]);
+const booleanFlags = new Set(["json", "help", "tiered-approval", "resume"]);
 const integerFlags = new Set([
   "expected-revision",
   "after",
@@ -295,6 +297,14 @@ export async function executeInitiativeCommand(
         ...(ms !== undefined ? { maxActiveMs: ms } : {}),
       });
     }
+    case "reroute": {
+      const resume = args.flags.resume === true;
+      const view = await initiatives.reroute(id, identity(), {
+        model: stringFlag(args, "model"),
+        resume,
+      });
+      return resume ? initiatives.drive(id, signal) : view;
+    }
   }
 }
 
@@ -332,7 +342,9 @@ export async function runInitiativeCli(
     const initiatives = new InitiativeService(workflows);
     const result = await executeInitiativeCommand(initiatives, args, signal);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    return DRIVING.includes(args.command) ? initiativeExit(result as InitiativeView) : 0;
+    const driving =
+      DRIVING.includes(args.command) || (args.command === "reroute" && args.flags.resume === true);
+    return driving ? initiativeExit(result as InitiativeView) : 0;
   } finally {
     workflows.close();
   }
@@ -356,6 +368,11 @@ drive ID                  run feature runs one at a time in dependency order unt
 pause|resume ID --expected-revision N
 replan ID --feature F --expected-revision N   (run one feature again; other results stay)
 extend ID --expected-revision N [--tokens N] [--calls N] [--time-ms N]   (raise the shared budget)
+reroute ID --model ID --expected-revision N [--resume]
+  Feature runs started from now on use the model, and the stopped open runs move to it as with
+  baked workflow reroute (same checks, run.rerouted events); every run is checked before any is
+  changed. Pause the initiative first if a run is executing. --resume continues blocked rerouted
+  runs and a paused initiative, then drives it.
   Feature run decisions use the run commands: baked workflow approve RUN_ID ...
   Exit codes of start, approve, drive and resume: 0 completed or progressing, 1 refused or error,
   3 waiting for a decision, 4 blocked, 5 revision conflict, 130 paused.

@@ -105,3 +105,16 @@ export function splitApproval(view: InitiativeView) {
   if (view.status !== "awaiting_approval") return null;
   return view.pendingDecisions.find((d) => d.scope === "initiative") ?? null;
 }
+
+/**
+ * Whether the initiative can switch to another model now (`POST /v1/initiatives/:id/reroute`):
+ * it is not finished, the backend reports its model, and no feature run is executing.
+ */
+export function canSwitchModel(view: InitiativeView): boolean {
+  return (
+    view.model !== undefined &&
+    view.status !== "completed" &&
+    view.status !== "refused" &&
+    !view.features.some((f) => f.runStatus === "running")
+  );
+}

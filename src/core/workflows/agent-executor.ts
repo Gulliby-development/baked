@@ -12,6 +12,7 @@ import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
 import { cleanStepMessages } from "../agents/stream-options.js";
 import { ContextManager } from "../context/manager.js";
+import { SharedRootContext } from "../context/shared-root.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { resolveModel } from "../llm/provider.js";
 import {
@@ -90,13 +91,18 @@ function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
 }
 
 export class NativeAgentExecutor implements AgentExecutor {
-  private ownedContext: Promise<ContextManager> | undefined;
+  private readonly rootContext: SharedRootContext;
+  private readonly ownsRootContext: boolean;
+  /** Without `rootContext`, the executor creates and disposes a root of its own. */
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
     private config: AppConfig,
-    private parentContext?: ContextManager,
-  ) {}
+    rootContext?: SharedRootContext,
+  ) {
+    this.rootContext = rootContext ?? SharedRootContext.forWorkspace(store.workspace, config);
+    this.ownsRootContext = !rootContext;
+  }
   async execute(request: ExecutionRequest): Promise<ExecutionResponse> {
     // Nothing is spent until the first model step; each finished step raises this record.
     this.store.recordAttemptUsage(request.runId, request.attemptId, 0);
@@ -106,13 +112,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         "Workflow v1 cannot classify command hook effects. Disable project tool hooks for this run.",
       );
     const policy = JSON.parse(this.store.run(request.runId).policy_json) as RunPolicy;
-    if (!this.parentContext && !this.ownedContext)
-      this.ownedContext = ContextManager.createAsync(this.store.workspace, undefined, {
-        repoMapEnabled: this.config.repoMap !== false,
-      });
     const root = request.root ?? this.store.workspace;
-    const parent = this.parentContext ?? (await this.ownedContext);
-    if (!parent) throw new WorkflowFault("OUTPUT_INVALID", "Context initialization failed");
+    const parent = await this.rootContext.get();
     const context = new ContextManager(root, parent.getSharedResources());
     try {
       const provider = await buildProviderOptions(
@@ -588,10 +589,6 @@ export class NativeAgentExecutor implements AgentExecutor {
   }
   /** Resolves once the owned context has closed its databases, so its directory can be removed. */
   dispose(): Promise<void> {
-    const closed = this.ownedContext
-      ?.then((context) => context.dispose({ preserveSharedIO: true }))
-      .catch(() => {});
-    this.ownedContext = undefined;
-    return closed ?? Promise.resolve();
+    return this.ownsRootContext ? this.rootContext.dispose().catch(() => {}) : Promise.resolve();
   }
 }
