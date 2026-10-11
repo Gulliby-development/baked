@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
-import type { ContextManager } from "../context/manager.js";
+import { SharedRootContext } from "../context/shared-root.js";
 import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
@@ -110,20 +110,26 @@ export class NativeWorkflowService implements WorkflowService {
    * the native executor calls providers, so a service given its own executor checks nothing.
    */
   providerReady: DoctorDeps["providerReady"] | null;
+  /**
+   * The process's root context, created on first use. The native executor builds each step's
+   * context on it, and `baked serve` gives it to the chat host too. The service disposes it on close.
+   */
+  readonly rootContext: SharedRootContext;
   constructor(
     readonly workspace: string,
     readonly config: AppConfig,
     executor?: AgentExecutor,
     readonly = false,
-    parentContext?: ContextManager,
+    rootContext?: SharedRootContext,
   ) {
+    this.rootContext = rootContext ?? SharedRootContext.forWorkspace(workspace, config);
     this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
     this.scheduler = new WorkflowScheduler(
       this.store,
       this.leases,
-      executor ?? new NativeAgentExecutor(this.store, this.leases, config, parentContext),
+      executor ?? new NativeAgentExecutor(this.store, this.leases, config, this.rootContext),
     );
   }
   private enabled(): void {
@@ -1287,6 +1293,7 @@ export class NativeWorkflowService implements WorkflowService {
       );
     this.leases.release();
     this.scheduler.dispose();
+    void this.rootContext.dispose().catch(() => {});
     this.store.close();
   }
 }

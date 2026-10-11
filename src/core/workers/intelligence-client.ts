@@ -19,7 +19,7 @@ import type {
   UnusedItem,
 } from "../intelligence/types.js";
 import { workerPath } from "./path.js";
-import { WorkerClient } from "./rpc.js";
+import { WorkerClient, type WorkerLike } from "./rpc.js";
 
 export type TrackedResult<T> = { value: T; backend: string } | null;
 
@@ -34,6 +34,16 @@ interface RepoMapStats {
   edges: number;
   summaries: number;
   calls: number;
+}
+
+type SemanticMode = "off" | "ast" | "synthetic" | "llm" | "full" | "on";
+
+/** The cached state a client borrowing another client's worker starts from. */
+export interface IntelligenceState {
+  isReady: boolean;
+  stats: RepoMapStats;
+  dbSize: number;
+  semanticMode: SemanticMode;
 }
 
 interface SummaryBreakdown {
@@ -73,8 +83,12 @@ export class IntelligenceClient extends WorkerClient {
   // primary safety net. This timeout is a last resort for true hangs.
   private static readonly SCAN_IDLE_TIMEOUT = 600_000; // 10 min
 
-  constructor(cwd: string) {
-    super(workerPath("intelligence", import.meta.url, import.meta.dir), { cwd });
+  /**
+   * Without `transport`, spawns and owns an intelligence worker. With it, talks to a worker another
+   * client owns (see intelligence-relay.ts); that owner recycles the worker and watches its heap.
+   */
+  constructor(cwd: string, transport?: () => WorkerLike) {
+    super(transport ?? workerPath("intelligence", import.meta.url, import.meta.dir), { cwd });
     this._cwd = cwd;
 
     const ws = useWorkerStore.getState();
@@ -114,7 +128,7 @@ export class IntelligenceClient extends WorkerClient {
       useWorkerStore.getState().setWorkerError("intelligence", d.message);
     });
 
-    this.startHeapWatchdog();
+    if (!transport) this.startHeapWatchdog();
 
     this.on("progress", (data) => {
       const d = data as {
@@ -161,6 +175,28 @@ export class IntelligenceClient extends WorkerClient {
 
   getCwd(): string {
     return this._cwd;
+  }
+
+  /** The cached state a borrowing client adopts; see `adoptState`. */
+  snapshotState(): IntelligenceState {
+    return {
+      isReady: this._isReady,
+      stats: this._stats,
+      dbSize: this._dbSize,
+      semanticMode: this._semanticMode,
+    };
+  }
+
+  adoptState(state: IntelligenceState): void {
+    this._isReady = state.isReady;
+    this._stats = state.stats;
+    this._dbSize = state.dbSize;
+    this._semanticMode = state.semanticMode;
+  }
+
+  /** Calls a worker method for a borrowing client; that client applies its own timeout. */
+  relayCall(method: string, args: unknown[]): Promise<unknown> {
+    return this.callWithTimeout<unknown>(null, method, ...args);
   }
 
   // ── Core ───────────────────────────────────────────────────────────

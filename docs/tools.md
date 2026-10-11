@@ -63,6 +63,8 @@ Each operation tries the best backend and falls back:
 
 `/lsp status` shows attached servers; `/lsp install` installs servers from the Mason registry into the BAKED data directory (`lsp-servers/`), through npm, pip, cargo, go or GitHub releases. Servers already on `PATH` are found automatically. `/diagnose` checks LSP, tree-sitter and semantic indexing.
 
+Chat and workflow runs in one BAKED process share the same language servers: the terminal UI and `baked serve` each start one set per project, not one for chat and another for runs ([architecture](architecture.md#code-intelligence)).
+
 ## Repository graph
 
 At startup the graph indexes files, symbols and import edges, ranks files with PageRank, adds files that change together in Git history, and renders the top of it into the system prompt:
