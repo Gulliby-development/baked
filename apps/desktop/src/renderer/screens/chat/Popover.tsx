@@ -1,6 +1,13 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 /**
+ * The chat chip: chat.css's `.chip` with the padding, size and colour the run screens' chip rule
+ * gave it. The `!` keeps them above chat.css until that sheet moves to utilities too.
+ */
+export const CHIP =
+  "chip py-[6px]! text-[13px]! text-dim-foreground! hover:text-foreground! aria-expanded:text-foreground!";
+
+/**
  * A button with a small panel under it. Closes on Escape (which it marks as handled, so the chat's
  * Escape-to-interrupt ignores it), on a click outside and when `close` is called.
  */
@@ -8,7 +15,7 @@ export function Popover({
   label,
   button,
   buttonLabel,
-  className = "chip",
+  className = CHIP,
   align = "left",
   up = false,
   children,

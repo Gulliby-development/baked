@@ -87,7 +87,7 @@ function TaskBox({ projectKey }: { projectKey: string }) {
         <Textarea
           id="home-task"
           rows={2}
-          className="min-h-16 text-[15px]"
+          className="min-h-16 resize-y px-[10px] text-[14px]/[1.45] [font-family:inherit]"
           value={text}
           placeholder="Fix the off-by-one in the usage table header"
           onChange={(e) => setText(e.target.value)}

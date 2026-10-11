@@ -7,7 +7,14 @@ import {
   gateView,
   type Verdict,
 } from "./acceptance.js";
-import { useDecide } from "./Decision.js";
+import {
+  DECISION,
+  FIELD_LABEL,
+  ROW_ACTIONS,
+  STACK_FORM,
+  TEXT_INPUT,
+  useDecide,
+} from "./Decision.js";
 import type { RunData } from "./load.js";
 import type { RunTrace } from "./model.js";
 import { Pill } from "./parts.js";
@@ -28,6 +35,24 @@ const TONE: Record<Verdict, string> = {
   manual: "warn",
   pending: "",
 };
+const CRITERION = "flex gap-3 rounded-[var(--radius-lg)] border-2 px-[14px] py-3 shadow-sm-hard";
+/** A criterion card and its verdict mark, by tone. */
+const CRITERION_TONE: Record<string, { card: string; mark: string }> = {
+  ok: { card: `${CRITERION} border-border bg-background`, mark: "text-[var(--ok)]" },
+  err: {
+    card: `${CRITERION} border-[color:var(--err)] bg-[color-mix(in_srgb,var(--err)_7%,var(--bg-panel))]`,
+    mark: "text-[var(--err)]",
+  },
+  warn: {
+    card: `${CRITERION} border-[color:var(--warn)] bg-[color-mix(in_srgb,var(--warn)_7%,var(--bg-panel))]`,
+    mark: "text-[var(--warn)]",
+  },
+  "": { card: `${CRITERION} border-border bg-background`, mark: "text-dim-foreground" },
+};
+const COLUMN = "flex min-w-0 flex-[1_1_380px] flex-col gap-[10px]";
+const SUB = "text-[12px] text-muted-foreground";
+const CODE =
+  "m-0 whitespace-pre-wrap rounded-[var(--radius-lg)] border-2 border-border bg-[var(--bg-code)] px-[14px] py-3 font-mono text-[12.5px] leading-[1.6] text-soft-foreground [overflow-wrap:anywhere]";
 
 function Observation({
   projectKey,
@@ -45,24 +70,27 @@ function Observation({
   const requestId = criterion.manualRequestId;
   if (!requestId) return null;
   if (!data.capabilities.includes(GROUP_B_CAPABILITY))
-    return <span className="small muted">Recording observations here needs a newer BAKED.</span>;
+    return (
+      <span className="muted text-[12px]">Recording observations here needs a newer BAKED.</span>
+    );
   const id = `obs-${criterion.key}`;
   const mark = (accepted: boolean) =>
     void decide(() => runs.evidence(projectKey, data.status, requestId, text.trim(), accepted));
   return (
-    <div className="stack-form">
-      <label htmlFor={id} className="field-label">
+    <div className={STACK_FORM}>
+      <label htmlFor={id} className={FIELD_LABEL}>
         Your observation
       </label>
       <input
         id={id}
         type="text"
+        className={TEXT_INPUT}
         value={text}
         placeholder="What you saw"
         onChange={(e) => setText(e.target.value)}
       />
       {error && <div className="banner error">{error}</div>}
-      <div className="row-actions">
+      <div className={ROW_ACTIONS}>
         <button
           type="button"
           className="btn-primary"
@@ -99,7 +127,7 @@ function TestDecision({
   const { busy, error, decide } = useDecide(projectKey, onDone);
   const run = data.status;
   return (
-    <section className="decision" aria-label="Acceptance test">
+    <section className={DECISION} aria-label="Acceptance test">
       <h3>Keep the acceptance test for {decision.gateId}?</h3>
       <p>
         The walk-through {decision.verdict} and the drafted test passed {decision.stableRuns} runs
@@ -108,19 +136,20 @@ function TestDecision({
       </p>
       <details>
         <summary>Show the test</summary>
-        <pre className="code">{decision.testContent}</pre>
+        <pre className={CODE}>{decision.testContent}</pre>
       </details>
-      <label htmlFor={`reason-${decision.requestId}`} className="field-label">
+      <label htmlFor={`reason-${decision.requestId}`} className={FIELD_LABEL}>
         Reason to discard
       </label>
       <input
         id={`reason-${decision.requestId}`}
         type="text"
+        className={TEXT_INPUT}
         value={reason}
         onChange={(e) => setReason(e.target.value)}
       />
       {error && <div className="banner error">{error}</div>}
-      <div className="row-actions">
+      <div className={ROW_ACTIONS}>
         <button
           type="button"
           className="btn-primary"
@@ -197,13 +226,15 @@ export function GateView({
         ? "err"
         : "warn";
   return (
-    <div className="gate">
-      <div className="gate-head">
-        {heading && <h2>{heading}</h2>}
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-3">
+        {heading && <h2 className="m-0 text-[18px]">{heading}</h2>}
         <Pill tone={tone}>
           {view.passed} of {view.total} passed
         </Pill>
-        {view.setup && <span className="meta">{view.setup}</span>}
+        {view.setup && (
+          <span className="font-mono text-[12px] text-dim-foreground">{view.setup}</span>
+        )}
       </div>
       {view.decisions.map((d) => (
         <TestDecision
@@ -214,29 +245,32 @@ export function GateView({
           onDone={onDone}
         />
       ))}
-      <div className="gate-body">
-        <section aria-label="Criteria" className="gate-criteria">
+      <div className="flex flex-wrap gap-6">
+        <section aria-label="Criteria" className={COLUMN}>
           <h3 className="label">Acceptance criteria</h3>
-          <ul className="criteria">
+          <ul className="m-0 flex list-none flex-col gap-[10px] p-0">
             {view.criteria.map((c) => (
-              <li key={c.key} className={`criterion ${TONE[c.verdict]}`}>
-                <span className="mono mark" aria-hidden="true">
+              <li key={c.key} className={CRITERION_TONE[TONE[c.verdict]]?.card}>
+                <span
+                  className={`mono ${CRITERION_TONE[TONE[c.verdict]]?.mark}`}
+                  aria-hidden="true"
+                >
                   {MARK[c.verdict]}
                 </span>
-                <div className="criterion-body">
+                <div className="flex min-w-0 flex-1 flex-col gap-[6px]">
                   <span>
                     <span className="mono muted">{c.label}.</span> {c.text}
                     <span className="sr-only">, {c.verdict}</span>
                   </span>
-                  {c.note && <span className="small sub-text">{c.note}</span>}
+                  {c.note && <span className={SUB}>{c.note}</span>}
                   {c.verdict === "manual" && (
-                    <span className="small">Needs a manual observation from you.</span>
+                    <span className="text-[12px]">Needs a manual observation from you.</span>
                   )}
                   <Observation projectKey={projectKey} data={data} criterion={c} onDone={onDone} />
                   {c.steps.length > 0 && (
                     <button
                       type="button"
-                      className="link-button small"
+                      className="cursor-pointer self-start border-none bg-transparent p-0 text-[var(--accent)] underline [font:inherit] aria-pressed:text-foreground"
                       aria-pressed={chosen?.key === c.key}
                       onClick={() => setSelected(c.key)}
                     >
@@ -248,25 +282,29 @@ export function GateView({
             ))}
           </ul>
         </section>
-        <section aria-label="Evidence" className="gate-evidence">
+        <section aria-label="Evidence" className={COLUMN}>
           <h3 className="label">{chosen ? `Evidence for ${chosen.label}` : "Evidence"}</h3>
           {!chosen && (
             <div className="empty">The AI acceptance walk-through records steps as evidence.</div>
           )}
           {chosen && (
             <>
-              <figure className="frame">
-                <div className="frame-bar mono">{chosen.url ?? "terminal"}</div>
-                <pre className="frame-body">
+              <figure className="m-0 flex h-full flex-col overflow-hidden rounded-[var(--radius-lg)] border-2 border-border bg-background shadow-shadow">
+                <div className="mono border-b-2 border-border px-3 py-2 text-[12px] text-dim-foreground">
+                  {chosen.url ?? "terminal"}
+                </div>
+                <pre className="m-0 max-h-[320px] min-h-[160px] overflow-auto whitespace-pre-wrap bg-[var(--bg-sunken)] p-3 font-mono text-[12px] leading-[1.5] text-muted-foreground">
                   {chosen.steps.at(-1)?.frame || "No frame recorded"}
                 </pre>
-                <figcaption>{chosen.steps.at(-1)?.observation}</figcaption>
+                <figcaption className="px-3 py-[10px] text-[13px] text-muted-foreground">
+                  {chosen.steps.at(-1)?.observation}
+                </figcaption>
               </figure>
-              <ol className="code steps">
+              <ol className={`${CODE} flex list-none flex-col gap-[6px]`}>
                 {chosen.steps.map((s) => (
                   <li key={s.stepId}>
                     <div>{s.action}</div>
-                    <div className="sub-text">→ {s.observation}</div>
+                    <div className="text-muted-foreground">→ {s.observation}</div>
                   </li>
                 ))}
               </ol>

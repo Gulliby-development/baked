@@ -1,5 +1,8 @@
 import type { RollbackReport } from "../../client/runs.js";
 
+const REPORT =
+  "mb-4 flex flex-col gap-[10px] rounded-base border-2 border-l-8 border-border bg-background px-[18px] py-[14px] shadow-shadow";
+
 /** What one restore did to the file: the run created it, deleted it, or changed it. */
 export function restoreLabel(restored: RollbackReport["restored"][number]): string {
   if (restored.to === null) return "removed";
@@ -26,13 +29,13 @@ export function UndoReport({
 }) {
   return (
     <section
-      className={`undo-report ${report?.kept.length ? "warn" : report ? "ok" : ""}`}
+      className={`${REPORT} ${report?.kept.length ? "border-l-fill-warn" : report ? "border-l-fill-ok" : "border-l-raised"}`}
       aria-label="Undo report"
       aria-live="polite"
     >
-      <div className="undo-head">
+      <div className="flex flex-wrap items-center gap-3">
         <h3 className="label">Undo</h3>
-        <span className="undo-summary">
+        <span className="flex-1 font-semibold">
           {report ? undoSummary(report) : "Nothing to undo: the run has no uncommitted task edits."}
         </span>
         <button type="button" className="btn" onClick={onClose}>
@@ -40,7 +43,7 @@ export function UndoReport({
         </button>
       </div>
       {report && (report.restored.length > 0 || report.kept.length > 0) && (
-        <ul className="undo-files">
+        <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px]">
           {report.restored.map((r) => (
             <li key={`r:${r.path}`}>
               <span className="mono">{r.path}</span>{" "}
@@ -54,7 +57,7 @@ export function UndoReport({
             </li>
           ))}
           {report.kept.map((k) => (
-            <li key={`k:${k.path}`} className="kept">
+            <li key={`k:${k.path}`} className="text-[var(--warn)]">
               <span className="mono">{k.path}</span> <span>{k.reason}</span>
             </li>
           ))}
