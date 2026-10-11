@@ -83,6 +83,10 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/codex logout` | Log out of the current Codex account |
 | `/codex switch` | Switch to a different Codex account |
 | `/codex status` | Show Codex login status |
+| `/claude-code` | Show Claude Code login status |
+| `/claude-code login` | Log in to Claude Code with your Claude subscription |
+| `/claude-code logout` | Log out of the current Claude Code account |
+| `/claude-code status` | Show Claude Code login status |
 | `/model-scope` | Set model scope (project/global) |
 | `/models` | Switch LLM model (Ctrl+L) |
 | `/provider-settings` | Provider options — thinking, effort, speed, context |
