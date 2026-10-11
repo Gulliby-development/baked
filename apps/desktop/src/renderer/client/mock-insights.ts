@@ -50,6 +50,9 @@ function initiative(
     reason: "",
     revision: 7,
     planRevision: 2,
+    approvedPlanRevision: status === "awaiting_approval" || status === "decomposing" ? null : 2,
+    workflowId: "sdd",
+    featureAutoApproval: null,
     model: null,
     goals,
     features,
@@ -69,6 +72,7 @@ function initiative(
     budget: {
       limits: { maxTotalTokens: 6_000_000, maxAgentCalls: 400, maxActiveMs: 8 * 3_600_000 },
       used: { tokens: used, calls: 0, activeMs: 0 },
+      remaining: { tokens: 6_000_000 - used, calls: 400, activeMs: 8 * 3_600_000 },
     },
     next: { kind: "drive", featureId: null, runId: null, message: next },
   };
@@ -153,7 +157,197 @@ function list(key: string): InitiativeView[] {
   return INITIATIVES[key] ?? [];
 }
 
+type Body = Record<string, unknown>;
+const refuse = (message: string) => response(400, { error: { code: "INVALID_REQUEST", message } });
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+const text = (value: unknown): string | undefined =>
+  typeof value === "string" && value ? value : undefined;
+const count = (value: unknown): number | undefined =>
+  typeof value === "number" && value > 0 ? value : undefined;
+
+/** A started initiative: the mock splits at once into three proposed features. */
+function started(body: Body): InitiativeView | string {
+  const id = text(body.initiativeId);
+  const prompt = text(body.prompt);
+  if (!id || !prompt) return "initiativeId and prompt are required";
+  const title = prompt.split(/[.\n]/)[0]?.slice(0, 60) || id;
+  const view = initiative(
+    id,
+    title,
+    "awaiting_approval",
+    [prompt],
+    [
+      feature("core", "Core model and storage", "proposed"),
+      feature("api", "Local API endpoints", "proposed", { dependsOn: ["core"] }),
+      feature("ui", "Terminal and desktop screens", "proposed", { dependsOn: ["api"] }),
+    ],
+    "Approve the split to start feature runs",
+  );
+  const budget = body.budget as { tokens?: number; calls?: number; timeMs?: number } | undefined;
+  const tiered = body.tieredApproval as { maxTasks: number; maxFiles: number } | undefined;
+  return {
+    ...view,
+    revision: 1,
+    planRevision: 1,
+    model: text(body.model) ?? null,
+    workflowId: text(body.workflow) ?? "sdd",
+    featureAutoApproval: tiered ?? null,
+    budget: budget
+      ? {
+          ...view.budget,
+          limits: {
+            maxTotalTokens: budget.tokens ?? 0,
+            maxAgentCalls: budget.calls ?? 0,
+            maxActiveMs: budget.timeMs ?? 0,
+          },
+        }
+      : view.budget,
+  };
+}
+
+/** Applies a split edit the way the core does, or says why it is refused. */
+function edited(view: InitiativeView, action: string, body: Body): InitiativeFeature[] | string {
+  const editable =
+    view.status === "awaiting_approval" ||
+    (view.status === "paused" && view.approvedPlanRevision != null);
+  if (!editable) return "The split can be edited only before approval or while paused";
+  const features = view.features;
+  const find = (id: unknown) => features.find((f) => f.id === id);
+  let next: InitiativeFeature[];
+  if (action === "rename") {
+    const target = find(body.feature);
+    const title = text(body.title);
+    if (!target || !title) return "Unknown feature or empty title";
+    next = features.map((f) => (f === target ? { ...f, title } : f));
+  } else if (action === "remove") {
+    const target = find(body.feature);
+    if (!target) return "Unknown feature";
+    next = features
+      .filter((f) => f !== target)
+      .map((f) => ({ ...f, dependsOn: f.dependsOn.filter((d) => d !== target.id) }));
+  } else if (action === "merge") {
+    const ids = strings(body.features);
+    const merged = features.filter((f) => ids.includes(f.id));
+    if (merged.length < 2) return "Merge needs two different features";
+    const id = text(body.id) ?? merged[0]?.id ?? "";
+    const combined = feature(
+      id,
+      text(body.title) ?? merged.map((f) => f.title).join(" + "),
+      "proposed",
+    );
+    const at = features.findIndex((f) => ids.includes(f.id));
+    next = features.flatMap((f, i) =>
+      i === at
+        ? [combined]
+        : ids.includes(f.id)
+          ? []
+          : [{ ...f, dependsOn: f.dependsOn.map((d) => (ids.includes(d) ? id : d)) }],
+    );
+  } else if (action === "split") {
+    const target = find(body.feature);
+    const parts = Array.isArray(body.parts) ? (body.parts as { id: string; title: string }[]) : [];
+    if (!target || parts.length < 2) return "Split needs a feature and two or more parts";
+    next = features.flatMap((f) =>
+      f === target
+        ? parts.map((p) => feature(p.id, p.title, "proposed", { dependsOn: target.dependsOn }))
+        : [f],
+    );
+  } else return "Unknown edit";
+  if (next.length < 3) return "An initiative needs at least 3 features";
+  if (next.length > 12) return "An initiative holds at most 12 features";
+  return next;
+}
+
+/** The answer to a POST that is not pause, resume, approve or reroute; undefined when none. */
+function command(view: InitiativeView, action: string | undefined, body: Body) {
+  const bump = { revision: view.revision + 1 };
+  switch (action) {
+    case "merge":
+    case "split":
+    case "remove":
+    case "rename": {
+      const features = edited(view, action, body);
+      if (typeof features === "string") return features;
+      return {
+        ...view,
+        ...bump,
+        planRevision: view.planRevision + 1,
+        features,
+        // Each revision gets a new split approval request, also after a rejection.
+        pendingDecisions: [
+          ...view.pendingDecisions.filter((d) => d.scope !== "initiative"),
+          ...(view.status === "awaiting_approval"
+            ? [
+                {
+                  scope: "initiative" as const,
+                  featureId: null,
+                  runId: null,
+                  requestId: `${view.initiativeId}-split-${view.planRevision + 1}`,
+                  kind: "split_approval",
+                  digest: `digest-${view.planRevision + 1}`,
+                },
+              ]
+            : []),
+        ],
+      };
+    }
+    case "reject": {
+      const reason = text(body.reason);
+      if (!reason || view.status !== "awaiting_approval") return "No split approval is pending";
+      // As in the core: the split stays waiting until it is edited into a new revision.
+      return {
+        ...view,
+        ...bump,
+        reason: `Split rejected: ${reason}. Edit the split to propose a new revision.`,
+        pendingDecisions: view.pendingDecisions.filter((d) => d.scope !== "initiative"),
+      };
+    }
+    case "replan": {
+      const target = view.features.find((f) => f.id === body.feature);
+      if (!target?.runId || target.runStatus === "running")
+        return "This feature cannot be re-planned now";
+      return {
+        ...view,
+        ...bump,
+        features: view.features.map((f) =>
+          f === target
+            ? { ...f, state: "in_progress" as const, runId: `${f.runId}-r`, runStatus: "plan" }
+            : f,
+        ),
+      };
+    }
+    case "extend": {
+      const limits = view.budget.limits;
+      const raised = {
+        maxTotalTokens: count(body.tokens) ?? limits.maxTotalTokens,
+        maxAgentCalls: count(body.calls) ?? limits.maxAgentCalls,
+        maxActiveMs: count(body.timeMs) ?? limits.maxActiveMs,
+      };
+      if (
+        raised.maxTotalTokens < limits.maxTotalTokens ||
+        raised.maxAgentCalls < limits.maxAgentCalls ||
+        raised.maxActiveMs < limits.maxActiveMs
+      )
+        return "Budget limits can only go up";
+      return { ...view, ...bump, budget: { ...view.budget, limits: raised } };
+    }
+    default:
+      return undefined;
+  }
+}
+
 const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
+  if (method === "POST" && path === "/v1/initiatives") {
+    const view = started((body ?? {}) as Body);
+    if (typeof view === "string") return refuse(view);
+    if (list(key).some((v) => v.initiativeId === view.initiativeId))
+      return response(409, {
+        error: { code: "CONFLICT", message: `Initiative ${view.initiativeId} already exists` },
+      });
+    list(key).unshift(view);
+    return response(202, view);
+  }
   if (method === "GET" && path === "/v1/initiatives")
     return response(200, {
       initiatives: list(key).map((view) => ({
@@ -173,6 +367,12 @@ const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
   const action = match[2];
   if (method === "GET" && action === undefined) return response(200, view);
   if (method !== "POST") return undefined;
+  const answer = command(view, action, (body ?? {}) as Body);
+  if (typeof answer === "string") return refuse(answer);
+  if (answer) {
+    views[index] = answer;
+    return response(200, answer);
+  }
   if (action === "reroute") {
     const model = (body as { model?: string } | undefined)?.model;
     if (!model) return undefined;
@@ -196,6 +396,7 @@ const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
     ...view,
     status,
     revision: view.revision + 1,
+    ...(action === "approve" ? { approvedPlanRevision: view.planRevision } : {}),
     pendingDecisions: action === "approve" ? [] : view.pendingDecisions,
     features:
       action === "approve"

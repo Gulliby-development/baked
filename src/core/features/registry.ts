@@ -1,0 +1,923 @@
+/**
+ * Feature registry: every user-facing feature and how it is reached on each surface (the terminal
+ * UI, the headless CLI, the `baked serve` local API and the desktop app). `tests/feature-parity.test.ts`
+ * fails when a TUI slash command, a `/v1` route or a desktop screen is missing here, when an entry
+ * names something that does not exist, or when a surface is left without a reach or a reason.
+ * `docs/parity.md` is generated from this list (`bun scripts/parity-docs.ts`).
+ *
+ * A reach is `<target>` or `<target>: <note>`. Targets are a slash command from
+ * `src/core/commands/registry.ts` or `key <keys>` (TUI), `baked <command...>` or a `--flag` (CLI),
+ * a `/v1` path template with `:id` for parameters (API, methods left out), and a screen from
+ * `apps/desktop/src/renderer/router.ts` (`projects`, `attention`, `project/<section>`,
+ * `settings/<section>`).
+ */
+
+export type Surface = "tui" | "cli" | "api" | "desktop";
+export const SURFACES: readonly Surface[] = ["tui", "cli", "api", "desktop"];
+export const SURFACE_LABELS: Record<Surface, string> = {
+  tui: "TUI",
+  cli: "Headless CLI",
+  api: "serve API",
+  desktop: "Desktop",
+};
+
+/** The surface does not get this feature, by design. */
+export interface Exempt {
+  status: "terminal-only" | "desktop-only" | "not-needed";
+  reason: string;
+}
+
+/** The surface should have the feature and does not yet; `issue` tracks it. */
+export interface Gap {
+  status: "gap";
+  issue: number;
+  note?: string;
+}
+
+/** The surface has part of the feature; `issue` tracks the rest. */
+export interface Partial {
+  status: "partial";
+  reach: readonly string[];
+  issue: number;
+  note: string;
+}
+
+export type SurfaceEntry = readonly string[] | Exempt | Gap | Partial;
+
+export interface Feature {
+  id: string;
+  group: string;
+  title: string;
+  tui: SurfaceEntry;
+  cli: SurfaceEntry;
+  api: SurfaceEntry;
+  desktop: SurfaceEntry;
+}
+
+export const GROUPS = [
+  "Chat and sessions",
+  "Models and providers",
+  "Tools and code intelligence",
+  "Workflow runs",
+  "Initiatives",
+  "Projects and setup",
+  "Terminal interface",
+] as const;
+
+const gap = (issue: number, note?: string): Gap =>
+  note === undefined ? { status: "gap", issue } : { status: "gap", issue, note };
+const partial = (reach: string[], issue: number, note: string): Partial => ({
+  status: "partial",
+  reach,
+  issue,
+  note,
+});
+const notNeeded = (reason: string): Exempt => ({ status: "not-needed", reason });
+const terminalOnly = (reason: string): Exempt => ({ status: "terminal-only", reason });
+const desktopOnly = (reason: string): Exempt => ({ status: "desktop-only", reason });
+
+export const FEATURES: readonly Feature[] = [
+  // Chat and sessions
+  {
+    id: "chat",
+    group: "Chat and sessions",
+    title: "Chat with the agent",
+    tui: [
+      "key Enter: the composer",
+      "/session",
+      "/session new",
+      "/session continue",
+      "/session clear",
+    ],
+    cli: ["--headless", "--chat"],
+    api: [
+      "/v1/sessions",
+      "/v1/sessions/:id",
+      "/v1/sessions/:id/messages",
+      "/v1/sessions/:id/events",
+      "/v1/sessions/:id/interrupt",
+      "/v1/sessions/:id/prompts",
+    ],
+    desktop: ["project/chat"],
+  },
+  {
+    id: "custom-commands-run",
+    group: "Chat and sessions",
+    title: "Run custom slash commands (.baked/commands) in chat",
+    tui: ["key /: a custom command typed in the composer"],
+    cli: ["--headless: expands a custom command in the prompt"],
+    api: ["/v1/sessions/:id/messages: expands the command"],
+    desktop: ["project/chat: composer"],
+  },
+  {
+    id: "custom-commands-list",
+    group: "Chat and sessions",
+    title: "List custom commands",
+    tui: ["/commands"],
+    cli: notNeeded("scripts read .baked/commands directly"),
+    api: ["/v1/commands"],
+    desktop: ["settings/commands"],
+  },
+  {
+    id: "session-history",
+    group: "Chat and sessions",
+    title: "Session list, resume and rename",
+    tui: ["/session history", "/session rename"],
+    cli: ["--resume", "--session", "baked session list"],
+    api: ["/v1/sessions", "/v1/sessions/:id"],
+    desktop: ["project/chat: session list"],
+  },
+  {
+    id: "session-delete",
+    group: "Chat and sessions",
+    title: "Delete a session",
+    tui: ["/session history: Ctrl+D in the picker"],
+    cli: ["baked session delete"],
+    api: ["/v1/sessions/:id: DELETE"],
+    desktop: gap(405),
+  },
+  {
+    id: "session-export",
+    group: "Chat and sessions",
+    title: "Export a chat (Markdown, JSON, clipboard)",
+    tui: ["/session export", "/session export json", "/session export clipboard"],
+    cli: ["baked session export"],
+    api: gap(405),
+    desktop: gap(405),
+  },
+  {
+    id: "session-diagnostics",
+    group: "Chat and sessions",
+    title: "Diagnostic export and API request dumps",
+    tui: ["/session export all", "/session export api"],
+    cli: ["--events"],
+    api: notNeeded("a debugging aid for BAKED itself"),
+    desktop: notNeeded("a debugging aid for BAKED itself"),
+  },
+  {
+    id: "plan-mode",
+    group: "Chat and sessions",
+    title: "Chat modes and plan mode with plan review",
+    tui: ["/mode", "/session plan"],
+    cli: ["--mode: no plan review in a one-shot run"],
+    api: ["/v1/sessions/:id: mode", "/v1/sessions/:id/prompts/:id: plan-review"],
+    desktop: ["project/chat: mode picker"],
+  },
+  {
+    id: "images",
+    group: "Chat and sessions",
+    title: "Images in messages",
+    tui: ["key Ctrl+V: paste an image"],
+    cli: ["--image"],
+    api: ["/v1/sessions/:id/messages: images"],
+    desktop: ["project/chat: attach or paste"],
+  },
+  {
+    id: "voice-input",
+    group: "Chat and sessions",
+    title: "Voice input in chat (Cactus Whistle speech to text)",
+    tui: desktopOnly("desktop only by decision (#419)"),
+    cli: desktopOnly("desktop only by decision (#419)"),
+    api: desktopOnly("speech is transcribed in the app and sent as text"),
+    desktop: gap(419, "planned"),
+  },
+  {
+    id: "mentions",
+    group: "Chat and sessions",
+    title: "@ mentions and ! shell in the input",
+    tui: ["key @: file and symbol mentions", "key !: shell command"],
+    cli: ["--include"],
+    api: ["/v1/mentions"],
+    desktop: ["project/chat: composer"],
+  },
+  {
+    id: "compact",
+    group: "Chat and sessions",
+    title: "Compact a conversation now",
+    tui: ["/compact", "/session compact"],
+    cli: notNeeded("a one-shot run compacts automatically"),
+    api: ["/v1/sessions/:id/compact"],
+    desktop: ["project/chat: header"],
+  },
+  {
+    id: "compaction-settings",
+    group: "Chat and sessions",
+    title: "Compaction strategy, thresholds and logs",
+    tui: ["/compact settings", "/compact logs"],
+    cli: notNeeded("set in config.json"),
+    api: ["/v1/settings: compaction page, no logs"],
+    desktop: ["settings/chat: Compaction page"],
+  },
+  {
+    id: "undo-redo",
+    group: "Chat and sessions",
+    title: "Undo and redo a turn with its file edits",
+    tui: [
+      "/checkpoint",
+      "/checkpoint undo",
+      "/checkpoint redo",
+      "/checkpoint save",
+      "/checkpoint live",
+    ],
+    cli: ["baked session undo", "baked session redo"],
+    api: ["/v1/sessions/:id/undo", "/v1/sessions/:id/redo"],
+    desktop: ["project/chat: header"],
+  },
+  {
+    id: "checkpoint-rewind",
+    group: "Chat and sessions",
+    title: "Checkpoint list and rewind to a checkpoint",
+    tui: ["/checkpoint"],
+    cli: partial(["baked session undo: --to N"], 273, "no list"),
+    api: partial(["/v1/sessions/:id/undo: toCheckpoint"], 273, "no checkpoint list"),
+    desktop: gap(273),
+  },
+  {
+    id: "session-fork",
+    group: "Chat and sessions",
+    title: "Fork a session",
+    tui: ["/checkpoint fork"],
+    cli: ["baked session fork"],
+    api: ["/v1/sessions/:id/fork"],
+    desktop: ["project/chat: fork from a message"],
+  },
+  {
+    id: "changed-files",
+    group: "Chat and sessions",
+    title: "Files changed in a session and diff stats",
+    tui: ["/changes"],
+    cli: ["--diff"],
+    api: ["/v1/sessions/:id/diff"],
+    desktop: ["project/chat: files chip"],
+  },
+  {
+    id: "reasoning-effort",
+    group: "Chat and sessions",
+    title: "Reasoning effort per chat",
+    tui: gap(384, "set globally in /provider-settings only"),
+    cli: gap(384),
+    api: gap(384),
+    desktop: gap(384),
+  },
+  {
+    id: "context-dashboard",
+    group: "Chat and sessions",
+    title: "Context and cost dashboard for a chat",
+    tui: ["/context", "/context clear", "/status"],
+    cli: notNeeded("--json reports usage of a one-shot run"),
+    api: ["/v1/sessions/:id: context"],
+    desktop: ["project/chat: context chip"],
+  },
+
+  // Models and providers
+  {
+    id: "provider-keys",
+    group: "Models and providers",
+    title: "Provider API keys",
+    tui: ["/keys"],
+    cli: ["--set-key", "--remove-key", "--list-providers"],
+    api: ["/v1/providers", "/v1/providers/:id/key"],
+    desktop: ["settings/providers"],
+  },
+  {
+    id: "provider-sign-in",
+    group: "Models and providers",
+    title: "Sign in through the Codex or Claude Code CLI",
+    tui: [
+      "/codex",
+      "/codex login",
+      "/codex logout",
+      "/codex status",
+      "/claude-code",
+      "/claude-code login",
+      "/claude-code logout",
+      "/claude-code status",
+    ],
+    cli: ["baked login", "baked logout"],
+    api: ["/v1/providers/:id/login", "/v1/providers/:id/logout"],
+    desktop: ["settings/providers"],
+  },
+  {
+    id: "codex-switch",
+    group: "Models and providers",
+    title: "Switch Codex accounts",
+    tui: ["/codex switch"],
+    cli: notNeeded("scripts sign in once"),
+    api: gap(408),
+    desktop: gap(408),
+  },
+  {
+    id: "model-picker",
+    group: "Models and providers",
+    title: "Pick a model from the list",
+    tui: ["/models", "/providers"],
+    cli: ["baked workflow models", "--list-models", "--model"],
+    api: ["/v1/models"],
+    desktop: ["project/chat: model picker"],
+  },
+  {
+    id: "default-model",
+    group: "Models and providers",
+    title: "Default chat model (project or global)",
+    tui: ["/model-scope"],
+    cli: notNeeded("--model picks the model per run"),
+    api: ["/v1/settings: chat-model page"],
+    desktop: ["settings/chat: Chat model page"],
+  },
+  {
+    id: "provider-options",
+    group: "Models and providers",
+    title: "Provider options: thinking, speed, cache TTL, server compaction, tool streaming",
+    tui: ["/provider-settings"],
+    cli: notNeeded("set in config.json"),
+    api: ["/v1/settings: provider-options page"],
+    desktop: ["settings/chat: Provider options page"],
+  },
+  {
+    id: "chat-router",
+    group: "Models and providers",
+    title: "Chat task router and fallback chains",
+    tui: ["/router"],
+    cli: notNeeded("set in config.json"),
+    api: ["/v1/settings: chat-router page"],
+    desktop: ["settings/chat: Chat router page"],
+  },
+  {
+    id: "workflow-routing",
+    group: "Models and providers",
+    title: "Workflow model routing",
+    tui: ["/workflow: routing view, R on the run list"],
+    cli: ["baked workflow route", "baked workflow routing"],
+    api: ["/v1/workflow/routing", "/v1/workflow/route"],
+    desktop: ["settings/routing"],
+  },
+  {
+    id: "web-search",
+    group: "Models and providers",
+    title: "Web search keys (Brave, Jina)",
+    tui: ["/web-search"],
+    cli: notNeeded("set in config.json"),
+    api: ["/v1/settings: tools page"],
+    desktop: ["settings/chat: Tools page"],
+  },
+  {
+    id: "mcp",
+    group: "Models and providers",
+    title: "MCP servers: list, add, edit, reconnect, tools",
+    tui: ["/mcp"],
+    cli: partial(["--headless: connects the configured servers"], 402, "no management"),
+    api: gap(402),
+    desktop: gap(402),
+  },
+
+  // Tools and code intelligence
+  {
+    id: "lsp",
+    group: "Tools and code intelligence",
+    title: "Language servers: status, install, enable, restart",
+    tui: ["/lsp", "/lsp install", "/lsp restart", "/lsp status"],
+    cli: gap(374),
+    api: gap(374),
+    desktop: gap(374),
+  },
+  {
+    id: "diagnose",
+    group: "Tools and code intelligence",
+    title: "Diagnose LSP, tree-sitter and index health",
+    tui: ["/diagnose"],
+    cli: partial(["baked self-check"], 374, "no language server check"),
+    api: gap(374),
+    desktop: gap(374),
+  },
+  {
+    id: "repo-map-settings",
+    group: "Tools and code intelligence",
+    title: "Baked map settings: on and off, regenerate, summaries, budget",
+    tui: ["/repo-map"],
+    cli: ["--no-repomap"],
+    api: ["/v1/settings: baked-map page"],
+    desktop: ["settings/chat: Baked map page"],
+  },
+  {
+    id: "code-graph",
+    group: "Tools and code intelligence",
+    title: "Code graph",
+    tui: ["/graph: static summary"],
+    cli: notNeeded("a picture; scripts query the API"),
+    api: ["/v1/graph", "/v1/graph/file", "/v1/graph/link", "/v1/graph/search"],
+    desktop: ["project/graph"],
+  },
+  {
+    id: "tools-toggle",
+    group: "Tools and code intelligence",
+    title: "Enable or disable tools",
+    tui: ["/tools"],
+    cli: notNeeded("set disabledTools in config.json"),
+    api: ["/v1/settings: tools page"],
+    desktop: ["settings/chat: Tools page"],
+  },
+  {
+    id: "agent-features",
+    group: "Tools and code intelligence",
+    title: "Agent features: de-sloppify, verify edits, tier routing",
+    tui: ["/agent-features"],
+    cli: notNeeded("set in config.json"),
+    api: ["/v1/settings: agent-features page"],
+    desktop: ["settings/chat: Agent features page"],
+  },
+  {
+    id: "hooks",
+    group: "Tools and code intelligence",
+    title: "Hooks: view and switch off",
+    tui: ["/hooks"],
+    cli: notNeeded("hooks are files scripts edit directly"),
+    api: gap(408),
+    desktop: gap(408),
+  },
+  {
+    id: "skills",
+    group: "Tools and code intelligence",
+    title: "Skills: browse, install, remove",
+    tui: ["/skills"],
+    cli: notNeeded("`bunx skills add` installs from scripts"),
+    api: ["/v1/skills", "/v1/skills/catalog", "/v1/skills/project/:id", "/v1/skills/global/:id"],
+    desktop: ["project/skills"],
+  },
+  {
+    id: "instructions-edit",
+    group: "Tools and code intelligence",
+    title: "Instruction files: view and edit content",
+    tui: ["/instructions show", "/instructions edit"],
+    cli: partial(["baked project show"], 407, "read-only"),
+    api: ["/v1/projects/current/instructions"],
+    desktop: ["project/instructions"],
+  },
+  {
+    id: "instructions-toggle",
+    group: "Tools and code intelligence",
+    title: "Instruction files: switch on or off",
+    tui: ["/instructions", "/instructions files"],
+    cli: notNeeded("set instructionFiles in config.json"),
+    api: ["/v1/projects/current/instructions/sources"],
+    desktop: ["project/instructions: sources"],
+  },
+  {
+    id: "chat-memory",
+    group: "Tools and code intelligence",
+    title: "Long-term chat memory: browse, pin, hide, cleanup, scopes",
+    tui: ["/memory"],
+    cli: notNeeded("one-shot runs read memory, people curate it"),
+    api: ["/v1/memory", "/v1/memory/cleanup", "/v1/memory/settings"],
+    desktop: ["project/chat-memory"],
+  },
+  {
+    id: "run-memory",
+    group: "Tools and code intelligence",
+    title: "Run memory: view and edit what runs learned",
+    tui: ["/workflow: run memory"],
+    cli: ["baked workflow memory"],
+    api: ["/v1/workflow/memory"],
+    desktop: ["project/run-memory"],
+  },
+
+  // Workflow runs
+  {
+    id: "run-start",
+    group: "Workflow runs",
+    title: "Start a full run or a quick task",
+    tui: ["/workflow"],
+    cli: [
+      "baked workflow run",
+      "baked quick",
+      "baked workflow definitions",
+      "baked workflow profiles",
+    ],
+    api: ["/v1/workflow/runs", "/v1/workflow/definitions", "/v1/workflow/profiles"],
+    desktop: ["project/overview: New run, Quick task"],
+  },
+  {
+    id: "run-detail",
+    group: "Workflow runs",
+    title: "Run list, detail, report, artifacts and usage",
+    tui: ["/workflow"],
+    cli: [
+      "baked workflow list",
+      "baked workflow status",
+      "baked workflow report",
+      "baked workflow artifacts",
+      "baked workflow usage",
+    ],
+    api: [
+      "/v1/workflow/runs",
+      "/v1/workflow/runs/:id",
+      "/v1/workflow/runs/:id/events",
+      "/v1/workflow/runs/:id/report",
+      "/v1/workflow/runs/:id/artifacts",
+      "/v1/workflow/runs/:id/usage",
+    ],
+    desktop: ["project/runs"],
+  },
+  {
+    id: "run-decisions",
+    group: "Workflow runs",
+    title: "Approve, reject, answer, give evidence, continue",
+    tui: ["/workflow"],
+    cli: [
+      "baked workflow approve",
+      "baked workflow reject",
+      "baked workflow answer",
+      "baked workflow evidence",
+      "baked workflow continue",
+    ],
+    api: [
+      "/v1/workflow/runs/:id/approve",
+      "/v1/workflow/runs/:id/reject",
+      "/v1/workflow/runs/:id/answer",
+      "/v1/workflow/runs/:id/evidence",
+      "/v1/workflow/runs/:id/continue",
+    ],
+    desktop: ["project/runs", "attention"],
+  },
+  {
+    id: "acceptance",
+    group: "Workflow runs",
+    title: "Acceptance: criteria that need a person's evidence",
+    tui: ["/workflow: acceptance requests"],
+    cli: ["baked workflow evidence"],
+    api: ["/v1/workflow/runs/:id/evidence"],
+    desktop: ["project/acceptance"],
+  },
+  {
+    id: "run-recover",
+    group: "Workflow runs",
+    title: "Recover a stuck side effect",
+    tui: ["/workflow"],
+    cli: ["baked workflow recover"],
+    api: ["/v1/workflow/runs/:id/recover"],
+    desktop: ["project/runs"],
+  },
+  {
+    id: "run-control",
+    group: "Workflow runs",
+    title: "Pause, resume, cancel, extend, reroute, undo edits",
+    tui: ["/workflow"],
+    cli: [
+      "baked workflow pause",
+      "baked workflow resume",
+      "baked workflow cancel",
+      "baked workflow extend",
+      "baked workflow reroute",
+      "baked workflow undo",
+    ],
+    api: [
+      "/v1/workflow/runs/:id/pause",
+      "/v1/workflow/runs/:id/resume",
+      "/v1/workflow/runs/:id/cancel",
+      "/v1/workflow/runs/:id/extend",
+      "/v1/workflow/runs/:id/reroute",
+      "/v1/workflow/runs/:id/undo",
+    ],
+    desktop: ["project/runs"],
+  },
+  {
+    id: "run-fork",
+    group: "Workflow runs",
+    title: "Fork a run",
+    tui: ["/workflow"],
+    cli: ["baked workflow fork"],
+    api: ["/v1/workflow/runs/:id/fork"],
+    desktop: ["project/runs"],
+  },
+  {
+    id: "run-discard-worktree",
+    group: "Workflow runs",
+    title: "Discard a run's worktree",
+    tui: ["/workflow: typed command"],
+    cli: ["baked workflow discard-worktree"],
+    api: ["/v1/workflow/runs/:id/discard-worktree"],
+    desktop: ["project/runs"],
+  },
+  {
+    id: "run-deliver",
+    group: "Workflow runs",
+    title: "Deliver a run (commit, pull request)",
+    tui: ["/workflow"],
+    cli: ["baked workflow deliver"],
+    api: ["/v1/workflow/runs/:id/deliver", "/v1/workflow/runs/:id/deliver/execute"],
+    desktop: ["project/runs", "attention"],
+  },
+  {
+    id: "run-revise",
+    group: "Workflow runs",
+    title: "Revise a run after its instructions change",
+    tui: ["/workflow: typed command"],
+    cli: ["baked workflow candidate", "baked workflow revise"],
+    api: ["/v1/workflow/runs/:id/candidate", "/v1/workflow/runs/:id/revise"],
+    desktop: ["project/runs"],
+  },
+  {
+    id: "checks",
+    group: "Workflow runs",
+    title: "Checks: list, edit, run now, suggestions",
+    tui: ["/workflow: checks"],
+    cli: ["baked doctor"],
+    api: ["/v1/workflow/checks", "/v1/workflow/checks/suggestions", "/v1/workflow/checks/:id/run"],
+    desktop: ["project/gates"],
+  },
+  {
+    id: "gates",
+    group: "Workflow runs",
+    title: "Gates: list and confirm",
+    tui: ["/workflow: gates"],
+    cli: ["baked workflow gates"],
+    api: ["/v1/workflow/gates", "/v1/workflow/gates/confirm"],
+    desktop: ["project/gates"],
+  },
+  {
+    id: "workflow-editor",
+    group: "Workflow runs",
+    title: "Workflow definition editor",
+    tui: ["/workflow: definition editor"],
+    cli: ["baked workflow define", "baked workflow validate"],
+    api: partial(["/v1/workflow/definitions"], 413, "read-only"),
+    desktop: gap(413),
+  },
+  {
+    id: "doctor-estimate",
+    group: "Workflow runs",
+    title: "Doctor and estimate before a run",
+    tui: ["/workflow"],
+    cli: ["baked doctor", "baked workflow estimate"],
+    api: ["/v1/workflow/doctor", "/v1/workflow/estimate"],
+    desktop: ["project/overview"],
+  },
+  {
+    id: "usage",
+    group: "Workflow runs",
+    title: "Usage across runs: days, by stage and model",
+    tui: partial(["/workflow: per run"], 413, "no totals over days"),
+    cli: ["baked usage", "baked workflow usage"],
+    api: ["/v1/usage"],
+    desktop: ["project/usage"],
+  },
+  {
+    id: "run-maintenance",
+    group: "Workflow runs",
+    title: "Import, export, gc and redact runs",
+    tui: ["/workflow: typed command"],
+    cli: [
+      "baked workflow import",
+      "baked workflow export",
+      "baked workflow gc",
+      "baked workflow redact",
+    ],
+    api: partial(["/v1/workflow/runs/:id/progress"], 413, "export-progress only"),
+    desktop: gap(413),
+  },
+
+  // Initiatives
+  {
+    id: "initiative-start",
+    group: "Initiatives",
+    title: "Start an initiative",
+    tui: ["/workflow: initiative start form"],
+    cli: ["baked workflow initiative"],
+    api: ["/v1/initiatives"],
+    desktop: ["project/initiatives: New initiative"],
+  },
+  {
+    id: "initiative-steer",
+    group: "Initiatives",
+    title: "Initiative view: approve split, pause, resume, switch model",
+    tui: ["/workflow: initiatives"],
+    cli: ["baked workflow initiative"],
+    api: [
+      "/v1/initiatives/:id",
+      "/v1/initiatives/:id/events",
+      "/v1/initiatives/:id/approve",
+      "/v1/initiatives/:id/pause",
+      "/v1/initiatives/:id/resume",
+      "/v1/initiatives/:id/reroute",
+    ],
+    desktop: ["project/initiatives", "attention"],
+  },
+  {
+    id: "initiative-edit",
+    group: "Initiatives",
+    title: "Reject, merge, split, rename, remove, re-plan, extend",
+    tui: ["/workflow: initiatives"],
+    cli: ["baked workflow initiative"],
+    api: [
+      "/v1/initiatives/:id/reject",
+      "/v1/initiatives/:id/merge",
+      "/v1/initiatives/:id/split",
+      "/v1/initiatives/:id/rename",
+      "/v1/initiatives/:id/remove",
+      "/v1/initiatives/:id/replan",
+      "/v1/initiatives/:id/extend",
+    ],
+    desktop: ["project/initiatives"],
+  },
+
+  // Projects and setup
+  {
+    id: "projects",
+    group: "Projects and setup",
+    title: "Projects: list, add, pin, forget, this project",
+    tui: ["/projects", "/project"],
+    cli: ["baked projects", "baked project"],
+    api: [
+      "/v1/projects",
+      "/v1/projects/pin",
+      "/v1/projects/unpin",
+      "/v1/projects/forget",
+      "/v1/projects/current",
+    ],
+    desktop: ["projects", "project/overview"],
+  },
+  {
+    id: "project-rename",
+    group: "Projects and setup",
+    title: "Rename a project",
+    tui: ["/project rename"],
+    cli: ["baked projects rename"],
+    api: ["/v1/projects/rename"],
+    desktop: ["projects: Rename"],
+  },
+  {
+    id: "working-set",
+    group: "Projects and setup",
+    title: "Working set",
+    tui: ["/project: working set"],
+    cli: ["baked project"],
+    api: ["/v1/projects/current/working-set"],
+    desktop: ["project/working-set"],
+  },
+  {
+    id: "attention",
+    group: "Projects and setup",
+    title: "What waits for me across projects",
+    tui: partial(["/project: what waits for you"], 413, "this project only"),
+    cli: ["baked attention"],
+    api: ["/v1/attention"],
+    desktop: ["attention"],
+  },
+  {
+    id: "server",
+    group: "Projects and setup",
+    title: "Local API server, health and capabilities",
+    tui: notNeeded("the TUI runs the core in process"),
+    cli: ["baked serve"],
+    api: ["/v1/health"],
+    desktop: ["projects: starts one server per project"],
+  },
+  {
+    id: "setup",
+    group: "Projects and setup",
+    title: "Prerequisite check and first-run wizard",
+    tui: ["/setup", "/wizard"],
+    cli: ["baked self-check", "--wizard"],
+    api: ["/v1/workflow/doctor"],
+    desktop: ["project/overview: doctor card"],
+  },
+  {
+    id: "settings",
+    group: "Projects and setup",
+    title: "Settings hub and raw config",
+    tui: ["/settings"],
+    cli: notNeeded("scripts edit config.json"),
+    api: ["/v1/config"],
+    desktop: ["settings/app", "settings/providers"],
+  },
+  {
+    id: "git",
+    group: "Projects and setup",
+    title: "Git menu: status, diff, commit, push, pull, branch, stash",
+    tui: [
+      "/git",
+      "/git status",
+      "/git diff",
+      "/git log",
+      "/git commit",
+      "/git push",
+      "/git pull",
+      "/git branch",
+      "/git stash",
+      "/git stash pop",
+      "/git init",
+      "/git co-author",
+    ],
+    cli: notNeeded("scripts call git"),
+    api: ["/v1/git", "/v1/git/actions"],
+    desktop: ["project/git"],
+  },
+  {
+    id: "storage-logs",
+    group: "Projects and setup",
+    title: "Storage cleanup, model events and the error log",
+    tui: ["/storage", "/model-events", "/errors"],
+    cli: notNeeded("scripts read the log files"),
+    api: [
+      "/v1/diagnostics/storage",
+      "/v1/diagnostics/storage/cleanup",
+      "/v1/diagnostics/model-events",
+      "/v1/diagnostics/errors",
+    ],
+    desktop: ["project/diagnostics"],
+  },
+  {
+    id: "timeouts",
+    group: "Projects and setup",
+    title: "Tool and watchdog timeouts, context-window overrides",
+    tui: ["/timeouts"],
+    cli: ["--timeout"],
+    api: ["/v1/settings: limits page"],
+    desktop: ["settings/chat: Timeouts and limits page"],
+  },
+  {
+    id: "telemetry",
+    group: "Projects and setup",
+    title: "Telemetry switch",
+    tui: ["/telemetry"],
+    cli: ["baked telemetry"],
+    api: ["/v1/config: telemetry"],
+    desktop: ["settings/telemetry"],
+  },
+  {
+    id: "notifications",
+    group: "Projects and setup",
+    title: "Notifications: system and webhook",
+    tui: ["/notifications"],
+    cli: notNeeded("scripts read the exit code and output"),
+    api: ["/v1/config: notifications"],
+    desktop: ["settings/notifications"],
+  },
+
+  // Terminal interface
+  {
+    id: "appearance",
+    group: "Terminal interface",
+    title: "Theme, motion and display of the transcript",
+    tui: [
+      "/theme",
+      "/motion",
+      "/chat-style",
+      "/diff-style",
+      "/reasoning",
+      "/verbose",
+      "/verbose-tab",
+    ],
+    cli: ["--quiet", "--render", "--no-render"],
+    api: notNeeded("each front end keeps its own look"),
+    desktop: ["settings/app"],
+  },
+  {
+    id: "terminal-workspace",
+    group: "Terminal interface",
+    title: "Tabs, file claims, drafts and $EDITOR",
+    tui: [
+      "/tab",
+      "/tab new",
+      "/tab close",
+      "/tab rename",
+      "/claim",
+      "/claim force",
+      "/claim release",
+      "/claim release-all",
+      "/stash",
+      "/editor",
+    ],
+    cli: notNeeded("one run per process"),
+    api: notNeeded("each desktop chat is its own session"),
+    desktop: terminalOnly("terminal workflows; the desktop opens chats side by side"),
+  },
+  {
+    id: "terminal-shell",
+    group: "Terminal interface",
+    title: "Command palette, quit and restart",
+    tui: ["/help", "/quit", "/exit", "/restart"],
+    cli: ["--help", "--version"],
+    api: notNeeded("the desktop app menu does this"),
+    desktop: terminalOnly("the window and app menu do this"),
+  },
+];
+
+/** The reach strings of an entry, or none when the surface is a gap or exempt. */
+export function reachOf(entry: SurfaceEntry): readonly string[] {
+  if (Array.isArray(entry)) return entry;
+  const e = entry as Exempt | Gap | Partial;
+  return e.status === "partial" ? e.reach : [];
+}
+
+/** The target of a reach: the text before its `: ` note. */
+export function targetOf(reach: string): string {
+  const at = reach.indexOf(": ");
+  return at === -1 ? reach : reach.slice(0, at);
+}
+
+/** The issue an entry waits on, if any. */
+export function issueOf(entry: SurfaceEntry): number | null {
+  if (Array.isArray(entry)) return null;
+  const e = entry as Exempt | Gap | Partial;
+  return e.status === "gap" || e.status === "partial" ? e.issue : null;
+}
