@@ -205,7 +205,8 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 
 | Method and path | Body | CLI |
 | --- | --- | --- |
-| `POST /v1/workflow/runs/RUN_ID/continue` | `requestId` | `continue` |
+| `POST /v1/workflow/runs/RUN_ID/continue` | `requestId` | `continue` (a token checkpoint, or one more repair round of a stopped convergence) |
+| `POST /v1/workflow/runs/RUN_ID/accept` | `requestId` | `accept` (accepts the findings of a stopped convergence as known limitations; `reject` stops it, see [stopped convergence](../workflows/runtime.md#stopped-convergence)) |
 | `POST /v1/workflow/runs/RUN_ID/evidence` | `requestId`, `evidence` (text), `accepted` | `evidence` (manual acceptance criterion) |
 | `POST /v1/workflow/runs/RUN_ID/recover` | `requestId`, `effectId`, `resolution: "record-applied" \| "record-not-applied" \| "retry" \| "cancel"`, `evidence` | `recover` |
 | `POST /v1/workflow/runs/RUN_ID/fork` | | `fork` |

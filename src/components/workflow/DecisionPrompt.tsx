@@ -48,6 +48,20 @@ interface CheckpointBody {
   calls?: number;
   stageId?: string;
 }
+interface ConvergenceBody {
+  reason?: string;
+  summary?: string;
+  checksPassing?: boolean;
+  criteria?: { total: number; passing: number; failing: { id: string }[] };
+  findings?: {
+    id: string;
+    severity: string;
+    file: string | null;
+    symbol: string | null;
+    claim: string;
+  }[];
+  contradictions?: { findingId: string; earlierId: string; earlierClaim: string }[];
+}
 interface DeliveryBody {
   operations?: string[];
   remote?: { name: string; url: string };
@@ -209,6 +223,23 @@ export function DecisionPrompt({
           kind: "reject",
           requestId: request.id,
           explanation: "Stopped at the token checkpoint",
+        });
+      }
+      return;
+    }
+    if (request.kind === "convergence") {
+      if (key === "a") {
+        evt.preventDefault();
+        onDecision({ kind: "accept", requestId: request.id });
+      } else if (key === "c" || key === "return") {
+        evt.preventDefault();
+        onDecision({ kind: "continue", requestId: request.id });
+      } else if (key === "x") {
+        evt.preventDefault();
+        onDecision({
+          kind: "reject",
+          requestId: request.id,
+          explanation: "Stopped at the convergence decision",
         });
       }
       return;
@@ -650,6 +681,38 @@ export function DecisionPrompt({
         </Section>
         <Hint>
           C continues up to the next checkpoint. X stops the run here; it can be resumed later.
+        </Hint>
+      </box>
+    );
+  }
+  if (request.kind === "convergence") {
+    const body = parse<ConvergenceBody>(request.body_json);
+    const criteria = body.criteria;
+    return (
+      <box flexDirection="column">
+        <Section
+          title="Repairs stopped with findings still open"
+          description={body.summary ?? "Convergence cannot start another repair round."}
+        >
+          {criteria ? (
+            <text fg={t.textPrimary}>
+              {`${criteria.passing} of ${criteria.total} criteria pass${criteria.failing.length ? `; failing: ${criteria.failing.map((c) => c.id).join(", ")}` : ""}. Required checks ${body.checksPassing ? "pass" : "do not all pass"}.`}
+            </text>
+          ) : null}
+          {(body.findings ?? []).map((f) => (
+            <text key={f.id} fg={t.textSecondary}>
+              {`  ${f.id} ${f.severity}: ${flatten(f.claim)}${f.file ? ` (${f.file}${f.symbol ? `:${f.symbol}` : ""})` : ""}`}
+            </text>
+          ))}
+          {(body.contradictions ?? []).map((c) => (
+            <text key={c.findingId} fg={t.warning}>
+              {`  ${c.findingId} reverses the fix of ${c.earlierId}: ${flatten(c.earlierClaim)}`}
+            </text>
+          ))}
+        </Section>
+        <Hint>
+          A accepts these findings as known limitations (listed in the run report) and goes on to
+          acceptance. C repairs once more. X stops the run here; it can be resumed later.
         </Hint>
       </box>
     );

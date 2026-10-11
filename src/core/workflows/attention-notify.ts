@@ -56,6 +56,7 @@ const KIND_LABELS: Record<string, string> = {
   manual_evidence: "manual evidence",
   recovery: "a recovery decision",
   checkpoint: "a checkpoint",
+  convergence: "a convergence decision",
   delivery: "delivery approval",
   budget_exhausted: "a budget extension",
 };

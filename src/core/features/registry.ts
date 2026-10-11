@@ -520,7 +520,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-decisions",
     group: "Workflow runs",
-    title: "Approve, reject, answer, give evidence, continue",
+    title: "Approve, reject, answer, give evidence, continue, accept a stopped convergence",
     tui: ["/workflow"],
     cli: [
       "baked workflow approve",
@@ -528,6 +528,7 @@ export const FEATURES: readonly Feature[] = [
       "baked workflow answer",
       "baked workflow evidence",
       "baked workflow continue",
+      "baked workflow accept",
     ],
     api: [
       "/v1/workflow/runs/:id/approve",
@@ -535,6 +536,7 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/answer",
       "/v1/workflow/runs/:id/evidence",
       "/v1/workflow/runs/:id/continue",
+      "/v1/workflow/runs/:id/accept",
     ],
     desktop: ["project/runs", "attention"],
   },

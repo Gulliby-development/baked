@@ -225,6 +225,7 @@ const MUTATIONS = [
   "extend",
   "reroute",
   "continue",
+  "accept",
   "evidence",
   "recover",
   "fork",
@@ -255,7 +256,8 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
     case "fork":
     case "discard-worktree":
       return args(identity(CommandBody.parse(raw)));
-    case "continue": {
+    case "continue":
+    case "accept": {
       const body = ContinueBody.parse(raw);
       return args({ ...identity(body), request: body.requestId });
     }

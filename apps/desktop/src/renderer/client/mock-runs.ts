@@ -1075,6 +1075,7 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
     case "answer":
     case "evidence":
     case "continue":
+    case "accept":
     case "recover":
       decide(run, body, "accepted");
       break;

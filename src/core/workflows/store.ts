@@ -17,6 +17,7 @@ import { migration006 } from "./migrations/006.js";
 import { migration007 } from "./migrations/007.js";
 import { migration008 } from "./migrations/008.js";
 import { migration009 } from "./migrations/009.js";
+import { migration010 } from "./migrations/010.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -91,7 +92,14 @@ export interface TaskRow {
 }
 export interface RequestRow {
   id: string;
-  kind: "approval" | "clarification" | "manual_evidence" | "recovery" | "checkpoint" | "delivery";
+  kind:
+    | "approval"
+    | "clarification"
+    | "manual_evidence"
+    | "recovery"
+    | "checkpoint"
+    | "delivery"
+    | "convergence";
   status: string;
   digest: string;
   body_json: string;
@@ -199,6 +207,7 @@ const MIGRATIONS = [
   { version: 7, sql: migration007 },
   { version: 8, sql: migration008 },
   { version: 9, sql: migration009 },
+  { version: 10, sql: migration010 },
 ] as const;
 
 export class WorkflowStore {

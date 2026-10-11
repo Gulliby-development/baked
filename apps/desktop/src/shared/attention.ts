@@ -105,6 +105,7 @@ const KIND_LABEL: Record<string, string> = {
   manual_evidence: "manual evidence",
   recovery: "recovery",
   checkpoint: "checkpoint",
+  convergence: "convergence decision",
   "outside-cwd": "write outside the project",
   destructive: "destructive command",
   "web-search": "web search",

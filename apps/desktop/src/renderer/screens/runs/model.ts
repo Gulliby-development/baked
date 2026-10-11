@@ -138,6 +138,7 @@ const REQUEST_TEXT: Record<string, string> = {
   manual_evidence: "A criterion needs a manual observation",
   recovery: "An effect needs a recovery decision",
   checkpoint: "Paused at a budget checkpoint",
+  convergence: "Repairs stopped: accept the findings, repair once more or stop",
   delivery: "A delivery plan waits for approval",
 };
 const STATE_TEXT: Partial<Record<RunState, string>> = {

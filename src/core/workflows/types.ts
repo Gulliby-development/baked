@@ -39,6 +39,27 @@ export const WorktreeStateSchema = z
   })
   .strict();
 export type WorktreeState = z.infer<typeof WorktreeStateSchema>;
+/**
+ * A finding the run was accepted with: convergence stopped with it open and the user (or the
+ * `assume` rule) decided it does not block acceptance. The run report lists them.
+ */
+export const LimitationSchema = z
+  .object({
+    findingId: z.string(),
+    severity: z.enum(["critical", "high", "medium", "low"]),
+    kind: z.string(),
+    criterionIds: z.array(z.string()),
+    file: z.string().nullable(),
+    symbol: z.string().nullable(),
+    claim: z.string(),
+    impact: z.string(),
+    /** Who accepted it: a person, or the `assume` rule when the checks passed. */
+    decidedBy: z.enum(["user", "assume"]),
+    /** Convergence rounds the run had used when the finding was accepted. */
+    round: z.number().int().nonnegative(),
+  })
+  .strict();
+export type Limitation = z.infer<typeof LimitationSchema>;
 export const RuntimeStateSchema = z
   .object({
     prompt: z.string(),
@@ -73,6 +94,14 @@ export const RuntimeStateSchema = z
     deferredCriteria: z.array(z.string()),
     previousFindingSet: z.string().nullable(),
     noProgressRounds: z.number().int(),
+    /** Convergence rounds a person allowed beyond `maxConvergenceRounds` ("one more round"). */
+    extraConvergenceRounds: z.number().int().nonnegative().default(0),
+    /** Corrective tasks a person allowed beyond `maxCorrectiveTasks` with that decision. */
+    extraCorrectiveTasks: z.number().int().nonnegative().default(0),
+    /** Findings a person already decided to repair; the convergence stop does not ask again. */
+    decidedFindings: z.array(z.string()).default([]),
+    /** Findings the run is accepted with (known limitations). */
+    limitations: z.array(LimitationSchema).default([]),
     verificationState: z.enum(["not_verified", "current", "stale", "invalid"]),
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),

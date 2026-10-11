@@ -209,7 +209,20 @@ export const runs = {
       commandId: crypto.randomUUID(),
       expectedRevision: run.revision,
     }),
-  /** Continues a run past a soft checkpoint (API group B, capability `setup`). */
+  /**
+   * Accepts the findings of a stopped convergence as known limitations (API group B, capability
+   * `setup`); the run then goes on to acceptance.
+   */
+  accept: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, requestId: string) =>
+    call<RunSnapshot>(key, "POST", runPath(run.runId, "accept"), {
+      commandId: crypto.randomUUID(),
+      expectedRevision: run.revision,
+      requestId,
+    }),
+  /**
+   * Continues a run past a soft checkpoint, or allows one more repair round on a stopped
+   * convergence (API group B, capability `setup`).
+   */
   continue: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, requestId: string) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "continue"), {
       commandId: crypto.randomUUID(),

@@ -19,6 +19,7 @@ import {
   type ApprovalBody,
   answersOf,
   type ClarificationBody,
+  type ConvergenceBody,
   parse,
   questionsOf,
   type RecoveryBody,
@@ -205,6 +206,98 @@ function Approval({
   );
 }
 
+/**
+ * Convergence stopped with findings open: the person accepts them as known limitations, allows one
+ * more repair round, or stops the run (it stays paused and can be resumed later).
+ */
+function Convergence({
+  projectKey,
+  data,
+  request,
+  onDone,
+}: {
+  projectKey: string;
+  data: RunData;
+  request: RunRequest;
+  onDone: () => Promise<void>;
+}) {
+  const body = parse<ConvergenceBody>(request.body_json);
+  const { busy, error, decide } = useDecide(projectKey, onDone);
+  const run = data.status;
+  const groupB = data.capabilities.includes(GROUP_B_CAPABILITY);
+  const failing = body.criteria?.failing ?? [];
+  return (
+    <div className={DECISION}>
+      <h3>Repairs stopped with findings still open</h3>
+      <p>{body.summary ?? "Convergence cannot start another repair round."}</p>
+      {body.criteria && (
+        <p>
+          {`${body.criteria.passing} of ${body.criteria.total} criteria pass${failing.length ? `; failing: ${failing.map((c) => c.id).join(", ")}` : ""}. Required checks ${body.checksPassing ? "pass" : "do not all pass"}.`}
+        </p>
+      )}
+      <ul className="m-0 pl-[18px] leading-[1.6] text-soft-foreground">
+        {(body.findings ?? []).map((f) => (
+          <li key={f.id}>
+            <strong>{f.severity}</strong> {f.claim}
+            {f.file ? ` (${f.file}${f.symbol ? `:${f.symbol}` : ""})` : ""}
+          </li>
+        ))}
+      </ul>
+      {(body.contradictions ?? []).map((c) => (
+        <p
+          key={c.findingId}
+        >{`${c.findingId} reverses the fix of ${c.earlierId}: ${c.earlierClaim}`}</p>
+      ))}
+      <p>
+        Accepting lists these findings as known limitations in the run report and goes on to
+        acceptance. One more round repairs them again.
+      </p>
+      {error && <Alert tone="error">{error}</Alert>}
+      {groupB ? (
+        <div className={ROW_ACTIONS}>
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy}
+            onClick={() => void decide(() => runs.accept(projectKey, run, request.id))}
+          >
+            Accept as known limitations
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            onClick={() => void decide(() => runs.continue(projectKey, run, request.id))}
+          >
+            One more round
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            onClick={() =>
+              void decide(
+                () =>
+                  workflow.reject(
+                    projectKey,
+                    run,
+                    request.id,
+                    "Stopped at the convergence decision",
+                  ),
+                false,
+              )
+            }
+          >
+            Stop here
+          </Button>
+        </div>
+      ) : (
+        <p className="text-dim-foreground">Deciding from the app needs a newer BAKED.</p>
+      )}
+    </div>
+  );
+}
+
 /** The outcomes of an interrupted effect, in the order and words of the terminal UI. */
 export const RESOLUTIONS: readonly { value: RecoveryResolution; label: string }[] = [
   { value: "record-applied", label: "It ran and its effect is in place" },
@@ -377,6 +470,8 @@ export function DecisionCard({
           )}
         </div>
       );
+    case "convergence":
+      return <Convergence projectKey={projectKey} data={data} request={request} onDone={onDone} />;
     case "delivery":
       return (
         <div className={DECISION}>

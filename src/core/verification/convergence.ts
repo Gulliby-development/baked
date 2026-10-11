@@ -10,6 +10,7 @@ import {
 } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
+import { findingSetHash } from "./convergence-stop.js";
 
 /**
  * Planned tasks a correction of `task` may write for: those of the same profile that cover one of
@@ -215,9 +216,14 @@ export function appendCorrections(
     throw new WorkflowFault("STALE_DECISION", "Repair requires an approved root graph");
   const run = store.run(runId);
   const round = (kind === "repair" ? run.repair_rounds : run.convergence_rounds) + 1;
-  const limit = kind === "repair" ? policy.maxRepairRounds : policy.maxConvergenceRounds;
+  // A person's "one more round" at a convergence decision raises both limits for that stage.
+  const limit =
+    kind === "repair"
+      ? policy.maxRepairRounds
+      : policy.maxConvergenceRounds + state.extraConvergenceRounds;
+  const cap = policy.maxCorrectiveTasks + state.extraCorrectiveTasks;
   // Not BUDGET_EXHAUSTED: `workflow extend` raises tokens, calls and time, none of which helps.
-  if (round > limit || run.corrective_tasks + findings.length > policy.maxCorrectiveTasks) {
+  if (round > limit || run.corrective_tasks + findings.length > cap) {
     const setting =
       round > limit
         ? kind === "repair"
@@ -226,15 +232,11 @@ export function appendCorrections(
         : "maxCorrectiveTasks";
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
-      `no_progress: ${findings.length} finding(s) remain after the policy's ${setting} (${round > limit ? limit : policy.maxCorrectiveTasks}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
+      `no_progress: ${findings.length} finding(s) remain after the policy's ${setting} (${round > limit ? limit : cap}). Narrow the spec or raise ${setting} with workflow revise, or fork the run.`,
       { reason: "no_progress", limit: setting },
     );
   }
-  const findingSet = hashJson(
-    findings
-      .map((f) => ({ claim: f.claim, criteria: f.criterionIds, impact: f.impact }))
-      .sort((a, b) => a.claim.localeCompare(b.claim)),
-  );
+  const findingSet = findingSetHash(findings);
   state.noProgressRounds = state.previousFindingSet === findingSet ? state.noProgressRounds + 1 : 0;
   state.previousFindingSet = findingSet;
   // A repair that leaves the failing output as it was may have had no way to see the cause
