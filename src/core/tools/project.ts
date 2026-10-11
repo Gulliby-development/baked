@@ -13,7 +13,10 @@ import { compressShellOutputFull } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
 import { getToolTimeoutMs } from "./tool-timeout.js";
 
+/** Quote one argument for the shell `bunShellArgs` runs: cmd.exe on Windows, `sh` elsewhere. */
 function shellQuote(s: string): string {
+  // cmd.exe does not treat single quotes as quoting; they would reach the program verbatim.
+  if (IS_WIN) return `"${s.replace(/"/g, '""')}"`;
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 

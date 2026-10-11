@@ -183,7 +183,7 @@ function scanSkillDir(
       const resolved = realpathSync(full);
       if (seenPaths.has(resolved)) continue;
       seenPaths.add(resolved);
-      const parentName = dir.split("/").pop() ?? "skill";
+      const parentName = basename(dir) || "skill";
       byName.set(parentName, { name: parentName, path: full, scope });
     }
   }
