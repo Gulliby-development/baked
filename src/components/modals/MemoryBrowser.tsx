@@ -16,6 +16,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ContextManager } from "../../core/context/manager.js";
+import {
+  applyChatMemoryCleanup,
+  type CleanupAction,
+  type CleanupCandidate,
+  chatMemoryCleanup,
+} from "../../core/memory/browse.js";
 import type { ScopedMemory } from "../../core/memory/manager.js";
 import type { MemoryRecord, MemoryScope } from "../../core/memory/types.js";
 import { useTheme } from "../../core/theme/index.js";
@@ -96,17 +102,16 @@ interface MemoryRow {
   record: MemoryRecord;
 }
 
-interface CleanupRow {
-  id: string;
-  scope: MemoryScope;
-  kind: "dupe" | "dead" | "stale" | "sim";
+interface CleanupRow extends CleanupCandidate {
   kindLabel: string;
-  summary: string;
-  detail: string;
-  record: MemoryRecord;
-  /** For "sim" rows: the cluster's preferred keeper id. */
-  clusterKeeperId?: string;
 }
+
+const KIND_LABEL: Record<CleanupCandidate["kind"], string> = {
+  duplicate: "DUPE",
+  dead: "DEAD",
+  stale: "STALE",
+  similar: "SIM",
+};
 
 const TABS: Tab[] = ["All", "Hidden", "Runs", "Cleanup", "Settings"];
 
@@ -212,76 +217,10 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
   );
 
   const refreshCleanup = useCallback(() => {
-    const dupes = memMgr.findDuplicates("all");
-    const dead = memMgr.findDeadFileRefs("all", fileExists);
-    const stale = memMgr.staleCandidates("all", 25);
-    const rows: CleanupRow[] = [];
-    for (const g of dupes) {
-      for (const d of g.dupes) {
-        rows.push({
-          id: d.id,
-          scope: g.scope,
-          kind: "dupe",
-          kindLabel: "DUPE",
-          summary: d.summary.replace(/[\n\r]+/g, " "),
-          detail: `dup of ${g.kept.id.slice(0, 8)}`,
-          record: d,
-        });
-      }
-    }
-    for (const d of dead) {
-      rows.push({
-        id: d.record.id,
-        scope: d.scope,
-        kind: "dead",
-        kindLabel: "DEAD",
-        summary: d.record.summary.replace(/[\n\r]+/g, " "),
-        detail: d.deadPaths.slice(0, 2).join(", ") + (d.deadPaths.length > 2 ? "…" : ""),
-        record: d.record,
-      });
-    }
-    for (const s of stale) {
-      // Skip already covered by dupe/dead to avoid double-listing.
-      if (rows.some((r) => r.id === s.record.id && r.scope === s.scope)) continue;
-      rows.push({
-        id: s.record.id,
-        scope: s.scope,
-        kind: "stale",
-        kindLabel: "STALE",
-        summary: s.record.summary.replace(/[\n\r]+/g, " "),
-        detail: `${s.ageDays.toFixed(0)}d unused, ×${String(s.record.use_count)}`,
-        record: s.record,
-      });
-    }
-
-    // Deep: similarity clusters from memory_edges. Keep the most-pinned /
-    // most-used / newest as cluster keeper; surface the rest as candidates
-    // for soft-delete (or supersede via the agent later).
-    const clusters = memMgr.similarClusters("all", 0.7);
-    for (const c of clusters) {
-      if (c.members.length < 2) continue;
-      const sortedMembers = [...c.members].sort((a, b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        if (a.use_count !== b.use_count) return b.use_count - a.use_count;
-        return Date.parse(b.last_used_at) - Date.parse(a.last_used_at);
-      });
-      const keeper = sortedMembers[0];
-      if (!keeper) continue;
-      for (const m of sortedMembers.slice(1)) {
-        // Don't double-list rows already flagged by Quick/Stale.
-        if (rows.some((r) => r.id === m.id && r.scope === c.scope)) continue;
-        rows.push({
-          id: m.id,
-          scope: c.scope,
-          kind: "sim",
-          kindLabel: "SIM",
-          summary: m.summary.replace(/[\n\r]+/g, " "),
-          detail: `~${keeper.id.slice(0, 8)} (${(c.avgWeight * 100).toFixed(0)}%)`,
-          record: m,
-          clusterKeeperId: keeper.id,
-        });
-      }
-    }
+    const rows = chatMemoryCleanup(memMgr, fileExists).map((c) => ({
+      ...c,
+      kindLabel: KIND_LABEL[c.kind],
+    }));
     setCleanupRows(rows);
     setCleanupSelected(new Map());
   }, [memMgr, fileExists]);
@@ -416,19 +355,13 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
   };
 
   const applyCleanup = () => {
-    let deleted = 0;
-    let pinned = 0;
-    for (const row of cleanupRows) {
+    const actions = cleanupRows.flatMap((row): CleanupAction[] => {
       const action = cleanupSelected.get(row.id);
-      if (action === "delete") {
-        memMgr.softDelete(row.scope, row.id);
-        deleted++;
-      } else if (action === "pin") {
-        memMgr.pin(row.scope, row.id);
-        pinned++;
-      }
-    }
-    memMgr.noteCleanupCompleted();
+      if (action === "delete") return [{ id: row.id, scope: row.scope, action: "hide" }];
+      if (action === "pin") return [{ id: row.id, scope: row.scope, action: "pin" }];
+      return [];
+    });
+    const { hidden: deleted, pinned } = applyChatMemoryCleanup(memMgr, actions);
     const summary = `Cleanup: ${String(deleted)} hidden, ${String(pinned)} pinned`;
     onSystemMessage(summary);
     popFlash("ok", summary);

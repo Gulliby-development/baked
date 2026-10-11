@@ -1,6 +1,7 @@
 import { create } from "zustand";
+import { DEFAULT_DISABLED_TOOLS } from "../core/settings/schema.js";
 
-const DEFAULT_DISABLED = ["request_tools", "release_tools", "skills"];
+const DEFAULT_DISABLED = DEFAULT_DISABLED_TOOLS;
 
 interface ToolsState {
   disabledTools: Set<string>;

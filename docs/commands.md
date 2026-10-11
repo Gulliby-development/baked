@@ -35,6 +35,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | Command | Does |
 | --- | --- |
 | `/project` | This project: sessions, workflow runs, what waits for you |
+| `/project rename` | `/project rename NAME` renames this project in the picker, `baked projects` and the desktop app; without a name it restores the default |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
 | `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |
@@ -98,6 +99,8 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/router` | Route models per task (code, explore, plan, verify) |
 | `/web-search` | Web search keys & settings |
 | `/mcp` | MCP servers — status, tools, reconnect |
+
+Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` sign the same CLIs in and out, and `baked --set-key` / `baked --remove-key` save and remove API keys ([headless CLI](headless.md#keys-and-sign-in)).
 
 ### Intelligence
 
