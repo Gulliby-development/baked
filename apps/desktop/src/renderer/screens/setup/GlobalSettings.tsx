@@ -524,7 +524,7 @@ function Notifications({
   );
 }
 
-type GlobalSection = Exclude<SettingsSection, "app">;
+type GlobalSection = Exclude<SettingsSection, "app" | "chat">;
 
 /** Title and one-line explanation of each All projects page. */
 const PAGES: Record<GlobalSection, { title: string; lede: ReactNode }> = {

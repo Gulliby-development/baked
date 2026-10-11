@@ -8,6 +8,7 @@
  */
 import { ApiError, call } from "./api.js";
 import {
+  CHAT_MEMORY_CAPABILITY,
   CHECKS_CAPABILITY,
   HOOKS_CAPABILITY,
   LIBRARY_CAPABILITY,
@@ -369,6 +370,61 @@ export type RunMemoryEdit =
   | { action: "forget"; id: string }
   | { action: "restore"; id: string };
 
+// --- Chat memory (`chat-memory` capability) -----------------------------------------------------
+
+export type ChatMemoryScope = "project" | "global";
+export type ChatMemoryCategory = "pref" | "decision" | "gotcha" | "context";
+/** What the chat agent remembers across sessions (`ChatMemoryEntry` in src/core/memory/browse.ts). */
+export interface ChatMemoryEntry {
+  id: string;
+  scope: ChatMemoryScope;
+  category: ChatMemoryCategory | null;
+  summary: string;
+  details: string;
+  topics: string[];
+  source: "user" | "agent";
+  createdAt: string;
+  lastUsedAt: string;
+  useCount: number;
+  pinned: boolean;
+  hidden: boolean;
+}
+export interface ChatMemorySettings {
+  writeScope: ChatMemoryScope | "none";
+  readScope: ChatMemoryScope | "all" | "none";
+  settingsScope: ChatMemoryScope;
+}
+export interface ChatMemoryView {
+  settings: ChatMemorySettings;
+  entries: ChatMemoryEntry[];
+  hidden: ChatMemoryEntry[];
+  cleanupHint: { sessions: number; total: number; stale: number } | null;
+}
+export type ChatMemoryEdit =
+  | { action: "pin" | "unpin" | "hide" | "restore"; scope: ChatMemoryScope; id: string }
+  | {
+      action: "edit";
+      scope: ChatMemoryScope;
+      id: string;
+      summary: string;
+      details?: string;
+      category?: ChatMemoryCategory | null;
+    }
+  | { action: "purge"; scope: ChatMemoryScope | "all" };
+export interface ChatMemoryCleanupCandidate {
+  id: string;
+  scope: ChatMemoryScope;
+  kind: "duplicate" | "dead" | "stale" | "similar";
+  summary: string;
+  detail: string;
+  keeperId?: string;
+}
+export interface ChatMemoryCleanupAction {
+  id: string;
+  scope: ChatMemoryScope;
+  action: "hide" | "pin";
+}
+
 // --- Hooks (`hooks` capability) -----------------------------------------------------------------
 
 export type HookScope = "user" | "project" | "local";
@@ -432,6 +488,25 @@ export const setup = {
     ),
   editRunMemory: (key: string, edit: RunMemoryEdit) =>
     call<RunMemoryView & { id: string }>(key, "POST", "/v1/workflow/memory", edit),
+
+  /** What the chat agent remembers across sessions, and where it reads and writes memories. */
+  chatMemory: (key: string) =>
+    withCapability(key, CHAT_MEMORY_CAPABILITY, () =>
+      call<ChatMemoryView>(key, "GET", "/v1/memory"),
+    ),
+  editChatMemory: (key: string, edit: ChatMemoryEdit) =>
+    call<ChatMemoryView & { cleared?: number }>(key, "POST", "/v1/memory", edit),
+  chatMemorySettings: (key: string, change: Partial<ChatMemorySettings>) =>
+    call<ChatMemoryView>(key, "PUT", "/v1/memory/settings", change),
+  chatMemoryCleanup: (key: string) =>
+    call<{ candidates: ChatMemoryCleanupCandidate[] }>(key, "GET", "/v1/memory/cleanup"),
+  applyChatMemoryCleanup: (key: string, actions: ChatMemoryCleanupAction[]) =>
+    call<ChatMemoryView & { applied: { hidden: number; pinned: number } }>(
+      key,
+      "POST",
+      "/v1/memory/cleanup",
+      { actions },
+    ),
 
   gates: (key: string) => call<GateList>(key, "GET", "/v1/workflow/gates"),
   confirmGates: (key: string, ids: string[]) =>
@@ -525,8 +600,18 @@ export const setup = {
   logout: (key: string, provider: string) =>
     call<{ ok: boolean; message: string }>(key, "POST", `/v1/providers/${json(provider)}/logout`),
   definitions: (key: string) => call<WorkflowDefinition[]>(key, "GET", "/v1/workflow/definitions"),
-  route: (key: string, workflow: string) =>
-    call<RouteExplanation>(key, "GET", `/v1/workflow/route?workflow=${json(workflow)}`),
+  /**
+   * Who runs each stage of a workflow and why; `model` is the run model to route against. Null
+   * from a backend without the `routing` capability, so the caller leaves the explanation out.
+   */
+  route: async (key: string, workflow: string, model?: string) =>
+    offers(await capabilities(key), ROUTING_CAPABILITY) === false
+      ? null
+      : call<RouteExplanation>(
+          key,
+          "GET",
+          `/v1/workflow/route?workflow=${json(workflow)}${model ? `&model=${json(model)}` : ""}`,
+        ),
   routing: (key: string, workflow: string | null) =>
     withCapability(key, ROUTING_CAPABILITY, () =>
       call<RoutingOverview>(

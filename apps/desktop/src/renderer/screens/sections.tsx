@@ -7,6 +7,7 @@ import { InitiativesSection } from "./insights/InitiativesSection.js";
 import { UsageSection } from "./insights/UsageSection.js";
 import { AcceptanceSection } from "./runs/AcceptanceSection.js";
 import { RunsView } from "./runs/RunsView.js";
+import { ChatMemorySection } from "./setup/ChatMemorySection.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { HooksSection } from "./setup/HooksSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
@@ -30,6 +31,7 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   instructions: InstructionsSection,
   "working-set": WorkingSetSection,
   "run-memory": RunMemorySection,
+  "chat-memory": ChatMemorySection,
   skills: SkillsSection,
   hooks: HooksSection,
   initiatives: InitiativesSection,

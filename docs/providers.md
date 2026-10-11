@@ -5,9 +5,9 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | Connection | Provider ID | Authentication |
 | --- | --- | --- |
 | Claude | `anthropic` | `ANTHROPIC_API_KEY` or `/keys` |
-| Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`), see below |
+| Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`) or `baked login claude-code`, see below |
 | OpenAI API | `openai` | `OPENAI_API_KEY` or `/keys` |
-| OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), or Sign in and Switch account in the desktop app's settings |
+| OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), `baked login codex`, or Sign in and Switch account in the desktop app's settings |
 | GitHub Copilot | `copilot` | `COPILOT_API_KEY`, `/keys` or `--set-key copilot`, see below |
 | GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys` |
 
@@ -17,6 +17,7 @@ Keys are stored outside project configuration ([configuration](configuration.md#
 baked --list-providers
 baked --list-models openai
 baked --set-key anthropic sk-ant-...
+baked --remove-key anthropic        # forget the saved key
 ```
 
 `baked workflow models` lists the same models for [model routing](workflows/runtime.md#routing-screen), with the routing model names and the providers that still need a key or login.
