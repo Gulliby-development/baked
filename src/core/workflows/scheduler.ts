@@ -572,13 +572,15 @@ export class WorkflowScheduler {
               if (analysis.inputHash !== hashJson(state.manifest))
                 throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
               // The host adds a finding the model missed: a program was described and none is planned.
-              const uncovered = state.coverageRaised
-                ? null
-                : coverageFinding(
-                    state.requestText || state.prompt,
-                    workspaceKind(runRoot(this.store.workspace, state)),
-                    graph,
-                  );
+              // A feature of an initiative has its boundary approved with the split, not the request.
+              const uncovered =
+                state.coverageRaised || state.hostDependencies
+                  ? null
+                  : coverageFinding(
+                      state.requestText || state.prompt,
+                      workspaceKind(runRoot(this.store.workspace, state)),
+                      graph,
+                    );
               if (uncovered) {
                 state.coverageRaised = true;
                 if (!analysis.findings.some((f) => f.id === uncovered.id))
