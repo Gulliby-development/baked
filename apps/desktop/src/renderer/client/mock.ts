@@ -143,6 +143,7 @@ export function createMockBridge(): DesktopBridge {
             "plan-mode",
             "chat-undo",
             "run-memory",
+            "chat-memory",
             "images",
             "code-graph",
             "skills-install",
