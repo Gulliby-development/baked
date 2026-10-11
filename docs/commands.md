@@ -100,6 +100,8 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/web-search` | Web search keys & settings |
 | `/mcp` | MCP servers — status, tools, reconnect |
 
+Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` sign the same CLIs in and out, and `baked --set-key` / `baked --remove-key` save and remove API keys ([headless CLI](headless.md#keys-and-sign-in)).
+
 ### Intelligence
 
 | Command | Does |
