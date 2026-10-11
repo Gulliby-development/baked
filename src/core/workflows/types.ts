@@ -55,6 +55,13 @@ export const RuntimeStateSchema = z
     workspaceHash: z.string().nullable(),
     expectedFiles: z.record(z.string(), z.string()).nullable(),
     reviews: z.record(z.string(), ReviewSchema),
+    /**
+     * Criteria a required reviewer could not establish after its one re-prompt, by reviewer key:
+     * the converge stage gets them as evidence gaps and settles them with a test or a check.
+     */
+    reviewGaps: z
+      .record(z.string(), z.array(z.object({ criterionId: z.string(), explanation: z.string() })))
+      .default({}),
     convergence: ReviewSchema.nullable(),
     approvalRoot: z.string().nullable(),
     correctionHashes: z.array(z.string()),
