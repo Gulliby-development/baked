@@ -17,6 +17,14 @@ import {
 import type { AppConfig } from "../../types/index.js";
 import { listCustomCommands } from "../commands/custom.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
+import {
+  cancelCliLogin,
+  cliSignInStatus,
+  getCliLogin,
+  isCliLoginProvider,
+  logoutCli,
+  startCliLogin,
+} from "../llm/cli-login.js";
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
@@ -63,6 +71,7 @@ const ConfigBody = z
   });
 const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
+const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/;
 
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
@@ -225,9 +234,26 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
           acceptsKey: Boolean(secret),
           source: source === "none" ? null : source === "env" ? "env" : "app",
           ...(secret?.keyUrl ? { keyUrl: secret.keyUrl } : {}),
+          ...(isCliLoginProvider(status.id)
+            ? { signIn: { ...cliSignInStatus(status.id), login: getCliLogin(status.id) } }
+            : {}),
         };
       }),
     });
+  }
+  const loginMatch = PROVIDER_LOGIN.exec(path);
+  if (loginMatch?.[1]) {
+    const id = loginMatch[1];
+    if (!isCliLoginProvider(id))
+      ctx.fail(404, "NOT_FOUND", `Provider ${id} does not sign in through a CLI`);
+    if (loginMatch[2] === "logout") {
+      ctx.only("POST");
+      return ctx.json(200, await logoutCli(id));
+    }
+    ctx.only("GET", "POST", "DELETE");
+    if (method === "POST") return ctx.json(202, { login: startCliLogin(id) });
+    if (method === "DELETE") return ctx.json(200, { login: await cancelCliLogin(id) });
+    return ctx.json(200, { login: getCliLogin(id) });
   }
   const keyMatch = PROVIDER_KEY.exec(path);
   if (keyMatch?.[1]) {
