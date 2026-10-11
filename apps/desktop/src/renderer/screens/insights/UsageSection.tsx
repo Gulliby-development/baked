@@ -9,7 +9,11 @@ import {
   type UsageSummary,
 } from "../../client/insights.js";
 import { workflow } from "../../client/workflow.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { tokens, usd } from "../../format.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { LoadState } from "./LoadState.js";
@@ -128,9 +132,9 @@ function Cost({ slice }: { slice: Pick<UsageSlice, "costUsd" | "unpricedTokens" 
 
 function Figure({ label, value, note }: { label: string; value: string; note: string }) {
   return (
-    <div className="card flex flex-col gap-[6px]">
+    <div className={cn(PANEL, "flex flex-col gap-[6px]")}>
       <span className="text-[12px] text-dim-foreground">{label}</span>
-      <span className="mono text-[26px] text-foreground">{value}</span>
+      <span className="font-mono text-[26px] text-foreground">{value}</span>
       <span className="text-[12px] text-muted-foreground">{note}</span>
     </div>
   );
@@ -171,15 +175,15 @@ function StageChart({ slices }: { slices: UsageSlice[] }) {
   const output = slices.some((s) => s.output !== null);
   const unsplit = slices.some((s) => s.unsplit > 0);
   return (
-    <section className="card flex flex-col gap-3" aria-labelledby="use-stage-title">
+    <section className={cn(PANEL, "flex flex-col gap-3")} aria-labelledby="use-stage-title">
       <div className="flex flex-wrap items-center gap-4">
-        <h2 id="use-stage-title" className="label">
+        <h2 id="use-stage-title" className={LABEL}>
           Tokens by stage
         </h2>
         <Legend output={output} unsplit={unsplit} />
       </div>
       {slices.length === 0 ? (
-        <p className="muted">No agent attempts match these filters.</p>
+        <p className="text-dim-foreground">No agent attempts match these filters.</p>
       ) : (
         <div className="grid grid-cols-[110px_minmax(0,1fr)_70px] items-center gap-x-3 gap-y-2 text-[13px]">
           {slices.map((s) => (
@@ -200,7 +204,7 @@ function StageChart({ slices }: { slices: UsageSlice[] }) {
                   )}
                 </div>
               </div>
-              <span className="mono text-right text-muted-foreground">{tokens(s.tokens)}</span>
+              <span className="text-right font-mono text-muted-foreground">{tokens(s.tokens)}</span>
             </div>
           ))}
         </div>
@@ -210,7 +214,7 @@ function StageChart({ slices }: { slices: UsageSlice[] }) {
           <summary className="cursor-pointer text-[12px] text-muted-foreground">
             Show as a table
           </summary>
-          <table className="table mt-2">
+          <table className={cn(TABLE, "mt-2")}>
             <thead>
               <tr>
                 <th>Stage</th>
@@ -221,7 +225,7 @@ function StageChart({ slices }: { slices: UsageSlice[] }) {
                 <th className={NUM}>Total</th>
               </tr>
             </thead>
-            <tbody className="mono">
+            <tbody className="font-mono">
               {slices.map((s) => (
                 <tr key={s.key}>
                   <td>{stageLabel(s.key)}</td>
@@ -291,22 +295,22 @@ function FigureHeads({ columns }: { columns: ReturnType<typeof columnsOf> }) {
 function ModelTable({ slices }: { slices: UsageSlice[] }) {
   const columns = columnsOf(slices);
   return (
-    <section className="card flex flex-col gap-3" aria-labelledby="use-model-title">
-      <h2 id="use-model-title" className="label">
+    <section className={cn(PANEL, "flex flex-col gap-3")} aria-labelledby="use-model-title">
+      <h2 id="use-model-title" className={LABEL}>
         By model
       </h2>
       {slices.length === 0 ? (
-        <p className="muted">No agent attempts match these filters.</p>
+        <p className="text-dim-foreground">No agent attempts match these filters.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table">
+          <table className={TABLE}>
             <thead>
               <tr>
                 <th>Model</th>
                 <FigureHeads columns={columns} />
               </tr>
             </thead>
-            <tbody className="mono">
+            <tbody className="font-mono">
               {slices.map((s) => (
                 <tr key={s.key}>
                   <td className="text-foreground">{s.key}</td>
@@ -324,12 +328,12 @@ function ModelTable({ slices }: { slices: UsageSlice[] }) {
 function StageModelTable({ slices }: { slices: StageModelSlice[] }) {
   const columns = columnsOf(slices);
   return (
-    <section className="card flex flex-col gap-3" aria-labelledby="use-cross-title">
-      <h2 id="use-cross-title" className="label">
+    <section className={cn(PANEL, "flex flex-col gap-3")} aria-labelledby="use-cross-title">
+      <h2 id="use-cross-title" className={LABEL}>
         By stage and model
       </h2>
       <div className="overflow-x-auto">
-        <table className="table">
+        <table className={TABLE}>
           <thead>
             <tr>
               <th>Stage</th>
@@ -337,7 +341,7 @@ function StageModelTable({ slices }: { slices: StageModelSlice[] }) {
               <FigureHeads columns={columns} />
             </tr>
           </thead>
-          <tbody className="mono">
+          <tbody className="font-mono">
             {slices.map((s, i) => (
               <tr key={s.key}>
                 <td className="text-foreground">
@@ -465,30 +469,26 @@ export function UsageSection({ project, id }: SectionProps) {
   return (
     <div className="flex flex-col gap-[18px]">
       <div className="flex flex-wrap items-center gap-2">
-        <fieldset className="seg-group">
+        <SegmentGroup>
           <legend className="sr-only">Range</legend>
           {id && (
-            <button
-              type="button"
-              className="seg"
+            <Segment
               aria-pressed={scope.kind === "run"}
               onClick={() => pick({ kind: "run", runId: id })}
             >
               This run
-            </button>
+            </Segment>
           )}
           {RANGES.map((days) => (
-            <button
+            <Segment
               key={days}
-              type="button"
-              className="seg"
               aria-pressed={scope.kind === "days" && scope.days === days}
               onClick={() => pick({ kind: "days", days })}
             >
               Last {days} days
-            </button>
+            </Segment>
           ))}
-        </fieldset>
+        </SegmentGroup>
         <label className="use-select">
           <span className="sr-only">Stage</span>
           <select
@@ -521,7 +521,7 @@ export function UsageSection({ project, id }: SectionProps) {
         </label>
       </div>
       {scope.kind === "run" && (
-        <p className="lede">
+        <p className={LEDE}>
           Run <a href={projectHref(project.key, "runs", scope.runId)}>{scope.runId}</a>
         </p>
       )}
@@ -536,14 +536,14 @@ export function UsageSection({ project, id }: SectionProps) {
       ) : (
         <>
           {state.data.kind === "runs" && state.data.fallback && (
-            <div className="banner">
+            <Alert>
               This BAKED has no project usage summary, so these figures cover the{" "}
               {state.data.reports.length} most recent runs instead of the chosen range. A newer
               BAKED reports any range.
-            </div>
+            </Alert>
           )}
           {state.data.kind === "summary" && (
-            <div className="banner">
+            <Alert>
               This BAKED reports usage by one dimension at a time, without input and output tokens
               or a cost estimate. A newer BAKED reports them, by stage and model together.
               {!report.crossFiltered &&
@@ -552,7 +552,7 @@ export function UsageSection({ project, id }: SectionProps) {
                   : filter.stage !== null
                     ? " The stage filter does not narrow the model table."
                     : " The model filter does not narrow the stage chart.")}
-            </div>
+            </Alert>
           )}
           <Figures report={report} source={state.data} />
           <StageChart slices={report.byStage} />

@@ -1,3 +1,5 @@
+import { Alert } from "../../components/ui/alert.js";
+import { Empty } from "../../components/ui/empty.js";
 import type { Load } from "./useLoad.js";
 
 /**
@@ -15,20 +17,20 @@ export function LoadState({
 }) {
   switch (state.kind) {
     case "loading":
-      return <div className="muted">Loading…</div>;
+      return <div className="text-dim-foreground">Loading…</div>;
     case "error":
-      return <div className="banner error">{state.message}</div>;
+      return <Alert tone="error">{state.message}</Alert>;
     case "missing":
       return missing ? (
-        <div className="empty">{missing}</div>
+        <Empty>{missing}</Empty>
       ) : (
-        <div className="empty flex flex-col items-center gap-[6px]">
+        <Empty className="flex flex-col items-center gap-[6px]">
           <strong className="text-foreground">Needs a newer BAKED</strong>
           <span>
-            {what} need a newer <code className="mono">baked serve</code> than the one running this
-            project. Update BAKED, then restart the project.
+            {what} need a newer <code className="font-mono">baked serve</code> than the one running
+            this project. Update BAKED, then restart the project.
           </span>
-        </div>
+        </Empty>
       );
   }
 }

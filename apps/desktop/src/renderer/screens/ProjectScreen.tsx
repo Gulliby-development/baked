@@ -1,5 +1,10 @@
 import type { DesktopProject } from "../../shared/api.js";
+import { Alert } from "../components/ui/alert.js";
+import { Button } from "../components/ui/button.js";
+import { Dot } from "../components/ui/dot.js";
+import { Empty } from "../components/ui/empty.js";
 import { backendLabel } from "../format.js";
+import { PAGE, SUB_LINE } from "../lib/styles.js";
 import type { ProjectSection } from "../router.js";
 import { useDesktop, useProject } from "../store.js";
 import { SECTION_VIEWS } from "./sections.js";
@@ -21,8 +26,8 @@ function Closed({ project }: { project: DesktopProject }) {
   const { open, restart } = useDesktop();
   const failed = project.backend.kind === "failed";
   return (
-    <div className="banner" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-      <span style={{ flex: 1 }}>
+    <Alert className="flex items-center gap-3">
+      <span className="flex-1">
         {failed
           ? `The backend of ${project.name} stopped: ${project.backend.kind === "failed" ? project.backend.lastError : ""}`
           : project.exists
@@ -30,15 +35,15 @@ function Closed({ project }: { project: DesktopProject }) {
             : `${project.path} no longer exists.`}
       </span>
       {project.exists && (
-        <button
-          type="button"
-          className="btn-primary"
+        <Button
+          variant="primary"
+          size="md"
           onClick={() => void (failed ? restart(project.key) : open(project.key))}
         >
           {failed ? "Restart" : "Open project"}
-        </button>
+        </Button>
       )}
-    </div>
+    </Alert>
   );
 }
 
@@ -55,8 +60,8 @@ export function ProjectScreen({
   const View = START_ROUTES[`${section}/${id}`] ?? SECTION_VIEWS[section];
   if (!project)
     return (
-      <div className="page">
-        <div className="empty">This project is not in the list.</div>
+      <div className={PAGE}>
+        <Empty>This project is not in the list.</Empty>
       </div>
     );
   const backend = backendLabel(project.backend);
@@ -64,12 +69,12 @@ export function ProjectScreen({
   // Chat draws its own header and fills the window.
   if (section === "chat" && View && live) return <View project={project} id={id} />;
   return (
-    <div className="page">
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 12 }}>
+    <div className={PAGE}>
+      <div className="flex flex-wrap items-baseline gap-3">
         <h1>{section === "overview" ? project.name : TITLES[section]}</h1>
-        <span className="sub-line">{project.path}</span>
-        <span className="status-line" style={{ marginLeft: "auto", padding: 0 }}>
-          <span className={`dot ${backend.tone}`} />
+        <span className={SUB_LINE}>{project.path}</span>
+        <span className="ml-auto flex items-center gap-2 text-[12px] text-dim-foreground">
+          <Dot tone={backend.tone} />
           {backend.text}
         </span>
       </div>
@@ -80,7 +85,7 @@ export function ProjectScreen({
       ) : View ? (
         <View project={project} id={id} />
       ) : (
-        <div className="empty">{TITLES[section]} comes in the next desktop pull requests.</div>
+        <Empty>{TITLES[section]} comes in the next desktop pull requests.</Empty>
       )}
     </div>
   );

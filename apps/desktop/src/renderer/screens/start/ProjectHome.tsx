@@ -5,9 +5,11 @@ import { attentionHash, attentionId } from "../../../shared/attention.js";
 import { api } from "../../client/api.js";
 import { isNoProject } from "../../client/setup.js";
 import { type ProjectSummary, start } from "../../client/start.js";
+import { Alert } from "../../components/ui/alert.js";
 import { Badge, type badgeVariants } from "../../components/ui/badge.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { Card } from "../../components/ui/card.js";
+import { Empty } from "../../components/ui/empty.js";
 import {
   Table,
   TableBody,
@@ -19,6 +21,7 @@ import {
 import { Textarea } from "../../components/ui/textarea.js";
 import { ago, tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { useDesktop } from "../../store.js";
 import type { SectionProps } from "../sections.js";
@@ -45,7 +48,7 @@ const LINK =
 function SectionHead({ id, title, children }: { id: string; title: string; children?: ReactNode }) {
   return (
     <div className="flex items-center justify-between">
-      <h2 id={id} className="label">
+      <h2 id={id} className={LABEL}>
         {title}
       </h2>
       {children}
@@ -81,7 +84,7 @@ function TaskBox({ projectKey }: { projectKey: string }) {
           go("quick");
         }}
       >
-        <label htmlFor="home-task" className="label">
+        <label htmlFor="home-task" className={LABEL}>
           What should change?
         </label>
         <Textarea
@@ -173,13 +176,11 @@ function RunsCard({ projectKey }: { projectKey: string }) {
         </a>
       </SectionHead>
       {runs.error ? (
-        <div className="banner error">{message(runs.error)}</div>
+        <Alert tone="error">{message(runs.error)}</Alert>
       ) : !runs.value ? (
         <p className={HINT}>Loading runs…</p>
       ) : runs.value.items.length === 0 ? (
-        <div className="empty">
-          No workflow runs yet. Describe a change above and pick Quick or Full run.
-        </div>
+        <Empty>No workflow runs yet. Describe a change above and pick Quick or Full run.</Empty>
       ) : (
         <Table>
           <TableHeader>
@@ -230,7 +231,7 @@ function SessionsCard({ projectKey, summary }: { projectKey: string; summary: Pr
         </a>
       </SectionHead>
       {summary.sessions.length === 0 ? (
-        <div className="empty">No chat sessions in this project yet.</div>
+        <Empty>No chat sessions in this project yet.</Empty>
       ) : (
         <Card className="gap-0 py-0">
           <ul className="m-0 list-none p-0">
@@ -371,7 +372,7 @@ export function ProjectHome({ project }: SectionProps) {
         <aside className="flex min-w-0 flex-col gap-5" aria-label="Project setup">
           {summary.error ? (
             <section className={PANEL}>
-              <h2 className="label">Project</h2>
+              <h2 className={LABEL}>Project</h2>
               <p className={NOTE}>
                 {isNoProject(summary.error)
                   ? "This folder has no baked/project.json, so it has no working set or project sessions. Run baked project init in the folder to create one."
