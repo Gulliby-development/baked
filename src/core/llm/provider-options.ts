@@ -140,6 +140,8 @@ export function detectModelFamily(modelId: string): ModelFamily {
 
   // Direct providers — no guessing needed
   if (provider === "anthropic") return "claude";
+  // Claude Code runs Claude models through the local CLI; its options are its own.
+  if (provider === "claude-code") return "claude";
   if (provider === "openai") return "openai";
   if (provider === "xai") return "xai";
   if (provider === "google") return "google";
