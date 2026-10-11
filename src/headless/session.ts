@@ -1,20 +1,24 @@
-import { relative } from "node:path";
+import { relative, resolve } from "node:path";
 import type { RollbackReport } from "../core/checkpoints/fork.js";
 import { RollbackError } from "../core/checkpoints/fork.js";
 import { forkSavedSession, SessionForkError } from "../core/checkpoints/session-fork.js";
 import { rewindSavedSession, SessionRewindError } from "../core/checkpoints/session-rewind.js";
 import { TurnUndoError } from "../core/checkpoints/undo.js";
 import { getCwd } from "../core/cwd.js";
-import { SessionManager } from "../core/sessions/manager.js";
+import { exportChat } from "../core/sessions/export.js";
+import { type SessionListEntry, SessionManager } from "../core/sessions/manager.js";
 
 const help = `Usage: baked session list [--limit N] [--json]
        baked session delete SESSION [--json]
+       baked session export SESSION [--format markdown|json] [--output FILE] [--json]
        baked session fork SESSION [options]
        baked session undo SESSION [--to N] [--force] [--json]
        baked session redo SESSION [--force] [--json]
 
 list prints the saved sessions of this project, most recently updated first (default limit 50).
 delete removes a saved session and the checkpoint tags it made; the files stay as they are.
+export writes the conversation of the session's active tab as Markdown (default) or JSON, to FILE
+or to .baked/exports/, as /session export does in the terminal UI.
 SESSION is an id or a unique id prefix.
 
 fork saves a new session with the active conversation of SESSION (an id or unique id prefix) up to a
@@ -49,6 +53,7 @@ export async function runSessionCli(argv: string[]): Promise<number> {
   if (command === "undo" || command === "redo") return rewind(command, rest);
   if (command === "list") return list(rest);
   if (command === "delete") return remove(rest);
+  if (command === "export") return exportSession(rest);
   if (command !== "fork") {
     process.stderr.write(`Unknown session command: ${command}\n\n${help}`);
     return 1;
@@ -201,6 +206,22 @@ function list(rest: string[]): number {
   return 0;
 }
 
+/** The saved session with this id, or the only one it is a prefix of; prints why not otherwise. */
+function uniqueSession(store: SessionManager, idOrPrefix: string): SessionListEntry | undefined {
+  const prefix = idOrPrefix.toLowerCase();
+  const matches = store.listSessions().filter((s) => s.id.toLowerCase().startsWith(prefix));
+  const target =
+    matches.find((s) => s.id.toLowerCase() === prefix) ??
+    (matches.length === 1 ? matches[0] : undefined);
+  if (!target)
+    process.stderr.write(
+      matches.length
+        ? `${idOrPrefix} matches ${String(matches.length)} sessions; give more of the id\n`
+        : `No session ${idOrPrefix}\n`,
+    );
+  return target;
+}
+
 function remove(rest: string[]): number {
   const ids = rest.filter((a) => !a.startsWith("--"));
   const unknown = rest.find((a) => a.startsWith("--") && a !== "--json");
@@ -210,24 +231,58 @@ function remove(rest: string[]): number {
     );
     return 1;
   }
-  const prefix = (ids[0] ?? "").toLowerCase();
   const store = new SessionManager(getCwd());
-  const matches = store.listSessions().filter((s) => s.id.toLowerCase().startsWith(prefix));
-  const exact = matches.find((s) => s.id.toLowerCase() === prefix);
-  const target = exact ?? (matches.length === 1 ? matches[0] : undefined);
-  if (!target) {
-    process.stderr.write(
-      matches.length
-        ? `${ids[0]} matches ${String(matches.length)} sessions; give more of the id\n`
-        : `No session ${ids[0]}\n`,
-    );
-    return 1;
-  }
+  const target = uniqueSession(store, ids[0] ?? "");
+  if (!target) return 1;
   store.deleteSession(target.id);
   process.stdout.write(
     rest.includes("--json")
       ? `${JSON.stringify({ deleted: target.id, title: target.title })}\n`
       : `Deleted session ${target.id} (${target.title})\n`,
+  );
+  return 0;
+}
+
+function exportSession(rest: string[]): number {
+  const valued = ["--format", "--output"];
+  const ids = rest.filter((a, i) => !a.startsWith("--") && !valued.includes(rest[i - 1] ?? ""));
+  const unknown = rest.find((a) => a.startsWith("--") && a !== "--json" && !valued.includes(a));
+  if (ids.length !== 1 || unknown) {
+    process.stderr.write(
+      `${unknown ? `Unknown argument: ${unknown}` : "Name one session to export."}\n\n${help}`,
+    );
+    return 1;
+  }
+  const format = value(rest, "--format") ?? "markdown";
+  if (format !== "markdown" && format !== "json") {
+    process.stderr.write("--format is markdown or json\n");
+    return 1;
+  }
+  const output = value(rest, "--output");
+  if (rest.includes("--output") && !output) {
+    process.stderr.write("--output needs a file path\n");
+    return 1;
+  }
+  const cwd = getCwd();
+  const store = new SessionManager(cwd);
+  const target = uniqueSession(store, ids[0] ?? "");
+  const data = target ? store.loadSession(target.id) : null;
+  if (!target || !data) {
+    if (target) process.stderr.write(`Session ${target.id} could not be read\n`);
+    return 1;
+  }
+  // The tab that was active when the session was saved, as the terminal UI exports it.
+  const tab = data.meta.tabs.find((t) => t.id === data.meta.activeTabId) ?? data.meta.tabs[0];
+  const result = exportChat(tab ? (data.tabMessages.get(tab.id) ?? []) : [], {
+    format,
+    title: target.title,
+    cwd,
+    ...(output ? { outPath: resolve(cwd, output) } : {}),
+  });
+  process.stdout.write(
+    rest.includes("--json")
+      ? `${JSON.stringify({ sessionId: target.id, ...result })}\n`
+      : `Exported ${String(result.messageCount)} messages of ${target.id} to ${relative(cwd, result.path) || result.path}\n`,
   );
   return 0;
 }
