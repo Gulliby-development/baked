@@ -886,6 +886,14 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   const [, , action, sub] = match;
   if (!action) {
     if (method === "GET") return response(200, detail(session));
+    if (method === "DELETE") {
+      if (stateOf(session) !== "idle")
+        return response(409, {
+          error: { code: "SESSION_BUSY", message: "Interrupt the running turn first" },
+        });
+      sessions.delete(session.summary.id);
+      return response(204, null);
+    }
     const changes = (body ?? {}) as { title?: string; model?: string; mode?: ChatMode };
     session.summary = {
       ...session.summary,

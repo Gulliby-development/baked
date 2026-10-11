@@ -82,6 +82,12 @@ describe("ProjectSupervisor", () => {
     });
     expect((await sup.request(key, "POST", "/v1/echo", { a: 1 })).body).toEqual({ body: { a: 1 } });
     expect((await sup.request(key, "GET", "/v1/missing")).status).toBe(404);
+    expect(await sup.download(key, "/v1/download?title=Plan")).toEqual({
+      text: "# Plan\n",
+      fileName: "chat-1.md",
+    });
+    await expect(sup.download(key, "/v1/missing")).rejects.toThrow("/v1/missing");
+    await expect(sup.download(key, "/v1/../secret")).rejects.toThrow("not an API path");
     await sup.close(key);
     expect(sup.projects()[0]?.open).toBe(false);
     await expect(sup.request(key, "GET", "/v1/health")).rejects.toThrow("not open");

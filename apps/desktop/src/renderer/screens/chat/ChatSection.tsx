@@ -10,6 +10,7 @@ import {
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
 import {
+  CHAT_EXPORT_CAPABILITY,
   CHAT_UNDO_CAPABILITY,
   COMPACTION_CAPABILITY,
   CUSTOM_COMMANDS_CAPABILITY,
@@ -425,6 +426,12 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               diff,
               ...(compactControl ? { compact: compactControl } : {}),
               ...(rewindControl ? { rewind: rewindControl } : {}),
+              manage: {
+                canExport: capabilities?.includes(CHAT_EXPORT_CAPABILITY) === true,
+                deleteDisabled: turnRunning
+                  ? "Stop the running turn before deleting the chat"
+                  : null,
+              },
             })}
       />
       <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>

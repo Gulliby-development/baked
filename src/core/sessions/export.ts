@@ -151,6 +151,23 @@ function exportToJson(messages: ChatMessage[]): string {
   return JSON.stringify(messages, null, 2);
 }
 
+export type ChatExportFormat = "markdown" | "json";
+
+/** Renders a chat for export; the TUI's `/session export` and `GET /v1/sessions/ID/export` share it. */
+export function renderChatExport(
+  messages: ChatMessage[],
+  format: ChatExportFormat,
+  title: string,
+): string {
+  return format === "json" ? exportToJson(messages) : exportToMarkdown(messages, title);
+}
+
+/** The file name an export is saved under: slugged title plus a UTC timestamp. */
+export function chatExportFileName(title: string, format: ChatExportFormat, now = new Date()): string {
+  const stamp = now.toISOString().slice(0, 19).replace(/[T:]/g, "-");
+  return `${slugify(title) || "chat"}-${stamp}${format === "json" ? ".json" : ".md"}`;
+}
+
 interface ExportResult {
   path: string;
   messageCount: number;
@@ -177,7 +194,6 @@ export function exportChat(
 ): ExportResult {
   const format = opts.format ?? "markdown";
   const title = opts.title ?? "Chat Export";
-  const ext = format === "json" ? ".json" : ".md";
 
   let outPath: string;
   if (opts.outPath) {
@@ -185,15 +201,13 @@ export function exportChat(
   } else {
     const exportDir = join(opts.cwd, ".baked", "exports");
     mkdirSync(exportDir, { recursive: true });
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-    const slug = slugify(title);
-    outPath = join(exportDir, `${slug}-${stamp}${ext}`);
+    outPath = join(exportDir, chatExportFileName(title, format));
   }
 
   const parentDir = dirname(outPath);
   mkdirSync(parentDir, { recursive: true });
 
-  const content = format === "json" ? exportToJson(messages) : exportToMarkdown(messages, title);
+  const content = renderChatExport(messages, format, title);
 
   writeFileSync(outPath, content, "utf-8");
 

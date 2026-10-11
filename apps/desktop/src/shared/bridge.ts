@@ -10,6 +10,8 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type ProjectAction = "pin" | "unpin" | "forget";
 
+export type ChatExportFormat = "markdown" | "json";
+
 export type WindowAction = "minimize" | "maximize" | "close";
 
 /**
@@ -45,6 +47,11 @@ export interface DesktopBridge {
     listener: (event: StreamEvent) => void,
     lastEventId?: string,
   ): () => void;
+  /**
+   * Reads `GET /v1/sessions/ID/export` and saves it where the user picks in a save dialog; the
+   * saved path, or null when cancelled.
+   */
+  exportChat(key: string, sessionId: string, format: ChatExportFormat): Promise<string | null>;
   attention(): Promise<AttentionItem[]>;
   onAttention(listener: (items: AttentionItem[]) => void): () => void;
   settings(): Promise<AppSettings>;
@@ -71,6 +78,7 @@ export const IPC = {
   subscribe: "baked:api:subscribe",
   unsubscribe: "baked:api:unsubscribe",
   streamEvent: "baked:api:event",
+  exportChat: "baked:chat:export",
   attention: "baked:attention",
   attentionChanged: "baked:attention:changed",
   settings: "baked:settings",
