@@ -267,6 +267,22 @@ describe("parseHeadlessArgs", () => {
 		}
 	});
 
+	test("parses --image (repeatable)", async () => {
+		const result = await parseHeadlessArgs([
+			"--headless",
+			"--image",
+			"shot.png",
+			"--image",
+			"logs.jpg",
+			"what broke?",
+		]);
+		expect(result!.type).toBe("run");
+		if (result!.type === "run") {
+			expect(result!.opts.images).toEqual(["shot.png", "logs.jpg"]);
+			expect(result!.opts.prompt).toBe("what broke?");
+		}
+	});
+
 	test("parses --diff", async () => {
 		const result = await parseHeadlessArgs(["--headless", "--diff", "fix the bug"]);
 		expect(result!.type).toBe("run");

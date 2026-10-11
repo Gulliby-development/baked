@@ -66,6 +66,7 @@ import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
+import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
 import type { MentionSuggestion } from "./mention-suggest.js";
@@ -289,6 +290,24 @@ export class ChatError extends Error {
   }
 }
 
+/** A message waiting for the running turn or compaction. */
+interface QueuedInput {
+  text: string;
+  images?: ImageAttachment[];
+}
+
+/** Queued messages sent as one: texts joined, images relabelled `image-1`… in order. */
+function mergeQueued(items: QueuedInput[]): QueuedInput {
+  const text = items
+    .map((q) => q.text)
+    .filter((t) => t.length > 0)
+    .join("\n\n");
+  const images = items
+    .flatMap((q) => q.images ?? [])
+    .map((img, i) => ({ ...img, label: `image-${i + 1}` }));
+  return images.length > 0 ? { text, images } : { text };
+}
+
 function emptyUsage(): Usage {
   return { input: 0, output: 0, cacheRead: 0 };
 }
@@ -399,7 +418,8 @@ export class ChatSession {
   private compaction: TurnState | null = null;
   private turnDone: Promise<void> = Promise.resolve();
   private readonly prompts = new Map<string, Pending>();
-  private queue: string[] = [];
+  /** Messages sent while a turn or compaction runs. */
+  private queue: QueuedInput[] = [];
   private plan: Plan | null = null;
   private planFollowUp: PlanFollowUp | null = null;
   /** The next turn carries out this accepted plan. */
@@ -520,7 +540,7 @@ export class ChatSession {
       ...this.summary(),
       messages: this.messages,
       prompts: this.pendingPrompts,
-      queued: [...this.queue],
+      queued: this.queue.map((q) => q.text),
       usage: { ...this.usage },
       context: this.context,
       filesEdited: editedFiles(this.messages),
@@ -572,12 +592,13 @@ export class ChatSession {
     return this.summary();
   }
 
-  /** Starts a turn, or steers the text into the running one. */
-  send(text: string): { turnId: string; queued: boolean } {
+  /** Starts a turn, or steers the text and images into the running one. */
+  send(text: string, images?: ImageAttachment[]): { turnId: string; queued: boolean } {
     if (this.rewinding) throw new ChatError("SESSION_BUSY", "Wait for the undo or redo to finish");
+    const input: QueuedInput = images && images.length > 0 ? { text, images } : { text };
     const running = this.turn ?? this.compaction;
     if (running) {
-      this.queue.push(text);
+      this.queue.push(input);
       return { turnId: running.id, queued: true };
     }
     if (!this.model)
@@ -587,8 +608,12 @@ export class ChatSession {
       );
     const turn: TurnState = { id: crypto.randomUUID(), abort: new AbortController() };
     this.turn = turn;
-    this.turnDone = this.runTurn(turn, text).catch(() => {});
+    this.turnDone = this.runTurn(turn, input).catch(() => {});
     return { turnId: turn.id, queued: false };
+  }
+
+  private sendQueued(input: QueuedInput): void {
+    this.send(input.text, input.images);
   }
 
   interrupt(): boolean {
@@ -771,10 +796,9 @@ export class ChatSession {
     this.emitSession();
     // Messages sent while compacting start the next turn.
     if (this.queue.length > 0 && status !== "interrupted") {
-      const first = this.queue.shift() ?? "";
-      const rest = this.queue;
+      const [first, ...rest] = this.queue;
       this.queue = [];
-      this.send(first);
+      if (first) this.sendQueued(first);
       this.queue.push(...rest);
     } else this.queue = [];
   }
@@ -927,28 +951,30 @@ export class ChatSession {
       drainSteering: () => {
         if (!this.turn || this.queue.length === 0) return null;
         // A message with `@` mentions or a `!command` waits for the next turn, which expands it.
-        const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+        const firstRef = this.queue.findIndex((q) => hasInputReferences(q.text));
         const count = firstRef === -1 ? this.queue.length : firstRef;
         if (count === 0) return null;
-        const text = this.queue.splice(0, count).join("\n\n");
+        const { text, images } = mergeQueued(this.queue.splice(0, count));
         const message: ChatMessage = {
           id: crypto.randomUUID(),
           role: "user",
           content: text,
           timestamp: Date.now(),
           isSteering: true,
+          ...(images ? { images } : {}),
         };
         this.messages = [...this.messages, message];
-        this.steered.push(text);
+        this.steered.push(images ? { text, images } : { text });
         this.emit({ type: "steering", turnId: this.turn.id, message });
-        return { text };
+        return images ? { text, images } : { text };
       },
     };
   }
 
-  private steered: string[] = [];
+  private steered: QueuedInput[] = [];
 
-  private async runTurn(turn: TurnState, text: string): Promise<void> {
+  private async runTurn(turn: TurnState, input: QueuedInput): Promise<void> {
+    const { text, images } = input;
     const started = Date.now();
     const executing = this.executingPlan;
     const planExecution = executing !== null;
@@ -983,9 +1009,13 @@ export class ChatSession {
       // The model gets the whole plan; the transcript names it, as the plan is shown above.
       content: executing ? `Execute the plan: ${executing.title}` : text,
       timestamp: started,
+      ...(images ? { images } : {}),
       ...(inputContext ? { inputContext } : {}),
     };
-    const history = [...this.core, { role: "user" as const, content: modelText }];
+    const history: ModelMessage[] = [
+      ...this.core,
+      { role: "user", content: userContent(modelText, images) },
+    ];
     const before = this.messages;
     this.messages = [...before, userMessage];
     this.steered = [];
@@ -1157,7 +1187,10 @@ export class ChatSession {
     if (followUp && followUp.action !== "cancel" && status === "interrupted") status = "completed";
     if (response.length === 0 && fullText.length > 0)
       response = [{ role: "assistant", content: fullText }];
-    const steering = this.steered.map((content) => ({ role: "user" as const, content }));
+    // The agent sends steering images to the model in a note of its own; history keeps them.
+    const steering = this.steered.map(
+      (q): ModelMessage => ({ role: "user", content: userContent(q.text, q.images) }),
+    );
     if (send) this.core = [...history, ...steering, ...response];
     const assistant: ChatMessage | null =
       fullText.length > 0 || calls.length > 0
@@ -1210,12 +1243,12 @@ export class ChatSession {
     // Text that arrived after the last step of the turn starts the next one.
     if (this.queue.length > 0 && status === "completed") {
       // Messages with `@` or `!` start a turn of their own so their expansion stays separate.
-      const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+      const firstRef = this.queue.findIndex((q) => hasInputReferences(q.text));
       const count = firstRef === 0 ? 1 : firstRef === -1 ? this.queue.length : firstRef;
-      const next = this.queue.splice(0, count).join("\n\n");
+      const next = mergeQueued(this.queue.splice(0, count));
       const rest = this.queue;
       this.queue = [];
-      this.send(next);
+      this.sendQueued(next);
       this.queue.push(...rest);
     } else this.queue = [];
   }

@@ -6,7 +6,7 @@ The terminal UI is started with `baked` in a project folder. One process works i
 
 - **Header**: model, project name, Git branch, context budget, token usage and cost, and a badge such as `2 waiting in other projects`.
 - **Chat**: Markdown, highlighted code, live tool calls and diffs. A checkpoint rail on the right marks each turn.
-- **Input**: plain text or slash commands (type `/`). A multi-line paste collapses to its first line and a line count. Typing while the agent works queues a steering message that is injected at the next step, without aborting.
+- **Input**: plain text or slash commands (type `/`). A multi-line paste collapses to its first line and a line count. Pasting an image from the clipboard attaches it as an `[image-N]` token; deleting the token removes the image. The desktop chat and `baked --headless --image` attach images the same way ([headless](headless.md#images)). Typing while the agent works queues a steering message that is injected at the next step, without aborting.
 - **Footer**: the main shortcuts.
 
 ## Models and the task router

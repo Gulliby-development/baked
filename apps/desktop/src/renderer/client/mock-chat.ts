@@ -6,11 +6,13 @@ import type {
   ChatMode,
   ChatPlan,
   ChatPrompt,
+  ImageUpload,
   MessageSegment,
   PlanAction,
   SessionDetail,
   SessionDiffStats,
   SessionSummary,
+  StoredImage,
   ToolCall,
 } from "./chat.js";
 import { type MockRoute, type MockStream, response } from "./mock-routes.js";
@@ -537,6 +539,16 @@ async function script(session: MockSession, turn: MockTurn, text: string): Promi
   );
 }
 
+/** Images as the server stores them: labelled in order. */
+function stored(images: ImageUpload[] | undefined): StoredImage[] | undefined {
+  if (!images || images.length === 0) return undefined;
+  return images.map((img, i) => ({
+    label: `image-${i + 1}`,
+    base64: img.data,
+    mediaType: img.mediaType,
+  }));
+}
+
 const PLAN_STEPS = [
   { id: "1", label: "Move the retry counter into ChainEntry" },
   { id: "2", label: "Ask the chain for the next model after the last retry" },
@@ -612,7 +624,12 @@ async function executeScript(session: MockSession, turn: MockTurn): Promise<void
   await say(session, turn, "All three steps are done and the router tests pass.");
 }
 
-async function startTurn(session: MockSession, text: string, executing = false): Promise<string> {
+async function startTurn(
+  session: MockSession,
+  text: string,
+  executing = false,
+  images?: StoredImage[],
+): Promise<string> {
   const turn: MockTurn = {
     id: nextId("turn"),
     cancelled: false,
@@ -624,7 +641,7 @@ async function startTurn(session: MockSession, text: string, executing = false):
   emit(session, {
     type: "turn-start",
     turnId: turn.id,
-    message: user(nextId("m"), text, Date.now()),
+    message: { ...user(nextId("m"), text, Date.now()), ...(images ? { images } : {}) },
   });
   emitSession(session);
   void (async () => {
@@ -717,7 +734,7 @@ function interrupt(session: MockSession): boolean {
 
 function create(
   key: string,
-  body: { title?: string; model?: string; mode?: ChatMode; text?: string },
+  body: { title?: string; model?: string; mode?: ChatMode; text?: string; images?: ImageUpload[] },
 ) {
   const now = Date.now();
   const text = body.text?.trim();
@@ -744,7 +761,8 @@ function create(
     queue: [],
   };
   sessions.set(summary.id, session);
-  if (text) void startTurn(session, text);
+  const images = stored(body.images);
+  if (text || images) void startTurn(session, text ?? "", false, images);
   return session;
 }
 
@@ -880,13 +898,17 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   }
   if (action === "messages") {
     session.undone = [];
-    const text = String((body as { text?: unknown } | null)?.text ?? "").trim();
-    if (!text) return response(400, { error: { code: "INVALID_REQUEST", message: "Empty text" } });
+    const sent = (body ?? {}) as { text?: unknown; images?: ImageUpload[] };
+    const text = String(sent.text ?? "").trim();
+    const images = stored(sent.images);
+    if (!text && !images)
+      return response(400, { error: { code: "INVALID_REQUEST", message: "Send text or images" } });
+    // The mock steers queued text only.
     if (session.turn) {
       session.queue.push(text);
       return response(202, { turnId: session.turn.id, queued: true });
     }
-    return response(202, { turnId: await startTurn(session, text), queued: false });
+    return response(202, { turnId: await startTurn(session, text, false, images), queued: false });
   }
   if (action === "interrupt") return response(200, { interrupted: interrupt(session) });
   if (action === "fork") {

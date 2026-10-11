@@ -67,6 +67,23 @@ export interface ChatMessage {
   isSteering?: boolean;
   /** What the message's `@` mentions and `!` command attached. */
   inputContext?: InputContextItem[];
+  /** Images attached to a user message. */
+  images?: StoredImage[];
+}
+
+export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+/** An image as the server stores it with a message. */
+export interface StoredImage {
+  label: string;
+  base64: string;
+  mediaType: ImageMediaType;
+}
+
+/** An image as the composer sends it: base64 without a `data:` prefix. */
+export interface ImageUpload {
+  mediaType: ImageMediaType;
+  data: string;
 }
 
 export interface InputContextItem {
@@ -244,7 +261,13 @@ export const chat = {
     call<{ sessions: SessionSummary[] }>(key, "GET", `/v1/sessions?limit=${limit}`),
   create: (
     key: string,
-    body: { title?: string; model?: string; mode?: ChatMode; text?: string } = {},
+    body: {
+      title?: string;
+      model?: string;
+      mode?: ChatMode;
+      text?: string;
+      images?: ImageUpload[];
+    } = {},
   ) => call<SessionDetail>(key, "POST", "/v1/sessions", body),
   get: (key: string, id: string) => call<SessionDetail>(key, "GET", sessionPath(id)),
   update: (key: string, id: string, body: { title?: string; model?: string; mode?: ChatMode }) =>
@@ -262,9 +285,10 @@ export const chat = {
   /** Puts back the oldest undone turn and the files it edited. */
   redo: (key: string, id: string, body: { force?: boolean } = {}) =>
     call<SessionDetail & { rollback: RollbackReport }>(key, "POST", sessionPath(id, "redo"), body),
-  send: (key: string, id: string, text: string) =>
+  send: (key: string, id: string, text: string, images: ImageUpload[] = []) =>
     call<{ turnId: string; queued: boolean }>(key, "POST", sessionPath(id, "messages"), {
       text,
+      ...(images.length > 0 ? { images } : {}),
     }),
   /** Starts a manual compaction; its progress arrives as `compaction-*` events. */
   compact: (key: string, id: string) =>

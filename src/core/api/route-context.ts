@@ -8,7 +8,8 @@ export interface RouteContext {
   path: string;
   method: string;
   json(status: number, body: unknown): Response;
-  readJson(): Promise<unknown>;
+  /** The JSON body; `maxBytes` raises the server's body limit for this request. */
+  readJson(maxBytes?: number): Promise<unknown>;
   query<T extends z.ZodType>(schema: T): z.infer<T>;
   fail(status: number, code: string, message: string): never;
   /** Throws 405 unless the request uses one of the methods. */

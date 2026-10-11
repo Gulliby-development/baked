@@ -4,10 +4,12 @@ import type {
   ChatPlan,
   InputContextItem,
   PlanAction,
+  StoredImage,
   ToolCall,
 } from "../../client/chat.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
+import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
@@ -288,14 +290,66 @@ function ForkAction({
   );
 }
 
+/** Thumbnails of a message's images; a click opens the image at full size. */
+function BubbleImages({ images }: { images: StoredImage[] }) {
+  const [open, setOpen] = useState<StoredImage | null>(null);
+  return (
+    <>
+      <ul className="list-none m-[8px_0_0] p-0 flex flex-wrap gap-2" aria-label="Attached images">
+        {images.map((image) => (
+          <li key={image.label}>
+            <button
+              type="button"
+              className="block p-0 border-2 border-border rounded-base bg-background overflow-hidden cursor-zoom-in"
+              aria-label={`Open ${image.label}`}
+              onClick={() => setOpen(image)}
+            >
+              <img
+                src={storedImageUrl(image)}
+                alt={image.label}
+                className="block max-w-[160px] max-h-[120px] object-contain"
+              />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {open && (
+        <dialog
+          open
+          className="fixed inset-0 z-50 w-full h-full max-w-none max-h-none m-0 p-8 border-none bg-overlay flex flex-col items-center justify-center gap-3"
+          aria-label={open.label}
+          onClick={() => setOpen(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              setOpen(null);
+            }
+          }}
+        >
+          <img
+            src={storedImageUrl(open)}
+            alt={open.label}
+            className="max-w-full max-h-[calc(100%-56px)] object-contain border-2 border-border rounded-base bg-background"
+          />
+          <Button variant="secondary" size="md" ref={(el) => el?.focus()}>
+            Close
+          </Button>
+        </dialog>
+      )}
+    </>
+  );
+}
+
 function UserBubble({
   text,
   note,
   context,
+  images,
 }: {
   text: string;
   note?: string;
   context?: InputContextItem[];
+  images?: StoredImage[];
 }) {
   return (
     <div
@@ -307,6 +361,7 @@ function UserBubble({
         </span>
       )}
       {text}
+      {images && images.length > 0 && <BubbleImages images={images} />}
       {context && context.length > 0 && (
         <ul
           className="list-none m-[8px_0_0] p-[8px_0_0] border-t-2 border-t-border flex flex-col gap-1 text-[13px]"
@@ -667,6 +722,7 @@ export function Conversation({
             text={message.content}
             {...(message.isSteering ? { note: "Sent while working" } : {})}
             {...(message.inputContext ? { context: message.inputContext } : {})}
+            {...(message.images ? { images: message.images } : {})}
           />
         ) : message.role === "assistant" ? (
           <div key={message.id} className="group/turn flex min-w-0 flex-col gap-1.5">

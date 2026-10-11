@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
@@ -103,11 +104,19 @@ const Title = z.string().trim().min(1).max(200);
 /** A chat message; large enough for pasted files, well under the body limit. */
 const Text = z.string().min(1).max(200_000);
 
+/** An attached image; `acceptImages` checks the type, size and data. */
+const ImageBody = z.strictObject({
+  mediaType: z.string().min(1).max(100),
+  data: z.string().min(1),
+});
+const Images = z.array(ImageBody).min(1).max(MAX_IMAGES_PER_MESSAGE);
+
 export const CreateSessionBody = z.strictObject({
   title: Title.optional(),
   model: ModelId.optional(),
   mode: ChatModeSchema.optional(),
   text: Text.optional(),
+  images: Images.optional(),
 });
 export const UpdateSessionBody = z
   .strictObject({
@@ -126,7 +135,12 @@ export const UndoSessionBody = z.strictObject({
   force: z.boolean().optional(),
 });
 export const RedoSessionBody = z.strictObject({ force: z.boolean().optional() });
-export const MessageBody = z.strictObject({ text: Text });
+/** A message is text, images, or both. */
+export const MessageBody = z
+  .strictObject({ text: z.string().max(200_000).default(""), images: Images.optional() })
+  .refine((body) => body.text.length > 0 || body.images !== undefined, {
+    message: "Send text or images",
+  });
 export const CompactBody = z.strictObject({});
 export const PromptAnswerBody = z.union([
   z.strictObject({ approve: z.boolean() }),

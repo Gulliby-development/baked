@@ -12,6 +12,7 @@ import {
   sessionDiffStats,
   toolCallEditPaths,
 } from "../core/chat/diff-stats.js";
+import { readImageFiles, userContent } from "../core/chat/images.js";
 import { expandChatInput, hasInputReferences } from "../core/chat/input-expansion.js";
 import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
@@ -25,6 +26,7 @@ import type {
   AppConfig,
   BakeMode,
   ChatMessage,
+  ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
 } from "../types/index.js";
@@ -464,6 +466,18 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
   }
   prompt = references.text;
 
+  let images: ImageAttachment[] | undefined;
+  if (opts.images) {
+    try {
+      images = await readImageFiles(opts.images.map((file) => resolve(env.cwd, file)));
+    } catch (err) {
+      stderrError(err instanceof Error ? err.message : String(err));
+      env.contextManager.dispose();
+      await disposeMCPManager();
+      process.exit(EXIT_ERROR);
+    }
+  }
+
   env.contextManager.updateConversationContext(typedPrompt, 0);
 
   // Header
@@ -507,7 +521,10 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
 
   setActiveSessionId(routingSessionId);
 
-  const messages: ModelMessage[] = [...priorMessages, { role: "user" as const, content: prompt }];
+  const messages: ModelMessage[] = [
+    ...priorMessages,
+    { role: "user" as const, content: userContent(prompt, images) },
+  ];
 
   const turn = await streamTurn(env.agent, messages, prompt, abortController.signal, {
     json: opts.json,
@@ -540,6 +557,7 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
         role: "user",
         content: typedPrompt,
         timestamp: startTime,
+        ...(images ? { images } : {}),
         ...(references.items.length > 0 ? { inputContext: references.items } : {}),
       },
       { id: crypto.randomUUID(), role: "assistant", content: turn.output, timestamp: Date.now() },

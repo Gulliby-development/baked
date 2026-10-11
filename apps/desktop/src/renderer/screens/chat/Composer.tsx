@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import type { ChatMode, MentionSuggestion, ModelProvider } from "../../client/chat.js";
+import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from "react";
+import type { ChatMode, ImageUpload, MentionSuggestion, ModelProvider } from "../../client/chat.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
+import { type Attachment, dataUrl, MAX_IMAGES, pickImages, readAttachment } from "./images.js";
 import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
 
 const ROUND_BUTTON =
@@ -119,6 +120,7 @@ export function Composer({
   modes = BASE_MODES,
   loadModels,
   loadMentions,
+  acceptsImages = false,
 }: {
   busy: boolean;
   canStop: boolean;
@@ -130,13 +132,15 @@ export function Composer({
   autoFocusKey: string;
   /** Text the composer starts with, e.g. a task typed on the project home. */
   initialText?: string;
-  onSend: (text: string) => Promise<boolean>;
+  onSend: (text: string, images: ImageUpload[]) => Promise<boolean>;
   onStop: () => void;
   onModel: (model: string) => void;
   onMode: (mode: ChatMode) => void;
   loadModels: () => Promise<ModelProvider[]>;
   /** `@` completions; without it the composer offers none. */
   loadMentions?: (query: string) => Promise<MentionSuggestion[]>;
+  /** Paste and drop of images; only when the backend lists the `images` capability. */
+  acceptsImages?: boolean;
 }) {
   const [text, setText] = useState(initialText);
   const [caret, setCaret] = useState(initialText.length);
@@ -182,6 +186,22 @@ export function Composer({
     });
   };
   const [sending, setSending] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [reading, setReading] = useState(0);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const addImages = (files: File[]): boolean => {
+    const { take, dropped } = pickImages(files, attachments.length + reading);
+    if (take.length === 0 && dropped === 0) return false;
+    setImageError(dropped > 0 ? `A message can carry at most ${MAX_IMAGES} images.` : null);
+    setReading((n) => n + take.length);
+    for (const file of take)
+      readAttachment(file)
+        .then((att) => setAttachments((list) => [...list, att].slice(0, MAX_IMAGES)))
+        .catch((e: unknown) => setImageError(e instanceof Error ? e.message : String(e)))
+        .finally(() => setReading((n) => n - 1));
+    return true;
+  };
   const area = useRef<HTMLTextAreaElement>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refocus when the session changes
   useEffect(() => {
@@ -194,25 +214,53 @@ export function Composer({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_PX)}px`;
   }, [text]);
+  const canSend = (text.trim().length > 0 || attachments.length > 0) && !sending && reading === 0;
   const submit = async (): Promise<void> => {
     const value = text.trim();
-    if (!value || sending) return;
+    if (!canSend) return;
+    const held = attachments;
     setSending(true);
     setText("");
-    const ok = await onSend(value);
+    setAttachments([]);
+    setImageError(null);
+    const ok = await onSend(
+      value,
+      held.map(({ mediaType, data }) => ({ mediaType, data })),
+    );
     setSending(false);
-    if (!ok) setText(value);
+    if (!ok) {
+      setText(value);
+      setAttachments(held);
+    }
   };
   return (
     <form
       className={cn(
         "relative w-full max-w-[820px] border-2 border-border rounded-base bg-background shadow-shadow px-[14px] py-3 flex flex-col gap-2 focus-within:outline-[3px] focus-within:outline-ring focus-within:outline-offset-2",
         text.trimStart().startsWith("!") && "border-fill-warn",
+        dragging && "outline-dashed outline-[3px] outline-ring outline-offset-2",
       )}
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
+      {...(acceptsImages
+        ? {
+            onDragOver: (event: DragEvent) => {
+              if (!event.dataTransfer.types.includes("Files")) return;
+              event.preventDefault();
+              setDragging(true);
+            },
+            onDragLeave: (event: DragEvent) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                setDragging(false);
+            },
+            onDrop: (event: DragEvent) => {
+              setDragging(false);
+              if (addImages([...event.dataTransfer.files])) event.preventDefault();
+            },
+          }
+        : {})}
     >
       {showMentions && (
         <div
@@ -249,6 +297,39 @@ export function Composer({
           ))}
         </div>
       )}
+      {(attachments.length > 0 || reading > 0) && (
+        <ul className="list-none m-0 p-0 flex flex-wrap gap-2" aria-label="Attached images">
+          {attachments.map((att) => (
+            <li
+              key={att.id}
+              className="relative w-16 h-16 flex items-center justify-center overflow-hidden border-2 border-border rounded-base bg-secondary-background text-[11px]"
+            >
+              <img src={dataUrl(att)} alt={att.name} className="w-full h-full object-cover" />
+              <button
+                type="button"
+                className="absolute top-[2px] right-[2px] w-5 h-5 p-0 leading-none border-2 border-border rounded-base bg-background text-foreground cursor-pointer"
+                aria-label={`Remove ${att.name}`}
+                onClick={() => setAttachments((list) => list.filter((a) => a.id !== att.id))}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+          {reading > 0 && (
+            <li
+              className="relative w-16 h-16 flex items-center justify-center overflow-hidden border-2 border-border rounded-base bg-secondary-background text-[11px] text-dim-foreground"
+              aria-live="polite"
+            >
+              Reading…
+            </li>
+          )}
+        </ul>
+      )}
+      {imageError && (
+        <p className="m-0 text-[13px] text-[var(--err)]" role="alert">
+          {imageError}
+        </p>
+      )}
       <label htmlFor="chat-prompt" className="sr-only">
         Message BAKED
       </label>
@@ -261,7 +342,9 @@ export function Composer({
         placeholder={
           busy
             ? "Add to the running turn…"
-            : "Ask BAKED to do something · @ adds a file or symbol · ! runs a command"
+            : `Ask BAKED to do something · @ adds a file or symbol · ! runs a command${
+                acceptsImages ? " · paste or drop images" : ""
+              }`
         }
         aria-autocomplete="list"
         aria-controls={showMentions ? "chat-mentions" : undefined}
@@ -270,6 +353,13 @@ export function Composer({
           setCaret(event.target.selectionStart);
         }}
         onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+        {...(acceptsImages
+          ? {
+              onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => {
+                if (addImages([...event.clipboardData.files])) event.preventDefault();
+              },
+            }
+          : {})}
         onKeyDown={(event) => {
           if (showMentions) {
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -353,7 +443,7 @@ export function Composer({
           type="submit"
           className={`${ROUND_BUTTON} bg-main text-main-foreground disabled:opacity-[0.45] disabled:cursor-default disabled:translate-none disabled:shadow-sm-hard`}
           aria-label={busy ? "Add to the running turn" : "Send"}
-          disabled={!text.trim() || sending}
+          disabled={!canSend}
         >
           <svg
             width="18"
