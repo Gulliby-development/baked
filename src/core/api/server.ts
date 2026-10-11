@@ -37,6 +37,7 @@ import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
 import { ProjectService } from "../projects/service.js";
+import type { SkillCatalog } from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
 import { WorkflowFault } from "../workflows/errors.js";
@@ -112,6 +113,7 @@ export const CAPABILITIES = [
   "run-memory",
   "images",
   "code-graph",
+  "skills-install",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -133,6 +135,8 @@ export interface ApiServerOptions {
   configDir?: string;
   /** The home directory holding global commands and skills; tests point it elsewhere. */
   homeDir?: string;
+  /** The skills.sh catalog and installer; tests pass a fake one. */
+  skillCatalog?: SkillCatalog;
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -806,6 +810,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         runsFreezing,
         ...(options.configDir ? { configDir: options.configDir } : {}),
         ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+        ...(options.skillCatalog ? { skillCatalog: options.skillCatalog } : {}),
       }));
     if (routed) return routed;
     if (path === "/v1/projects") {
