@@ -116,7 +116,6 @@ export function ModelPickList({
 
   const listRows = Math.max(3, rows - 2);
   const start = Math.max(0, Math.min(selected - Math.floor(listRows / 2), lines.length - listRows));
-  const detailW = 10;
   return (
     <box flexDirection="column">
       <text fg={t.textPrimary} attributes={1}>
@@ -153,8 +152,15 @@ export function ModelPickList({
           );
         const isSelected = index === selected;
         const bg = isSelected ? t.bgPopupHighlight : t.bgPopup;
-        const label = line.kind === "typed" ? `Use “${line.id}” as typed` : line.id;
+        const label =
+          line.kind === "typed"
+            ? `Use “${line.id}” as typed`
+            : line.label !== line.id
+              ? `${line.id}  ${line.label}`
+              : line.id;
         const detail = line.kind === "choice" ? (line.detail ?? "") : "";
+        // A class shows the model it resolves to, so its detail gets more room than a context size.
+        const detailW = detail ? Math.min(detail.length, Math.max(6, Math.floor(width * 0.45))) : 0;
         const labelW = Math.max(4, width - 2 - (detail ? detailW + 1 : 0));
         return (
           <text key={`c-${line.kind}-${line.id}`} bg={bg}>
