@@ -126,6 +126,9 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/chat-style` | Toggle chat layout style |
 | `/diff-style` | Change diff display style |
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |
+| `/instructions edit` | Edit or create an instruction file in $EDITOR |
+| `/instructions files` | List instruction files in prompt order; Enter edits one in $EDITOR |
+| `/instructions show` | Show an instruction file's content |
 | `/mode` | Switch Baked mode |
 | `/motion` | Full or reduced animation |
 | `/notifications` | System notifications and the webhook for runs that wait for you; `/notifications system on\|off`, `/notifications webhook URL\|off`, `/notifications blocking-only on\|off` ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |

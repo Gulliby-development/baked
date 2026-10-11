@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { chat } from "../../client/chat.js";
-import type { InitiativeView } from "../../client/insights.js";
+import type { InitiativeFeature, InitiativeView } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
@@ -10,6 +10,19 @@ import { tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import {
+  ExtendDialog,
+  FormDialog,
+  MergeDialog,
+  RejectDialog,
+  RenameDialog,
+  SplitDialog,
+} from "./InitiativeDialogs.js";
+import {
+  canEditSplit,
+  canExtendBudget,
+  canRemoveFeature,
+  canReplanFeature,
+  canSplitFeature,
   canSwitchModel,
   featureCounts,
   featureRow,
@@ -19,6 +32,7 @@ import {
   type Tone,
 } from "./initiative-model.js";
 import { LoadState } from "./LoadState.js";
+import { NewInitiativeDialog } from "./NewInitiativeDialog.js";
 import { useLoad } from "./useLoad.js";
 
 /** Text color of each status tone. */
@@ -114,10 +128,51 @@ function ModelSwitch({
   );
 }
 
+/** The dialog the initiative detail shows, if any. */
+type Open =
+  | { kind: "reject" | "merge" | "extend" }
+  | { kind: "rename" | "split" | "remove" | "replan"; feature: InitiativeFeature };
+
+/** The actions of one feature row: split edits while the split is editable, then re-plan. */
+function FeatureActions({
+  view,
+  feature,
+  open,
+}: {
+  view: InitiativeView;
+  feature: InitiativeFeature;
+  open: (dialog: Open) => void;
+}) {
+  const editable = canEditSplit(view);
+  const replan = canReplanFeature(view, feature);
+  if (!editable && !replan) return null;
+  const action = (kind: "rename" | "split" | "remove" | "replan", label: string) => (
+    <Button
+      variant="secondary"
+      size="sm"
+      className="h-7 shadow-none"
+      aria-label={`${label}: ${feature.title}`}
+      onClick={() => open({ kind, feature })}
+    >
+      {label}
+    </Button>
+  );
+  return (
+    <span className="flex flex-wrap gap-1.5">
+      {editable && action("rename", "Rename")}
+      {editable && canSplitFeature(view) && action("split", "Split")}
+      {editable && canRemoveFeature(view) && action("remove", "Remove")}
+      {replan && action("replan", "Re-plan")}
+    </span>
+  );
+}
+
 function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   const { state, reload } = useLoad(() => insights.initiative(projectKey, id), [projectKey, id]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<Open | null>(null);
+  const [picked, setPicked] = useState<readonly string[]>([]);
   if (state.kind !== "ready")
     return (
       <LoadState
@@ -130,6 +185,18 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   const status = initiativeStatus(view.status);
   const counts = featureCounts(view);
   const split = splitApproval(view);
+  const editable = canEditSplit(view);
+  // In split order, so a merge without an ID keeps the first feature's ID.
+  const selected = editable
+    ? view.features.map((f) => f.id).filter((fid) => picked.includes(fid))
+    : [];
+  const close = (done: boolean): void => {
+    setDialog(null);
+    if (done) {
+      setPicked([]);
+      reload();
+    }
+  };
   const act = (run: (v: InitiativeView) => Promise<InitiativeView>) => async () => {
     setBusy(true);
     setError(null);
@@ -171,6 +238,16 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
               onClick={act((v) => insights.approveSplit(projectKey, v, split))}
             >
               Approve split
+            </Button>
+          )}
+          {split && (
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={busy}
+              onClick={() => setDialog({ kind: "reject" })}
+            >
+              Reject split
             </Button>
           )}
           {view.status === "paused" && (
@@ -233,6 +310,23 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           </div>
         </>
       )}
+      {editable && counts.total > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy || selected.length < 2}
+            onClick={() => setDialog({ kind: "merge" })}
+          >
+            Merge selected{selected.length > 0 ? ` (${selected.length})` : ""}
+          </Button>
+          <span className="text-[12px] text-dim-foreground">
+            {view.status === "awaiting_approval"
+              ? "Edit the split before you approve it; each edit makes a new plan revision to approve."
+              : "The initiative is paused, so its split can be edited; started features keep their runs."}
+          </span>
+        </div>
+      )}
       {counts.total === 0 ? (
         <Empty>{view.next.message || "No features yet."}</Empty>
       ) : (
@@ -244,6 +338,21 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
                 key={feature.id}
                 className={`flex flex-wrap items-center gap-3 shadow-sm-hard ${PANEL} ${TONE_TEXT[row.tone]} ${FEATURE_TONE[row.tone]}`}
               >
+                {editable && (
+                  <input
+                    type="checkbox"
+                    className="size-4"
+                    checked={selected.includes(feature.id)}
+                    aria-label={`Select ${feature.title} to merge`}
+                    onChange={(e) =>
+                      setPicked(
+                        e.target.checked
+                          ? [...selected, feature.id]
+                          : selected.filter((fid) => fid !== feature.id),
+                      )
+                    }
+                  />
+                )}
                 <span
                   className={`font-mono ${row.tone === "busy" ? "text-[color:var(--accent)]" : ""}`}
                   aria-hidden="true"
@@ -253,7 +362,8 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
                 <span
                   className={`min-w-[200px] flex-1 ${row.tone === "muted" ? "" : "text-foreground"}`}
                 >
-                  {feature.title}
+                  {feature.title}{" "}
+                  <span className="font-mono text-[12px] text-dim-foreground">{feature.id}</span>
                 </span>
                 <span className="text-[12px]">{row.label}</span>
                 {feature.usage.tokens > 0 && (
@@ -270,39 +380,123 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
                     {row.link}
                   </a>
                 )}
+                <FeatureActions view={view} feature={feature} open={setDialog} />
               </li>
             );
           })}
         </ol>
       )}
       <ModelSwitch projectKey={projectKey} view={view} onDone={reload} />
-      <p className="m-0 text-[12px] text-dim-foreground">
-        Shared budget: {tokens(view.budget.used.tokens)} of{" "}
-        {tokens(view.budget.limits.maxTotalTokens)} tokens · plan revision {view.planRevision}
-        {view.next.message && ` · ${view.next.message}`}
-      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="m-0 text-[12px] text-dim-foreground">
+          Shared budget: {tokens(view.budget.used.tokens)} of{" "}
+          {tokens(view.budget.limits.maxTotalTokens)} tokens · plan revision {view.planRevision}
+          {view.next.message && ` · ${view.next.message}`}
+        </p>
+        {canExtendBudget(view) && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="h-7 shadow-none"
+            disabled={busy}
+            onClick={() => setDialog({ kind: "extend" })}
+          >
+            Extend budget
+          </Button>
+        )}
+      </div>
+      {dialog?.kind === "reject" && split && (
+        <RejectDialog projectKey={projectKey} view={view} decision={split} onClose={close} />
+      )}
+      {dialog?.kind === "merge" && (
+        <MergeDialog projectKey={projectKey} view={view} selected={selected} onClose={close} />
+      )}
+      {dialog?.kind === "extend" && (
+        <ExtendDialog projectKey={projectKey} view={view} onClose={close} />
+      )}
+      {dialog?.kind === "rename" && (
+        <RenameDialog
+          projectKey={projectKey}
+          view={view}
+          feature={dialog.feature}
+          onClose={close}
+        />
+      )}
+      {dialog?.kind === "split" && (
+        <SplitDialog projectKey={projectKey} view={view} feature={dialog.feature} onClose={close} />
+      )}
+      {dialog?.kind === "remove" && (
+        <FormDialog
+          title="Remove feature"
+          description={
+            <>
+              Removes <span className="font-mono">{dialog.feature.id}</span> ({dialog.feature.title}
+              ) from the split. Features that depended on it lose that dependency.
+            </>
+          }
+          submitLabel="Remove"
+          danger
+          onSubmit={() => insights.removeFeature(projectKey, view, dialog.feature.id)}
+          onClose={close}
+        />
+      )}
+      {dialog?.kind === "replan" && (
+        <FormDialog
+          title="Re-plan feature"
+          description={
+            <>
+              Supersedes the run of <span className="font-mono">{dialog.feature.id}</span> with a
+              new one under the approved plan. The new run starts from its plan again.
+            </>
+          }
+          submitLabel="Re-plan"
+          onSubmit={() => insights.replanFeature(projectKey, view, dialog.feature.id)}
+          onClose={close}
+        />
+      )}
     </section>
   );
 }
 
 export function InitiativesSection({ project, id }: SectionProps) {
-  const { state } = useLoad(() => insights.initiatives(project.key), [project.key]);
+  const { state, reload } = useLoad(() => insights.initiatives(project.key), [project.key]);
+  const [creating, setCreating] = useState(false);
   if (state.kind !== "ready") return <LoadState state={state} what="Initiatives" />;
   const items = state.data;
+  const newDialog = creating && (
+    <NewInitiativeDialog
+      projectKey={project.key}
+      onClose={(done) => {
+        setCreating(false);
+        if (done) reload();
+      }}
+    />
+  );
+  const newButton = (
+    <Button variant="primary" size="md" className="self-start" onClick={() => setCreating(true)}>
+      New initiative
+    </Button>
+  );
   if (items.length === 0)
     return (
       <Empty>
-        No initiatives in this project yet. Start one with{" "}
-        <code className="font-mono">baked workflow initiative start</code>.
+        <span className="flex flex-col items-center gap-3">
+          No initiatives in this project yet. An initiative splits a large request into features
+          that run as separate workflow runs.
+          {newButton}
+        </span>
+        {newDialog}
       </Empty>
     );
   const selected = id ?? items[0]?.initiativeId ?? null;
   return (
     <div className="flex flex-wrap items-start gap-6">
+      {newDialog}
       <nav
         className="flex max-w-[340px] flex-[1_1_260px] flex-col gap-[10px]"
         aria-label="Initiatives"
       >
+        {newButton}
         {items.map((item) => {
           const tone = initiativeStatus(item.status).tone;
           return (
