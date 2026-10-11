@@ -6,8 +6,9 @@
     "appsRoot": "C:\\Project\\baked-bench"
   },
   "round": {
-    "newApps": 5,
-    "ideaCandidates": 7,
+    "newApps": 2,
+    "ideaCandidates": 5,
+    "updateApps": 3,
     "controlApps": ["url-shortener", "md-site", "expenses-py"],
     "controlRunsB": true,
     "maxConcurrentRuns": 2,

@@ -8,9 +8,10 @@ The loop runs on the owner's PC (Windows today; nothing here may assume one OS),
 
 1. Measure BAKED on varied, realistic greenfield work, with numbers that stay comparable from round to round.
 2. Turn every problem a run shows into a GitHub issue with a point fix **and** a broader option, then implement the best of them.
-3. Ship each app that passes verification as a public MIT repository in `Gulliby-development` right after verification, so BAKED gains a public portfolio ("Built with BAKED").
+3. Ship each new app that passes verification as a public MIT repository in `Gulliby-development` right after verification, so BAKED gains a public portfolio ("Built with BAKED").
+4. Work on existing code too: from round 3 each round also adds a small feature to three public repositories of `Gulliby-development` (brownfield updates), shipped as pull requests to those repositories.
 
-Success is measured on the control apps across rounds: fewer interventions, fewer blocked runs, fewer tokens per completed app, and the share of new apps that pass verification.
+Success is measured on the control apps across rounds: fewer interventions, fewer blocked runs, fewer tokens per completed app, and the share of new apps and updates that pass verification.
 
 ## The loop at a glance
 
@@ -29,15 +30,15 @@ Success is measured on the control apps across rounds: fewer interventions, fewe
 | # | Phase | Role file | Runs | Output (in `rounds/RNN/`) |
 |---|---|---|---|---|
 | 0 | Prepare | this file | once per round | `round.json`, runner commit |
-| 1 | Ideate | `roles/ideator.md` | once per round | `ideas.md` (7 candidates) |
-| 2 | Review | `roles/reviewer.md` | once per round, up to 2 revise loops | `review.md`, `apps/<app>/brief.md` for 5 accepted apps |
-| 3 | Build | `roles/implementer.md` | per app (5 new + 3 control) | `apps/<app>/run.json`, `interventions.jsonl`, workflow report |
+| 1 | Ideate | `roles/ideator.md` | once per round | `ideas.md` (5 new app candidates and one feature idea per picked repository) |
+| 2 | Review | `roles/reviewer.md` | once per round, up to 2 revise loops | `review.md`, `apps/<app>/brief.md` for 2 accepted new apps and each accepted update (`apps/<repo>-update/brief.md`) |
+| 3 | Build | `roles/implementer.md` | per app (2 new + 3 update + 3 control) | `apps/<app>/run.json`, `interventions.jsonl`, workflow report |
 | 4 | Verify | `roles/verifier.md` | per app | `apps/<app>/verify.json`, screenshot for UI apps |
 | 5 | Analyze | `roles/analyst.md` | per app, right after verify | `apps/<app>/findings.md` |
 | 6 | Scout | `roles/scout.md` | once per round (parallel with phase 3) | `scout.md`, updates `ledger/workflow-map.md` |
 | 7 | Backlog | `roles/backlog.md` | once per round | issues on GitHub + board, `backlog.md` (fix set; scout ideas are ranked here, not by the owner) |
 | 8 | Fix | `roles/fixer.md` | per selected issue | merged PRs in `Gulliby-development/baked` |
-| 9 | Publish | `roles/publisher.md` | per app, right after it passes verification (`publish.mode` auto); in `approve-per-round` once per round, behind the publish gate | public repos, `publish.md` (the round's publish record) |
+| 9 | Publish | `roles/publisher.md` | per app, right after it passes verification (`publish.mode` auto); in `approve-per-round` once per round, behind the publish gate. Updates are pull requests to existing public repos | public repos and merged update PRs, `publish.md` (the round's publish record) |
 | 10 | Report | this file | once per round | `report.md`, row in `ledger/metrics.csv`, summary to the owner |
 
 Phases 3–5 are pipelined: while app N is analyzed, app N+1 builds. Phase 6 runs alongside phase 3. Phase 8 may start on issues filed early in the round, but its merges never change the runner pinned for the current round (see [Comparability](#comparability)).
@@ -63,7 +64,7 @@ baked-loop/
   ledger/
     ideas.jsonl          # every idea ever proposed, accepted or rejected (dedupe)
     findings.jsonl       # every finding, with its issue number
-    published.jsonl      # every public repo created
+    published.jsonl      # every public repo the loop created or updated
     metrics.csv          # one row per run, all rounds
     workflow-map.md      # task type -> workflow preset and settings (scout + analyst keep it)
     scout-sources.md     # what the scout read and when (so it reads only news)
@@ -76,7 +77,7 @@ Paths outside the loop root:
 |---|---|---|
 | `C:\Project\BAKED-runner` | BAKED checkout that runs the apps, pinned per round | orchestrator (phase 0) |
 | `C:\Project\BAKED-loop-dev` | BAKED checkout for fix branches | fixer |
-| `C:\Project\baked-bench\RNN\<app>` | one Git repo per app per round | implementer, verifier, publisher |
+| `C:\Project\baked-bench\RNN\<app>` | one Git repo per app per round; for an update, `<repo>-update` is a fresh clone of the published repository | implementer, verifier, publisher |
 
 Never run apps inside a BAKED checkout (round 1 lesson: the app picked up BAKED's `bunfig.toml`). Never let two roles write the same checkout at the same time.
 
@@ -84,10 +85,10 @@ Never run apps inside a BAKED checkout (round 1 lesson: the app picked up BAKED'
 
 ```
 rounds/R07/
-  round.json                 # runner commit, providers/models, config snapshot, phase timestamps
+  round.json                 # runner commit, providers/models, config snapshot, phase timestamps, update picks and the random seed
   ideas.md  review.md  scout.md  backlog.md  publish.md  report.md
   apps/<app>/
-    brief.md                 # the exact prompt BAKED got
+    brief.md                 # the exact prompt BAKED got (apps/<repo>-update/ for updates)
     run.json                 # run ids, outcome, metrics (templates/run.json)
     interventions.jsonl      # one line per human-equivalent action the implementer took
     workflow-report.md       # `baked workflow report RUN_ID`
@@ -109,8 +110,9 @@ Defaults below. The owner may change any value; roles read it at the start of ea
     "appsRoot": "C:\\Project\\baked-bench"
   },
   "round": {
-    "newApps": 5,
-    "ideaCandidates": 7,
+    "newApps": 2,
+    "ideaCandidates": 5,
+    "updateApps": 3,
     "controlApps": ["url-shortener", "md-site", "expenses-py"],
     "controlRunsB": true,
     "maxConcurrentRuns": 2,
@@ -150,6 +152,7 @@ Defaults below. The owner may change any value; roles read it at the start of ea
 }
 ```
 
+- `round.newApps` new apps are kept out of `round.ideaCandidates` candidates; `round.updateApps` existing published repositories get a small feature each (see [Updates to existing projects](#updates-to-existing-projects)). A round therefore builds `newApps + updateApps` = 5 apps plus the control apps.
 - `runs.referenceModel` is the model every control-app run uses, every round (`provider/model`). `null` means "the default model configured on the PC at loop start"; phase 0 resolves it once and writes it here, and it changes only by the owner's edit.
 - `runs.rotateNewAppProviders`: new apps cycle through the other configured providers (one provider per app, recorded per run), so BAKED keeps being tested on more than one provider. Estimates must stay provider-agnostic; a provider that costs much more is a finding, not a reason to tune constants to it.
 - `round.difficulty` is the ideator's starting difficulty level (1-4). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
@@ -199,7 +202,21 @@ Every later start (after a crash, a reboot or a new session): read `config.json`
 6. List configured providers and check each with one tiny headless call (`baked --headless --model PROVIDER/MODEL "Reply OK"`). A provider that refuses for credits or auth is skipped this round and reported once. Resolve `referenceModel` if unset. If the reference model is unavailable, control apps wait for it; they never switch models (that would break comparability).
 7. Write `round.json` and set `state.phase = "ideate"`.
 
+Phase 0 also picks the round's update repositories (from round 3; rounds 1 and 2 had no update apps): see [Updates to existing projects](#updates-to-existing-projects). Record the picks and the seed in `round.json`.
+
 Round 1 of the loop is special: the owner already approved five apps on 2026-10-10 (envguard, mdtoc, cronsay, jsondelta, logslice; briefs in `templates/round1-briefs.md`). Round 1 skips phases 1–2 and uses those prompts verbatim as briefs, then continues normally.
+
+## Updates to existing projects
+
+Besides new apps, each round improves existing public projects of the organization, so the portfolio grows in depth as well as in width. Applied from round 3.
+
+- **Pool.** All public repositories of the GitHub organization `publish.org` (`gh repo list Gulliby-development --visibility public`), excluding forks, archived repositories and BAKED itself (`baked`). Private repositories are never touched: never cloned, never listed as candidates, never changed. If fewer than `round.updateApps` exist, take all of them; with none, the round has only new apps.
+- **Pick.** `round.updateApps` (3) repositories at random from the pool, using a seeded random generator with the round number as the seed. Record the seed and the picks in `round.json` so the pick can be reproduced. Never pick the same repository two rounds in a row when others exist.
+- **Idea.** For each pick the ideator reads the repository and proposes one small useful feature (one run: 1 to 3 source files plus tests plus a README update, no breaking change, no new dependencies). A CI pipeline may itself be the feature when the repository has no CI. The update may also bundle small repository hygiene as a side part, never as the whole update (optional extras, listed in the brief): an MIT `LICENSE` only where the repository has no license at all, a logo when the README has none, topics and a description when the repository has none, a README badge or section only when clearly missing. The reviewer keeps it or asks for a revision. Ideas are recorded in `ledger/ideas.jsonl` with `kind: "update"` and the repository name.
+- **Build.** The implementer clones the repository fresh, adds the BAKED project config, records the baseline test result and runs `workflow run sdd` with the same fixed settings as every other app.
+- **Verify and ship.** The verifier checks the whole test suite and the diff against the brief, and that the listed extras exist and are correct. The publisher opens a pull request in the repository, merges it after green CI and then applies topics and description with `gh repo edit` (see `roles/publisher.md`).
+- **Metrics.** Update runs use `group: "update"` and are tracked separately from new apps and control apps in `ledger/metrics.csv`, `run.json` and the round report. They are never averaged with greenfield runs. Their findings are tagged `brownfield`.
+- **Budget.** Update runs are small, but they count toward `roundRunTokens`. Each has the policy sizing as its run budget, like every other app.
 
 ## Comparability
 
@@ -208,7 +225,7 @@ Numbers across rounds mean something only if the inputs are fixed. These rules h
 - **Runner pinned per round.** All runs of a round use the same BAKED commit. Fixes merged during the round take effect next round.
 - **Control apps are fixed.** Same prompts (`controls/`, verbatim from rounds 1–2), same workflow and settings (`runs.*`), same `referenceModel`, fresh folder each round. They are measurement fixtures, not products: they are never published (`publishControlApps: false`).
 - **Same settings for new apps,** except where `ledger/workflow-map.md` names another workflow for the app's task type. Each round may run at most one deliberate **experiment** (a different preset, setting or provider on one app), named in `round.json`, so a change of results can be attributed.
-- **Every metric row records** the BAKED commit, workflow, settings hash, provider and model per stage, and whether the run is a control, a new app or an experiment. Runs on different providers or before/after a provider-changing PR are reported in separate groups, never averaged together.
+- **Every metric row records** the BAKED commit, workflow, settings hash, provider and model per stage, and whether the run is a control, a new app, an update or an experiment. Runs on different providers or before/after a provider-changing PR are reported in separate groups, never averaged together.
 - **Interventions are counted strictly.** Any action a person would have had to take (resume, extend, answer, approve outside auto-approval, recover, reroute, cancel, evidence supplied after inspecting the code, manual file edit) is one intervention with a category, even when the implementer takes it on its own. The implementer never edits app files by hand to rescue a run.
 
 ## Budgets
@@ -216,7 +233,7 @@ Numbers across rounds mean something only if the inputs are fixed. These rules h
 | Budget | Default | On reaching it |
 |---|---|---|
 | One BAKED run | starts at the policy budget; the implementer may raise it up to `selfRaiseTokensUpTo` (8M) on its own | above 8M only with the owner's OK; otherwise stop the run and record `budget_cap` |
-| All BAKED runs in a round | `roundRunTokens` 30M | finish runs in progress, skip unbuilt new apps (record them), go to phase 6 |
+| All BAKED runs in a round | `roundRunTokens` 30M | finish runs in progress, skip unbuilt new apps and updates (record them), go to phase 6 |
 | Fix work per round | `maxFixIssuesPerRound` 6 issues, at least `minBroadFeaturesPerRound` 1 broad feature when one is open (the top-ranked `idea` counts; the backlog role ranks ideas, the owner does not pick) | the rest stays on the board for later rounds |
 | One fix PR | `maxPrAttemptsPerIssue` 3 CI rounds | leave the PR open with a comment on what fails, take the next issue |
 | Round wall clock | `maxWallClockHours` 30 | finish the current step, write the report with what is done |
@@ -234,6 +251,7 @@ The loop is autonomous except at these points:
 | Making a repository public (`gh repo edit --visibility public`) | same as creating it, and only after CI is green on all three operating systems |
 | Raising one run above 8M tokens | the owner's OK for that run |
 | Merging a fix PR into BAKED `main` | none when `fix.mergeAfterGreenCi` is true and CI is green (owner's standing authorization of 2026-10-09). False: leave PRs for the owner. |
+| Merging a verified update PR into a published repository | none when `publish.mode` is `auto` and the repository's CI is green on all three operating systems (standing authorization of 2026-10-11, same as creating the repositories) |
 | Tags, releases, version bumps | never; the owner pushes tags |
 | Deleting or renaming any repository, branch on someone else's PR, or published file history | never |
 | Changing `config.json`, `AGENTS.md` of BAKED, provider keys, signing certificates, org settings | never; propose the change in the report |
@@ -276,7 +294,7 @@ No other messages. Progress goes into `state.json` and the round folder.
 
 ## Phase 10: report
 
-1. Fill `rounds/RNN/report.md` from `templates/round-report.md`: tables per group (control, new, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
+1. Fill `rounds/RNN/report.md` from `templates/round-report.md`: tables per group (control, new, update, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
 2. Append one row per run to `ledger/metrics.csv`.
 3. Send the round result message.
 4. Set `state.round += 1`, `state.phase = "prepare"`.

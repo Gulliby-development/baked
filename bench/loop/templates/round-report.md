@@ -13,6 +13,10 @@ BAKED runner: <commit> · reference model: <provider/model> · experiment: <none
 | App | Task type | Provider/model | Outcome | Tokens | Interventions | Verified | Published |
 |---|---|---|---|---|---|---|---|
 
+## Updates to existing projects (brownfield, tracked separately)
+| Repository | Feature | Provider/model | Outcome | Tokens | Interventions | Baseline tests | After tests | Verified | PR / merge |
+|---|---|---|---|---|---|---|---|---|---|
+
 ## Published
 | App | Repository | CI (ubuntu / windows / macos) | Logo | Notes |
 |---|---|---|---|---|

@@ -1,7 +1,9 @@
 {
   "app": "envguard",
   "round": 1,
-  "group": "new | control | experiment",
+  "group": "new | update | control | experiment",
+  "repo": null,
+  "baseline": null,
   "variant": "A | B",
   "runIds": ["1185f909"],
   "bakedCommit": "4604198c",
