@@ -1,16 +1,20 @@
 import { type DependencyList, type ReactNode, useCallback, useEffect, useState } from "react";
-import { isMissingEndpoint } from "../../client/setup.js";
+import { isMissingEndpoint, isNoProject } from "../../client/setup.js";
 
 export type Loaded<T> =
   | { state: "loading" }
   | { state: "ready"; data: T }
   | { state: "missing" }
+  | { state: "no-project" }
   | { state: "error"; message: string };
 
 export const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-/** Loads once per dependency change; a 404 from an older backend becomes `missing`. */
+/**
+ * Loads once per dependency change; a 404 from an older backend becomes `missing`, and one from a
+ * folder without baked/project.json becomes `no-project`.
+ */
 export function useLoad<T>(
   load: () => Promise<T>,
   deps: DependencyList,
@@ -27,7 +31,9 @@ export function useLoad<T>(
         setValue(
           isMissingEndpoint(error)
             ? { state: "missing" }
-            : { state: "error", message: errorText(error) },
+            : isNoProject(error)
+              ? { state: "no-project" }
+              : { state: "error", message: errorText(error) },
         ),
     );
     return () => {
@@ -52,6 +58,13 @@ export function NeedsNewer({ what }: { what: string }) {
 export function LoadState({ value, what }: { value: Loaded<unknown>; what: string }) {
   if (value.state === "loading") return <div className="muted">Loading {what}…</div>;
   if (value.state === "missing") return <NeedsNewer what={what} />;
+  if (value.state === "no-project")
+    return (
+      <div className="empty">
+        This folder has no <span className="mono">baked/project.json</span> yet. Run{" "}
+        <span className="mono">baked project init</span> in the folder to create one.
+      </div>
+    );
   if (value.state === "error") return <div className="banner error">{value.message}</div>;
   return null;
 }

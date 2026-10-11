@@ -72,7 +72,7 @@ The main process runs on Electron's Node.js; everything else (install, scripts, 
 ### Renderer
 
 - React 19, Vite, TypeScript strict. Colours come from design tokens in `src/renderer/styles/tokens.css` (the dark TUI palette: `#191410` ground, `#ff9d52` accent; IBM Plex Sans and Plex Mono, bundled as files so the app works offline). A light theme follows the TUI's light tokens.
-- Visual style: neobrutalism. Controls and panels have a 2px ink outline (`--ink`) and a hard offset shadow (`--shadow`, `--shadow-sm`); a button moves into its shadow on hover. Status colours appear as colour blocks (`--fill-accent`, `--fill-ok`, `--fill-warn`, `--fill-err`, `--fill-info`) that always carry `--on-fill` text, so they read in both themes.
+- Visual style: neobrutalism. Controls and panels have a 2px ink outline (`--ink`) and a hard offset shadow (`--shadow`, `--shadow-sm`); a button moves into its shadow on hover. Native checkboxes and selects get the same outline (`app.css`): a ticked box fills with the accent, and a select draws its own chevron (`--chevron` per theme). Status colours appear as colour blocks (`--fill-accent`, `--fill-ok`, `--fill-warn`, `--fill-err`, `--fill-info`) that always carry `--on-fill` text, so they read in both themes.
 - Components: [shadcn/ui](https://ui.shadcn.com) on [Base UI](https://base-ui.com) primitives, styled after [neobrutalism.dev](https://www.neobrutalism.dev) (MIT). They live in `src/renderer/components/ui/` and are styled with Tailwind CSS v4; `components.json` lets the shadcn CLI add more. `src/renderer/styles/index.css` is the stylesheet entry: it maps the kit's token names (`main`, `background`, `border`, `shadow`, …) onto BAKED's tokens and loads Tailwind without its preflight. The shell (title bar, sidebar) and the project home are built from these components. The other screens keep their own stylesheets (`chat.css`, `runs.css`, …), which draw the same outline, shadow and fill tokens; `app.css` sits in a `legacy` layer below Tailwind's utilities, and screen stylesheets that a screen imports itself are unlayered.
 - Routing by URL hash: `#/projects`, `#/attention`, `#/p/<projectKey>/{overview,chat/<sessionId>,runs/<runId>,initiatives,acceptance,usage,setup/{gates,instructions,working-set}}`, `#/settings/{app,global}`. `projectKey` is a short hash of the folder path.
 - Data access goes through one typed `BakedClient` interface. Two implementations: `IpcClient` (the real one) and `MockClient` (fixtures plus a scripted chat stream). The renderer runs in a plain browser against `MockClient` (`bun run dev:web`), so screens can be built and reviewed before the chat API lands.
@@ -113,7 +113,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Parallel writers | Writer columns with worktrees, integrator, task graph. |
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |
 | Initiatives, Usage | Initiative features and their runs; tokens by stage and model, cost. |
-| Project setup | Gates and checks, Instructions, Working set. |
+| Project setup | Gates and checks, Instructions, Working set. In a folder without `baked/project.json`, Working set and the project panels say to run `baked project init` instead of showing an error. |
 | Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, telemetry). |
 
 ## Repository layout and builds
