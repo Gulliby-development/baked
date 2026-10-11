@@ -3,10 +3,13 @@
  * commands over HTTP. Starting, approving and resuming drive the initiative in the background.
  */
 import { z } from "zod";
-import { defaultWorkflowPolicy } from "../workflows/defaults.js";
-import { InitiativePlanSchema, SplitEditSchema } from "../workflows/initiatives/plan.js";
+import {
+  InitiativeStartInputSchema,
+  initiativeStartRequest,
+} from "../workflows/initiatives/forms.js";
+import { SplitEditSchema } from "../workflows/initiatives/plan.js";
 import type { InitiativeService } from "../workflows/initiatives/service.js";
-import { PolicySchema, SafeId } from "../workflows/schemas.js";
+import { SafeId } from "../workflows/schemas.js";
 import type { RouteContext } from "./route-context.js";
 
 export interface InitiativeRouteContext extends RouteContext {
@@ -17,20 +20,9 @@ export interface InitiativeRouteContext extends RouteContext {
 
 const Command = z.object({ commandId: SafeId, expectedRevision: z.number().int().min(0) });
 const PositiveInt = z.number().int().min(1);
-const StartBody = z.strictObject({
+const StartBody = InitiativeStartInputSchema.extend({
   commandId: SafeId,
-  initiativeId: SafeId,
-  prompt: z.string().min(1),
-  plan: InitiativePlanSchema.optional(),
-  workflow: SafeId.optional(),
-  policy: z.unknown().optional(),
-  model: z.string().min(1).optional(),
   owner: z.string().min(1).max(200).optional(),
-  budget: z
-    .strictObject({ tokens: PositiveInt, calls: PositiveInt, timeMs: PositiveInt })
-    .optional(),
-  tieredApproval: z.strictObject({ maxTasks: PositiveInt, maxFiles: PositiveInt }).optional(),
-  confirmAutoApproval: z.string().min(1).optional(),
 });
 const MergeBody = Command.extend({
   features: z.array(SafeId).min(2),
@@ -90,27 +82,13 @@ export async function initiativeRoute(ctx: InitiativeRouteContext): Promise<Resp
           next: view.next,
         })),
       });
-    const body = StartBody.parse(await ctx.readJson());
-    const config = initiatives.workflows.config;
-    const view = await initiatives.start({
-      commandId: body.commandId,
-      initiativeId: body.initiativeId,
-      prompt: body.prompt,
-      ...(body.plan ? { plan: body.plan } : {}),
-      policy: PolicySchema.parse(body.policy ?? config.workflows?.policy ?? defaultWorkflowPolicy),
-      workflowId: body.workflow ?? config.workflows?.defaultWorkflow ?? "sdd",
-      budget: body.budget
-        ? {
-            maxTotalTokens: body.budget.tokens,
-            maxAgentCalls: body.budget.calls,
-            maxActiveMs: body.budget.timeMs,
-          }
-        : null,
-      featureAutoApproval: body.tieredApproval ?? null,
-      ...(body.confirmAutoApproval ? { autoApprovalConfirmation: body.confirmAutoApproval } : {}),
-      ...(body.model ? { model: body.model } : {}),
-      ownerLabel: body.owner ?? "API",
-    });
+    const { commandId, owner, ...input } = StartBody.parse(await ctx.readJson());
+    const view = await initiatives.start(
+      initiativeStartRequest(input, initiatives.workflows.config, {
+        commandId,
+        ownerLabel: owner ?? "API",
+      }),
+    );
     ctx.launch(view.initiativeId);
     return ctx.json(202, view);
   }

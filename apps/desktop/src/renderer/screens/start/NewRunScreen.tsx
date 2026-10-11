@@ -102,7 +102,7 @@ function RecipeCard({
   );
 }
 
-function RecipeChoice({
+export function RecipeChoice({
   definitions,
   value,
   onChange,
