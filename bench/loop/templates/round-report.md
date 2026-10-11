@@ -3,7 +3,23 @@
 BAKED runner: <commit> · reference model: <provider/model> · experiment: <none | what>
 
 ## Summary
-<5 lines: what improved, what got worse, the top finding, what the next round changes>
+<5 lines, BAKED-side first: what improved, what got worse, the top finding, what the next round changes. App counts (published, updated) come last.>
+
+## BAKED-side metrics
+| Metric | This round | Last round | First round |
+|---|---|---|---|
+| Interventions per run (control / new / update) | | | |
+| Runs completed without intervention | | | |
+| Tokens per verified app | | | |
+| Fixes merged | | | |
+
+Stop reasons by count:
+| Stop reason | Count | Runs |
+|---|---|---|
+
+## Did last round's fixes work?
+| Issue | Expected metric movement | Measured | Verdict |
+|---|---|---|---|
 
 ## Control apps (comparable)
 | App | Variant | Outcome | Tokens | Δ vs last round | Steps | Active | Interventions | Corrections |

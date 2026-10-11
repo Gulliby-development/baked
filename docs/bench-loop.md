@@ -1,5 +1,7 @@
 # Bench loop
 
+The objective of the loop is to make BAKED a better harness. The apps, updates and published repositories are the test bench, not the product: when budget, time or attention is short, the loop spends it on analysis and BAKED fixes rather than on getting more apps through, never hand-fixes an app or works around a BAKED defect to make a run pass (a stuck run is recorded as blocked and becomes a finding), and judges a round by BAKED-side metrics (interventions per run, stop reasons, tokens per verified app, runs completed without intervention, and whether last round's fixes worked) before app counts.
+
 The bench loop tunes BAKED by building small, useful apps with it, round after round, on a real machine with real providers. Its operating spec is an `AGENTS.md` for an orchestrator agent and its roles, in [`bench/loop/`](../bench/loop/AGENTS.md); any agent harness that reads `AGENTS.md` and can run sub-agents can drive it.
 
 ## One round
