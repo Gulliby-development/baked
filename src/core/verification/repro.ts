@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
-import { type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
+import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
 import type { HostTool } from "../workflows/types.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
@@ -167,6 +167,89 @@ export function reproTool(
           reason: `Only ${REPRO_TRIES} repro runs are allowed per review`,
         };
       return run(ReproSchema.parse(input));
+    },
+  };
+}
+
+/** Probes one repair attempt may run before it must edit or report. */
+export const PROBE_TRIES = 8;
+
+export interface ProbeOutcome {
+  status: "ran" | "refused";
+  reason?: string;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  output: string;
+}
+
+/**
+ * Runs a program the run's checks start, without a shell, in the task's root, to look at what a
+ * library or the runtime does (hookdrop c325575b: `bun:sqlite` dropped a leading U+FEFF, which
+ * the repair task could not see from the test output). Like a repro it may read the workspace
+ * but not change it; a probe that changed source files is reported as refused.
+ */
+export async function runProbe(
+  processes: ProcessScope,
+  probe: { executable: string; args: string[] },
+  options: {
+    root: string;
+    executables: readonly string[];
+    generated: string[];
+    signal: AbortSignal;
+  },
+): Promise<ProbeOutcome> {
+  if (!options.executables.includes(probe.executable))
+    return {
+      status: "refused",
+      reason: `${probe.executable} is not a program the run's checks start (${options.executables.join(", ") || "none"})`,
+      output: "",
+    };
+  const before = await sourceManifest(options.root, options.generated, options.signal);
+  const executable = probe.executable === "bun" ? process.execPath : probe.executable;
+  let result: Awaited<ReturnType<ProcessScope["execute"]>>;
+  try {
+    result = await processes.execute(executable, probe.args, {
+      cwd: options.root,
+      env: reproEnv(options.root),
+      timeoutMs: REPRO_TIMEOUT_MS,
+      signal: options.signal,
+    });
+  } catch (error) {
+    options.signal.throwIfAborted();
+    return {
+      status: "refused",
+      reason: `The command did not start: ${error instanceof Error ? error.message : String(error)}`,
+      output: "",
+    };
+  }
+  const after = await sourceManifest(options.root, options.generated);
+  if (changedPaths(before, after).length)
+    return {
+      status: "refused",
+      reason: "The command changed source files; a probe must only read them. Edit with edit_file.",
+      output: result.output.slice(-OUTPUT_LIMIT),
+    };
+  return {
+    status: "ran",
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    output: result.output.slice(-OUTPUT_LIMIT),
+  };
+}
+
+/** The host tool a repair task isolates a failure with before it edits again. */
+export function probeTool(
+  executables: readonly string[],
+  run: (probe: { executable: string; args: string[] }) => Promise<ProbeOutcome>,
+): HostTool {
+  let tries = 0;
+  return {
+    description: `Run a program (one of ${executables.join(", ")}) with arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s, and read its output and exit code. Use it to isolate a failing check (one test alone, a few lines that call the library the code relies on) and to confirm what the runtime or a library does before editing again. It must not change any file. At most ${PROBE_TRIES} runs.`,
+    inputSchema: ProbeSchema,
+    execute: async (input) => {
+      if (++tries > PROBE_TRIES)
+        return { status: "refused", reason: `Only ${PROBE_TRIES} probes are allowed per attempt` };
+      return run(ProbeSchema.parse(input));
     },
   };
 }
