@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatMode, ModelProvider } from "../../client/chat.js";
+import type { ChatMode, MentionSuggestion, ModelProvider } from "../../client/chat.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
 import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
@@ -195,12 +195,50 @@ export function Composer({
   };
   return (
     <form
-      className="w-full max-w-[820px] border-2 border-border rounded-base bg-background shadow-shadow px-[14px] py-3 flex flex-col gap-2 focus-within:outline-[3px] focus-within:outline-ring focus-within:outline-offset-2"
+      className={cn(
+        "relative w-full max-w-[820px] border-2 border-border rounded-base bg-background shadow-shadow px-[14px] py-3 flex flex-col gap-2 focus-within:outline-[3px] focus-within:outline-ring focus-within:outline-offset-2",
+        text.trimStart().startsWith("!") && "border-fill-warn",
+      )}
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
+      {showMentions && (
+        <div
+          id="chat-mentions"
+          className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-20 max-h-[280px] overflow-y-auto flex flex-col gap-[2px] p-[6px] border-2 border-border rounded-base bg-background shadow-shadow"
+          role="listbox"
+          aria-label="Mentions"
+        >
+          {mentions.map((m, i) => (
+            <button
+              key={`${m.kind}:${m.insert}`}
+              type="button"
+              role="option"
+              aria-selected={i === mentionIdx}
+              // Not `cn`: tailwind-merge would drop MENU_ITEM's `leading-[inherit]` for its text size.
+              className={`${MENU_ITEM} aria-selected:border-border aria-selected:bg-hover aria-selected:text-foreground`}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => acceptMention(m)}
+            >
+              <span
+                className={cn(
+                  "w-[14px] text-center text-muted-foreground",
+                  m.kind === "symbol" && "text-[var(--accent)]",
+                )}
+                aria-hidden="true"
+              >
+                {MENTION_ICONS[m.kind]}
+              </span>
+              <span className="font-mono text-[13px]">{m.label}</span>
+              {m.kind === "symbol" && (
+                <span className="ml-auto text-[12px] text-dim-foreground truncate">{m.detail}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
       <label htmlFor="chat-prompt" className="sr-only">
         Message BAKED
       </label>
