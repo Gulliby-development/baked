@@ -12,8 +12,15 @@ export const MODE_LABELS: Record<ChatMode, { name: string; detail: string }> = {
     name: "Architect",
     detail: "Read-only: design analysis and review, no edits.",
   },
+  plan: {
+    name: "Plan first",
+    detail: "Researches read-only and proposes a plan; you execute, revise or cancel it.",
+  },
   auto: { name: "Auto-approve", detail: "Runs everything without asking." },
 };
+
+/** The modes every backend with chat offers; `plan` needs the `plan-mode` capability. */
+export const BASE_MODES: readonly ChatMode[] = ["default", "architect", "auto"];
 
 const MAX_TEXTAREA_PX = 240;
 
@@ -103,6 +110,7 @@ export function Composer({
   onStop,
   onModel,
   onMode,
+  modes = BASE_MODES,
   loadModels,
   loadMentions,
   acceptsImages = false,
@@ -111,6 +119,8 @@ export function Composer({
   canStop: boolean;
   model: string | null;
   mode: ChatMode;
+  /** The modes the menu offers; defaults to the modes every backend has. */
+  modes?: readonly ChatMode[];
   /** Changing it moves the focus to the textarea, e.g. when another session opens. */
   autoFocusKey: string;
   /** Text the composer starts with, e.g. a task typed on the project home. */
@@ -363,7 +373,7 @@ export function Composer({
         >
           {(close) => (
             <div className="menu-list">
-              {(Object.keys(MODE_LABELS) as ChatMode[]).map((m) => (
+              {modes.map((m) => (
                 <button
                   key={m}
                   type="button"

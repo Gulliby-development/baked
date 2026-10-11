@@ -15,6 +15,7 @@ const TITLES: Record<ProjectSection, string> = {
   gates: "Gates and checks",
   instructions: "Instructions",
   "working-set": "Working set",
+  "run-memory": "Run memory",
 };
 
 function Closed({ project }: { project: DesktopProject }) {

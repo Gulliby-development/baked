@@ -13,8 +13,12 @@ export const ROUTING_CAPABILITY = "routing";
 export const COMPACTION_CAPABILITY = "compaction";
 /** `GET /v1/sessions/ID/diff` (line counts of the files a chat changed). */
 export const DIFF_STATS_CAPABILITY = "diff-stats";
+/** `mode: "plan"` in chat sessions and its `plan-review` prompt. */
+export const PLAN_MODE_CAPABILITY = "plan-mode";
 /** `POST /v1/sessions/ID/undo` and `/redo` (Undo and Redo in chat). */
 export const CHAT_UNDO_CAPABILITY = "chat-undo";
+/** `GET|POST /v1/workflow/memory` (the Run memory section). */
+export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `images` on chat messages (paste and drop in the composer). */
 export const IMAGES_CAPABILITY = "images";
 

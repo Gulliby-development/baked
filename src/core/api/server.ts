@@ -60,6 +60,7 @@ import {
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
+import { memoryRoute } from "./memory-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
   AnswerBody,
@@ -103,7 +104,9 @@ export const CAPABILITIES = [
   "routing",
   "compaction",
   "diff-stats",
+  "plan-mode",
   "chat-undo",
+  "run-memory",
   "images",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -758,6 +761,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     const routed =
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
+      (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
       (await checkRoute({
         ...ctx,
         workspace: service.workspace,

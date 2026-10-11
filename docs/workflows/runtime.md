@@ -126,6 +126,35 @@ Candidate fields are optional: missing ones are taken from the current package. 
 
 The terminal states completed/cancelled/failed are immutable; `fork RUN_ID --expected-revision N` creates a new run with the parent's artifacts, a new approval and no passing evidence. It does not start the model before resume. There is no automatic rollback of user changes.
 
+### Project memory
+
+A run starts with what earlier runs of the same workspace learned, so it does not ask the same question or rediscover the same facts again. At creation the run reads the 30 newest runs in `.baked/workflows.sqlite` ([project-memory](../../src/core/workflows/project-memory.ts)) and collects:
+
+- the answers people gave to research and spec questions, from any run; the newest answer to a question wins (at most 12);
+- the assumptions of the specifications that completed runs had approved, such as those recorded under `clarification: "assume"` (at most 12);
+- the check commands that passed in completed runs, except the new run's own checks, which its execution contract already lists (at most 8).
+
+Answers to analysis findings are left out, since they are about one run's plan. The result is stored as the run's `project/run-memory.md` artifact, its hash joins the run's inputs, and a fork keeps it; a candidate revision keeps the memory the run captured. The researcher, the spec author and the planner receive it as `projectMemory` in their input, framed as background that the request, the answers in it and the run's policy override; implementers, reviewers and the auditor do not. A workspace with nothing to remember adds nothing. The policy field `projectMemory: false` turns it off (absent means on, so stored policies keep their hash), and runs removed by `baked workflow gc` drop out of it.
+
+#### Viewing and editing project memory
+
+People can review and correct the memory before the next run. Each entry has a stable ID (`a-` answer, `s-` assumption, `c-` check, `n-` note) derived from its question, assumption or command, so an edit keeps applying when later runs record the same entry again. Changes are stored in the `project_memory_edits` table of `.baked/workflows.sqlite` and apply to runs created afterwards; started runs keep the memory they captured.
+
+- **Add** a note of your own (at most 12, 600 characters each). Notes come first in what research, spec and planning read.
+- **Edit** rewords a note, an answer or an assumption. A reworded entry keeps your text even when a later run records a newer answer to the same question; the original stays visible as "runs recorded". Check commands cannot be reworded: forget them or change the workspace checks.
+- **Forget** deletes a note, or hides a recorded entry from new runs. A hidden entry frees its place, so the next entry of its kind moves in.
+- **Restore** brings a forgotten or reworded entry back as runs recorded it.
+
+```sh
+baked workflow memory [list] [--json]          # what a run started now reads, then forgotten entries
+baked workflow memory add --text "Public APIs keep their names"
+baked workflow memory edit a-91d0c3e2aa --text "Yes, and mark them as failed"
+baked workflow memory forget s-0b7e55d1c4
+baked workflow memory restore s-0b7e55d1c4
+```
+
+The listing marks a check the workspace policy already lists as not sent, and `--json` returns `{enabled, entries, hidden, rendered}`, where `rendered` is the exact text the next run would receive (null when empty). In the TUI the **Runs** tab of `/memory` lists the same entries: Enter edits, Ctrl+N adds a note, Ctrl+D forgets, Ctrl+R restores and typing filters. The desktop app has a **Run memory** section under the project's setup, and the local API serves `GET|POST /v1/workflow/memory`.
+
 ### The run's own edits and undo
 
 A run keeps the edits it executed. A revision, a failed or interrupted task attempt and a fork leave the files as they are, and the runtime recognises content the run itself wrote by the effect journal:
@@ -287,7 +316,7 @@ Every model step resends the whole conversation, so a stage that reads many file
 
 The evidence handed to later agents is shaped the same way. Each implemented task stores a unified diff of its changes in its `diff` evidence (`patch`, from the content kept before each edit, cut at 48,000 characters), so reviewers and the convergence auditor see the change without reading whole files. Earlier `read` evidence reaches them as its tool, the paths it named and its size, not its content; implementers get no reads at all. An implementer of a planned task gets no check logs either (`command` evidence); a corrective task still gets the logs of the checks it fixes.
 
-An implementer's prompt is trimmed to what writing its task needs, since every step of the attempt resends it: no research (the spec and plan carry what it found), the other tasks of the graph only by ID, title, dependencies and written paths (its own task arrives whole in its input), and only its own profile in the execution contract. The files the task modifies come preloaded in its input (`taskFiles`), as the read tool shows them: whole with line numbers up to 24 KB each and 64 KB in total, outlines above that ([read-outline](../../src/core/workflows/read-outline.ts)). The implementer edits them on its first step instead of spending a step reading them. Files the task creates, missing files and binary files are not preloaded.
+An implementer's prompt is trimmed to what writing its task needs, since every step of the attempt resends it: no research (the spec and plan carry what it found), the other tasks of the graph only by ID, title, dependencies and written paths (its own task arrives whole in its input), and only its own profile in the execution contract. The files the task modifies come preloaded in its input (`taskFiles`), as the read tool shows them: whole with line numbers up to 24 KB each and 64 KB in total, outlines above that ([read-outline](../../src/core/workflows/read-outline.ts)). Under an outline come the spans of the declarations whose names appear in the task's title or description (identifiers of four or more characters), as a range read shows them, up to 16 KB per file within the same total; a named class larger than that stays outlined. The implementer edits them on its first step instead of spending a step reading them. Files the task creates, missing files and binary files are not preloaded.
 
 A workflow agent's `read` of a whole file larger than 20 KB (24 KB for a file its task writes, whose exact text the edit needs) returns the file's outline instead: its classes, functions, methods, types and top-level variables with their line spans, from tree-sitter ([read-outline](../../src/core/workflows/read-outline.ts)). The agent then reads the spans it needs with `ranges` or a symbol with `target`. A file with no outline (an unsupported language or a parse failure) is read whole, and reads with ranges or a target are unchanged. A compacted `read` stub asks for `fresh: true`, because the read tool answers a repeated whole-file read with "already in your context". Reads of line ranges or symbols are never compacted and always run fresh: they are small and chosen for an edit, and an agent that lost them, or was refused a fourth range of the same file, read the same spans again instead of editing. An implementer that must edit and has only read for four steps in a row is told once to apply its edits. A retry of a task whose earlier attempt left edits in place gets those edits as a patch (`earlierEdits.patch`) and reads only the spans it still has to change.
 

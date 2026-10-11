@@ -6,6 +6,7 @@ import { fitPopupHeight, fitPopupWidth, popupContentWidth } from "../ui/popup-ge
  *   - All       : every active memory across project + global
  *   - Hidden    : soft-deleted (restorable)
  *   - Cleanup   : Quick (dupes + dead refs) and Stale candidates
+ *   - Runs      : project memory new workflow runs read (RunMemoryTab.tsx)
  *
  * Per-row actions: Pin/Unpin, Soft-delete / Restore.
  * Cleanup tab: bulk review with Soft-delete / Pin / Skip per candidate.
@@ -32,8 +33,9 @@ import {
   type TableColumn,
   VSpacer,
 } from "../ui/index.js";
+import { RunMemoryPanel, useRunMemory } from "./RunMemoryTab.js";
 
-type Tab = "All" | "Hidden" | "Cleanup" | "Settings";
+type Tab = "All" | "Hidden" | "Runs" | "Cleanup" | "Settings";
 
 type SettingsModalKind = "write" | "read" | "settings-storage";
 type SettingsModal = { kind: SettingsModalKind; current: string } | null;
@@ -106,7 +108,7 @@ interface CleanupRow {
   clusterKeeperId?: string;
 }
 
-const TABS: Tab[] = ["All", "Hidden", "Cleanup", "Settings"];
+const TABS: Tab[] = ["All", "Hidden", "Runs", "Cleanup", "Settings"];
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - Date.parse(iso);
@@ -195,6 +197,8 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
     setFlash({ kind, message });
     setTimeout(() => setFlash(null), 1800);
   }, []);
+
+  const runMemory = useRunMemory({ cwd, active: visible && tab === "Runs", flash: popFlash });
 
   const fileExists = useCallback(
     (p: string) => {
@@ -502,6 +506,7 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
       return;
     }
 
+    if (tab === "Runs" && runMemory.handleKey(evt)) return;
     if (evt.name === "escape") {
       onClose();
       return;
@@ -637,6 +642,15 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
       status: hiddenRows.length > 0 ? "idle" : undefined,
     },
     {
+      id: "Runs",
+      label: "Runs",
+      icon: "clock",
+      blurb: runMemory.view
+        ? `${String(runMemory.view.entries.length)} for new runs`
+        : "what runs learned",
+      status: runMemory.view && !runMemory.view.enabled ? "idle" : undefined,
+    },
+    {
       id: "Cleanup",
       label: "Cleanup",
       icon: "cleanup",
@@ -660,7 +674,9 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
   };
 
   let baseHints: { key: string; label: string }[];
-  if (tab === "Cleanup") {
+  if (tab === "Runs") {
+    baseHints = runMemory.hints;
+  } else if (tab === "Cleanup") {
     baseHints = [
       { key: "↑↓", label: "nav" },
       { key: "Enter", label: "cycle" },
@@ -744,7 +760,7 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
       tabs={sidebarTabs}
       activeTab={tab}
       onTabChange={(next) => {
-        if (settingsModal || confirmPurge) return;
+        if (settingsModal || confirmPurge || runMemory.editing) return;
         setTab(next);
         setCursor(0);
         setQuery("");
@@ -761,7 +777,9 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
       flash={flash}
     >
       <Section>
-        {tab === "Settings" ? (
+        {tab === "Runs" ? (
+          <RunMemoryPanel state={runMemory} width={contentW} maxRows={Math.max(5, popupH - 16)} />
+        ) : tab === "Settings" ? (
           <GroupedList
             groups={settingsGroups}
             expanded={new Set(["scopes", "auto"])}
