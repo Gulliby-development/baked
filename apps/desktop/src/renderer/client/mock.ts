@@ -156,6 +156,7 @@ export function createMockBridge(): DesktopBridge {
             "images",
             "code-graph",
             "skills-install",
+            "mcp",
             "custom-commands",
             "settings",
             "git",

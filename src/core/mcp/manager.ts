@@ -55,8 +55,15 @@ export class MCPManager {
   private pendingSync: MCPServerConfig[] | null = null;
   private syncing = false;
   private connecting = new Map<string, Promise<void>>();
+  private synced = false;
+
+  /** Whether servers were connected from the config yet (connectAll, or one server on demand). */
+  get started(): boolean {
+    return this.synced || this.connections.size > 0 || this.connecting.size > 0;
+  }
 
   async connectAll(configs: MCPServerConfig[]): Promise<void> {
+    this.synced = true;
     // Serialize: if already syncing, queue the latest config and return.
     // Only the most recent config matters — intermediate states are skipped.
     if (this.syncing) {
@@ -267,6 +274,29 @@ export class MCPManager {
     if (!state) return;
     this.restartCounts.set(name, 0);
     await this.connect(state.config);
+  }
+
+  /**
+   * Connects one server from its current config, closing an open connection first, and resets its
+   * restart budget. Unlike reconnect it works for a server nothing connected yet.
+   */
+  async restart(config: MCPServerConfig): Promise<void> {
+    if (config.disabled) return;
+    useMCPStore.setState((s) => ({
+      servers: {
+        ...s.servers,
+        [config.name]: {
+          config,
+          status: "disconnected",
+          tools: s.servers[config.name]?.tools ?? [],
+          error: null,
+          connectedAt: null,
+          lastPingMs: null,
+        },
+      },
+    }));
+    this.restartCounts.set(config.name, 0);
+    await this.connect(config);
   }
 
   /** Debounced restart — prevents double-restart when both onclose and onUncaughtError fire. */

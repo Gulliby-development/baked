@@ -1,6 +1,12 @@
 import { TextAttributes } from "@opentui/core";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { icon } from "../../core/icons.js";
+import {
+  applyMCPChange,
+  type MCPChange,
+  MCPChangeError,
+  type MCPLayers,
+} from "../../core/mcp/config.js";
 import type { MCPManager } from "../../core/mcp/manager.js";
 import { useTheme } from "../../core/theme/index.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
@@ -279,6 +285,7 @@ export function MCPSettings({
   const [errorExpanded, setErrorExpanded] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [deleteChoice, setDeleteChoice] = useState<"no" | "yes">("no");
+  const [formError, setFormError] = useState<string | null>(null);
 
   const filteredTools = useMemo(() => {
     if (!toolFilter) return allTools;
@@ -330,6 +337,7 @@ export function MCPSettings({
       setErrorExpanded(false);
       setPendingDelete(null);
       setDeleteChoice("no");
+      setFormError(null);
       resetScroll();
     }
   }, [visible, resetScroll]);
@@ -339,7 +347,25 @@ export function MCPSettings({
   // All actions just save config. The useEffect in App.tsx watches effectiveConfig.mcpServers
   // and calls connectAll — the single entry point for all connection lifecycle.
 
+  /** Applies a change as the local API's /v1/mcp does; returns the error when it is refused. */
+  const save = useCallback(
+    (change: MCPChange): string | null => {
+      const layers: MCPLayers = { global: globalServers, project: projectServers };
+      try {
+        const lists = applyMCPChange(layers, change);
+        if (lists.global) onSave(lists.global, "global");
+        if (lists.project) onSave(lists.project, "project");
+        return null;
+      } catch (error) {
+        if (error instanceof MCPChangeError) return error.message;
+        throw error;
+      }
+    },
+    [globalServers, projectServers, onSave],
+  );
+
   const openAdd = useCallback(() => {
+    setFormError(null);
     setDraft({ ...EMPTY });
     setActiveField("name");
     setEditingName(null);
@@ -352,6 +378,7 @@ export function MCPSettings({
       const list = scope === "project" ? projectServers : globalServers;
       const cfg = list.find((s) => s.name === name);
       if (!cfg) return;
+      setFormError(null);
       setDraft(configToDraft(cfg, scope));
       setActiveField("name");
       setEditingName(name);
@@ -362,41 +389,40 @@ export function MCPSettings({
 
   const commitForm = useCallback(() => {
     if (!draft.name.trim()) return;
-    const cfg = draftToConfig(draft);
-    const scope = draft.scope;
-    const list = scope === "project" ? projectServers : globalServers;
-    const updated = editingName
-      ? list.map((s) => (s.name === editingName ? cfg : s))
-      : [...list, cfg];
-    onSave(updated, scope);
-    setView("list");
-  }, [draft, editingName, projectServers, globalServers, onSave]);
+    const server = draftToConfig(draft);
+    const error = save(
+      editingName
+        ? {
+            action: "edit",
+            scope: scopeOf(editingName),
+            name: editingName,
+            server,
+            toScope: draft.scope,
+          }
+        : { action: "add", scope: draft.scope, server },
+    );
+    setFormError(error);
+    if (!error) setView("list");
+  }, [draft, editingName, scopeOf, save]);
 
   const deleteServer = useCallback(
     (name: string) => {
-      const scope = scopeOf(name);
-      const list = scope === "project" ? projectServers : globalServers;
-      onSave(
-        list.filter((s) => s.name !== name),
-        scope,
-      );
+      save({ action: "remove", scope: scopeOf(name), name });
       setCursor((c) => Math.max(0, Math.min(c, filteredServers.length - 2)));
     },
-    [scopeOf, projectServers, globalServers, onSave, setCursor, filteredServers.length],
+    [scopeOf, save, setCursor, filteredServers.length],
   );
 
   const toggleDisabled = useCallback(
     (name: string) => {
       const scope = scopeOf(name);
-      const list = scope === "project" ? projectServers : globalServers;
-      const srv = list.find((s) => s.name === name);
-      if (!srv) return;
-      onSave(
-        list.map((s) => (s.name === name ? { ...s, disabled: !s.disabled } : s)),
-        scope,
+      const srv = (scope === "project" ? projectServers : globalServers).find(
+        (s) => s.name === name,
       );
+      if (!srv) return;
+      save({ action: "set-disabled", scope, name, disabled: !srv.disabled });
     },
-    [scopeOf, projectServers, globalServers, onSave],
+    [scopeOf, projectServers, globalServers, save],
   );
 
   // ── Keyboard ──
@@ -654,6 +680,7 @@ export function MCPSettings({
             onSave={commitForm}
             innerW={innerW}
             focused={visible}
+            error={formError}
           />
         ) : view === "list" && serverList.length === 0 ? (
           <EmptyState innerW={innerW} />
@@ -1233,6 +1260,7 @@ function FormBody({
   onSave,
   innerW,
   focused,
+  error,
 }: {
   draft: Draft;
   setDraft: React.Dispatch<React.SetStateAction<Draft>>;
@@ -1241,6 +1269,7 @@ function FormBody({
   onSave: () => void;
   innerW: number;
   focused: boolean;
+  error: string | null;
 }) {
   const t = useTheme();
   const fields = fieldsFor(draft.transport);
@@ -1350,6 +1379,14 @@ function FormBody({
           </FocusTarget>
         );
       })}
+
+      {error && (
+        <box paddingX={1} width={innerW} backgroundColor={t.bgPopup}>
+          <text bg={t.bgPopup} fg={t.error}>
+            {error}
+          </text>
+        </box>
+      )}
 
       <VSpacer />
     </box>

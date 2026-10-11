@@ -16,6 +16,7 @@ export const PROJECT_SECTIONS = [
   "chat-memory",
   "skills",
   "hooks",
+  "mcp",
   "diagnostics",
 ] as const;
 export type ProjectSection = (typeof PROJECT_SECTIONS)[number];

@@ -37,6 +37,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["chat-memory", "Chat memory", "chat-memory"],
   ["skills", "Skills", "skills"],
   ["hooks", "Hooks", "hooks"],
+  ["mcp", "MCP servers", "mcp"],
   ["diagnostics", "Diagnostics", "diagnostics"],
 ];
 
