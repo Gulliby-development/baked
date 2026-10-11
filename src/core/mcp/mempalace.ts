@@ -6,6 +6,7 @@
  * agent loop or compaction.
  */
 
+import { basename } from "node:path";
 import { getMCPManager } from "./index.js";
 
 const SERVER_NAME = "mempalace";
@@ -125,7 +126,7 @@ export function onCompaction(
   cwd: string,
 ): void {
   if (!isConnected()) return;
-  const projectName = cwd.split("/").pop() ?? "unknown";
+  const projectName = basename(cwd) || "unknown";
 
   saveCompactionDrawer(summary, projectName);
 

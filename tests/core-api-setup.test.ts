@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
 import { recordProjectOpen } from "../src/core/projects/known.js";
 import type { RunSnapshot } from "../src/core/workflows/schemas.js";
@@ -199,7 +199,7 @@ describe("local API setup and workflow additions", () => {
     cleanups.push(() => removeTempDir(folder));
     recordProjectOpen(folder, { configDir });
     type Listed = { projects: { path: string; name: string }[] };
-    const base = folder.split("/").at(-1) ?? "";
+    const base = basename(folder);
     const renamed = (await (await post("/v1/projects/rename", { path: folder, name: "  Shop  " })).json()) as Listed;
     expect(renamed.projects.find((p) => p.path.endsWith(base))?.name).toBe("Shop");
     const restored = (await (await post("/v1/projects/rename", { path: folder, name: "" })).json()) as Listed;
