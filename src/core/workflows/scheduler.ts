@@ -46,7 +46,7 @@ import {
   planScopeAdvice,
   policyDecisions,
 } from "./auto-approval.js";
-import { budgetUsage, reserveTokens } from "./budget.js";
+import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   taskCheckList,
   validateChecks,
@@ -77,6 +77,7 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "./initiatives/plan.js";
+import { readsChangedFile, repairChangedFiles } from "./invalidation.js";
 import {
   commandMayBeRunning,
   mutationLeaseFor,
@@ -292,6 +293,7 @@ export class WorkflowScheduler {
     // A reroute between drives writes a new routing revision; read it again.
     this.routing.delete(runId);
     const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+    raiseToStartEstimate(this.store, runId, policy);
     // A worktree run holds the lease of its worktree; the project working copy stays free.
     this.mutation =
       executionModeOf(policy) === "worktree"
@@ -3201,23 +3203,42 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             }
           }
         }
-        const affected = new Set(restored);
+        // A task that depends on a restored task is invalidated (its agent runs again) only when
+        // the repair changed a file it reads or writes; the other dependents keep their
+        // implementation and only run their task checks again (jsondelta 9fbc18e7: one function
+        // repaired in src/diff.ts reran three tasks for 494k of 1.94M tokens). Without the diffs of
+        // the repair every dependent is invalidated, as before.
+        const changedFiles = repairChangedFiles(
+          this.store,
+          runId,
+          completed.filter((entry) => entry.origin !== "planned"),
+        );
+        const root = runRoot(this.store.workspace, state);
+        const rows = this.store.tasks(runId);
+        const invalid = new Set(restored);
+        const recheck = new Set<string>();
         for (let changed = true; changed; ) {
           changed = false;
           for (const candidate of graph.tasks) {
-            if (!affected.has(candidate.id) && candidate.dependsOn.some((id) => affected.has(id))) {
-              affected.add(candidate.id);
-              changed = true;
-            }
+            if (invalid.has(candidate.id) || recheck.has(candidate.id)) continue;
+            if (!candidate.dependsOn.some((id) => invalid.has(id))) continue;
+            const row = rows.find((entry) => entry.id === candidate.id);
+            const finished = row && ["implemented", "verified"].includes(row.status);
+            if (finished && changedFiles && !readsChangedFile(root, candidate, changedFiles))
+              recheck.add(candidate.id);
+            else invalid.add(candidate.id);
+            changed = true;
           }
         }
-        for (const entry of this.store.tasks(runId))
-          if (
-            !restored.has(entry.id) &&
-            affected.has(entry.id) &&
-            ["implemented", "verified"].includes(entry.status)
-          )
-            this.store.taskStatus(runId, entry.id, "invalidated");
+        for (const entry of rows) {
+          if (restored.has(entry.id) || !["implemented", "verified"].includes(entry.status))
+            continue;
+          if (invalid.has(entry.id)) this.store.taskStatus(runId, entry.id, "invalidated");
+          else if (recheck.has(entry.id)) {
+            delete state.taskGates[entry.id];
+            this.store.taskStatus(runId, entry.id, "implemented", entry.snapshot_id);
+          }
+        }
         this.store.finishStep(runId, child, "completed");
         this.store.saveState(runId, state);
       });

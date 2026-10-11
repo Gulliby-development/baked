@@ -192,7 +192,8 @@ describe("plan-time sizing", () => {
     expect(tests?.estimate).toEqual({ low: 400_000, high: 480_000 });
     expect(tests?.attemptTokens).toBe(480_000);
     expect(report.decision).toBe("raise-budget");
-    expect(report.budgetAfter).toBe(300_000 + 80_000 + 480_000 + 210_000);
+    expect(report.repairReserve).toBe(231_000);
+    expect(report.budgetAfter).toBe(300_000 + 80_000 + 480_000 + 210_000 + 231_000);
   });
 
   test("only a task with several files is split; a plan above the ceiling asks to split the feature", () => {

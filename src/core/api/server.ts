@@ -62,7 +62,9 @@ import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
+import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
+import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
@@ -116,9 +118,12 @@ export const CAPABILITIES = [
   "images",
   "code-graph",
   "skills-install",
+  "mcp",
   "custom-commands",
   "settings",
   "git",
+  "hooks",
+  "provider-switch",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -734,7 +739,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
+      (await mcpRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
+      })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
+      (await hooksRoute({ ...ctx, workspace: service.workspace })) ??
       (await graphRoute({
         ...ctx,
         workspace: service.workspace,

@@ -72,14 +72,14 @@ bun test tests/feature-parity.test.ts
 | --- | --- | --- | --- | --- |
 | Provider API keys | `/keys` | `--set-key`, `--remove-key`, `--list-providers` | `/v1/providers`, `/v1/providers/:id/key` | `settings/providers` |
 | Sign in through the Codex or Claude Code CLI | `/codex`, `/codex login`, `/codex logout` +5 | `baked login`, `baked logout` | `/v1/providers/:id/login`, `/v1/providers/:id/logout` | `settings/providers` |
-| Switch Codex accounts | `/codex switch` | Not needed: scripts sign in once | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
+| Switch Codex accounts | `/codex switch` | Not needed: scripts sign in once | `/v1/providers/:id/switch` | `settings/providers` |
 | Pick a model from the list | `/models`, `/providers` | `baked workflow models`, `--list-models`, `--model` | `/v1/models` | `project/chat` |
 | Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | `settings/chat` |
 | Provider options: thinking, speed, cache TTL, server compaction, tool streaming | `/provider-settings` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Chat task router and fallback chains | `/router` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Workflow model routing | `/workflow` | `baked workflow route`, `baked workflow routing` | `/v1/workflow/routing`, `/v1/workflow/route` | `settings/routing` |
 | Web search keys (Brave, Jina) | `/web-search` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
-| MCP servers: list, add, edit, reconnect, tools | `/mcp` | Partial [#402](https://github.com/Gulliby-development/baked/issues/402): no management | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) |
+| MCP servers: list, add, edit, reconnect, tools | `/mcp` | `baked mcp list`, `baked mcp enable`, `baked mcp disable` +1 | `/v1/mcp`, `/v1/mcp/:id`, `/v1/mcp/:id/reconnect` +1 | `project/mcp` |
 
 ### Tools and code intelligence
 
@@ -91,7 +91,7 @@ bun test tests/feature-parity.test.ts
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
 | Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
-| Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
+| Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
 | Instruction files: view and edit content | `/instructions show`, `/instructions edit` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/instructions` |
 | Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/instructions` |
@@ -157,10 +157,9 @@ bun test tests/feature-parity.test.ts
 - [#273](https://github.com/Gulliby-development/baked/issues/273): Checkpoint list and rewind to a checkpoint
 - [#374](https://github.com/Gulliby-development/baked/issues/374): Language servers: status, install, enable, restart; Diagnose LSP, tree-sitter and index health
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
-- [#402](https://github.com/Gulliby-development/baked/issues/402): MCP servers: list, add, edit, reconnect, tools
 - [#405](https://github.com/Gulliby-development/baked/issues/405): Delete a session; Export a chat (Markdown, JSON, clipboard)
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Storage cleanup, model events and the error log
+- [#408](https://github.com/Gulliby-development/baked/issues/408): Storage cleanup, model events and the error log
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 

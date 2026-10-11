@@ -32,7 +32,7 @@ BAKED connects to MCP servers and offers their tools next to the built-in ones a
 | `timeout` | Per tool call, in ms (default 30000) |
 | `disabled` | Keep the entry but do not connect |
 
-Servers connect at startup, at most 5 at a time; a failed one is retried 3 times with backoff, and a crashed `stdio` server restarts. `/mcp` shows status and tools: type to filter, `Ctrl+A` adds, `Ctrl+D` deletes, `Ctrl+T` toggles, `Ctrl+R` retries, `Tab` switches to the tool browser. Headless runs connect the same servers. Workflow agents use MCP tools only where a profile and the run policy grant them ([MCP tools](workflows/runtime.md#mcp-tools)).
+Servers connect at startup, at most 5 at a time; a failed one is retried 3 times with backoff, and a crashed `stdio` server restarts. `/mcp` shows status and tools: type to filter, `Ctrl+A` adds, `Ctrl+D` deletes, `Ctrl+T` toggles, `Ctrl+R` retries, `Tab` switches to the tool browser. The desktop app has the same in a project's MCP servers page, over the local API's [`/v1/mcp`](desktop/api.md#mcp-servers). Headless runs connect the same servers; `baked mcp list` prints them (`--json` for scripts, `--check` connects each enabled one, lists its tools and exits 1 when one fails), and `baked mcp enable|disable|remove NAME [--scope global|project]` changes the config. Workflow agents use MCP tools only where a profile and the run policy grant them ([MCP tools](workflows/runtime.md#mcp-tools)).
 
 ## Hooks
 
@@ -44,7 +44,7 @@ Hooks run shell commands at lifecycle events. The format is the one Claude Code 
 4. the global BAKED `config.json`
 5. `.baked/config.json`
 
-`"disableAllHooks": true` in any of them turns hooks off. `/hooks` lists active hooks and toggles them for the session.
+`"disableAllHooks": true` in any of them turns hooks off. `/hooks` lists active hooks and toggles them for the session. In the desktop app, the project's Hooks section lists them with their files and switches an event off until the project's backend restarts (`GET /v1/hooks`, `POST /v1/hooks/session` in the [desktop API](desktop/api.md)); neither writes a file, and hooks are added or changed only in the files above.
 
 ```json
 {

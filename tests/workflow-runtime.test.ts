@@ -511,8 +511,9 @@ describe("durable SDD runtime", () => {
     expect(paths).toContain("sizing/plan-0.json");
     expect(paths).toContain("sizing/plan-1.json");
     expect(service.store.state(run.runId).prompt).toContain("Sizing: the plan is too large");
-    // The budget grows to the price before the re-plan, not only once a plan is accepted.
-    expect(paths).toContain("policy-revisions/sizing-0.json");
+    // The budget grows before the re-plan, not only once a plan is accepted: at the start to the
+    // estimate (up to the ceiling), or to the price.
+    expect(paths.some((path) => /^policy-revisions\/(sizing|auto)-\d+\.json$/.test(path))).toBe(true);
     const question = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
     expect(question?.body_json).toContain("initiative");
   });
@@ -569,7 +570,7 @@ describe("durable SDD runtime", () => {
     await service.drive(run.runId, new AbortController().signal);
     const raised = JSON.parse(service.store.run(run.runId).policy_json) as RunPolicy;
     expect(raised.maxTotalTokens).toBeGreaterThan(50_000);
-    expect(service.store.artifacts(run.runId).some((a) => a.logical_path === "policy-revisions/sizing-0.json")).toBe(true);
+    expect(service.store.artifacts(run.runId).some((a) => /^policy-revisions\/(sizing|auto)-\d+\.json$/.test(a.logical_path))).toBe(true);
     await approve(service, run.runId);
     expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
     expect(caps).toEqual([250_000]);

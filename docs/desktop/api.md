@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) `settings` (`GET|PATCH /v1/settings`) and `git` (`GET /v1/git`, `POST /v1/git/actions`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`) and `mcp` (`/v1/mcp*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -270,6 +270,8 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 | `POST /v1/skills` | `{source, skillId, scope: "project" \| "global"}` | `{skill, skills}`: installs a catalog skill the way `/skills` in the terminal does (`bunx skills add`, `npx` as the fallback; up to 30 seconds), into the skill folders of the project or the home folder; `skill` is the installed entry, `skills` the new list. 422 `INSTALL_FAILED` with the installer's message when no `SKILL.md` arrived |
 | `GET /v1/skills/SCOPE/NAME` | | the skill's entry plus `content` (its `SKILL.md`, at most 256 KiB); `SCOPE` is `project` or `global`; 404 for a skill that is not installed |
 | `DELETE /v1/skills/SCOPE/NAME` | | `{skills}`: deletes the skill's folder. 409 `NOT_REMOVABLE` for a `SKILL.md` lying directly in a skills folder, which is removed by hand |
+| `GET /v1/hooks` | | `{disabledBy, sources, events}`: the [hooks](../extensions.md#hooks) configured for the workspace. `sources` is every file hooks are read from, in load order: `{path, scope: "user" \| "project" \| "local", exists, hooks}` (`hooks` counts its commands). `events` are `{event, known, disabled, blocking, hooks: [{source, scope, matcher, command, async, once, timeout, if}]}` in lifecycle order; `known` is false for an event name BAKED never fires, `disabled` is true when the event is switched off for this server process, `blocking` when one of its commands is not `async`. Values of secret environment variables (`*TOKEN*`, `*SECRET*`, `*API_KEY*`, ...) are replaced with `[redacted]` in `command`. `disabledBy` is the file that sets `disableAllHooks: true` (no hook runs then), or null |
+| `POST /v1/hooks/session` | `{event, enabled}` | as `GET /v1/hooks`; switches every hook of `event` off or back on for this server process only, as `/hooks` does in the terminal UI. Nothing is written to a config file, and a restarted server runs every configured hook again. Hooks are created and changed only in their files; the API has no route for that. 400 for an event name BAKED does not fire |
 
 Changing a file a run froze (an instruction file, a gate or a skill) does not pause the run at once. A run that is driving stops at its next step as `blocked` with reason `input_changed`, which `/v1/attention` shows; resuming a waiting or paused run is refused with 409 `INPUT_CHANGED`. To continue with the new text, stage a candidate (`POST /v1/workflow/runs/RUN_ID/candidate` with only `commandId`) and apply it with `revise`; the plan is approved again before the run resumes. `cancel` or `fork` are the other ways out.
 | `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`: both files as stored and the merged config the server runs with. Provider keys live in the secret store, not here, but values the user put in these files themselves (an MCP server's `env`) are returned as written |
@@ -279,8 +281,35 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | `GET /v1/providers/ID/login` | | `{login: Login \| null}`; poll it while `state` is `running` |
 | `DELETE /v1/providers/ID/login` | | `{login: Login \| null}`; stops a running sign-in (`state: "cancelled"`) |
 | `POST /v1/providers/ID/logout` | | `{ok, message}`: runs the CLI's own logout (`claude auth logout`, `codex logout`) |
+| `POST /v1/providers/ID/switch` | | 202 `{ok: true, message, login: Login}`: switches the CLI to another account as `/codex switch` does: runs the CLI's own logout, then starts its login (as `POST /v1/providers/ID/login`) so the user signs in with another account in the browser. While a sign-in runs, returns it without signing out. The CLI keeps one account at a time and its own credentials, so there is no account list and no token is returned. 200 `{ok: false, message, login: null}` when the logout fails and the CLI is still signed in. Needs the `provider-switch` capability |
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
+
+## MCP servers
+
+The `mcpServers` entries of the global and project config ([MCP servers](../extensions.md#mcp-servers)) with their live status, and the changes `/mcp` makes in the terminal UI. Changes write only `mcpServers` of the named config file and apply to the running server at once: once anything connected servers (a chat message, a run step, or Reconnect), removed and disabled servers disconnect and changed ones reconnect in the background. Before that, the first chat message or run step connects them. The config logic is in `src/core/mcp/config.ts`; `/mcp` and `baked mcp` use the same.
+
+| Method and path | Body or query | Result |
+| --- | --- | --- |
+| `GET /v1/mcp` | | `McpView` |
+| `POST /v1/mcp` | `{scope: "global" \| "project", server: McpServerConfig}` | `McpView`; 409 `CONFLICT` when the scope already has a server with that name, 400 for a missing command (stdio) or http(s) URL (http, sse) |
+| `PATCH /v1/mcp/NAME` | `{scope, server, toScope?}` or `{scope, disabled: boolean}` | `McpView`; replaces the entry (renaming it when `server.name` differs, moving it to `toScope`) and keeps `disabled` unless `server` sets it, or turns it on or off. 404 when `scope` has no server `NAME` |
+| `DELETE /v1/mcp/NAME` | `?scope=` | `McpView`; a global server with the same name takes a removed project server's place |
+| `POST /v1/mcp/NAME/reconnect` | | `McpView` after one connection attempt with a fresh restart budget; it connects a server nothing connected yet too. 409 `DISABLED` |
+| `POST /v1/mcp/NAME/ping` | | `{ms, ...McpView}`: lists the server's tools as a health check. 409 `NOT_CONNECTED`, 502 `PING_FAILED` |
+
+```ts
+interface McpServerConfig { name; transport?: "stdio" | "http" | "sse"; command?; args?: string[]; env?: Record<string, string>; url?; headers?: Record<string, string>; timeout?: number /* ms */; disabled?: boolean }
+interface McpView {
+  servers: { name; scope: "global" | "project"; overridesGlobal: boolean; transport; config: McpServerConfig;
+    status: "idle" | "disconnected" | "connecting" | "ready" | "error" | "disabled"; error: string | null;
+    tools: { name; description }[]; connectedAt: number | null; lastPingMs: number | null }[];
+  started: boolean; // whether anything connected servers yet; "idle" servers wait for that
+  paths: { global; project };
+}
+```
+
+Project servers come first, then the global servers no project server replaces. `config` holds `env` and `headers` as written, secrets included, as `GET /v1/config` does. A server name is 1 to 64 letters, digits, dots, dashes or underscores.
 
 ## Chat settings
 
@@ -386,7 +415,8 @@ interface GitOverview {
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
 | Settings: chat settings pages | `GET|PATCH /v1/settings`, `GET /v1/models` |
-| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
+| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `POST /v1/providers/ID/switch`, `GET /v1/models` |
+| Project setup: hooks | `GET /v1/hooks`, `POST /v1/hooks/session` |
 | Run memory | `GET\|POST /v1/workflow/memory` |
 | Chat memory | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |
 | Git | `GET /v1/git`, `POST /v1/git/actions` |
@@ -394,6 +424,7 @@ interface GitOverview {
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
+| Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
 
