@@ -30,7 +30,14 @@ import {
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
-import { assumable, hostCounts, isCountNit } from "./analysis-notes.js";
+import {
+  assumable,
+  DEFECT_NOTE,
+  hostCounts,
+  isCountNit,
+  knownRisks,
+  persistentDefect,
+} from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
@@ -674,10 +681,14 @@ export class WorkflowScheduler {
                   break;
                 }
               }
+              // An inconsistency that survived the first reroute gets one more, with the finding
+              // text and a note that it is a defect to fix, not a decision to assume.
+              const defectRound =
+                state.analysisReplans === 2 && findings.some((f) => persistentDefect(f));
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
-                state.analysisReplans < 2 &&
+                (state.analysisReplans < 2 || defectRound) &&
                 findings.some((f) => f.blocking)
               ) {
                 const blockingFindings = findings.filter((f) => f.blocking);
@@ -689,8 +700,8 @@ export class WorkflowScheduler {
                 });
                 if (target !== asking && this.moveTo(state, stages, target, v2)) {
                   // Findings a default settles go back to the stage they refer to before a person.
-                  state.analysisReplans = 2;
-                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                  state.analysisReplans = defectRound ? 3 : 2;
+                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound ? DEFECT_NOTE : `Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
                   rerouted = v2 !== null;
                   break;
@@ -1725,10 +1736,17 @@ export class WorkflowScheduler {
         profile.context === "planning")
         ? this.store.readArtifact(runId, state.projectMemory.artifactId)
         : null;
+    // What analysis assumed instead of settling is the first thing a reviewer should test.
+    const assumed =
+      profile.context === "review" || profile.context === "convergence"
+        ? this.store.latestArtifact(runId, "assumptions/analysis.json")
+        : null;
+    const risks = assumed ? knownRisks(this.store.readArtifact(runId, assumed.id)) : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       ...(memory ? { projectMemory: memory } : {}),
+      ...(risks ? { knownRisks: risks } : {}),
       executionContract: {
         checks: policy.checks,
         // An implementer works alone; the other agents' tools are only resent on every step.
