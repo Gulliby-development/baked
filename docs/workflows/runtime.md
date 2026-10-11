@@ -579,6 +579,19 @@ The edit form has Model (a `provider/model` ID, or `$class` outside a class), Ef
 
 The desktop app shows and edits the same entries in Settings > Model routing, through `GET` and `PATCH /v1/workflow/routing` of the [local API](../desktop/api.md), with the same checks. Its Model and Fallback models fields offer the same list from `GET /v1/models`.
 
+Scripts and CI change the same entries with `baked workflow routing`, which runs the same checks and writes only the `modelRouting` section of the project config (or the global one with `--scope global`):
+
+```sh
+baked workflow routing set role:reviewer openai/gpt-5 --effort high --fallback anthropic/claude-sonnet-4-6
+baked workflow routing set '$coding' anthropic/claude-sonnet-4-6 --scope global
+baked workflow routing set stage:sdd/plan '$review'
+baked workflow routing clear role:reviewer
+baked workflow routing review require      # independentReview; unset removes it
+baked workflow routing show --json         # modelRouting of both files
+```
+
+A target is a class (`$name` or `class:name`), a role (`role:NAME`), a profile (`profile:ID`) or a stage (`stage:WORKFLOW/STAGE`). A refused change is not written; the reasons go to stderr (or `{saved: false, problems}` with `--json`) and the command exits 1. `--json` prints `{saved: true, file, modelRouting}` for a saved change.
+
 `baked workflow models [--model ID] [--provider ID] [--json]` prints what a route, `--route`, `--model`, a reroute or a fallback can name: the model names with the model each resolves to for the run model (`--model`, else `defaultModel`), then the models of each provider, and the providers without a key or login with that reason. `--json` prints `{runModel, classes: [{ref, model, source}], providers}`, where `providers` has the shape of `GET /v1/models`.
 
 ### Effort and fallback models

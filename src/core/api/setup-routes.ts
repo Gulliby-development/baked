@@ -2,7 +2,7 @@
  * Project setup and settings endpoints of the local API: the known-project list, instruction
  * files, global and project config, and provider keys. The contract is `docs/desktop/api.md`.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import {
@@ -10,7 +10,6 @@ import {
   loadConfig,
   loadEffectiveProjectConfig,
   mergeConfigs,
-  migrateLegacyConfigKeys,
 } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import { listCustomCommands } from "../commands/custom.js";
@@ -31,7 +30,7 @@ import {
   logoutCli,
   startCliLogin,
 } from "../llm/cli-login.js";
-import { type ModelRouting, ROUTED_ROLES, RouteEffort } from "../llm/model-routing.js";
+import { ROUTED_ROLES, RouteEffort } from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
@@ -54,9 +53,14 @@ import {
 } from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
+import { WorkflowFault } from "../workflows/errors.js";
 import { explainRoute, type RouteExplanation } from "../workflows/routing.js";
 import {
-  applyRoutingChange,
+  readConfigObject,
+  readRoutingLayers,
+  saveRoutingChange,
+} from "../workflows/routing-config.js";
+import {
   type RoutingChange,
   type RoutingLayers,
   routingOverview,
@@ -163,15 +167,6 @@ const KeyBody = z.strictObject({ key: z.string().trim().min(1).max(4096) });
 const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
 const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/;
 
-/** Reads a config file, with legacy keys under their current names. */
-export function readJsonFile(path: string): Record<string, unknown> {
-  if (!existsSync(path)) return {};
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error(`${path} does not hold a JSON object`);
-  return migrateLegacyConfigKeys(parsed as Record<string, unknown>);
-}
-
 /** Answers a setup request, or returns null when the path is not a setup endpoint. */
 export async function setupRoute(ctx: SetupRouteContext): Promise<Response | null> {
   const { path, method, workspace } = ctx;
@@ -189,7 +184,7 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
   const instructionScope = (): "global" | "project" => {
     const has = (file: string) => {
       try {
-        return Array.isArray(readJsonFile(file).instructionFiles);
+        return Array.isArray(readConfigObject(file).instructionFiles);
       } catch {
         return false;
       }
@@ -279,7 +274,7 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     const file = scope === "global" ? globalFile : projectFile;
     let current: Record<string, unknown>;
     try {
-      current = readJsonFile(file);
+      current = readConfigObject(file);
     } catch (error) {
       return ctx.fail(409, "INPUT_CHANGED", error instanceof Error ? error.message : String(error));
     }
@@ -296,7 +291,7 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     // Only instructionFiles changed; the rest of the running config stays as it is.
     const effective = mergeConfigs(
       ctx.configDir
-        ? ({ ...DEFAULT_CONFIG, ...readJsonFile(globalFile) } as AppConfig)
+        ? ({ ...DEFAULT_CONFIG, ...readConfigObject(globalFile) } as AppConfig)
         : loadConfig(),
       loadEffectiveProjectConfig(workspace),
     );
@@ -392,8 +387,8 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
   if (path === "/v1/config") {
     ctx.only("GET", "PATCH");
     const read = () => {
-      const global = readJsonFile(globalFile);
-      const project = readJsonFile(projectFile);
+      const global = readConfigObject(globalFile);
+      const project = readConfigObject(projectFile);
       const base = ctx.configDir ? ({ ...DEFAULT_CONFIG, ...global } as AppConfig) : loadConfig();
       const effective = mergeConfigs(base, loadEffectiveProjectConfig(workspace));
       return { global, project, effective, paths: { global: globalFile, project: projectFile } };
@@ -403,7 +398,7 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     const file = body.scope === "global" ? globalFile : projectFile;
     let current: Record<string, unknown>;
     try {
-      current = readJsonFile(file);
+      current = readConfigObject(file);
     } catch (error) {
       return ctx.fail(409, "INPUT_CHANGED", error instanceof Error ? error.message : String(error));
     }
@@ -421,14 +416,12 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     ctx.only("GET", "PATCH");
     const effectiveConfig = (): AppConfig => {
       const base = ctx.configDir
-        ? ({ ...DEFAULT_CONFIG, ...readJsonFile(globalFile) } as AppConfig)
+        ? ({ ...DEFAULT_CONFIG, ...readConfigObject(globalFile) } as AppConfig)
         : loadConfig();
       return mergeConfigs(base, loadEffectiveProjectConfig(workspace));
     };
-    const layersOf = (): RoutingLayers => ({
-      global: readJsonFile(globalFile).modelRouting as ModelRouting | undefined,
-      project: readJsonFile(projectFile).modelRouting as ModelRouting | undefined,
-    });
+    const layersOf = (): RoutingLayers =>
+      readRoutingLayers({ global: globalFile, project: projectFile });
     // Routes resolve with the config the server starts runs with.
     const overview = (workflow: string | undefined, model: string | undefined) => {
       const config = ctx.config;
@@ -462,13 +455,6 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
       return ctx.json(200, overview(query.workflow, query.model));
     }
     const body = RoutingBody.parse(await ctx.readJson());
-    const file = body.scope === "global" ? globalFile : projectFile;
-    let current: Record<string, unknown>;
-    try {
-      current = readJsonFile(file);
-    } catch (error) {
-      return ctx.fail(409, "INPUT_CHANGED", error instanceof Error ? error.message : String(error));
-    }
     const change: RoutingChange =
       "independentReview" in body
         ? { independentReview: body.independentReview }
@@ -481,17 +467,24 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
             },
             ...(body.create ? { create: true } : {}),
           };
-    const { routing, problems } = applyRoutingChange(layersOf(), body.scope, change);
+    let problems: string[];
+    try {
+      ({ problems } = saveRoutingChange(
+        workspace,
+        { global: globalFile, project: projectFile },
+        body.scope,
+        change,
+      ));
+    } catch (error) {
+      if (error instanceof WorkflowFault && error.code === "INPUT_CHANGED")
+        return ctx.fail(409, "INPUT_CHANGED", error.message);
+      throw error;
+    }
     if (problems.length)
       return ctx.json(422, {
         error: { code: "ROUTING_REFUSED", message: problems.join("; ") },
         problems,
       });
-    const { modelRouting: _previous, ...rest } = current;
-    const next = routing ? { ...current, modelRouting: routing } : rest;
-    if (body.scope === "global") mkdirSync(dir, { recursive: true, mode: 0o700 });
-    else ensurebakedDir(workspace);
-    writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
     // Only modelRouting changed; the rest of the running config stays as it is.
     const merged = effectiveConfig().modelRouting;
     ctx.config.modelRouting = merged;
