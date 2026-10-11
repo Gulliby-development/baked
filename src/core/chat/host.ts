@@ -166,10 +166,9 @@ export class BakeChatHost implements ChatAgentHost {
 
   async dispose(): Promise<void> {
     for (const id of [...this.sessions.keys()]) this.release(id);
-    if (this.mcpConnected) {
-      const { disposeMCPManager } = await import("../mcp/index.js");
-      await disposeMCPManager();
-    }
+    // The local API's /v1/mcp can connect servers before any chat does.
+    const { disposeMCPManager } = await import("../mcp/index.js");
+    await disposeMCPManager();
     if (this.ownsRoot) await this.root.dispose();
   }
 }
