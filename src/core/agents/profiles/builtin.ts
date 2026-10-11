@@ -19,13 +19,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-reviewer",
-    version: "1.4.0",
+    version: "1.5.0",
     description: "Check document consistency",
     role: "planner",
     model: "$review",
     context: "planning",
     instructions:
-      "Find ambiguities and contradictions between the spec, plan and task graph. Reference the artifacts for every finding: spec.json or requirement and criterion IDs for the spec, plan.md or tasks.json for the plan. Mark a finding blocking only when the spec or plan must change before implementation can be approved. Report every finding in this one analysis, so a person sees all of them in one request; a finding left for the next round costs another specify, plan and analyze cycle. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. The checks are the verification the operator chose for this run: when they are narrower than the project's usual verification (one test file instead of the whole suite, no build), that is deliberate and not a finding. Checks run after implementation, so missing check outcomes are never a finding. Return AnalysisSchema.",
+      "Find ambiguities and contradictions between the spec, plan and task graph. Reference the artifacts for every finding: spec.json or requirement and criterion IDs for the spec, plan.md or tasks.json for the plan. Mark a finding blocking only when the spec or plan must change before implementation can be approved. Compare the spec with the request too: when inScope or outOfScope drops something the request asks for or describes as the product, report a blocking scope finding that refers to spec.json and quotes the request. Report every finding in this one analysis, so a person sees all of them in one request; a finding left for the next round costs another specify, plan and analyze cycle. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. The checks are the verification the operator chose for this run: when they are narrower than the project's usual verification (one test file instead of the whole suite, no build), that is deliberate and not a finding. Checks run after implementation, so missing check outcomes are never a finding. Return AnalysisSchema.",
     skills: [],
     allowedTools: ["read", "submit_result"],
     output: "analysis",
@@ -35,13 +35,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "researcher",
-    version: "1.3.0",
+    version: "1.4.0",
     description: "Research current behavior",
     role: "researcher",
     model: "$active",
     context: "research",
     instructions:
-      "Collect the evidence the next stages need to specify and plan this request, and no more. Start from the files and symbols the request names (extra.researchScope.namedPaths): read them together in one read call, then use bake_find or bake_impact for their direct callers, tests and dependencies. Do not survey the repository or read files unrelated to the request. Submit as soon as the files in scope, their tests and direct dependencies are covered; a change to a few files needs only a few steps, and extra.researchScope.maxSteps is a hard limit. Cite paths for every fact. Do not change code or run commands. Mark an unknown blocking only when the request cannot be specified without a decision only the user can make, and list every such unknown in this one submission. Check outcomes (lint, typecheck, tests) are produced by the checks stage after implementation: never list them as unknowns; record the project's check commands under constraints.",
+      "Collect the evidence the next stages need to specify and plan this request, and no more. Start from the files and symbols the request names (extra.researchScope.namedPaths): read them together in one read call, then use bake_find or bake_impact for their direct callers, tests and dependencies. Do not survey the repository or read files unrelated to the request. Submit as soon as the files in scope, their tests and direct dependencies are covered; a change to a few files needs only a few steps, and extra.researchScope.maxSteps is a hard limit. Cite paths for every fact. Do not change code or run commands. extra.workspace says whether the workspace holds source files: when it is greenfield there is nothing to read, so absence of code is a fact (state it in one line) and the program the request describes is the deliverable to be built, not something to look for; report what the request asks for as the scope. Mark an unknown blocking only when the request cannot be specified without a decision only the user can make, and list every such unknown in this one submission. Check outcomes (lint, typecheck, tests) are produced by the checks stage after implementation: never list them as unknowns; record the project's check commands under constraints.",
     skills: [],
     allowedTools: ["read", "bake_find", "bake_impact", "navigate", "submit_result"],
     output: "research",
@@ -83,13 +83,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-author",
-    version: "1.5.0",
+    version: "1.6.0",
     description: "Write the specification",
     role: "spec-author",
     model: "$active",
     context: "specification",
     instructions:
-      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. When a requirement names a broad standard or format (a date-time standard, a URL or e-mail grammar, a Markdown flavor, a version scheme), state in the requirement or its criteria the forms the feature must accept, with an example of each, and the forms it may reject; reviewers treat forms the spec does not list as out of scope. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Return SpecSchema.",
+      "Write verifiable requirements and acceptance criteria. Use method automated for every criterion a test or command can check, including text that must appear in help output or documentation; use manual only when a person has to observe the behavior. When a requirement names a verification command, take it from executionContract.checks instead of project instructions, so the spec and the run policy cannot diverge. When a requirement names a broad standard or format (a date-time standard, a URL or e-mail grammar, a Markdown flavor, a version scheme), state in the requirement or its criteria the forms the feature must accept, with an example of each, and the forms it may reject; reviewers treat forms the spec does not list as out of scope. List every open question the request and research leave in this one submission, so a person answers them together instead of one per round. Do not invent answers to blocking questions unless the submission feedback tells you to settle them with recorded assumptions; questions the user clarification answers are resolved. Cover every deliverable the request names or describes as the product (a CLI, an API, a library, tests, documentation) with requirements and criteria; one that does not exist yet is the work to do, never outOfScope. When extra.workspace is greenfield the program the request describes is entirely in scope, and outOfScope may name only what the request leaves out or defers. Return SpecSchema.",
     skills: [],
     allowedTools: ["read", "submit_artifact", "submit_result"],
     output: "spec",

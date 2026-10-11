@@ -52,6 +52,7 @@ import {
   scopedPlanBudget,
 } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
+import { coverageFinding, workspaceKind } from "./coverage.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -359,6 +360,7 @@ export class WorkflowScheduler {
                       namedPaths: budget.namedPaths,
                       maxSteps: budget.maxSteps,
                     },
+                    workspace: workspaceKind(researchRoot),
                   },
                   signal,
                   undefined,
@@ -395,7 +397,10 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  { featureId: run.feature_id },
+                  {
+                    featureId: run.feature_id,
+                    workspace: workspaceKind(runRoot(this.store.workspace, state)),
+                  },
                   signal,
                   undefined,
                   0,
@@ -573,6 +578,21 @@ export class WorkflowScheduler {
               );
               if (analysis.inputHash !== hashJson(state.manifest))
                 throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // The host adds a finding the model missed: a program was described and none is planned.
+              // A feature of an initiative has its boundary approved with the split, not the request.
+              const uncovered =
+                state.coverageRaised || state.hostDependencies
+                  ? null
+                  : coverageFinding(
+                      state.requestText || state.prompt,
+                      workspaceKind(runRoot(this.store.workspace, state)),
+                      graph,
+                    );
+              if (uncovered) {
+                state.coverageRaised = true;
+                if (!analysis.findings.some((f) => f.id === uncovered.id))
+                  analysis.findings.push(uncovered);
+              }
               // Findings about check outcomes stay in the record as notes; checks run later.
               const findings = demoteDeferred(analysis.findings, (f) => f.description);
               const blocking = findings.some((f) => f.blocking);
