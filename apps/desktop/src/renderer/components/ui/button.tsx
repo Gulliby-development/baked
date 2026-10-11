@@ -31,7 +31,7 @@ const buttonVariants = cva(
         icon: "size-10",
         "icon-sm": "size-8",
         // Inherits the surrounding font and line height, so links styled as buttons match too.
-        md: "h-auto min-h-[34px] gap-1.5 px-3 py-0 [font-family:inherit] text-[13px] leading-[inherit] font-bold no-underline",
+        md: "h-auto min-h-[34px] gap-1.5 whitespace-normal px-3 py-0 [font-family:inherit] text-[13px] leading-[inherit] font-bold no-underline",
       },
     },
     defaultVariants: { variant: "default", size: "default" },
