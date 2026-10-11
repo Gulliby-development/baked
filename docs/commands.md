@@ -109,7 +109,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/lsp install` | Install & manage LSP servers (Mason registry) |
 | `/lsp restart` | Restart LSP servers (all or specific) |
 | `/lsp status` | LSP status dashboard |
-| `/memory` | Manage memory scopes, view & clear |
+| `/memory` | Manage memory scopes, view & clear; the Runs tab shows and edits what workflow runs remember |
 | `/repo-map` | Baked map settings (AST index) |
 | `/skills` | Browse & install skills |
 | `/tools` | Enable/disable tools for the agent |

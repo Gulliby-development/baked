@@ -32,6 +32,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["gates", "Gates and checks", "gate"],
   ["instructions", "Instructions", "file"],
   ["working-set", "Working set", "folder"],
+  ["run-memory", "Run memory", "memory"],
 ];
 
 const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };

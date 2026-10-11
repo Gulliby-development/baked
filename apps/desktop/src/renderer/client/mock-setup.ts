@@ -25,6 +25,8 @@ import type {
   RoutingOverview,
   RoutingRow,
   RoutingTarget,
+  RunMemoryEdit,
+  RunMemoryView,
   SkillEntry,
 } from "./setup.js";
 
@@ -839,6 +841,112 @@ function body<T>(request: MockRequest): Partial<T> {
 const error = (status: number, code: string, message: string) =>
   response(status, { error: { code, message } });
 
+const memories = new Map<string, RunMemoryView>();
+function memoryState(key: string): RunMemoryView {
+  let found = memories.get(key);
+  if (!found) {
+    found = {
+      enabled: true,
+      entries: [
+        {
+          id: "n-4f1c2a9b07",
+          kind: "note",
+          text: "Public APIs keep their names; add aliases instead of renaming.",
+          hidden: false,
+          sent: true,
+        },
+        {
+          id: "a-91d0c3e2aa",
+          kind: "answer",
+          question: "Should usage totals include failed attempts?",
+          text: "Yes, count them and mark them as failed.",
+          runId: "run-usage-totals",
+          hidden: false,
+          sent: true,
+        },
+        {
+          id: "s-0b7e55d1c4",
+          kind: "assumption",
+          text: "JSON output keeps the existing field order.",
+          runId: "run-locale-validation",
+          hidden: false,
+          sent: true,
+        },
+        {
+          id: "c-7a2210fe93",
+          kind: "check",
+          text: "bun run lint",
+          runs: 3,
+          runId: "run-locale-validation",
+          hidden: false,
+          sent: false,
+        },
+        {
+          id: "c-5c9e01b2d8",
+          kind: "check",
+          text: "bun test tests/usage.test.ts",
+          runs: 1,
+          runId: "run-locale-validation",
+          hidden: false,
+          sent: true,
+        },
+      ],
+      hidden: [
+        {
+          id: "s-e3a9d07c11",
+          kind: "assumption",
+          text: "Sorting is stable by run ID.",
+          runId: "run-usage-totals",
+          hidden: true,
+        },
+      ],
+      rendered: null,
+    };
+    memories.set(key, found);
+  }
+  found.rendered = found.entries.length
+    ? `Project memory from earlier workflow runs in this project, newest first.\n\n${found.entries
+        .filter((e) => e.sent)
+        .map((e) => `- ${e.question ? `Q: ${e.question}\n  A: ` : ""}${e.text}`)
+        .join("\n")}`
+    : null;
+  return found;
+}
+
+function editMemory(key: string, edit: Partial<RunMemoryEdit & { id: string; text: string }>) {
+  const m = memoryState(key);
+  const text = (edit.text ?? "").trim();
+  if (edit.action === "add") {
+    if (!text) return error(400, "INVALID_REQUEST", "Memory text must not be empty");
+    const id = `n-${Math.random().toString(16).slice(2, 12).padEnd(10, "0")}`;
+    m.entries.unshift({ id, kind: "note", text, hidden: false, sent: true });
+    return response(200, { id, ...memoryState(key) });
+  }
+  const at = m.entries.findIndex((e) => e.id === edit.id);
+  const hiddenAt = m.hidden.findIndex((e) => e.id === edit.id);
+  const entry = m.entries[at];
+  if (edit.action === "restore" && hiddenAt >= 0) {
+    const [back] = m.hidden.splice(hiddenAt, 1);
+    if (back) m.entries.push({ ...back, hidden: false, sent: true });
+  } else if (!entry) return error(404, "NOT_FOUND", `No project memory entry ${edit.id ?? ""}`);
+  else if (edit.action === "forget") {
+    m.entries.splice(at, 1);
+    if (entry.kind !== "note") m.hidden.push({ ...entry, hidden: true });
+  } else if (edit.action === "restore") {
+    if (entry.recorded) m.entries[at] = { ...entry, text: entry.recorded, recorded: undefined };
+  } else if (edit.action === "edit") {
+    if (entry.kind === "check")
+      return error(400, "INVALID_DEFINITION", "A check command cannot be reworded");
+    if (!text) return error(400, "INVALID_REQUEST", "Memory text must not be empty");
+    m.entries[at] = {
+      ...entry,
+      text,
+      recorded: entry.kind === "note" ? undefined : (entry.recorded ?? entry.text),
+    };
+  }
+  return response(200, { id: edit.id, ...memoryState(key) });
+}
+
 export const setupRoutes: MockRoute = (request) => {
   const { key, method, path } = request;
   const s = state(key);
@@ -863,6 +971,10 @@ export const setupRoutes: MockRoute = (request) => {
       }
       return response(200, s.summary);
     }
+    case "GET /v1/workflow/memory":
+      return response(200, memoryState(key));
+    case "POST /v1/workflow/memory":
+      return editMemory(key, body<RunMemoryEdit & { id: string; text: string }>(request));
     case "GET /v1/workflow/gates":
       return response(200, gates(s));
     case "POST /v1/workflow/gates/confirm": {

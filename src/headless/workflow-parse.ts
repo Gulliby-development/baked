@@ -27,6 +27,7 @@ const commands = [
   "candidate",
   "usage",
   "report",
+  "memory",
   "extend",
   "reroute",
   "continue",
@@ -109,6 +110,7 @@ const flags = new Set([
   "clarification",
   "issue",
   "output",
+  "text",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -189,6 +191,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top"],
   report: ["output"],
+  memory: ["text"],
   extend: [
     "tokens",
     "calls",
@@ -264,7 +267,32 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     }
   }
   if (typeof result.flags.route === "string") parseRouteOverrides(result.flags.route);
-  if (!result.flags.help && ["route", "doctor", "estimate"].includes(result.command)) {
+  if (!result.flags.help && result.command === "memory") {
+    const [action = "list", ...rest] = result.positional;
+    const needs = {
+      list: [0, false],
+      add: [0, true],
+      edit: [1, true],
+      forget: [1, false],
+      restore: [1, false],
+    } as const;
+    const rule = needs[action as keyof typeof needs];
+    if (!rule)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "memory accepts list, add, edit, forget or restore",
+      );
+    if (rest.length !== rule[0])
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        rule[0] ? `memory ${action} expects an entry ID` : `memory ${action} takes no entry ID`,
+      );
+    if (rule[1] !== (typeof result.flags.text === "string"))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        rule[1] ? `memory ${action} requires --text` : `--text is not valid for memory ${action}`,
+      );
+  } else if (!result.flags.help && ["route", "doctor", "estimate"].includes(result.command)) {
     if (result.positional.length > 1 || (result.positional.length && result.flags.workflow))
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -371,6 +399,10 @@ quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MO
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
 status RUN_ID [--json]
+memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory forget|restore ID
+  What earlier runs taught new runs (answers, approved assumptions, passing checks) and your notes.
+  add writes a note; edit rewords a note, answer or assumption; forget deletes a note or hides an
+  entry; restore brings an entry back as runs recorded it. Runs started afterwards read the result
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]

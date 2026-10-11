@@ -12,6 +12,7 @@ import {
   LIBRARY_CAPABILITY,
   offers,
   ROUTING_CAPABILITY,
+  RUN_MEMORY_CAPABILITY,
 } from "./capabilities.js";
 
 // --- Working set (exists) -----------------------------------------------------------------------
@@ -325,10 +326,46 @@ async function withCapability<T>(
   return request();
 }
 
+// --- Run memory (`run-memory` capability) -------------------------------------------------------
+
+export type MemoryEntryKind = "note" | "answer" | "assumption" | "check";
+/** An entry of project memory (`MemoryEntry` in src/core/workflows/project-memory.ts). */
+export interface MemoryEntry {
+  id: string;
+  kind: MemoryEntryKind;
+  text: string;
+  question?: string;
+  runId?: string;
+  runs?: number;
+  /** What runs recorded, when a person reworded the entry. */
+  recorded?: string;
+  hidden: boolean;
+}
+export interface RunMemoryView {
+  enabled: boolean;
+  /** What a run started now reads; `sent: false` for a check the policy already lists. */
+  entries: (MemoryEntry & { sent: boolean })[];
+  hidden: MemoryEntry[];
+  rendered: string | null;
+}
+export type RunMemoryEdit =
+  | { action: "add"; text: string }
+  | { action: "edit"; id: string; text: string }
+  | { action: "forget"; id: string }
+  | { action: "restore"; id: string };
+
 export const setup = {
   project: (key: string) => call<ProjectSummary>(key, "GET", "/v1/projects/current"),
   changeWorkingSet: (key: string, change: { add?: string[]; remove?: string[] }) =>
     call<ProjectSummary>(key, "POST", "/v1/projects/current/working-set", change),
+
+  /** Project memory new runs read: notes, earlier answers, approved assumptions, passing checks. */
+  runMemory: (key: string) =>
+    withCapability(key, RUN_MEMORY_CAPABILITY, () =>
+      call<RunMemoryView>(key, "GET", "/v1/workflow/memory"),
+    ),
+  editRunMemory: (key: string, edit: RunMemoryEdit) =>
+    call<RunMemoryView & { id: string }>(key, "POST", "/v1/workflow/memory", edit),
 
   gates: (key: string) => call<GateList>(key, "GET", "/v1/workflow/gates"),
   confirmGates: (key: string, ids: string[]) =>

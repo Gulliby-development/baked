@@ -12,6 +12,12 @@ import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { uniqueFeatureId } from "../core/workflows/feature-id.js";
 import { issueStart } from "../core/workflows/issue-source.js";
+import {
+  editProjectMemory,
+  type MemoryEdit,
+  type ProjectMemoryView,
+  projectMemoryView,
+} from "../core/workflows/project-memory.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
 import { runReport } from "../core/workflows/run-report.js";
@@ -116,6 +122,32 @@ export function formatRoute(route: RouteExplanation): string {
     ? `\n${route.warnings.map((w) => `warning: ${w}`).join("\n")}\n`
     : "";
   return `Workflow ${route.workflowId}, run model ${route.runModel}\n\n${lines.join("\n").replace(/ +$/gm, "")}\n${warnings}`;
+}
+/** Project memory as `baked workflow memory` prints it: one entry per line with its ID. */
+export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): string {
+  const KIND = { note: "note", answer: "answer", assumption: "assume", check: "check" } as const;
+  const line = (e: ProjectMemoryView["hidden"][number], extra = ""): string => {
+    const source = e.runId ? ` (run ${e.runId.slice(0, 8)})` : "";
+    const head = `${e.id}  ${KIND[e.kind].padEnd(6)}  `;
+    const body =
+      e.kind === "answer"
+        ? `Q: ${e.question ?? ""}\n${" ".repeat(head.length)}A: ${e.text}`
+        : e.text;
+    return `${head}${body}${source}${e.recorded ? " [edited]" : ""}${extra}`;
+  };
+  const out: string[] = [];
+  if (view.id) out.push(`Changed ${view.id}.`, "");
+  if (!view.enabled)
+    out.push("Project memory is off for new runs (workflow policy projectMemory: false).", "");
+  out.push(
+    view.entries.length
+      ? `Project memory new runs read (${String(view.entries.length)}):`
+      : "Project memory is empty: earlier runs recorded nothing and there are no notes.",
+    ...view.entries.map((e) => line(e, e.sent ? "" : " [not sent: the policy's own check]")),
+  );
+  if (view.hidden.length)
+    out.push("", `Forgotten (${String(view.hidden.length)}):`, ...view.hidden.map((e) => line(e)));
+  return `${out.join("\n")}\n`;
 }
 export async function executeWorkflowCommand(
   service: NativeWorkflowService,
@@ -412,6 +444,21 @@ export async function executeWorkflowCommand(
       writeFileSync(path, markdown);
       return { runId, path, bytes: Buffer.byteLength(markdown) };
     }
+    case "memory": {
+      const [action = "list", id = ""] = args.positional;
+      const policy = PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy);
+      if (action === "list") return projectMemoryView(service.store, policy);
+      const text = typeof args.flags.text === "string" ? args.flags.text : "";
+      const edit = (
+        action === "add"
+          ? { action, text }
+          : action === "edit"
+            ? { action, id, text }
+            : { action, id }
+      ) as MemoryEdit;
+      const changed = editProjectMemory(service.store, edit);
+      return { id: changed, ...projectMemoryView(service.store, policy) };
+    }
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),
@@ -565,6 +612,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     // The report prints as Markdown so it can be piped into a file or a pull request.
     if (args.command === "report" && !args.flags.json && !args.flags.output) {
       process.stdout.write((result as { markdown: string }).markdown);
+      return 0;
+    }
+    if (args.command === "memory" && !args.flags.json) {
+      process.stdout.write(formatProjectMemory(result as ProjectMemoryView & { id?: string }));
       return 0;
     }
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);

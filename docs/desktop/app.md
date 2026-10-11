@@ -91,6 +91,7 @@ The app uses the existing endpoints as they are:
 | New run, quick task | `GET /v1/workflow/{definitions,profiles,estimate}`, `POST /v1/workflow/runs` |
 | Acceptance | run artifacts and acceptance requests from attention |
 | Working set | `GET`/`POST /v1/projects/current/working-set` |
+| Run memory | `GET`/`POST /v1/workflow/memory` |
 
 Chat, prompts (tool approvals), setup, usage and initiatives are specified in [`api.md`](api.md), owned by the API work; the desktop does not change the API. Session prompts appear in `/v1/attention` with source `chat`, so "Needs you" and notifications cover them.
 
@@ -102,7 +103,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 
 | Screen | Content |
 | --- | --- |
-| Sidebar | Needs you (count), All projects; the selected project expanded with Quick task, New run, Overview, Chat, Runs, Initiatives, Acceptance, Usage and a Setup group (Gates and checks, Instructions, Working set, each with a count); other projects collapsed to one line with their state; Open folder; Settings at the bottom with backend status and version. Under Chat: New chat and the five latest chats, counted by the running backend. The sidebar stays expanded on every screen, chat included. |
+| Sidebar | Needs you (count), All projects; the selected project expanded with Quick task, New run, Overview, Chat, Runs, Initiatives, Acceptance, Usage and a Setup group (Gates and checks, Instructions, Working set, each with a count, and Run memory); other projects collapsed to one line with their state; Open folder; Settings at the bottom with backend status and version. Under Chat: New chat and the five latest chats, counted by the running backend. The sidebar stays expanded on every screen, chat included. |
 | Title bar | Drawn by the app: the window has no system frame on Windows and Linux, and the bar carries BAKED's name and its own minimize, maximize/restore and close buttons; the bar drags the window and a double click maximizes it. macOS keeps its traffic lights inset in the same bar. The native menu is not shown; its shortcuts still work. |
 | All projects | Project cards: open, running in the background or closed, branch, sessions, active runs, items waiting; open folder, pin, forget. |
 | Needs you | Blocking and advisory items of all open projects with project tags and a filter; the selected item's detail with its actions (approve, reject, answer, deliver). |
@@ -113,7 +114,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Parallel writers | Writer columns with worktrees, integrator, task graph. |
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |
 | Initiatives, Usage | Initiative features and their runs, and the initiative's model with a switch to another one (features started later use it, stopped runs move to it, and the initiative continues; offered while no feature run executes); tokens by stage and model, cost. |
-| Project setup | Gates and checks, Instructions, Working set. In a folder without `baked/project.json`, Working set and the project panels say to run `baked project init` instead of showing an error. |
+| Project setup | Gates and checks, Instructions, Working set, Run memory. Run memory (servers with the `run-memory` capability) lists what new workflow runs read, grouped as notes, answers, assumptions and checks, with Add note, Edit, Forget (Delete for a note) and Restore, a Forgotten list and "What the next run reads" with the exact text ([project memory](../workflows/runtime.md#viewing-and-editing-project-memory)). In a folder without `baked/project.json`, Working set and the project panels say to run `baked project init` instead of showing an error. |
 | Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, run notifications, telemetry). Model routing lists the same entries as the TUI [routing screen](../workflows/runtime.md#routing-screen): classes, roles, the stages of a chosen workflow, profiles and independent review, each with the route All projects sets, the route the project's `.baked/config.json` sets, and what a run resolves (model, effort, fallback models and the setting that chose it). The Layer switch picks which file Edit, Clear and Add class change; with several open projects, a Project choice picks whose config is shown and resolved. The backend refuses what a run start would refuse and the form lists the reasons; nothing is written then. Under Providers and keys, Claude Code and Codex have Sign in and Sign out: Sign in runs the CLI's own login, which opens the browser, shows its progress, and offers Open sign-in page and Cancel until it ends. The CLI keeps the credentials, as when you sign in from a terminal. A CLI that is not installed shows the command to run once it is. GitHub Copilot has no sign-in of its own: paste the OAuth token of a signed-in IDE with Set key ([providers](../providers.md#github-copilot)). |
 
 ## Repository layout and builds
