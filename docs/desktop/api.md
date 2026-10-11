@@ -125,7 +125,7 @@ The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/I
 
 ## Workflow runs (exists, gaps filled by B)
 
-Exists: `GET /v1/workflow/definitions`, `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers), `.../usage`, `.../artifacts`, `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. Quick tasks are runs started with `workflow: "quick"`.
+Exists: `GET /v1/workflow/definitions`, `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `requests`, including tasks and writers), `.../usage`, `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. Quick tasks are runs started with `workflow: "quick"`.
 
 B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations.
 
@@ -203,6 +203,7 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | Delivery (in Needs you) | `deliver`, `approve`, `deliver/execute` |
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
+| Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET /v1/workflow/route`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET /v1/models` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |

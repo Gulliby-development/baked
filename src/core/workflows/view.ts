@@ -311,7 +311,8 @@ function detailsOf(store: WorkflowStore, runId: string): RunDetails {
       }) ?? [],
   };
 }
-function changesOf(store: WorkflowStore, runId: string): FileChange[] {
+/** Files the run changed, from its effect journal, with drift against the workspace. */
+export function changesOf(store: WorkflowStore, runId: string): FileChange[] {
   const root = runRoot(store.workspace, store.state(runId));
   const byPath = new Map<string, FileChange & { before: string | null; after: string | null }>();
   for (const effect of store.effects(runId)) {
