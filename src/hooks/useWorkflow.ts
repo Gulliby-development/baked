@@ -3,6 +3,7 @@ import type { GatesApi } from "../components/workflow/GatesView.js";
 import type { InitiativesApi } from "../components/workflow/InitiativesView.js";
 import type { WorkflowEditorApi } from "../components/workflow/WorkflowEditor.js";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
+import { getIntelligenceClient } from "../core/intelligence/instance.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
@@ -58,6 +59,7 @@ export function workflowSession(workspace: string): WorkflowClient {
       workspace,
       mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace)),
       [...(exitedOwners.get(workspace) ?? [])],
+      getIntelligenceClient,
     );
     sessions.set(workspace, service);
   }

@@ -385,7 +385,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     new ChatService({
       workspace: service.workspace,
       config: service.config,
-      host: new BakeChatHost(service.workspace, service.config),
+      host: new BakeChatHost(service.workspace, service.config, service.rootContext),
     });
   const initiatives = new InitiativeService(service);
   /** The latest on-demand result of each check. */
@@ -1048,7 +1048,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         await Promise.allSettled([...drives]);
         await chat.shutdown();
         await service.shutdown();
-        if (options.ownsService) service.close();
+        if (options.ownsService) {
+          // Waits for the shared code-intelligence worker to stop its language servers.
+          await service.rootContext.dispose();
+          service.close();
+        }
       } finally {
         removeTokenFile(tokenFile);
       }
