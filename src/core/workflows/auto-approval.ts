@@ -33,9 +33,14 @@ const alwaysHuman =
 const manifestFile =
   /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|tsconfig[^/]*|biome[^/]*)$/i;
 
-/** Whether a write needs a person whatever the limits; `exists` tells which files are already there. */
-function needsPerson(write: Write, exists?: (path: string) => boolean): boolean {
+/**
+ * Whether a write needs a person whatever the limits; `exists` tells which files are already there.
+ * On a scaffold baseline (no source files) a manifest is edited too: the scaffold holds nothing a
+ * person has reviewed yet, and the next task needs its scripts and dev dependencies.
+ */
+function needsPerson(write: Write, exists?: (path: string) => boolean, scaffold = false): boolean {
   if (!alwaysHuman.test(write.path)) return false;
+  if (scaffold && manifestFile.test(write.path) && write.action !== "delete") return false;
   return !(
     write.action === "create" &&
     exists !== undefined &&
@@ -50,6 +55,8 @@ export interface ApprovalContext {
   exists?: (path: string) => boolean;
   /** Tasks the host added by splitting a planned task; the person approved the plan, not these. */
   hostSplitTasks?: number;
+  /** The run's baseline holds no source files (empty or scaffold only). */
+  scaffold?: boolean;
 }
 
 /** Budget limits a renewal may keep or lower, never raise, unless the operator raised them. */
@@ -92,7 +99,8 @@ export function evaluateAutoApproval(
   const writes = graph.tasks.flatMap((task) => task.writes);
   const common: string[] = [];
   for (const write of writes)
-    if (needsPerson(write, context.exists)) common.push(`${write.path} always needs a person`);
+    if (needsPerson(write, context.exists, context.scaffold))
+      common.push(`${write.path} always needs a person`);
   if (spec.criteria.some((criterion) => criterion.method === "post-release"))
     common.push("Deferring post-release criteria needs a person");
   const limitsHash = hashJson({ policy: policyBounds(policy) });
@@ -154,7 +162,7 @@ export function plannerApprovalLimits(policy: RunPolicy): {
     allowedPaths: limits.allowedPaths,
     allowDelete: limits.allowDelete,
     alwaysHuman:
-      "repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed), lockfiles, tool configs (tsconfig, biome), .env files and keys",
+      "repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files), lockfiles, tool configs (tsconfig, biome), .env files and keys",
   };
 }
 
@@ -166,12 +174,13 @@ export function planScopeAdvice(
   policy: RunPolicy,
   graph: TaskGraph,
   exists?: (path: string) => boolean,
+  scaffold = false,
 ): string[] {
   const limits = policy.autoApproval?.limits;
   if (!limits) return [];
   const always = graph.tasks
     .flatMap((task) => task.writes)
-    .filter((write) => needsPerson(write, exists))
+    .filter((write) => needsPerson(write, exists, scaffold))
     .map((write) => `${write.path} always needs a person`);
   const problems = [...new Set([...always, ...scopeProblems(limits, graph)])];
   if (!problems.length) return [];

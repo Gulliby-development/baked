@@ -155,6 +155,14 @@ describe("auto approval", () => {
     expect(evaluateAutoApproval(anywhere, manifest, spec, graph([modify("package.json")]), [], [], absent).approval).toBeNull();
     expect(evaluateAutoApproval(anywhere, manifest, spec, graph([create("package.json")]), []).approval).toBeNull();
   });
+  test("editing a manifest of a scaffold baseline is approved, a source baseline still needs a person", () => {
+    const present = { exists: () => true };
+    const edits = graph([modify("package.json"), modify("tsconfig.json")]);
+    expect(evaluateAutoApproval(anywhere, manifest, spec, edits, [], [], { ...present, scaffold: true }).approval?.mode).toBe("limits");
+    expect(evaluateAutoApproval(anywhere, manifest, spec, edits, [], [], { ...present, scaffold: false }).reasons.join("\n")).toContain("package.json always needs a person");
+    expect(evaluateAutoApproval(anywhere, manifest, spec, graph([{ path: "package.json", action: "delete" }]), [], [], { ...present, scaffold: true }).approval).toBeNull();
+    expect(evaluateAutoApproval(anywhere, manifest, spec, graph([modify("bun.lock"), modify("AGENTS.md")]), [], [], { ...present, scaffold: true }).approval).toBeNull();
+  });
   test("creating a lock file, a CI file or project instructions still needs a person", () => {
     for (const path of ["bun.lock", ".github/workflows/ci.yml", "AGENTS.md", ".env"])
       expect(evaluateAutoApproval(anywhere, manifest, spec, graph([create(path)]), [], [], { exists: () => false }).approval).toBeNull();
