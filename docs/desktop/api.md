@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`) and `library` (`/v1/commands`, `/v1/skills`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`) and `routing` (`/v1/workflow/routing`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -150,6 +150,8 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `GET /v1/workflow/gates` | | `gates`: gates with `required`, `scope`, `source`, `confirmed`, plus `problems` |
 | `POST /v1/workflow/gates/confirm` | `{ids?: string[], all?: true}` | `gates confirm` |
 | `GET /v1/workflow/route` | `?workflow=&model=&route=` | `route`: who runs each stage and why |
+| `GET /v1/workflow/routing` | `?workflow=&model=` | `{layers: {global, project}, workflows, workflowId, runModel, classes, roles, stages, profiles, independentReview: {global, project, effective}, warnings, error}`. Each of `classes`, `roles`, `stages` (of `workflowId`, `sdd` by default) and `profiles` is a list of rows `{target, path, label, global, project, resolved}`: `target` is `{kind: "class", name}`, `{kind: "role", role}`, `{kind: "profile", id}` or `{kind: "stage", workflowId, stageId}`, `path` the key under `modelRouting`, `global` and `project` the route each layer's own file sets (or null), and `resolved` `{model, source, effort?, fallback?}` what a run would use, or null. Routes resolve with the server's running config; `error` says why stages and profiles could not be explained (no run model, unknown workflow) |
+| `PATCH /v1/workflow/routing` | `{scope: "global" \| "project", target, route: {model, effort?, fallback?} \| null, create?, workflow?, model?}` or `{scope, independentReview: "off" \| "warn" \| "require" \| null, workflow?, model?}` | as `GET`. Sets one route of the layer's `modelRouting` (a model ID, or `$class` outside a class), or removes it with `route: null`; `create: true` adds a class that must not exist yet. The change is checked as a run start would check the merged routing; a refused one answers 422 `ROUTING_REFUSED` with every reason in `problems` (an empty model, a class naming a class, a class reference no layer defines, including removing a class still in use, fallback models that are classes, repeat the primary or exceed three, schema errors) and writes nothing. Only the `modelRouting` section of the file changes, and an emptied one is removed. New runs use it; started runs keep their frozen routing |
 | `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated: `stage,model`), `model?` (`(host)` for host attempts), `stage?` | `{days, since, groupBy: string[], filters, runs, attempts, tokens, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens, groups: [{key, keys: {model?, stage?, day?}, runs, attempts, tokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens}]}` over every attempt started in the window. `key` joins the group's values with ` / `. Stage keys are stage IDs (`plan`, `task-T001`, `checks`), days are UTC dates. `costUsd` is estimated from the price table (uncached input, cache reads, cache writes and output; attempts recorded before cache writes were report 0 writes); `unpricedTokens` are tokens of attempts it could not price (no per-step usage, or a model without a price) |
 
 ## Initiatives (B)
@@ -214,7 +216,7 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
-| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET /v1/workflow/route`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
+| Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions` |

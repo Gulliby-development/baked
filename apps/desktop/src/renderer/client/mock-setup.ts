@@ -770,8 +770,7 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
 
 /** The refusals of `applyRoutingChange` in src/core/workflows/routing-edit.ts, for sample data. */
 function routingProblems(
-  next: ModelRouting | undefined,
-  other: ModelRouting | undefined,
+  layers: { global: ModelRouting | undefined; project: ModelRouting | undefined },
   target: RoutingTarget,
   draft: RouteDraft | null,
 ): string[] {
@@ -787,7 +786,7 @@ function routingProblems(
     if (draft.fallback.includes(model)) problems.push("A fallback repeats the primary model");
     if (problems.length) return problems;
   }
-  const merged = mergeRouting(next, other) ?? {};
+  const merged = mergeRouting(layers.global, layers.project) ?? {};
   const known = new Set([...MOCK_BUILTIN, ...Object.keys(merged.classes ?? {})]);
   const check = (route: Route, at: string) => {
     const model = typeof route === "string" ? route : route.model;
@@ -989,7 +988,13 @@ export const setupRoutes: MockRoute = (request) => {
           (MOCK_BUILTIN.includes(edit.target.name) ||
             mergeRouting(current, other)?.classes?.[edit.target.name])
             ? [`Class $${edit.target.name} already exists; select it to edit`]
-            : routingProblems(next, other, edit.target, draft);
+            : routingProblems(
+                scope === "global"
+                  ? { global: next, project: other }
+                  : { global: other, project: next },
+                edit.target,
+                draft,
+              );
         if (problems.length)
           return response(422, {
             error: { code: "ROUTING_REFUSED", message: problems.join("; ") },

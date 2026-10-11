@@ -323,7 +323,12 @@ function RoutingTables({
 
 function RouteCell({ value, active }: { value: string; active: boolean }) {
   return (
-    <TableCell className={cn("font-mono text-xs", !active && "text-muted-foreground")}>
+    <TableCell
+      className={cn(
+        "font-mono text-xs whitespace-normal [overflow-wrap:anywhere]",
+        !active && "text-muted-foreground",
+      )}
+    >
       {value || <span className="text-muted-foreground">–</span>}
     </TableCell>
   );
@@ -348,11 +353,14 @@ function RouteRow({
 }) {
   const own = layerValue(row, scope);
   return (
-    <TableRow data-state={selected ? "selected" : undefined}>
+    <TableRow
+      aria-current={selected ? "true" : undefined}
+      className={cn(selected && "bg-secondary-background shadow-[inset_4px_0_0_var(--color-main)]")}
+    >
       <TableCell className="font-mono">{row.label}</TableCell>
       <RouteCell value={describeRoute(row.global)} active={scope === "global"} />
       <RouteCell value={describeRoute(row.project)} active={scope === "project"} />
-      <TableCell className="font-mono text-xs whitespace-normal">
+      <TableCell className="font-mono text-xs whitespace-normal [overflow-wrap:anywhere]">
         {row.resolved ? (
           <span className="flex flex-col">
             <span>{describeResolved(row.resolved)}</span>
@@ -362,7 +370,7 @@ function RouteRow({
           <span className="text-muted-foreground">{unresolvedText(row, view) || "–"}</span>
         )}
       </TableCell>
-      <TableCell>
+      <TableCell className="w-px">
         <span className="flex justify-end gap-2">
           <Button
             variant="neutral"

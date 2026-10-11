@@ -527,6 +527,8 @@ Keys: ↑/↓ select, Tab switches between the global (`~/.baked/config.json`) a
 
 The edit form has Model (a `provider/model` ID, or `$class` outside a class), Effort (←/→: unset, `default`, `low`, `medium`, `high`, `xhigh`, `max`) and Fallback (up to three model IDs separated by commas). Enter saves; a route without effort or fallback models is written as a plain string. Before writing, the screen checks the route and the whole layer as a run start would: an empty model, a class naming another class, a class reference that neither layer defines (including removing a class that a route still uses), fallback models that are classes, repeat the primary model or exceed three, and anything the `modelRouting` schema rejects. A refused change is not written and the form lists why. Saving writes only the `modelRouting` section of the selected layer, and an emptied section is removed. New runs use the saved routing (an idle workflow worker restarts to read it); started runs keep the routing frozen in their `routing.json` until a [reroute](#switching-a-run-to-another-model).
 
+The desktop app shows and edits the same entries in Settings > Model routing, through `GET` and `PATCH /v1/workflow/routing` of the [local API](../desktop/api.md), with the same checks.
+
 ### Effort and fallback models
 
 Any route, and any class, can be an object instead of a model ID:
