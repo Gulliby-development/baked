@@ -5,6 +5,13 @@ import type { LanguageModel, ModelMessage } from "ai";
 import type { createBakeAgent } from "../core/agents/index.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
 import { createChatAgent, createSharedCacheRef } from "../core/chat/agent.js";
+import {
+  editedFiles,
+  formatDiffStatLines,
+  formatDiffTotals,
+  sessionDiffStats,
+  toolCallEditPaths,
+} from "../core/chat/diff-stats.js";
 import { expandChatInput, hasInputReferences } from "../core/chat/input-expansion.js";
 import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
@@ -294,17 +301,7 @@ async function streamTurn(
         } else if (reporting.showProgress) {
           process.stderr.write(`${DIM}  ▸ ${part.toolName}${RST}\n`);
         }
-        const input = (part as { input?: Record<string, unknown> }).input;
-        if (
-          input?.path &&
-          typeof input.path === "string" &&
-          (part.toolName === "edit_file" ||
-            part.toolName === "write_file" ||
-            part.toolName === "create_file" ||
-            part.toolName === "multi_edit")
-        ) {
-          filesEdited.add(input.path);
-        }
+        for (const path of toolCallEditPaths(part.toolName, partInput.input)) filesEdited.add(path);
       } else if (part.type === "tool-result") {
         if (reporting.events) {
           const raw = part.output;
@@ -529,6 +526,10 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
   }
 
   const duration = Date.now() - startTime;
+  const diffStats = await sessionDiffStats(env.cwd, [
+    ...editedFiles(priorChatMessages),
+    ...turn.filesEdited,
+  ]);
 
   // Session save
   if (opts.saveSession) {
@@ -561,6 +562,7 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
       tokens: turn.tokens,
       toolCalls: turn.toolCalls,
       filesEdited: turn.filesEdited,
+      diffStats,
       duration,
       ...(turn.error ? { error: turn.error } : {}),
     });
@@ -576,6 +578,7 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
           tokens: turn.tokens,
           toolCalls: turn.toolCalls,
           filesEdited: turn.filesEdited,
+          diffStats,
           duration,
           ...(turn.error ? { error: turn.error } : {}),
         },
@@ -591,14 +594,15 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
       process.stdout.write("\n");
     }
     if (!isQuiet) {
-      if (turn.filesEdited.length > 0 && opts.diff) {
+      if (diffStats.files.length > 0 && opts.diff) {
         separator();
         process.stderr.write(`${PURPLE()}Files changed:${RST}\n`);
-        for (const f of turn.filesEdited) process.stderr.write(`  ${f}\n`);
+        for (const line of formatDiffStatLines(diffStats)) process.stderr.write(`  ${line}\n`);
       }
       separator();
+      const lines = diffStats.totals.files > 0 ? ` — ${formatDiffTotals(diffStats)}` : "";
       process.stderr.write(
-        `${DIM}${String(turn.steps)} steps — ${formatTokens(turn.tokens)} — ${formatDuration(duration)}${RST}\n`,
+        `${DIM}${String(turn.steps)} steps — ${formatTokens(turn.tokens)} — ${formatDuration(duration)}${lines}${RST}\n`,
       );
     }
   }
@@ -798,6 +802,8 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   }
 
   const totalTokens = { input: 0, output: 0, cacheRead: 0 };
+  // Files the resumed session and this chat edited, for the per-turn diff stats.
+  const chatEdited = new Set(editedFiles(chatHistory));
   let turns = 0;
   let aborted = false;
   let turnAbort = new AbortController();
@@ -918,6 +924,9 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       });
     }
 
+    for (const path of turn.filesEdited) chatEdited.add(path);
+    const diffStats = await sessionDiffStats(env.cwd, [...chatEdited]);
+
     totalTokens.input += turn.tokens.input;
     totalTokens.output += turn.tokens.output;
     totalTokens.cacheRead += turn.tokens.cacheRead;
@@ -931,6 +940,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
         tokens: turn.tokens,
         toolCalls: turn.toolCalls,
         filesEdited: turn.filesEdited,
+        diffStats,
         duration: Date.now() - turnStart,
         ...(turn.error ? { error: turn.error } : {}),
       });
@@ -944,6 +954,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
           tokens: turn.tokens,
           toolCalls: turn.toolCalls,
           filesEdited: turn.filesEdited,
+          diffStats,
           duration: Date.now() - turnStart,
           ...(turn.error ? { error: turn.error } : {}),
         })}\n`,
@@ -953,7 +964,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       if (showProgress) {
         separator();
         process.stderr.write(
-          `${DIM}turn ${String(turns)} — ${String(turn.steps)} steps — ${formatTokens(turn.tokens)}${RST}\n`,
+          `${DIM}turn ${String(turns)} — ${String(turn.steps)} steps — ${formatTokens(turn.tokens)}${diffStats.totals.files > 0 ? ` — ${formatDiffTotals(diffStats)}` : ""}${RST}\n`,
         );
         if (!aborted) process.stderr.write(`${PURPLE()}▸${RST} `);
       }

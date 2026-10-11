@@ -103,6 +103,10 @@ Tabs coordinate through file claims. The first edit of a file claims it for that
 
 `Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git branch`, `/git stash`. `/git co-author` toggles the co-author trailer.
 
+## Changed files
+
+Once a tab's agent edits files, a line above the input lists them: new and modified counts, the lines they add and remove (`+52 −3`) and the first few names. `/changes` opens the side panel with the files as a tree, each with its own `+added −removed` (or `binary`). The line counts come from git, as in the desktop app's chat ([local API](desktop/api.md)): they are what is uncommitted in those files against `HEAD` now, so a file committed or reverted since drops out of the totals, and a new untracked file counts all its lines as added. They are measured when a turn ends and when the tab comes back into view; outside a git repository only the names are shown. Headless runs report the same numbers ([headless CLI](headless.md#changed-files)).
+
 ## Context and compaction
 
 `/context` shows the context budget per section, cache hit rate and cost per model. When the conversation reaches 70% of the model's window (`compaction.triggerThreshold`), BAKED compacts it: older messages become a summary and the last few stay verbatim. The default `v2` strategy keeps a structured record of files, decisions and tool results as the conversation goes, so compaction usually needs no model call; `v1` asks the `compact` model for a prose summary. `/compact` runs it now and `/compact settings` changes the strategy. In the desktop app, **Compact now** in the chat's context panel does the same for a chat session.
