@@ -99,13 +99,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "planner",
-    version: "1.4.0",
+    version: "1.5.0",
     description: "Plan and task dependencies",
     role: "planner",
     model: "$active",
     context: "planning",
     instructions:
-      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel.",
+      "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Every task must list the requirement IDs of each criterion it covers. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel. When extra.approvalLimits is present, the host approves the plan without a person only within it: at most maxTasks tasks and maxFiles distinct files, every write under allowedPaths, no deletions unless allowDelete, nothing in alwaysHuman. Plan within it whenever the requirements allow; write a file outside it only when the requirements need that file.",
     skills: [],
     allowedTools: [
       "read",
@@ -122,13 +122,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "quick-planner",
-    version: "1.0.0",
+    version: "1.1.0",
     description: "Find the files and plan a small change",
     role: "planner",
     model: "$fast",
     context: "planning",
     instructions:
-      "There is no research stage: find the files yourself, then plan. Start from the paths the request names (extra.researchScope.namedPaths) and read them together in one read call; use bake_find or bake_impact only for their direct callers and tests. Do not survey the repository. Plan the smallest change that does the request: one task, more only when files must change in a fixed order, never more than three. Keep each plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision DEC-001 that references FR-001 is enough. Every task lists FR-001 and AC-001. Take checks from the policy under approval and do not plan verification-only tasks. Submit as soon as the files to change are known; extra.researchScope.maxSteps is a hard limit.",
+      "There is no research stage: find the files yourself, then plan. Start from the paths the request names (extra.researchScope.namedPaths) and read them together in one read call; use bake_find or bake_impact only for their direct callers and tests. Do not survey the repository. Plan the smallest change that does the request: one task, more only when files must change in a fixed order, never more than three. Keep each plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision DEC-001 that references FR-001 is enough. Every task lists FR-001 and AC-001. Take checks from the policy under approval and do not plan verification-only tasks. When extra.approvalLimits is present, keep the writes within it unless the request needs a file outside it. Submit as soon as the files to change are known; extra.researchScope.maxSteps is a hard limit.",
     skills: [],
     allowedTools: ["read", "bake_find", "bake_impact", "navigate", "submit_result"],
     output: "plan",
