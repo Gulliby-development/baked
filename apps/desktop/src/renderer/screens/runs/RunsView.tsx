@@ -1,7 +1,6 @@
 import type { SectionProps } from "../sections.js";
 import { RunScreen } from "./RunScreen.js";
 import { RunsList } from "./RunsList.js";
-import "../../styles/runs.css";
 
 /** Route IDs under `runs` that other screens own (new run, quick task). */
 const OTHER_SCREENS = new Set(["new", "new-quick"]);

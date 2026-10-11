@@ -8,6 +8,9 @@ import {
   runs,
 } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { CHECK } from "../../lib/styles.js";
 import { href } from "../../router.js";
 import type { RunData } from "./load.js";
 import { stageLabel } from "./model.js";
@@ -18,6 +21,17 @@ import {
   parse,
   questionsOf,
 } from "./requests.js";
+
+/** A request card: its heading and paragraphs carry the warning tone. */
+export const DECISION =
+  "flex flex-col gap-3 rounded-base border-2 border-l-8 border-border border-l-fill-warn bg-[color-mix(in_srgb,var(--warn)_7%,var(--bg-panel))] px-5 py-[18px] shadow-shadow [&_h3]:m-0 [&_h3]:text-[16px] [&_h3]:font-semibold [&_h3]:text-[var(--warn)] [&_p]:m-0 [&_p]:leading-[1.6] [&_p]:text-soft-foreground";
+export const FIELD_LABEL = "text-[12px] text-dim-foreground";
+export const STACK_FORM = "flex flex-col gap-2";
+export const ROW_ACTIONS = "flex flex-wrap gap-2";
+/** Text inputs in run forms keep the taller padding of the multi-line fields. */
+export const TEXT_INPUT = "px-[10px] py-2";
+const TEXTAREA =
+  "resize-y rounded-base border-2 border-border bg-secondary-background px-[10px] py-2 text-foreground [font:inherit]";
 
 /** Runs a decision, then resumes the run the way `baked workflow` does after a decision. */
 export function useDecide(projectKey: string, onDone: () => Promise<void>) {
@@ -61,7 +75,7 @@ export function Questions({
   const filled = Object.keys(answersOf(questions, answers)).length > 0;
   return (
     <form
-      className="stack-form"
+      className={STACK_FORM}
       onSubmit={(e) => {
         e.preventDefault();
         void decide(() =>
@@ -70,13 +84,14 @@ export function Questions({
       }}
     >
       {questions.map((q, i) => (
-        <label key={q.key} className="question">
+        <label key={q.key} className="flex flex-col gap-[6px] text-soft-foreground">
           <span>
-            {!compact && <span className="mono muted">{q.key} </span>}
+            {!compact && <span className="font-mono text-dim-foreground">{q.key} </span>}
             {q.text}
-            {q.blocking && !compact && <span className="warn-text"> · blocking</span>}
+            {q.blocking && !compact && <span className="text-[var(--warn)]"> · blocking</span>}
           </span>
           <textarea
+            className={TEXTAREA}
             rows={compact ? 2 : 2}
             value={answers[i] ?? ""}
             onChange={(e) => {
@@ -87,11 +102,11 @@ export function Questions({
           />
         </label>
       ))}
-      {error && <div className="banner error">{error}</div>}
-      <div className="row-actions">
-        <button type="submit" className="btn-primary" disabled={busy || !filled}>
+      {error && <Alert tone="error">{error}</Alert>}
+      <div className={ROW_ACTIONS}>
+        <Button type="submit" variant="primary" size="md" disabled={busy || !filled}>
           {compact ? "Answer" : "Send answers"}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -121,7 +136,7 @@ function Approval({
       : " in the working copy";
   const files = body.writes?.length ?? 0;
   return (
-    <div className="decision">
+    <div className={DECISION}>
       <h3>
         {tasks
           ? "The spec, plan and tasks wait for your approval"
@@ -134,9 +149,9 @@ function Approval({
         Rejecting sends your note back to the agents.
       </p>
       {body.assumptions?.length ? (
-        <div className="decision-assumptions">
-          <span className="field-label">Assumptions the agents made instead of asking</span>
-          <ul>
+        <div>
+          <span className={FIELD_LABEL}>Assumptions the agents made instead of asking</span>
+          <ul className="m-[4px_0_0] pl-[18px] leading-[1.6] text-soft-foreground">
             {body.assumptions.map((assumption, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: assumptions may repeat
               <li key={i}>{assumption}</li>
@@ -145,43 +160,44 @@ function Approval({
         </div>
       ) : null}
       {scope.length > 0 && (
-        <label className="check">
+        <label className={CHECK}>
           <input type="checkbox" checked={exclude} onChange={(e) => setExclude(e.target.checked)} />
           <span>
             Leave out my uncommitted changes in {scope.join(", ")} (the worktree starts from HEAD)
           </span>
         </label>
       )}
-      <label htmlFor="decision-note" className="field-label">
+      <label htmlFor="decision-note" className={FIELD_LABEL}>
         Note for the agents (needed to reject)
       </label>
       <textarea
+        className={TEXTAREA}
         id="decision-note"
         rows={2}
         value={note}
         placeholder="What should change before implementation"
         onChange={(e) => setNote(e.target.value)}
       />
-      {error && <div className="banner error">{error}</div>}
-      <div className="row-actions">
-        <button
-          type="button"
-          className="btn-primary"
+      {error && <Alert tone="error">{error}</Alert>}
+      <div className={ROW_ACTIONS}>
+        <Button
+          variant="primary"
+          size="md"
           disabled={busy || (scope.length > 0 && !exclude)}
           onClick={() => void decide(() => approveRequest(projectKey, run, request, exclude))}
         >
           {tasks ? "Approve and implement" : "Approve"}
-        </button>
-        <button
-          type="button"
-          className="btn"
+        </Button>
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy || !note.trim()}
           onClick={() =>
             void decide(() => workflow.reject(projectKey, run, request.id, note.trim()))
           }
         >
           Reject with note
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -207,7 +223,7 @@ export function DecisionCard({
       return <Approval projectKey={projectKey} data={data} request={request} onDone={onDone} />;
     case "clarification":
       return (
-        <div className="decision">
+        <div className={DECISION}>
           <h3>The agents have questions</h3>
           <p>Answers go back to the stage that asked; the run continues after you send them.</p>
           <Questions projectKey={projectKey} run={data.status} request={request} onDone={onDone} />
@@ -215,43 +231,43 @@ export function DecisionCard({
       );
     case "manual_evidence":
       return (
-        <div className="decision">
+        <div className={DECISION}>
           <h3>A criterion needs your observation</h3>
           <p>Check it by hand and record what you saw in Criteria.</p>
-          <div className="row-actions">
-            <button type="button" className="btn-primary" onClick={onCriteria}>
+          <div className={ROW_ACTIONS}>
+            <Button variant="primary" size="md" onClick={onCriteria}>
               Open criteria
-            </button>
+            </Button>
           </div>
         </div>
       );
     case "checkpoint":
       return (
-        <div className="decision">
+        <div className={DECISION}>
           <h3>The run paused at a budget checkpoint</h3>
           <p>Continue to spend up to the next checkpoint, or leave it paused.</p>
-          {error && <div className="banner error">{error}</div>}
+          {error && <Alert tone="error">{error}</Alert>}
           {groupB ? (
-            <div className="row-actions">
-              <button
-                type="button"
-                className="btn-primary"
+            <div className={ROW_ACTIONS}>
+              <Button
+                variant="primary"
+                size="md"
                 disabled={busy}
                 onClick={() =>
                   void decide(() => runs.continue(projectKey, data.status, request.id))
                 }
               >
                 Continue
-              </button>
+              </Button>
             </div>
           ) : (
-            <p className="muted">Continuing from the app needs a newer BAKED.</p>
+            <p className="text-dim-foreground">Continuing from the app needs a newer BAKED.</p>
           )}
         </div>
       );
     case "delivery":
       return (
-        <div className="decision">
+        <div className={DECISION}>
           <h3>A delivery plan waits for approval</h3>
           <p>
             Review the commit and pull request in{" "}
@@ -261,11 +277,11 @@ export function DecisionCard({
       );
     default:
       return (
-        <div className="decision">
+        <div className={DECISION}>
           <h3>An effect needs a recovery decision</h3>
           <p>
             Resolve it in the terminal:{" "}
-            <code className="mono">
+            <code className="font-mono">
               baked workflow recover {data.status.runId} --request {request.id}
             </code>
           </p>

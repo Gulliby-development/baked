@@ -1,6 +1,10 @@
 import { type FormEvent, useState } from "react";
 import { setup } from "../../client/setup.js";
-import "../../styles/setup.css";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
 import {
   kb,
@@ -8,7 +12,22 @@ import {
   WORKING_SET_MAX_BYTES,
   workingSetBudget,
 } from "./logic.js";
-import { errorText, LoadState, Tag, useLoad } from "./shared.js";
+import {
+  ADD,
+  errorText,
+  FLUSH,
+  GROW,
+  LINE,
+  LIST,
+  LoadState,
+  NOTE,
+  ROW,
+  SETUP,
+  STACK,
+  Tag,
+  useLoad,
+  WRAP,
+} from "./shared.js";
 
 const FIT_LABEL = {
   included: null,
@@ -47,68 +66,67 @@ export function WorkingSetSection({ project }: SectionProps) {
   const percent = Math.min(100, Math.round((budget.used / WORKING_SET_MAX_BYTES) * 100));
 
   return (
-    <div className="setup">
-      <p className="lede">
+    <div className={SETUP}>
+      <p className={LEDE}>
         Files every chat and workflow agent of this project gets with its contents, stored in{" "}
-        <span className="mono">baked/project.json</span>. A run captures them when it starts.
+        <span className="font-mono">baked/project.json</span>. A run captures them when it starts.
       </p>
 
-      <section className="card setup-budget" aria-label="Budget">
-        <div className="setup-row">
+      <section className={cn(PANEL, "flex flex-col gap-2")} aria-label="Budget">
+        <div className={ROW}>
           <span>
-            <span className="mono">{set.files.length}</span> files ·{" "}
-            <span className="mono">{kb(budget.total)}</span>
+            <span className="font-mono">{set.files.length}</span> files ·{" "}
+            <span className="font-mono">{kb(budget.total)}</span>
           </span>
-          <span className="muted mono">
+          <span className="font-mono text-dim-foreground">
             {kb(budget.used)} of {kb(WORKING_SET_MAX_BYTES)} sent with contents
           </span>
         </div>
-        <div className="setup-meter" aria-hidden="true">
-          <span style={{ width: `${percent}%` }} />
+        <div className="h-[6px] overflow-hidden rounded-[3px] bg-hover" aria-hidden="true">
+          <span className="block h-full bg-[var(--accent)]" style={{ width: `${percent}%` }} />
         </div>
-        <span className="muted setup-note">
+        <span className={`text-dim-foreground ${NOTE}`}>
           Files over {kb(WORKING_SET_FILE_MAX_BYTES)}, and files past the budget, reach agents by
           name only.
         </span>
       </section>
 
-      <form className="setup-add" onSubmit={(e) => void add(e)}>
+      <form className={ADD} onSubmit={(e) => void add(e)}>
         <label htmlFor="ws-entry" className="sr-only">
           Path or glob
         </label>
         <input
           id="ws-entry"
           type="text"
-          className="mono"
           placeholder="src/core/api/*.ts or docs/guide.md"
           value={entry}
           onChange={(e) => setEntry(e.target.value)}
           disabled={busy}
         />
-        <button type="submit" className="btn-primary" disabled={busy || !entry.trim()}>
+        <Button type="submit" variant="primary" size="md" disabled={busy || !entry.trim()}>
           Add
-        </button>
+        </Button>
       </form>
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
 
-      <section aria-label="Entries" className="setup-section">
-        <h2 className="label">Entries</h2>
+      <section aria-label="Entries" className={STACK}>
+        <h2 className={LABEL}>Entries</h2>
         {set.entries.length === 0 ? (
-          <div className="empty">No entries yet. Add a file, a folder or a glob.</div>
+          <Empty>No entries yet. Add a file, a folder or a glob.</Empty>
         ) : (
-          <ul className="card setup-list">
+          <ul className={cn(PANEL, LIST)}>
             {set.entries.map((e) => (
-              <li key={e} className="setup-line">
-                <span className="mono setup-grow">{e}</span>
-                <button
-                  type="button"
-                  className="btn"
+              <li key={e} className={LINE}>
+                <span className={`font-mono ${GROW}`}>{e}</span>
+                <Button
+                  variant="secondary"
+                  size="md"
                   disabled={busy}
                   onClick={() => void change({ remove: [e] })}
                   aria-label={`Remove ${e}`}
                 >
                   Remove
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -116,10 +134,10 @@ export function WorkingSetSection({ project }: SectionProps) {
       </section>
 
       {set.files.length > 0 && (
-        <section aria-label="Files" className="setup-section">
-          <h2 className="label">Files</h2>
-          <div className="card setup-flush">
-            <table className="table">
+        <section aria-label="Files" className={STACK}>
+          <h2 className={LABEL}>Files</h2>
+          <div className={cn(PANEL, FLUSH)}>
+            <table className={TABLE}>
               <thead>
                 <tr>
                   <th>Path</th>
@@ -132,11 +150,11 @@ export function WorkingSetSection({ project }: SectionProps) {
                   const fit = budget.fit[i] ?? "included";
                   return (
                     <tr key={file.path}>
-                      <td className="mono setup-wrap">{file.path}</td>
-                      <td className="mono">{kb(file.bytes)}</td>
+                      <td className={`font-mono ${WRAP}`}>{file.path}</td>
+                      <td className="font-mono">{kb(file.bytes)}</td>
                       <td>
                         {fit === "included" ? (
-                          <span className="muted">contents</span>
+                          <span className="text-dim-foreground">contents</span>
                         ) : (
                           <Tag tone="warn">{FIT_LABEL[fit]}</Tag>
                         )}
@@ -151,13 +169,13 @@ export function WorkingSetSection({ project }: SectionProps) {
       )}
 
       {set.skipped.length > 0 && (
-        <section aria-label="Skipped" className="setup-section">
-          <h2 className="label">Left out</h2>
-          <ul className="card setup-list">
+        <section aria-label="Skipped" className={STACK}>
+          <h2 className={LABEL}>Left out</h2>
+          <ul className={cn(PANEL, LIST)}>
             {set.skipped.map((s) => (
-              <li key={`${s.path}:${s.reason}`} className="setup-line">
-                <span className="mono setup-grow setup-wrap">{s.path}</span>
-                <span className="muted">{s.reason}</span>
+              <li key={`${s.path}:${s.reason}`} className={LINE}>
+                <span className={`font-mono ${GROW} ${WRAP}`}>{s.path}</span>
+                <span className="text-dim-foreground">{s.reason}</span>
               </li>
             ))}
           </ul>

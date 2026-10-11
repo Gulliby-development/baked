@@ -10,13 +10,28 @@ import {
   questionsOf,
   type RunWithRequests,
 } from "../../client/attention.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button, buttonVariants } from "../../components/ui/button.js";
+import { cn } from "../../lib/cn.js";
+import { CHECK, LABEL, PANEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import {
+  ACTIONS,
   ActionError,
+  ASIDE,
+  BTN,
   DetailHeader,
+  FACTS,
   Fact,
+  FORM,
+  INPUT,
+  LEDE,
+  LINK_BTN,
+  LIST,
   Loading,
+  NOTE,
   RejectForm,
+  ROW,
   useAction,
   useLoad,
 } from "./common.js";
@@ -26,6 +41,8 @@ export interface DetailProps {
   /** Called after the item was answered, with what happens next. */
   onDone: (message: string, next?: string) => void;
 }
+
+const PRIMARY_LINK_BTN = cn(buttonVariants({ variant: "primary", size: "md" }), BTN);
 
 /** A run item always has a run ID; the screen picks run details only for run items. */
 const runIdOf = (item: AttentionItem): string => item.runId ?? "";
@@ -43,7 +60,7 @@ function requestOf(run: RunWithRequests, item: AttentionItem) {
 
 function OpenRun({ item }: { item: AttentionItem }) {
   return (
-    <a className="btn att-btn" href={projectHref(item.projectKey, "runs", runIdOf(item))}>
+    <a className={LINK_BTN} href={projectHref(item.projectKey, "runs", runIdOf(item))}>
       Open run
     </a>
   );
@@ -66,20 +83,20 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
             <DetailHeader
               item={item}
               aside={
-                <span className="att-aside">
+                <span className={ASIDE}>
                   {writes.length} {writes.length === 1 ? "file" : "files"} ·{" "}
                   {body.checks?.length ?? 0} checks
                 </span>
               }
             />
-            <p className="att-lede">
+            <p className={LEDE}>
               Approving starts implementation of exactly this specification, plan and task graph.
               Review them in the run first if you have not.
             </p>
-            <div className="att-facts">
+            <div className={FACTS}>
               <Fact label="Runs in">
                 {body.executionMode === "worktree" && body.worktree ? (
-                  <span className="mono">{body.worktree.branch}</span>
+                  <span className="font-mono">{body.worktree.branch}</span>
                 ) : (
                   "the working copy"
                 )}
@@ -89,40 +106,42 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 {body.checks?.length ? body.checks.map((c) => c.id).join(", ") : "none"}
               </Fact>
             </div>
-            <section className="card att-list" aria-label="Files the tasks write">
-              <span className="label">Files the tasks write</span>
-              {writes.length === 0 && <span className="muted">No file writes declared.</span>}
+            <section className={LIST} aria-label="Files the tasks write">
+              <span className={LABEL}>Files the tasks write</span>
+              {writes.length === 0 && (
+                <span className="text-dim-foreground">No file writes declared.</span>
+              )}
               {writes.map((write) => (
-                <div key={write.path} className="att-row">
-                  <span className="mono">{write.path}</span>
-                  <span className="muted">{write.action}</span>
+                <div key={write.path} className={ROW}>
+                  <span className="font-mono">{write.path}</span>
+                  <span className="text-dim-foreground">{write.action}</span>
                 </div>
               ))}
             </section>
             {body.assumptions?.length ? (
-              <section className="card att-list" aria-label="Assumptions">
-                <span className="label">Assumptions the agents made instead of asking</span>
+              <section className={LIST} aria-label="Assumptions">
+                <span className={LABEL}>Assumptions the agents made instead of asking</span>
                 {body.assumptions.map((assumption, i) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: assumptions may repeat
-                  <div key={i} className="att-row">
+                  <div key={i} className={ROW}>
                     <span>{assumption}</span>
                   </div>
                 ))}
               </section>
             ) : null}
             {body.deferredCriteria?.length ? (
-              <p className="att-note">
+              <p className={NOTE}>
                 Checked after release, not by this run: {body.deferredCriteria.join(", ")}.
               </p>
             ) : null}
             {inScope.length > 0 && (
-              <div className="banner">
+              <Alert>
                 <p style={{ margin: "0 0 8px" }}>
                   You have uncommitted changes in files these tasks write:{" "}
-                  <span className="mono">{inScope.join(", ")}</span>. The worktree starts from HEAD
-                  without them.
+                  <span className="font-mono">{inScope.join(", ")}</span>. The worktree starts from
+                  HEAD without them.
                 </p>
-                <label className="check">
+                <label className={CHECK}>
                   <input
                     type="checkbox"
                     checked={exclude}
@@ -130,13 +149,14 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                   />
                   Leave my uncommitted changes out of this run
                 </label>
-              </div>
+              </Alert>
             )}
             <ActionError error={action.error} />
-            <div className="att-actions">
-              <button
-                type="button"
-                className="btn-primary att-btn"
+            <div className={ACTIONS}>
+              <Button
+                variant="primary"
+                size="md"
+                className={BTN}
                 disabled={action.busy || (inScope.length > 0 && !exclude)}
                 onClick={() =>
                   void action.run(async () => {
@@ -146,7 +166,7 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 }
               >
                 Approve
-              </button>
+              </Button>
               <RejectForm
                 busy={action.busy}
                 onReject={(reason) =>
@@ -179,7 +199,7 @@ export function ClarificationDetail({ item, onDone }: DetailProps) {
         const none = questions.every((_q, i) => !answers[i]?.trim());
         return (
           <form
-            className="att-form"
+            className={FORM}
             onSubmit={(event) => {
               event.preventDefault();
               void action.run(async () => {
@@ -194,18 +214,19 @@ export function ClarificationDetail({ item, onDone }: DetailProps) {
             }}
           >
             <DetailHeader item={item} />
-            <p className="att-lede">
+            <p className={LEDE}>
               The run stopped at stage {run.stageId ?? "–"} with questions only you can answer.
             </p>
             {questions.map((question, index) => (
-              <div key={question.key} className="card att-question">
+              <div key={question.key} className={cn(PANEL, "flex flex-col gap-2")}>
                 <label htmlFor={`att-q-${index}`}>
-                  <span className="mono muted">{question.key}</span> {question.text}
-                  {!question.blocking && <span className="muted"> (optional)</span>}
+                  <span className="font-mono text-dim-foreground">{question.key}</span>{" "}
+                  {question.text}
+                  {!question.blocking && <span className="text-dim-foreground"> (optional)</span>}
                 </label>
                 <textarea
                   id={`att-q-${index}`}
-                  className="att-input"
+                  className={INPUT}
                   rows={2}
                   value={answers[index] ?? ""}
                   onChange={(event) => {
@@ -217,14 +238,16 @@ export function ClarificationDetail({ item, onDone }: DetailProps) {
               </div>
             ))}
             <ActionError error={action.error} />
-            <div className="att-actions">
-              <button
+            <div className={ACTIONS}>
+              <Button
                 type="submit"
-                className="btn-primary att-btn"
+                variant="primary"
+                size="md"
+                className={BTN}
                 disabled={action.busy || missing || none}
               >
                 Answer and continue
-              </button>
+              </Button>
               <OpenRun item={item} />
             </div>
           </form>
@@ -239,18 +262,15 @@ export function RunDetail({ item }: DetailProps) {
   return (
     <>
       <DetailHeader item={item} />
-      <p className="att-lede">
+      <p className={LEDE}>
         {item.requestId === null
           ? "The run is blocked and needs a look before it can continue."
           : item.blocking
             ? `The run waits for a ${kindLabel(item.kind)} decision. Answer it in the run.`
             : `For your review: the run continues without it. Record it in the run when you can.`}
       </p>
-      <div className="att-actions">
-        <a
-          className="btn-primary att-btn"
-          href={projectHref(item.projectKey, "runs", runIdOf(item))}
-        >
+      <div className={ACTIONS}>
+        <a className={PRIMARY_LINK_BTN} href={projectHref(item.projectKey, "runs", runIdOf(item))}>
           Open run
         </a>
       </div>
@@ -262,12 +282,12 @@ export function InitiativeDetail({ item }: DetailProps) {
   return (
     <>
       <DetailHeader item={item} />
-      <p className="att-lede">
+      <p className={LEDE}>
         The initiative {item.title ? <strong>{item.title}</strong> : item.initiativeId} waits for
         your {kindLabel(item.kind)} before it drives its features further.
       </p>
-      <div className="att-actions">
-        <a className="btn-primary att-btn" href={projectHref(item.projectKey, "initiatives")}>
+      <div className={ACTIONS}>
+        <a className={PRIMARY_LINK_BTN} href={projectHref(item.projectKey, "initiatives")}>
           Open initiatives
         </a>
       </div>
@@ -279,7 +299,7 @@ export function Gone({ item }: { item: AttentionItem }) {
   return (
     <>
       <DetailHeader item={item} />
-      <p className="att-lede">This request was already answered or replaced.</p>
+      <p className={LEDE}>This request was already answered or replaced.</p>
     </>
   );
 }

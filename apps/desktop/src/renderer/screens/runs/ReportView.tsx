@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import { errorText, runs } from "../../client/runs.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { cn } from "../../lib/cn.js";
+import { LEDE, PANEL } from "../../lib/styles.js";
 
 /** File name the report is saved under. */
 export const reportFileName = (runId: string): string =>
@@ -53,22 +57,29 @@ export function ReportView({
     URL.revokeObjectURL(url);
   };
 
-  if (error) return <div className="banner error">{error}</div>;
-  if (markdown === null) return <div className="muted">Loading report…</div>;
+  if (error) return <Alert tone="error">{error}</Alert>;
+  if (markdown === null) return <div className="text-dim-foreground">Loading report…</div>;
   return (
-    <section className="report" aria-label="Run report">
-      <div className="report-head">
-        <p className="lede">
+    <section aria-label="Run report">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <p className={cn(LEDE, "flex-1")}>
           One Markdown file for the whole run. Delivery uses it as the pull request description.
         </p>
-        <button type="button" className="btn" onClick={() => void copy()}>
+        <Button variant="secondary" size="md" onClick={() => void copy()}>
           {copied ? "Copied" : "Copy"}
-        </button>
-        <button type="button" className="btn" onClick={save}>
+        </Button>
+        <Button variant="secondary" size="md" onClick={save}>
           Save as .md
-        </button>
+        </Button>
       </div>
-      <pre className="card doc">{markdown}</pre>
+      <pre
+        className={cn(
+          PANEL,
+          "m-0 whitespace-pre-wrap font-mono text-[12.5px] leading-[1.6] text-soft-foreground [overflow-wrap:anywhere]",
+        )}
+      >
+        {markdown}
+      </pre>
     </section>
   );
 }

@@ -10,10 +10,15 @@ import {
   kindLabel,
   sourceOf,
 } from "../../shared/attention.js";
+import { Alert } from "../components/ui/alert.js";
+import { Empty } from "../components/ui/empty.js";
 import { ago } from "../format.js";
+import { cn } from "../lib/cn.js";
+import { ITEM, LABEL, LEDE, STACK } from "../lib/styles.js";
 import { href } from "../router.js";
 import { useDesktop } from "../store.js";
 import { ChatDetail } from "./attention/ChatDetail.js";
+import { PROJECT } from "./attention/common.js";
 import { DeliveryDetail } from "./attention/DeliveryDetail.js";
 import {
   ApprovalDetail,
@@ -22,7 +27,6 @@ import {
   InitiativeDetail,
   RunDetail,
 } from "./attention/RunDetails.js";
-import "../styles/attention.css";
 
 const DETAILS: Record<DetailKind, ComponentType<DetailProps>> = {
   approval: ApprovalDetail,
@@ -44,6 +48,9 @@ const MARK: Record<DetailKind, { mark: string; tone: string }> = {
   run: { mark: "◎", tone: "var(--info)" },
 };
 
+const CHIP =
+  "min-h-[26px] cursor-pointer rounded-[13px] border-2 border-border bg-raised px-[10px] py-0 text-muted-foreground [font-family:inherit] text-[12px] leading-[inherit] font-semibold aria-pressed:bg-main aria-pressed:text-foreground";
+
 const itemHref = (item: AttentionItem): string =>
   href({ name: "attention", key: item.projectKey, id: attentionItemId(item) });
 
@@ -52,19 +59,26 @@ function Entry({ item, selected }: { item: AttentionItem; selected: boolean }) {
   const source = sourceOf(item);
   const owner = source === "run" ? item.featureId : source === "chat" ? "chat" : "initiative";
   return (
-    <a className="item att-item" href={itemHref(item)} aria-current={selected ? "true" : undefined}>
+    <a
+      className={cn(
+        ITEM,
+        "no-underline aria-[current=true]:border-border aria-[current=true]:bg-hover aria-[current=true]:shadow-sm-hard",
+      )}
+      href={itemHref(item)}
+      aria-current={selected ? "true" : undefined}
+    >
       <span
-        className="mono"
+        className="font-mono"
         style={{ color: item.blocking ? MARK[kind].tone : "var(--info)" }}
         aria-hidden="true"
       >
         {MARK[kind].mark}
       </span>
-      <span className="stack" style={{ gap: 2 }}>
-        <span className="att-item-title">{attentionTitle(item)}</span>
-        <span className="att-item-meta">
-          <span className="att-project">{item.projectName}</span> · {owner} · {kindLabel(item.kind)}{" "}
-          · {item.blocking ? ago(item.createdAt) : "run continues"}
+      <span className={STACK} style={{ gap: 2 }}>
+        <span className="text-foreground">{attentionTitle(item)}</span>
+        <span className="text-[12px] text-dim-foreground">
+          <span className={PROJECT}>{item.projectName}</span> · {owner} · {kindLabel(item.kind)} ·{" "}
+          {item.blocking ? ago(item.createdAt) : "run continues"}
         </span>
       </span>
     </a>
@@ -98,18 +112,24 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
   };
 
   return (
-    <div className="att-layout">
-      <section className="att-list-pane" aria-label="Waiting items">
-        <h1>Needs you</h1>
-        <p className="lede">
+    <div className="flex min-h-full min-w-0 flex-wrap">
+      <section
+        className="flex max-w-[480px] flex-[1_1_360px] flex-col gap-[10px] border-r-[3px] border-r-border px-5 py-[22px]"
+        aria-label="Waiting items"
+      >
+        <h1 className="mx-0 mt-0 mb-1 text-[20px] font-semibold">Needs you</h1>
+        <p className={LEDE}>
           Everything in every open project that waits for a person. Each item opens in its own
           project; new ones also arrive as system notifications.
         </p>
         {groups.projects.length > 0 && (
-          <fieldset className="att-chips" aria-label="Filter by project">
+          <fieldset
+            className="mx-0 mt-0 mb-1 flex min-w-0 flex-wrap gap-[6px] border-0 p-0"
+            aria-label="Filter by project"
+          >
             <button
               type="button"
-              className="att-chip"
+              className={CHIP}
               aria-pressed={filter === null}
               onClick={() => setFilter(null)}
             >
@@ -119,7 +139,7 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
               <button
                 key={project.key}
                 type="button"
-                className="att-chip"
+                className={CHIP}
                 aria-pressed={filter === project.key}
                 onClick={() => setFilter(project.key)}
               >
@@ -128,10 +148,8 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
             ))}
           </fieldset>
         )}
-        {shown.length === 0 && (
-          <div className="empty">Nothing waits for you in the open projects.</div>
-        )}
-        {groups.blocking.length > 0 && <p className="label">Blocking</p>}
+        {shown.length === 0 && <Empty>Nothing waits for you in the open projects.</Empty>}
+        {groups.blocking.length > 0 && <p className={LABEL}>Blocking</p>}
         {groups.blocking.map((item) => (
           <Entry
             key={`${item.projectKey}:${attentionItemId(item)}`}
@@ -140,7 +158,7 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
           />
         ))}
         {groups.advisory.length > 0 && (
-          <p className="label" style={{ marginTop: 10 }}>
+          <p className={LABEL} style={{ marginTop: 10 }}>
             Advisory
           </p>
         )}
@@ -152,11 +170,15 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
           />
         ))}
       </section>
-      <section className="att-detail-pane" aria-label="Selected item" aria-live="polite">
+      <section
+        className="flex min-w-0 max-w-[900px] flex-[999_1_480px] flex-col gap-4 px-7 py-[22px]"
+        aria-label="Selected item"
+        aria-live="polite"
+      >
         {notice && (
-          <div className="banner att-notice" role="status">
+          <Alert className="border-[color:var(--ok)]" role="status">
             {notice.text}
-          </div>
+          </Alert>
         )}
         {selected && Detail ? (
           <Detail
@@ -165,9 +187,9 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
             onDone={done(selected.projectKey)}
           />
         ) : itemId && !notice?.next ? (
-          <p className="muted">This item was answered or is no longer waiting.</p>
+          <p className="text-dim-foreground">This item was answered or is no longer waiting.</p>
         ) : !notice && shown.length > 0 ? (
-          <p className="muted">Select an item.</p>
+          <p className="text-dim-foreground">Select an item.</p>
         ) : null}
       </section>
     </div>

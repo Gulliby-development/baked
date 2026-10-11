@@ -5,9 +5,27 @@ import {
   type RunMemoryEdit,
   setup,
 } from "../../client/setup.js";
-import "../../styles/setup.css";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
-import { errorText, LoadState, Tag, useLoad } from "./shared.js";
+import {
+  ACTIONS,
+  ADD,
+  errorText,
+  GROW,
+  LINE,
+  LIST,
+  LoadState,
+  NOTE,
+  SETUP,
+  STACK,
+  Tag,
+  useLoad,
+  WRAP,
+} from "./shared.js";
 
 const GROUPS: [MemoryEntryKind, string, string][] = [
   ["note", "Notes", "Your own notes. Every new run's research, spec and plan read them."],
@@ -36,17 +54,20 @@ function EntryLine({
     if (text && (await onEdit({ action: "edit", id: entry.id, text }))) setDraft(null);
   };
   return (
-    <li className="setup-line">
+    <li className={LINE}>
       {draft === null ? (
-        <span className="setup-grow setup-wrap">
-          {entry.question && <span className="muted">Q: {entry.question} · A: </span>}
-          <span className={entry.kind === "check" ? "mono" : undefined}>{entry.text}</span>
+        <span className={cn(GROW, WRAP)}>
+          {entry.question && <span className="text-dim-foreground">Q: {entry.question} · A: </span>}
+          <span className={entry.kind === "check" ? "font-mono" : undefined}>{entry.text}</span>
           {entry.recorded && (
-            <span className="muted setup-note"> Runs recorded: {entry.recorded}</span>
+            <span className={cn("text-dim-foreground", NOTE)}>
+              {" "}
+              Runs recorded: {entry.recorded}
+            </span>
           )}
         </span>
       ) : (
-        <form className="setup-add setup-grow" onSubmit={(e) => void save(e)}>
+        <form className={cn(ADD, GROW)} onSubmit={(e) => void save(e)}>
           <label htmlFor={`mem-${entry.id}`} className="sr-only">
             New text
           </label>
@@ -58,49 +79,53 @@ function EntryLine({
             onChange={(e) => setDraft(e.target.value)}
             disabled={busy}
           />
-          <button type="submit" className="btn-primary" disabled={busy || !draft.trim()}>
+          <Button type="submit" variant="primary" size="md" disabled={busy || !draft.trim()}>
             Save
-          </button>
-          <button type="button" className="btn" onClick={() => setDraft(null)}>
+          </Button>
+          <Button variant="secondary" size="md" onClick={() => setDraft(null)}>
             Cancel
-          </button>
+          </Button>
         </form>
       )}
-      {entry.runId && <span className="muted mono">run {entry.runId.slice(0, 8)}</span>}
-      {entry.runs !== undefined && <span className="muted mono">{entry.runs}×</span>}
+      {entry.runId && (
+        <span className="font-mono text-dim-foreground">run {entry.runId.slice(0, 8)}</span>
+      )}
+      {entry.runs !== undefined && (
+        <span className="font-mono text-dim-foreground">{entry.runs}×</span>
+      )}
       {entry.recorded && <Tag>edited</Tag>}
       {!sent && <Tag tone="warn">not sent: the policy lists it</Tag>}
       {draft === null && (
-        <span className="setup-actions">
+        <span className={ACTIONS}>
           {entry.kind !== "check" && (
-            <button
-              type="button"
-              className="btn"
+            <Button
+              variant="secondary"
+              size="md"
               disabled={busy}
               onClick={() => setDraft(entry.text)}
             >
               Edit
-            </button>
+            </Button>
           )}
           {entry.recorded && (
-            <button
-              type="button"
-              className="btn"
+            <Button
+              variant="secondary"
+              size="md"
               disabled={busy}
               onClick={() => void onEdit({ action: "restore", id: entry.id })}
             >
               Restore
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            className="btn"
+          <Button
+            variant="secondary"
+            size="md"
             disabled={busy}
             onClick={() => void onEdit({ action: "forget", id: entry.id })}
             aria-label={`${entry.kind === "note" ? "Delete" : "Forget"} ${entry.text}`}
           >
             {entry.kind === "note" ? "Delete" : "Forget"}
-          </button>
+          </Button>
         </span>
       )}
     </li>
@@ -136,19 +161,19 @@ export function RunMemorySection({ project }: SectionProps) {
   const view = memory.data;
 
   return (
-    <div className="setup">
-      <p className="lede">
+    <div className={SETUP}>
+      <p className={LEDE}>
         What earlier workflow runs of this project learned, and notes of your own. A run reads it
         when it starts; changes apply to runs started afterwards, and started runs keep their copy.
       </p>
       {!view.enabled && (
-        <div className="banner">
+        <Alert>
           Run memory is off for new runs: the workflow policy sets{" "}
-          <span className="mono">projectMemory: false</span>.
-        </div>
+          <span className="font-mono">projectMemory: false</span>.
+        </Alert>
       )}
 
-      <form className="setup-add" onSubmit={(e) => void add(e)}>
+      <form className={ADD} onSubmit={(e) => void add(e)}>
         <label htmlFor="mem-note" className="sr-only">
           New note
         </label>
@@ -161,26 +186,26 @@ export function RunMemorySection({ project }: SectionProps) {
           onChange={(e) => setNote(e.target.value)}
           disabled={busy}
         />
-        <button type="submit" className="btn-primary" disabled={busy || !note.trim()}>
+        <Button type="submit" variant="primary" size="md" disabled={busy || !note.trim()}>
           Add note
-        </button>
+        </Button>
       </form>
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
 
       {view.entries.length === 0 && (
-        <div className="empty">
+        <Empty>
           Nothing yet. Runs record the answers you give, the assumptions you approve and the checks
           that pass.
-        </div>
+        </Empty>
       )}
       {GROUPS.map(([kind, label, about]) => {
         const entries = view.entries.filter((e) => e.kind === kind);
         if (!entries.length) return null;
         return (
-          <section key={kind} aria-label={label} className="setup-section">
-            <h2 className="label">{label}</h2>
-            <span className="muted setup-note">{about}</span>
-            <ul className="card setup-list">
+          <section key={kind} aria-label={label} className={STACK}>
+            <h2 className={LABEL}>{label}</h2>
+            <span className={cn("text-dim-foreground", NOTE)}>{about}</span>
+            <ul className={cn(PANEL, LIST, "p-0")}>
               {entries.map((e) => (
                 <EntryLine key={e.id} entry={e} sent={e.sent} busy={busy} onEdit={change} />
               ))}
@@ -190,23 +215,23 @@ export function RunMemorySection({ project }: SectionProps) {
       })}
 
       {view.hidden.length > 0 && (
-        <section aria-label="Forgotten" className="setup-section">
-          <h2 className="label">Forgotten</h2>
-          <ul className="card setup-list">
+        <section aria-label="Forgotten" className={STACK}>
+          <h2 className={LABEL}>Forgotten</h2>
+          <ul className={cn(PANEL, LIST, "p-0")}>
             {view.hidden.map((e) => (
-              <li key={e.id} className="setup-line">
-                <span className="setup-grow setup-wrap muted">
+              <li key={e.id} className={LINE}>
+                <span className={cn(GROW, WRAP, "text-dim-foreground")}>
                   {e.question ? `Q: ${e.question} · A: ` : ""}
                   {e.text}
                 </span>
-                <button
-                  type="button"
-                  className="btn"
+                <Button
+                  variant="secondary"
+                  size="md"
                   disabled={busy}
                   onClick={() => void change({ action: "restore", id: e.id })}
                 >
                   Restore
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -214,9 +239,9 @@ export function RunMemorySection({ project }: SectionProps) {
       )}
 
       {view.rendered && (
-        <details className="setup-section">
-          <summary className="label">What the next run reads</summary>
-          <pre className="card mono setup-wrap">{view.rendered}</pre>
+        <details className={STACK}>
+          <summary className={LABEL}>What the next run reads</summary>
+          <pre className={cn(PANEL, "font-mono", WRAP)}>{view.rendered}</pre>
         </details>
       )}
     </div>

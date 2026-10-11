@@ -1,4 +1,3 @@
-import "../../styles/start.css";
 import type { VariantProps } from "class-variance-authority";
 import { type ReactNode, useState } from "react";
 import type { AttentionItem, RunSnapshot, RunState } from "../../../shared/api.js";
@@ -6,9 +5,11 @@ import { attentionHash, attentionId } from "../../../shared/attention.js";
 import { api } from "../../client/api.js";
 import { isNoProject } from "../../client/setup.js";
 import { type ProjectSummary, start } from "../../client/start.js";
+import { Alert } from "../../components/ui/alert.js";
 import { Badge, type badgeVariants } from "../../components/ui/badge.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { Card } from "../../components/ui/card.js";
+import { Empty } from "../../components/ui/empty.js";
 import {
   Table,
   TableBody,
@@ -20,11 +21,12 @@ import {
 import { Textarea } from "../../components/ui/textarea.js";
 import { ago, tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { useDesktop } from "../../store.js";
 import type { SectionProps } from "../sections.js";
 import { type DraftTarget, putDraft } from "./drafts.js";
-import { DoctorChecks, message, useLoad } from "./panels.js";
+import { DoctorChecks, message, NOTE, NOTE_ERR, PANEL, useLoad } from "./panels.js";
 
 type Tone = VariantProps<typeof badgeVariants>["tone"];
 
@@ -46,7 +48,7 @@ const LINK =
 function SectionHead({ id, title, children }: { id: string; title: string; children?: ReactNode }) {
   return (
     <div className="flex items-center justify-between">
-      <h2 id={id} className="label">
+      <h2 id={id} className={LABEL}>
         {title}
       </h2>
       {children}
@@ -82,13 +84,13 @@ function TaskBox({ projectKey }: { projectKey: string }) {
           go("quick");
         }}
       >
-        <label htmlFor="home-task" className="label">
+        <label htmlFor="home-task" className={LABEL}>
           What should change?
         </label>
         <Textarea
           id="home-task"
           rows={2}
-          className="min-h-16 text-[15px]"
+          className="min-h-16 resize-y px-[10px] text-[14px]/[1.45] [font-family:inherit]"
           value={text}
           placeholder="Fix the off-by-one in the usage table header"
           onChange={(e) => setText(e.target.value)}
@@ -174,13 +176,11 @@ function RunsCard({ projectKey }: { projectKey: string }) {
         </a>
       </SectionHead>
       {runs.error ? (
-        <div className="banner error">{message(runs.error)}</div>
+        <Alert tone="error">{message(runs.error)}</Alert>
       ) : !runs.value ? (
         <p className={HINT}>Loading runs…</p>
       ) : runs.value.items.length === 0 ? (
-        <div className="empty">
-          No workflow runs yet. Describe a change above and pick Quick or Full run.
-        </div>
+        <Empty>No workflow runs yet. Describe a change above and pick Quick or Full run.</Empty>
       ) : (
         <Table>
           <TableHeader>
@@ -231,7 +231,7 @@ function SessionsCard({ projectKey, summary }: { projectKey: string; summary: Pr
         </a>
       </SectionHead>
       {summary.sessions.length === 0 ? (
-        <div className="empty">No chat sessions in this project yet.</div>
+        <Empty>No chat sessions in this project yet.</Empty>
       ) : (
         <Card className="gap-0 py-0">
           <ul className="m-0 list-none p-0">
@@ -259,7 +259,7 @@ function WorkingSetCard({ projectKey, summary }: { projectKey: string; summary: 
   const { entries, files, skipped } = summary.workingSet;
   const total = files.reduce((n, f) => n + f.bytes, 0);
   return (
-    <section aria-labelledby="home-ws" className="card start-panel">
+    <section aria-labelledby="home-ws" className={PANEL}>
       <SectionHead id="home-ws" title="Working set">
         <a
           className={cn(buttonVariants({ variant: "neutral", size: "sm" }), "no-underline")}
@@ -268,12 +268,12 @@ function WorkingSetCard({ projectKey, summary }: { projectKey: string; summary: 
           Edit
         </a>
       </SectionHead>
-      <p className="start-note">
+      <p className={NOTE}>
         Sent to every new chat and to the research stage, so the agent does not search for them
         again.
       </p>
       {entries.length === 0 ? (
-        <p className="start-note">Nothing in the working set yet.</p>
+        <p className={NOTE}>Nothing in the working set yet.</p>
       ) : (
         <>
           <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[13px]">
@@ -305,18 +305,18 @@ function DoctorCard({ projectKey }: { projectKey: string }) {
   const doctor = useLoad(projectKey, (key) => start.doctor(key));
   const report = doctor.value;
   return (
-    <section aria-labelledby="home-doctor" className="card start-panel">
+    <section aria-labelledby="home-doctor" className={PANEL}>
       <SectionHead id="home-doctor" title="Doctor">
         {report && (
           <Badge tone={report.ready ? "ok" : "err"}>{report.ready ? "ready" : "not ready"}</Badge>
         )}
       </SectionHead>
       {doctor.error ? (
-        <p className="start-note err">{message(doctor.error)}</p>
+        <p className={NOTE_ERR}>{message(doctor.error)}</p>
       ) : report ? (
         <DoctorChecks checks={report.checks} limit={4} />
       ) : (
-        <p className="start-note">Checking…</p>
+        <p className={NOTE}>Checking…</p>
       )}
       <a className={LINK} href={projectHref(projectKey, "runs", "new")}>
         Open full report
@@ -371,9 +371,9 @@ export function ProjectHome({ project }: SectionProps) {
         </div>
         <aside className="flex min-w-0 flex-col gap-5" aria-label="Project setup">
           {summary.error ? (
-            <section className="card start-panel">
-              <h2 className="label">Project</h2>
-              <p className="start-note">
+            <section className={PANEL}>
+              <h2 className={LABEL}>Project</h2>
+              <p className={NOTE}>
                 {isNoProject(summary.error)
                   ? "This folder has no baked/project.json, so it has no working set or project sessions. Run baked project init in the folder to create one."
                   : message(summary.error)}

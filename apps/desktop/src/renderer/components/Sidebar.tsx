@@ -4,11 +4,13 @@ import type { SessionState } from "../client/chat.js";
 import { useChatSessions } from "../client/chat-sessions.js";
 import { backendLabel, initial, projectLine } from "../format.js";
 import { cn } from "../lib/cn.js";
+import { LABEL } from "../lib/styles.js";
 import { href, type ProjectSection, projectHref, type Route } from "../router.js";
 import { useDesktop } from "../store.js";
 import { Icon, type IconName } from "./Icon.js";
 import { Badge } from "./ui/badge.js";
 import { buttonVariants } from "./ui/button.js";
+import { Dot, type DotTone } from "./ui/dot.js";
 
 /** How many projects the sidebar lists before "All projects" takes over. */
 const SIDEBAR_PROJECTS = 8;
@@ -33,7 +35,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["run-memory", "Run memory", "memory"],
 ];
 
-const STATE_TONE: Record<SessionState, string> = { idle: "", working: "busy", waiting: "warn" };
+const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };
 
 function current(active: boolean): "page" | undefined {
   return active ? "page" : undefined;
@@ -50,7 +52,7 @@ const SUB_LINE = "truncate font-mono text-xs text-dim-foreground";
 
 const COUNT = "ml-auto font-mono text-xs text-dim-foreground";
 
-const GROUP_LABEL = "label px-2.5 pb-1.5";
+const GROUP_LABEL = `${LABEL} px-2.5 pb-1.5`;
 
 function ProjectEntry({ project, route }: { project: DesktopProject; route: Route }) {
   const selected = route.name === "project" && route.key === project.key;
@@ -67,7 +69,7 @@ function ProjectEntry({ project, route }: { project: DesktopProject; route: Rout
             {project.overview.attention}
           </Badge>
         ) : project.open ? (
-          <span className={`dot ${backendLabel(project.backend).tone} ml-auto`} />
+          <Dot tone={backendLabel(project.backend).tone} className="ml-auto" />
         ) : null}
       </a>
     );
@@ -148,7 +150,7 @@ function SelectedProject({
                   aria-current={current(chatId === session.id)}
                   title={session.title}
                 >
-                  <span className={`dot ${STATE_TONE[session.state]}`} />
+                  <Dot tone={STATE_TONE[session.state]} />
                   <span className="min-w-0 truncate">{session.title}</span>
                 </a>
               ))}
@@ -156,7 +158,7 @@ function SelectedProject({
           )}
         </Fragment>
       ))}
-      <p className="label pt-2 pr-2.5 pb-1 pl-5 text-[11px]">Setup</p>
+      <p className={cn(LABEL, "pt-2 pr-2.5 pb-1 pl-5 text-[11px]")}>Setup</p>
       {SETUP.map(([id, label, icon]) => (
         <a
           key={id}
@@ -231,7 +233,7 @@ export function Sidebar({ route }: { route: Route }) {
           Settings
         </a>
         <div className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-dim-foreground">
-          <span className={`dot ${failed > 0 ? "err" : running > 0 ? "ok" : ""}`} />
+          <Dot tone={failed > 0 ? "err" : running > 0 ? "ok" : ""} />
           {failed > 0
             ? `${failed} project${failed === 1 ? "" : "s"} stopped`
             : `${running} project${running === 1 ? "" : "s"} running`}

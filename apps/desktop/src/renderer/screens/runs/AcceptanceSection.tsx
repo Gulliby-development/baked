@@ -1,28 +1,36 @@
 import { useEffect, useState } from "react";
 import { errorText, type RunRow, runs } from "../../client/runs.js";
+import { Alert } from "../../components/ui/alert.js";
+import { buttonVariants } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
 import { ago } from "../../format.js";
+import { cn } from "../../lib/cn.js";
+import { ITEM, STACK } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { useDesktop } from "../../store.js";
 import type { SectionProps } from "../sections.js";
 import { GateView } from "./GateView.js";
 import { useBriefs, useRun } from "./load.js";
 import { StatusPill } from "./parts.js";
-import "../../styles/runs.css";
+import { RUN_TITLE, RUN_TITLE_ROW } from "./RunScreen.js";
 
 const ACCEPTANCE_KINDS = new Set(["manual_evidence", "acceptance"]);
 
 function RunGate({ projectKey, runId }: { projectKey: string; runId: string }) {
   const { data, trace, error, refresh } = useRun(projectKey, runId);
-  if (error) return <div className="banner error">{error}</div>;
-  if (!data) return <div className="muted">Loading acceptance…</div>;
+  if (error) return <Alert tone="error">{error}</Alert>;
+  if (!data) return <div className="text-dim-foreground">Loading acceptance…</div>;
   return (
-    <div className="gate-page">
-      <div className="run-title-row">
-        <h2 className="run-title">
+    <div className="flex flex-col gap-4">
+      <div className={RUN_TITLE_ROW}>
+        <h2 className={RUN_TITLE}>
           Acceptance: {data.artifacts.spec?.title ?? data.status.featureId}
         </h2>
         <StatusPill status={data.status.status} />
-        <a className="btn" href={projectHref(projectKey, "runs", runId)}>
+        <a
+          className={buttonVariants({ variant: "secondary", size: "md" })}
+          href={projectHref(projectKey, "runs", runId)}
+        >
           Open run
         </a>
       </div>
@@ -60,23 +68,29 @@ export function AcceptanceSection({ project, id }: SectionProps) {
   );
   const checking = list !== null && briefs.size < list.length;
   return (
-    <div className="acceptance">
-      <nav className="acceptance-list" aria-label="Runs with acceptance results">
-        {error && <div className="banner error">{error}</div>}
-        {!list && !error && <div className="muted">Loading runs…</div>}
+    <div className="flex flex-wrap items-start gap-5">
+      <nav
+        className="flex max-w-[300px] flex-[1_1_220px] flex-col gap-2"
+        aria-label="Runs with acceptance results"
+      >
+        {error && <Alert tone="error">{error}</Alert>}
+        {!list && !error && <div className="text-dim-foreground">Loading runs…</div>}
         {shown.map((run) => {
           const brief = briefs.get(run.runId);
           return (
             <a
               key={run.runId}
-              className="item"
+              className={cn(
+                ITEM,
+                "no-underline aria-[current=page]:border-border aria-[current=page]:bg-hover aria-[current=page]:shadow-sm-hard",
+              )}
               href={projectHref(project.key, "acceptance", run.runId)}
               aria-current={id === run.runId ? "page" : undefined}
             >
-              <span className="stack">
-                <span className="item-title">{brief?.title ?? run.featureId}</span>
-                <span className="small muted">
-                  <span className="mono">{run.featureId}</span>
+              <span className={STACK}>
+                <span className="text-foreground">{brief?.title ?? run.featureId}</span>
+                <span className="text-[12px] text-dim-foreground">
+                  <span className="font-mono">{run.featureId}</span>
                   {waiting.has(run.runId) ? " · needs you" : ""}
                   {brief?.updatedAt ? ` · ${ago(Date.parse(brief.updatedAt))}` : ""}
                 </span>
@@ -84,16 +98,16 @@ export function AcceptanceSection({ project, id }: SectionProps) {
             </a>
           );
         })}
-        {checking && <div className="small muted">Checking runs…</div>}
+        {checking && <div className="text-[12px] text-dim-foreground">Checking runs…</div>}
         {list && !checking && shown.length === 0 && (
-          <div className="empty">No run has acceptance results yet.</div>
+          <Empty>No run has acceptance results yet.</Empty>
         )}
       </nav>
-      <div className="acceptance-detail">
+      <div className="min-w-0 flex-[999_1_520px]">
         {id ? (
           <RunGate key={id} projectKey={project.key} runId={id} />
         ) : (
-          <div className="empty">Choose a run to see its criteria, verdicts and evidence.</div>
+          <Empty>Choose a run to see its criteria, verdicts and evidence.</Empty>
         )}
       </div>
     </div>

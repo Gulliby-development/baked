@@ -1,4 +1,3 @@
-import "../../styles/chat.css";
 import {
   type ReactNode,
   useCallback,
@@ -26,6 +25,10 @@ import {
   type SessionDiffStats,
 } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button, buttonVariants } from "../../components/ui/button.js";
+import { emptyClass } from "../../components/ui/empty.js";
+import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
@@ -38,22 +41,30 @@ import { emptyTranscript, isBusy, reduceTranscript, turnCount } from "./transcri
 
 const NEW = "new";
 
+const CHAT = "flex-1 min-h-0 flex flex-col";
+const SCROLL = "flex-1 min-h-0 overflow-y-auto flex justify-center px-6 pt-[18px] pb-2";
+const COLUMN = "w-full max-w-[820px] flex flex-col gap-[18px] pb-3";
+const EMPTY = cn(emptyClass, "mt-12 flex flex-col items-center gap-[10px]");
+const LINK_BTN = buttonVariants({ variant: "secondary", size: "md" });
+const EMPTY_TITLE = "text-[18px] font-bold text-foreground";
+const EMPTY_P = "m-0 max-w-[480px]";
+
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 function NeedsNewer({ project }: { project: DesktopProject }) {
   return (
-    <div className="chat">
+    <div data-chat className={CHAT}>
       <ChatHeader project={project} title="Chat" sessionId={null} />
-      <div className="chat-scroll">
-        <div className="chat-column">
-          <div className="empty chat-empty">
-            <p className="chat-empty-title">Chat needs a newer BAKED</p>
-            <p>
+      <div className={SCROLL}>
+        <div className={COLUMN}>
+          <div className={EMPTY}>
+            <p className={cn(EMPTY_P, EMPTY_TITLE)}>Chat needs a newer BAKED</p>
+            <p className={EMPTY_P}>
               The BAKED that serves {project.name} has no chat API yet. Update BAKED, or point
               Settings → BAKED executable at a newer one, then restart the project.
             </p>
-            <a className="btn" href={projectHref(project.key, "runs")}>
+            <a className={LINK_BTN} href={projectHref(project.key, "runs")}>
               Open runs instead
             </a>
           </div>
@@ -65,10 +76,10 @@ function NeedsNewer({ project }: { project: DesktopProject }) {
 
 function Centered({ project, children }: { project: DesktopProject; children: ReactNode }) {
   return (
-    <div className="chat">
+    <div data-chat className={CHAT}>
       <ChatHeader project={project} title="Chat" sessionId={null} />
-      <div className="chat-scroll">
-        <div className="chat-column">{children}</div>
+      <div className={SCROLL}>
+        <div className={COLUMN}>{children}</div>
       </div>
     </div>
   );
@@ -97,9 +108,9 @@ function LatestSession({ project }: { project: DesktopProject }) {
   return (
     <Centered project={project}>
       {state === "loading" ? (
-        <p className="muted">Loading sessions…</p>
+        <p className="text-dim-foreground">Loading sessions…</p>
       ) : (
-        <div className="banner error">{state}</div>
+        <Alert tone="error">{state}</Alert>
       )}
     </Centered>
   );
@@ -379,9 +390,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   if (load === "not-found")
     return (
       <Centered project={project}>
-        <div className="empty chat-empty">
-          <p className="chat-empty-title">This chat no longer exists</p>
-          <a className="btn" href={projectHref(key, "chat", NEW)}>
+        <div className={EMPTY}>
+          <p className={cn(EMPTY_P, EMPTY_TITLE)}>This chat no longer exists</p>
+          <a className={LINK_BTN} href={projectHref(key, "chat", NEW)}>
             Start a new chat
           </a>
         </div>
@@ -391,7 +402,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const session = transcript.session;
   const empty = !draft && load === "ready" && transcript.messages.length === 0 && !transcript.live;
   return (
-    <div className="chat">
+    <div data-chat className={CHAT}>
       <ChatHeader
         project={project}
         title={draft ? "New chat" : (session?.title ?? "Chat")}
@@ -408,37 +419,41 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               ...(rewindControl ? { rewind: rewindControl } : {}),
             })}
       />
-      <section className="chat-scroll" aria-label="Conversation" ref={scroller} onScroll={onScroll}>
-        <div className="chat-column" aria-live="off">
-          {load === "loading" && <p className="muted">Loading the session…</p>}
-          {load !== "loading" && load !== "ready" && <div className="banner error">{load}</div>}
+      <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
+        <div className={COLUMN} aria-live="off">
+          {load === "loading" && <p className="text-dim-foreground">Loading the session…</p>}
+          {load !== "loading" && load !== "ready" && <Alert tone="error">{load}</Alert>}
           {(draft || empty) && transcript.pending.length === 0 && (
-            <div className="chat-welcome">
-              <p className="chat-empty-title">What should BAKED do in {project.name}?</p>
-              <p className="muted">
+            <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">
+              <p className={cn("m-0", EMPTY_TITLE)}>What should BAKED do in {project.name}?</p>
+              <p className="m-0 text-dim-foreground">
                 Describe a change, ask about the code, or paste an error. Tool approvals show up
                 here and in Needs you.
               </p>
             </div>
           )}
           {forkReport && (
-            <div className="banner fork-report" role="status">
+            <Alert role="status">
               {forkReport.map((line) => (
-                <p key={line}>{line}</p>
+                <p key={line} className="m-0">
+                  {line}
+                </p>
               ))}
-            </div>
+            </Alert>
           )}
           {rewindReport && (
-            <div className="banner fork-report rewind-report" role="status">
-              <div>
+            <Alert role="status" className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
                 {rewindReport.map((line) => (
-                  <p key={line}>{line}</p>
+                  <p key={line} className="m-0">
+                    {line}
+                  </p>
                 ))}
               </div>
-              <button type="button" className="btn" onClick={() => setRewindReport(null)}>
+              <Button variant="secondary" size="md" onClick={() => setRewindReport(null)}>
                 Dismiss
-              </button>
-            </div>
+              </Button>
+            </Alert>
           )}
           <Conversation
             transcript={transcript}
@@ -452,13 +467,13 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             }
           />
           {actionError && (
-            <p className="notice error" role="alert">
+            <p className="m-0 px-3 py-0 text-[13px] text-[var(--err)]" role="alert">
               {actionError}
             </p>
           )}
         </div>
       </section>
-      <div className="composer-wrap">
+      <div className="flex justify-center px-6 pt-2 pb-5">
         <Composer
           busy={busy}
           canStop={canStop}
