@@ -46,6 +46,11 @@ import {
   WorkspaceLeases,
 } from "./leases.js";
 import { estimatePrepared } from "./pre-run.js";
+import {
+  collectProjectMemory,
+  PROJECT_MEMORY_ARTIFACT,
+  renderProjectMemory,
+} from "./project-memory.js";
 import { undoRunEdits } from "./rollback.js";
 import {
   independenceWarnings,
@@ -214,6 +219,12 @@ export class NativeWorkflowService implements WorkflowService {
       ? renderWorkingSet(project.id, resolveWorkingSet(project), { cwd: this.workspace })
       : null;
     if (workingSet) instructionHashes.push({ source: WORKING_SET_ARTIFACT, hash: workingSet.hash });
+    const memory =
+      policy.projectMemory === false
+        ? null
+        : renderProjectMemory(collectProjectMemory(this.store), policy);
+    if (memory)
+      instructionHashes.push({ source: PROJECT_MEMORY_ARTIFACT, hash: hashBytes(memory) });
     const state: RuntimeState = {
       prompt: request.prompt,
       ownerLabel: request.ownerLabel,
@@ -271,6 +282,7 @@ export class NativeWorkflowService implements WorkflowService {
       hostDependencies,
       diff: null,
       workingSet: null,
+      projectMemory: null,
       worktree: null,
       gateResults: {},
       acceptance: {},
@@ -299,6 +311,11 @@ export class NativeWorkflowService implements WorkflowService {
           hash: artifact.content_hash,
           files: workingSet.included.map((path) => displayPath(this.workspace, path)),
         };
+        this.store.saveState(id, state);
+      }
+      if (memory) {
+        const artifact = this.store.artifact(id, "context", PROJECT_MEMORY_ARTIFACT, memory);
+        state.projectMemory = { artifactId: artifact.id, hash: artifact.content_hash };
         this.store.saveState(id, state);
       }
       if (diff) {
@@ -1240,6 +1257,16 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.readArtifact(runId, state.workingSet.artifactId),
         );
         state.workingSet = { ...state.workingSet, artifactId: copy.id };
+        this.store.saveState(id, state);
+      }
+      if (state.projectMemory) {
+        const copy = this.store.artifact(
+          id,
+          "context",
+          PROJECT_MEMORY_ARTIFACT,
+          this.store.readArtifact(runId, state.projectMemory.artifactId),
+        );
+        state.projectMemory = { ...state.projectMemory, artifactId: copy.id };
         this.store.saveState(id, state);
       }
       const result = this.store.snapshot(id);

@@ -1468,9 +1468,18 @@ export class WorkflowScheduler {
         profile.context === "planning")
         ? this.store.readArtifact(runId, state.workingSet.artifactId)
         : null;
+    // What earlier runs learned helps the agents that ask questions and choose the approach.
+    const memory =
+      state.projectMemory &&
+      (profile.context === "research" ||
+        profile.context === "specification" ||
+        profile.context === "planning")
+        ? this.store.readArtifact(runId, state.projectMemory.artifactId)
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
+      ...(memory ? { projectMemory: memory } : {}),
       executionContract: {
         checks: policy.checks,
         // An implementer works alone; the other agents' tools are only resent on every step.
@@ -1813,7 +1822,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
-      const preloaded = await preloadTaskFiles(root, task.writes);
+      const preloaded = await preloadTaskFiles(
+        root,
+        task.writes,
+        `${task.title}\n${task.description}`,
+      );
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -1833,7 +1846,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
               ? {
                   taskFiles: {
                     content: preloaded,
-                    note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines. Edit them directly; read them again only for spans of an outlined file or to cite evidence.",
+                    note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines followed by the spans of the symbols the task names. Edit them directly; read them again only for other spans of an outlined file or to cite evidence.",
                   },
                 }
               : {}),
