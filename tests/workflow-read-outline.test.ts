@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   LARGE_READ_BYTES,
   outlineLargeReads,
+  PRELOAD_TOTAL_BYTES,
+  preloadTaskFiles,
   WRITTEN_READ_BYTES,
 } from "../src/core/workflows/read-outline.js";
 
@@ -67,4 +69,33 @@ test("a file the task writes is read whole up to the written-file limit, outline
   });
   writeFileSync(large, `${content}${"// padding\n".repeat(WRITTEN_READ_BYTES / 10)}`);
   expect((await outlineLargeReads([{ path: large }], [large])).outlines).toHaveLength(1);
+});
+
+test("an implementer's preload holds small modified files whole, outlines large ones and skips new files", async () => {
+  const dir = workspace();
+  const text = await preloadTaskFiles(dir, [
+    { path: "small.ts", action: "modify" },
+    { path: "large.ts", action: "modify" },
+    { path: "new.ts", action: "create" },
+    { path: "gone.ts", action: "modify" },
+  ]);
+  expect(text).toMatch(/^--- small\.ts\n {3}1 {2}export const small = 1;\n {3}2 {2}\nhash:/);
+  expect(text).toContain("--- large.ts\nlarge.ts is ");
+  expect(text).toMatch(/\d+-\d+ class Store/);
+  expect(text).not.toContain("new.ts");
+  expect(text).not.toContain("gone.ts");
+});
+
+test("whole files in the preload stop at the total; the rest are outlined", async () => {
+  const dir = workspace();
+  const body = readFileSync(join(dir, "large.ts"), "utf8").slice(0, WRITTEN_READ_BYTES - 100);
+  const count = Math.ceil(PRELOAD_TOTAL_BYTES / body.length) + 1;
+  const writes = Array.from({ length: count }, (_, i) => {
+    writeFileSync(join(dir, `part${i}.ts`), body);
+    return { path: `part${i}.ts`, action: "modify" };
+  });
+  const text = await preloadTaskFiles(dir, writes);
+  const whole = text.split("\n\n--- ").filter((part) => part.includes("\nhash:"));
+  expect(whole.length).toBe(Math.floor(PRELOAD_TOTAL_BYTES / body.length));
+  expect(text).toContain("shown as an outline");
 });

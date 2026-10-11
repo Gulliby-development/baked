@@ -53,6 +53,7 @@ import {
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
+import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun } from "./recovery.js";
 import { abortableDelay, accountRefusal, isTransient, retryAfterMs, retryDelay } from "./retry.js";
 import {
@@ -1444,8 +1445,10 @@ export class WorkflowScheduler {
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       executionContract: {
         checks: policy.checks,
+        // An implementer works alone; the other agents' tools are only resent on every step.
         profiles: ProfileSchema.array()
           .parse(JSON.parse(this.store.run(runId).profiles_json))
+          .filter((p) => profile.context !== "implementation" || p.id === profile.id)
           .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
         policy: { allowedTools: policy.allowedTools, network: policy.network },
       },
@@ -1648,12 +1651,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   private evidenceContext(
     runId: string,
     state: RuntimeState,
-    options: { reads: boolean } = { reads: true },
+    options: { reads: boolean; commands?: boolean } = { reads: true },
   ): unknown[] {
     return this.store
       .evidence(runId)
       .filter((e) => e.snapshot_id === state.snapshotId && e.validity === "current")
       .filter((e) => options.reads || e.kind !== "read")
+      .filter((e) => options.commands !== false || e.kind !== "command")
       .map((e) => {
         const content = this.store.readArtifact(runId, e.artifact_id);
         // A read is replaced by what it read: its content is resent on every step of every later
@@ -1781,6 +1785,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
+      const preloaded = await preloadTaskFiles(root, task.writes);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -1790,7 +1795,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           this.requireProfile(profiles.find((p) => p.id === task.profileId)),
           {
             task,
-            evidence: this.evidenceContext(runId, state, { reads: false }),
+            // A planned task needs the earlier tasks' changes, not their check logs; a repair
+            // task gets the logs of the checks it fixes.
+            evidence: this.evidenceContext(runId, state, {
+              reads: false,
+              commands: task.origin !== "planned",
+            }),
+            ...(preloaded
+              ? {
+                  taskFiles: {
+                    content: preloaded,
+                    note: "The files this task modifies, as the read tool shows them: small files whole with line numbers, large ones as outlines. Edit them directly; read them again only for spans of an outlined file or to cite evidence.",
+                  },
+                }
+              : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
             ...(inherited.length
               ? {
