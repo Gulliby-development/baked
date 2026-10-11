@@ -178,7 +178,16 @@ export function budgetLimitText(budget: BudgetView): string {
 export interface RunAction {
   key: string;
   label: string;
-  action: "resume" | "pause" | "cancel" | "fork" | "decide" | "extend" | "undo" | "reroute";
+  action:
+    | "resume"
+    | "pause"
+    | "cancel"
+    | "fork"
+    | "discard-worktree"
+    | "decide"
+    | "extend"
+    | "undo"
+    | "reroute";
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
@@ -206,12 +215,14 @@ export function extensionText(budget: BudgetView): string {
 }
 /**
  * The run screen's actions. `switchTo` is the model a stopped run can move to (the tab's model
- * when it differs from the run model); null hides the action.
+ * when it differs from the run model); null hides the action. `worktree` is true while the run's
+ * worktree is still on disk.
  */
 export function runActions(
   snapshot: RunSnapshot,
   budget: BudgetView | null = null,
   switchTo: string | null = null,
+  worktree = false,
 ): RunAction[] {
   const actions: RunAction[] = [];
   const s = snapshot.status;
@@ -237,6 +248,8 @@ export function runActions(
   if (switchTo && (s === "created" || s === "paused" || s === "blocked" || s === "waiting"))
     actions.push({ key: "M", label: "switch model", action: "reroute" });
   if (s === "blocked" || isTerminal(s)) actions.push({ key: "F", label: "fork", action: "fork" });
+  if (worktree && isTerminal(s))
+    actions.push({ key: "D", label: "discard worktree", action: "discard-worktree" });
   // Undo needs the run's leases, so it is offered only while nothing executes the run.
   if (s !== "created" && s !== "running")
     actions.push({ key: "U", label: "undo edits", action: "undo" });
