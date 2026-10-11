@@ -377,7 +377,8 @@ candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE] [--w
   reasons when the current or a completed stage is gone or changed, or a contract the run needs
   is no longer produced
 revise RUN_ID --candidate SHA256 --expected-revision N [--resume [--events]]   (applies the candidate; the plan is approved again)
-  Implemented tasks the revision leaves unchanged keep their implementation; their checks run again.
+  Implemented tasks the revision leaves unchanged, or only gives added criteria, keep their
+  implementation; their checks run again.
   --resume resumes and drives the revised run in the same command (exit codes as resume)
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
