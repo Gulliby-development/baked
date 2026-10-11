@@ -15,9 +15,11 @@ export interface AttemptUsageRow {
   inputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens: number | null;
+  /** Input tokens written to the prompt cache; 0 in attempts recorded before writes were. */
+  cacheWriteTokens: number | null;
   /**
-   * Estimated USD cost from the price table: uncached input, cache reads and output (cache writes
-   * are not recorded). 0 for host attempts; null without per-step usage or a known price.
+   * Estimated USD cost from the price table: uncached input, cache reads, cache writes and
+   * output. 0 for host attempts; null without per-step usage or a known price.
    */
   costUsd: number | null;
   compactedBytes: number | null;
@@ -32,6 +34,7 @@ export interface RunUsageReport {
     tokens: number | null;
     steps: number | null;
     cacheReadTokens: number | null;
+    cacheWriteTokens: number | null;
     compactedBytes: number | null;
   };
   stages: Array<{ stage: string; attempts: number; tokens: number; steps: number | null }>;
@@ -83,6 +86,7 @@ export function runUsage(
         inputTokens: sum((step) => step.inputTokens),
         outputTokens: sum((step) => step.outputTokens),
         cacheReadTokens: sum((step) => step.cacheReadTokens),
+        cacheWriteTokens: sum((step) => step.cacheWriteTokens ?? null),
         costUsd: attemptCost(attempt.model_id, usage),
         compactedBytes: sum((step) => step.compactedBytes),
         stopReason: usage?.stopReason ?? null,
@@ -129,6 +133,7 @@ export function runUsage(
       tokens: sumReported((attempt) => attempt.usedTokens),
       steps: sumReported((attempt) => attempt.steps),
       cacheReadTokens: sumReported((attempt) => attempt.cacheReadTokens),
+      cacheWriteTokens: sumReported((attempt) => attempt.cacheWriteTokens),
       compactedBytes: sumReported((attempt) => attempt.compactedBytes),
     },
     stages: [...byStage.values()],
@@ -151,6 +156,7 @@ interface UsageTotals {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheWriteTokens: number;
   /** Estimated cost of the priced attempts. */
   costUsd: number;
   /** Tokens of attempts without per-step usage or a known price, which `costUsd` leaves out. */
@@ -183,6 +189,7 @@ const emptyTotals = (): UsageTotals => ({
   inputTokens: 0,
   outputTokens: 0,
   cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   costUsd: 0,
   unpricedTokens: 0,
 });
@@ -193,6 +200,7 @@ function addAttempt(totals: UsageTotals, attempt: AttemptUsageRow): void {
   totals.inputTokens += attempt.inputTokens ?? 0;
   totals.outputTokens += attempt.outputTokens ?? 0;
   totals.cacheReadTokens += attempt.cacheReadTokens ?? 0;
+  totals.cacheWriteTokens += attempt.cacheWriteTokens ?? 0;
   if (attempt.costUsd === null) totals.unpricedTokens += attempt.usedTokens ?? 0;
   else totals.costUsd += attempt.costUsd;
 }
@@ -278,9 +286,11 @@ function attemptCost(model: string | null, usage: AttemptUsageRecord | undefined
   for (const step of usage.steps) {
     const input = step.inputTokens ?? 0;
     const cacheRead = Math.min(step.cacheReadTokens ?? 0, input);
+    const cacheWrite = Math.min(step.cacheWriteTokens ?? 0, input - cacheRead);
     cost +=
-      (input - cacheRead) * pricing.input +
+      (input - cacheRead - cacheWrite) * pricing.input +
       cacheRead * pricing.cacheRead +
+      cacheWrite * pricing.cacheWrite +
       (step.outputTokens ?? 0) * pricing.output;
   }
   return cost / 1e6;

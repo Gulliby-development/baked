@@ -239,6 +239,7 @@ describe("runUsage totals", () => {
       tokens: null,
       steps: null,
       cacheReadTokens: null,
+      cacheWriteTokens: null,
       compactedBytes: null,
     });
   });
@@ -290,6 +291,7 @@ describe("runUsage totals", () => {
       tokens: 7,
       steps: 1,
       cacheReadTokens: 3,
+      cacheWriteTokens: 0,
       compactedBytes: 8,
     });
   });
@@ -306,6 +308,7 @@ describe("runUsage totals", () => {
       tokens: null,
       steps: null,
       cacheReadTokens: null,
+      cacheWriteTokens: null,
       compactedBytes: null,
     });
   });
@@ -332,6 +335,7 @@ describe("runUsage totals", () => {
       tokens: 12,
       steps: 2,
       cacheReadTokens: 5,
+      cacheWriteTokens: 0,
       compactedBytes: 12,
     });
     expect(report.attempts.map(({ steps, cacheReadTokens, compactedBytes }) => ({
@@ -359,6 +363,7 @@ describe("runUsage totals", () => {
       tokens: 0,
       steps: 0,
       cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       compactedBytes: 0,
     });
     expect(report.totalTokens).toBe(0);
@@ -373,6 +378,7 @@ describe("runUsage totals", () => {
       tokens: null,
       steps: null,
       cacheReadTokens: null,
+      cacheWriteTokens: null,
       compactedBytes: null,
     });
     expect(report.totalTokens).toBe(0);

@@ -26,7 +26,9 @@ export interface StepUsageLike {
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
   totalTokens?: number | undefined;
-  inputTokenDetails?: { cacheReadTokens?: number | undefined } | undefined;
+  inputTokenDetails?:
+    | { cacheReadTokens?: number | undefined; cacheWriteTokens?: number | undefined }
+    | undefined;
 }
 
 export function stepTokens(usage: StepUsageLike, fallback: number): number {
@@ -186,6 +188,8 @@ export interface AttemptStepUsage {
   inputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens: number | null;
+  /** Absent in records written before cache writes were recorded. */
+  cacheWriteTokens?: number | null;
   toolCalls: number;
   compactedBytes: number;
 }
@@ -375,6 +379,7 @@ export class AttemptStepController {
         inputTokens: step.usage.inputTokens ?? null,
         outputTokens: step.usage.outputTokens ?? null,
         cacheReadTokens: step.usage.inputTokenDetails?.cacheReadTokens ?? null,
+        cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
         toolCalls: step.toolCalls.length,
         compactedBytes: this.compactedBytes[index] ?? 0,
       })),

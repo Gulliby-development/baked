@@ -215,7 +215,7 @@ All numbers are estimates and are labeled as such. The new-run form shows a rang
 
 - Only the definition's stages count. A stage uses earlier runs of the same workflow when they reached it, then runs of other workflows, then a generic range by stage type (tasks stages: task cost times task count; approval, check and learn stages without history: zero).
 - Each stage carries the models routing gives it: the stage route, else its profile's model; tasks stages use `implementer`, review stages their review profiles, and their tokens are split evenly.
-- The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. Cache writes are not recorded, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The cost is advice only: `maxCostUsd` stays disabled.
+- The cost in USD prices 60% uncached input, 30% cache reads and 10% output at the prices in `src/core/llm/pricing.ts`. The estimate leaves cache writes out, so Anthropic costs read low. Family guesses and Copilot request prices are marked approximate; a model without a price is left out and the cost is marked partial. The cost is advice only: `maxCostUsd` stays disabled.
 
 ### Doctor
 
@@ -237,7 +237,7 @@ The evidence handed to later agents is shaped the same way. Each implemented tas
 
 A workflow agent's `read` of a whole file larger than 20 KB (24 KB for a file its task writes, whose exact text the edit needs) returns the file's outline instead: its classes, functions, methods, types and top-level variables with their line spans, from tree-sitter ([read-outline](../../src/core/workflows/read-outline.ts)). The agent then reads the spans it needs with `ranges` or a symbol with `target`. A file with no outline (an unsupported language or a parse failure) is read whole, and reads with ranges or a target are unchanged. A compacted `read` stub asks for `fresh: true`, because the read tool answers a repeated whole-file read with "already in your context". Reads of line ranges or symbols are never compacted and always run fresh: they are small and chosen for an edit, and an agent that lost them, or was refused a fourth range of the same file, read the same spans again instead of editing. An implementer that must edit and has only read for four steps in a row is told once to apply its edits. A retry of a task whose earlier attempt left edits in place gets those edits as a patch (`earlierEdits.patch`) and reads only the spans it still has to change.
 
-The prompt of an agent attempt puts the run's documents (request, research, spec, plan and task graph) on one line before the attempt's own input (the snapshot hashes, the task and its evidence). Attempts of a run then share a byte-identical prefix, which providers serve from their prompt cache.
+The prompt of an agent attempt puts the run's documents (request, research, spec, plan and task graph) on one line before the attempt's own input (the snapshot hashes, the task and its evidence). Attempts of a run then share a byte-identical prefix, which providers serve from their prompt cache. On the Claude API an attempt marks its system prompt and, with the request-level automatic breakpoint, its newest message, so each step reads the earlier steps from the cache ([providers](../providers.md#prompt-cache)). Attempt usage records cache reads and writes per step.
 
 ### Plan-time sizing
 
@@ -606,7 +606,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
 | `POST /v1/workflow/runs/RUN_ID/candidate`, `/revise` | `candidate`, `revise` | candidate takes `commandId` and inline `spec`, `plan`, `tasks`, `policy`; revise takes `candidate` plus `commandId`, `expectedRevision` |
 | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; `GET /v1/commands`, `GET /v1/skills` | | the terminal UI's gate editor, custom commands and skills; see `docs/desktop/api.md` |
-| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads) and estimated cost of every attempt started in the window, grouped |
+| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads, cache writes) and estimated cost of every attempt started in the window, grouped |
 | `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `docs/desktop/api.md`; start, approve and resume drive the initiative in the background |
 | `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
 | `GET /v1/projects` | `projects list --json` | every folder BAKED was opened in (`~/.baked/known-projects.json`), pinned first: `path`, `name`, `projectId` (null without `baked/project.json`), `pinned`, `exists`, `current` and `overview` (`sessions`, `lastSessionAt`, `activeRuns`, `attention`). Each folder is served by its own `baked serve`. |
