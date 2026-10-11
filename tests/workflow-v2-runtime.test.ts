@@ -342,11 +342,23 @@ describe("workflow v2 scheduler", () => {
     expect(position?.stageId).toBe("approve");
   }, 30000);
 
-  test("under clarification: assume a finding that survives the loop-backs goes to a person", async () => {
-    const { start, drive, executor } = setup({ analysisFindings: 3 }, { ...policy, clarification: "assume" });
+  test("under clarification: assume a finding that survives the loop-backs is recorded as an assumption", async () => {
+    const { start, drive, service, executor } = setup({ analysisFindings: 3 }, { ...policy, clarification: "assume" });
+    const run = await start("standard");
+    expect((await drive(run.runId)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis", "plan", "analysis"]);
+    expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+    expect(service.store.artifacts(run.runId).some((x) => x.logical_path === "assumptions/analysis.json")).toBe(true);
+  }, 30000);
+
+  test("under clarification: assume a scope finding that survives the loop-backs goes to a person", async () => {
+    const { start, drive, executor } = setup(
+      { analysisFindings: 3, findingKind: "scope", findingRefs: ["spec.json"] },
+      { ...policy, clarification: "assume" },
+    );
     const run = await start("standard");
     expect((await drive(run.runId)).reason).toBe("clarification");
-    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis", "plan", "analysis"]);
+    expect(executor.calls.filter((c) => c === "analysis").length).toBeGreaterThanOrEqual(2);
   }, 30000);
 
   test("without clarification: assume a spec finding from analysis goes to a person", async () => {

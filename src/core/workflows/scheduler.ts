@@ -30,6 +30,7 @@ import {
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
+import { assumable, hostCounts, isCountNit } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
@@ -572,6 +573,7 @@ export class WorkflowScheduler {
                   {
                     verifiedByRuntime: PLAN_CONSISTENCY_CHECKS,
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                    hostCounts: hostCounts(graph),
                   },
                   signal,
                   undefined,
@@ -616,14 +618,19 @@ export class WorkflowScheduler {
                   finding.description = `Contradicted by the workspace facts (facts/workspace.json); kept as a note: ${finding.description}`;
                 }
               }
+              // The host computed the task and file counts; a finding that only compares them is a note.
+              const counts = hostCounts(graph);
+              for (const finding of analysis.findings) {
+                if (finding.blocking && isCountNit(finding.description)) {
+                  finding.blocking = false;
+                  finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
+                }
+              }
               // Findings about check outcomes stay in the record as notes; checks run later.
-              const findings = demoteDeferred(analysis.findings, (f) => f.description);
+              let findings = demoteDeferred(analysis.findings, (f) => f.description);
+              // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
-              const onlyDeferred = !blocking && analysis.findings.some((f) => f.blocking);
-              state.analysisPassed =
-                !blocking &&
-                (analysis.verdict === "pass" ||
-                  (analysis.verdict === "needs_revision" && onlyDeferred));
+              state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
               const planOnly = state.analysisPassed ? [] : planOnlyFindings(findings);
               const stages = this.stageKinds(runId, v2);
               const plan = stages.findIndex((s) => s.kind === "plan");
@@ -640,7 +647,8 @@ export class WorkflowScheduler {
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
-                state.analysisReplans < 2
+                state.analysisReplans < 2 &&
+                findings.some((f) => f.blocking)
               ) {
                 const blockingFindings = findings.filter((f) => f.blocking);
                 const asking = v2
@@ -657,6 +665,43 @@ export class WorkflowScheduler {
                   rerouted = v2 !== null;
                   break;
                 }
+              }
+              // Under assume a person is not asked about what a default settles: the findings that
+              // survived the reroute are recorded as assumptions and the run goes on to approval,
+              // where a person sees them. A scope finding still asks.
+              if (
+                !state.analysisPassed &&
+                policy.clarification === "assume" &&
+                state.analysisReplans >= 2 &&
+                analysis.verdict !== "inconclusive" &&
+                findings.every((f) => !f.blocking || assumable(f))
+              ) {
+                const assumed = findings.filter((f) => f.blocking);
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "assumption",
+                    "assumptions/analysis.json",
+                    canonical({
+                      assumed: assumed.map(({ id, kind, refs, description }) => ({
+                        id,
+                        kind,
+                        refs,
+                        description,
+                      })),
+                    }),
+                  ),
+                );
+                findings = findings.map((f) =>
+                  f.blocking
+                    ? {
+                        ...f,
+                        blocking: false,
+                        description: `Assumed under clarification assume (assumptions/analysis.json): ${f.description}`,
+                      }
+                    : f,
+                );
+                state.analysisPassed = true;
               }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
@@ -1221,17 +1266,24 @@ export class WorkflowScheduler {
     return split;
   }
   /**
-   * The host inventory of the workspace the run starts from. It is stored as `facts/workspace.json`
-   * (a new revision only when it changes) so every front end shows what the stages were told.
+   * The host inventory of the workspace the run starts from, taken once before research and stored
+   * as `facts/workspace.json`: later stages read the same facts (the run's own published specs
+   * must not turn into "existing files"), and every front end shows what the stages were told.
    */
   private recordFacts(runId: string, root: string): WorkspaceFacts {
-    const facts = workspaceFacts(root);
-    const content = canonical(facts);
     const latest = this.store.latestArtifact(runId, "facts/workspace.json");
-    if (!latest || latest.content_hash !== hashBytes(content))
-      this.store.transaction(() =>
-        this.store.artifact(runId, "facts", "facts/workspace.json", content),
-      );
+    if (latest) {
+      try {
+        const stored = JSON.parse(this.store.readArtifact(runId, latest.id)) as WorkspaceFacts;
+        if (stored.schemaVersion === 1 && Array.isArray(stored.files)) return stored;
+      } catch {
+        // An unreadable record is rebuilt below.
+      }
+    }
+    const facts = workspaceFacts(root);
+    this.store.transaction(() =>
+      this.store.artifact(runId, "facts", "facts/workspace.json", canonical(facts)),
+    );
     return facts;
   }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */

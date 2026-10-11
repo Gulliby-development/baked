@@ -14,6 +14,7 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
 import { hostDiff } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
+import { supersedeResearch } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { AttentionNotifier } from "./attention-notify.js";
 import {
@@ -528,6 +529,20 @@ export class NativeWorkflowService implements WorkflowService {
             ...research,
             unknowns: research.unknowns.map((q) => ({ ...q, blocking: false })),
           });
+        }
+        // An answer to an analysis finding supersedes the research the analyzer reads, so the same
+        // fact is not raised again.
+        if (asking?.kind === "analyze" && state.research) {
+          const findings = Array.isArray(body.findings)
+            ? (body.findings as { id?: unknown; description?: unknown }[])
+            : [];
+          state.research = canonical(
+            supersedeResearch(
+              ResearchSchema.parse(JSON.parse(state.research)),
+              findings,
+              decision.answers,
+            ),
+          );
         }
         if (answerInvalidatesAnalysis(asking?.kind)) state.analysisPassed = false;
         const resume = clarificationResumeIndex(stages, askingIndex, body);

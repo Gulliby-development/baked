@@ -149,7 +149,7 @@ const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: 
 class ScriptedExecutor implements AgentExecutor {
   calls: string[] = [];
   requests: ExecutionRequest[] = [];
-  constructor(private script: { researchUnknowns?: { question: string; blocking: boolean }[]; planFinding?: number; specQuestion?: boolean; findingRefs?: string[]; findingKind?: string }) {}
+  constructor(private script: { researchUnknowns?: { question: string; blocking: boolean }[]; planFinding?: number; specQuestion?: boolean; findingRefs?: string[]; findingKind?: string; findingText?: string; nonBlocking?: boolean }) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     this.requests.push(request);
@@ -173,7 +173,7 @@ class ScriptedExecutor implements AgentExecutor {
         const ask = (this.script.planFinding ?? 0) > 0;
         this.script.planFinding = Math.max(0, (this.script.planFinding ?? 0) - 1);
         output = ask
-          ? { schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision", findings: [{ id: "F1", kind: this.script.findingKind ?? "coverage", refs: this.script.findingRefs ?? ["tasks.json"], description: "Task order unclear", blocking: true }] }
+          ? { schemaVersion: 1, inputHash: data.inputHash, verdict: "needs_revision", findings: [{ id: "F1", kind: this.script.findingKind ?? "coverage", refs: this.script.findingRefs ?? ["tasks.json"], description: this.script.findingText ?? "Task order unclear", blocking: !this.script.nonBlocking }] }
           : { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       }
@@ -244,6 +244,37 @@ describe("answering a clarification", () => {
     expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
     expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis", "plan", "analysis"]);
   });
+  test("needs_revision with only non-blocking findings passes the analysis as notes", async () => {
+    const executor = new ScriptedExecutor({ planFinding: 1, nonBlocking: true, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] });
+    const service = setup(executor);
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis"]);
+    expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+  });
+  test("a blocking finding that only compares task or file counts is a note; the model is given the host counts", async () => {
+    const executor = new ScriptedExecutor({ planFinding: 1, findingKind: "inconsistency", findingRefs: ["plan.md", "tasks.json"], findingText: "plan.md says 8 tasks and 14 files, but tasks.json has 9 tasks and 12 files" });
+    const service = setup(executor);
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+    expect(executor.calls).toEqual(["research", "spec", "plan", "analysis"]);
+    expect(executor.requests[3]?.prompt).toContain('"hostCounts":{"files":1,"tasks":1}');
+    // The facts are the ones taken before research: the run's own published specs are not in them.
+    expect(executor.requests[3]?.prompt).toContain('"kind":"empty"');
+  });
+  test("an answer to an analysis finding supersedes the research it contradicts", async () => {
+    const executor = new ScriptedExecutor({ planFinding: 2 });
+    const service = setup(executor);
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
+    const request = service.store.requests(run.runId).find((r) => r.kind === "clarification" && r.status === "pending");
+    const current = await service.get(run.runId);
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: current.revision }, { kind: "answer", requestId: request?.id ?? "", answers: { F1: "The order is by name" } });
+    const research = service.store.state(run.runId).research ?? "";
+    expect(research).toContain("Superseded by the user's answer");
+    expect(research).toContain("Task order unclear");
+    expect(research).toContain("The order is by name");
+  });
   describe("with clarification: assume", () => {
     const assume: RunPolicy = { ...policy, clarification: "assume" };
     const startAssume = (service: NativeWorkflowService) =>
@@ -288,8 +319,17 @@ describe("answering a clarification", () => {
       expect(JSON.parse(service.store.run(run.runId).policy_json).clarification).toBeUndefined();
       expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
     });
-    test("a finding that survives goes to a person", async () => {
+    test("a finding that survives the reroute is recorded as an assumption, not asked", async () => {
       const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] });
+      const service = setup(executor);
+      const run = await startAssume(service);
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+      expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+      const recorded = service.store.artifacts(run.runId).find((a) => a.logical_path === "assumptions/analysis.json");
+      expect(recorded?.kind).toBe("assumption");
+    });
+    test("a scope finding that survives still goes to a person", async () => {
+      const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "scope", findingRefs: ["spec.json"] });
       const service = setup(executor);
       const run = await startAssume(service);
       expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
