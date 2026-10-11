@@ -693,6 +693,59 @@
   cursor: default;
 }
 
+/* Fork from a message */
+.assistant-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fork-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 13px;
+  color: var(--text-4);
+}
+
+.fork-row:not(.fork-confirm) {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.assistant-turn:hover .fork-row,
+.fork-row:focus-within {
+  opacity: 1;
+}
+
+.fork-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--text-4);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.fork-link:hover {
+  color: var(--text);
+}
+
+.fork-link:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.fork-report p {
+  margin: 0;
+}
+
 .notice {
   margin: 0;
   padding: 0 12px;

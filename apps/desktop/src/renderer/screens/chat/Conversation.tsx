@@ -195,6 +195,47 @@ function Assistant({
   );
 }
 
+function ForkAction({
+  disabled,
+  onFork,
+}: {
+  disabled: boolean;
+  onFork: (rollbackFiles: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!open)
+    return (
+      <div className="fork-row">
+        <button
+          type="button"
+          className="fork-link"
+          disabled={disabled}
+          onClick={() => setOpen(true)}
+        >
+          Fork from here
+        </button>
+      </div>
+    );
+  const pick = (rollbackFiles: boolean) => {
+    setOpen(false);
+    onFork(rollbackFiles);
+  };
+  return (
+    <fieldset className="fork-row fork-confirm" aria-label="Fork from here">
+      <span>Continue in a new chat from this point. Roll the files back too?</span>
+      <button type="button" className="btn" onClick={() => pick(false)}>
+        Chat only
+      </button>
+      <button type="button" className="btn-primary" onClick={() => pick(true)}>
+        Chat and files
+      </button>
+      <button type="button" className="fork-link" onClick={() => setOpen(false)}>
+        Cancel
+      </button>
+    </fieldset>
+  );
+}
+
 function UserBubble({
   text,
   note,
@@ -366,11 +407,16 @@ export function Conversation({
   deciding,
   onApprove,
   onAnswer,
+  forking,
+  onFork,
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
   onApprove: (id: string, approve: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
+  forking?: boolean;
+  /** Forks the session after `messageId`; absent while the session cannot be forked. */
+  onFork?: (messageId: string, rollbackFiles: boolean) => void;
 }) {
   const { messages, live, prompts, pending, notice, thoughtMs } = transcript;
   const running = transcript.turnId !== null;
@@ -387,12 +433,15 @@ export function Conversation({
             {...(message.inputContext ? { context: message.inputContext } : {})}
           />
         ) : message.role === "assistant" ? (
-          <Assistant
-            key={message.id}
-            message={message}
-            thoughtMs={thoughtMs[message.id]}
-            thinking={false}
-          />
+          <div key={message.id} className="assistant-turn">
+            <Assistant message={message} thoughtMs={thoughtMs[message.id]} thinking={false} />
+            {onFork && !running && (
+              <ForkAction
+                disabled={forking === true}
+                onFork={(rollbackFiles) => onFork(message.id, rollbackFiles)}
+              />
+            )}
+          </div>
         ) : null,
       )}
       {live && (

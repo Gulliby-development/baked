@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { parseInline, parseMarkdown } from "../src/renderer/screens/chat/markdown-parse.ts";
 import { toolDiff, toolTitle } from "../src/renderer/screens/chat/tools.ts";
+import {
+  forkReportLines,
+  rememberForkReport,
+  takeForkReport,
+} from "../src/renderer/screens/chat/fork.ts";
 import { parseChatEvent } from "../src/renderer/screens/chat/transcript.ts";
 
 describe("tool titles", () => {
@@ -127,5 +132,31 @@ describe("session events", () => {
     expect(parseChatEvent({ id: null, event: "reset", data: "{}" })).toEqual({ type: "reset" });
     expect(parseChatEvent({ id: "1", event: "unknown", data: "{}" })).toBeNull();
     expect(parseChatEvent({ id: "1", event: "text", data: "not json" })).toBeNull();
+  });
+});
+
+describe("fork reports", () => {
+  test("name restored, removed and kept files and the backup tag", () => {
+    expect(forkReportLines(undefined)).toEqual(["Forked the chat. Files were left as they are."]);
+    expect(
+      forkReportLines({
+        checkpoint: 2,
+        snapshot: "baked/cp-1",
+        backupTag: "baked/fork-backup-1",
+        restored: ["/w/src/a.ts"],
+        removed: ["/w/b.ts"],
+        skipped: [{ path: "/w/src/c.ts", reason: "has changes no checkpoint holds" }],
+      }),
+    ).toEqual([
+      "Forked at checkpoint #2: restored 1 file(s), removed 1.",
+      "Left src/c.ts as it is: has changes no checkpoint holds.",
+      "The files from before the fork are in Git tag baked/fork-backup-1.",
+    ]);
+  });
+
+  test("are read once by the new session", () => {
+    rememberForkReport("s1", ["done"]);
+    expect(takeForkReport("s1")).toEqual(["done"]);
+    expect(takeForkReport("s1")).toBeNull();
   });
 });

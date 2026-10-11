@@ -112,7 +112,8 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
   if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
   if (action === "fork") {
     const body = ForkSessionBody.parse(await ctx.readJson());
-    return ctx.json(201, (await chat.fork(id, body.atMessageId)).detail());
+    const { session, rollback } = await chat.fork(id, body.atMessageId, body);
+    return ctx.json(201, { ...session.detail(), ...(rollback ? { rollback } : {}) });
   }
   if (action === "messages") {
     const body = MessageBody.parse(await ctx.readJson());

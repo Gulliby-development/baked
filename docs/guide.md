@@ -69,9 +69,23 @@ Every turn is a checkpoint. `Ctrl+B` and `Ctrl+F` step back and forward; browsin
 | `/checkpoint N`, `/checkpoint live` | View checkpoint N, return to live |
 | `/checkpoint undo [N]` | Undo the last checkpoint, or back to N, including its file edits |
 | `/checkpoint redo` | Redo the last undo |
+| `/checkpoint fork [N] [--force]` | Continue from checkpoint N (the viewed one, or the latest) in a new tab, with the files rolled back to it |
 | `/checkpoint save` | Save the current state as a Git tag |
 
 Checkpoints with file edits are tagged in Git; undo restores only the files those checkpoints edited. Without Git, undo rewinds the conversation only. Each tab has its own checkpoint history.
+
+### Forking a checkpoint
+
+`/checkpoint fork N` opens a new tab with the conversation up to the end of checkpoint N and restores the files the agent edited after it to their state at N; the original tab keeps its whole history. Browse to a checkpoint with `Ctrl+B` and run `/checkpoint fork` to fork the one you are viewing. The working tree is shared, so the rollback is visible to every tab.
+
+The snapshots are Git tags (`baked/cp-*`) of the whole working tree, uncommitted and untracked files included and ignored files left out, made in a temporary index so your index, HEAD and branch do not change. The first message of a tab snapshots the workspace as it was before the conversation, and each checkpoint with edits snapshots it after. Forking never discards work silently:
+
+- Before any file changes, the current working tree is saved to a `baked/fork-backup-*` tag; restore a file with `git restore --source=baked/fork-backup-XXXX -- path`.
+- A file whose current content is in none of the conversation's snapshots (you or another program changed it after the agent did) is left as it is and listed. `--force` restores it too; it is still in the backup tag.
+- Files another tab is editing, files Git ignores, and files outside the project are left as they are and listed.
+- Only files the agent changed with its edit tools are rolled back; changes made through shell commands are not tracked.
+
+Fork needs a Git repository only when there are files to restore. The same fork is `baked session fork` on the command line ([headless CLI](headless.md#forking-a-session)) and "Fork from here" in the desktop chat.
 
 ## Sessions
 

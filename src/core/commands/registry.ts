@@ -826,6 +826,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["restore"],
   },
   {
+    cmd: "/checkpoint fork",
+    ic: "bookmark",
+    desc: "Fork a checkpoint into a new tab (rolls back files)",
+    category: "Session",
+    tags: ["branch", "rollback", "tab"],
+  },
+  {
     cmd: "/checkpoint save",
     ic: "bookmark",
     desc: "Force save current state as git tag",

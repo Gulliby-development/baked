@@ -55,6 +55,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/checkpoint` | Browse checkpoints — undo, redo, save |
 | `/checkpoint undo` | Undo last checkpoint (revert files) |
 | `/checkpoint redo` | Redo last undone checkpoint |
+| `/checkpoint fork` | Fork a checkpoint into a new tab (rolls back files): `/checkpoint fork [N] [--force]` |
 | `/checkpoint save` | Force save current state as git tag |
 | `/checkpoint live` | Back to live view |
 
@@ -173,6 +174,7 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked quick TEXT` | A small task through the quick workflow ([quick workflow](workflows/quick.md)) |
 | `baked doctor` | Checks before a workflow run: keys, routed models, check commands, Git, budget |
 | `baked serve [--port N] [--allow-origin ORIGIN]` | Local HTTP API on 127.0.0.1 for the desktop app ([local API](workflows/runtime.md#local-api-baked-serve)) |
+| `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
 | `baked telemetry [--json]` | The locally recorded usage events ([privacy](privacy.md)) |
 | `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |

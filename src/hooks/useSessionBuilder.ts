@@ -48,31 +48,7 @@ export function buildSessionMeta({
     // Extract checkpoint git tags for session persistence (include redo stack
     // so undo→save→restore→redo works)
     const cpStore = useCheckpointStore.getState();
-    const cpState = cpStore.getCheckpoints(tabState.id);
-    const redoStack = cpStore.getTab(tabState.id).redoStack;
-    const seen = new Set<string>();
-    const checkpointTags: Array<{ index: number; anchorMessageId: string; gitTag: string }> = [];
-    for (const cp of cpState) {
-      if (cp.gitTag && !seen.has(cp.gitTag)) {
-        seen.add(cp.gitTag);
-        checkpointTags.push({
-          index: cp.index,
-          anchorMessageId: cp.anchorMessageId,
-          gitTag: cp.gitTag,
-        });
-      }
-    }
-    for (const entry of redoStack) {
-      const cp = entry.checkpoint;
-      if (cp.gitTag && !seen.has(cp.gitTag)) {
-        seen.add(cp.gitTag);
-        checkpointTags.push({
-          index: cp.index,
-          anchorMessageId: cp.anchorMessageId,
-          gitTag: cp.gitTag,
-        });
-      }
-    }
+    const checkpointTags = cpStore.snapshotTags(tabState.id);
 
     const uiSnapshot = useUIStore.getState();
     const verboseForTab = uiSnapshot.verboseByTab[tabState.id];
@@ -134,32 +110,7 @@ export function buildTabMeta(args: {
 }): { tabMeta: TabMeta; messages: ChatMessage[]; coreMessages?: ModelMessage[] } {
   const msgs = args.messages.filter((m) => m.role !== "system" || m.showInChat);
 
-  const cpStore = useCheckpointStore.getState();
-  const cpState = cpStore.getCheckpoints(args.tabId);
-  const redoStack = cpStore.getTab(args.tabId).redoStack;
-  const seen = new Set<string>();
-  const checkpointTags: Array<{ index: number; anchorMessageId: string; gitTag: string }> = [];
-  for (const cp of cpState) {
-    if (cp.gitTag && !seen.has(cp.gitTag)) {
-      seen.add(cp.gitTag);
-      checkpointTags.push({
-        index: cp.index,
-        anchorMessageId: cp.anchorMessageId,
-        gitTag: cp.gitTag,
-      });
-    }
-  }
-  for (const entry of redoStack) {
-    const cp = entry.checkpoint;
-    if (cp.gitTag && !seen.has(cp.gitTag)) {
-      seen.add(cp.gitTag);
-      checkpointTags.push({
-        index: cp.index,
-        anchorMessageId: cp.anchorMessageId,
-        gitTag: cp.gitTag,
-      });
-    }
-  }
+  const checkpointTags = useCheckpointStore.getState().snapshotTags(args.tabId);
 
   const uiSnapshot = useUIStore.getState();
   const verboseForTab = uiSnapshot.verboseByTab[args.tabId];
