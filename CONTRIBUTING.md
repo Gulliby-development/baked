@@ -30,13 +30,15 @@ Keep agent logic independent of the UI. Preserve approval callbacks, secret hand
 bun run typecheck
 bun run lint
 bun test tests/<feature>.test.ts
-bun test
+bun run test
 bun run build
 ```
 
 `bun run typecheck` runs `bun check` (Bun 1.4.3 or newer, the version CI uses). On an older Bun, `bun run typecheck:tsc` runs the same check with `tsc` from `package.json`.
 
-Run the full test suite for shared behavior changes. Build after changes to startup, dependencies, or bundling. The generated application starts with `bun run dist/index.js`.
+Run the full test suite for shared behavior changes. Use `bun run test` rather than a bare `bun test` for the whole suite: the script passes `--timeout 30000`, which workflow tests need on slower machines, and Bun applies a timeout set in a preload only to the first test file.
+
+CI runs `bun run test` on Linux for every pull request (`CI / check`). The `OS tests` workflow runs it on Windows and macOS (runners there cost 2x and 10x Linux minutes) for pull requests that change platform-sensitive code, nightly against `main`, and on manual dispatch. Its `scope` job holds the path list: process, shell, path, file system and key store code (`src/core/platform`, `workflows`, `verification`, `tools`, `sessions`, `git` and similar), `src/headless`, the test setup, dependencies and the workflow file. Add a directory there when it gains platform-specific behavior. A test of a feature one platform lacks uses `test.skipIf` with a comment naming the platform; a test that fails on one platform is fixed, not skipped. Build after changes to startup, dependencies, or bundling. The generated application starts with `bun run dist/index.js`.
 
 Checkouts use LF line endings on every platform (`.gitattributes`). A Windows checkout made before that file existed still has CRLF files, which `bun run lint` reports as format errors. Convert it once with `git rm --cached -r -q . && git reset --hard` after committing or stashing your work.
 

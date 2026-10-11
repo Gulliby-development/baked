@@ -56,7 +56,12 @@ import {
 import { GateSchema } from "./definition.js";
 import { FilterProxy, type ProxyDecision, type ProxyResolver } from "./filter-proxy.js";
 import { confirmGates, loadGateLibrary } from "./library.js";
-import { listenerViolations, listeningSockets, TerminalApp } from "./terminal-driver.js";
+import {
+  listenerViolations,
+  listeningSockets,
+  PORTS_UNCHECKED,
+  TerminalApp,
+} from "./terminal-driver.js";
 
 /** A flaky or wrong test goes back to the writer at most this many times. */
 export const MAX_REWRITES = 2;
@@ -440,17 +445,28 @@ export class WalkSession {
   private watchPorts(): void {
     if (this.monitor) return;
     const granted = this.gate.acceptance.capabilities.listenPorts;
+    // Reading the socket table outside Linux runs a command; one read at a time.
+    let reading = false;
     this.monitor = setInterval(() => {
       const app = this.app;
-      if (!app || app.exited) return;
-      const sockets = listeningSockets(app.pids());
-      if (!sockets) return;
-      const problems = listenerViolations(sockets, granted).filter(
-        (p) => !this.violations.includes(p),
-      );
-      if (!problems.length) return;
-      this.violations.push(...problems);
-      void app.stop();
+      if (!app || app.exited || reading) return;
+      reading = true;
+      void listeningSockets(app.pids())
+        .then((sockets) => {
+          if (!sockets) {
+            if (!this.violations.includes(PORTS_UNCHECKED)) this.violations.push(PORTS_UNCHECKED);
+            return;
+          }
+          const problems = listenerViolations(sockets, granted).filter(
+            (p) => !this.violations.includes(p),
+          );
+          if (!problems.length || app.exited) return;
+          this.violations.push(...problems);
+          void app.stop();
+        })
+        .finally(() => {
+          reading = false;
+        });
     }, PORT_POLL_MS);
   }
   private async stopApp(): Promise<unknown> {
@@ -629,14 +645,21 @@ async function runTest(
       timeoutMs: gate.timeoutMs,
       signal,
       onSpawn: (pid, marker) => {
+        let reading = false;
         monitor = setInterval(() => {
-          const sockets = listeningSockets([pid, ...(scopedProcesses(marker) ?? [])]);
-          if (!sockets) return;
-          for (const problem of listenerViolations(
-            sockets,
-            gate.acceptance.capabilities.listenPorts,
-          ))
-            if (!violations.includes(problem)) violations.push(problem);
+          if (reading) return;
+          reading = true;
+          void listeningSockets([pid, ...(scopedProcesses(marker) ?? [])])
+            .then((sockets) => {
+              const problems = sockets
+                ? listenerViolations(sockets, gate.acceptance.capabilities.listenPorts)
+                : [PORTS_UNCHECKED];
+              for (const problem of problems)
+                if (!violations.includes(problem)) violations.push(problem);
+            })
+            .finally(() => {
+              reading = false;
+            });
         }, PORT_POLL_MS);
       },
     });

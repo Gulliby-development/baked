@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configDir } from "../src/core/platform/index.js";
 
 // Isolate config/anon-id writes into a throwaway dir.
 let tmp: string;
 let origHome: string | undefined;
+let origLocal: string | undefined;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "sf-telem-"));
@@ -13,6 +15,9 @@ beforeEach(() => {
   // rotating anon-id never touches the real config dir.
   origHome = process.env.HOME;
   process.env.HOME = tmp;
+  // On Windows configDir() resolves from LOCALAPPDATA instead.
+  origLocal = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = join(tmp, "local");
   delete process.env.DO_NOT_TRACK;
   delete process.env.BAKED_TELEMETRY;
   delete process.env.BAKED_TELEMETRY_URL;
@@ -21,6 +26,8 @@ beforeEach(() => {
 afterEach(() => {
   if (origHome === undefined) delete process.env.HOME;
   else process.env.HOME = origHome;
+  if (origLocal === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = origLocal;
   rmSync(tmp, { recursive: true, force: true });
   mock.restore();
 });
@@ -185,7 +192,7 @@ describe("maybeShowTelemetryNotice", () => {
 });
 
 describe("runTelemetryCli", () => {
-  const configFile = () => join(tmp, ".baked", "config.json");
+  const configFile = () => join(configDir(), "config.json");
 
   test("on and off write telemetry to the global config", async () => {
     const { runTelemetryCli } = await load();

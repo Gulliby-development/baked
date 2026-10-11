@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
@@ -630,7 +630,7 @@ describe("workflow v2 scheduler", () => {
 
   test("V2-09 advisory gates never block, retries are recorded and a late pass is flaky", async () => {
     const { start, complete, service, define, gate, root } = setup();
-    const counter = join(root, "..", `${root.split("/").at(-1)}-counter`);
+    const counter = join(root, "..", `${basename(root)}-counter`);
     cleanups.push(() => rmSync(counter, { force: true }));
     gate(commandGate("always-fails", ["-e", "process.exit(3)"], { required: false }));
     gate(commandGate("second-time", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));process.exit(n>1?0:1)`], { retries: { max: 2, retryOn: ["failed"] } }));

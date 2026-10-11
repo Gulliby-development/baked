@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { tool } from "ai";
 import { z } from "zod";
@@ -121,7 +121,7 @@ async function enrichWithBlastRadius(
   repoMap?: IntelligenceClient,
 ): Promise<void> {
   if (!result.success || !repoMap?.isReady) return;
-  const rel = filePath.startsWith("/") ? filePath.slice(cwd.length + 1) : filePath;
+  const rel = isAbsolute(filePath) ? relative(cwd, filePath).replaceAll("\\", "/") : filePath;
   const blast = await repoMap.getFileBlastRadius(rel);
   const cochanges = await repoMap.getFileCoChanges(rel);
   if (blast > 0 || cochanges.length > 0) {
@@ -1841,7 +1841,7 @@ export function buildTools(
           }) => {
             // Delegate to our own file operations
             const fs = await import("node:fs");
-            const absPath = path.startsWith("/") ? path : resolve(effectiveCwd, path);
+            const absPath = resolve(effectiveCwd, path);
             switch (command) {
               case "view": {
                 if (!fs.existsSync(absPath)) return `File not found: ${path}`;

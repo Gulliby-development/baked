@@ -16,7 +16,10 @@ export function isInside(root: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-/** Forward-slash relative path for display and globbing. */
+/**
+ * Forward-slash relative path for display and globbing. Both sides are compared as real paths, so
+ * a folder reached through a symlink (macOS `/var` is `/private/var`) still gives a short path.
+ */
 export function displayPath(from: string, path: string): string {
-  return relative(from, path).replaceAll("\\", "/") || ".";
+  return relative(realPath(from), realPath(path)).replaceAll("\\", "/") || ".";
 }

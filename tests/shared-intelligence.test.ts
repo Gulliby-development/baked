@@ -18,6 +18,7 @@ import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
 import { WorkerClient } from "../src/core/workers/rpc.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 class BorrowerClient extends WorkerClient {
   constructor(relay: ReturnType<typeof serveIntelligenceRelay>) {
@@ -117,7 +118,8 @@ describe("intelligence relay", () => {
   afterAll(async () => {
     relay.dispose();
     await owner.close();
-    rmSync(dir, { recursive: true, force: true });
+    // The worker and its language servers release their handles in the folder shortly after close.
+    await removeTempDir(dir);
   });
 
   test("a borrowed client starts from the owner's state and calls the owner's worker", async () => {

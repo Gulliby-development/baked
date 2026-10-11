@@ -124,8 +124,8 @@ describe("working set", () => {
     const project = resolveProject(app, { configDir: profile });
     if (!project) throw new Error("no project");
     const set = resolveWorkingSet(project);
-    expect(set.files.map((f) => f.path.slice(realpath(app).length + 1))).toEqual(["src/a.ts", "src/nested/b.ts", "notes/todo.md"]);
-    const reasons = Object.fromEntries(set.skipped.map((s) => [s.path.split("/").slice(-2).join("/"), s.reason]));
+    expect(set.files.map((f) => f.path.slice(realpath(app).length + 1).replaceAll("\\", "/"))).toEqual(["src/a.ts", "src/nested/b.ts", "notes/todo.md"]);
+    const reasons = Object.fromEntries(set.skipped.map((s) => [s.path.split(/[\\/]/).slice(-2).join("/"), s.reason]));
     expect(reasons).toMatchObject({
       "app/.env": "forbidden (.env)",
       ".git/config": "excluded directory",

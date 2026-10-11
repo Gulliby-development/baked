@@ -4,6 +4,7 @@
  */
 
 import { bunShellArgs, IS_WIN } from "../platform/index.js";
+import { realPath } from "../projects/paths.js";
 
 // Format command per checkout root; `null` from setFormatCache disables formatting everywhere.
 const formatCommands = new Map<string, string | null>();
@@ -46,7 +47,8 @@ export async function autoFormatAfterEdit(filePath: string, cwd?: string): Promi
   const cmd = await getFormatCommand(effectiveCwd);
   if (!cmd) return false;
 
-  const command = `${cmd} ${shellQuote(filePath)}`;
+  // A real path, as in `formatFile`: the formatter sees its working directory as a real path.
+  const command = `${cmd} ${shellQuote(realPath(filePath))}`;
   try {
     const proc = Bun.spawn(bunShellArgs(command), {
       cwd: effectiveCwd,

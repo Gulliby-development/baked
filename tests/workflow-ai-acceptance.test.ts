@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
+import { killTree } from "../src/core/platform/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
@@ -11,7 +13,7 @@ import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { type AcceptanceGateDefinition, failedAssertions, forbiddenConstructs, walkProblems } from "../src/core/workflows/v2/acceptance.js";
-import { listenerViolations, parseProcNetTcp } from "../src/core/workflows/v2/terminal-driver.js";
+import { isLoopbackAddress, listenerViolations, listeningSockets, parseLsofListeners, parseProcNetTcp, parsePsTable, parseWindowsSockets, processFamily } from "../src/core/workflows/v2/terminal-driver.js";
 import { recordedSteps, runTestOnce, WalkSession, type WalkStep } from "../src/core/workflows/v2/acceptance-gate.js";
 import { type BrowserLauncher, type BrowserPage, MISSING_PLAYWRIGHT } from "../src/core/workflows/v2/browser-driver.js";
 import type { ProxyDecision } from "../src/core/workflows/v2/filter-proxy.js";
@@ -649,4 +651,64 @@ describe("AI acceptance gate", () => {
     expect(forbiddenConstructs("await Bun.file('.baked/config.json').text()", "tests/acceptance/x.ts")).toEqual(["it refers to .baked (the run store and configuration)"]);
     expect(forbiddenConstructs(generatedTest("correct"), "tests/acceptance/calc-walk.ts")).toEqual([]);
   });
+
+  test("socket tables of macOS and Windows are read into listeners of the process family", () => {
+    expect(["127.0.0.1", "[::1]", "::ffff:127.0.0.1", "localhost"].every(isLoopbackAddress)).toBe(true);
+    expect(["*", "0.0.0.0", "::", "[::]", "192.168.1.4"].some(isLoopbackAddress)).toBe(false);
+    const lsof = ["p100", "f5", "n127.0.0.1:8080", "f6", "n[::]:3000", "p200", "f3", "n*:5000"].join("\n");
+    expect(parseLsofListeners(lsof)).toEqual([
+      { pid: 100, listener: { port: 8080, loopback: true } },
+      { pid: 100, listener: { port: 3000, loopback: false } },
+      { pid: 200, listener: { port: 5000, loopback: false } },
+    ]);
+    // 101 is a child of 100, 102 a member of its group, 300 unrelated.
+    const ps = parsePsTable("  100     1   100\n  101   100   101\n  102     1   100\n  300     1   300\n");
+    expect([...processFamily([100], ps)].sort()).toEqual([100, 101, 102]);
+    const windows = parseWindowsSockets(
+      ["P 10 1 500", "P 11 10 600", "P 12 10 400", "L 11 127.0.0.1 8080", "L 12 0.0.0.0 9000", "L 10 :: 7000"].join("\r\n"),
+    );
+    // 12 started before 10, so its parent PID was reused: not part of the family.
+    const family = processFamily([10], windows.table);
+    expect([...family].sort()).toEqual([10, 11]);
+    expect(windows.listeners.filter((l) => family.has(l.pid)).map((l) => l.listener)).toEqual([
+      { port: 8080, loopback: true },
+      { port: 7000, loopback: false },
+    ]);
+  });
+
+  test("the listening sockets of a process and its descendants are read on this system", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-listen-"));
+    const grandchild = join(dir, "grandchild.ts");
+    writeFileSync(grandchild, 'const s = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch: () => new Response("") });\nconsole.log(`wide ${s.port}`);\nsetInterval(() => {}, 1000);\n');
+    const parent = join(dir, "parent.ts");
+    writeFileSync(parent, `const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });\nconsole.log(\`local \${s.port}\`);\nBun.spawn([process.execPath, ${JSON.stringify(grandchild)}], { stdout: "inherit" });\nsetInterval(() => {}, 1000);\n`);
+    const child = spawn(process.execPath, [parent], { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
+    cleanups.push(() => {
+      killTree(child.pid ?? 0, "SIGKILL");
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const ports: Record<string, number> = {};
+    let text = "";
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no ports announced: ${text}`)), 30000);
+      child.stdout?.on("data", (chunk: Buffer) => {
+        text += chunk.toString();
+        for (const [, kind, port] of text.matchAll(/(local|wide) (\d+)/g)) ports[kind as string] = Number(port);
+        if (ports.local && ports.wide) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+    let found: Awaited<ReturnType<typeof listeningSockets>> = [];
+    for (let attempt = 0; attempt < 40; attempt++) {
+      found = await listeningSockets([child.pid ?? 0]);
+      if (found?.some((l) => l.port === ports.wide) && found.some((l) => l.port === ports.local)) break;
+      await Bun.sleep(250);
+    }
+    expect(found).not.toBeNull();
+    expect(found).toContainEqual({ port: ports.local as number, loopback: true });
+    expect(found).toContainEqual({ port: ports.wide as number, loopback: false });
+    expect(listenerViolations(found ?? [], [ports.local as number])).toEqual([`the application listens on port ${ports.wide} which is not granted`.replace(" which", ", which")]);
+  }, 60000);
 });

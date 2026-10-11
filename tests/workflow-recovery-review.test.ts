@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
-import { PROCESS_SCOPE_ENV } from "../src/core/platform/index.js";
+import { PROCESS_SCOPE_ENV, parseScopedPs } from "../src/core/platform/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
@@ -240,7 +240,8 @@ test("an orphaned descendant of an exited command still blocks recovery and leas
   expect(commandMayBeRunning(service.store, run.runId)).toBe(false);
 }, 30000);
 
-test.skipIf(process.platform !== "linux")("cancelling a command also stops a descendant that left its process group", async () => {
+// Windows has no readable process environment, so a descendant there is linked only by parent PID.
+test.skipIf(process.platform === "win32")("cancelling a command also stops a descendant that left its process group", async () => {
   const { scopedProcesses } = await import("../src/core/platform/index.js");
   const script = `const { spawn } = require("node:child_process"); spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore", detached: true }).unref(); setTimeout(() => {}, 60000);`;
   const controller = new AbortController();
@@ -272,3 +273,14 @@ test.skipIf(process.platform !== "linux")("cancelling a command also stops a des
     for (const pid of started) try { process.kill(pid, "SIGKILL"); } catch {}
   }
 }, 30000);
+
+test("the scope marker is found in the environment column of macOS ps", () => {
+  const scope = "3f1c";
+  const table = [
+    `  101 /usr/bin/node app.js PATH=/usr/bin ${PROCESS_SCOPE_ENV}=${scope} HOME=/Users/a`,
+    `  102 /bin/sleep 60 ${PROCESS_SCOPE_ENV}=${scope}`,
+    `  103 /bin/sleep 60 ${PROCESS_SCOPE_ENV}=${scope}5 HOME=/Users/a`,
+    "  104 /bin/zsh HOME=/Users/a",
+  ].join("\n");
+  expect(parseScopedPs(table, scope)).toEqual([101, 102]);
+});

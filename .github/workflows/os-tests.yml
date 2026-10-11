@@ -1,0 +1,76 @@
+name: OS tests
+
+# Runs `bun run test` on Windows and macOS; `CI / check` runs it on Linux for every pull request.
+# Windows and macOS runners cost 2x and 10x Linux minutes in a private repository, so these run
+# on pull requests that touch platform-sensitive code (process, path, shell, filesystem and key
+# store handling, the workflow runtime, the test setup), nightly against main, and on demand.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: os-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          echo "$changed"
+          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
+          if echo "$changed" | grep -Eq "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: scope
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.os }})
+    timeout-minutes: 40
+    steps:
+      - name: Skip
+        if: needs.scope.outputs.run != 'true'
+        run: echo "No platform-sensitive files changed; this platform runs nightly."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.scope.outputs.run == 'true'
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: needs.scope.outputs.run == 'true'
+        with:
+          bun-version: "1.4.3"
+      - name: Install
+        if: needs.scope.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+      - name: Test
+        if: needs.scope.outputs.run == 'true'
+        run: bun run test

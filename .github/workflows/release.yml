@@ -43,7 +43,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx biome check src/ --reporter=github
       - run: bun run typecheck
-      - run: bun test
+      - run: bun run test
 
   builds:
     needs: verify
