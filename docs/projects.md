@@ -49,6 +49,16 @@ It is not a new database. Listing a project's sessions and runs reads the existi
 
 The schema is a strict zod object; unknown top-level keys are refused, so typos surface instead of being ignored.
 
+## Setting up a folder
+
+Opening a folder sets it up as a project (`scaffoldProject` in `src/core/projects/scaffold.ts`): the terminal UI does it at start-up (also after switching projects, which restarts BAKED in the new folder), `baked serve` does it for its folder, so the desktop app's Open folder does too, and `baked projects add FOLDER` does it for the folder it adds. `baked project init` runs the same setup by hand. It creates only what is missing; the one existing file it may change is `.gitignore`:
+
+- `baked/project.json` with the folder's name as its ID and name, no roots, an empty working set and empty `defaults`, registered for this user. A folder that a registered project already covers (a subfolder of its root) gets no manifest of its own.
+- `.baked/`, added to `.gitignore` when the folder is a Git checkout whose ignore rules do not cover it yet.
+- `.baked/workflows.sqlite`, the workflow store.
+
+Settings are not copied into `.baked/config.json`: a project uses the built-in defaults until someone changes a setting, so a later release's tuned defaults (budgets, the policy) and the global config keep applying. The code graph (`.baked/repomap.db`) is built by the index when the first session or run needs it. The home folder and a drive root are never set up, and the headless one-shot commands (`baked --headless`, `baked workflow ...`) do not set up the folder they run in. A folder that cannot be written is opened as before, without a project.
+
 ## Finding the active project
 
 `resolveProject(cwd, { home })` returns the project for a directory or `null`:

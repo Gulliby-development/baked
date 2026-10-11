@@ -467,7 +467,7 @@ initiative <command> ...   split a large request into 3..12 features run in depe
   replan, extend, reroute; see baked workflow initiative --help
 
 Management mutations accept --command-id UUID for idempotent retries.
-All commands accept --help. Workflows require an explicit workflows.enabled opt-in.
+All commands accept --help. Workflows are on unless the configuration sets workflows.enabled: false.
 Drive exit codes: 0 completed, 1 error, 2 deadline, 3 waiting, 4 blocked,
 5 revision/lease/input conflict, 130 paused/cancelled. Management success returns 0.
 No daemon continues execution after the command exits.

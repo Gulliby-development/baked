@@ -149,7 +149,7 @@ test("running is refused with an explanation while workflows are off", async () 
     const frame = await settle(view);
     expect(state.runs).toHaveLength(0);
     expect(state.notes.at(-1)).toContain("Enable workflows first");
-    expect(frame).toContain("Workflows are off");
+    expect(frame).toContain("Workflows are turned off");
   } finally { await act(async () => view.renderer.destroy()); }
 });
 

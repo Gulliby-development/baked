@@ -63,7 +63,7 @@ export function readGates(workspace: string, fallback?: WorkflowConfig): Check[]
 
 /**
  * Writes the gate list into the project's `.baked/config.json` and keeps every other setting.
- * A project without a `workflows` block gets a disabled one, so enabling later only flips the flag.
+ * A project without a `workflows` block gets one with the default policy.
  * Runs that already started keep the policy they froze; only new runs read this list.
  */
 export function writeGates(workspace: string, checks: Check[], fallback?: WorkflowConfig): void {
@@ -71,7 +71,7 @@ export function writeGates(workspace: string, checks: Check[], fallback?: Workfl
   validateChecks(workspace, { ...defaultWorkflowPolicy, checks: parsed });
   const base: WorkflowConfig = loadProjectConfig(workspace)?.workflows ??
     fallback ?? {
-      enabled: false,
+      enabled: true,
       importsEnabled: false,
       defaultWorkflow: "sdd",
       policy: defaultWorkflowPolicy,

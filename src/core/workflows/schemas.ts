@@ -565,7 +565,7 @@ export const DeliveryConfigSchema = z
   .strict();
 export const WorkflowConfigSchema = z
   .object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     importsEnabled: z.boolean().default(false),
     defaultWorkflow: SafeId.default("sdd"),
     /** The definition `baked quick` runs; the shipped quick preset when absent. */
@@ -574,6 +574,10 @@ export const WorkflowConfigSchema = z
     delivery: DeliveryConfigSchema.optional(),
   })
   .strict();
+/** Workflows are on unless a configuration layer turns them off with `workflows.enabled: false`. */
+export function workflowsEnabled(config: { workflows?: { enabled?: boolean } }): boolean {
+  return config.workflows?.enabled !== false;
+}
 export const InputManifestSchema = z
   .object({
     schemaVersion: z.literal(1),

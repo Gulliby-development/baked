@@ -1,6 +1,6 @@
 # Workflows
 
-`baked workflow` (and `/workflow` in the terminal UI) runs spec-driven development as durable, resumable runs: research, specification, plan, analysis, an approval, implementation of a task graph, required checks, independent review and convergence. Runs survive crashes and restarts, are bound by budgets, and change files only within the scope a person approved. The feature is off by default; turn it on with `workflows.enabled` ([enabling](runtime.md#enabling)).
+`baked workflow` (and `/workflow` in the terminal UI) runs spec-driven development as durable, resumable runs: research, specification, plan, analysis, an approval, implementation of a task graph, required checks, independent review and convergence. Runs survive crashes and restarts, are bound by budgets, and change files only within the scope a person approved. The feature is on by default in every project; `workflows.enabled: false` turns it off ([enabling](runtime.md#enabling)).
 
 ```sh
 baked workflow run --feature status-json --prompt "Add JSON status for a run" --events

@@ -390,7 +390,10 @@ export function lastModel(events: WorkflowEvent[]): string | null {
 }
 
 const HINTS: [RegExp, string][] = [
-  [/Workflows are disabled/i, "Open /workflow and press E to enable workflows for this project."],
+  [
+    /Workflows are turned off/i,
+    "Open /workflow and press E to turn workflows back on for this project.",
+  ],
   [/Select a model/i, "Close the panel, press Ctrl+L to pick a model, then try again."],
   [
     /at least one mandatory command check/i,

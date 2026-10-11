@@ -28,6 +28,7 @@ import {
   MAX_CONCURRENT_WRITERS,
   type RunPolicy,
   SafeId,
+  workflowsEnabled,
 } from "../workflows/schemas.js";
 import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
@@ -147,7 +148,7 @@ const ctx = createWorkerHandler(
       const policy = runtime.config.workflows?.policy ?? defaultWorkflowPolicy;
       return {
         estimate: estimateStart(readHistory(runtime.store)),
-        enabled: runtime.config.workflows?.enabled === true,
+        enabled: workflowsEnabled(runtime.config),
         defaultWorkflow: runtime.config.workflows?.defaultWorkflow ?? "sdd",
         quickWorkflow: runtime.config.workflows?.quickWorkflow ?? QUICK_WORKFLOW_ID,
         workflows: [...new Set(["sdd", ...PRESETS, ...custom])],

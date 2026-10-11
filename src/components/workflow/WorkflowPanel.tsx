@@ -453,7 +453,7 @@ export function WorkflowPanel({
         title="Workflow"
         blurb={
           enabled === false
-            ? "Not enabled for this project"
+            ? "Turned off for this project"
             : needsYou
               ? `${needsYou} run${needsYou > 1 ? "s" : ""} waiting for you`
               : "Runs in this project"

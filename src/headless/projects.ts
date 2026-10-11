@@ -9,6 +9,7 @@ import {
   setProjectPinned,
 } from "../core/projects/known.js";
 import { type ProjectOverview, projectOverview } from "../core/projects/overview.js";
+import { scaffoldProjectQuietly } from "../core/projects/scaffold.js";
 
 const help = `Usage: baked projects [command]
 
@@ -78,6 +79,7 @@ export async function runProjectsCli(argv: string[]): Promise<number> {
       }
       case "add": {
         const project = addKnownProject(folder(rest[0]));
+        scaffoldProjectQuietly(project.path);
         process.stdout.write(`Added ${project.name} (${project.path}).\n`);
         return 0;
       }

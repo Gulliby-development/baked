@@ -425,7 +425,7 @@ Turning the feature flag off forbids start/drive but keeps status/export availab
 
 Restart/crash scenarios, Windows path/process tests and TUI/CLI parity are mandatory before release. Checking one happy-path feature is not enough.
 
-Rollout: `workflows.enabled` is false by default, so workflows are opt-in. Importers are enabled separately by workflows.importsEnabled. Unifying the wrong success/done and permission propagation ships as a separate fix with legacy regression tests.
+Rollout: `workflows.enabled` defaults to true, so workflows are available in every project without configuration; `false` turns them off. Importers are enabled separately by workflows.importsEnabled. Unifying the wrong success/done and permission propagation ships as a separate fix with legacy regression tests.
 
 The built-in profiles, workflow and migration SQL are included in the Bun bundle as static assets or TypeScript constants. Access to them does not depend on cwd or on a source checkout. The build smoke test runs the built binary from an empty temporary workspace, creates the DB, lists the built-in profiles and checks status without provider credentials. The migration checksum is computed over the same bytes that are in the bundle.
 

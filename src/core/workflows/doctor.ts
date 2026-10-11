@@ -10,7 +10,7 @@ import { commandMayBeRunning, leaseOwnerAlive } from "./leases.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
 import { reachableModels } from "./routing.js";
-import { PolicySchema, WorkflowConfigSchema } from "./schemas.js";
+import { PolicySchema, workflowsEnabled } from "./schemas.js";
 import { type PreparedStart, prepareStart } from "./start.js";
 import { WorkflowStore } from "./store.js";
 import { loadGateLibrary } from "./v2/library.js";
@@ -411,15 +411,14 @@ export async function runDoctor(
   deps: DoctorDeps = defaultDoctorDeps,
 ): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
-  const enabled = WorkflowConfigSchema.safeParse(config.workflows ?? {});
   checks.push(
-    config.workflows && enabled.success && enabled.data.enabled
+    workflowsEnabled(config)
       ? { id: "config.enabled", status: "ok", title: "Workflows are enabled" }
       : {
           id: "config.enabled",
           status: "fail",
-          title: "Workflows are disabled",
-          fix: "Set workflows.enabled to true in the project configuration",
+          title: "Workflows are turned off",
+          fix: "Remove workflows.enabled: false from the configuration",
         },
   );
   let workflowId = request.workflowId ?? config.workflows?.defaultWorkflow ?? "sdd";

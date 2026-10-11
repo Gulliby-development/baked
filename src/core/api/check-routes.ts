@@ -14,7 +14,7 @@ import {
   writeGates,
 } from "../workflows/gates.js";
 import { leaseOwnerAlive } from "../workflows/leases.js";
-import { CheckSchema, SafeId } from "../workflows/schemas.js";
+import { CheckSchema, SafeId, workflowsEnabled } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { RouteContext } from "./route-context.js";
 
@@ -46,7 +46,7 @@ export async function checkRoute(ctx: CheckRouteContext): Promise<Response | nul
       const last = ctx.results.get(check.id);
       return { ...check, ...(last ? { lastResult: last } : {}) };
     }),
-    workflowsEnabled: config.workflows?.enabled === true,
+    workflowsEnabled: workflowsEnabled(config),
   });
 
   if (path === "/v1/workflow/checks") {

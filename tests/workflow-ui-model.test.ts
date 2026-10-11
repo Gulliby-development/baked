@@ -129,7 +129,7 @@ describe("workflow panel formatting", () => {
   });
   test("errors get an actionable hint", () => {
     expect(errorHint("Select a model before starting a workflow")).toContain("Ctrl+L");
-    expect(errorHint("Workflows are disabled. Enable workflows.enabled")).toContain("press E");
+    expect(errorHint("Workflows are turned off by workflows.enabled: false in the configuration.")).toContain("press E");
     expect(errorHint("something unexpected")).toBeNull();
   });
   test("runs needing the user sort first", () => {

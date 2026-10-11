@@ -73,7 +73,7 @@ worktree refusal and `worktreeBase`, review and skeptic profile outputs, skill h
 store-free function `prepareStart(workspace, config, request)`. `start` calls it unchanged; the doctor
 calls it with a placeholder feature and prompt and reports a thrown fault as one `fail`.
 
-1. **config.enabled.** `workflows.enabled` is true. Fail otherwise; fix: the opt-in setting.
+1. **config.enabled.** Workflows are on, which they are unless a configuration sets `workflows.enabled: false`. Fail otherwise; fix: remove that setting.
 2. **start.** `prepareStart` succeeds. Fail with the fault message. When it fails, checks that need its
    result (models, commands, estimate) are `skip`.
 3. **models.** `checkStartModels` checks every distinct model the run can call, the same set and the same
