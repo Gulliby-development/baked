@@ -19,6 +19,7 @@ A reach can carry a note after `: ` (`project/chat: model picker`). A surface wi
 | `partial(reach, issue, note)` | The surface has part of it; the issue tracks the rest |
 | `notNeeded(reason)` | The surface does not need it, for example a setting scripts write to `config.json` |
 | `terminalOnly(reason)` | A terminal workflow by design, such as tabs and file claims |
+| `desktopOnly(reason)` | A desktop feature by decision, such as voice input in chat |
 
 ## The parity test
 
@@ -54,6 +55,7 @@ bun test tests/feature-parity.test.ts
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
+| Voice input in chat (Cactus Whistle speech to text) | Desktop only: desktop only by decision (#419) | Desktop only: desktop only by decision (#419) | Desktop only: speech is transcribed in the app and sent as text | **Gap** [#419](https://github.com/Gulliby-development/baked/issues/419): planned |
 | @ mentions and ! shell in the input | `key @`, `key !` | `--include` | `/v1/mentions` | `project/chat` |
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
 | Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | Partial [#401](https://github.com/Gulliby-development/baked/issues/401): only through the generic config route | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
@@ -166,5 +168,6 @@ bun test tests/feature-parity.test.ts
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Session list, resume and rename; Delete a session; Provider API keys; Sign in through the Codex or Claude Code CLI; Workflow model routing; Usage across runs: days, by stage and model; What waits for me across projects
 - [#408](https://github.com/Gulliby-development/baked/issues/408): Switch Codex accounts; Hooks: view and switch off; Rename a project; Git menu: status, diff, commit, push, pull, branch, stash; Storage cleanup, model events and the error log; Telemetry switch; Notifications: system and webhook
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
+- [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 
 <!-- parity:end -->

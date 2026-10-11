@@ -23,7 +23,7 @@ export const SURFACE_LABELS: Record<Surface, string> = {
 
 /** The surface does not get this feature, by design. */
 export interface Exempt {
-  status: "terminal-only" | "not-needed";
+  status: "terminal-only" | "desktop-only" | "not-needed";
   reason: string;
 }
 
@@ -74,6 +74,7 @@ const partial = (reach: string[], issue: number, note: string): Partial => ({
 });
 const notNeeded = (reason: string): Exempt => ({ status: "not-needed", reason });
 const terminalOnly = (reason: string): Exempt => ({ status: "terminal-only", reason });
+const desktopOnly = (reason: string): Exempt => ({ status: "desktop-only", reason });
 
 const RAW_CONFIG = "only through the generic config route";
 
@@ -172,6 +173,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["--image"],
     api: ["/v1/sessions/:id/messages: images"],
     desktop: ["project/chat: attach or paste"],
+  },
+  {
+    id: "voice-input",
+    group: "Chat and sessions",
+    title: "Voice input in chat (Cactus Whistle speech to text)",
+    tui: desktopOnly("desktop only by decision (#419)"),
+    cli: desktopOnly("desktop only by decision (#419)"),
+    api: desktopOnly("speech is transcribed in the app and sent as text"),
+    desktop: gap(419, "planned"),
   },
   {
     id: "mentions",

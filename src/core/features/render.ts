@@ -29,6 +29,8 @@ function cell(entry: SurfaceEntry): string {
       return `Partial ${issueLink(e.issue)}: ${e.note}`;
     case "terminal-only":
       return `Terminal only: ${e.reason}`;
+    case "desktop-only":
+      return `Desktop only: ${e.reason}`;
     case "not-needed":
       return `Not needed: ${e.reason}`;
   }
