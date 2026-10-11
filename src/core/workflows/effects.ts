@@ -38,6 +38,18 @@ export function effectFile(workspace: string, intentJson: string): string {
 export function fileHash(path: string): string | null {
   return existsSync(path) ? hashBytes(readFileSync(path)) : null;
 }
+/**
+ * Whether a file still holds the content a recorded hash describes, ignoring line endings: a
+ * checkout that converts LF to CRLF (or back) changes the bytes, not the content.
+ */
+export function sameContentIgnoringEol(path: string, expected: string | null): boolean {
+  if (expected === null || !existsSync(path)) return false;
+  const bytes = readFileSync(path);
+  const lf = Buffer.from(bytes.toString("latin1").replace(/\r\n/g, "\n"), "latin1");
+  if (hashBytes(lf) === expected) return true;
+  const crlf = Buffer.from(lf.toString("latin1").replace(/\n/g, "\r\n"), "latin1");
+  return hashBytes(crlf) === expected;
+}
 export class EffectJournal {
   constructor(
     private store: WorkflowStore,

@@ -121,6 +121,7 @@ import {
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
 import { hasTaskGate, readyTasks } from "./task-graph.js";
+import { takeHashRefusals } from "./tool-policy.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
 import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
@@ -202,6 +203,15 @@ function isStoreError(error: unknown): boolean {
 }
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
+/**
+ * Files whose edits the host's hash check refused during an attempt that then reported blocked:
+ * an infrastructure fault (the worktree differs from the run's record), which the model cannot
+ * fix and a second attempt would repeat.
+ */
+const refusedReason = (paths: string[]): string =>
+  paths.length
+    ? `; infrastructure fault, not a disagreement with the task: the host refused edits to ${paths.slice(0, 3).join(", ")} because the file differs from the run's record`
+    : "";
 /** Characters of a task's unified diff kept in its diff evidence. */
 const MAX_PATCH_CHARS = 48_000;
 /** Lines of a failed check's output handed to a stage that does not write, such as research. */
@@ -2183,9 +2193,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           return;
         }
         this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        const refused = takeHashRefusals(root);
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
+          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${refusedReason(refused)}`,
+          refused.length ? { reason: "input_changed", paths: refused } : {},
         );
       }
       if (result.outcome === "already_satisfied")
@@ -2313,7 +2325,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       try {
         // Worktrees and their leases are set up one at a time: Git locks its worktree list.
         for (const entry of batch) {
-          entry.path = await createTaskWorktree(this.store, runId, entry.task.id, base);
+          entry.path = await createTaskWorktree(
+            this.store,
+            runId,
+            entry.task.id,
+            base,
+            entry.task.writes.map((w) => w.path),
+          );
           this.leases.acquire(entry.lease(), runId, { isolated: true });
         }
         const outcomes = await Promise.all(
@@ -2540,6 +2558,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
           ),
         };
+      const refused = takeHashRefusals(root);
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
@@ -2552,7 +2571,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           ...(changed.length ? { edits: { before, changed } } : {}),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
-            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}`,
+            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${refusedReason(refused)}`,
+            refused.length ? { reason: "input_changed", paths: refused } : {},
           ),
         };
       if (result.outcome === "already_satisfied")

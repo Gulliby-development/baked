@@ -1,6 +1,6 @@
 import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
-import { fileHash, intentRoot, rootField } from "./effects.js";
+import { fileHash, intentRoot, rootField, sameContentIgnoringEol } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
@@ -10,6 +10,20 @@ import type { WorkflowStore } from "./store.js";
 import type { Task } from "./types.js";
 
 export const pureWorkflowTools = new Set(["read", "navigate", "bake_find", "bake_impact"]);
+/**
+ * Edits the file-hash check refused, by the root they were attempted in. A refusal is a host
+ * fact (the file differs from what the run recorded), not the model's disagreement with its task,
+ * so a blocked outcome that follows one is reported as infrastructure.
+ */
+const hashRefusals = new Map<string, string[]>();
+
+/** The files whose edits were refused by the hash check in `root` since the last call. */
+export function takeHashRefusals(root: string): string[] {
+  const paths = hashRefusals.get(root) ?? [];
+  hashRefusals.delete(root);
+  return [...new Set(paths)];
+}
+
 export class WorkflowToolPolicy {
   constructor(
     private store: WorkflowStore,
@@ -94,9 +108,15 @@ export class WorkflowToolPolicy {
     if (
       baseline &&
       !unseen &&
-      existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null))
-    )
+      existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null)) &&
+      !sameContentIgnoringEol(
+        workspacePath(this.root, path),
+        ownEffect ? ownEffect.after_hash : (baseline[path] ?? null),
+      )
+    ) {
+      hashRefusals.set(this.root, [...(hashRefusals.get(this.root) ?? []), path]);
       throw new WorkflowFault("INPUT_CHANGED", `File changed outside this attempt: ${path}`);
+    }
     if (
       write.action === "create" &&
       existing !== null &&

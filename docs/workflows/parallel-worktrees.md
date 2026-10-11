@@ -64,6 +64,8 @@ Implemented on 2026-10-09 together with phase 2. The policy permission is `allow
 - Every effect is bound to a root; reconcile and recovery never apply an effect to another root.
 - A worktree is deleted only for a terminal run after its branch has been delivered or explicitly discarded by the user.
 
+- Task worktrees are byte-exact copies of the run worktree: the content commit and the checkout run with `core.autocrlf=false`, so a Windows repository without `.gitattributes` does not turn LF files into CRLF. After the checkout, each file the task may write is compared with the run worktree and replaced by a byte copy when it differs; the edit hash check also ignores a pure line-ending difference.
+- A blocked implementer outcome that follows an edit refused by the hash check is reported as an infrastructure fault (reason `input_changed`, with the refused paths), not as a disagreement with the task.
 ## Checks
 
 - Phase 0: the executor, tool-policy and check-runner use the given root; without it, v1 behavior does not change.

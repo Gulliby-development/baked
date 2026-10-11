@@ -150,6 +150,14 @@ export async function ensureRunWorktree(
   return worktree;
 }
 
+/**
+ * Git settings for the run worktree's content commit and the task worktrees checked out from it:
+ * no line-ending conversion, so a task worktree holds the same bytes as the run worktree. With
+ * `core.autocrlf=true` (the Windows default) and no `.gitattributes`, a checkout would turn the
+ * run's LF files into CRLF and every edit hash check would fail.
+ */
+const BYTE_EXACT = ["-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "-c", "core.eol=lf"];
+
 /** Author, committer and dates of the commits a run makes: deterministic for the same content. */
 async function commitEnv(store: WorkflowStore, runId: string): Promise<Record<string, string>> {
   const workspace = store.workspace;
@@ -193,7 +201,15 @@ export async function runContentCommit(
     const ignored = (await git(root, ["check-ignore", "-q", "node_modules"])).code === 0;
     await required(
       root,
-      ["add", "-A", "--", ".", ":(exclude).baked", ...(ignored ? [] : [":(exclude)node_modules"])],
+      [
+        ...BYTE_EXACT,
+        "add",
+        "-A",
+        "--",
+        ".",
+        ":(exclude).baked",
+        ...(ignored ? [] : [":(exclude)node_modules"]),
+      ],
       { env },
     );
     const tree = await required(root, ["write-tree"], { env });
@@ -218,6 +234,7 @@ export async function createTaskWorktree(
   runId: string,
   taskId: string,
   base: string,
+  files: string[] = [],
 ): Promise<string> {
   const workspace = store.workspace;
   const path = taskWorktreePath(runId, taskId);
@@ -226,6 +243,7 @@ export async function createTaskWorktree(
   mkdirSync(dirname(absolute), { recursive: true });
   const hooks = join(workspace, ".baked", "no-hooks");
   await required(workspace, [
+    ...BYTE_EXACT,
     "-c",
     `core.hooksPath=${hooks}`,
     "worktree",
@@ -235,7 +253,28 @@ export async function createTaskWorktree(
     base,
   ]);
   linkDependencies(workspace, absolute);
+  const source = store.state(runId).worktree;
+  if (source) alignTaskFiles(join(workspace, source.path), absolute, files);
   return path;
+}
+
+/**
+ * Self-check of a fresh task worktree: each file the task may write must hold the same bytes as in
+ * the run worktree, and a file that does not (a checkout filter, an attribute rule) is replaced
+ * by a byte copy, so the task's edit checks compare against what the run recorded.
+ */
+export function alignTaskFiles(from: string, to: string, files: string[]): string[] {
+  const repaired: string[] = [];
+  for (const file of files) {
+    const source = join(from, file);
+    const target = join(to, file);
+    if (!existsSync(source)) continue;
+    if (existsSync(target) && readFileSync(source).equals(readFileSync(target))) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(source, target);
+    repaired.push(file);
+  }
+  return repaired;
 }
 
 /** Removes a task worktree, if present; its edits are integrated or abandoned by then. */
