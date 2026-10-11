@@ -480,6 +480,8 @@ gates confirm ID... | --all  confirm project gates (baked/gates) before a run ma
 profiles [--model ID]     artifacts RUN_ID [--file ARTIFACT_ID]
 route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
   show the model each stage and profile would use and where each choice comes from
+routing [show] | set TARGET MODEL | clear TARGET | review MODE   [--scope project|global]
+  change modelRouting with the routing screen's checks (see baked workflow routing --help)
 models [--model ID] [--provider ID] [--json]
   list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
   ...) with the model each resolves to, then the models of each provider; providers without a key
