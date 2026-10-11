@@ -60,6 +60,15 @@ export async function snapshotWorkspace(
   tag: string,
   message: string,
 ): Promise<boolean> {
+  try {
+    return await snapshot(cwd, tag, message);
+  } catch {
+    // A snapshot is best effort: callers continue without one, and rollback reports the gap.
+    return false;
+  }
+}
+
+async function snapshot(cwd: string, tag: string, message: string): Promise<boolean> {
   const indexPath = await git(["rev-parse", "--git-path", "index"], cwd);
   if (!indexPath.ok) return false;
   const dir = await mkdtemp(join(tmpDir(), "baked-snapshot-"));
