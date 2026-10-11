@@ -27,6 +27,7 @@ import {
 } from "./delivery-provider.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { closingReference, type IssueSource } from "./issue-source.js";
 import { mutationLeaseFor, WorkspaceLeases } from "./leases.js";
 import {
   type Decision,
@@ -331,6 +332,11 @@ function pullRequestBody(
   return lines.join("\n");
 }
 
+/** The body of a run started from an issue opens with the line that closes it on merge. */
+function closingIssue(issue: IssueSource | null, repository: string, body: string): string {
+  return issue ? `${closingReference(issue, repository)}\n\n${body}` : body;
+}
+
 export interface PrepareDeliveryOptions {
   remote?: string;
   branch?: string;
@@ -620,7 +626,11 @@ export async function prepareDelivery(
             provider: pullRequestTarget.provider.name,
             repository: pullRequestTarget.repository,
             title,
-            body: pullRequestBody(core, outcome),
+            body: closingIssue(
+              state.issue,
+              pullRequestTarget.repository,
+              pullRequestBody(core, outcome),
+            ),
             base: core.base.branch,
             draft: options.draft === true,
           }

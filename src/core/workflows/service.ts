@@ -250,6 +250,7 @@ export class NativeWorkflowService implements WorkflowService {
       worktree: null,
       gateResults: {},
       acceptance: {},
+      issue: request.issue ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);

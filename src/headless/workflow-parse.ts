@@ -106,6 +106,7 @@ const flags = new Set([
   "route",
   "resume",
   "clarification",
+  "issue",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -149,6 +150,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "writers",
     "route",
     "clarification",
+    "issue",
   ],
   quick: [
     "feature",
@@ -310,10 +312,13 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "INVALID_DEFINITION",
         "Specify at most one workflow ID, positional or --workflow",
       );
-    if (Number(!!result.flags.prompt) + Number(!!result.flags["prompt-file"]) !== 1)
+    const prompts = Number(!!result.flags.prompt) + Number(!!result.flags["prompt-file"]);
+    if (result.flags.issue ? prompts > 1 : prompts !== 1)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "Specify exactly one of --prompt or --prompt-file",
+        result.flags.issue
+          ? "Specify at most one of --prompt or --prompt-file with --issue"
+          : "Specify exactly one of --prompt, --prompt-file or --issue",
       );
   }
   if (
@@ -348,6 +353,10 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 export const workflowHelp = `baked workflow <command> [options]
 
 run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume]
+run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
+  --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
+  and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
+  Closes #N, so merging it closes the issue. #N reads the origin remote's repository
   --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID

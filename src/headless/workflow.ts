@@ -11,6 +11,7 @@ import type { PullRequestProvider } from "../core/workflows/delivery-provider.js
 import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { uniqueFeatureId } from "../core/workflows/feature-id.js";
+import { issueStart } from "../core/workflows/issue-source.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
 import {
@@ -159,6 +160,19 @@ export async function executeWorkflowCommand(
           ? jsonFile("policy")
           : (service.config.workflows?.policy ?? defaultWorkflowPolicy),
       );
+      const typed = args.flags["prompt-file"]
+        ? readFlagFile("prompt-file")
+        : typeof args.flags.prompt === "string"
+          ? args.flags.prompt
+          : undefined;
+      const fromIssue =
+        typeof args.flags.issue === "string"
+          ? await issueStart(service.store.workspace, service.config, {
+              reference: args.flags.issue,
+              ...(typed !== undefined ? { prompt: typed } : {}),
+              ...(typeof args.flags.feature === "string" ? { featureId: args.flags.feature } : {}),
+            })
+          : null;
       const run = await service.start({
         commandId: stringFlag(args, "command-id", newId()),
         workflowId: stringFlag(
@@ -166,10 +180,9 @@ export async function executeWorkflowCommand(
           "workflow",
           args.positional[0] ?? service.config.workflows?.defaultWorkflow ?? "sdd",
         ),
-        featureId: stringFlag(args, "feature"),
-        prompt: args.flags["prompt-file"]
-          ? readFlagFile("prompt-file")
-          : stringFlag(args, "prompt"),
+        featureId: fromIssue?.featureId ?? stringFlag(args, "feature"),
+        prompt: fromIssue?.prompt ?? typed ?? stringFlag(args, "prompt"),
+        ...(fromIssue ? { issue: fromIssue.issue } : {}),
         policy,
         ownerLabel: stringFlag(args, "owner", "CLI"),
         ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),

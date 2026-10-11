@@ -310,10 +310,11 @@ function startArgs(raw: unknown): WorkflowArgs {
   const body = StartBody.parse(raw);
   const flags: WorkflowArgs["flags"] = {
     "command-id": body.commandId,
-    feature: body.feature,
-    prompt: body.prompt,
     owner: body.owner ?? "API",
   };
+  if (body.feature) flags.feature = body.feature;
+  if (body.prompt) flags.prompt = body.prompt;
+  if (body.issue) flags.issue = body.issue;
   if (body.workflow) flags.workflow = body.workflow;
   if (body.model) flags.model = body.model;
   if (body.confirmAutoApproval) flags["confirm-auto-approval"] = body.confirmAutoApproval;
