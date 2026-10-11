@@ -8,9 +8,10 @@ const HANDLE_HELD = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 /**
  * Removes a test directory once its handles are released. A fixture process can report exit
  * while its worker's SQLite files and descendant processes are still being torn down, so
- * Windows reports EBUSY for a short time after the exit.
+ * Windows reports EBUSY for a short time after the exit. On a loaded Windows runner that teardown
+ * has taken longer than four seconds after a long fixture run.
  */
-export async function removeTempDir(path: string, timeoutMs = 4000): Promise<void> {
+export async function removeTempDir(path: string, timeoutMs = 15000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (let delay = 50; ; delay = Math.min(delay * 2, 500)) {
     try {
