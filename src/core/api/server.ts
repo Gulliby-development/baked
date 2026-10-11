@@ -24,7 +24,7 @@
  * must name the loopback address and port (DNS rebinding); requests with an Origin header are
  * refused unless that origin was allowed explicitly.
  */
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
@@ -32,6 +32,7 @@ import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow
 import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
+import { runsFreezingFile } from "../instruction-files.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
@@ -431,16 +432,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
 
   /** Runs that have not ended and froze `absolutePath` as an input. */
   function runsFreezing(absolutePath: string): string[] {
-    const target = resolve(absolutePath);
-    return service.store
-      .list(100)
-      .items.filter((run) => !["completed", "failed", "cancelled"].includes(run.status))
-      .filter((run) =>
-        Object.keys(service.store.state(run.runId).frozenFiles).some(
-          (file) => resolve(file) === target,
-        ),
-      )
-      .map((run) => run.runId);
+    return runsFreezingFile(service.store, absolutePath);
   }
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
