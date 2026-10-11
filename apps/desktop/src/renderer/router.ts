@@ -13,6 +13,7 @@ export const PROJECT_SECTIONS = [
   "working-set",
   "run-memory",
   "skills",
+  "mcp",
 ] as const;
 export type ProjectSection = (typeof PROJECT_SECTIONS)[number];
 

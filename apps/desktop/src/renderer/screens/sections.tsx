@@ -9,6 +9,7 @@ import { AcceptanceSection } from "./runs/AcceptanceSection.js";
 import { RunsView } from "./runs/RunsView.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
+import { McpSection } from "./setup/McpSection.js";
 import { RunMemorySection } from "./setup/RunMemorySection.js";
 import { SkillsSection } from "./setup/SkillsSection.js";
 import { WorkingSetSection } from "./setup/WorkingSetSection.js";
@@ -30,6 +31,7 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   "working-set": WorkingSetSection,
   "run-memory": RunMemorySection,
   skills: SkillsSection,
+  mcp: McpSection,
   initiatives: InitiativesSection,
   acceptance: AcceptanceSection,
   usage: UsageSection,

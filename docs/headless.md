@@ -72,6 +72,16 @@ baked session redo <id>            # put the oldest undone turn back
 
 `baked session undo ID` drops the last turn of the active conversation of session `ID` (with `--to N`, every turn after checkpoint N; `--to 0` drops them all) and restores the files those turns edited, with the safeguards of `/undo` in the terminal UI ([checkpoints](guide.md#checkpoints)): a backup tag first, and files changed since the agent last wrote them are left as they are unless `--force`. The undone turns are saved with the session; `baked session redo ID` puts back the oldest one and restores the files it edited. After a new message in the session they can no longer be put back. `--json` prints `{sessionId, action, checkpoint, messageCount, redoCount, rollback}`. The command exits 1 when the session does not exist or there is nothing to undo or redo.
 
+## MCP servers
+
+```sh
+baked mcp list --json        # servers of the global and project config
+baked mcp list --check       # connect each enabled server; exit 1 when one fails
+baked mcp disable github     # keep it in the config without connecting it
+```
+
+`baked mcp` lists and changes the [MCP servers](extensions.md#mcp-servers) headless runs connect. `list --json` prints `{servers}` in the shape of the local API's [`GET /v1/mcp`](desktop/api.md#mcp-servers); without `--check` every server is `idle`. `enable`, `disable` and `remove` take `--scope global|project`; without it they change the file that defines the server, the project one when both do. They exit 2 for an unknown server.
+
 ## Approvals
 
 There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.

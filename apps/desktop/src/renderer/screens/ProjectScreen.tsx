@@ -23,6 +23,7 @@ const TITLES: Record<ProjectSection, string> = {
   "working-set": "Working set",
   "run-memory": "Run memory",
   skills: "Skills",
+  mcp: "MCP servers",
 };
 
 function Closed({ project }: { project: DesktopProject }) {

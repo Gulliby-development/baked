@@ -4,6 +4,7 @@ import { attentionRoutes } from "./mock-attention.js";
 import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
 import { graphRoutes } from "./mock-graph.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
+import { mcpRoutes } from "./mock-mcp.js";
 import { activeRunIds, freezeInputChanged, RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
 import { setupRoutes } from "./mock-setup.js";
 import { startRoutes } from "./mock-start.js";
@@ -105,6 +106,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   ...MOCK_CHAT_ROUTES,
   ...INSIGHTS_ROUTES,
   graphRoutes,
+  mcpRoutes,
 ];
 
 /** Sample event streams per feature; screens add theirs here. */

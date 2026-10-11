@@ -35,3 +35,6 @@ export const CODE_GRAPH_CAPABILITY = "code-graph";
 export function offers(capabilities: readonly string[] | null, name: string): boolean | null {
   return capabilities === null ? null : capabilities.includes(name);
 }
+
+/** `/v1/mcp*` (the MCP servers section). */
+export const MCP_CAPABILITY = "mcp";
