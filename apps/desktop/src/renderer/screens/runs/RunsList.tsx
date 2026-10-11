@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import type { RunState } from "../../../shared/api.js";
 import { errorText, type RunRow, runs } from "../../client/runs.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { ago, tokens, usd } from "../../format.js";
+import { TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { useBriefs } from "./load.js";
@@ -59,39 +64,37 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
   };
 
   return (
-    <section aria-label="Workflow runs" className="runs-list">
-      <fieldset className="seg-group" aria-label="Filter by status">
+    <section aria-label="Workflow runs" className="flex flex-col gap-3">
+      <SegmentGroup aria-label="Filter by status">
         {FILTERS.map((f) => (
-          <button
+          <Segment
             key={f.label}
-            type="button"
-            className="seg"
             aria-pressed={status === f.status}
             onClick={() => setStatus(f.status)}
           >
             {f.label}
-          </button>
+          </Segment>
         ))}
-      </fieldset>
-      {error && <div className="banner error">{error}</div>}
-      {!error && !list && <div className="muted">Loading runs…</div>}
+      </SegmentGroup>
+      {error && <Alert tone="error">{error}</Alert>}
+      {!error && !list && <div className="text-dim-foreground">Loading runs…</div>}
       {list?.length === 0 && (
-        <div className="empty">
+        <Empty>
           {status ? `No ${STATUS_TEXT[status]} runs.` : "No workflow runs in this project yet."}
-        </div>
+        </Empty>
       )}
       {list && list.length > 0 && (
-        <div className="table-wrap">
-          <table className="table runs-table">
+        <div className="overflow-x-auto">
+          <table className={TABLE}>
             <thead>
               <tr>
                 <th>Feature</th>
                 <th>Title</th>
                 <th>Status</th>
                 <th>Stage</th>
-                <th className="num">Tasks</th>
-                <th className="num">Tokens</th>
-                <th className="num">Cost</th>
+                <th className="text-right">Tasks</th>
+                <th className="text-right">Tokens</th>
+                <th className="text-right">Cost</th>
                 <th>Updated</th>
               </tr>
             </thead>
@@ -100,30 +103,32 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
                 const brief = briefs.get(run.runId);
                 return (
                   <tr key={run.runId}>
-                    <td className="mono">
+                    <td className="font-mono">
                       <a href={projectHref(project.key, "runs", run.runId)}>{run.featureId}</a>
                     </td>
-                    <td className="runs-title">{brief?.title ?? "–"}</td>
+                    <td className="max-w-[320px] overflow-hidden text-ellipsis">
+                      {brief?.title ?? "–"}
+                    </td>
                     <td>
                       <StatusPill status={run.status} />
                     </td>
                     <td>
                       {run.stageId ? stageLabel(run.stageId) : "–"}
                       {brief && brief.stage.total > 0 && (
-                        <span className="muted mono">
+                        <span className="font-mono text-dim-foreground">
                           {" "}
                           {brief.stage.index}/{brief.stage.total}
                         </span>
                       )}
                     </td>
-                    <td className="mono num">
+                    <td className="text-right font-mono">
                       {brief && brief.tasks.total > 0
                         ? `${brief.tasks.done}/${brief.tasks.total}`
                         : "–"}
                     </td>
-                    <td className="mono num">{tokens(run.tokenUsage)}</td>
-                    <td className="mono num">{usd(run.estimatedCostUsd)}</td>
-                    <td className="muted">
+                    <td className="text-right font-mono">{tokens(run.tokenUsage)}</td>
+                    <td className="text-right font-mono">{usd(run.estimatedCostUsd)}</td>
+                    <td className="text-dim-foreground">
                       {brief?.updatedAt ? ago(Date.parse(brief.updatedAt)) : "–"}
                     </td>
                   </tr>
@@ -134,9 +139,9 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
         </div>
       )}
       {cursor && (
-        <button type="button" className="btn" onClick={() => void more()}>
+        <Button variant="secondary" size="md" onClick={() => void more()}>
           Show more runs
-        </button>
+        </Button>
       )}
     </section>
   );

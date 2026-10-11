@@ -6,13 +6,40 @@ import type {
   PlanAction,
   ToolCall,
 } from "../../client/chat.js";
-import { Markdown } from "./Markdown.js";
+import { Button } from "../../components/ui/button.js";
+import { cn } from "../../lib/cn.js";
+import { INLINE_CODE, Markdown } from "./Markdown.js";
+import { CHIP_SMALL } from "./Popover.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
 
 /** Tools the agent uses for its own bookkeeping; they say nothing to the person. */
 const HIDDEN_TOOLS = new Set(["final_response"]);
 const DIFF_PREVIEW_LINES = 14;
+
+const TOOL_LINE =
+  "flex items-center gap-[10px] min-h-[34px] w-full px-3 py-0 rounded-base border-2 border-border bg-sidebar text-muted-foreground font-mono leading-[inherit] text-[12.5px] text-left cursor-pointer hover:bg-hover hover:text-foreground aria-expanded:bg-hover aria-expanded:text-foreground aria-expanded:shadow-sm-hard";
+const TOOL_BODY =
+  "m-[0_0_0_34px] py-[10px] px-3 border-l-[3px] border-l-border text-muted-foreground leading-[1.6] whitespace-pre-wrap wrap-anywhere max-h-[320px] overflow-y-auto";
+const NOTICE = "m-0 px-3 py-0 text-[13px]";
+const DIFF_LINE: Record<ToolDiff["lines"][number]["kind"], string> = {
+  add: "bg-[var(--diff-add)] text-[var(--ok)]",
+  del: "bg-[var(--diff-del)] text-[var(--err)]",
+  hunk: "text-dim-foreground",
+  ctx: "",
+};
+const PROMPT_CARD =
+  "border-2 border-border rounded-base shadow-shadow px-4 py-[14px] flex flex-col";
+const PROMPT_TITLE = "m-0 font-bold text-main-foreground";
+const ROW = "flex flex-wrap gap-2";
+const SPINNER = "size-3 flex-none inline-flex";
+const SPINNER_RING =
+  "w-full h-full rounded-[50%] border-2 border-[var(--line-strong)] border-t-[var(--accent)] animate-spin [animation-duration:0.8s] motion-reduce:animate-none";
+const OUTCOME_TONE: Record<string, string> = {
+  approved: "text-[var(--ok)]",
+  denied: "text-[var(--err)]",
+};
+const RESOLVED = "m-0 px-3 py-0 flex gap-2 text-[13px] text-dim-foreground min-w-0";
 
 function Chevron({ open }: { open: boolean }) {
   return (
@@ -24,7 +51,7 @@ function Chevron({ open }: { open: boolean }) {
       stroke="currentColor"
       strokeWidth="2"
       aria-hidden="true"
-      className={`chevron${open ? " open" : ""}`}
+      className={`flex-none [transition:transform_0.12s] motion-reduce:[transition:none]${open ? " [transform:rotate(90deg)]" : ""}`}
     >
       <path d="M6 4l4 4-4 4" />
     </svg>
@@ -34,16 +61,16 @@ function Chevron({ open }: { open: boolean }) {
 function Status({ call }: { call: ToolCall }) {
   if (!call.result)
     return (
-      <span className="spinner" role="img" aria-label="Running">
-        <span />
+      <span className={SPINNER} role="img" aria-label="Running">
+        <span className={SPINNER_RING} />
       </span>
     );
   return call.result.success ? (
-    <span className="tool-ok" role="img" aria-label="Done">
+    <span className="text-[var(--ok)]" role="img" aria-label="Done">
       ✓
     </span>
   ) : (
-    <span className="tool-err" role="img" aria-label="Failed">
+    <span className="text-[var(--err)]" role="img" aria-label="Failed">
       ✕
     </span>
   );
@@ -52,9 +79,11 @@ function Status({ call }: { call: ToolCall }) {
 function Title({ call }: { call: ToolCall }) {
   const title = toolTitle(call.name, call.args);
   return (
-    <span className="tool-title">
+    <span className="min-w-0 truncate">
       {title.verb}
-      {title.subject && <> {title.code ? <code>{title.subject}</code> : title.subject}</>}
+      {title.subject && (
+        <> {title.code ? <code className={INLINE_CODE}>{title.subject}</code> : title.subject}</>
+      )}
     </span>
   );
 }
@@ -64,10 +93,10 @@ function ToolLine({ call }: { call: ToolCall }) {
   const id = useId();
   const output = call.result ? (call.result.error ?? call.result.output) : "";
   return (
-    <div className="tool">
+    <div className="flex flex-col gap-1">
       <button
         type="button"
-        className="tool-line"
+        className={TOOL_LINE}
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((v) => !v)}
@@ -77,7 +106,7 @@ function ToolLine({ call }: { call: ToolCall }) {
         <Title call={call} />
       </button>
       {open && (
-        <pre id={id} className="tool-output">
+        <pre id={id} className={`${TOOL_BODY} font-mono text-[12px]`}>
           {call.result ? output.trim() || "No output." : "Running…"}
         </pre>
       )}
@@ -91,17 +120,20 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
   const lines = all ? diff.lines : diff.lines.slice(0, DIFF_PREVIEW_LINES);
   const hidden = diff.lines.length - lines.length;
   return (
-    <figure className="diff-card" aria-label={`Changes to ${diff.path}`}>
-      <figcaption className="diff-head">
+    <figure
+      className="m-0 border-2 border-border rounded-base overflow-hidden bg-background shadow-shadow"
+      aria-label={`Changes to ${diff.path}`}
+    >
+      <figcaption className="flex items-center gap-[10px] px-3 py-[10px] text-[13px] font-semibold text-muted-foreground border-b-2 border-b-border">
         <Status call={call} />
-        <span className="mono diff-path">{diff.path}</span>
-        {diff.created && <span className="muted">new file</span>}
-        <span className="mono diff-add-count">+{diff.added}</span>
-        <span className="mono diff-del-count">−{diff.removed}</span>
+        <span className="font-mono text-soft-foreground min-w-0 truncate">{diff.path}</span>
+        {diff.created && <span className="text-dim-foreground">new file</span>}
+        <span className="font-mono ml-auto text-[var(--ok)]">+{diff.added}</span>
+        <span className="font-mono text-[var(--err)]">−{diff.removed}</span>
         {(hidden > 0 || all) && (
           <button
             type="button"
-            className="chip small"
+            className={CHIP_SMALL}
             aria-expanded={all}
             onClick={() => setAll((v) => !v)}
           >
@@ -109,11 +141,15 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
           </button>
         )}
       </figcaption>
-      {failed && <p className="diff-failed">{call.result?.error ?? "The edit failed."}</p>}
-      <pre className="diff-body">
+      {failed && (
+        <p className="m-0 px-[14px] py-2 text-[var(--err)] text-[13px]">
+          {call.result?.error ?? "The edit failed."}
+        </p>
+      )}
+      <pre className="m-0 py-[6px] px-0 bg-[var(--bg-code)] font-mono text-[13px] leading-[1.7] text-muted-foreground overflow-x-auto">
         {lines.map((line, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: diff lines are positional
-          <span key={i} className={`diff-line ${line.kind}`}>
+          <span key={i} className={`block px-4 py-0 whitespace-pre ${DIFF_LINE[line.kind]}`}>
             {line.kind === "add" ? "+ " : line.kind === "del" ? "- " : "  "}
             {line.text}
             {"\n"}
@@ -140,10 +176,10 @@ function Reasoning({ text, ms, active }: { text: string; ms?: number; active: bo
   const id = useId();
   const label = active ? "Thinking…" : ms !== undefined ? `Thought for ${seconds(ms)}` : "Thought";
   return (
-    <div className="tool">
+    <div className="flex flex-col gap-1">
       <button
         type="button"
-        className={`tool-line${active ? " thinking" : ""}`}
+        className={TOOL_LINE}
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((v) => !v)}
@@ -152,7 +188,7 @@ function Reasoning({ text, ms, active }: { text: string; ms?: number; active: bo
         {label}
       </button>
       {open && (
-        <div id={id} className="reasoning-text">
+        <div id={id} className={`${TOOL_BODY} text-[13px]`}>
           {text}
         </div>
       )}
@@ -176,7 +212,7 @@ function Assistant({
   ];
   let reasoningIndex = 0;
   return (
-    <div className="assistant">
+    <div className="flex flex-col gap-3 min-w-0">
       {segments.map((segment, i) => {
         const key = `${segment.type}-${i}`;
         if (segment.type === "text")
@@ -201,6 +237,11 @@ function Assistant({
   );
 }
 
+const FORK_ROW =
+  "m-0 flex flex-wrap items-center gap-2 border-0 p-0 text-[13px] text-dim-foreground";
+const FORK_LINK =
+  "cursor-pointer border-0 bg-transparent p-0 [font-family:inherit] [font-size:inherit] leading-[inherit] text-dim-foreground underline hover:text-foreground disabled:cursor-default disabled:opacity-50";
+
 function ForkAction({
   disabled,
   onFork,
@@ -211,10 +252,15 @@ function ForkAction({
   const [open, setOpen] = useState(false);
   if (!open)
     return (
-      <div className="fork-row">
+      <div
+        className={cn(
+          FORK_ROW,
+          "opacity-0 transition-opacity duration-[120ms] group-hover/turn:opacity-100 focus-within:opacity-100",
+        )}
+      >
         <button
           type="button"
-          className="fork-link"
+          className={FORK_LINK}
           disabled={disabled}
           onClick={() => setOpen(true)}
         >
@@ -227,15 +273,15 @@ function ForkAction({
     onFork(rollbackFiles);
   };
   return (
-    <fieldset className="fork-row fork-confirm" aria-label="Fork from here">
+    <fieldset className={FORK_ROW} aria-label="Fork from here">
       <span>Continue in a new chat from this point. Roll the files back too?</span>
-      <button type="button" className="btn" onClick={() => pick(false)}>
+      <Button variant="secondary" size="md" onClick={() => pick(false)}>
         Chat only
-      </button>
-      <button type="button" className="btn-primary" onClick={() => pick(true)}>
+      </Button>
+      <Button variant="primary" size="md" onClick={() => pick(true)}>
         Chat and files
-      </button>
-      <button type="button" className="fork-link" onClick={() => setOpen(false)}>
+      </Button>
+      <button type="button" className={FORK_LINK} onClick={() => setOpen(false)}>
         Cancel
       </button>
     </fieldset>
@@ -252,20 +298,33 @@ function UserBubble({
   context?: InputContextItem[];
 }) {
   return (
-    <div className={`user-bubble${note === "Sending…" ? " pending" : ""}`}>
-      {note && <span className="bubble-note">{note}</span>}
+    <div
+      className={`self-end max-w-[640px] bg-main text-main-foreground border-2 border-border rounded-base shadow-shadow px-4 py-3 leading-[1.6] text-[15px] whitespace-pre-wrap wrap-anywhere flex flex-col gap-[2px]${note === "Sending…" ? " opacity-[0.65]" : ""}`}
+    >
+      {note && (
+        <span className="font-mono text-[11px] font-bold text-main-foreground opacity-75 uppercase tracking-[0.06em]">
+          {note}
+        </span>
+      )}
       {text}
       {context && context.length > 0 && (
-        <ul className="input-context" aria-label="Attached context">
+        <ul
+          className="list-none m-[8px_0_0] p-[8px_0_0] border-t-2 border-t-border flex flex-col gap-1 text-[13px]"
+          aria-label="Attached context"
+        >
           {context.map((item, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: items keep their order
-            <li key={i} className={item.ok ? "ok" : "failed"}>
-              <span className="mono">
+            <li key={i} className={item.ok ? undefined : "opacity-70 line-through"}>
+              <span className="font-mono">
                 {item.kind === "command" ? "!" : "@"}
                 {item.ref}
               </span>{" "}
-              <span className="input-context-summary">{item.summary}</span>
-              {item.output && <pre className="input-context-output">{item.output}</pre>}
+              <span className="opacity-80">{item.summary}</span>
+              {item.output && (
+                <pre className="m-[4px_0_0] px-2 py-[6px] max-h-[200px] overflow-auto font-mono text-[12px] rounded-base bg-background text-foreground border-2 border-border whitespace-pre">
+                  {item.output}
+                </pre>
+              )}
             </li>
           ))}
         </ul>
@@ -314,19 +373,22 @@ function PlanReviewCard({
   const [feedback, setFeedback] = useState("");
   const inputId = useId();
   return (
-    <section className="prompt-card plan-review" aria-label="Review the plan">
-      <p className="prompt-title">Review the plan</p>
-      <p className="plan-meta muted">
+    <section
+      className={`${PROMPT_CARD} gap-[10px] bg-fill-info text-main-foreground`}
+      aria-label="Review the plan"
+    >
+      <p className={PROMPT_TITLE}>Review the plan</p>
+      <p className="m-0 text-[12px] text-main-foreground">
         {prompt.steps.length} {prompt.steps.length === 1 ? "step" : "steps"} ·{" "}
         {prompt.depth === "full" ? "full plan with edits" : "light plan"} ·{" "}
-        <span className="mono">{prompt.planFile}</span>
+        <span className="font-mono">{prompt.planFile}</span>
       </p>
-      <div className="plan-body">
+      <div className="max-h-[420px] overflow-auto px-3 py-[10px] border-2 border-border rounded-base bg-raised text-foreground">
         <Markdown text={prompt.content} />
       </div>
       {revising ? (
         <form
-          className="prompt-answer"
+          className={ROW}
           onSubmit={(event) => {
             event.preventDefault();
             if (feedback.trim())
@@ -339,47 +401,48 @@ function PlanReviewCard({
           <input
             id={inputId}
             type="text"
+            className="flex-1 min-w-[200px]"
             placeholder="What should change?"
             value={feedback}
             onChange={(event) => setFeedback(event.target.value)}
           />
-          <button type="submit" className="btn-primary" disabled={busy || !feedback.trim()}>
+          <Button type="submit" variant="primary" size="md" disabled={busy || !feedback.trim()}>
             Send
-          </button>
-          <button type="button" className="btn" onClick={() => setRevising(false)}>
+          </Button>
+          <Button variant="secondary" size="md" onClick={() => setRevising(false)}>
             Back
-          </button>
+          </Button>
         </form>
       ) : (
-        <div className="prompt-actions">
-          <button
-            type="button"
-            className="btn-primary"
+        <div className={ROW}>
+          <Button
+            variant="primary"
+            size="md"
             disabled={busy}
             onClick={() => onReview(prompt.id, { action: "execute" })}
           >
             Execute
-          </button>
-          <button
-            type="button"
-            className="btn"
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
             disabled={busy}
             title="Drops the conversation so far; the plan carries what the work needs."
             onClick={() => onReview(prompt.id, { action: "clear-execute" })}
           >
             Clear context and execute
-          </button>
-          <button type="button" className="btn" disabled={busy} onClick={() => setRevising(true)}>
+          </Button>
+          <Button variant="secondary" size="md" disabled={busy} onClick={() => setRevising(true)}>
             Revise
-          </button>
-          <button
-            type="button"
-            className="btn"
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
             disabled={busy}
             onClick={() => onReview(prompt.id, { action: "cancel" })}
           >
             Cancel
-          </button>
+          </Button>
         </div>
       )}
     </section>
@@ -387,22 +450,31 @@ function PlanReviewCard({
 }
 
 const STEP_MARKS = { pending: "○", active: "◐", done: "✓", skipped: "–" } as const;
+const STEP_TONE = {
+  pending: undefined,
+  active: "font-semibold",
+  done: "text-muted-foreground",
+  skipped: undefined,
+} as const;
 
 /** The checklist of a plan being carried out. */
 function PlanChecklist({ plan }: { plan: ChatPlan }) {
   const done = plan.steps.filter((s) => s.status === "done").length;
   return (
-    <section className="plan-checklist" aria-label="Plan">
-      <p className="plan-checklist-title">
+    <section
+      className="px-[14px] py-[10px] border-2 border-border rounded-base bg-raised shadow-sm-hard"
+      aria-label="Plan"
+    >
+      <p className="m-0 mb-[6px] font-bold">
         {plan.title}{" "}
-        <span className="muted">
+        <span className="text-dim-foreground">
           {done}/{plan.steps.length}
         </span>
       </p>
-      <ol>
+      <ol className="m-0 p-0 list-none flex flex-col gap-1 text-[13px]">
         {plan.steps.map((step) => (
-          <li key={step.id} className={`plan-step ${step.status}`}>
-            <span className="plan-step-mark" aria-hidden="true">
+          <li key={step.id} className={STEP_TONE[step.status]}>
+            <span className="inline-block w-[1.4em] font-mono" aria-hidden="true">
               {STEP_MARKS[step.status]}
             </span>
             <span className="sr-only">{step.status}: </span>
@@ -433,11 +505,11 @@ function PromptCard({
   if (outcome) {
     if (prompt.kind === "plan-review")
       return (
-        <p className={`prompt-resolved ${outcome}`}>
-          <span className="prompt-resolved-outcome">
+        <p className={RESOLVED}>
+          <span className={`flex-none font-medium ${OUTCOME_TONE[outcome] ?? ""}`}>
             {entry.action ? PLAN_OUTCOMES[entry.action] : OUTCOMES[outcome]}
           </span>
-          <span className="prompt-resolved-subject">{prompt.title}</span>
+          <span className="truncate">{prompt.title}</span>
         </p>
       );
     const subject =
@@ -451,9 +523,11 @@ function PromptCard({
               ? prompt.query
               : prompt.url;
     return (
-      <p className={`prompt-resolved ${outcome}`}>
-        <span className="prompt-resolved-outcome">{OUTCOMES[outcome]}</span>
-        <span className="prompt-resolved-subject">{subject}</span>
+      <p className={RESOLVED}>
+        <span className={`flex-none font-medium ${OUTCOME_TONE[outcome] ?? ""}`}>
+          {OUTCOMES[outcome]}
+        </span>
+        <span className="truncate">{subject}</span>
       </p>
     );
   }
@@ -463,15 +537,18 @@ function PromptCard({
   }
   if (prompt.kind === "question") {
     return (
-      <section className="prompt-card question" aria-label="Question">
-        <p className="prompt-title">{prompt.question}</p>
+      <section
+        className={`${PROMPT_CARD} gap-[6px] bg-fill-info text-soft-foreground`}
+        aria-label="Question"
+      >
+        <p className={PROMPT_TITLE}>{prompt.question}</p>
         {prompt.options.length > 0 && (
-          <div className="suggestions">
+          <div className={ROW}>
             {prompt.options.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                className="suggestion"
+                className="min-h-9 px-[14px] py-0 rounded-[999px] border-2 border-border bg-raised text-foreground shadow-sm-hard font-[inherit] leading-[inherit] text-[13px] font-semibold cursor-pointer hover:bg-main hover:text-main-foreground disabled:opacity-50 disabled:cursor-default"
                 disabled={busy}
                 title={option.description}
                 onClick={() => onAnswer(prompt.id, option.value)}
@@ -482,7 +559,7 @@ function PromptCard({
           </div>
         )}
         <form
-          className="prompt-answer"
+          className={ROW}
           onSubmit={(event) => {
             event.preventDefault();
             if (text.trim()) onAnswer(prompt.id, text.trim());
@@ -494,22 +571,23 @@ function PromptCard({
           <input
             id={inputId}
             type="text"
+            className="flex-1 min-w-[200px]"
             placeholder={prompt.options.length > 0 ? "Or write an answer" : "Your answer"}
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
-          <button type="submit" className="btn-primary" disabled={busy || !text.trim()}>
+          <Button type="submit" variant="primary" size="md" disabled={busy || !text.trim()}>
             Answer
-          </button>
+          </Button>
           {prompt.allowSkip && (
-            <button
-              type="button"
-              className="btn"
+            <Button
+              variant="secondary"
+              size="md"
               disabled={busy}
               onClick={() => onAnswer(prompt.id, "")}
             >
               Skip
-            </button>
+            </Button>
           )}
         </form>
       </section>
@@ -524,26 +602,31 @@ function PromptCard({
           ? prompt.query
           : prompt.url;
   return (
-    <section className="prompt-card" aria-label={APPROVAL_TITLES[prompt.kind]}>
-      <p className="prompt-title">{APPROVAL_TITLES[prompt.kind]}</p>
-      <pre className="prompt-detail">{detail}</pre>
-      <div className="prompt-actions">
-        <button
-          type="button"
-          className="btn-primary"
+    <section
+      className={`${PROMPT_CARD} gap-[10px] bg-fill-warn text-main-foreground`}
+      aria-label={APPROVAL_TITLES[prompt.kind]}
+    >
+      <p className={PROMPT_TITLE}>{APPROVAL_TITLES[prompt.kind]}</p>
+      <pre className="m-0 px-[10px] py-2 border-2 border-border rounded-base bg-[var(--bg-code)] font-mono text-[13px] text-soft-foreground whitespace-pre-wrap wrap-anywhere">
+        {detail}
+      </pre>
+      <div className={ROW}>
+        <Button
+          variant="primary"
+          size="md"
           disabled={busy}
           onClick={() => onApprove(prompt.id, true)}
         >
           Allow
-        </button>
-        <button
-          type="button"
-          className="btn"
+        </Button>
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy}
           onClick={() => onApprove(prompt.id, false)}
         >
           Deny
-        </button>
+        </Button>
       </div>
     </section>
   );
@@ -586,7 +669,7 @@ export function Conversation({
             {...(message.inputContext ? { context: message.inputContext } : {})}
           />
         ) : message.role === "assistant" ? (
-          <div key={message.id} className="assistant-turn">
+          <div key={message.id} className="group/turn flex min-w-0 flex-col gap-1.5">
             <Assistant message={message} thoughtMs={thoughtMs[message.id]} thinking={false} />
             {onFork && !running && (
               <ForkAction
@@ -596,7 +679,10 @@ export function Conversation({
             )}
           </div>
         ) : (
-          <p key={message.id} className="chat-note">
+          <p
+            key={message.id}
+            className="self-center m-0 px-3 py-1 border-2 border-dashed border-border rounded-base text-[12px] text-muted-foreground text-center"
+          >
             {message.content}
           </p>
         ),
@@ -624,23 +710,32 @@ export function Conversation({
         <UserBubble key={`pending-${i}`} text={text} note="Sending…" />
       ))}
       {running && !waiting && lastLive?.type !== "reasoning" && (
-        <p className="working" aria-live="polite">
-          <span className="spinner" aria-hidden="true">
-            <span />
+        <p
+          className={`${NOTICE} flex items-center gap-[10px] text-dim-foreground`}
+          aria-live="polite"
+        >
+          <span className={SPINNER} aria-hidden="true">
+            <span className={SPINNER_RING} />
           </span>
           Working…
         </p>
       )}
       {transcript.compacting && (
-        <p className="working" aria-live="polite">
-          <span className="spinner" aria-hidden="true">
-            <span />
+        <p
+          className={`${NOTICE} flex items-center gap-[10px] text-dim-foreground`}
+          aria-live="polite"
+        >
+          <span className={SPINNER} aria-hidden="true">
+            <span className={SPINNER_RING} />
           </span>
           Compacting the conversation…
         </p>
       )}
       {notice && (
-        <p className={`notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
+        <p
+          className={`${NOTICE} ${notice.kind === "error" ? "text-[var(--err)]" : "text-dim-foreground"}`}
+          role={notice.kind === "error" ? "alert" : "status"}
+        >
           {notice.kind === "error" ? "Error: " : ""}
           {notice.text}
         </p>

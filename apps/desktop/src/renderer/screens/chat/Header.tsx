@@ -9,13 +9,28 @@ import {
   type Usage,
 } from "../../client/chat.js";
 import { Icon } from "../../components/Icon.js";
-import { Button } from "../../components/ui/button.js";
+import { Button, buttonVariants } from "../../components/ui/button.js";
+import { Dot, type DotTone } from "../../components/ui/dot.js";
 import { ago, tokens } from "../../format.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { shortModel } from "./Composer.js";
-import { Popover } from "./Popover.js";
+import {
+  CHIP,
+  MENU_ITEM,
+  MENU_LIST,
+  MENU_NOTE,
+  POPOVER,
+  POPOVER_ROOT,
+  Popover,
+} from "./Popover.js";
 
-const STATE_TONE: Record<SessionState, string> = { idle: "", working: "busy", waiting: "warn" };
+const SESSION_TITLE =
+  "inline-flex items-center gap-[6px] min-h-[30px] max-w-[420px] px-2 py-0 border-2 border-transparent rounded-base bg-transparent text-foreground font-[inherit] text-[length:inherit] leading-[inherit] cursor-pointer hover:border-border hover:bg-hover aria-expanded:border-border aria-expanded:bg-hover";
+const KV = "flex justify-between gap-3";
+
+const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };
 
 function SessionMenu({
   project,
@@ -29,11 +44,11 @@ function SessionMenu({
   return (
     <Popover
       label="Chats"
-      className="session-title"
+      className={SESSION_TITLE}
       buttonLabel={`${title}, switch chat`}
       button={
         <>
-          <h1>{title}</h1>
+          <h1 className="m-0 text-[15px] font-bold truncate">{title}</h1>
           <svg
             width="12"
             height="12"
@@ -75,27 +90,31 @@ function SessionList({
     };
   }, [project.key]);
   return (
-    <div className="menu-list sessions">
-      <a className="btn-primary" href={projectHref(project.key, "chat", "new")} onClick={close}>
+    <div className={`${MENU_LIST} w-[320px]`}>
+      <a
+        className={buttonVariants({ variant: "primary", size: "md" })}
+        href={projectHref(project.key, "chat", "new")}
+        onClick={close}
+      >
         New chat
       </a>
-      <p className="label" style={{ padding: "6px 4px 2px" }}>
+      <p className={LABEL} style={{ padding: "6px 4px 2px" }}>
         Recent
       </p>
-      {error && <p className="menu-note">{error}</p>}
-      {!sessions && !error && <p className="menu-note">Loading…</p>}
-      {sessions?.length === 0 && <p className="menu-note">No chats yet.</p>}
+      {error && <p className={MENU_NOTE}>{error}</p>}
+      {!sessions && !error && <p className={MENU_NOTE}>Loading…</p>}
+      {sessions?.length === 0 && <p className={MENU_NOTE}>No chats yet.</p>}
       {sessions?.map((s) => (
         <a
           key={s.id}
-          className="menu-item"
+          className={MENU_ITEM}
           href={projectHref(project.key, "chat", s.id)}
           aria-current={s.id === currentId ? "page" : undefined}
           onClick={close}
         >
-          <span className={`dot ${STATE_TONE[s.state]}`} />
-          <span className="menu-item-title">{s.title}</span>
-          <span className="muted menu-item-time">{ago(s.updatedAt)}</span>
+          <Dot tone={STATE_TONE[s.state]} />
+          <span className="flex-1 min-w-0 truncate">{s.title}</span>
+          <span className="flex-none text-[12px] text-dim-foreground">{ago(s.updatedAt)}</span>
         </a>
       ))}
     </div>
@@ -107,15 +126,15 @@ function Ring({ percent }: { percent: number }) {
   const length = 2 * Math.PI * r;
   const filled = Math.min(1, Math.max(0, percent / 100)) * length;
   return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" className="ring">
-      <circle cx="8" cy="8" r={r} fill="none" strokeWidth="2.5" className="ring-track" />
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r={r} fill="none" strokeWidth="2.5" className="stroke-[var(--line)]" />
       <circle
         cx="8"
         cy="8"
         r={r}
         fill="none"
         strokeWidth="2.5"
-        className={`ring-fill${percent >= 80 ? " high" : ""}`}
+        className={percent >= 80 ? "stroke-[var(--warn)]" : "stroke-[var(--accent)]"}
         strokeDasharray={`${filled} ${length}`}
         transform="rotate(-90 8 8)"
       />
@@ -139,12 +158,14 @@ export interface RewindControl {
   redoPrompt: string | null;
 }
 
+const REWIND_CHIP = `${CHIP} disabled:cursor-default disabled:bg-raised disabled:text-soft-foreground disabled:opacity-50 disabled:shadow-none disabled:hover:bg-raised disabled:hover:text-soft-foreground disabled:hover:shadow-none`;
+
 function RewindChips({ rewind }: { rewind: RewindControl }) {
   return (
     <>
       <button
         type="button"
-        className="chip"
+        className={REWIND_CHIP}
         disabled={rewind.undoDisabled !== null}
         title={rewind.undoDisabled ?? "Undo the last turn: drop it and restore the files it edited"}
         onClick={rewind.undo}
@@ -154,7 +175,7 @@ function RewindChips({ rewind }: { rewind: RewindControl }) {
       </button>
       <button
         type="button"
-        className="chip"
+        className={REWIND_CHIP}
         disabled={rewind.redoDisabled !== null}
         title={
           rewind.redoDisabled ??
@@ -200,10 +221,10 @@ function ContextChip({
     [],
   );
   return (
-    <div className="popover-root">
+    <div className={POPOVER_ROOT}>
       <button
         type="button"
-        className="chip"
+        className={CHIP}
         aria-expanded={open}
         aria-controls={id}
         onMouseEnter={show}
@@ -226,40 +247,40 @@ function ContextChip({
           id={id}
           role="dialog"
           aria-label="Context"
-          className="popover context-pop"
+          className={`${POPOVER} top-[calc(100%+6px)] right-0 w-[280px] p-[14px]`}
           onMouseEnter={show}
           onMouseLeave={hide}
         >
-          <p className="label">Context</p>
+          <p className={LABEL}>Context</p>
           {context ? (
-            <div className="kv">
+            <div className={KV}>
               <span>Used</span>
-              <span className="mono">
+              <span className="font-mono">
                 {tokens(context.usedTokens)} of {tokens(context.windowTokens)}
               </span>
             </div>
           ) : (
-            <p className="menu-note">Known after the next turn.</p>
+            <p className={MENU_NOTE}>Known after the next turn.</p>
           )}
-          <p className="label">Session tokens</p>
-          <div className="kv">
+          <p className={LABEL}>Session tokens</p>
+          <div className={KV}>
             <span>Input</span>
-            <span className="mono">{tokens(usage.input)}</span>
+            <span className="font-mono">{tokens(usage.input)}</span>
           </div>
-          <div className="kv">
+          <div className={KV}>
             <span>Cache read</span>
-            <span className="mono">{tokens(usage.cacheRead)}</span>
+            <span className="font-mono">{tokens(usage.cacheRead)}</span>
           </div>
-          <div className="kv">
+          <div className={KV}>
             <span>Output</span>
-            <span className="mono">{tokens(usage.output)}</span>
+            <span className="font-mono">{tokens(usage.output)}</span>
           </div>
-          <div className="kv total">
+          <div className={`${KV} border-t-2 border-t-border pt-2 font-bold`}>
             <span>Model</span>
-            <span className="mono">{shortModel(model)}</span>
+            <span className="font-mono">{shortModel(model)}</span>
           </div>
           {compact && (
-            <div className="compact-now">
+            <div className="mt-[10px] flex flex-col items-start gap-1">
               <Button
                 size="sm"
                 variant="neutral"
@@ -268,7 +289,7 @@ function ContextChip({
               >
                 Compact now
               </Button>
-              <p className="menu-note">
+              <p className={cn(MENU_NOTE, "m-0")}>
                 {compact.disabled ??
                   "Summarizes the older messages to free context; recent ones stay as they are."}
               </p>
@@ -289,9 +310,9 @@ function FilesChip({ files }: { files: string[] }) {
       button={`${files.length} file${files.length === 1 ? "" : "s"} changed`}
     >
       {() => (
-        <ul className="file-list">
+        <ul className="m-0 p-0 list-none flex flex-col gap-1 text-[12px]">
           {files.map((file) => (
-            <li key={file} className="mono">
+            <li key={file} className="font-mono">
               {file}
             </li>
           ))}
@@ -322,8 +343,8 @@ function DiffChip({ diff }: { diff: SessionDiffStats }) {
       button={
         counted ? (
           <>
-            <span className="mono diff-stat-add">+{totals.added}</span>
-            <span className="mono diff-stat-del">−{totals.removed}</span>
+            <span className="font-mono text-[var(--ok)]">+{totals.added}</span>
+            <span className="font-mono text-[var(--err)]">−{totals.removed}</span>
             <span>
               {totals.files} file{totals.files === 1 ? "" : "s"}
             </span>
@@ -335,29 +356,31 @@ function DiffChip({ diff }: { diff: SessionDiffStats }) {
     >
       {() => (
         <>
-          <p className="label">{counted ? "Changes since the last commit" : "Files edited"}</p>
-          <ul className="file-list diff-stats">
+          <p className={LABEL}>{counted ? "Changes since the last commit" : "Files edited"}</p>
+          <ul className="m-0 p-0 list-none flex flex-col gap-1 text-[12px] min-w-[300px] max-w-[460px]">
             {diff.files.map((file) => (
               <li
                 key={file.path}
-                className={
-                  file.status === "unchanged" || file.status === "outside" ? "unchanged" : ""
-                }
+                className={cn(
+                  "flex items-baseline gap-2",
+                  (file.status === "unchanged" || file.status === "outside") &&
+                    "text-dim-foreground",
+                )}
               >
-                <span className="mono path" title={file.path}>
+                <span className="font-mono flex-1 min-w-0 truncate" title={file.path}>
                   {file.path}
                 </span>
                 {STATUS_NOTE[file.status] ? (
-                  <span className="muted">{STATUS_NOTE[file.status]}</span>
+                  <span className="text-dim-foreground">{STATUS_NOTE[file.status]}</span>
                 ) : null}
                 {counted && file.status !== "unchanged" && file.status !== "outside" && (
-                  <span className="mono">
+                  <span className="font-mono">
                     {file.binary ? (
                       "binary"
                     ) : (
                       <>
-                        <span className="diff-stat-add">+{file.added}</span>{" "}
-                        <span className="diff-stat-del">−{file.removed}</span>
+                        <span className="text-[var(--ok)]">+{file.added}</span>{" "}
+                        <span className="text-[var(--err)]">−{file.removed}</span>
                       </>
                     )}
                   </span>
@@ -385,7 +408,7 @@ function WorkingSetChip({ project }: { project: DesktopProject }) {
   }, [project.key]);
   if (count === null) return null;
   return (
-    <a className="chip" href={projectHref(project.key, "working-set")}>
+    <a className={CHIP} href={projectHref(project.key, "working-set")}>
       working set · {count}
     </a>
   );
@@ -416,15 +439,19 @@ export function ChatHeader({
   rewind?: RewindControl;
 }) {
   return (
-    <header className="chat-head">
-      <a className="crumb" href={projectHref(project.key)} title={project.path}>
+    <header className="flex flex-wrap items-center gap-[10px] px-6 py-[10px] border-b-2 border-b-border bg-background">
+      <a
+        className="text-[13px] text-dim-foreground no-underline max-w-[320px] truncate hover:text-soft-foreground"
+        href={projectHref(project.key)}
+        title={project.path}
+      >
         {project.name} · {project.path}
       </a>
-      <span className="crumb-sep" aria-hidden="true">
+      <span className="text-[var(--line-strong)]" aria-hidden="true">
         /
       </span>
       <SessionMenu project={project} title={title} currentId={sessionId} />
-      <div className="chat-chips">
+      <div className="ml-auto flex flex-wrap gap-[6px] [@media(max-width:720px)]:ml-0">
         {usage && (
           <ContextChip
             context={context ?? null}
@@ -437,7 +464,7 @@ export function ChatHeader({
         <WorkingSetChip project={project} />
         {rewind && <RewindChips rewind={rewind} />}
         {sessionId !== null && (
-          <a className="chip" href={projectHref(project.key, "chat", "new")}>
+          <a className={CHIP} href={projectHref(project.key, "chat", "new")}>
             <Icon name="plus" size={13} />
             New chat
           </a>

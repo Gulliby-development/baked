@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMode, MentionSuggestion, ModelProvider } from "../../client/chat.js";
-import { Popover } from "./Popover.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
+import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
+
+const ROUND_BUTTON =
+  "w-[38px] h-[38px] flex-none rounded-base border-2 border-border shadow-sm-hard flex items-center justify-center cursor-pointer hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none";
 
 export const MODE_LABELS: Record<ChatMode, { name: string; detail: string }> = {
   default: {
@@ -65,21 +70,21 @@ function ModelMenu({
       live = false;
     };
   }, [loadModels]);
-  if (error) return <p className="menu-note">{error}</p>;
-  if (!providers) return <p className="menu-note">Loading models…</p>;
+  if (error) return <p className={MENU_NOTE}>{error}</p>;
+  if (!providers) return <p className={MENU_NOTE}>Loading models…</p>;
   const usable = providers.filter((p) => p.configured && p.models.length > 0);
   if (usable.length === 0)
-    return <p className="menu-note">No provider is configured. Add a key in Settings.</p>;
+    return <p className={MENU_NOTE}>No provider is configured. Add a key in Settings.</p>;
   return (
-    <div className="menu-list">
+    <div className={MENU_LIST}>
       {usable.map((provider) => (
-        <fieldset key={provider.id} className="menu-group">
-          <legend className="label">{provider.name}</legend>
+        <fieldset key={provider.id} className="border-0 m-[0_0_6px] p-0 flex flex-col gap-[2px]">
+          <legend className={cn(LABEL, "p-[4px_4px_2px]")}>{provider.name}</legend>
           {provider.models.map((m) => (
             <button
               key={m.id}
               type="button"
-              className="menu-item"
+              className={MENU_ITEM}
               aria-pressed={m.id === model}
               onClick={() => {
                 onModel(m.id);
@@ -88,7 +93,9 @@ function ModelMenu({
             >
               {m.name}
               {m.contextWindow ? (
-                <span className="mono muted">{Math.round(m.contextWindow / 1000)}k</span>
+                <span className="ml-auto font-mono text-[12px] text-dim-foreground">
+                  {Math.round(m.contextWindow / 1000)}k
+                </span>
               ) : null}
             </button>
           ))}
@@ -198,29 +205,46 @@ export function Composer({
   };
   return (
     <form
-      className={`composer${text.trimStart().startsWith("!") ? " shell" : ""}`}
+      className={cn(
+        "relative w-full max-w-[820px] border-2 border-border rounded-base bg-background shadow-shadow px-[14px] py-3 flex flex-col gap-2 focus-within:outline-[3px] focus-within:outline-ring focus-within:outline-offset-2",
+        text.trimStart().startsWith("!") && "border-fill-warn",
+      )}
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
       {showMentions && (
-        <div id="chat-mentions" className="mention-list" role="listbox" aria-label="Mentions">
+        <div
+          id="chat-mentions"
+          className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-20 max-h-[280px] overflow-y-auto flex flex-col gap-[2px] p-[6px] border-2 border-border rounded-base bg-background shadow-shadow"
+          role="listbox"
+          aria-label="Mentions"
+        >
           {mentions.map((m, i) => (
             <button
               key={`${m.kind}:${m.insert}`}
               type="button"
               role="option"
               aria-selected={i === mentionIdx}
-              className="menu-item mention-item"
+              // Not `cn`: tailwind-merge would drop MENU_ITEM's `leading-[inherit]` for its text size.
+              className={`${MENU_ITEM} aria-selected:border-border aria-selected:bg-hover aria-selected:text-foreground`}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => acceptMention(m)}
             >
-              <span className={`mention-icon ${m.kind}`} aria-hidden="true">
+              <span
+                className={cn(
+                  "w-[14px] text-center text-muted-foreground",
+                  m.kind === "symbol" && "text-[var(--accent)]",
+                )}
+                aria-hidden="true"
+              >
                 {MENTION_ICONS[m.kind]}
               </span>
-              <span className="mono">{m.label}</span>
-              {m.kind === "symbol" && <span className="muted mention-detail">{m.detail}</span>}
+              <span className="font-mono text-[13px]">{m.label}</span>
+              {m.kind === "symbol" && (
+                <span className="ml-auto text-[12px] text-dim-foreground truncate">{m.detail}</span>
+              )}
             </button>
           ))}
         </div>
@@ -232,6 +256,7 @@ export function Composer({
         id="chat-prompt"
         ref={area}
         rows={2}
+        className="resize-none rounded-base px-[10px] py-2 border-none outline-none bg-transparent text-foreground font-[inherit] text-[15px] leading-[1.5] max-h-[240px] placeholder:text-dim-foreground"
         value={text}
         placeholder={
           busy
@@ -271,12 +296,12 @@ export function Composer({
           }
         }}
       />
-      <div className="composer-bar">
+      <div className="flex flex-wrap items-center gap-[6px]">
         <Popover
           label="Model"
           up
           buttonLabel={`Model: ${shortModel(model)}`}
-          button={<span className="mono">{shortModel(model)}</span>}
+          button={<span className="font-mono">{shortModel(model)}</span>}
         >
           {(close) => (
             <ModelMenu model={model} loadModels={loadModels} onModel={onModel} close={close} />
@@ -289,12 +314,12 @@ export function Composer({
           button={MODE_LABELS[mode].name}
         >
           {(close) => (
-            <div className="menu-list">
+            <div className={MENU_LIST}>
               {modes.map((m) => (
                 <button
                   key={m}
                   type="button"
-                  className="menu-item stacked"
+                  className={MENU_ITEM_STACKED}
                   aria-pressed={m === mode}
                   onClick={() => {
                     onMode(m);
@@ -302,18 +327,23 @@ export function Composer({
                   }}
                 >
                   <span>{MODE_LABELS[m].name}</span>
-                  <span className="muted">{MODE_LABELS[m].detail}</span>
+                  <span className="text-dim-foreground">{MODE_LABELS[m].detail}</span>
                 </button>
               ))}
-              <p className="menu-note">Applies from the next turn.</p>
+              <p className={MENU_NOTE}>Applies from the next turn.</p>
             </div>
           )}
         </Popover>
-        <span className="composer-hint muted">
+        <span className="ml-auto text-[12px] text-dim-foreground [@media(max-width:720px)]:hidden">
           {busy ? "Esc stops · Enter adds to the turn" : "Enter sends · Shift+Enter new line"}
         </span>
         {canStop && (
-          <button type="button" className="round-btn stop" aria-label="Stop" onClick={onStop}>
+          <button
+            type="button"
+            className={`${ROUND_BUTTON} bg-raised text-foreground hover:bg-fill-err hover:text-main-foreground`}
+            aria-label="Stop"
+            onClick={onStop}
+          >
             <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
               <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor" />
             </svg>
@@ -321,7 +351,7 @@ export function Composer({
         )}
         <button
           type="submit"
-          className="round-btn send"
+          className={`${ROUND_BUTTON} bg-main text-main-foreground disabled:opacity-[0.45] disabled:cursor-default disabled:translate-none disabled:shadow-sm-hard`}
           aria-label={busy ? "Add to the running turn" : "Send"}
           disabled={!text.trim() || sending}
         >

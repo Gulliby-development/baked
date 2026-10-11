@@ -10,11 +10,14 @@ import {
   type RoutingTarget,
   setup,
 } from "../../client/setup.js";
+import { Alert } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
 import { Card, CardContent } from "../../components/ui/card.js";
+import { Empty } from "../../components/ui/empty.js";
 import { Input } from "../../components/ui/input.js";
 import { Label } from "../../components/ui/label.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import {
   Table,
   TableBody,
@@ -25,6 +28,7 @@ import {
 } from "../../components/ui/table.js";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs.js";
 import { cn } from "../../lib/cn.js";
+import { STACK as COLUMN, LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import {
   classSuggestions,
   describeResolved,
@@ -36,7 +40,7 @@ import {
   routingGroups,
   unresolvedText,
 } from "./routing-logic.js";
-import { errorText, LoadState, useLoad } from "./shared.js";
+import { errorText, GROW, H2, LoadState, NOTE, OK, ROW, STACK, useLoad, WARN } from "./shared.js";
 
 export interface RoutingProject {
   key: string;
@@ -91,19 +95,19 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
   const layerName = scope === "global" ? "All projects" : (project?.name ?? "this project");
 
   return (
-    <section className="setup-section" aria-labelledby="routing">
-      <h2 id="routing" className="setup-h2">
+    <section className={STACK} aria-labelledby="routing">
+      <h2 id="routing" className={H2}>
         Model routing
       </h2>
-      <p className="lede">
+      <p className={LEDE}>
         Which model each class, role, stage and profile uses. All projects share{" "}
-        <span className="mono">~/.baked/config.json</span>; a project's own{" "}
-        <span className="mono">.baked/config.json</span> overrides it route by route. New runs use
-        the change; started runs keep their routing.
+        <span className="font-mono">~/.baked/config.json</span>; a project's own{" "}
+        <span className="font-mono">.baked/config.json</span> overrides it route by route. New runs
+        use the change; started runs keep their routing.
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
-          <span className="label">Layer</span>
+          <span className={LABEL}>Layer</span>
           <Tabs
             value={scope}
             onValueChange={(value) => {
@@ -124,7 +128,7 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
         </div>
         {projects.length > 1 && (
           <div className="flex flex-col gap-1">
-            <label htmlFor="routing-project" className="label">
+            <label htmlFor="routing-project" className={LABEL}>
               Project
             </label>
             <select
@@ -145,7 +149,7 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
         )}
         {view.state === "ready" && view.data.workflows.length > 0 && (
           <div className="flex flex-col gap-1">
-            <label htmlFor="routing-workflow" className="label">
+            <label htmlFor="routing-workflow" className={LABEL}>
               Workflow
             </label>
             <select
@@ -165,19 +169,19 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
           </div>
         )}
       </div>
-      <span className="muted setup-note">
-        Editing <strong>{layerName}</strong> in <span className="mono">{file}</span>
+      <span className={cn("text-dim-foreground", NOTE)}>
+        Editing <strong>{layerName}</strong> in <span className="font-mono">{file}</span>
         {view.state === "ready" && (
           <>
             {" "}
             · routes resolve for {project?.name} with run model{" "}
-            <span className="mono">{view.data.runModel ?? "none"}</span>
+            <span className="font-mono">{view.data.runModel ?? "none"}</span>
           </>
         )}
       </span>
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
       {saved && (
-        <output className="setup-ok setup-note">
+        <output className={cn(OK, NOTE)}>
           ✓ {saved} in {layerName}.
         </output>
       )}
@@ -242,18 +246,18 @@ function RoutingTables({
   );
   return (
     <>
-      {view.error && <div className="banner error">{view.error}</div>}
+      {view.error && <Alert tone="error">{view.error}</Alert>}
       {!editing && problems.length > 0 && <Refused problems={problems} />}
       {routingGroups(view).map((group) => (
         <div key={group.id} className="flex flex-col gap-2">
           <div className="flex flex-col">
-            <h3 className="label">{group.title}</h3>
-            <span className="muted setup-note">{group.note}</span>
+            <h3 className={LABEL}>{group.title}</h3>
+            <span className={cn("text-dim-foreground", NOTE)}>{group.note}</span>
           </div>
           {group.rows.length === 0 ? (
-            <div className="empty">
+            <Empty>
               {group.id === "profiles" ? "No profiles in this workflow." : "Nothing to route."}
-            </div>
+            </Empty>
           ) : (
             <Table aria-label={group.title}>
               <TableHeader>
@@ -311,7 +315,7 @@ function RoutingTables({
       ))}
       <IndependentReviewRow view={view} scope={scope} busy={busy} onChange={onChange} />
       {view.warnings.length > 0 && (
-        <ul className="setup-warn setup-note setup-plain">
+        <ul className={cn("m-0 list-none p-0", WARN, NOTE)}>
           {view.warnings.map((w) => (
             <li key={w}>! {w}</li>
           ))}
@@ -521,14 +525,14 @@ function RouteForm({
 
 function Refused({ problems }: { problems: string[] }) {
   return (
-    <div className="banner error" role="alert">
+    <Alert tone="error" role="alert">
       <span className="font-heading">Not saved: a run would refuse to start with this.</span>
-      <ul className="setup-plain">
+      <ul className="m-0 list-none p-0">
         {problems.map((p) => (
           <li key={p}>{p}</li>
         ))}
       </ul>
-    </div>
+    </Alert>
   );
 }
 
@@ -545,21 +549,19 @@ function IndependentReviewRow({
 }) {
   const own = view.independentReview[scope];
   return (
-    <div className="card setup-row">
-      <span className="setup-grow stack">
+    <div className={cn(PANEL, ROW)}>
+      <span className={cn(GROW, COLUMN)}>
         <span>Independent review</span>
-        <span className="muted setup-note">
+        <span className={cn("text-dim-foreground", NOTE)}>
           When a reviewer would use a model the implementation also uses: off ignores it, warn
           records a warning, require refuses the start. In effect:{" "}
-          <span className="mono">{view.independentReview.effective}</span>.
+          <span className="font-mono">{view.independentReview.effective}</span>.
         </span>
       </span>
-      <fieldset className="seg-group" aria-label="Independent review">
+      <SegmentGroup aria-label="Independent review">
         {REVIEW_MODES.map((mode) => (
-          <button
+          <Segment
             key={mode ?? "unset"}
-            type="button"
-            className="seg"
             aria-pressed={own === mode}
             disabled={busy}
             onClick={() =>
@@ -570,9 +572,9 @@ function IndependentReviewRow({
             }
           >
             {mode ?? "inherit"}
-          </button>
+          </Segment>
         ))}
-      </fieldset>
+      </SegmentGroup>
     </div>
   );
 }

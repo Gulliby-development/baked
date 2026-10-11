@@ -17,6 +17,27 @@ import {
 } from "./logic.js";
 import { message, useLoad } from "./panels.js";
 
+export const HINT = "text-[12px] text-dim-foreground";
+export const HINT_ERR = "text-[12px] text-[color:var(--err)]";
+export const LEGEND = "p-0 font-medium text-foreground";
+export const FIELD = "flex min-w-0 flex-col gap-2";
+export const FIELDSET = "m-0 flex min-w-0 flex-col gap-2 border-0 p-0";
+export const CHIPS = "flex flex-wrap items-center gap-2";
+/**
+ * A segment button standing alone in a row of chips: rounded on every side, with a thin left rule.
+ * Written out rather than merged onto `segmentClass`, whose first/last and sibling rules would win.
+ */
+export const CHIP =
+  "min-h-8 cursor-pointer rounded-[8px] border-2 border-l border-border border-l-[color:var(--line)] bg-raised px-[14px] py-0 [font-family:inherit] text-[13px] leading-[inherit] font-semibold text-soft-foreground disabled:cursor-default disabled:opacity-45 aria-pressed:border-[color:var(--accent)] aria-pressed:bg-main aria-pressed:text-main-foreground";
+export const INLINE = "flex flex-wrap items-center gap-2";
+export const FORM = "flex min-w-0 flex-col gap-5";
+export const TITLE = "m-0 text-[20px] font-semibold";
+// `!` keeps these above the unlayered `textarea` rule in runs.css while that stylesheet exists.
+export const GOAL =
+  "resize-y rounded-[var(--radius-lg)] border! border-selected! bg-background! px-[14px]! py-3! text-foreground [font-family:inherit] text-[15px]! leading-[1.5]! focus:border-[color:var(--accent)]! focus:outline-none";
+/** Extra classes of the primary submit button. */
+export const SUBMIT = "min-h-11 px-[22px]";
+
 /** The configured policy, or why the presets that scale it are unavailable. */
 export interface PolicyState {
   policy: RunPolicy | null;
@@ -86,14 +107,14 @@ export function BudgetPicker({
   base: { maxTotalTokens: number; checkpointTokens: number | null } | null;
 }) {
   return (
-    <fieldset className="start-fieldset">
-      <legend className="start-legend">Budget preset</legend>
-      <div className="start-chips">
+    <fieldset className={FIELDSET}>
+      <legend className={LEGEND}>Budget preset</legend>
+      <div className={CHIPS}>
         {BUDGET_PRESETS.map((preset) => (
           <button
             key={preset}
             type="button"
-            className="seg start-chip"
+            className={CHIP}
             aria-pressed={value === preset}
             disabled={preset !== "standard" && !policy.policy}
             onClick={() => onChange(preset)}
@@ -102,11 +123,11 @@ export function BudgetPicker({
           </button>
         ))}
       </div>
-      <span className="start-hint">{presetText(value, base)}</span>
+      <span className={HINT}>{presetText(value, base)}</span>
       {policy.unavailable ? (
-        <span className="start-hint">{policy.unavailable}</span>
+        <span className={HINT}>{policy.unavailable}</span>
       ) : (
-        <span className="start-hint">Built into the app, nothing is downloaded.</span>
+        <span className={HINT}>Built into the app, nothing is downloaded.</span>
       )}
     </fieldset>
   );

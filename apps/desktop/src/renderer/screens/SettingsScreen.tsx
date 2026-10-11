@@ -1,13 +1,20 @@
 import type { AppSettings } from "../../shared/api.js";
+import { Segment, SegmentGroup } from "../components/ui/segmented.js";
+import { cn } from "../lib/cn.js";
+import { CHECK, FIELD, LABEL, LEDE, PAGE, PANEL, STACK } from "../lib/styles.js";
 import { href, type SettingsSection } from "../router.js";
 import { useDesktop } from "../store.js";
 import { GlobalSettings } from "./setup/GlobalSettings.js";
+
+/** A section link of the settings menu; the current one is raised with an ink outline. */
+const NAV =
+  "flex min-h-(--row) w-full cursor-pointer items-center gap-[10px] rounded-[6px] border-0 bg-transparent px-[10px] py-[6px] text-left text-[14px] text-soft-foreground no-underline hover:bg-hover hover:text-foreground aria-[current=page]:bg-selected aria-[current=page]:font-semibold aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_0_0_0_var(--border-w)_var(--ink),var(--shadow-sm)]";
 
 function Toggle({ label, field }: { label: string; field: keyof AppSettings }) {
   const { settings, updateSettings } = useDesktop();
   if (!settings) return null;
   return (
-    <label className="check">
+    <label className={CHECK}>
       <input
         type="checkbox"
         checked={settings[field] === true}
@@ -23,55 +30,43 @@ function AppSection() {
   if (!settings) return null;
   return (
     <>
-      <div className="stack" style={{ gap: 4 }}>
+      <div className={cn(STACK, "gap-1")}>
         <h1>Appearance and behavior</h1>
-        <span className="lede">
+        <span className={LEDE}>
           Stored by the desktop app on this computer. Agents and runs never read these.
         </span>
       </div>
-      <section
-        className="card"
-        aria-label="Appearance"
-        style={{ display: "flex", flexDirection: "column", gap: 10 }}
-      >
-        <div className="field">
+      <section className={cn(PANEL, "flex flex-col gap-[10px]")} aria-label="Appearance">
+        <div className={FIELD}>
           <span>Theme</span>
-          <fieldset className="seg-group" aria-label="Theme">
+          <SegmentGroup aria-label="Theme">
             {(["system", "dark", "light"] as const).map((theme) => (
-              <button
+              <Segment
                 key={theme}
-                type="button"
-                className="seg"
                 aria-pressed={settings.theme === theme}
                 onClick={() => void updateSettings({ theme })}
               >
                 {theme}
-              </button>
+              </Segment>
             ))}
-          </fieldset>
+          </SegmentGroup>
         </div>
-        <div className="field">
+        <div className={FIELD}>
           <span>Density</span>
-          <fieldset className="seg-group" aria-label="Density">
+          <SegmentGroup aria-label="Density">
             {(["comfortable", "compact"] as const).map((density) => (
-              <button
+              <Segment
                 key={density}
-                type="button"
-                className="seg"
                 aria-pressed={settings.density === density}
                 onClick={() => void updateSettings({ density })}
               >
                 {density}
-              </button>
+              </Segment>
             ))}
-          </fieldset>
+          </SegmentGroup>
         </div>
       </section>
-      <section
-        className="card"
-        aria-label="Behavior"
-        style={{ display: "flex", flexDirection: "column", gap: 4 }}
-      >
+      <section className={cn(PANEL, "flex flex-col gap-1")} aria-label="Behavior">
         <Toggle field="openLastProjects" label="Open the last projects on start" />
         <Toggle
           field="keepRunningInTray"
@@ -80,12 +75,8 @@ function AppSection() {
         <Toggle field="notifyBlocking" label="System notification when something needs me" />
         <Toggle field="notifyAdvisory" label="Also notify for advisory items" />
       </section>
-      <section
-        className="card"
-        aria-label="Backend"
-        style={{ display: "flex", flexDirection: "column", gap: 8 }}
-      >
-        <div className="field">
+      <section className={cn(PANEL, "flex flex-col gap-2")} aria-label="Backend">
+        <div className={FIELD}>
           <label htmlFor="baked-path">BAKED executable</label>
           <input
             id="baked-path"
@@ -96,10 +87,10 @@ function AppSection() {
             style={{ minWidth: 320 }}
           />
         </div>
-        <span className="muted" style={{ fontSize: 12 }}>
-          Each open project runs its own <span className="mono">baked serve</span> on 127.0.0.1.
-          Leave empty to use the one bundled with the app; a change applies to projects opened
-          afterwards.
+        <span className="text-[12px] text-dim-foreground">
+          Each open project runs its own <span className="font-mono">baked serve</span> on
+          127.0.0.1. Leave empty to use the one bundled with the app; a change applies to projects
+          opened afterwards.
         </span>
       </section>
     </>
@@ -108,7 +99,7 @@ function AppSection() {
 
 export function SettingsScreen({ section }: { section: SettingsSection }) {
   return (
-    <div className="shell" style={{ height: "auto", minHeight: "100%" }}>
+    <div className="flex min-h-full min-w-0 flex-1">
       <nav
         aria-label="Settings"
         style={{
@@ -120,34 +111,30 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
           gap: 2,
         }}
       >
-        <p className="label" style={{ padding: "0 10px 2px" }}>
-          This app
-        </p>
-        <span className="muted" style={{ padding: "0 10px 6px", fontSize: 12 }}>
+        <p className={cn(LABEL, "px-[10px] pt-0 pb-[2px]")}>This app</p>
+        <span className="px-[10px] pt-0 pb-[6px] text-[12px] text-dim-foreground">
           this computer only
         </span>
         <a
-          className="nav"
+          className={NAV}
           href={href({ name: "settings", section: "app" })}
           aria-current={section === "app" ? "page" : undefined}
         >
           Appearance and behavior
         </a>
-        <p className="label" style={{ padding: "16px 10px 2px" }}>
-          All projects
-        </p>
-        <span className="muted mono" style={{ padding: "0 10px 6px", fontSize: 12 }}>
+        <p className={cn(LABEL, "px-[10px] pt-4 pb-[2px]")}>All projects</p>
+        <span className="px-[10px] pt-0 pb-[6px] font-mono text-[12px] text-dim-foreground">
           ~/.baked/config.json
         </span>
         <a
-          className="nav"
+          className={NAV}
           href={href({ name: "settings", section: "global" })}
           aria-current={section === "global" ? "page" : undefined}
         >
           Providers and model routing
         </a>
       </nav>
-      <div className="page" style={{ flex: 1, maxWidth: 900 }}>
+      <div className={cn(PAGE, "max-w-[900px] flex-1")}>
         {section === "app" ? <AppSection /> : <GlobalSettings />}
       </div>
     </div>

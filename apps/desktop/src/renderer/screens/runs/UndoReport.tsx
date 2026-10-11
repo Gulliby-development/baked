@@ -1,4 +1,9 @@
 import type { RollbackReport } from "../../client/runs.js";
+import { Button } from "../../components/ui/button.js";
+import { LABEL } from "../../lib/styles.js";
+
+const REPORT =
+  "mb-4 flex flex-col gap-[10px] rounded-base border-2 border-l-8 border-border bg-background px-[18px] py-[14px] shadow-shadow";
 
 /** What one restore did to the file: the run created it, deleted it, or changed it. */
 export function restoreLabel(restored: RollbackReport["restored"][number]): string {
@@ -26,36 +31,36 @@ export function UndoReport({
 }) {
   return (
     <section
-      className={`undo-report ${report?.kept.length ? "warn" : report ? "ok" : ""}`}
+      className={`${REPORT} ${report?.kept.length ? "border-l-fill-warn" : report ? "border-l-fill-ok" : "border-l-raised"}`}
       aria-label="Undo report"
       aria-live="polite"
     >
-      <div className="undo-head">
-        <h3 className="label">Undo</h3>
-        <span className="undo-summary">
+      <div className="flex flex-wrap items-center gap-3">
+        <h3 className={LABEL}>Undo</h3>
+        <span className="flex-1 font-semibold">
           {report ? undoSummary(report) : "Nothing to undo: the run has no uncommitted task edits."}
         </span>
-        <button type="button" className="btn" onClick={onClose}>
+        <Button variant="secondary" size="md" onClick={onClose}>
           Dismiss
-        </button>
+        </Button>
       </div>
       {report && (report.restored.length > 0 || report.kept.length > 0) && (
-        <ul className="undo-files">
+        <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px]">
           {report.restored.map((r) => (
             <li key={`r:${r.path}`}>
-              <span className="mono">{r.path}</span>{" "}
-              <span className="muted">{restoreLabel(r)}</span>
+              <span className="font-mono">{r.path}</span>{" "}
+              <span className="text-dim-foreground">{restoreLabel(r)}</span>
               {r.keptAs && (
-                <span className="muted">
+                <span className="text-dim-foreground">
                   {" "}
-                  · run's version kept as <span className="mono">{r.keptAs}</span>
+                  · run's version kept as <span className="font-mono">{r.keptAs}</span>
                 </span>
               )}
             </li>
           ))}
           {report.kept.map((k) => (
-            <li key={`k:${k.path}`} className="kept">
-              <span className="mono">{k.path}</span> <span>{k.reason}</span>
+            <li key={`k:${k.path}`} className="text-[var(--warn)]">
+              <span className="font-mono">{k.path}</span> <span>{k.reason}</span>
             </li>
           ))}
         </ul>

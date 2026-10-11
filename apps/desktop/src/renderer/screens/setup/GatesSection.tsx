@@ -10,8 +10,13 @@ import {
   isMissingEndpoint,
   setup,
 } from "../../client/setup.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { ago } from "../../format.js";
-import "../../styles/setup.css";
+import { cn } from "../../lib/cn.js";
+import { CHECK, LEDE, PANEL } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
 import {
   type CheckDraft,
@@ -27,7 +32,32 @@ import {
   upsertCheck,
   workflowsWithChecks,
 } from "./logic.js";
-import { errorText, LoadState, Tag, useLoad } from "./shared.js";
+import {
+  ACTIONS,
+  errorText,
+  FIELD_HALF,
+  FL,
+  FLUSH,
+  FORM,
+  GATE,
+  GROW,
+  H,
+  LIST,
+  LoadState,
+  MARK,
+  NEEDS,
+  NOTE,
+  PAIR,
+  ROW,
+  SETUP,
+  SIDE,
+  SPLIT,
+  SPLIT_MAIN,
+  STACK,
+  Tag,
+  useLoad,
+  WRAP,
+} from "./shared.js";
 
 const TYPE_LABEL: Record<GateEntry["type"], string> = {
   command: "command",
@@ -35,6 +65,19 @@ const TYPE_LABEL: Record<GateEntry["type"], string> = {
   "ai-review": "AI review",
   "ai-acceptance": "AI acceptance",
 };
+
+const MARK_TONE = {
+  ok: "text-[var(--ok)]",
+  err: "text-[var(--err)]",
+  warn: "text-[var(--warn)]",
+  "": "text-dim-foreground",
+} as const;
+
+const RESULT_TONE = {
+  ok: "text-[var(--ok)]",
+  err: "text-[var(--err)]",
+  "": "text-muted-foreground",
+} as const;
 
 /** An on-demand run of one check from this screen. */
 type CheckRun =
@@ -65,16 +108,16 @@ function GateRow({
   const m = gateMark(gate, result);
   return (
     <li>
-      <button type="button" className="setup-gate" aria-pressed={selected} onClick={onSelect}>
-        <span className={`mono setup-mark ${m.tone}`} role="img" aria-label={m.label}>
+      <button type="button" className={GATE} aria-pressed={selected} onClick={onSelect}>
+        <span className={`font-mono ${MARK} ${MARK_TONE[m.tone]}`} role="img" aria-label={m.label}>
           {m.text}
         </span>
-        <span className="mono setup-gate-id">{gate.id}</span>
+        <span className="font-mono text-foreground">{gate.id}</span>
         <Tag>{TYPE_LABEL[gate.type]}</Tag>
         <Tag>{gate.required ? "required" : "advisory"}</Tag>
         <Tag>{gate.scope}</Tag>
         <Tag>{gateOrigin(gate, config)}</Tag>
-        <span className="mono muted setup-push">
+        <span className="ml-auto font-mono text-dim-foreground">
           {gate.source === "project" && gate.confirmed === false
             ? "not confirmed"
             : result
@@ -108,30 +151,30 @@ function Suggestions({
   const chosen = fresh.filter((s) => picked.has(s.check.id));
   const sources = [...new Set(fresh.map((s) => s.source.split(" ")[0] ?? s.source))];
   return (
-    <section className="card setup-callout" aria-label="Detected checks">
-      <div className="setup-row">
-        <span className="setup-grow">
-          Detected in <span className="mono">{sources.join(", ")}</span>:{" "}
+    <section className={cn(PANEL, "border-border")} aria-label="Detected checks">
+      <div className={ROW}>
+        <span className={GROW}>
+          Detected in <span className="font-mono">{sources.join(", ")}</span>:{" "}
           {fresh.map((s, i) => (
             <span key={s.check.id}>
               {i > 0 && (i === fresh.length - 1 ? " and " : ", ")}
-              <span className="mono">{s.reason}</span>
+              <span className="font-mono">{s.reason}</span>
             </span>
           ))}
         </span>
-        <button
-          type="button"
-          className="btn"
+        <Button
+          variant="secondary"
+          size="md"
           aria-expanded={open}
           onClick={() => setOpen((o) => !o)}
         >
           Review and add
-        </button>
+        </Button>
       </div>
       {open && (
-        <div className="setup-stack">
+        <div className={STACK}>
           {fresh.map((s) => (
-            <label key={s.check.id} className="check">
+            <label key={s.check.id} className={CHECK}>
               <input
                 type="checkbox"
                 checked={picked.has(s.check.id)}
@@ -142,22 +185,24 @@ function Suggestions({
                   setPicked(next);
                 }}
               />
-              <span className="mono">{s.check.id}</span>
-              <span className="mono muted">{joinCommand(s.check.executable, s.check.args)}</span>
-              <span className="muted">
+              <span className="font-mono">{s.check.id}</span>
+              <span className="font-mono text-dim-foreground">
+                {joinCommand(s.check.executable, s.check.args)}
+              </span>
+              <span className="text-dim-foreground">
                 {s.check.required ? "required" : "advisory"} · {s.source}
               </span>
             </label>
           ))}
           <div>
-            <button
-              type="button"
-              className="btn-primary"
+            <Button
+              variant="primary"
+              size="md"
               disabled={busy || chosen.length === 0}
               onClick={() => onAdd(chosen.map((s) => s.check))}
             >
               Add {chosen.length} to this checkout
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -167,20 +212,27 @@ function Suggestions({
 
 /** The latest result of a check: from this screen's run, or the backend's `lastResult`. */
 function RunResult({ run, last }: { run: CheckRun | undefined; last: CheckRunResult | null }) {
-  if (run?.kind === "running") return <span className="muted setup-note">Running…</span>;
-  if (run?.kind === "error") return <div className="banner error">{run.message}</div>;
+  if (run?.kind === "running")
+    return <span className={`text-dim-foreground ${NOTE}`}>Running…</span>;
+  if (run?.kind === "error") return <Alert tone="error">{run.message}</Alert>;
   const result = run?.kind === "done" ? run.result : last;
   if (!result) return null;
   const tone = result.status === "passed" ? "ok" : result.status === "cancelled" ? "" : "err";
   return (
-    <section className="setup-stack" aria-label="Last result">
-      <span className="setup-note">
-        <span className={`mono setup-result ${tone}`}>{checkResultText(result)}</span>
-        <span className="muted"> · {ago(result.at)}</span>
+    <section className={STACK} aria-label="Last result">
+      <span className={NOTE}>
+        <span className={`font-mono ${RESULT_TONE[tone]}`}>{checkResultText(result)}</span>
+        <span className="text-dim-foreground"> · {ago(result.at)}</span>
       </span>
-      {result.outputTail && <pre className="setup-output mono">{result.outputTail}</pre>}
+      {result.outputTail && (
+        <pre className="m-0 font-mono max-h-[260px] overflow-auto whitespace-pre-wrap wrap-anywhere rounded-base border-2 border-border bg-[var(--bg-code)] px-3 py-[10px] text-[12px] leading-[1.5] text-soft-foreground">
+          {result.outputTail}
+        </pre>
+      )}
       {result.truncated && (
-        <span className="muted setup-note">Only the last lines of the output are kept.</span>
+        <span className={`text-dim-foreground ${NOTE}`}>
+          Only the last lines of the output are kept.
+        </span>
       )}
     </section>
   );
@@ -215,93 +267,88 @@ function CheckForm({
   const field = (key: "id" | "command" | "cwd" | "timeoutSeconds" | "envNames" | "writes") => ({
     id: `check-${key}`,
     type: "text" as const,
-    className: "mono",
     value: draft[key],
     onChange: (e: ChangeEvent<HTMLInputElement>) => set(key, e.target.value),
   });
   return (
     <form
-      className="card setup-form"
+      className={cn(PANEL, FORM)}
       aria-label={isNew ? "New check" : `Edit ${initial?.id}`}
       onSubmit={(e) => {
         e.preventDefault();
         onSave(draft);
       }}
     >
-      <div className="setup-row">
-        <h2 className="setup-h">{isNew ? "New check" : initial?.id}</h2>
+      <div className={ROW}>
+        <h2 className={H}>{isNew ? "New check" : initial?.id}</h2>
         <Tag>command</Tag>
-        <span className="muted setup-push setup-note">{scopeNote}</span>
+        <span className={`text-dim-foreground ml-auto ${NOTE}`}>{scopeNote}</span>
       </div>
-      <div className="setup-fl">
+      <div className={FL}>
         <label htmlFor="check-id">ID</label>
         <input {...field("id")} />
       </div>
-      <div className="setup-fl">
+      <div className={FL}>
         <label htmlFor="check-command">Command</label>
         <input {...field("command")} placeholder="bun run typecheck" />
       </div>
-      <div className="setup-pair">
-        <div className="setup-fl">
+      <div className={PAIR}>
+        <div className={FIELD_HALF}>
           <label htmlFor="check-cwd">Directory</label>
           <input {...field("cwd")} />
         </div>
-        <div className="setup-fl">
+        <div className={FIELD_HALF}>
           <label htmlFor="check-timeoutSeconds">Timeout, s</label>
           <input {...field("timeoutSeconds")} inputMode="numeric" />
         </div>
       </div>
-      <div className="setup-pair">
-        <div className="setup-fl">
+      <div className={PAIR}>
+        <div className={FIELD_HALF}>
           <span id="check-required">Required</span>
-          <fieldset className="seg-group" aria-labelledby="check-required">
+          <SegmentGroup aria-labelledby="check-required">
             {([true, false] as const).map((required) => (
-              <button
+              <Segment
                 key={String(required)}
-                type="button"
-                className="seg"
                 aria-pressed={draft.required === required}
                 onClick={() => set("required", required)}
               >
                 {required ? "required" : "advisory"}
-              </button>
+              </Segment>
             ))}
-          </fieldset>
+          </SegmentGroup>
         </div>
-        <div className="setup-fl">
+        <div className={FIELD_HALF}>
           <span id="check-scope">Scope</span>
-          <fieldset className="seg-group" aria-labelledby="check-scope">
+          <SegmentGroup aria-labelledby="check-scope">
             {(["task", "feature"] as const).map((scope) => (
-              <button
+              <Segment
                 key={scope}
-                type="button"
-                className="seg"
                 aria-pressed={draft.scope === scope}
                 onClick={() => set("scope", scope)}
               >
                 {scope}
-              </button>
+              </Segment>
             ))}
-          </fieldset>
+          </SegmentGroup>
         </div>
       </div>
-      <div className="setup-fl">
+      <div className={FL}>
         <label htmlFor="check-envNames">Env names passed through</label>
         <input {...field("envNames")} placeholder="none" />
       </div>
-      <div className="setup-fl">
+      <div className={FL}>
         <label htmlFor="check-writes">Files it may write</label>
         <input {...field("writes")} placeholder="none" />
       </div>
-      <div className="setup-actions">
-        <button type="submit" className="btn-primary" disabled={busy}>
+      <div className={ACTIONS}>
+        <Button type="submit" variant="primary" size="md" disabled={busy}>
           Save
-        </button>
+        </Button>
         {!isNew && (
           <>
-            <button
-              type="button"
-              className="btn"
+            <Button
+              variant="secondary"
+              size="md"
               disabled={busy || !canRun || run?.kind === "running"}
               title={
                 canRun
@@ -311,15 +358,15 @@ function CheckForm({
               onClick={onRun}
             >
               Run now
-            </button>
-            <button type="button" className="btn" disabled={busy} onClick={onDelete}>
+            </Button>
+            <Button variant="secondary" size="md" disabled={busy} onClick={onDelete}>
               Delete
-            </button>
+            </Button>
           </>
         )}
       </div>
       {!isNew && !canRun && (
-        <span className="muted setup-note">
+        <span className={`text-dim-foreground ${NOTE}`}>
           Running one check on its own needs a newer BAKED; it runs as part of every workflow run.
         </span>
       )}
@@ -338,22 +385,22 @@ function GateDetails({
   busy: boolean;
 }) {
   return (
-    <section className="card setup-form" aria-label={`Gate ${gate.id}`}>
-      <div className="setup-row">
-        <h2 className="setup-h">{gate.id}</h2>
+    <section className={cn(PANEL, FORM)} aria-label={`Gate ${gate.id}`}>
+      <div className={ROW}>
+        <h2 className={H}>{gate.id}</h2>
         <Tag>{TYPE_LABEL[gate.type]}</Tag>
       </div>
-      <dl className="setup-dl">
+      <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-[14px] gap-y-[6px] text-[13px] [&_dd]:m-0 [&_dd]:text-soft-foreground [&_dt]:text-dim-foreground">
         <dt>Mode</dt>
         <dd>{gate.required ? "required" : "advisory"}</dd>
         <dt>Scope</dt>
         <dd>{gate.scope}</dd>
         <dt>Defined in</dt>
-        <dd className="mono setup-wrap">
+        <dd className={`font-mono ${WRAP}`}>
           {gate.path ?? (gate.source === "builtin" ? "BAKED (built in)" : "workflow policy")}
         </dd>
         <dt>Version</dt>
-        <dd className="mono">{gate.hash.slice(0, 12)}</dd>
+        <dd className="font-mono">{gate.hash.slice(0, 12)}</dd>
         {gate.shadows.length > 0 && (
           <>
             <dt>Replaces</dt>
@@ -362,19 +409,19 @@ function GateDetails({
         )}
       </dl>
       {gate.source === "project" && gate.confirmed === false && (
-        <div className="banner setup-stack">
+        <Alert className={STACK}>
           <span>
             This gate came with the repository. Read its definition before you confirm it; runs use
             it only after that.
           </span>
           <div>
-            <button type="button" className="btn-primary" disabled={busy} onClick={onConfirm}>
+            <Button variant="primary" size="md" disabled={busy} onClick={onConfirm}>
               Confirm
-            </button>
+            </Button>
           </div>
-        </div>
+        </Alert>
       )}
-      <span className="muted setup-note">
+      <span className={`text-dim-foreground ${NOTE}`}>
         {gate.source === "builtin"
           ? "Built into BAKED. Review profiles and severities come from the workflow policy."
           : "Edit this file in your editor. A changed project gate needs your confirmation again."}
@@ -467,22 +514,17 @@ export function GatesSection({ project }: SectionProps) {
       : "saved in .baked/config.json";
 
   return (
-    <div className="setup setup-gates">
-      <div className="setup-row">
-        <p className="lede setup-grow">
+    <div className={SETUP}>
+      <div className={ROW}>
+        <p className={`${LEDE} ${GROW}`}>
           A required gate must pass before a run can finish. An advisory gate reports, the run goes
-          on. Shared gates live in <span className="mono">baked/gates/</span>; checks you add here
-          go to <span className="mono">.baked/config.json</span>. New runs use them at once; started
-          runs keep the list they froze.
+          on. Shared gates live in <span className="font-mono">baked/gates/</span>; checks you add
+          here go to <span className="font-mono">.baked/config.json</span>. New runs use them at
+          once; started runs keep the list they froze.
         </p>
-        <button
-          type="button"
-          className="btn-primary"
-          disabled={!canEdit}
-          onClick={() => setCreating(true)}
-        >
+        <Button variant="primary" size="md" disabled={!canEdit} onClick={() => setCreating(true)}>
           New check
-        </button>
+        </Button>
       </div>
 
       {canEdit && suggestions.state === "ready" && (
@@ -495,63 +537,65 @@ export function GatesSection({ project }: SectionProps) {
       )}
 
       {unconfirmed.map((gate) => (
-        <section key={gate.id} className="card setup-callout" aria-label={`Confirm ${gate.id}`}>
-          <div className="setup-row">
-            <span className="setup-grow">
-              <span className="mono">{gate.id}</span> came with the repository. It runs only after
-              you confirm it once.
+        <section
+          key={gate.id}
+          className={cn(PANEL, "border-border")}
+          aria-label={`Confirm ${gate.id}`}
+        >
+          <div className={ROW}>
+            <span className={GROW}>
+              <span className="font-mono">{gate.id}</span> came with the repository. It runs only
+              after you confirm it once.
             </span>
-            <button
-              type="button"
-              className="btn-primary"
+            <Button
+              variant="primary"
+              size="md"
               disabled={busy}
               onClick={() => void confirm([gate.id])}
             >
               Confirm
-            </button>
-            <button
-              type="button"
-              className="btn"
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
               onClick={() => {
                 setCreating(false);
                 setSelected(gate.id);
               }}
             >
               Inspect
-            </button>
+            </Button>
           </div>
         </section>
       ))}
 
       {gates.data.problems.length > 0 && (
-        <div className="banner error">
-          Not used, could not be read: {gates.data.problems.join("; ")}
-        </div>
+        <Alert tone="error">Not used, could not be read: {gates.data.problems.join("; ")}</Alert>
       )}
       {api && !api.workflowsEnabled && (
-        <div className="banner">
+        <Alert>
           Workflows are off in this project, so no run uses these checks yet. The list is kept in{" "}
-          <span className="mono">.baked/config.json</span> for when you turn them on.
-        </div>
+          <span className="font-mono">.baked/config.json</span> for when you turn them on.
+        </Alert>
       )}
       {checkList.state === "error" && (
-        <div className="banner error">
+        <Alert tone="error">
           The checks could not be read, so they are read-only here: {checkList.message}
-        </div>
+        </Alert>
       )}
       {checkList.state === "missing" && config.state === "missing" && (
-        <div className="banner setup-needs">
+        <Alert className={NEEDS}>
           Editing checks needs a newer BAKED; the list below is read-only.
-        </div>
+        </Alert>
       )}
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
 
-      <div className="setup-split">
-        <section aria-label="Gates" className="setup-section">
+      <div className={SPLIT}>
+        <section aria-label="Gates" className={SPLIT_MAIN}>
           {list.length === 0 ? (
-            <div className="empty">No gates yet. Add a check, or detect one from the project.</div>
+            <Empty>No gates yet. Add a check, or detect one from the project.</Empty>
           ) : (
-            <ul className="card setup-list setup-flush">
+            <ul className={cn(PANEL, LIST, FLUSH)}>
               {list.map((gate) => (
                 <GateRow
                   key={gate.id}
@@ -568,7 +612,7 @@ export function GatesSection({ project }: SectionProps) {
             </ul>
           )}
         </section>
-        <div className="setup-side">
+        <div className={SIDE}>
           {editable ? (
             <CheckForm
               key={formKey}

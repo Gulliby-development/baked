@@ -1,15 +1,11 @@
-/* Entry stylesheet. Tailwind supplies its theme and utilities without preflight, and the app's own
-   CSS sits in the `legacy` layer below the utilities, so shadcn components in components/ui win
-   over the older per-screen rules while screens move over one by one. */
-@layer theme, legacy, components, utilities;
+/* Entry stylesheet. Tailwind supplies its theme and utilities without preflight; the tokens and the
+   element defaults sit in the `base` layer below the utilities, so any utility overrides them. */
+@layer theme, base, components, utilities;
 
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
-@import "./tokens.css" layer(legacy);
-@import "./app.css" layer(legacy);
-
-/* Class names the older screens use for their own rules; never generate utilities for them. */
-@source not inline("table ring bg-accent bg-ok bg-warn bg-err");
+@import "./tokens.css" layer(base);
+@import "./base.css" layer(base);
 
 /* The neobrutalism.dev token names, mapped onto BAKED's palette (tokens.css). */
 @theme inline {
