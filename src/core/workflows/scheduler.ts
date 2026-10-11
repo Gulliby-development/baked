@@ -308,6 +308,8 @@ export class WorkflowScheduler {
           const profiles = ProfileSchema.array().parse(JSON.parse(run.profiles_json));
           const profile = profiles.find((p) => p.id === stage.profileId);
           let advance = true;
+          // A v2 stage that moved the run's position itself reports no outcome.
+          let rerouted = false;
           let repairFindings: {
             findings: Review["findings"];
             kind: "repair" | "convergence";
@@ -538,38 +540,38 @@ export class WorkflowScheduler {
                 (analysis.verdict === "pass" ||
                   (analysis.verdict === "needs_revision" && onlyDeferred));
               const planOnly = state.analysisPassed ? [] : planOnlyFindings(findings);
-              if (!v2 && planOnly.length && state.analysisReplans === 0) {
-                const stages = WorkflowSchema.parse(
-                  JSON.parse(this.store.run(runId).definition_json),
-                ).stages;
-                const plan = stages.findIndex((stage) => stage.kind === "plan");
-                if (plan >= 0) {
+              const stages = this.stageKinds(runId, v2);
+              const plan = stages.findIndex((s) => s.kind === "plan");
+              if (planOnly.length && state.analysisReplans === 0 && plan >= 0) {
+                if (this.moveTo(state, stages, plan, v2)) {
                   // Gaps in the plan text go back to the planner once before a person is asked.
                   state.analysisReplans = 1;
                   state.prompt += `\nAnalysis findings on the plan; fix every one of them in plan.md and tasks.json:\n${canonical(planOnly.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
-                  state.stageIndex = plan;
                   advance = false;
+                  rerouted = v2 !== null;
                   break;
                 }
               }
               if (
-                !v2 &&
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
                 state.analysisReplans < 2
               ) {
-                const stages = WorkflowSchema.parse(
-                  JSON.parse(this.store.run(runId).definition_json),
-                ).stages;
                 const blockingFindings = findings.filter((f) => f.blocking);
-                // Findings a default settles go back to the stage they refer to before a person.
-                state.analysisReplans = 2;
-                state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
-                state.stageIndex = clarificationResumeIndex(stages, state.stageIndex, {
+                const asking = v2
+                  ? stages.findIndex((s) => s.id === v2.stage.id)
+                  : state.stageIndex;
+                const target = clarificationResumeIndex(stages, asking, {
                   findings: blockingFindings,
                 });
-                advance = false;
-                break;
+                if (target !== asking && this.moveTo(state, stages, target, v2)) {
+                  // Findings a default settles go back to the stage they refer to before a person.
+                  state.analysisReplans = 2;
+                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. Where a finding needs a decision: ${ASSUME_NOTE}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                  advance = false;
+                  rerouted = v2 !== null;
+                  break;
+                }
               }
               if (!state.analysisPassed) {
                 this.wait("clarification", state, { findings });
@@ -964,7 +966,13 @@ export class WorkflowScheduler {
           signal.throwIfAborted();
           await this.assertWorkspace(runId, state, policy, signal);
           const waiting = this.queued.length > 0;
-          if (v2 && state.position && !waiting && this.store.run(runId).status === "running") {
+          if (
+            v2 &&
+            state.position &&
+            !rerouted &&
+            !waiting &&
+            this.store.run(runId).status === "running"
+          ) {
             // The visit is decided; the next pass takes the transition that answers it.
             state.position.outcome = this.outcomeOf(v2.stage, repairFindings !== null);
             state.position.findings = repairFindings?.findings.map((f) => f.id) ?? [];
@@ -3438,6 +3446,42 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       position.repairKind = null;
       this.store.saveState(runId, state);
     });
+  }
+  /** The stages of a run's definition with the mechanism each one runs. */
+  private stageKinds(
+    runId: string,
+    v2: { definition: WorkflowV2 } | null,
+  ): { id: string; kind: string }[] {
+    return v2
+      ? v2.definition.stages.map((s) => ({ id: s.id, kind: stageKind(s) ?? s.type }))
+      : WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
+  }
+  /**
+   * Sends the run back to an earlier stage outside the definition's transitions. A v2 run counts
+   * the visit; when that would pass the definition's visit limit the run stays and a person is
+   * asked instead.
+   */
+  private moveTo(
+    state: RuntimeState,
+    stages: readonly { id: string }[],
+    index: number,
+    v2: { definition: WorkflowV2 } | null,
+  ): boolean {
+    const target = stages[index];
+    if (!target) return false;
+    const position = state.position;
+    if (!v2 || !position) {
+      state.stageIndex = index;
+      return true;
+    }
+    if (position.total + 1 > v2.definition.limits.maxStageVisits) return false;
+    position.stageId = target.id;
+    position.outcome = null;
+    position.findings = [];
+    position.repairKind = null;
+    position.total++;
+    position.visits[target.id] = (position.visits[target.id] ?? 0) + 1;
+    return true;
   }
   /** Completion of a run of a v2 definition. */
   private async acceptV2(
