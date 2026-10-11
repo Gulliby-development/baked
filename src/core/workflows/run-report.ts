@@ -357,7 +357,7 @@ function render(facts: Facts, cap: number): string {
     out.push(
       "## Known limitations",
       "",
-      `Convergence stopped with ${state.limitations.length} finding(s) open; they were accepted instead of repaired, so the criteria they name may not hold in every case.`,
+      `${state.limitations.length} finding(s) were accepted instead of repaired, so the criteria they name may not hold in every case: a stopped convergence accepted by a person or the assume rule, or a low partial finding about test or documentation strength behind verified behavior (notes).`,
       "",
       ...table(
         ["Finding", "Severity", "Criteria", "Where", "Claim", "Accepted by"],
@@ -367,7 +367,11 @@ function render(facts: Facts, cap: number): string {
           l.criterionIds.join(", "),
           l.file ? code(l.symbol ? `${l.file}:${l.symbol}` : l.file) : null,
           l.claim,
-          l.decidedBy === "assume" ? "assume rule (checks passed)" : "user",
+          l.decidedBy === "assume"
+            ? "assume rule (checks passed)"
+            : l.decidedBy === "notes"
+              ? "notes rule (behavior verified)"
+              : "user",
         ]),
         cap,
       ),

@@ -53,8 +53,11 @@ export const LimitationSchema = z
     symbol: z.string().nullable(),
     claim: z.string(),
     impact: z.string(),
-    /** Who accepted it: a person, or the `assume` rule when the checks passed. */
-    decidedBy: z.enum(["user", "assume"]),
+    /**
+     * Who accepted it: a person, the `assume` rule when the checks passed, or the notes rule (a
+     * low `partial` finding behind verified behavior, accepted without a decision).
+     */
+    decidedBy: z.enum(["user", "assume", "notes"]),
     /** Convergence rounds the run had used when the finding was accepted. */
     round: z.number().int().nonnegative(),
   })
