@@ -33,7 +33,7 @@ if (cliArgs[0] === "workflow" || cliArgs[0] === "doctor" || cliArgs[0] === "quic
 
 if (cliArgs[0] === "telemetry") {
   const { runTelemetryCli } = await import("./core/telemetry.js");
-  process.exit(runTelemetryCli(cliArgs.slice(1)));
+  process.exit(await runTelemetryCli(cliArgs.slice(1)));
 }
 
 if (cliArgs[0] === "projects") {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { getGitDiff, getGitStatus, gitAdd, gitCommit } from "../../core/git/status.js";
+import { commitChanges } from "../../core/git/menu.js";
+import { getGitDiff, getGitStatus } from "../../core/git/status.js";
 import { useTheme } from "../../core/theme/index.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { Hint, PremiumPopup, Section, Toggle, VSpacer } from "../ui/index.js";
@@ -45,37 +46,15 @@ export function GitCommitModal({ visible, cwd, coAuthor, onClose, onCommitted, o
   }, [visible, cwd]);
 
   const handleCommit = useCallback(async () => {
-    if (!message.trim()) {
-      setError("Commit message cannot be empty");
-      return;
-    }
-    if (stageAll || staged.length === 0) {
-      const files = [...modified, ...untracked];
-      if (files.length > 0) await gitAdd(cwd, files);
-    }
-    const commitMsg = coAuthor
-      ? `${message.trim()}\n\nCo-Authored-By: BAKED <noreply@github.com>`
-      : message.trim();
-    const result = await gitCommit(cwd, commitMsg);
+    const result = await commitChanges(cwd, { message, stageAll, coAuthor });
     if (result.ok) {
       onCommitted(message.trim());
       onRefresh();
       onClose();
     } else {
-      setError(result.output || "Commit failed");
+      setError(result.message);
     }
-  }, [
-    message,
-    stageAll,
-    staged,
-    modified,
-    untracked,
-    cwd,
-    coAuthor,
-    onCommitted,
-    onRefresh,
-    onClose,
-  ]);
+  }, [message, stageAll, cwd, coAuthor, onCommitted, onRefresh, onClose]);
 
   useKeyboard((evt) => {
     if (!visible) return;

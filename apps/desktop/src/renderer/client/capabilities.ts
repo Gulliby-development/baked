@@ -36,6 +36,9 @@ export const SETTINGS_CAPABILITY = "settings";
 /** `/v1/graph*` (the Code graph section). */
 export const CODE_GRAPH_CAPABILITY = "code-graph";
 
+/** `GET /v1/git` and `POST /v1/git/actions` (the Git section). */
+export const GIT_CAPABILITY = "git";
+
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the
  * health answer could not be read, so the caller has to try the endpoint and treat 404 as "no".

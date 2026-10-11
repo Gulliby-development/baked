@@ -1,14 +1,6 @@
 import type { InfoPopupLine } from "../../components/modals/InfoPopup.js";
-import {
-  getGitDiff,
-  getGitLog,
-  getGitStatus,
-  gitInit,
-  gitPull,
-  gitPush,
-  gitStash,
-  gitStashPop,
-} from "../git/status.js";
+import { type GitMenuAction, runGitMenuAction } from "../git/menu.js";
+import { getGitDiff, getGitLog, getGitStatus, gitInit } from "../git/status.js";
 import { icon } from "../icons.js";
 import { getThemeTokens } from "../theme/index.js";
 import type { CommandContext, CommandHandler } from "./types.js";
@@ -21,26 +13,13 @@ function handleGitInit(_input: string, ctx: CommandContext): void {
   });
 }
 
-async function handleBranchCreate(input: string, ctx: CommandContext): Promise<void> {
-  const branchName = input
+function handleBranchCreate(input: string, ctx: CommandContext): void {
+  const name = input
     .trim()
     .replace(/^\/git\s+branch\s+/i, "")
     .trim();
-  if (!branchName) return;
-  const { spawn } = await import("node:child_process");
-  const { SAFE_STDIO, buildSafeEnv } = await import("../spawn.js");
-  const proc = spawn("git", ["checkout", "-b", branchName], {
-    cwd: ctx.cwd,
-    env: buildSafeEnv(),
-    stdio: SAFE_STDIO,
-  });
-  const chunks: string[] = [];
-  proc.stdout?.on("data", (d: Buffer) => chunks.push(d.toString()));
-  proc.stderr?.on("data", (d: Buffer) => chunks.push(d.toString()));
-  proc.on("close", (code) => {
-    ctx.refreshGit();
-    sysMsg(ctx, code === 0 ? `Switched to new branch '${branchName}'` : chunks.join("").trim());
-  });
+  if (!name) return;
+  runGitOp(ctx, { action: "create-branch", name }, "");
 }
 
 function handleCoAuthorCommits(input: string, ctx: CommandContext): void {
@@ -197,34 +176,28 @@ function handleGitMenu(_input: string, ctx: CommandContext): void {
   ctx.openGitMenu();
 }
 
-function runGitOp(
-  ctx: CommandContext,
-  fn: (cwd: string) => Promise<{ ok: boolean; output: string }>,
-  loading: string,
-  success: string,
-  failPrefix: string,
-): void {
-  sysMsg(ctx, loading);
-  fn(ctx.cwd).then((result) => {
-    sysMsg(ctx, result.ok ? success : `${failPrefix}: ${result.output}`);
+function runGitOp(ctx: CommandContext, action: GitMenuAction, loading: string): void {
+  if (loading) sysMsg(ctx, loading);
+  runGitMenuAction(ctx.cwd, action).then((result) => {
+    sysMsg(ctx, result.message);
     ctx.refreshGit();
   });
 }
 
 function handlePush(_input: string, ctx: CommandContext): void {
-  runGitOp(ctx, gitPush, "Pushing...", "Push complete.", "Push failed");
+  runGitOp(ctx, { action: "push" }, "Pushing...");
 }
 
 function handlePull(_input: string, ctx: CommandContext): void {
-  runGitOp(ctx, gitPull, "Pulling...", "Pull complete.", "Pull failed");
+  runGitOp(ctx, { action: "pull" }, "Pulling...");
 }
 
 function handleStash(_input: string, ctx: CommandContext): void {
-  runGitOp(ctx, gitStash, "", "Changes stashed.", "Stash failed");
+  runGitOp(ctx, { action: "stash" }, "");
 }
 
 function handleStashPop(_input: string, ctx: CommandContext): void {
-  runGitOp(ctx, gitStashPop, "", "Stash popped.", "Stash pop failed");
+  runGitOp(ctx, { action: "stash-pop" }, "");
 }
 
 function handleLog(_input: string, ctx: CommandContext): void {

@@ -330,7 +330,7 @@ async function capabilities(key: string): Promise<string[] | null> {
  * with a 404 like a missing endpoint without being asked; when health cannot tell, the request
  * is tried and its own 404 says the same.
  */
-async function withCapability<T>(
+export async function withCapability<T>(
   key: string,
   capability: string,
   request: () => Promise<T>,
