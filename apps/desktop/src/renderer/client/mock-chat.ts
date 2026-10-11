@@ -604,6 +604,20 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
         { id: "openai", name: "OpenAI", configured: false, models: [] },
       ],
     });
+  if (path === "/v1/mentions" && method === "GET") {
+    const q = (query.get("q") ?? "").toLowerCase();
+    const all = [
+      { kind: "directory", insert: "src/core/llm/", detail: "directory" },
+      { kind: "file", insert: "src/core/llm/models.ts", detail: "file" },
+      { kind: "file", insert: "src/core/llm/provider.ts", detail: "file" },
+      { kind: "file", insert: "README.md", detail: "file" },
+      { kind: "symbol", insert: "resolveModel", detail: "function · src/core/llm/provider.ts:42" },
+    ];
+    const mentions = all
+      .filter((m) => m.insert.toLowerCase().includes(q))
+      .map((m) => ({ ...m, label: m.insert, indices: [] }));
+    return response(200, { mentions });
+  }
   if (path === "/v1/projects/current" && method === "GET")
     return response(200, {
       workingSet: {

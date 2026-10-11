@@ -4,30 +4,28 @@ import {
   mergeModelRouting,
   ROUTED_ROLES,
   type RoutingInputs,
-  resolveRef,
 } from "../../core/llm/model-routing.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { RouteExplanation } from "../../core/workflows/routing.js";
 import {
+  applyRoutingChange,
   describeRoute,
   draftOf,
-  draftProblems,
   EFFORT_CHOICES,
   parseFallback,
+  type RoutingScope,
   type RoutingTarget,
+  resolveTarget,
   routeAt,
-  routeOf,
   routingClasses,
-  routingProblems,
   setIndependentReview,
-  setRoute,
   targetPath,
 } from "../../core/workflows/routing-edit.js";
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { PremiumPopup } from "../ui/index.js";
 import { PopupViewport } from "../ui/PopupViewport.js";
 
-export type RoutingScope = "global" | "project";
+export type { RoutingScope };
 
 /** Everything the routing screen needs from the outside, so it renders the same in tests. */
 export interface RoutingApi {
@@ -203,26 +201,13 @@ export function RoutingView({
   const other: RoutingScope = scope === "global" ? "project" : "global";
   const current = rows[cursor];
 
-  const resolved = (target: RoutingTarget): Shown | null => {
-    if (target.kind === "stage") {
-      const stage = explained.data?.stages.find((s) => s.stageId === target.stageId);
-      return stage?.model ? { ...stage, model: stage.model, source: stage.source ?? "" } : null;
-    }
-    if (target.kind === "profile") return explained.data?.profiles[target.id] ?? null;
-    if (!runModel) return null;
-    const inputs: RoutingInputs = {
-      runModel,
+  const resolved = (target: RoutingTarget): Shown | null =>
+    resolveTarget(target, {
       routing: effective,
+      runModel,
       legacy: loaded.data?.legacy,
-    };
-    try {
-      if (target.kind === "class") return resolveRef(`$${target.name}`, targetPath(target), inputs);
-      const route = effective?.roles?.[target.role];
-      return route ? resolveRef(route, `modelRouting.roles.${target.role}`, inputs) : null;
-    } catch {
-      return null;
-    }
-  };
+      explanation: explained.data,
+    });
   const resolvedText = (r: Shown): string =>
     [
       r.model,
@@ -263,11 +248,11 @@ export function RoutingView({
   const submit = (f: Form): void => {
     const target: RoutingTarget = f.isNew ? { kind: "class", name: f.name.trim() } : f.target;
     const draft = { model: f.model, effort: f.effort, fallback: parseFallback(f.fallback) };
-    const problems = draftProblems(target, draft);
-    if (f.isNew && target.kind === "class" && routingClasses(effective).includes(target.name))
-      problems.push(`Class $${target.name} already exists; select it to edit`);
-    const next = problems.length ? undefined : setRoute(layers[scope], target, routeOf(draft));
-    if (!problems.length) problems.push(...routingProblems(next, layers[other], scope));
+    const { routing: next, problems } = applyRoutingChange(layers, scope, {
+      target,
+      route: draft,
+      create: f.isNew,
+    });
     if (problems.length) {
       setFormProblems(problems);
       return;
@@ -280,8 +265,7 @@ export function RoutingView({
       notify("info", `modelRouting.${targetPath(target)} is not set in the ${scope} config`);
       return;
     }
-    const next = setRoute(layers[scope], target, null);
-    const problems = routingProblems(next, layers[other], scope);
+    const { routing: next, problems } = applyRoutingChange(layers, scope, { target, route: null });
     if (problems.length) {
       notify("err", `Not cleared: ${problems[0]}`);
       return;

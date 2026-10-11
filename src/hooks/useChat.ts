@@ -18,6 +18,7 @@ import { createBakeAgent } from "../core/agents/index.js";
 import { AbnormalFinishError } from "../core/agents/stream-options.js";
 import { onAgentStats, onMultiAgentEvent, onSubagentStep } from "../core/agents/subagent-events.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
+import { expandChatInput, hasInputReferences } from "../core/chat/input-expansion.js";
 import { expandCustomSlashInput } from "../core/commands/registry.js";
 import {
   buildV2Summary,
@@ -1601,12 +1602,53 @@ export function useChat({
         }
       }
 
+      // `@` mentions and a leading `!command` expand into context for the model; the chat shows
+      // the message as typed with what was attached under it.
+      let modelInput = input;
+      let inputContext: ChatMessage["inputContext"];
+      if (hasInputReferences(input)) {
+        const expandAbort = new AbortController();
+        abortRef.current = expandAbort;
+        setIsLoading(true);
+        let expanded: Awaited<ReturnType<typeof expandChatInput>>;
+        try {
+          expanded = await expandChatInput(input, {
+            cwd,
+            mode: bakeModeRef.current,
+            repoMap: contextManager.isRepoMapReady() ? contextManager.getRepoMap() : undefined,
+            onApproveDestructive: promptDestructive,
+            tabId,
+            ...(tabLabel ? { tabLabel } : {}),
+            abortSignal: expandAbort.signal,
+          });
+        } finally {
+          if (abortRef.current === expandAbort) abortRef.current = null;
+        }
+        if (expandAbort.signal.aborted) return;
+        for (const f of expanded.files) contextManager.trackMentionedFile(f);
+        modelInput = expanded.text;
+        if (expanded.items.length > 0) inputContext = expanded.items;
+        if (!expanded.send) {
+          setIsLoading(false);
+          const shown: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: "user",
+            content: input,
+            timestamp: Date.now(),
+            inputContext,
+          };
+          setMessages((prev) => [...prev, shown]);
+          return;
+        }
+      }
+
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
         content: input,
         timestamp: Date.now(),
         images: images && images.length > 0 ? images : undefined,
+        ...(inputContext ? { inputContext } : {}),
       };
       setMessages((prev) => {
         const allMsgs = [...prev, userMsg];
@@ -1623,7 +1665,7 @@ export function useChat({
       // Build user content: text + optional image parts for multimodal models
       let userContent: string | Array<TextPart | ImagePart>;
       if (images && images.length > 0) {
-        const parts: Array<TextPart | ImagePart> = [{ type: "text" as const, text: input }];
+        const parts: Array<TextPart | ImagePart> = [{ type: "text" as const, text: modelInput }];
         for (const img of images) {
           const raw = Buffer.from(img.base64, "base64");
           const { data, mediaType } = await compressImageForApi(raw, img.mediaType);
@@ -1635,7 +1677,7 @@ export function useChat({
         }
         userContent = parts;
       } else {
-        userContent = input;
+        userContent = modelInput;
       }
       const userCoreMsg: ModelMessage = { role: "user" as const, content: userContent };
       // Sanitize: strip empty assistant text blocks that would cause Anthropic to reject.
@@ -2125,9 +2167,14 @@ export function useChat({
 
           const drainSteering = (): { text: string; images?: ImageAttachment[] } | null => {
             if (steeringAbortedRef.current) return null;
-            const queue = messageQueueRef.current;
+            // A queued message with `@` mentions or a `!command` waits for the turn to end, so it is
+            // expanded like a typed message; the ones before it steer now.
+            const pending = messageQueueRef.current;
+            const firstRef = pending.findIndex((m) => hasInputReferences(m.content));
+            const queue = firstRef === -1 ? pending : pending.slice(0, firstRef);
+            const rest = firstRef === -1 ? [] : pending.slice(firstRef);
             if (queue.length === 0) return null;
-            // Drain ALL queued steering messages at once
+            // Drain the queued steering messages at once
             const drained: ChatMessage[] = [];
             const texts: string[] = [];
             const allImages: ImageAttachment[] = [];
@@ -2147,8 +2194,8 @@ export function useChat({
                 if (item.images) allImages.push(...item.images);
               }
             }
-            messageQueueRef.current = [];
-            setMessageQueue([]);
+            messageQueueRef.current = rest;
+            setMessageQueue(rest);
 
             if (drained.length > 0) {
               // Flush current progress + steering into messages

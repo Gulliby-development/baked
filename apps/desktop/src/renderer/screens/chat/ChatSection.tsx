@@ -261,6 +261,10 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   };
 
   const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
+  const loadMentions = useCallback(
+    (query: string) => chat.mentions(key, query).then((result) => result.mentions),
+    [key],
+  );
 
   if (load === "missing") return <NeedsNewer project={project} />;
   if (load === "not-found")
@@ -340,6 +344,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           onModel={(model) => update({ model })}
           onMode={(mode) => update({ mode })}
           loadModels={loadModels}
+          loadMentions={loadMentions}
         />
       </div>
     </div>

@@ -13,11 +13,13 @@
  * first.
  */
 import type { ModelMessage } from "ai";
+import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AppConfig,
   BakeMode,
   ChatMessage,
   ImageAttachment,
+  InputContextItem,
   InteractiveCallbacks,
   MessageSegment,
   ToolCall,
@@ -37,6 +39,9 @@ import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../ch
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import type { ExpandedChatInput } from "./input-expansion.js";
+import { hasInputReferences } from "./input-parse.js";
+import type { MentionSuggestion } from "./mention-suggest.js";
 
 export const CHAT_MODES = ["default", "architect", "auto"] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
@@ -151,9 +156,21 @@ export interface TurnAgentRequest {
   drainSteering: () => { text: string; images?: ImageAttachment[] } | null;
 }
 
+export interface InputExpansionRequest {
+  sessionId: string;
+  mode: ChatMode;
+  text: string;
+  onApproveDestructive: (description: string) => Promise<boolean>;
+  abortSignal: AbortSignal;
+}
+
 /** Builds the agent of each turn; the API server uses a host backed by `createChatAgent`. */
 export interface ChatAgentHost {
   agent(request: TurnAgentRequest): Promise<{ agent: TurnAgent; contextWindow: number }>;
+  /** Expands the `@` mentions and `!` command of a message; without it, text goes as typed. */
+  expandInput?(request: InputExpansionRequest): Promise<ExpandedChatInput>;
+  /** `@` completions for a chat input, from the workspace files and the repository graph. */
+  suggestMentions?(query: string, limit?: number): Promise<MentionSuggestion[]>;
   /** Frees what the host keeps for a session that is no longer loaded. */
   release(sessionId: string): void;
   dispose(): Promise<void>;
@@ -213,6 +230,9 @@ function toolResultOf(output: unknown): ToolResult {
   }
   return { success: true, output: typeof output === "string" ? output : JSON.stringify(output) };
 }
+
+/** Ends a turn before the model runs, without counting as a failure. */
+class SkipTurn extends Error {}
 
 const EDIT_TOOLS = new Set(["edit_file", "write_file", "create_file", "multi_edit"]);
 
@@ -506,7 +526,11 @@ export class ChatSession {
       onApproveDestructive: (description) => approve({ kind: "destructive", description }),
       drainSteering: () => {
         if (!this.turn || this.queue.length === 0) return null;
-        const text = this.queue.splice(0).join("\n\n");
+        // A message with `@` mentions or a `!command` waits for the next turn, which expands it.
+        const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+        const count = firstRef === -1 ? this.queue.length : firstRef;
+        if (count === 0) return null;
+        const text = this.queue.splice(0, count).join("\n\n");
         const message: ChatMessage = {
           id: crypto.randomUUID(),
           role: "user",
@@ -526,13 +550,34 @@ export class ChatSession {
 
   private async runTurn(turn: TurnState, text: string): Promise<void> {
     const started = Date.now();
+    let modelText = text;
+    let inputContext: InputContextItem[] | undefined;
+    let send = true;
+    const { host } = this.owner;
+    if (host.expandInput && hasInputReferences(text)) {
+      try {
+        const expanded = await host.expandInput({
+          sessionId: this.meta.id,
+          mode: this.mode,
+          text,
+          onApproveDestructive: this.approvalCallbacks().onApproveDestructive,
+          abortSignal: turn.abort.signal,
+        });
+        modelText = expanded.text;
+        send = expanded.send && !turn.abort.signal.aborted;
+        if (expanded.items.length > 0) inputContext = expanded.items;
+      } catch (err) {
+        logBackgroundError("chat:input-expansion", errorText(err));
+      }
+    }
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
       content: text,
       timestamp: started,
+      ...(inputContext ? { inputContext } : {}),
     };
-    const history = [...this.core, { role: "user" as const, content: text }];
+    const history = [...this.core, { role: "user" as const, content: modelText }];
     const before = this.messages;
     this.messages = [...before, userMessage];
     this.steered = [];
@@ -575,6 +620,8 @@ export class ChatSession {
       if (base) this.addCheckpointTag(base);
       const model = this.model;
       if (!model) throw new Error("No model configured");
+      // A `!` command that did not run leaves nothing to answer.
+      if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
         sessionId: this.meta.id,
         modelId: model,
@@ -682,7 +729,8 @@ export class ChatSession {
       }
       if (turn.abort.signal.aborted) status = "interrupted";
     } catch (err) {
-      if (turn.abort.signal.aborted) status = "interrupted";
+      if (err instanceof SkipTurn) status = turn.abort.signal.aborted ? "interrupted" : "completed";
+      else if (turn.abort.signal.aborted) status = "interrupted";
       else {
         status = "failed";
         error = errorText(err);
@@ -693,7 +741,7 @@ export class ChatSession {
     if (response.length === 0 && fullText.length > 0)
       response = [{ role: "assistant", content: fullText }];
     const steering = this.steered.map((content) => ({ role: "user" as const, content }));
-    this.core = [...history, ...steering, ...response];
+    if (send) this.core = [...history, ...steering, ...response];
     const assistant: ChatMessage | null =
       fullText.length > 0 || calls.length > 0
         ? {
@@ -732,8 +780,14 @@ export class ChatSession {
     this.emitSession();
     // Text that arrived after the last step of the turn starts the next one.
     if (this.queue.length > 0 && status === "completed") {
-      const next = this.queue.splice(0).join("\n\n");
+      // Messages with `@` or `!` start a turn of their own so their expansion stays separate.
+      const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+      const count = firstRef === 0 ? 1 : firstRef === -1 ? this.queue.length : firstRef;
+      const next = this.queue.splice(0, count).join("\n\n");
+      const rest = this.queue;
+      this.queue = [];
       this.send(next);
+      this.queue.push(...rest);
     } else this.queue = [];
   }
 

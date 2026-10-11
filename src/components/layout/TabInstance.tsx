@@ -112,6 +112,11 @@ export const TabInstance = memo(function TabInstance({
     [cwd, sharedResources],
   );
 
+  const getRepoMap = useCallback(
+    () => (contextManager.isRepoMapReady() ? contextManager.getRepoMap() : undefined),
+    [contextManager],
+  );
+
   // Register tabId with contextManager for cross-tab awareness
   useEffect(() => {
     contextManager.setTabId(tabId);
@@ -845,6 +850,7 @@ export const TabInstance = memo(function TabInstance({
                 }
                 onCycleTab={onCycleTab}
                 viewingCheckpoint={checkpointViewing}
+                getRepoMap={getRepoMap}
               />
             </box>
           </box>

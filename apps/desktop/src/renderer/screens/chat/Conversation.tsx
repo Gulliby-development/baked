@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { ChatMessage, ToolCall } from "../../client/chat.js";
+import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
 import { Markdown } from "./Markdown.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
@@ -236,11 +236,34 @@ function ForkAction({
   );
 }
 
-function UserBubble({ text, note }: { text: string; note?: string }) {
+function UserBubble({
+  text,
+  note,
+  context,
+}: {
+  text: string;
+  note?: string;
+  context?: InputContextItem[];
+}) {
   return (
     <div className={`user-bubble${note === "Sending…" ? " pending" : ""}`}>
       {note && <span className="bubble-note">{note}</span>}
       {text}
+      {context && context.length > 0 && (
+        <ul className="input-context" aria-label="Attached context">
+          {context.map((item, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: items keep their order
+            <li key={i} className={item.ok ? "ok" : "failed"}>
+              <span className="mono">
+                {item.kind === "command" ? "!" : "@"}
+                {item.ref}
+              </span>{" "}
+              <span className="input-context-summary">{item.summary}</span>
+              {item.output && <pre className="input-context-output">{item.output}</pre>}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -407,6 +430,7 @@ export function Conversation({
             key={message.id}
             text={message.content}
             {...(message.isSteering ? { note: "Sent while working" } : {})}
+            {...(message.inputContext ? { context: message.inputContext } : {})}
           />
         ) : message.role === "assistant" ? (
           <div key={message.id} className="assistant-turn">

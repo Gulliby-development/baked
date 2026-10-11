@@ -6,7 +6,14 @@ import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { resolveModel } from "../llm/provider.js";
 import { buildProviderOptions } from "../llm/provider-options.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
-import type { ChatAgentHost, TurnAgent, TurnAgentRequest } from "./sessions.js";
+import { type ExpandedChatInput, expandChatInput } from "./input-expansion.js";
+import { type MentionSuggestion, suggestMentions } from "./mention-suggest.js";
+import type {
+  ChatAgentHost,
+  InputExpansionRequest,
+  TurnAgent,
+  TurnAgentRequest,
+} from "./sessions.js";
 
 interface SessionResources {
   context: ContextManager;
@@ -84,6 +91,29 @@ export class BakeChatHost implements ChatAgentHost {
     });
     const turnAgent: TurnAgent = agent;
     return { agent: turnAgent, contextWindow: provider.contextWindow };
+  }
+
+  async expandInput(request: InputExpansionRequest): Promise<ExpandedChatInput> {
+    const { context } = await this.resources(request.sessionId);
+    const expanded = await expandChatInput(request.text, {
+      cwd: this.workspace,
+      mode: request.mode,
+      ...(context.isRepoMapReady() ? { repoMap: context.getRepoMap() } : {}),
+      onApproveDestructive: request.onApproveDestructive,
+      tabId: request.sessionId,
+      abortSignal: request.abortSignal,
+    });
+    for (const f of expanded.files) context.trackMentionedFile(f);
+    return expanded;
+  }
+
+  async suggestMentions(query: string, limit?: number): Promise<MentionSuggestion[]> {
+    const parent = await this.parentContext();
+    return suggestMentions(query, {
+      cwd: this.workspace,
+      ...(parent.isRepoMapReady() ? { repoMap: parent.getRepoMap() } : {}),
+      ...(limit ? { limit } : {}),
+    });
   }
 
   release(sessionId: string): void {

@@ -147,6 +147,20 @@ export interface ChatMessage {
    *  When true, text segments after the last `tools` segment stream as the final
    *  answer; the rest renders as a collapsed rail. */
   finalResponseCalled?: boolean;
+  /** What the message's `@` mentions and `!` command added to the context. */
+  inputContext?: InputContextItem[];
+}
+
+/** One `@` mention or `!` command of a user message and what it attached. */
+export interface InputContextItem {
+  kind: "file" | "directory" | "symbol" | "command";
+  /** The mention target or the command as typed. */
+  ref: string;
+  ok: boolean;
+  /** A short line such as "120 lines", "ran" or "not found". */
+  summary: string;
+  /** The start of the command output, for display. */
+  output?: string;
 }
 
 export interface ToolCall {

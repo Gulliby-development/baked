@@ -19,7 +19,12 @@ import { changedPaths, gitBaseline, sourceManifest } from "../verification/snaps
 import { outputSchemas } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { evaluateAutoApproval, policyDecisions } from "./auto-approval.js";
+import {
+  evaluateAutoApproval,
+  plannerApprovalLimits,
+  planScopeAdvice,
+  policyDecisions,
+} from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
 import {
@@ -410,6 +415,9 @@ export class WorkflowScheduler {
                 state.research === null && SCOPING_PLANNERS.has(planner.id)
                   ? scopedPlanBudget(state.prompt, planner, policy)
                   : null;
+              const approvalLimits = plannerApprovalLimits(policy);
+              // Scope advice is given once; a plan that keeps the writes is approved by a person.
+              let scopeAdvised = false;
               const plan = PlanSchema.parse(
                 await this.call(
                   runId,
@@ -420,6 +428,7 @@ export class WorkflowScheduler {
                   {
                     checks: policy.checks,
                     profiles,
+                    ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
                       ? {
                           sizing: plannerSizing(
@@ -443,12 +452,15 @@ export class WorkflowScheduler {
                   // The planner sees package errors at submission and can correct them in place.
                   (output) => {
                     const parsed = PlanSchema.safeParse(output);
-                    return parsed.success
-                      ? [
-                          ...this.planProblems(runId, spec, parsed.data, policy, profiles),
-                          ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
-                        ]
-                      : [parsed.error.message];
+                    if (!parsed.success) return [parsed.error.message];
+                    const problems = [
+                      ...this.planProblems(runId, spec, parsed.data, policy, profiles),
+                      ...codeTaskCheckProblems(parsed.data.taskGraph, policy),
+                    ];
+                    if (scopeAdvised) return problems;
+                    const advice = planScopeAdvice(policy, parsed.data.taskGraph);
+                    if (advice.length) scopeAdvised = true;
+                    return [...problems, ...advice];
                   },
                   scope ? { maxSteps: scope.maxSteps, maxTokens: scope.maxTokens } : undefined,
                 ),

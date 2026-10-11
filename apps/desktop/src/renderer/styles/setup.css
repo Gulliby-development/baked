@@ -399,3 +399,16 @@ a.setup-link:hover {
 .setup-wrap-line {
   row-gap: 10px;
 }
+
+.setup-login-log {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: var(--border-w) solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-code);
+}

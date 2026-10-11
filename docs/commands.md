@@ -22,6 +22,8 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 | `Ctrl+O` | Expand or collapse code and reasoning |
 | `Ctrl+C` | Copy the selection, or exit |
 | `Meta+R` (`Alt+R` on Linux) | Error log |
+| `@` in the input | Mention a file, folder or symbol (`Tab`/`Enter` inserts, `Esc` closes); see [mentions and shell commands](guide.md#mentions-and-shell-commands-in-the-input) |
+| `!` at the start of a message | Run a shell command and add its output to the context |
 
 ## Slash commands
 
