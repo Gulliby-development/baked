@@ -41,6 +41,12 @@ export const GIT_CAPABILITY = "git";
 /** `/v1/diagnostics/*` (the Diagnostics section: storage, model events, error log). */
 export const DIAGNOSTICS_CAPABILITY = "diagnostics";
 
+/** `GET /v1/hooks` and `POST /v1/hooks/session` (the Hooks section). */
+export const HOOKS_CAPABILITY = "hooks";
+
+/** `POST /v1/providers/ID/switch` (Switch account for Codex and Claude Code). */
+export const PROVIDER_SWITCH_CAPABILITY = "provider-switch";
+
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the
  * health answer could not be read, so the caller has to try the endpoint and treat 404 as "no".

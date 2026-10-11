@@ -93,6 +93,34 @@ export function pathsInOutput(output: string, tasks: Task[]): string[] {
   );
 }
 
+/** Lines of a check's output that name what fails: test names and assertion messages. */
+const FAILURE_LINE =
+  /^\s*(?:\(fail\)|✗|✘|×|✖|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL)/i;
+
+/**
+ * What fails in a check's output, normalized so two runs of the same failure compare equal:
+ * the failing test names and assertion lines, without timings, durations, absolute paths and
+ * line numbers. A run going from six failing tests to one changes it; the same failure does not.
+ * Empty when the output names nothing recognizable.
+ */
+export function failureSignature(output: string): string {
+  const lines = output
+    .replaceAll("\\", "/")
+    .split(/\r?\n/)
+    .filter((line) => FAILURE_LINE.test(line))
+    .map((line) =>
+      line
+        .replace(/\[[\d.]+\s*m?s\]/gi, "")
+        .replace(/\(\d+(?:\.\d+)?\s*m?s\)/gi, "")
+        .replace(/(?:[A-Za-z]:)?(?:\/[\w.@-]+)+\/([\w.-]+)/g, "$1")
+        .replace(/:\d+(?::\d+)?/g, "")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .filter(Boolean);
+  return [...new Set(lines)].sort().slice(0, 6).join(" | ").slice(0, 400);
+}
+
 /**
  * Findings for a failed run-level check. Run 6931efd6: ruff flagged three test files of three
  * tasks, but the one finding (no file) went to the first task with the check, whose correction
@@ -121,9 +149,12 @@ export function failedCheckFindings(
     symbol: null,
     evidenceIds: [evidenceId],
     claim: `Required check ${check.id} failed`,
-    impact: "Implementation cannot be accepted",
+    impact: signature
+      ? `Implementation cannot be accepted. Failing: ${signature}`
+      : "Implementation cannot be accepted",
     suggestedFix,
   });
+  const signature = failureSignature(output);
   const owners = new Map<string, { task: Task; file: string }>();
   for (const path of pathsInOutput(output, tasks)) {
     const task = tasks.find((t) => t.writes.some((w) => w.path === path));
@@ -201,16 +232,29 @@ export function appendCorrections(
   }
   const findingSet = hashJson(
     findings
-      .map((f) => ({ claim: f.claim, criteria: f.criterionIds }))
+      .map((f) => ({ claim: f.claim, criteria: f.criterionIds, impact: f.impact }))
       .sort((a, b) => a.claim.localeCompare(b.claim)),
   );
   state.noProgressRounds = state.previousFindingSet === findingSet ? state.noProgressRounds + 1 : 0;
   state.previousFindingSet = findingSet;
-  if (state.noProgressRounds >= 1)
+  // A repair that leaves the failing output as it was may have had no way to see the cause
+  // (hookdrop c325575b: a library dropped a character the code could not restore). The first
+  // repeat gets the next repair round, told to isolate the failure with run_probe before it
+  // edits again; the second identical repeat stops the run.
+  const repeatsAllowed = kind === "repair" ? 1 : 0;
+  if (state.noProgressRounds > repeatsAllowed)
     throw new WorkflowFault(
       "RECOVERY_REQUIRED",
       "no_progress: consecutive reflection rounds repeat the same findings",
+      { reason: "no_progress" },
     );
+  const toCorrect =
+    state.noProgressRounds > 0
+      ? findings.map((f) => ({
+          ...f,
+          suggestedFix: `${f.suggestedFix} The previous correction left this failure unchanged: isolate the cause with run_probe (a minimal program or the failing test alone) and confirm what the code or a library actually does before editing again; if the cause lies outside the files you may edit, say so in unresolved.`,
+        }))
+      : findings;
   let next = Math.max(...state.graph.tasks.map((t) => Number(t.id.slice(1)))) + 1;
   // Findings against the same task and file become one corrective task: each task reads the
   // files again from scratch, so three failed checks of one task were three full rereads. The
@@ -220,7 +264,7 @@ export function appendCorrections(
   // reading four times and left the later tasks with nothing to change.
   const groups = new Map<string, { base: Task; bases: Task[]; findings: Review["findings"] }>();
   const runGroups = new Map<string, string>();
-  for (const finding of findings) {
+  for (const finding of toCorrect) {
     const predecessor = state.repairPredecessors[finding.id];
     const base =
       (predecessor && state.graph?.tasks.find((t) => t.id === predecessor)) ||

@@ -18,19 +18,29 @@ import { join, resolve } from "node:path";
 import { userHome } from "../platform/index.js";
 import type { HookEventName, HookRule, HooksConfig } from "./types.js";
 
-function getHookPaths(cwd: string): string[] {
+/** Who a hooks file belongs to: the user (home), the project, or the project's local overrides. */
+export type HookSourceScope = "user" | "project" | "local";
+
+/** A file hooks are read from. */
+export interface HookSourcePath {
+  path: string;
+  scope: HookSourceScope;
+}
+
+/** The files hooks are read from for `cwd`, in load order. */
+export function getHookSourcePaths(cwd: string): HookSourcePath[] {
   const home = userHome();
-  const paths = [
-    join(home, ".claude", "settings.json"),
-    join(cwd, ".claude", "settings.json"),
-    join(cwd, ".claude", "settings.local.json"),
-    join(home, ".baked", "config.json"),
-    join(cwd, ".baked", "config.json"),
+  const paths: HookSourcePath[] = [
+    { path: join(home, ".claude", "settings.json"), scope: "user" },
+    { path: join(cwd, ".claude", "settings.json"), scope: "project" },
+    { path: join(cwd, ".claude", "settings.local.json"), scope: "local" },
+    { path: join(home, ".baked", "config.json"), scope: "user" },
+    { path: join(cwd, ".baked", "config.json"), scope: "project" },
   ];
   // In the home directory the user and project paths name the same file; read it once so
   // its hooks do not run twice.
   const seen = new Set<string>();
-  return paths.filter((path) => {
+  return paths.filter(({ path }) => {
     const key = process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
     if (seen.has(key)) return false;
     seen.add(key);
@@ -61,31 +71,50 @@ function readSettingsFile(filePath: string): SettingsFile | null {
  * Returns empty config if any source sets `disableAllHooks: true`.
  */
 export function loadHooks(cwd: string): HooksConfig {
-  const paths = getHookPaths(cwd);
   const merged: Record<string, HookRule[]> = {};
 
-  for (const path of paths) {
-    const settings = readSettingsFile(path);
-    if (!settings) continue;
-
+  for (const source of readHookSources(cwd)) {
     // disableAllHooks in any config file kills all hooks globally
-    if (settings.disableAllHooks === true) return {};
-
-    const hooks = settings.hooks;
-    if (!hooks || typeof hooks !== "object") continue;
-
-    for (const [event, rules] of Object.entries(hooks)) {
-      if (!Array.isArray(rules)) continue;
+    if (source.disablesAll) return {};
+    for (const [event, rules] of Object.entries(source.hooks)) {
       if (!merged[event]) merged[event] = [];
-      for (const rule of rules) {
-        if (rule && typeof rule === "object" && Array.isArray(rule.hooks)) {
-          merged[event].push(rule);
-        }
-      }
+      merged[event].push(...rules);
     }
   }
 
   return merged as HooksConfig;
+}
+
+/** The hooks of one source file; `disablesAll` when it sets `disableAllHooks: true`. */
+export interface HookSource extends HookSourcePath {
+  exists: boolean;
+  disablesAll: boolean;
+  /** The well-formed rules per event name, as the file lists them. */
+  hooks: Record<string, HookRule[]>;
+}
+
+/** Reads every hooks file for `cwd`, in load order. */
+export function readHookSources(cwd: string): HookSource[] {
+  return getHookSourcePaths(cwd).map((source) => {
+    const settings = readSettingsFile(source.path);
+    const hooks: Record<string, HookRule[]> = {};
+    const raw = settings?.hooks;
+    if (raw && typeof raw === "object") {
+      for (const [event, rules] of Object.entries(raw)) {
+        if (!Array.isArray(rules)) continue;
+        hooks[event] = rules.filter(
+          (rule): rule is HookRule =>
+            Boolean(rule) && typeof rule === "object" && Array.isArray(rule.hooks),
+        );
+      }
+    }
+    return {
+      ...source,
+      exists: settings !== null,
+      disablesAll: settings?.disableAllHooks === true,
+      hooks,
+    };
+  });
 }
 
 // ── Per-cwd cache with TTL ───────────────────────────────────────────

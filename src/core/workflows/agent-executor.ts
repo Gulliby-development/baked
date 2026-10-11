@@ -27,6 +27,7 @@ import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
 import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
+import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -297,6 +298,34 @@ export class NativeAgentExecutor implements AgentExecutor {
               await scope.stop();
             }
           },
+        });
+      }
+      const probeable = reproExecutables(policy.checks);
+      if (
+        !request.hostTools &&
+        request.profile.role === "implementer" &&
+        request.profile.allowedTools.includes("run_probe") &&
+        request.task &&
+        request.task.origin !== "planned" &&
+        probeable.length > 0
+      ) {
+        const probe = probeTool(probeable, async (input) => {
+          const scope = new ProcessScope();
+          try {
+            return await runProbe(scope, input, {
+              root,
+              executables: probeable,
+              generated: generatedPaths(policy),
+              signal: request.signal,
+            });
+          } finally {
+            await scope.stop();
+          }
+        });
+        available.run_probe = tool({
+          description: probe.description,
+          inputSchema: probe.inputSchema,
+          execute: async (input: unknown) => probe.execute(input),
         });
       }
       const fixable = policy.checks.filter((c) => c.fix);

@@ -18,6 +18,7 @@ const PATHS = {
   "chat-memory": "M3 4h18v12H10l-5 4v-4H3zM7 8.5h4M7 12h3M15 7.5v5M13 8.5l4 3M17 8.5l-4 3",
   diagnostics: "M3 4h18v16H3zM3 12h4l2-4 3 8 2.5-5 1.5 1H21",
   skills: "M5 3h11l3 3v15H5zM9 13.5l1.8-.6.7-1.9.7 1.9 1.8.6-1.8.6-.7 1.9-.7-1.9zM9 8h6",
+  hooks: "M14 3v9a5 5 0 0 1-10 0v-2M4 10l-2 2M4 10l2 2M14 3h-3M17 6h4M17 10h4M17 14h4",
   attention: "M3.5 17a8.5 8.5 0 0 1 17 0zM2 17h20v3H2zM12 5v3.5M9.5 5h5",
   projects: "M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z",
   settings: "M4 12a8 8 0 1 0 16 0a8 8 0 1 0 -16 0zM12 12l4-4M12 1.5v1.5M22.5 12H21M1.5 12H3",

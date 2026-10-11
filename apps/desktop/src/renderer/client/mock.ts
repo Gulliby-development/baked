@@ -159,6 +159,8 @@ export function createMockBridge(): DesktopBridge {
             "custom-commands",
             "settings",
             "git",
+            "hooks",
+            "provider-switch",
             "diagnostics",
           ],
         });

@@ -403,6 +403,14 @@ export const ReproSchema = z
   .strict();
 export type Repro = z.infer<typeof ReproSchema>;
 
+/** A program a repair task runs to look at behavior; it has no claim to judge. */
+export const ProbeSchema = z
+  .object({
+    executable: z.string().min(1).max(512),
+    args: z.array(z.string().max(4096)).max(32),
+  })
+  .strict();
+
 export const ReviewSchema = z
   .object({
     schemaVersion: z.literal(1),

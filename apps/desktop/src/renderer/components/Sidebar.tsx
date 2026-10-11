@@ -36,6 +36,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["run-memory", "Run memory", "run-memory"],
   ["chat-memory", "Chat memory", "chat-memory"],
   ["skills", "Skills", "skills"],
+  ["hooks", "Hooks", "hooks"],
   ["diagnostics", "Diagnostics", "diagnostics"],
 ];
 
