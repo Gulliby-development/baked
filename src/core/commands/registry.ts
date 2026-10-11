@@ -174,6 +174,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["folder", "workspace", "sessions", "runs", "working set"],
   },
   {
+    cmd: "/project rename",
+    ic: "folder",
+    desc: "Rename this project in every app; no name restores the default",
+    category: "Session",
+    tags: ["folder", "workspace", "name", "title"],
+  },
+  {
     cmd: "/projects",
     ic: "folder",
     desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",

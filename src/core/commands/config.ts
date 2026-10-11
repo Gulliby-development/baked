@@ -11,6 +11,7 @@ import {
   parseNotificationsArgs,
   parseOnOff,
 } from "../notification-settings.js";
+import { SETTINGS } from "../settings/schema.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
 import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
@@ -441,30 +442,25 @@ function handleCompaction(_input: string, ctx: CommandContext): void {
 }
 
 function handleAgentFeatures(_input: string, ctx: CommandContext): void {
-  const featureDesc: Record<string, string> = {
-    desloppify: "cleanup pass after code agents (needs model in /router)",
-    verifyEdits: "adversarial review after code agents (needs exploration model)",
-    tierRouting: "auto-route trivial tasks to cheaper models",
-    dispatchCache: "cache file reads across dispatch boundaries",
-    targetFileValidation: "require file paths on dispatch tasks",
-  };
-  const featureLabel: Record<string, string> = {
-    desloppify: "De-sloppify",
-    verifyEdits: "Verify Edits",
-    tierRouting: "Tier Routing",
-    dispatchCache: "Dispatch Cache",
-    targetFileValidation: "Target File Validation",
-  };
-  // Features that default to off when not explicitly set in config
-  const defaultOff = new Set(["desloppify", "verifyEdits"]);
+  // Labels, help and defaults come from the shared settings schema, as on the desktop page.
+  const features = SETTINGS.filter((setting) => setting.page === "agent-features").map(
+    (setting) => ({
+      key: setting.id.replace(/^agentFeatures\./, ""),
+      label: setting.label,
+      help: setting.help,
+      defaultOn: setting.default === true,
+    }),
+  );
   const isOn = (key: string, state: Record<string, unknown>) =>
-    defaultOff.has(key) ? state[key] === true : state[key] !== false;
+    features.find((feature) => feature.key === key)?.defaultOn
+      ? state[key] !== false
+      : state[key] === true;
   const localState = { ...ctx.agentFeatures };
   const buildOptions = () =>
-    Object.entries(featureLabel).map(([key, label]) => ({
+    features.map(({ key, label, help }) => ({
       value: key,
       label: `${label}: ${isOn(key, localState as Record<string, unknown>) ? "on" : "off"}`,
-      description: featureDesc[key] ?? "",
+      description: help,
     }));
   ctx.openCommandPicker({
     title: "Agent Features",
