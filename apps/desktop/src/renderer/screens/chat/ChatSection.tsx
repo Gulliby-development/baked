@@ -12,6 +12,7 @@ import { ApiError } from "../../client/api.js";
 import {
   CHAT_UNDO_CAPABILITY,
   COMPACTION_CAPABILITY,
+  CUSTOM_COMMANDS_CAPABILITY,
   DIFF_STATS_CAPABILITY,
   IMAGES_CAPABILITY,
   PLAN_MODE_CAPABILITY,
@@ -25,6 +26,7 @@ import {
   type SessionDiffStats,
 } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
+import { setup } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { emptyClass } from "../../components/ui/empty.js";
@@ -222,6 +224,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const canRewind = capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
+  // Older servers list commands under `library` but send them to the model unexpanded.
+  const expandsCommands = capabilities?.includes(CUSTOM_COMMANDS_CAPABILITY) === true;
   const modes: readonly ChatMode[] =
     capabilities?.includes(PLAN_MODE_CAPABILITY) === true ? CHAT_MODES : BASE_MODES;
 
@@ -381,6 +385,10 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       : undefined;
 
   const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
+  const loadCommands = useCallback(
+    () => setup.commands(key).then((result) => result.commands),
+    [key],
+  );
   const loadMentions = useCallback(
     (query: string) => chat.mentions(key, query).then((result) => result.mentions),
     [key],
@@ -488,6 +496,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           modes={modes}
           loadModels={loadModels}
           loadMentions={loadMentions}
+          {...(expandsCommands ? { loadCommands } : {})}
           acceptsImages={acceptsImages}
         />
       </div>
