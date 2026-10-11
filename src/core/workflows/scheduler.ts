@@ -52,7 +52,7 @@ import {
   scopedPlanBudget,
 } from "./clarification.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
-import { coverageFinding, workspaceKind } from "./coverage.js";
+import { coverageFinding } from "./coverage.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -144,6 +144,7 @@ import {
   stageKind,
   stageProfileId,
 } from "./v2/runtime.js";
+import { contradictsFacts, type WorkspaceFacts, workspaceFacts } from "./workspace-facts.js";
 import {
   commitRunBranch,
   createTaskWorktree,
@@ -360,7 +361,7 @@ export class WorkflowScheduler {
                       namedPaths: budget.namedPaths,
                       maxSteps: budget.maxSteps,
                     },
-                    workspace: workspaceKind(researchRoot),
+                    workspaceFacts: this.recordFacts(runId, researchRoot),
                   },
                   signal,
                   undefined,
@@ -399,7 +400,7 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   {
                     featureId: run.feature_id,
-                    workspace: workspaceKind(runRoot(this.store.workspace, state)),
+                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                   },
                   signal,
                   undefined,
@@ -458,6 +459,7 @@ export class WorkflowScheduler {
                   {
                     checks: policy.checks,
                     profiles,
+                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
                       ? {
@@ -561,7 +563,10 @@ export class WorkflowScheduler {
                   state,
                   policy,
                   this.requireProfile(profile),
-                  { verifiedByRuntime: PLAN_CONSISTENCY_CHECKS },
+                  {
+                    verifiedByRuntime: PLAN_CONSISTENCY_CHECKS,
+                    workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
+                  },
                   signal,
                   undefined,
                   0,
@@ -585,13 +590,25 @@ export class WorkflowScheduler {
                   ? null
                   : coverageFinding(
                       state.requestText || state.prompt,
-                      workspaceKind(runRoot(this.store.workspace, state)),
+                      this.recordFacts(runId, runRoot(this.store.workspace, state)).kind,
                       graph,
                     );
               if (uncovered) {
                 state.coverageRaised = true;
                 if (!analysis.findings.some((f) => f.id === uncovered.id))
                   analysis.findings.push(uncovered);
+              }
+              // The host inventory outranks the model: a finding that a listed file does not exist is a note.
+              const facts = this.recordFacts(runId, runRoot(this.store.workspace, state));
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  finding.kind === "inconsistency" &&
+                  contradictsFacts(finding.description, facts)
+                ) {
+                  finding.blocking = false;
+                  finding.description = `Contradicted by the workspace facts (facts/workspace.json); kept as a note: ${finding.description}`;
+                }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
               const findings = demoteDeferred(analysis.findings, (f) => f.description);
@@ -1194,6 +1211,20 @@ export class WorkflowScheduler {
       ),
     );
     return split;
+  }
+  /**
+   * The host inventory of the workspace the run starts from. It is stored as `facts/workspace.json`
+   * (a new revision only when it changes) so every front end shows what the stages were told.
+   */
+  private recordFacts(runId: string, root: string): WorkspaceFacts {
+    const facts = workspaceFacts(root);
+    const content = canonical(facts);
+    const latest = this.store.latestArtifact(runId, "facts/workspace.json");
+    if (!latest || latest.content_hash !== hashBytes(content))
+      this.store.transaction(() =>
+        this.store.artifact(runId, "facts", "facts/workspace.json", content),
+      );
+    return facts;
   }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
