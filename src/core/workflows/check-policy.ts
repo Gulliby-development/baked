@@ -1,6 +1,7 @@
 import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "./errors.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
+import type { Check, Task } from "./types.js";
 
 export function validateChecks(workspace: string, policy: RunPolicy, graph?: TaskGraph): void {
   if (policy.maxCostUsd !== null)
@@ -40,3 +41,54 @@ export function validateChecks(workspace: string, policy: RunPolicy, graph?: Tas
     }
   }
 }
+
+const CODE_FILE =
+  /\.(?:[cm]?[jt]sx?|pyi?|rs|go|java|kt|rb|php|cs|cpp|cc|c|h|hpp|swift|vue|svelte)$/i;
+/** Commands that analyze source without running it: linters, formatters and type checkers. */
+const STATIC_COMMAND =
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|format|prettier|mypy|pyright|tsc|typecheck|check)\b/i;
+
+/** Source code a linter or formatter reads: any written file that is not documentation or data. */
+export const isCodePath = (path: string): boolean => CODE_FILE.test(path);
+
+/** The code files a task creates or modifies. */
+export const writtenCodePaths = (task: Pick<Task, "writes">): string[] =>
+  task.writes.filter((w) => w.action !== "delete" && isCodePath(w.path)).map((w) => w.path);
+
+/**
+ * Whether a feature-scope check analyzes source files statically (it names a fixer or runs a
+ * linter, formatter or type checker). Test suites are not: they need other tasks' code to pass.
+ */
+export const isStaticCheck = (check: Check): boolean =>
+  Boolean(check.fix) || STATIC_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
+
+/** The checks that run for a task: the task-scope ones it names and the static feature ones covering its code. */
+export const coveringChecks = (policy: RunPolicy, task: Pick<Task, "writes">): Check[] =>
+  writtenCodePaths(task).length
+    ? policy.checks.filter((c) => c.scope === "feature" && isStaticCheck(c))
+    : [];
+
+/**
+ * Gives every task that writes source code the static feature checks (lint, format) that cover
+ * its files, so a lint error shows in the task that wrote the file and not in a repair task after
+ * the test tasks have run (bench round 03, md-site and zoneslot). The planner's own check IDs stay.
+ */
+export function withCoveringChecks(graph: TaskGraph, policy: RunPolicy): TaskGraph {
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => {
+      const added = coveringChecks(policy, task)
+        .map((c) => c.id)
+        .filter((id) => !task.checkIds.includes(id));
+      return added.length ? { ...task, checkIds: [...task.checkIds, ...added] } : task;
+    }),
+  };
+}
+
+/** The checks the host runs after a task: the task-scope checks it names, plus the covering static ones. */
+export const taskCheckList = (policy: RunPolicy, task: Task): Check[] => {
+  const covering = new Set(coveringChecks(policy, task).map((c) => c.id));
+  return policy.checks.filter(
+    (c) => task.checkIds.includes(c.id) && (c.scope === "task" || covering.has(c.id)),
+  );
+};

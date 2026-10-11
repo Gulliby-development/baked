@@ -40,7 +40,12 @@ import {
   policyDecisions,
 } from "./auto-approval.js";
 import { budgetUsage, reserveTokens } from "./budget.js";
-import { validateChecks } from "./check-policy.js";
+import {
+  taskCheckList,
+  validateChecks,
+  withCoveringChecks,
+  writtenCodePaths,
+} from "./check-policy.js";
 import {
   ASSUME_NOTE,
   assumeProblems,
@@ -177,12 +182,19 @@ const repairSeverities = (run: { repair_rounds: number; convergence_rounds: numb
   run.repair_rounds + run.convergence_rounds > 0 ? SERIOUS : ALL_SEVERITIES;
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
-function planGraph(spec: Spec, plan: { markdown: string; taskGraph: TaskGraph }): TaskGraph {
-  return withTestDependencies({
-    ...plan.taskGraph,
-    specHash: hashJson(spec),
-    planHash: hashBytes(plan.markdown),
-  });
+function planGraph(
+  spec: Spec,
+  plan: { markdown: string; taskGraph: TaskGraph },
+  policy: RunPolicy,
+): TaskGraph {
+  return withCoveringChecks(
+    withTestDependencies({
+      ...plan.taskGraph,
+      specHash: hashJson(spec),
+      planHash: hashBytes(plan.markdown),
+    }),
+    policy,
+  );
 }
 
 /** A request for a person that the current step raised and has not made durable yet. */
@@ -528,7 +540,7 @@ export class WorkflowScheduler {
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
-              const planned = planGraph(spec, plan);
+              const planned = planGraph(spec, plan, policy);
               const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
               state.graph = graph;
               state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
@@ -1327,7 +1339,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     profiles: AgentProfile[],
   ): string[] {
-    const graph = planGraph(spec, plan);
+    const graph = planGraph(spec, plan, policy);
     const problems: string[] = [];
     const root = this.rootOf(runId);
     try {
@@ -2155,6 +2167,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           task,
         ),
       );
+      if (result.outcome === "implemented")
+        await this.fixTaskFiles(runId, child, root, policy, task, signal);
       const after = await sourceManifest(root, generatedPaths(policy), signal);
       // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
       // effect journal recorded every file this task changed, so it counts as well.
@@ -2546,6 +2560,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           { root, attemptId: entry.attemptId },
         ),
       );
+      if (result.outcome === "implemented")
+        await this.fixTaskFiles(runId, entry.child, root, policy, task, signal);
       const after = await sourceManifest(root, generatedPaths(policy), signal);
       const changed = this.workerChanges(runId, entry, known, before, after);
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
@@ -3219,6 +3235,48 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       for (const write of task.writes)
         if (write.action === "delete") owners.delete(write.path);
         else owners.set(write.path, task.id);
+    return this.fixFiles(runId, stepId, root, policy, fixable, owners, signal);
+  }
+  /**
+   * Before a task's checks are evaluated, runs the fixers of the static checks that cover its
+   * code on the code files it wrote, so what a tool fixes mechanically (import order, formatting,
+   * safe lint rules) is never a failure. What it cannot fix stays and fails the check in the task
+   * that wrote the file, where the implementer can edit it.
+   */
+  private async fixTaskFiles(
+    runId: string,
+    child: string,
+    root: string,
+    policy: RunPolicy,
+    task: Task,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const fixable = taskChecks(policy, task).filter((c) => c.fix);
+    const paths = writtenCodePaths(task);
+    if (!fixable.length || !paths.length) return false;
+    return this.fixFiles(
+      runId,
+      child,
+      root,
+      policy,
+      fixable,
+      new Map(paths.map((path) => [path, task.id])),
+      signal,
+    );
+  }
+  /**
+   * Runs each fixer on the files in `owners` (path to the task that last writes it) inside
+   * `root`, one journaled edit per file. A change outside those files faults the call.
+   */
+  private async fixFiles(
+    runId: string,
+    stepId: string,
+    root: string,
+    policy: RunPolicy,
+    fixable: Check[],
+    owners: Map<string, string>,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const paths = [...owners.keys()].filter((path) => fileHash(workspacePath(root, path)));
     if (!paths.length) return false;
     const lease = mutationLeaseFor(this.store.workspace, root);
@@ -4204,9 +4262,8 @@ function taskSize(
   return undefined;
 }
 
-/** The task-scope checks a task names, in policy order. */
-const taskChecks = (policy: RunPolicy, task: Task): Check[] =>
-  policy.checks.filter((c) => c.scope === "task" && task.checkIds.includes(c.id));
+/** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
+const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
 
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
