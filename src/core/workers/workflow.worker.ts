@@ -12,6 +12,10 @@ import { scaledPolicy } from "../workflows/budget.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { estimateStart, readHistory } from "../workflows/estimate.js";
 import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
+import {
+  InitiativeStartInputSchema,
+  initiativeStartRequest,
+} from "../workflows/initiatives/forms.js";
 import { InitiativeId } from "../workflows/initiatives/plan.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import {
@@ -133,6 +137,18 @@ const ctx = createWorkerHandler(
       const result = await applyInitiativeAction(currentInitiatives(), id, action);
       if (result.drive) driveInitiative(id);
       return result.view;
+    },
+    // Starts an initiative from the TUI form, then splits and drives it in the background.
+    async startInitiative(input) {
+      const service = currentInitiatives();
+      const view = await service.start(
+        initiativeStartRequest(InitiativeStartInputSchema.parse(input), service.workflows.config, {
+          commandId: newId(),
+          ownerLabel: "TUI",
+        }),
+      );
+      driveInitiative(view.initiativeId);
+      return view;
     },
     // Past runs with their spend, for the editor's estimate of a definition.
     history: () => readHistory(current().store),

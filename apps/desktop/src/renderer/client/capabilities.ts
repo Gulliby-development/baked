@@ -36,6 +36,9 @@ export const SETTINGS_CAPABILITY = "settings";
 /** `/v1/graph*` (the Code graph section). */
 export const CODE_GRAPH_CAPABILITY = "code-graph";
 
+/** `GET /v1/git` and `POST /v1/git/actions` (the Git section). */
+export const GIT_CAPABILITY = "git";
+
 /** `GET /v1/hooks` and `POST /v1/hooks/session` (the Hooks section). */
 export const HOOKS_CAPABILITY = "hooks";
 

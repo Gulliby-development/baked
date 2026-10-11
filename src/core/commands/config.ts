@@ -1,9 +1,18 @@
 import type { ConfigScope } from "../../components/layout/shared.js";
 import { loadConfig } from "../../config/index.js";
+import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
 import type { AgentFeatures, AppConfig } from "../../types/index.js";
 import { icon } from "../icons.js";
+import {
+  applyNotificationsChange,
+  describeNotifications,
+  type NotificationsChange,
+  parseNotificationsArgs,
+  parseOnOff,
+} from "../notification-settings.js";
 import { SETTINGS } from "../settings/schema.js";
+import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
 import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
 import type { CommandContext, CommandHandler } from "./types.js";
@@ -480,7 +489,19 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
   });
 }
 
-async function handleInstructions(_input: string, ctx: CommandContext): Promise<void> {
+async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
+  const [sub = "", ...rest] = input.trim().split(/\s+/).slice(1);
+  const arg = rest.join(" ");
+  if (sub === "files") return openInstructionFiles(ctx);
+  if (sub === "show") return showInstructionFile(ctx, arg);
+  if (sub === "edit") {
+    if (arg) return editInstruction(ctx, arg);
+    return openInstructionFiles(ctx);
+  }
+  if (sub) {
+    sysMsg(ctx, "Usage: /instructions [files | show <path> | edit <path>]");
+    return;
+  }
   const { INSTRUCTION_SOURCES, loadInstructions, buildInstructionPrompt } = await import(
     "../instructions.js"
   );
@@ -492,21 +513,28 @@ async function handleInstructions(_input: string, ctx: CommandContext): Promise<
   );
   const loaded = loadInstructions(ctx.cwd, [...currentEnabled]);
   const loadedIds = new Set(loaded.map((l: { source: string }) => l.source));
+  const { listInstructionFiles } = await import("../instruction-files.js");
+  const onDisk = () => listInstructionFiles(ctx.cwd, [...currentEnabled]);
+  let found = onDisk();
 
   const buildOptions = () =>
     INSTRUCTION_SOURCES.map((s: { id: string; label: string; files: string[] }) => {
       const enabled = currentEnabled.has(s.id);
-      const found = loadedIds.has(s.id);
-      const suffix = enabled ? (found ? "" : " (not found)") : "";
+      const loadedHere = loadedIds.has(s.id);
+      const files = found.filter((f) => f.source === s.id);
+      const suffix = enabled ? (loadedHere ? "" : " (not found)") : "";
       return {
         value: s.id,
         icon: enabled ? "✓" : " ",
         color: enabled
-          ? found
+          ? loadedHere
             ? getThemeTokens().success
             : getThemeTokens().warning
           : getThemeTokens().textMuted,
         label: `${s.label}${suffix}`,
+        description: files.length
+          ? files.map((f) => (f.scope === "global" ? `~/${f.path}` : f.path)).join(", ")
+          : "no file",
       };
     });
 
@@ -530,12 +558,13 @@ async function handleInstructions(_input: string, ctx: CommandContext): Promise<
       const freshLoaded = loadInstructions(ctx.cwd, ids);
       loadedIds.clear();
       for (const l of freshLoaded) loadedIds.add(l.source);
+      found = onDisk();
 
       ctx.contextManager.setProjectInstructions(buildInstructionPrompt(freshLoaded));
 
       sysMsg(
         ctx,
-        `Instruction file "${value}" ${currentEnabled.has(value) ? "enabled" : "disabled"} (${scope ?? "project"})`,
+        `Instruction file "${value}" ${currentEnabled.has(value) ? "enabled" : "disabled"} (${scope ?? "project"}). /instructions files views and edits them.`,
       );
       useUIStore.getState().updatePickerOptions(buildOptions());
     },
@@ -543,6 +572,87 @@ async function handleInstructions(_input: string, ctx: CommandContext): Promise<
       ctx.saveToScope({ instructionFiles: [...currentEnabled] }, to, from);
     },
   });
+}
+
+/** The files on disk, in prompt order; Enter opens one in $EDITOR. */
+async function openInstructionFiles(ctx: CommandContext): Promise<void> {
+  const { listInstructionFiles } = await import("../instruction-files.js");
+  const files = listInstructionFiles(ctx.cwd, ctx.instructionFiles);
+  const t = getThemeTokens();
+  const options = files.map((f) => ({
+    value: f.absolutePath,
+    icon: f.enabled ? String(f.order) : " ",
+    color: f.enabled ? t.textPrimary : t.textMuted,
+    label: f.scope === "global" ? `~/${f.path}` : f.path,
+    description: `${f.sourceLabel} · ${f.scope === "global" ? "every project" : "this project"} · ${f.enabled ? "read by agents" : "off"} · ${f.bytes} B`,
+  }));
+  if (!options.length) {
+    sysMsg(
+      ctx,
+      "No instruction files. /instructions edit baked.md (or AGENTS.md, CLAUDE.md, ...) creates one.",
+    );
+    return;
+  }
+  ctx.openCommandPicker({
+    title: "Instruction Files: Enter edits in $EDITOR",
+    icon: icon("system"),
+    options,
+    onSelect: (value) => {
+      const file = files.find((f) => f.absolutePath === value);
+      if (file) void editInstruction(ctx, file.path);
+    },
+  });
+}
+
+async function showInstructionFile(ctx: CommandContext, path: string): Promise<void> {
+  const { findInstructionFile, listInstructionFiles } = await import("../instruction-files.js");
+  const files = listInstructionFiles(ctx.cwd, ctx.instructionFiles);
+  const file = path ? findInstructionFile(files, path) : files.find((f) => f.enabled);
+  if (!file) {
+    sysMsg(ctx, path ? `${path} is not an instruction file.` : "No instruction files.");
+    return;
+  }
+  ctx.openInfoPopup({
+    title: file.path,
+    icon: icon("system"),
+    width: 100,
+    lines: [
+      {
+        type: "entry",
+        label: "Read by agents",
+        desc: file.enabled ? `yes, number ${file.order}` : `no (${file.sourceLabel} is off)`,
+      },
+      {
+        type: "entry",
+        label: "Scope",
+        desc: file.scope === "global" ? "every project" : "this project",
+      },
+      { type: "entry", label: "Path", desc: file.absolutePath },
+      { type: "separator" },
+      ...file.content.split("\n").map((line) => ({ type: "text" as const, label: line || " " })),
+    ],
+  });
+}
+
+async function editInstruction(ctx: CommandContext, path: string): Promise<void> {
+  const { editInstructionFile } = await import("../instruction-files.js");
+  const { buildInstructionPrompt, loadInstructions } = await import("../instructions.js");
+  const result = await editInstructionFile(ctx.cwd, ctx.instructionFiles, path);
+  if (result.status === "saved") {
+    ctx.contextManager.setProjectInstructions(
+      buildInstructionPrompt(loadInstructions(ctx.cwd, ctx.instructionFiles)),
+    );
+    const runs = result.affectedRuns.length
+      ? ` Active runs that froze the earlier version stop at their next step until their plan is revised: ${result.affectedRuns.join(", ")}.`
+      : "";
+    const off = result.enabled
+      ? ""
+      : " Its source is off, so agents do not read it; /instructions switches it on.";
+    sysMsg(ctx, `${result.created ? "Created" : "Saved"} ${result.path}.${off}${runs}`);
+  } else if (result.status === "unchanged") sysMsg(ctx, `${result.path} is unchanged.`);
+  else if (result.status === "conflict")
+    sysMsg(ctx, `${result.message}. Your edit was not saved; it is kept in ${result.keptAt}.`);
+  else sysMsg(ctx, result.message);
 }
 
 function handleDiffStyle(_input: string, ctx: CommandContext): void {
@@ -633,6 +743,8 @@ const settingsHandlers: Record<string, (input: string, ctx: CommandContext) => v
   instructions: handleInstructions as CommandHandler,
   "model-scope": handleModelScope,
   timeouts: handleTimeouts,
+  notifications: handleNotifications,
+  telemetry: handleTelemetry,
 };
 
 function handleSettingsHub(_input: string, ctx: CommandContext): void {
@@ -670,6 +782,12 @@ function handleSettingsHub(_input: string, ctx: CommandContext): void {
         value: "timeouts",
         label: `${icon("clock")} Tool Timeout`,
         description: `${String(loadConfig().toolTimeout ?? 2)}m`,
+      },
+      { value: "notifications", label: `${icon("info")} Notifications`, description: "global" },
+      {
+        value: "telemetry",
+        label: `${icon("info")} Telemetry`,
+        description: loadConfig().telemetry === false ? "off" : "on",
       },
     ],
     onSelect: (value) => {
@@ -850,6 +968,114 @@ const handleTheme: CommandHandler = (input: string, ctx: CommandContext) => {
   sysMsg(ctx, `Theme → ${arg}`);
 };
 
+/** `/telemetry [on|off]`: anonymous usage telemetry in the global config. */
+function handleTelemetry(input: string, ctx: CommandContext): void {
+  const arg = input.trim().split(/\s+/).slice(1).join(" ");
+  const apply = (on: boolean) => {
+    ctx.saveToScope({ telemetry: on }, "global");
+    sysMsg(ctx, `Telemetry ${on ? "on" : "off"} (global). ${telemetryStatus(on)}`);
+  };
+  if (arg) {
+    const on = parseOnOff(arg);
+    if (on === null) sysMsg(ctx, "Usage: /telemetry [on|off]");
+    else apply(on);
+    return;
+  }
+  ctx.openCommandPicker({
+    title: "Telemetry",
+    icon: icon("info"),
+    currentValue: loadConfig().telemetry === false ? "off" : "on",
+    scopeEnabled: false,
+    options: [
+      {
+        value: "on",
+        label: "On",
+        description: "record one anonymous event per session in a local log",
+      },
+      { value: "off", label: "Off", description: "record nothing" },
+    ],
+    onSelect: (value) => apply(value === "on"),
+  });
+}
+
+/** Saves a `notifications` change to the global config and restarts an idle workflow worker. */
+function saveNotifications(ctx: CommandContext, change: NotificationsChange): void {
+  const result = applyNotificationsChange(loadConfig().notifications, change);
+  if (!result.ok) {
+    sysMsg(ctx, result.error);
+    return;
+  }
+  ctx.saveToScope({ notifications: result.value }, "global");
+  // Announcements come from the workflow worker, which reads config when it starts.
+  const driving = existingWorkflowSession(ctx.cwd)?.drivingRuns() ?? [];
+  void reloadWorkflowSession(ctx.cwd, driving).then((reloaded) =>
+    sysMsg(
+      ctx,
+      [
+        "Notifications saved (global).",
+        ...describeNotifications(result.value),
+        ...(reloaded ? [] : ["A run is active: the change applies after BAKED restarts."]),
+      ].join("\n"),
+    ),
+  );
+}
+
+/** `/notifications [system on|off | webhook URL|off | blocking-only on|off]`. */
+function handleNotifications(input: string, ctx: CommandContext): void {
+  const parsed = parseNotificationsArgs(input.trim().split(/\s+/).slice(1));
+  if ("error" in parsed) {
+    sysMsg(ctx, parsed.error);
+    return;
+  }
+  if ("change" in parsed) {
+    saveNotifications(ctx, parsed.change);
+    return;
+  }
+  const current = loadConfig().notifications;
+  const url = current?.webhook?.url;
+  ctx.openCommandPicker({
+    title: "Run Notifications",
+    icon: icon("info"),
+    scopeEnabled: false,
+    options: [
+      {
+        value: "system",
+        label: `System notifications: ${current?.system === false ? "off" : "on"}`,
+        description: "desktop notifications from the terminal app and the CLI",
+      },
+      {
+        value: "webhook",
+        label: `Webhook: ${url ?? "none"}`,
+        description: "set with /notifications webhook URL",
+      },
+      ...(url
+        ? [
+            {
+              value: "blocking",
+              label: `Blocking requests only: ${current?.webhook?.blockingOnly ? "on" : "off"}`,
+              description: "skip advisory acceptance decisions",
+            },
+            { value: "remove", label: "Remove webhook", description: "nothing is sent" },
+          ]
+        : []),
+    ],
+    onSelect: (value) => {
+      if (value === "system") saveNotifications(ctx, { system: current?.system === false });
+      else if (value === "blocking")
+        saveNotifications(ctx, { blockingOnly: current?.webhook?.blockingOnly !== true });
+      else if (value === "remove") saveNotifications(ctx, { webhookUrl: null });
+      else
+        sysMsg(
+          ctx,
+          [
+            ...describeNotifications(current),
+            "Set the webhook with /notifications webhook URL; headers such as a token go in notifications.webhook.headers of the config file.",
+          ].join("\n"),
+        );
+    },
+  });
+}
+
 export function register(map: Map<string, CommandHandler>): void {
   map.set("/chat-style", handleChatStyle);
   map.set("/mode", handleMode);
@@ -869,12 +1095,16 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/watchdog", handleTimeouts); // alias for /timeouts
   map.set("/context-window", handleContextWindow);
   map.set("/ctxwin", handleContextWindow); // alias
+  map.set("/telemetry", handleTelemetry);
+  map.set("/notifications", handleNotifications);
 }
 
 export function matchConfigPrefix(cmd: string): CommandHandler | null {
   if (cmd === "/chat-style" || cmd.startsWith("/chat-style ")) return handleChatStyle;
   if (cmd === "/mode" || cmd.startsWith("/mode ")) return handleMode;
   if (cmd === "/theme" || cmd.startsWith("/theme ")) return handleTheme;
+  if (cmd.startsWith("/telemetry ")) return handleTelemetry;
+  if (cmd.startsWith("/notifications ")) return handleNotifications;
   if (
     cmd === "/context-window" ||
     cmd === "/ctxwin" ||

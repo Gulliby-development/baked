@@ -7,6 +7,7 @@ import { type InitiativesApi, InitiativesPopup } from "../src/components/workflo
 import { NewRunForm } from "../src/components/workflow/NewRunForm.js";
 import { PremiumPopup } from "../src/components/ui/index.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import type { InitiativeStartInput } from "../src/core/workflows/initiatives/forms.js";
 import type { InitiativeView } from "../src/core/workflows/initiatives/service.js";
 import type { InitiativeAction } from "../src/core/workflows/initiatives/view-model.js";
 import type { StartRunInput, WorkflowInfo } from "../src/core/workflows/view.js";
@@ -167,6 +168,75 @@ test("the initiative screen explains an empty project and a disabled one", async
     } finally { await act(async () => view.renderer.destroy()); }
   }
 });
+
+test("the initiative screen starts an initiative and edits a split from typed text", async () => {
+  const views = initiatives();
+  const acted: InitiativeAction[] = [];
+  const started: InitiativeStartInput[] = [];
+  const state = { selected: null as string | null };
+  const api: InitiativesApi = {
+    load: async () => ({ initiatives: views, driving: [], errors: {} }),
+    act: async (id, action) => {
+      acted.push(action);
+      return views.find((v) => v.initiativeId === id) as InitiativeView;
+    },
+    start: async (input) => {
+      started.push(input);
+      return views[2] as InitiativeView;
+    },
+    info: async () => ({ workflows: ["sdd", "quick"], defaultWorkflow: "sdd" }),
+  };
+  function Harness() {
+    const [selectedId, setSelectedId] = useState<string | null>(null);
+    return (
+      <InitiativesPopup api={api} width={100} height={40} selectedId={selectedId} model="fixture/model"
+        onSelect={(id) => { state.selected = id; setSelectedId(id); }} onBack={() => {}} onOpenRun={() => {}} />
+    );
+  }
+  let view!: View;
+  await act(async () => { view = await testRender(<Harness />, { width: 100, height: 40 }); });
+  const type = async (text: string) => { await act(async () => { await view.mockInput.typeText(text); }); };
+  try {
+    let text = await frame(view, 100, 40, "list-start");
+    expect(text).toContain("new initiative");
+    await press(view, "n");
+    text = await frame(view, 100, 40, "start-form");
+    expect(text).toContain("New initiative");
+    await type("Move billing to the new API");
+    text = await frame(view, 100, 40, "start-typed");
+    expect(text).toContain("move-billing-to-the-new");
+    await press(view, "tab");
+    await press(view, "tab");
+    await press(view, "right");
+    await press(view, "tab");
+    await type("2M 100 1h");
+    await press(view, "tab");
+    await press(view, "right");
+    await press(view, "s", { ctrl: true });
+    await act(async () => { await Bun.sleep(20); });
+    expect(started).toEqual([{ initiativeId: "move-billing-to-the-new", prompt: "Move billing to the new API", workflow: "quick", model: "fixture/model", budget: { tokens: 2_000_000, calls: 100, timeMs: 3_600_000 }, tieredApproval: { maxTasks: 5, maxFiles: 10 } }]);
+    expect(state.selected).toBe("billing");
+    text = await frame(view, 100, 40, "started");
+    expect(flat(text)).toContain("N rejects it");
+    await press(view, "n");
+    text = await frame(view, 100, 40, "reject-reason");
+    expect(flat(text)).toContain("Why reject plan revision 2?");
+    await type("Too coarse");
+    await press(view, "return");
+    await act(async () => { await Bun.sleep(20); });
+    expect(acted.at(-1)).toEqual({ kind: "reject", expectedRevision: 5, requestId: "split-2", reason: "Too coarse" });
+    await press(view, "e");
+    text = await frame(view, 100, 40, "rename");
+    expect(flat(text)).toContain("New title of feature schema");
+    await press(view, "escape");
+    expect(acted).toHaveLength(1);
+    await press(view, "s");
+    await type("schema-a: Tables; schema-b: Migrations");
+    await press(view, "return");
+    await act(async () => { await Bun.sleep(20); });
+    expect(acted.at(-1)).toEqual({ kind: "edit", expectedRevision: 5, edit: { op: "split", featureId: "schema", into: [{ id: "schema-a", title: "Tables" }, { id: "schema-b", title: "Migrations" }] } });
+  } finally { await act(async () => view.renderer.destroy()); }
+}, 20000);
 
 const info: WorkflowInfo = {
   estimate: { tokens: { low: 90000, high: 300000 }, basis: "defaults", samples: 0, label: "Estimate: 90k–300k tokens" },

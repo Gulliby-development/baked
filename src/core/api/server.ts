@@ -24,7 +24,7 @@
  * must name the loopback address and port (DNS rebinding); requests with an Origin header are
  * refused unless that origin was allowed explicitly.
  */
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
@@ -32,6 +32,7 @@ import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow
 import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
+import { runsFreezingFile } from "../instruction-files.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
 import { MemoryManager } from "../memory/manager.js";
 import { listKnownProjects } from "../projects/known.js";
@@ -59,6 +60,7 @@ import {
 import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
+import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
@@ -117,6 +119,7 @@ export const CAPABILITIES = [
   "skills-install",
   "custom-commands",
   "settings",
+  "git",
   "hooks",
   "provider-switch",
 ] as const;
@@ -416,19 +419,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   };
   /** The latest on-demand result of each check. */
   const checkResults = new Map<string, CheckRunRecord>();
+  const gitQueue: { tail: Promise<unknown> } = { tail: Promise.resolve() };
 
   /** Runs that have not ended and froze `absolutePath` as an input. */
   function runsFreezing(absolutePath: string): string[] {
-    const target = resolve(absolutePath);
-    return service.store
-      .list(100)
-      .items.filter((run) => !["completed", "failed", "cancelled"].includes(run.status))
-      .filter((run) =>
-        Object.keys(service.store.state(run.runId).frozenFiles).some(
-          (file) => resolve(file) === target,
-        ),
-      )
-      .map((run) => run.runId);
+    return runsFreezingFile(service.store, absolutePath);
   }
   /** Background drives started by run and resume requests. */
   const drives = new Set<Promise<unknown>>();
@@ -758,6 +753,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         store: service.store,
         results: checkResults,
         signal: shutdown.signal,
+      })) ??
+      (await gitRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        store: service.store,
+        queue: gitQueue,
       })) ??
       (await setupRoute({
         ...ctx,

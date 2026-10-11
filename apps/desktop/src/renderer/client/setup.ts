@@ -111,20 +111,39 @@ export interface CheckSuggestion {
 // --- Instructions -------------------------------------------------------------------------------
 
 export interface InstructionFile {
-  order: number;
+  /** Position in every agent's prompt; null when the file's source is switched off. */
+  order: number | null;
   path: string;
   absolutePath: string;
   /** The instruction source ID (`baked`, `codex`, `claude`, ...) or `project` for the manifest's. */
   source: string;
+  /** The source's display name; absent on older backends. */
+  sourceLabel?: string;
   scope: "project" | "global";
+  /** Whether agents read the file; absent on older backends, which list only files agents read. */
+  enabled?: boolean;
   bytes: number;
   hash: string;
   content: string;
 }
 
+/** An instruction source (`instructionFiles` in config) and whether agents read its files. */
+export interface InstructionSource {
+  id: string;
+  label: string;
+  /** The file names it looks for, first match wins. */
+  files: string[];
+  enabled: boolean;
+  defaultEnabled: boolean;
+}
+
 export interface InstructionList {
   files: InstructionFile[];
   promptBytes: number;
+  /** Absent on older backends, which cannot switch sources. */
+  sources?: InstructionSource[];
+  /** The config file that sets `instructionFiles`. */
+  sourcesScope?: "project" | "global";
 }
 
 /** `PUT /v1/projects/current/instructions`: the saved file. */
@@ -332,7 +351,7 @@ async function capabilities(key: string): Promise<string[] | null> {
  * with a 404 like a missing endpoint without being asked; when health cannot tell, the request
  * is tried and its own 404 says the same.
  */
-async function withCapability<T>(
+export async function withCapability<T>(
   key: string,
   capability: string,
   request: () => Promise<T>,
@@ -535,11 +554,18 @@ export const setup = {
 
   instructions: (key: string) =>
     call<InstructionList>(key, "GET", "/v1/projects/current/instructions"),
-  saveInstruction: (key: string, path: string, content: string, expectedHash: string) =>
+  /** `expectedHash: null` creates a project file at a path a source reads, such as `AGENTS.md`. */
+  saveInstruction: (key: string, path: string, content: string, expectedHash: string | null) =>
     call<SavedInstruction>(key, "PUT", "/v1/projects/current/instructions", {
       path,
       content,
       expectedHash,
+    }),
+  /** Switches an instruction source on or off; the answer is the new list. */
+  setInstructionSource: (key: string, source: string, enabled: boolean) =>
+    call<InstructionList>(key, "PUT", "/v1/projects/current/instructions/sources", {
+      source,
+      enabled,
     }),
   commands: (key: string) =>
     withCapability(key, LIBRARY_CAPABILITY, () =>

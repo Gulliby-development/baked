@@ -4,7 +4,16 @@
  * stays the authority and its refusal text is what a person sees when the view is stale.
  */
 import { z } from "zod";
+import { WorkflowFault } from "../errors.js";
 import { newId } from "../store.js";
+import {
+  canExtendBudget,
+  canReplanFeature,
+  parseBudgetText,
+  parseSplitParts,
+  splitEditable,
+} from "./forms.js";
+import { type SplitEdit, SplitEditSchema } from "./plan.js";
 import type { FeatureView, InitiativeService, InitiativeView, PendingDecision } from "./service.js";
 
 /** One row of the initiative list. */
@@ -101,6 +110,30 @@ export const InitiativeActionSchema = z.discriminatedUnion("kind", [
       model: z.string().min(1),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("reject"),
+      expectedRevision: z.number().int().min(0),
+      requestId: z.string().min(1),
+      reason: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("edit"),
+      expectedRevision: z.number().int().min(0),
+      edit: SplitEditSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("extend"),
+      expectedRevision: z.number().int().min(0),
+      maxTotalTokens: z.number().int().min(1).optional(),
+      maxAgentCalls: z.number().int().min(1).optional(),
+      maxActiveMs: z.number().int().min(1).optional(),
+    })
+    .strict(),
   z.object({ kind: z.literal("drive") }).strict(),
 ]);
 /** A command of the TUI, bound to the revision of the view the person saw. */
@@ -112,7 +145,24 @@ export interface InitiativeActionOption {
   action: InitiativeAction;
   /** Set when the action needs a Y/N confirmation first; the question to ask. */
   confirm: string | null;
+  /**
+   * Set when the action needs text first, such as a reason or a new title: the question, a
+   * placeholder, the starting text, and how the text becomes the command. `build` throws a
+   * `WorkflowFault` with the words to show when the text does not fit.
+   */
+  input?: {
+    question: string;
+    placeholder: string;
+    initial: string;
+    build(text: string): InitiativeAction;
+  };
 }
+
+const required = (text: string, message: string): string => {
+  const value = text.trim();
+  if (!value) throw new WorkflowFault("INVALID_DEFINITION", message);
+  return value;
+};
 
 const CONTINUABLE: readonly InitiativeView["next"]["kind"][] = [
   "decompose",
@@ -169,11 +219,94 @@ export function initiativeActions(
       action: { kind: "pause", expectedRevision },
       confirm: null,
     });
-  if (
-    feature?.runId &&
-    view.approvedPlanRevision !== null &&
-    (view.status === "active" || view.status === "paused")
-  )
+  if (split)
+    options.push({
+      key: "N",
+      label: "reject split",
+      action: { kind: "reject", expectedRevision, requestId: split.requestId, reason: "rejected" },
+      confirm: null,
+      input: {
+        question: `Why reject plan revision ${view.planRevision}? The initiative waits until you edit the split.`,
+        placeholder: "e.g. api and storage belong in one feature",
+        initial: "",
+        build: (text) => ({
+          kind: "reject",
+          expectedRevision,
+          requestId: split.requestId,
+          reason: required(text, "A rejection needs a reason"),
+        }),
+      },
+    });
+  if (feature && splitEditable(view)) {
+    const edit = (value: SplitEdit): InitiativeAction => ({
+      kind: "edit",
+      expectedRevision,
+      edit: value,
+    });
+    options.push(
+      {
+        key: "E",
+        label: "rename",
+        action: edit({ op: "rename", featureId: feature.id, title: feature.title }),
+        confirm: null,
+        input: {
+          question: `New title of feature ${feature.id}:`,
+          placeholder: feature.title,
+          initial: feature.title,
+          build: (text) =>
+            edit({
+              op: "rename",
+              featureId: feature.id,
+              title: required(text, "Give the feature a title"),
+            }),
+        },
+      },
+      {
+        key: "S",
+        label: "split",
+        action: edit({ op: "split", featureId: feature.id, into: [] }),
+        confirm: null,
+        input: {
+          question: `Split ${feature.id} into parts, "id: title" separated by ";". Each part keeps its scope and contract.`,
+          placeholder: `${feature.id}-a: First part; ${feature.id}-b: Second part`,
+          initial: "",
+          build: (text) =>
+            edit({ op: "split", featureId: feature.id, into: parseSplitParts(text) }),
+        },
+      },
+      {
+        key: "G",
+        label: "merge",
+        action: edit({ op: "merge", featureIds: [feature.id] }),
+        confirm: null,
+        input: {
+          question: `Merge ${feature.id} with which features? IDs separated by commas; the merged feature keeps the ID ${feature.id}.`,
+          placeholder: view.features
+            .filter((f) => f.id !== feature.id)
+            .slice(0, 2)
+            .map((f) => f.id)
+            .join(", "),
+          initial: "",
+          build: (text) => {
+            const others = text
+              .split(/[,\s]+/)
+              .map((id) => id.trim())
+              .filter((id) => id && id !== feature.id);
+            if (!others.length)
+              throw new WorkflowFault("INVALID_DEFINITION", "Name at least one feature to merge");
+            return edit({ op: "merge", featureIds: [feature.id, ...others], id: feature.id });
+          },
+        },
+      },
+      {
+        key: "D",
+        label: "remove",
+        action: edit({ op: "remove", featureId: feature.id }),
+        confirm: `Remove ${feature.id} from the split? Features that depend on it lose that dependency. Y confirms; N keeps it.`,
+      },
+    );
+  }
+  if (feature && canReplanFeature(view, feature))
     options.push({
       key: "X",
       label: "re-plan feature",
@@ -195,6 +328,26 @@ export function initiativeActions(
       action: { kind: "reroute", expectedRevision, model },
       confirm: `Switch initiative ${view.initiativeId} from ${view.model ?? "the default model"} to ${model} and continue? Features started from now on use it, and its stopped runs move to it; finished work stays. Y confirms; N keeps the current model.`,
     });
+  if (canExtendBudget(view)) {
+    const { limits } = view.budget;
+    options.push({
+      key: "B",
+      label: "extend budget",
+      action: { kind: "extend", expectedRevision },
+      confirm: null,
+      input: {
+        question: `Raise the shared budget: tokens [calls [time]], such as 8M 400 4h; - keeps a limit. Now ${limits.maxTotalTokens} tokens, ${limits.maxAgentCalls} calls, ${Math.round(limits.maxActiveMs / 60_000)}m.`,
+        placeholder: `${Math.ceil((limits.maxTotalTokens * 1.5) / 1_000_000)}M`,
+        initial: "",
+        build: (text) => {
+          const raised = parseBudgetText(text);
+          if (!Object.keys(raised).length)
+            throw new WorkflowFault("INVALID_DEFINITION", "Give at least one new limit");
+          return { kind: "extend", expectedRevision, ...raised };
+        },
+      },
+    });
+  }
   return options;
 }
 
@@ -231,6 +384,20 @@ export async function applyInitiativeAction(
         view: await initiatives.reroute(id, command, { model: action.model, resume: true }),
         drive: true,
       };
+    case "reject":
+      return {
+        view: await initiatives.reject(id, command, {
+          requestId: action.requestId,
+          reason: action.reason,
+        }),
+        drive: false,
+      };
+    case "edit":
+      return { view: await initiatives.edit(id, command, action.edit), drive: false };
+    case "extend": {
+      const { kind: _kind, expectedRevision: _revision, ...limits } = action;
+      return { view: await initiatives.extendBudget(id, command, limits), drive: false };
+    }
   }
 }
 

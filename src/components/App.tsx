@@ -12,6 +12,7 @@ import {
   saveProjectConfig,
   stripConfigKeys,
 } from "../config/index.js";
+import { setTerminalHandoff } from "../core/chat/external-editor.js";
 import { openProjectPicker } from "../core/commands/projects.js";
 import { handleCommand } from "../core/commands/registry.js";
 import { ContextManager } from "../core/context/manager.js";
@@ -272,6 +273,19 @@ export function App({
   });
   const [shutdownPhase, setShutdownPhase] = useState(-1);
   const savedSessionIdRef = useRef<string | null>(null);
+
+  // Commands that open $EDITOR (such as `/instructions edit`) hand the terminal over through this.
+  useEffect(
+    () =>
+      setTerminalHandoff({
+        suspend: () => renderer.suspend(),
+        resume: () => {
+          renderer.resume();
+          renderer.requestRender();
+        },
+      }),
+    [renderer],
+  );
 
   useEffect(() => {
     const stdin = process.stdin;
