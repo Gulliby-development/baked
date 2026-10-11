@@ -581,7 +581,7 @@ function create(
 }
 
 const SESSION_PATH =
-  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts)(?:\/([A-Za-z0-9-]+))?)?$/;
+  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork)(?:\/([A-Za-z0-9-]+))?)?$/;
 
 const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (path === "/v1/models" && method === "GET")
@@ -668,6 +668,24 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     return response(202, { turnId: await startTurn(session, text), queued: false });
   }
   if (action === "interrupt") return response(200, { interrupted: interrupt(session) });
+  if (action === "fork") {
+    const request = (body ?? {}) as { atMessageId?: string; rollbackFiles?: boolean };
+    const all = session.transcript.messages;
+    const at = request.atMessageId
+      ? all.findIndex((m) => m.id === request.atMessageId)
+      : all.length - 1;
+    if (at < 0) return response(404, { error: { code: "NOT_FOUND", message: "No such message" } });
+    const forked = create(key, {
+      title: `${session.summary.title} (fork)`,
+      mode: session.summary.mode,
+    });
+    forked.transcript = { ...forked.transcript, messages: all.slice(0, at + 1) };
+    forked.summary = { ...forked.summary, messageCount: at + 1 };
+    const rollback = request.rollbackFiles
+      ? { checkpoint: 1, snapshot: null, backupTag: null, restored: [], removed: [], skipped: [] }
+      : undefined;
+    return response(201, { ...detail(forked), ...(rollback ? { rollback } : {}) });
+  }
   const resolve = sub ? session.turn?.waiters.get(sub) : undefined;
   if (!sub || !resolve)
     return response(409, { error: { code: "STALE_PROMPT", message: "Not waiting" } });

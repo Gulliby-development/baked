@@ -38,6 +38,8 @@ const valueCheck = {
   cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [],
 };
 const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [valueCheck] };
+/** A repro that shows the claimed value, run with the program the value check starts. */
+const oldValueRepro = { executable: "bun", args: ["-e", "console.log('old')"], expected: "ready", actual: "old" };
 
 interface Behavior {
   /** Implementations that write a broken value before the fixture writes the right one. */
@@ -52,7 +54,12 @@ interface Behavior {
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
   /** Fields that replace those of the medium correctness finding a review requesting changes reports. */
-  reviewFinding?: { severity?: string; kind?: string; basis?: "spec" | "inferred" };
+  reviewFinding?: {
+    severity?: string;
+    kind?: string;
+    basis?: "spec" | "inferred";
+    repro?: { executable: string; args: string[]; expected: string; actual: string } | undefined;
+  };
   /** Analyses that report one blocking finding before passing. */
   analysisFindings?: number;
   findingKind?: string;
@@ -68,6 +75,8 @@ class V2Executor implements AgentExecutor {
   maxTokens: number[] = [];
   implementations = 0;
   convergences = 0;
+  /** Host tools each review attempt was offered. */
+  reviewTools: string[][] = [];
   constructor(private root: string, private behavior: Behavior = {}) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
@@ -113,10 +122,12 @@ class V2Executor implements AgentExecutor {
         output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
         break;
       case "review":
+        this.reviewTools.push(Object.keys(request.hostTools ?? {}));
         output = this.behavior.reviewVerdict === "changes_requested"
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [],
-              findings: [{ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case", ...this.behavior.reviewFinding }],
+              // An undefined field in reviewFinding drops the default.
+              findings: [Object.fromEntries(Object.entries({ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case", repro: oldValueRepro, ...this.behavior.reviewFinding }).filter(([, value]) => value !== undefined))],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Evidence checked" }], findings: [] };
         break;
@@ -379,6 +390,35 @@ describe("workflow v2 scheduler", () => {
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(1);
     expect(service.store.run(run.runId).repair_rounds).toBe(0);
     expect(service.store.findings(run.runId)).toHaveLength(0);
+  }, 30000);
+
+  // Run 5b703388 corrected a regex claim that holds in Python but not in JavaScript (#155).
+  test("a review finding whose repro does not show the claim is a note", async () => {
+    const { start, complete, service, executor } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { repro: { ...oldValueRepro, args: ["-e", "console.log('ready')"] } },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.reviewTools[0]).toEqual(["run_repro"]);
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+    expect(service.store.findings(run.runId)).toHaveLength(0);
+    const record = service.store.artifacts(run.runId).find((a) => a.kind === "repro");
+    expect(service.store.readArtifact(run.runId, record?.id ?? "")).toContain('"status":"refuted"');
+  }, 30000);
+
+  test("a correctness finding without a repro is a note", async () => {
+    const { start, complete, service } = setup({
+      reviewVerdict: "changes_requested",
+      reviewFinding: { repro: undefined },
+    });
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
   }, 30000);
 
   test("an inferred security finding still starts a correction", async () => {

@@ -153,6 +153,16 @@ export interface ModelProvider {
   error?: string;
 }
 
+/** What `POST /v1/sessions/ID/fork` with `rollbackFiles` did to the workspace files. */
+export interface RollbackReport {
+  checkpoint: number;
+  snapshot: string | null;
+  backupTag: string | null;
+  restored: string[];
+  removed: string[];
+  skipped: { path: string; reason: string }[];
+}
+
 export interface WorkingSetSummary {
   workingSet: { entries: string[]; files: { path: string; bytes: number }[] };
 }
@@ -175,6 +185,13 @@ export const chat = {
   get: (key: string, id: string) => call<SessionDetail>(key, "GET", sessionPath(id)),
   update: (key: string, id: string, body: { title?: string; model?: string; mode?: ChatMode }) =>
     call<SessionSummary>(key, "PATCH", sessionPath(id), body),
+  /** A new session with the messages up to `atMessageId`, optionally with the files rolled back. */
+  fork: (
+    key: string,
+    id: string,
+    body: { atMessageId?: string; rollbackFiles?: boolean; force?: boolean },
+  ) =>
+    call<SessionDetail & { rollback?: RollbackReport }>(key, "POST", sessionPath(id, "fork"), body),
   send: (key: string, id: string, text: string) =>
     call<{ turnId: string; queued: boolean }>(key, "POST", sessionPath(id, "messages"), {
       text,

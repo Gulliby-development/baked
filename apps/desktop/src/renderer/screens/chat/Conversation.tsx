@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
 import { Button } from "../../components/ui/button.js";
+import { cn } from "../../lib/cn.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
@@ -229,6 +230,57 @@ function Assistant({
   );
 }
 
+const FORK_ROW =
+  "m-0 flex flex-wrap items-center gap-2 border-0 p-0 text-[13px] text-dim-foreground";
+const FORK_LINK =
+  "cursor-pointer border-0 bg-transparent p-0 [font-family:inherit] [font-size:inherit] leading-[inherit] text-dim-foreground underline hover:text-foreground disabled:cursor-default disabled:opacity-50";
+
+function ForkAction({
+  disabled,
+  onFork,
+}: {
+  disabled: boolean;
+  onFork: (rollbackFiles: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!open)
+    return (
+      <div
+        className={cn(
+          FORK_ROW,
+          "opacity-0 transition-opacity duration-[120ms] group-hover/turn:opacity-100 focus-within:opacity-100",
+        )}
+      >
+        <button
+          type="button"
+          className={FORK_LINK}
+          disabled={disabled}
+          onClick={() => setOpen(true)}
+        >
+          Fork from here
+        </button>
+      </div>
+    );
+  const pick = (rollbackFiles: boolean) => {
+    setOpen(false);
+    onFork(rollbackFiles);
+  };
+  return (
+    <fieldset className={FORK_ROW} aria-label="Fork from here">
+      <span>Continue in a new chat from this point. Roll the files back too?</span>
+      <Button variant="secondary" size="md" onClick={() => pick(false)}>
+        Chat only
+      </Button>
+      <Button variant="primary" size="md" onClick={() => pick(true)}>
+        Chat and files
+      </Button>
+      <button type="button" className={FORK_LINK} onClick={() => setOpen(false)}>
+        Cancel
+      </button>
+    </fieldset>
+  );
+}
+
 function UserBubble({
   text,
   note,
@@ -424,11 +476,16 @@ export function Conversation({
   deciding,
   onApprove,
   onAnswer,
+  forking,
+  onFork,
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
   onApprove: (id: string, approve: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
+  forking?: boolean;
+  /** Forks the session after `messageId`; absent while the session cannot be forked. */
+  onFork?: (messageId: string, rollbackFiles: boolean) => void;
 }) {
   const { messages, live, prompts, pending, notice, thoughtMs } = transcript;
   const running = transcript.turnId !== null;
@@ -445,12 +502,15 @@ export function Conversation({
             {...(message.inputContext ? { context: message.inputContext } : {})}
           />
         ) : message.role === "assistant" ? (
-          <Assistant
-            key={message.id}
-            message={message}
-            thoughtMs={thoughtMs[message.id]}
-            thinking={false}
-          />
+          <div key={message.id} className="group/turn flex min-w-0 flex-col gap-1.5">
+            <Assistant message={message} thoughtMs={thoughtMs[message.id]} thinking={false} />
+            {onFork && !running && (
+              <ForkAction
+                disabled={forking === true}
+                onFork={(rollbackFiles) => onFork(message.id, rollbackFiles)}
+              />
+            )}
+          </div>
         ) : null,
       )}
       {live && (

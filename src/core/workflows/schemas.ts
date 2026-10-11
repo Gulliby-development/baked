@@ -385,6 +385,17 @@ export const ReasonCode = z.enum([
   "none",
 ]);
 
+/** A reproducible example a review finding attaches to a claim about behavior (#155). */
+export const ReproSchema = z
+  .object({
+    executable: z.string().min(1).max(512),
+    args: z.array(z.string().max(4096)).max(32),
+    expected: z.string().min(1).max(2000),
+    actual: z.string().min(1).max(2000),
+  })
+  .strict();
+export type Repro = z.infer<typeof ReproSchema>;
+
 export const ReviewSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -421,6 +432,12 @@ export const ReviewSchema = z
              * security findings or critical. A finding without a basis counts as `spec`.
              */
             basis: z.enum(["spec", "inferred"]).optional(),
+            /**
+             * A command that shows the claimed behavior: it prints `actual` on a line of its
+             * output where the spec requires `expected`. The runtime runs it before the finding
+             * starts a correction; a finding whose repro does not print `actual` is a note.
+             */
+            repro: ReproSchema.optional(),
             requirementIds: z.array(RequirementId),
             criterionIds: z.array(CriterionId),
             file: RelativePath.nullable(),

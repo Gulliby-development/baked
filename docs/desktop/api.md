@@ -91,7 +91,7 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `GET /v1/sessions/ID` | | `SessionDetail` |
 | `PATCH /v1/sessions/ID` | `{title?, model?, mode?}` | `SessionSummary`; `model` and `mode` apply from the next turn |
 | `DELETE /v1/sessions/ID` | | 204; 409 `SESSION_BUSY` while a turn runs |
-| `POST /v1/sessions/ID/fork` | `{atMessageId?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent) |
+| `POST /v1/sessions/ID/fork` | `{atMessageId?, rollbackFiles?, force?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent); with `rollbackFiles`, plus `rollback` (below). 409 `SESSION_BUSY` with `rollbackFiles` while any turn runs, 409 `ROLLBACK_UNAVAILABLE` when files need restoring and the workspace is not a Git repository or cannot be backed up |
 | `POST /v1/sessions/ID/messages` | `{text}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the text is steered into it at its next step |
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
@@ -102,6 +102,8 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
 
 A message text with `@` mentions or a leading `!command` is expanded on the server before the model sees it, by the same code as the terminal UI ([user guide](../guide.md#mentions-and-shell-commands-in-the-input)): the stored user message keeps the typed text and lists what was attached in `inputContext`. A destructive `!` command asks with a `destructive` prompt in `default` mode, is denied in `architect` mode with every other command, and runs in `auto` mode. A message that is only a command that did not run ends its turn with `turn-done` `completed` and `message: null`. Text with `@` or `!` sent while a turn runs is not steered into it; it starts its own turn afterwards.
+
+Each turn of an API session that edits files snapshots the workspace in a Git tag, and the first turn snapshots it before it starts; the tags are saved in the session's tab as `checkpointTags`, as the terminal UI saves them. A fork with `rollbackFiles` restores the files the agent edited after the fork point to the latest snapshot at or before it. The fork point of a message is the end of its turn, or the end of the previous turn when the message is the user prompt that starts a turn. `rollback` is `{checkpoint, snapshot, backupTag, restored: [path], removed: [path], skipped: [{path, reason}]}`: `restored` files were rewritten, `removed` ones did not exist at the checkpoint, and `backupTag` (null when nothing changed) holds the whole working tree from before the rollback. A file is skipped, not overwritten, when its current content is in none of the session's snapshots (changed outside the agent) unless `force` is set, and always when Git ignores it or it is outside the workspace. The fork gets copies of the snapshots up to its fork point, so it can be forked again. [Forking a checkpoint](../guide.md#forking-a-checkpoint) describes the same behavior in the terminal UI.
 
 ### Session events
 

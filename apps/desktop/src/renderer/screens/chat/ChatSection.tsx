@@ -20,6 +20,7 @@ import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
 import { Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
+import { forkReportLines, rememberForkReport, takeForkReport } from "./fork.js";
 import { ChatHeader } from "./Header.js";
 import { emptyTranscript, isBusy, reduceTranscript } from "./transcript.js";
 
@@ -130,6 +131,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [draftMode, setDraftMode] = useState<ChatMode>("default");
+  const [forking, setForking] = useState(false);
+  const [forkReport] = useState(() => (draft ? null : takeForkReport(sessionId)));
   // A task typed on the project home ("Ask in chat") starts the new session's composer.
   const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
   useEffect(() => {
@@ -231,6 +234,20 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     }
   };
 
+  const fork = (atMessageId: string, rollbackFiles: boolean): void => {
+    setForking(true);
+    setActionError(null);
+    chat
+      .fork(key, sessionId, { atMessageId, rollbackFiles })
+      .then((created) => {
+        rememberForkReport(created.id, forkReportLines(created.rollback));
+        chatSessionsChanged();
+        window.location.assign(projectHref(key, "chat", created.id));
+      })
+      .catch((e: unknown) => setActionError(message(e)))
+      .finally(() => setForking(false));
+  };
+
   const decide = (promptId: string, work: () => Promise<unknown>): void => {
     setDeciding((s) => new Set(s).add(promptId));
     setActionError(null);
@@ -303,9 +320,20 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               </p>
             </div>
           )}
+          {forkReport && (
+            <Alert role="status">
+              {forkReport.map((line) => (
+                <p key={line} className="m-0">
+                  {line}
+                </p>
+              ))}
+            </Alert>
+          )}
           <Conversation
             transcript={transcript}
             deciding={deciding}
+            forking={forking}
+            {...(draft ? {} : { onFork: fork })}
             onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
           />

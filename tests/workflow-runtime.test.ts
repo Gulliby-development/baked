@@ -199,7 +199,7 @@ describe("durable SDD runtime", () => {
       const context = JSON.parse(request.prompt.split("\n").at(-1)!);
       if (request.profile.output === "refutation") return { output: { schemaVersion: 1, findingId: context.extra.finding.id, decision: "refuted", evidenceIds: context.extra.evidence.map((e: { id: string }) => e.id), explanation: "Passing host check disproves the claim" }, inputTokens: 20, outputTokens: 30 };
       const result = await original(request);
-      if (request.profile.output === "review") result.output = { ...ReviewSchema.parse(result.output), verdict: "changes_requested", findings: [{ id: "false-positive", kind: "correctness", severity: "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds: context.extra.evidence.map((e: { id: string }) => e.id), claim: "Value might be wrong", impact: "Contract", suggestedFix: "Check value" }] };
+      if (request.profile.output === "review") result.output = { ...ReviewSchema.parse(result.output), verdict: "changes_requested", findings: [{ id: "false-positive", kind: "correctness", severity: "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds: context.extra.evidence.map((e: { id: string }) => e.id), claim: "Value might be wrong", impact: "Contract", suggestedFix: "Check value", repro: { executable: "bun", args: ["-e", "console.log('wrong')"], expected: "ready", actual: "wrong" } }] };
       return result;
     };
     const { run } = await start(service); await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
