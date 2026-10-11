@@ -14,7 +14,12 @@ import { cleanStepMessages } from "../agents/stream-options.js";
 import { ContextManager } from "../context/manager.js";
 import { hasToolHooks } from "../hooks/index.js";
 import { resolveModel } from "../llm/provider.js";
-import { buildProviderOptions, withRouteEffort } from "../llm/provider-options.js";
+import {
+  buildProviderOptions,
+  getEphemeralCache,
+  withAutomaticCache,
+  withRouteEffort,
+} from "../llm/provider-options.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
@@ -415,9 +420,16 @@ export class NativeAgentExecutor implements AgentExecutor {
       let lastCallUsage: LanguageModelUsage | undefined;
       let result: { steps: readonly StepLike[]; text: string; usage: Partial<LanguageModelUsage> };
       try {
+        // Anthropic prompt cache: a breakpoint after the tools and system prompt, and the
+        // automatic one after the newest message, so each step re-reads the earlier ones.
+        const cacheTtl = this.config.cache?.ttl ?? "5m";
         result = await generateText({
           model: resolveModel(request.profile.model),
-          instructions: request.profile.instructions,
+          instructions: {
+            role: "system",
+            content: request.profile.instructions,
+            providerOptions: getEphemeralCache(cacheTtl),
+          },
           prompt: request.prompt,
           tools: available,
           stopWhen: [
@@ -428,7 +440,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           maxRetries: 0,
           maxOutputTokens: request.profile.maxOutputTokens,
           abortSignal: request.signal,
-          providerOptions: provider.providerOptions,
+          providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
           headers: provider.headers,
           onStepEnd: (step) => {
             finished.push(step);

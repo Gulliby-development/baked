@@ -575,6 +575,23 @@ export function getEphemeralCache(ttl: CacheTTL = "5m"): ProviderOptions {
 /** Back-compat default (5m). New code should call getEphemeralCache(config.cache?.ttl). */
 export const EPHEMERAL_CACHE: ProviderOptions = EPHEMERAL_CACHE_5M;
 
+/**
+ * Adds Anthropic's request-level automatic cache breakpoint, which follows the end of the
+ * conversation as an agent loop grows. Paired with a breakpoint on the system prompt (same TTL),
+ * every step reads the tools, system prompt and earlier steps from the cache.
+ */
+export function withAutomaticCache(
+  providerOptions: ProviderOptions | undefined,
+  ttl: CacheTTL = "5m",
+): ProviderOptions {
+  const anthropic = (providerOptions as Record<string, Record<string, unknown>> | undefined)
+    ?.anthropic;
+  return {
+    ...providerOptions,
+    anthropic: { ...anthropic, cacheControl: { type: "ephemeral", ttl } },
+  } as ProviderOptions;
+}
+
 export interface ProviderOptionsResult {
   providerOptions: ProviderOptions;
   headers: Record<string, string> | undefined;

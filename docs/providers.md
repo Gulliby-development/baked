@@ -28,6 +28,10 @@ The Copilot connection uses your Copilot subscription through the same API as th
 
 A 401 means the token was rotated; copy it again.
 
+## Prompt cache
+
+On the Claude API every agent loop (chat, subagents and workflow attempts) sends a cache breakpoint on the system prompt and Anthropic's request-level automatic breakpoint, which follows the newest message. Each step then reads the tools, the system prompt and the earlier steps from the cache instead of paying full price for them. `cache.ttl` ([configuration](configuration.md)) sets the lifetime of both: `5m` (default) or `1h`. Usage records cache reads and writes; costs price cache writes at the 5-minute write price.
+
 For Claude models BAKED marks the system prompt and the newest message with Copilot's `copilot_cache_control`, the cache marker the IDE extensions send, so later agent steps can read the conversation from the prompt cache. GPT models on Copilot rely on the upstream automatic prefix cache. Copilot bills premium requests rather than tokens, so the cache shortens responses and lowers the token counts BAKED records, not the Copilot bill.
 
 ## Model fallback

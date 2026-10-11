@@ -98,6 +98,8 @@ export interface UsageFigures {
   attempts: number;
   tokens: number;
   cacheReadTokens: number;
+  /** Input tokens written to the prompt cache; absent on older backends. */
+  cacheWriteTokens?: number;
   /** Input tokens, cache reads included. */
   inputTokens?: number;
   outputTokens?: number;
@@ -146,6 +148,8 @@ export interface AttemptUsageRow {
   status: string;
   usedTokens: number | null;
   cacheReadTokens: number | null;
+  /** Input tokens written to the prompt cache; absent on older backends. */
+  cacheWriteTokens?: number | null;
   /** Input tokens, cache reads included; null without per-step usage, absent on older backends. */
   inputTokens?: number | null;
   outputTokens?: number | null;

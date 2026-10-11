@@ -232,6 +232,7 @@ describe("AttemptStepController", () => {
       inputTokens: null,
       outputTokens: null,
       cacheReadTokens: null,
+      cacheWriteTokens: null,
       toolCalls: 0,
       compactedBytes: 0,
     });
