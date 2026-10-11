@@ -12,6 +12,8 @@ import {
 } from "../projects/working-set.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
+import { appendCorrections } from "../verification/convergence.js";
+import { acceptResidual, type ConvergenceRequestBody } from "../verification/convergence-stop.js";
 import { hostDiff } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { supersedeResearch } from "./analysis-notes.js";
@@ -268,6 +270,10 @@ export class NativeWorkflowService implements WorkflowService {
       deferredCriteria: [],
       previousFindingSet: null,
       noProgressRounds: 0,
+      extraConvergenceRounds: 0,
+      extraCorrectiveTasks: 0,
+      decidedFindings: [],
+      limitations: [],
       verificationState: "not_verified",
       instructionText: instructions.text,
       frozenFiles: instructions.files,
@@ -454,6 +460,59 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
+  }
+  /**
+   * "Accept" on a stopped convergence: the remaining findings become known limitations, and the
+   * run leaves the convergence stage as if it had passed.
+   */
+  private acceptStoppedConvergence(
+    runId: string,
+    state: RuntimeState,
+    body: ConvergenceRequestBody,
+  ): void {
+    acceptResidual(this.store, runId, state, body, "user");
+    const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+    const position = state.position;
+    if (parsed.schemaVersion === 1) {
+      if (parsed.definition.stages[state.stageIndex]?.kind === "converge") state.stageIndex++;
+    } else if (position) {
+      position.outcome = "passed";
+      position.findings = [];
+      position.repairKind = null;
+    }
+  }
+  /**
+   * "One more round" on a stopped convergence: the limit that stopped it is raised just far
+   * enough for these findings. A schema 1 run starts the corrections now; a schema 2 run takes
+   * its decided transition again when it resumes.
+   */
+  private repairStoppedConvergence(
+    runId: string,
+    state: RuntimeState,
+    body: ConvergenceRequestBody,
+  ): void {
+    const run = this.store.run(runId);
+    const policy = PolicySchema.parse(JSON.parse(run.policy_json));
+    state.extraConvergenceRounds = Math.max(
+      state.extraConvergenceRounds,
+      run.convergence_rounds + 1 - policy.maxConvergenceRounds,
+    );
+    state.extraCorrectiveTasks = Math.max(
+      state.extraCorrectiveTasks,
+      run.corrective_tasks + body.findings.length - policy.maxCorrectiveTasks,
+    );
+    state.previousFindingSet = null;
+    state.noProgressRounds = 0;
+    const ids = new Set(body.findings.map((f) => f.id));
+    state.decidedFindings = [...new Set([...state.decidedFindings, ...ids])];
+    const parsed = parseRunDefinition(run.definition_json);
+    if (parsed.schemaVersion !== 1) return;
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => ids.has(f.id))
+      .map((f) => ({ ...JSON.parse(f.body_json), id: f.id }));
+    appendCorrections(this.store, runId, state, policy, findings, "convergence");
+    state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
   }
   /**
    * Whether a run can continue right after a decision: it is not finished and no request that
@@ -661,8 +720,17 @@ export class NativeWorkflowService implements WorkflowService {
             decision.resolution === "record-applied" ? "reconciled" : "failed",
           );
       } else if (decision.kind === "continue") {
-        if (request.kind !== "checkpoint")
-          throw new WorkflowFault("STALE_DECISION", "Only a token checkpoint can be continued");
+        if (request.kind === "convergence")
+          this.repairStoppedConvergence(runId, state, body as unknown as ConvergenceRequestBody);
+        else if (request.kind !== "checkpoint")
+          throw new WorkflowFault(
+            "STALE_DECISION",
+            "Only a token checkpoint or a stopped convergence can be continued",
+          );
+      } else if (decision.kind === "accept") {
+        if (request.kind !== "convergence")
+          throw new WorkflowFault("STALE_DECISION", "Only a stopped convergence can be accepted");
+        this.acceptStoppedConvergence(runId, state, body as unknown as ConvergenceRequestBody);
       } else if (decision.kind === "reject") accepted = false;
       this.store.decideRequest(runId, request.id, accepted ? "accepted" : "rejected", decision);
       const pending = this.store.requests(runId).some(blocksRun);
@@ -885,6 +953,10 @@ export class NativeWorkflowService implements WorkflowService {
         state.taskGates = {};
         state.previousFindingSet = null;
         state.noProgressRounds = 0;
+        state.extraConvergenceRounds = 0;
+        state.extraCorrectiveTasks = 0;
+        state.decidedFindings = [];
+        state.limitations = [];
         state.manifest.correctionHashes = [];
         state.rootGraph = structuredClone(state.graph);
         state.manifest.rootGraphHash = hashJson(state.graph);
@@ -1221,6 +1293,10 @@ export class NativeWorkflowService implements WorkflowService {
       state.taskGates = {};
       state.previousFindingSet = null;
       state.noProgressRounds = 0;
+      state.extraConvergenceRounds = 0;
+      state.extraCorrectiveTasks = 0;
+      state.decidedFindings = [];
+      state.limitations = [];
       const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
       if (rebase) {
         state.hostDependencies = rebase.dependencies;

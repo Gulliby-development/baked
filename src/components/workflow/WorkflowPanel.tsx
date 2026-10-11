@@ -545,18 +545,24 @@ export function WorkflowPanel({
                 { key: "A", label: "approve" },
                 { key: "X", label: "reject" },
               ]
-            : pending.kind === "checkpoint"
+            : pending.kind === "convergence"
               ? [
-                  { key: "C", label: "continue" },
+                  { key: "A", label: "accept findings" },
+                  { key: "C", label: "repair once more" },
                   { key: "X", label: "stop here" },
                 ]
-              : pending.kind === "clarification"
+              : pending.kind === "checkpoint"
                 ? [
-                    { key: "↑↓", label: "question" },
-                    { key: "Enter", label: "next" },
-                    { key: "Ctrl+S", label: "send" },
+                    { key: "C", label: "continue" },
+                    { key: "X", label: "stop here" },
                   ]
-                : [{ key: "Enter", label: "submit" }]),
+                : pending.kind === "clarification"
+                  ? [
+                      { key: "↑↓", label: "question" },
+                      { key: "Enter", label: "next" },
+                      { key: "Ctrl+S", label: "send" },
+                    ]
+                  : [{ key: "Enter", label: "submit" }]),
           { key: "Esc", label: "back" },
         ]
       : [

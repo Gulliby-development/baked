@@ -21,8 +21,8 @@ const approveArgs = (s: Awaited<ReturnType<typeof waitingForApproval>>, ...extra
   ["approve", s.runId, "--request", s.request.id, "--digest", s.request.digest, "--expected-revision", String(s.revision), ...extra];
 
 describe("headless decisions continue the run", () => {
-  test("approve, answer and evidence resume by default and --no-resume keeps the old behavior", () => {
-    for (const command of ["approve", "answer", "evidence"]) {
+  test("approve, answer, evidence and accept resume by default and --no-resume keeps the old behavior", () => {
+    for (const command of ["approve", "answer", "evidence", "accept"]) {
       expect(parseWorkflowArgs([command, "r", "--request", "q", "--expected-revision", "1"]).flags.resume).toBe(true);
       const kept = parseWorkflowArgs([command, "r", "--request", "q", "--expected-revision", "1", "--no-resume"]);
       expect(kept.flags.resume).toBeUndefined();

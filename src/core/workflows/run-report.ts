@@ -353,6 +353,28 @@ function render(facts: Facts, cap: number): string {
     );
   } else out.push("No findings recorded.", "");
 
+  if (state.limitations.length) {
+    out.push(
+      "## Known limitations",
+      "",
+      `Convergence stopped with ${state.limitations.length} finding(s) open; they were accepted instead of repaired, so the criteria they name may not hold in every case.`,
+      "",
+      ...table(
+        ["Finding", "Severity", "Criteria", "Where", "Claim", "Accepted by"],
+        state.limitations.map((l) => [
+          l.findingId,
+          l.severity,
+          l.criterionIds.join(", "),
+          l.file ? code(l.symbol ? `${l.file}:${l.symbol}` : l.file) : null,
+          l.claim,
+          l.decidedBy === "assume" ? "assume rule (checks passed)" : "user",
+        ]),
+        cap,
+      ),
+      "",
+    );
+  }
+
   const decided = facts.requests.filter((r) => r.status !== "pending");
   const pending = facts.requests.filter((r) => r.status === "pending");
   const assumptions = spec?.assumptions ?? [];

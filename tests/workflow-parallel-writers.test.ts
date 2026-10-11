@@ -487,7 +487,7 @@ describe("workflow parallel writers", () => {
     db.close();
     const store = new WorkflowStore(root);
     try {
-      expect(store.schemaVersion()).toBe(9);
+      expect(store.schemaVersion()).toBe(10);
       expect(store.tasks("r1").map((t) => t.id)).toEqual(["T001", "T002"]);
       expect(store.findings("r1").map((f) => f.repair_task_id)).toEqual(["T002"]);
       store.transaction(() => store.taskStatus("r1", "T002", "interrupted"));
