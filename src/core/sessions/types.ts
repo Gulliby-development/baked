@@ -1,4 +1,5 @@
 import type { BakeMode } from "../../types/index.js";
+import type { RedoTurn } from "../checkpoints/rewind.js";
 
 export interface TabMeta {
   workflowRunId?: string;
@@ -21,6 +22,11 @@ export interface TabMeta {
   messageRange: { startLine: number; endLine: number };
   /** Saved checkpoint git tags for session persistence */
   checkpointTags?: Array<{ index: number; anchorMessageId: string; gitTag: string }>;
+  /**
+   * Turns `baked session rewind` dropped, for `baked session redo`. They apply only while the
+   * conversation still ends at `afterMessageId` (null: empty).
+   */
+  redo?: { afterMessageId: string | null; turns: RedoTurn[] };
   /** Per-tab verbose render. false (default) = rail layout, true = raw stream. */
   verbose?: boolean;
 }

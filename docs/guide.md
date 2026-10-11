@@ -61,22 +61,22 @@ For durable, resumable work with budgets, checks and review, use [workflows](wor
 
 ## Checkpoints
 
-Every turn is a checkpoint. `Ctrl+B` and `Ctrl+F` step back and forward; browsing is read-only. Sending a message while viewing a past checkpoint branches from it: later messages leave the model context but stay visible, dimmed.
+Every turn is a checkpoint. `Ctrl+B` and `Ctrl+F` step back and forward; browsing is read-only. Sending a message while viewing a past checkpoint branches from it: the later turns are undone as with `/undo N` before the message is sent.
 
 | Command | Does |
 | --- | --- |
 | `/checkpoint` | List checkpoints |
 | `/checkpoint N`, `/checkpoint live` | View checkpoint N, return to live |
-| `/checkpoint undo [N]`, `/undo [N]` | Undo the last checkpoint, or back to N, including its file edits |
-| `/checkpoint redo`, `/redo` | Re-apply the oldest undone checkpoint: its messages come back and its files return to their state after that turn |
+| `/checkpoint undo [N] [--force]`, `/undo [N] [--force]` | Undo the last checkpoint, or every checkpoint after N, including their file edits |
+| `/checkpoint redo [--force]`, `/redo [--force]` | Re-apply the oldest undone checkpoint: its messages come back and its files return to their state after that turn |
 | `/checkpoint fork [N] [--force]` | Continue from checkpoint N (the viewed one, or the latest) in a new tab, with the files rolled back to it |
 | `/checkpoint save` | Save the current state as a Git tag |
 
-Checkpoints with file edits are tagged in Git; undo restores only the files those checkpoints edited. Without Git, undo rewinds the conversation only. Each tab has its own checkpoint history.
+`/undo N` keeps checkpoint N whole, its prompt and its answer, and drops the turns after it; `/undo 0` drops every turn. The files those turns edited go back to their content at the end of checkpoint N, with the safeguards of a fork ([forking a checkpoint](#forking-a-checkpoint)): a `baked/undo-backup-*` tag first, and a file you or another program changed after the agent did is left as it is and listed unless `--force`. Without Git, undo rewinds the conversation only. Each tab has its own checkpoint history.
 
 `/redo` steps forward one checkpoint at a time, in the order the turns ran, so `/undo 1` followed by `/redo` twice brings back turns 2 and 3. A file the redone turn deleted is deleted again, and folders it created are recreated. Files Git ignores are in no snapshot, so neither undo nor redo deletes them. Sending a new message clears the redo history.
 
-The desktop app rewinds and redoes a chat in place with "Rewind to here" and "Redo" ([desktop app](desktop/app.md)); its rewind keeps the whole turn it rewinds to and leaves files changed outside the agent in place unless forced.
+The same rewind and redo run in the desktop app ("Rewind to here" and "Redo", [desktop app](desktop/app.md)) and on the command line (`baked session rewind` and `baked session redo`, [headless CLI](headless.md#rewinding-a-session)).
 
 ### Forking a checkpoint
 

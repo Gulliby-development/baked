@@ -57,6 +57,20 @@ baked --headless --session <new-id> "try the other approach"
 
 Headless runs do not snapshot the workspace, so a session made only with `--save-session` can be forked but its files cannot be rolled back.
 
+## Rewinding a session
+
+```sh
+baked session checkpoints <id>
+baked session rewind <id> --checkpoint 1 --rollback-files
+baked session redo <id>
+```
+
+`baked session rewind ID --checkpoint N` changes session `ID` itself instead of saving a copy: it keeps the turns up to and including checkpoint N (`0` keeps none) and drops the later ones, as `/undo N` does in the terminal UI ([checkpoints](guide.md#checkpoints)). `--rollback-files` also restores the files the dropped turns edited, with the fork's safeguards and `--force`. `baked session checkpoints ID` lists the checkpoints with their prompts and the turns a redo can bring back.
+
+`baked session redo ID` brings back the oldest dropped turn, and moves its files forward when the rewind rolled them back. The dropped turns are saved with the session, so redo works in a later invocation; they are discarded once the conversation changes in any other way, for example a new turn after `baked --session ID`. Run these commands on a session no terminal UI or `baked serve` has open, since those keep their own copy and save it over the change.
+
+All three take `--json`: `checkpoints` prints `{sessionId, checkpoints, redo}`, `rewind` and `redo` print `{sessionId, checkpoint, messageCount, rollback, redo}`. They exit 1 when the session or checkpoint does not exist, when there is nothing to redo, or when files need restoring and the project is not a Git repository.
+
 ## Approvals
 
 There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.

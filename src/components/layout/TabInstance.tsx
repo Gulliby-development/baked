@@ -21,6 +21,7 @@ import { useLandingTransition } from "../../hooks/useLandingTransition.js";
 import { useSessionDiffStats } from "../../hooks/useSessionDiffStats.js";
 import type { TabActivity } from "../../hooks/useTabs.js";
 import { useCheckpointStore } from "../../stores/checkpoints.js";
+import { logBackgroundError } from "../../stores/errors.js";
 import { useStatusBarStore } from "../../stores/statusbar.js";
 import { useUIStore } from "../../stores/ui.js";
 import type { AppConfig, ChatMessage, ImageAttachment } from "../../types/index.js";
@@ -543,7 +544,7 @@ export const TabInstance = memo(function TabInstance({
         onCommand(input, chat);
         return;
       }
-      // Branch-on-submit: if viewing a past checkpoint, undo to that point (reverts files + messages)
+      // Branch-on-submit: viewing a past checkpoint undoes to it (keeps that turn, reverts files)
       const cpStore = useCheckpointStore.getState();
       const viewingIdx = cpStore.getViewing(tabId);
       let current = chat.messages;
@@ -551,7 +552,14 @@ export const TabInstance = memo(function TabInstance({
         if (branchingRef.current) return; // guard against double-submit during async undo
         branchingRef.current = true;
         try {
-          const undoResult = await cpStore.undoToCheckpoint(tabId, viewingIdx, cwd, chat.messages);
+          let undoResult: Awaited<ReturnType<typeof cpStore.undoToCheckpoint>>;
+          try {
+            undoResult = await cpStore.undoToCheckpoint(tabId, viewingIdx, cwd, chat.messages);
+          } catch (err) {
+            // The prompt stays unsent: sending it after the live history would not branch.
+            logBackgroundError("checkpoint", err instanceof Error ? err.message : String(err));
+            return;
+          }
           const msgs = undoResult?.messages;
           if (msgs) {
             current = msgs;

@@ -32,7 +32,7 @@ ${BOLD}Management:${RST}
 
 ${BOLD}Automation:${RST}
   baked workflow <command>                           Durable workflow runs (see --help)
-  baked session fork <id> [--rollback-files]         Fork a saved session (see --help)
+  baked session fork|rewind|redo <id>                Fork or rewind a saved session (see --help)
   baked serve [--port N] [--allow-origin ORIGIN]     Local workflow API on 127.0.0.1
 
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort

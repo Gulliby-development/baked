@@ -28,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N] [--force]` or `/undo [N] [--force]`, `/redo [--force]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -177,6 +177,7 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked doctor` | Checks before a workflow run: keys, routed models, check commands, Git, budget |
 | `baked serve [--port N] [--allow-origin ORIGIN]` | Local HTTP API on 127.0.0.1 for the desktop app ([local API](workflows/runtime.md#local-api-baked-serve)) |
 | `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
+| `baked session checkpoints ID`, `rewind ID --checkpoint N [--rollback-files] [--force]`, `redo ID [--force]` | List checkpoints, rewind a saved session in place, redo ([rewinding a session](headless.md#rewinding-a-session)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
 | `baked telemetry [--json]` | The locally recorded usage events ([privacy](privacy.md)) |
 | `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |
