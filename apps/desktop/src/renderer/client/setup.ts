@@ -472,8 +472,18 @@ export const setup = {
   logout: (key: string, provider: string) =>
     call<{ ok: boolean; message: string }>(key, "POST", `/v1/providers/${json(provider)}/logout`),
   definitions: (key: string) => call<WorkflowDefinition[]>(key, "GET", "/v1/workflow/definitions"),
-  route: (key: string, workflow: string) =>
-    call<RouteExplanation>(key, "GET", `/v1/workflow/route?workflow=${json(workflow)}`),
+  /**
+   * Who runs each stage of a workflow and why; `model` is the run model to route against. Null
+   * from a backend without the `routing` capability, so the caller leaves the explanation out.
+   */
+  route: async (key: string, workflow: string, model?: string) =>
+    offers(await capabilities(key), ROUTING_CAPABILITY) === false
+      ? null
+      : call<RouteExplanation>(
+          key,
+          "GET",
+          `/v1/workflow/route?workflow=${json(workflow)}${model ? `&model=${json(model)}` : ""}`,
+        ),
   routing: (key: string, workflow: string | null) =>
     withCapability(key, ROUTING_CAPABILITY, () =>
       call<RoutingOverview>(

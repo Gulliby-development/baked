@@ -56,6 +56,7 @@ const tray = new AppTray({
   show: () => showWindow(),
   showAttention: () => showWindow("#/attention"),
   quit: () => app.quit(),
+  window: () => window,
 });
 
 const attention = new AttentionHub((items, added) => {
@@ -264,6 +265,7 @@ function createWindow(): void {
     },
   });
   window.once("ready-to-show", () => window?.show());
+  tray.refreshBadge();
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\//.test(url)) void shell.openExternal(url);
     return { action: "deny" };

@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseHead, readGitBranch } from "../src/main/git-branch.ts";
 import { manageKnownProject, ProjectActionError } from "../src/main/project-actions.ts";
-import { closeAction, trayModel } from "../src/main/tray-model.ts";
+import {
+  BADGE_FILL,
+  BADGE_TEXT,
+  badgeBitmap,
+  badgeLabel,
+  closeAction,
+  trayModel,
+} from "../src/main/tray-model.ts";
 import type { ApiResponse, AttentionItem, DesktopProject } from "../src/shared/api.ts";
 
 describe("git branch", () => {
@@ -112,5 +119,39 @@ describe("tray", () => {
       badge: 2,
     });
     expect(trayModel([item(false)])).toEqual({ tooltip: "BAKED", needYou: null, badge: 0 });
+  });
+});
+
+describe("windows overlay badge", () => {
+  test("labels the count up to 9, then 9+, and clears at 0", () => {
+    expect(badgeLabel(0)).toBeNull();
+    expect(badgeLabel(-1)).toBeNull();
+    expect(badgeLabel(1)).toBe("1");
+    expect(badgeLabel(9)).toBe("9");
+    expect(badgeLabel(10)).toBe("9+");
+    expect(badgeLabel(250)).toBe("9+");
+  });
+
+  test("draws an orange disc with the label in BGRA", () => {
+    const size = 32;
+    const pixel = (image: Buffer, x: number, y: number): string => {
+      const at = (y * size + x) * 4;
+      return [image[at + 2], image[at + 1], image[at], image[at + 3]].join();
+    };
+    const textPixels = (image: Buffer): number => {
+      let count = 0;
+      for (let y = 0; y < size; y++)
+        for (let x = 0; x < size; x++) if (pixel(image, x, y) === [...BADGE_TEXT, 255].join()) count++;
+      return count;
+    };
+    const one = badgeBitmap("1", size);
+    expect(one.length).toBe(size * size * 4);
+    // Corners stay transparent; the disc is the accent orange.
+    expect(pixel(one, 0, 0)).toBe("0,0,0,0");
+    expect(pixel(one, 4, 16)).toBe([...BADGE_FILL, 255].join());
+    expect(textPixels(one)).toBeGreaterThan(0);
+    expect(textPixels(badgeBitmap("9+", size))).toBeGreaterThan(0);
+    expect(textPixels(badgeBitmap("", size))).toBe(0);
+    expect(badgeBitmap("8", size).equals(badgeBitmap("3", size))).toBe(false);
   });
 });

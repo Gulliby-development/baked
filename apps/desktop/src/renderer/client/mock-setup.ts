@@ -688,10 +688,10 @@ function resolveRef(routing: ModelRouting | undefined, ref: string, runModel: st
     : { model: route.model, effort: route.effort ?? null, fallback: route.fallback ?? [] };
 }
 
-function explain(s: SetupState, workflowId: string): RouteExplanation {
+function explain(s: SetupState, workflowId: string, model?: string | null): RouteExplanation {
   const view = configView(s);
   const routing = view.effective.modelRouting;
-  const runModel = view.effective.defaultModel ?? "anthropic/claude-sonnet-5-5";
+  const runModel = model || view.effective.defaultModel || "anthropic/claude-sonnet-5-5";
   const roleOf: Record<string, string> = {
     research: "researcher",
     plan: "planner",
@@ -730,7 +730,11 @@ function explain(s: SetupState, workflowId: string): RouteExplanation {
       (st) => (st.stageId === "review" || st.stageId === "converge") && st.model === implement,
     )
     .map((st) => `${st.stageId} uses ${implement}, the model of the implementation`);
-  return { workflowId, runModel, stages, profiles: {}, warnings };
+  // Profiles without a route of their own keep the run model.
+  const profiles: RouteExplanation["profiles"] = Object.fromEntries(
+    [...new Set(Object.values(roleOf))].map((id) => [id, { model: runModel, source: "run model" }]),
+  );
+  return { workflowId, runModel, stages, profiles, warnings };
 }
 
 const MOCK_ROLES = [
@@ -1127,7 +1131,10 @@ export const setupRoutes: MockRoute = (request) => {
         Object.entries(WORKFLOW_STAGES).map(([id, stages]) => ({ id, stages })),
       );
     case "GET /v1/workflow/route":
-      return response(200, explain(s, request.query.get("workflow") ?? "sdd"));
+      return response(
+        200,
+        explain(s, request.query.get("workflow") ?? "sdd", request.query.get("model")),
+      );
     case "GET /v1/workflow/routing":
       return response(200, routingOverview(s, request.query.get("workflow")));
     case "PATCH /v1/workflow/routing": {
