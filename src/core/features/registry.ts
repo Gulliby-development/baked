@@ -206,7 +206,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/compact settings", "/compact logs"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: compaction page, no logs"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Compaction page"],
   },
   {
     id: "undo-redo",
@@ -322,7 +322,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/model-scope"],
     cli: notNeeded("--model picks the model per run"),
     api: ["/v1/settings: chat-model page"],
-    desktop: gap(401, "the model is set per chat only"),
+    desktop: ["settings/chat: Chat model page"],
   },
   {
     id: "provider-options",
@@ -331,7 +331,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/provider-settings"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: provider-options page"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Provider options page"],
   },
   {
     id: "chat-router",
@@ -340,7 +340,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/router"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: chat-router page"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Chat router page"],
   },
   {
     id: "workflow-routing",
@@ -358,7 +358,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/web-search"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: tools page"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Tools page"],
   },
   {
     id: "mcp",
@@ -396,7 +396,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/repo-map"],
     cli: ["--no-repomap"],
     api: ["/v1/settings: baked-map page"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Baked map page"],
   },
   {
     id: "code-graph",
@@ -414,7 +414,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/tools"],
     cli: notNeeded("set disabledTools in config.json"),
     api: ["/v1/settings: tools page"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Tools page"],
   },
   {
     id: "agent-features",
@@ -423,7 +423,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/agent-features"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: agent-features page"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Agent features page"],
   },
   {
     id: "hooks",
@@ -827,7 +827,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/timeouts"],
     cli: ["--timeout"],
     api: ["/v1/settings: limits page"],
-    desktop: gap(401),
+    desktop: ["settings/chat: Timeouts and limits page"],
   },
   {
     id: "telemetry",

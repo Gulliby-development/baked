@@ -58,7 +58,7 @@ bun test tests/feature-parity.test.ts
 | Voice input in chat (Cactus Whistle speech to text) | Desktop only: desktop only by decision (#419) | Desktop only: desktop only by decision (#419) | Desktop only: speech is transcribed in the app and sent as text | **Gap** [#419](https://github.com/Gulliby-development/baked/issues/419): planned |
 | @ mentions and ! shell in the input | `key @`, `key !` | `--include` | `/v1/mentions` | `project/chat` |
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
-| Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
+| Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Undo and redo a turn with its file edits | `/checkpoint`, `/checkpoint undo`, `/checkpoint redo` +2 | `baked session undo`, `baked session redo` | `/v1/sessions/:id/undo`, `/v1/sessions/:id/redo` | `project/chat` |
 | Checkpoint list and rewind to a checkpoint | `/checkpoint` | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no list | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no checkpoint list | **Gap** [#273](https://github.com/Gulliby-development/baked/issues/273) |
 | Fork a session | `/checkpoint fork` | `baked session fork` | `/v1/sessions/:id/fork` | `project/chat` |
@@ -74,11 +74,11 @@ bun test tests/feature-parity.test.ts
 | Sign in through the Codex or Claude Code CLI | `/codex`, `/codex login`, `/codex logout` +5 | **Gap** [#407](https://github.com/Gulliby-development/baked/issues/407) | `/v1/providers/:id/login`, `/v1/providers/:id/logout` | `settings/providers` |
 | Switch Codex accounts | `/codex switch` | Not needed: scripts sign in once | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
 | Pick a model from the list | `/models`, `/providers` | `baked workflow models`, `--list-models`, `--model` | `/v1/models` | `project/chat` |
-| Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401): the model is set per chat only |
-| Provider options: thinking, speed, cache TTL, server compaction, tool streaming | `/provider-settings` | Not needed: set in config.json | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
-| Chat task router and fallback chains | `/router` | Not needed: set in config.json | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
+| Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | `settings/chat` |
+| Provider options: thinking, speed, cache TTL, server compaction, tool streaming | `/provider-settings` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
+| Chat task router and fallback chains | `/router` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Workflow model routing | `/workflow` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/workflow/routing`, `/v1/workflow/route` | `settings/routing` |
-| Web search keys (Brave, Jina) | `/web-search` | Not needed: set in config.json | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
+| Web search keys (Brave, Jina) | `/web-search` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | MCP servers: list, add, edit, reconnect, tools | `/mcp` | Partial [#402](https://github.com/Gulliby-development/baked/issues/402): no management | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) |
 
 ### Tools and code intelligence
@@ -87,10 +87,10 @@ bun test tests/feature-parity.test.ts
 | --- | --- | --- | --- | --- |
 | Language servers: status, install, enable, restart | `/lsp`, `/lsp install`, `/lsp restart` +1 | **Gap** [#374](https://github.com/Gulliby-development/baked/issues/374) | **Gap** [#374](https://github.com/Gulliby-development/baked/issues/374) | **Gap** [#374](https://github.com/Gulliby-development/baked/issues/374) |
 | Diagnose LSP, tree-sitter and index health | `/diagnose` | Partial [#374](https://github.com/Gulliby-development/baked/issues/374): no language server check | **Gap** [#374](https://github.com/Gulliby-development/baked/issues/374) | **Gap** [#374](https://github.com/Gulliby-development/baked/issues/374) |
-| Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
+| Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
-| Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
-| Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
+| Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
+| Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
 | Instruction files: view and edit content | **Gap** [#406](https://github.com/Gulliby-development/baked/issues/406) | `baked project show` | `/v1/projects/current/instructions` | `project/instructions` |
@@ -140,7 +140,7 @@ bun test tests/feature-parity.test.ts
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
 | Git menu: status, diff, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +9 | Not needed: scripts call git | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408): the desktop relies on workflow delivery |
 | Storage cleanup, model events and the error log | `/storage`, `/model-events`, `/errors` | Not needed: scripts read the log files | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) |
-| Tool and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | **Gap** [#401](https://github.com/Gulliby-development/baked/issues/401) |
+| Tool and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
 | Telemetry switch | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | `baked telemetry` | `/v1/config` | `settings/telemetry` |
 | Notifications: system and webhook | **Gap** [#408](https://github.com/Gulliby-development/baked/issues/408) | Not needed: scripts read the exit code and output | `/v1/config` | `settings/notifications` |
 
@@ -158,7 +158,6 @@ bun test tests/feature-parity.test.ts
 - [#374](https://github.com/Gulliby-development/baked/issues/374): Language servers: status, install, enable, restart; Diagnose LSP, tree-sitter and index health
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#399](https://github.com/Gulliby-development/baked/issues/399): Start an initiative; Reject, merge, split, rename, remove, re-plan, extend
-- [#401](https://github.com/Gulliby-development/baked/issues/401): Compaction strategy, thresholds and logs; Default chat model (project or global); Provider options: thinking, speed, cache TTL, server compaction, tool streaming; Chat task router and fallback chains; Web search keys (Brave, Jina); Baked map settings: on and off, regenerate, summaries, budget; Enable or disable tools; Agent features: de-sloppify, verify edits, tier routing; Tool and watchdog timeouts, context-window overrides
 - [#402](https://github.com/Gulliby-development/baked/issues/402): MCP servers: list, add, edit, reconnect, tools
 - [#403](https://github.com/Gulliby-development/baked/issues/403): Long-term chat memory: browse, pin, hide, cleanup, scopes
 - [#405](https://github.com/Gulliby-development/baked/issues/405): Delete a session; Export a chat (Markdown, JSON, clipboard)
