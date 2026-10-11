@@ -80,6 +80,8 @@ class ParallelExecutor implements AgentExecutor {
   resolution: Record<string, string> = {};
   /** Tasks whose first attempt writes a partial file and stops at its token cap. */
   capped = new Set<string>();
+  /** Attempts per task whose worker writes a partial file and then dies without a result. */
+  crashes: Record<string, number> = {};
   /** The earlier edits each implementation was handed. */
   earlier: { taskId: string; root: string; content: string | null; earlierEdits?: { paths: string[]; patch: string } }[] = [];
   constructor(private workspace: string, private plans: Plan[]) {}
@@ -120,6 +122,11 @@ class ParallelExecutor implements AgentExecutor {
         content: existsSync(join(root, first)) ? readFileSync(join(root, first), "utf8") : null,
         ...(data.extra.earlierEdits ? { earlierEdits: data.extra.earlierEdits } : {}),
       });
+      if ((this.crashes[task.id] ?? 0) > 0) {
+        this.crashes[task.id] = (this.crashes[task.id] ?? 0) - 1;
+        await write(first, "partial");
+        throw new Error("worker process exited");
+      }
       if (this.capped.delete(task.id)) {
         await write(first, "partial");
         service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
@@ -322,6 +329,44 @@ describe("workflow parallel writers", () => {
     expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
     expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
     expect(fx.store.leases()).toEqual([]);
+  });
+
+  test("a task whose worker dies is restarted once with its edits and the run completes", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.crashes = { T002: 1 };
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
+    // The restarted attempt starts from the run worktree with the dead worker's edit applied.
+    const restarted = fx.executor.earlier.filter((e) => e.taskId === "T002").at(-1);
+    expect(restarted?.content).toBe("partial");
+    expect(restarted?.earlierEdits?.paths).toEqual(["b.txt"]);
+    const record = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/restarts/T002.json");
+    expect(record).toBeDefined();
+    const restart = JSON.parse(fx.store.readArtifact(run.runId, record?.id ?? "")) as { reason: string; carriedPaths: string[] };
+    expect(restart.reason).toContain("worker process exited");
+    expect(restart.carriedPaths).toEqual(["b.txt"]);
+    expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
+    expect(fx.store.leases()).toEqual([]);
+  });
+
+  test("a task whose worker dies again after its restart blocks the run with owner_lost", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.crashes = { T002: 2 };
+    const run = await fx.start(2);
+    const stopped = await fx.complete(run.runId);
+    expect(stopped.status).toBe("blocked");
+    expect(stopped.reason).toBe("owner_lost");
+    expect(fx.lastError(run.runId)).toContain("Lost the worker of T002");
+    expect(fx.status("T002", run.runId)).toBe("interrupted");
+    expect(fx.status("T001", run.runId)).toBe("implemented");
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
+    // A person's resume still implements it again.
+    await fx.service.resume(run.runId, { commandId: newId(), expectedRevision: fx.store.run(run.runId).revision });
+    expect((await fx.drive(run.runId)).status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
   });
 
   test("a batch shrinks to the tasks the remaining budget covers", async () => {
