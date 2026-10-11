@@ -122,6 +122,7 @@ export const ForkSessionBody = z.strictObject({
   force: z.boolean().optional(),
 });
 export const MessageBody = z.strictObject({ text: Text });
+export const CompactBody = z.strictObject({});
 export const PromptAnswerBody = z.union([
   z.strictObject({ approve: z.boolean() }),
   z.strictObject({ answer: z.string().max(20_000) }),
