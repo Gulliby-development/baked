@@ -85,8 +85,15 @@ describe("research budget", () => {
     const researcher = builtinProfiles.find((p) => p.id === "researcher");
     if (!researcher) throw new Error("researcher profile missing");
     const small = researchBudget(PROMPT, researcher, defaultWorkflowPolicy);
-    expect(small.maxSteps).toBe(8);
-    expect(small.maxTokens).toBe(8 * 14_000);
+    expect(small.maxSteps).toBe(10);
+    expect(small.maxTokens).toBe(10 * 14_000);
+    // Only paths that exist count; a request that creates its files gets the step floor.
+    const creating = researchBudget(PROMPT, researcher, defaultWorkflowPolicy, () => false);
+    expect(creating.namedPaths).toEqual([]);
+    expect(creating.maxSteps).toBe(researcher.maxSteps);
+    const partial = researchBudget(PROMPT, researcher, defaultWorkflowPolicy, (path) => path.startsWith("src/"));
+    expect(partial.namedPaths).toEqual(["src/core/workflows/usage.ts"]);
+    expect(partial.maxSteps).toBe(10);
     const broad = researchBudget("Improve error handling across the CLI", researcher, defaultWorkflowPolicy);
     expect(broad.maxSteps).toBe(researcher.maxSteps);
     expect(broad.maxTokens).toBeUndefined();
@@ -199,8 +206,9 @@ describe("answering a clarification", () => {
     const waiting = await service.drive(run.runId, new AbortController().signal);
     expect(waiting.reason).toBe("clarification");
     expect(executor.calls).toEqual(["research"]);
-    expect(executor.requests[0]?.maxSteps).toBe(6);
-    expect(executor.requests[0]?.maxTokens).toBe(6 * 14_000);
+    // value.txt does not exist yet, so the request names nothing to read: the profile limit.
+    expect(executor.requests[0]?.maxSteps).toBe(12);
+    expect(executor.requests[0]?.maxTokens).toBeUndefined();
     await answerPending(service, run.runId);
     expect(service.store.state(run.runId).stageIndex).toBe(1);
     expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");

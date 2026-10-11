@@ -51,7 +51,10 @@ export function finalizeReason(input: {
   lastStepTokens: number;
   maxTokens: number;
 }): FinalizeReason | null {
-  if (input.stepNumber >= input.maxSteps - 1) return "steps";
+  // Two forced steps when the cap allows: a submission the schema or the stage validators reject
+  // otherwise has no step left to be corrected (url-shortener 6a2a4f9c ended on a rejected submit).
+  if (input.stepNumber >= (input.maxSteps > 2 ? input.maxSteps - 2 : input.maxSteps - 1))
+    return "steps";
   if (input.consumed + 2 * input.lastStepTokens > input.maxTokens) return "tokens";
   return null;
 }
