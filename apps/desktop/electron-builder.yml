@@ -20,6 +20,8 @@ files:
   # The tray icon is loaded from <appPath>/build at runtime.
   - build/tray.png
   - build/tray@2x.png
+  - build/trayTemplate.png
+  - build/trayTemplate@2x.png
 asar: true
 # No native modules to rebuild for Electron.
 npmRebuild: false

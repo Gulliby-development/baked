@@ -29,6 +29,7 @@ This folder describes BAKED as it works now. It is the only place for long-lived
 ## Internals
 
 - [Architecture](architecture.md): how the agent, the repository graph, tools and storage fit together.
+- [Brand](brand.md): the oven logo, the bun mascot and the icon set.
 - [CONTRIBUTING.md](../CONTRIBUTING.md): development setup, checks, distributables and releases.
 
 ## Keeping this folder current

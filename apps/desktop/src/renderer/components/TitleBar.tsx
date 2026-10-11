@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { WindowAction } from "../../shared/bridge.js";
 import { bridge, isMock } from "../client/bridge.js";
 import { cn } from "../lib/cn.js";
+import { BakedMark } from "./BakedMark.js";
 
 const GLYPHS: Record<"minimize" | "maximize" | "restore" | "close", string> = {
   minimize: "M2 6h8",
@@ -64,6 +65,7 @@ export function TitleBar() {
           !mac && "ml-3",
         )}
       >
+        <BakedMark size={13} className="mr-1.5" />
         BAKED
       </span>
       {!mac && (
