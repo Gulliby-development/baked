@@ -13,6 +13,12 @@ import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
 import {
+  acceptResidual,
+  assumeAccepts,
+  convergenceBody,
+  convergenceStop,
+} from "../verification/convergence-stop.js";
+import {
   currentEvidence,
   evidenceHandle,
   resolveEvidenceIds,
@@ -207,7 +213,7 @@ function planGraph(
 
 /** A request for a person that the current step raised and has not made durable yet. */
 interface QueuedRequest {
-  kind: "approval" | "clarification" | "manual_evidence";
+  kind: "approval" | "clarification" | "manual_evidence" | "convergence";
   digest: string;
   body: unknown;
 }
@@ -1177,8 +1183,19 @@ export class WorkflowScheduler {
               break;
             }
           }
-          if (repairFindings && !v2)
-            this.repair(runId, state, policy, repairFindings.findings, repairFindings.kind);
+          if (repairFindings && !v2) {
+            // A stopped convergence is a decision for a person (or the assume rule), not a block.
+            const halt =
+              repairFindings.kind === "convergence"
+                ? this.haltConvergence(runId, state, policy, repairFindings.findings)
+                : "go";
+            if (halt === "go")
+              this.repair(runId, state, policy, repairFindings.findings, repairFindings.kind);
+            else if (halt === "accepted") {
+              advance = true;
+              repairFindings = null;
+            }
+          }
           signal.throwIfAborted();
           await this.assertWorkspace(runId, state, policy, signal);
           const waiting = this.queued.length > 0;
@@ -1879,9 +1896,36 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       state.manifest.policyHash = hashJson(after);
     }
   }
+  /**
+   * Convergence is about to start another correction round. When its limits are used up, the same
+   * findings return or a finding reverses an earlier fix, a person decides instead of the run
+   * blocking: accept the findings as known limitations, repair once more, or stop. Under
+   * `clarification: assume` the findings are accepted without asking when every required check
+   * passes and only a small share of the criteria fail. `go` means no stop applies.
+   */
+  private haltConvergence(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+  ): "go" | "wait" | "accepted" {
+    const stop = convergenceStop(this.store, runId, state, policy, findings);
+    if (!stop) return "go";
+    const body = convergenceBody(this.store, runId, state, policy, stop, findings);
+    if (assumeAccepts(policy, body)) {
+      this.store.transaction(() => {
+        const id = this.store.request(runId, "convergence", hashJson(state.manifest), body);
+        this.store.decideRequest(runId, id, "accepted", { kind: "accept", automatic: true }, true);
+        acceptResidual(this.store, runId, state, body, "assume");
+      });
+      return "accepted";
+    }
+    this.queued.push({ kind: "convergence", digest: hashJson(state.manifest), body });
+    return "wait";
+  }
   /** Queues a request for a person; `flushWaits` makes it durable with the step's state. */
   private wait(
-    kind: "clarification" | "manual_evidence",
+    kind: "clarification" | "manual_evidence" | "convergence",
     state: RuntimeState,
     body: unknown,
   ): void {
@@ -1897,7 +1941,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     for (const request of queued)
       this.store.request(runId, request.kind, request.digest, request.body);
     const last = queued.at(-1);
-    if (last) this.store.transition(runId, "waiting", last.kind);
+    // A stopped convergence waits for a decision because repairs stopped making progress.
+    if (last)
+      this.store.transition(
+        runId,
+        "waiting",
+        last.kind === "convergence" ? "no_progress" : last.kind,
+      );
     this.store.saveState(runId, state);
   }
   private async publish(
@@ -3033,10 +3083,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   }
   /** Runs one task check in `root` under its own host attempt. */
   /**
-   * A corrective task whose attempt changed nothing is satisfied, not blocked, when the checks it
-   * was created for pass on the current files: a sibling task or an earlier correction already
-   * fixed the cause (zoneslot 51f9d664 T007 and md-site 93fbee70 T010 reported passing tests and
-   * stopped the run). The checks are the task's own and the ones its findings name.
+   * A task whose attempt changed nothing is satisfied, not blocked, when the checks it was created
+   * for pass on the current files: a sibling task or an earlier correction already fixed the
+   * cause (zoneslot 51f9d664 T007 and md-site 93fbee70 T010 reported passing tests and stopped the
+   * run). The checks are the task's own and the ones its findings name. A planned task counts
+   * only on a rerun (generation above 0): a repair invalidated it though it was already correct
+   * (md-site 2707d602 T004 generation 3 blocked the run), while a first run that changed nothing
+   * did not do its work.
    */
   private async correctionSatisfied(
     runId: string,
@@ -3047,8 +3100,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     signal: AbortSignal,
     root: string,
   ): Promise<boolean> {
+    const rerun = (this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0) > 0;
     if (
-      task.origin === "planned" ||
+      (task.origin === "planned" && !rerun) ||
       result.taskId !== task.id ||
       result.outcome !== "implemented" ||
       result.unresolved.length > 0
@@ -3986,6 +4040,30 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         `Stage ${v2.stage.id} reported ${position.outcome} and no transition answers it`,
         { reason: "verification_failed" },
       );
+    // A convergence that cannot start another correction round asks for a decision instead of
+    // taking the loop back to the writing stage.
+    if (position.repairKind === "convergence" && position.outcome === "changes_requested") {
+      const ids = new Set(position.findings);
+      const stopped = this.store
+        .findings(runId)
+        .filter((f) => ids.has(f.id) && !["refuted", "resolved"].includes(f.status))
+        .map((f) => ({ ...JSON.parse(f.body_json), id: f.id }) as Review["findings"][number]);
+      const destination = v2.definition.stages.find((s) => s.id === transition.to);
+      if (stopped.length && destination?.type === "tasks") {
+        const halt = this.haltConvergence(runId, state, policy, stopped);
+        if (halt === "wait") {
+          this.store.transaction(() => this.flushWaits(runId, state));
+          return;
+        }
+        if (halt === "accepted") {
+          position.outcome = "passed";
+          position.findings = [];
+          position.repairKind = null;
+          this.store.transaction(() => this.store.saveState(runId, state));
+          return this.takeTransition(runId, state, policy, v2, signal);
+        }
+      }
+    }
     // Task scope gates ran after each task inside the tasks stage.
     const bindings = transition.gates
       .map((binding) => ({ binding, gate: v2.gates.find((g) => g.id === binding.gateId) }))
@@ -4145,7 +4223,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       }
       if (transition.loop) {
         const count = (position.loops[transition.id] ?? 0) + 1;
-        if (count > transition.loop.maxIterations)
+        // "One more round" at a convergence decision allows the loop one more pass as well.
+        const bound =
+          transition.loop.maxIterations +
+          (position.repairKind === "convergence" ? state.extraConvergenceRounds : 0);
+        if (count > bound)
           throw new WorkflowFault(
             "RECOVERY_REQUIRED",
             `no_progress: loop ${transition.id} reached its bound of ${transition.loop.maxIterations}`,
@@ -4286,6 +4368,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           snapshotId: state.snapshotId,
           workspaceHash: state.workspaceHash,
           coverage: state.convergence?.coverage ?? null,
+          limitations: state.limitations,
           gates: state.gateResults,
           reviews: Object.fromEntries(
             Object.entries(state.reviews).map(([key, review]) => [
@@ -4389,6 +4472,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           snapshotId: state.snapshotId,
           workspaceHash: state.workspaceHash,
           coverage: state.convergence?.coverage,
+          limitations: state.limitations,
           checks: this.store.checks(runId).filter((c) => c.snapshot_id === state.snapshotId),
           verifiedTaskIds: state.graph?.tasks.map((t) => t.id),
           ...(state.worktree ? { worktree: state.worktree } : {}),

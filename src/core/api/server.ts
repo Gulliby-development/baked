@@ -32,9 +32,11 @@ import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow
 import { BakeChatHost } from "../chat/host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
+import { storageDirs } from "../diagnostics/storage.js";
 import { runsFreezingFile } from "../instruction-files.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
 import { MemoryManager } from "../memory/manager.js";
+import { configDir as defaultConfigDir } from "../platform/index.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
@@ -60,6 +62,7 @@ import {
 import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
+import { diagnosticsRoute } from "./diagnostics-routes.js";
 import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
@@ -124,6 +127,8 @@ export const CAPABILITIES = [
   "git",
   "hooks",
   "provider-switch",
+  "chat-export",
+  "diagnostics",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -224,6 +229,7 @@ const MUTATIONS = [
   "extend",
   "reroute",
   "continue",
+  "accept",
   "evidence",
   "recover",
   "fork",
@@ -254,7 +260,8 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
     case "fork":
     case "discard-worktree":
       return args(identity(CommandBody.parse(raw)));
-    case "continue": {
+    case "continue":
+    case "accept": {
       const body = ContinueBody.parse(raw);
       return args({ ...identity(body), request: body.requestId });
     }
@@ -784,6 +791,21 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         config: service.config,
         ...(options.configDir ? { configDir: options.configDir } : {}),
         ...(options.settingsSecrets ? { secrets: options.settingsSecrets } : {}),
+      })) ??
+      (await diagnosticsRoute({
+        ...ctx,
+        dirs: storageDirs(service.workspace, options.configDir ?? defaultConfigDir()),
+        clearSessions: () => chat.clearAll(),
+        clearRepoMap: async () => {
+          if (drives.size > 0)
+            throw new ApiError(
+              409,
+              "WORKSPACE_BUSY",
+              "Wait for the runs this server drives to stop before clearing the code map",
+            );
+          chat.assertIdleWorkspace("clearing the code map");
+          await (await service.rootContext.get()).clearRepoMap();
+        },
       }));
     if (routed) return routed;
     if (path === "/v1/projects") {

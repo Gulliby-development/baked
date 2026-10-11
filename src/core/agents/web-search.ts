@@ -2,7 +2,7 @@ import type { LanguageModel } from "ai";
 import { isStepCount, ToolLoopAgent, tool } from "ai";
 import { z } from "zod";
 import { loadConfig } from "../../config/index.js";
-import { logBackgroundError } from "../../stores/errors.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { getModelId, supportsTemperature } from "../llm/provider-options.js";
 import { resolveRetrySettings } from "../retry/settings.js";
 import { fetchPageTool } from "../tools/fetch-page.js";

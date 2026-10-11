@@ -272,7 +272,7 @@ describe("projectId and working set on workflow runs", () => {
     }
     const store = new WorkflowStore(root);
     try {
-      expect(store.schemaVersion()).toBe(9);
+      expect(store.schemaVersion()).toBe(10);
       expect(store.run("r1").project_id).toBeNull();
       expect(store.projectRuns("demo")).toEqual([]);
     } finally {

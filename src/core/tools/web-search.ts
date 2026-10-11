@@ -2,9 +2,9 @@ import type { LanguageModel } from "ai";
 import { tool } from "ai";
 import { LinkifyIt } from "linkify-it";
 import { z } from "zod";
-import { recordModelCall } from "../../stores/model-events.js";
 import { emitSubagentStep } from "../agents/subagent-events.js";
 import { createWebSearchAgent } from "../agents/web-search.js";
+import { recordModelCall } from "../diagnostics/model-events.js";
 import { getShortModelLabel } from "../llm/models.js";
 import { webSearchScraper } from "./web-search-scraper.js";
 

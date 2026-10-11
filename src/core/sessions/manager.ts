@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { logBackgroundError } from "../../stores/errors.js";
 import type { ChatMessage } from "../../types/index.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { safeRename } from "../platform/index.js";
 import { projectIdOf } from "../projects/resolve.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";

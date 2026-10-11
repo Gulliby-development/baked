@@ -139,6 +139,31 @@ export class ProjectSupervisor {
   }
 
   /**
+   * Reads a non-JSON endpoint (a chat export) as text, with the file name its
+   * `Content-Disposition` suggests. A refused request throws with the API's error message.
+   */
+  async download(key: string, path: string): Promise<{ text: string; fileName: string | null }> {
+    checkApiPath("GET", path);
+    const { url, token } = await this.backend(key).endpointOrStart();
+    const response = await (this.options.fetch ?? fetch)(`${url}${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      let message = text || `HTTP ${response.status}`;
+      try {
+        const parsed = JSON.parse(text) as { error?: { message?: string } };
+        message = parsed.error?.message ?? message;
+      } catch {
+        // Not JSON: keep the text.
+      }
+      throw new BackendError("REQUEST_FAILED", message);
+    }
+    const disposition = response.headers.get("content-disposition") ?? "";
+    return { text, fileName: /filename="([^"]+)"/.exec(disposition)?.[1] ?? null };
+  }
+
+  /**
    * Streams an SSE endpoint. A dropped connection, including one lost to a backend restart, is
    * reopened with the last event ID until `close` is called.
    */

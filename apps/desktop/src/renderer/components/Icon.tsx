@@ -16,6 +16,7 @@ const PATHS = {
   "run-memory":
     "M6 7h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2zM5 3h14v4H5zM6 11h12M9 15a1 1 0 1 0 2 0a1 1 0 1 0 -2 0zM13 17.5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0z",
   "chat-memory": "M3 4h18v12H10l-5 4v-4H3zM7 8.5h4M7 12h3M15 7.5v5M13 8.5l4 3M17 8.5l-4 3",
+  diagnostics: "M3 4h18v16H3zM3 12h4l2-4 3 8 2.5-5 1.5 1H21",
   skills: "M5 3h11l3 3v15H5zM9 13.5l1.8-.6.7-1.9.7 1.9 1.8.6-1.8.6-.7 1.9-.7-1.9zM9 8h6",
   hooks: "M14 3v9a5 5 0 0 1-10 0v-2M4 10l-2 2M4 10l2 2M14 3h-3M17 6h4M17 10h4M17 14h4",
   mcp: "M8 3v5M16 3v5M5 8h14v4a7 7 0 0 1-14 0zM12 19v3",
@@ -27,6 +28,8 @@ const PATHS = {
   redo: "M15 5l5 5-5 5M20 10H9a5 5 0 0 0 0 10h3",
   send: "M12 20V4M5 11l7-7 7 7",
   stop: "M6 6h12v12H6z",
+  export: "M12 4v11M7 10l5 5 5-5M4 20h16",
+  delete: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
   "chevron-right": "M9 5l7 7-7 7",
   "chevron-down": "M5 9l7 7 7-7",
 } as const;

@@ -28,6 +28,13 @@ else {
       const url = new URL(req.url);
       if (url.pathname === "/v1/health")
         return Response.json({ apiVersion: 1, version: "9.9.9", workspace: folder });
+      if (url.pathname === "/v1/download")
+        return new Response(`# ${url.searchParams.get("title") ?? "Chat"}\n`, {
+          headers: {
+            "content-type": "text/markdown; charset=utf-8",
+            "content-disposition": 'attachment; filename="chat-1.md"',
+          },
+        });
       if (url.pathname === "/v1/echo" && req.method === "POST")
         return req.json().then((body) => Response.json({ body }));
       if (url.pathname === "/v1/events") {

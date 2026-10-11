@@ -1,7 +1,7 @@
 import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import { type LanguageModel, RetryError } from "ai";
-import { logBackgroundError } from "../../stores/errors.js";
 import type { TaskTier } from "../../types/index.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { getSurfacedHintIds, runInSubagentScope } from "../memory/hints.js";
 import { taskListTool } from "../tools/task-list.js";
 import {
@@ -36,8 +36,8 @@ export function getMaxConcurrentAgents(): number {
   return Math.min(8, Math.max(2, Math.round(v)));
 }
 
-import { recordModelCall } from "../../stores/model-events.js";
 import { getCwd } from "../cwd.js";
+import { recordModelCall } from "../diagnostics/model-events.js";
 import { runWithEditOrigin } from "../tools/file-events.js";
 import { getToolTimeoutMs } from "../tools/tool-timeout.js";
 

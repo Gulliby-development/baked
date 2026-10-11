@@ -6,7 +6,7 @@
  */
 import type { JSONObject } from "@ai-sdk/provider";
 import { generateText, type ModelMessage } from "ai";
-import { recordModelCall } from "../../stores/model-events.js";
+import { recordModelCall } from "../diagnostics/model-events.js";
 import { supportsTemperature } from "../llm/provider-options.js";
 import type { IOClient } from "../workers/io-client.js";
 import {

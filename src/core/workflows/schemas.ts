@@ -787,6 +787,7 @@ export const EventSchema = z.discriminatedUnion("type", [
             "recovery",
             "checkpoint",
             "delivery",
+            "convergence",
           ]),
           digest: Hash,
         })
@@ -993,6 +994,7 @@ export type Decision =
     }
   | { requestId: string; kind: "reject"; explanation: string }
   | { requestId: string; kind: "continue" }
+  | { requestId: string; kind: "accept" }
   | { requestId: string; kind: "answer"; answers: Record<string, string> }
   | {
       requestId: string;
@@ -1019,6 +1021,7 @@ export const DecisionSchema: z.ZodType<Decision> = z.discriminatedUnion("kind", 
     .strict(),
   z.object({ requestId: SafeId, kind: z.literal("reject"), explanation: Text }).strict(),
   z.object({ requestId: SafeId, kind: z.literal("continue") }).strict(),
+  z.object({ requestId: SafeId, kind: z.literal("accept") }).strict(),
   z
     .object({
       requestId: SafeId,

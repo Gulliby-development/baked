@@ -12,6 +12,7 @@ import {
   type WorkflowV2,
 } from "../workflows/v2/definition.js";
 import { correctionAuthorized } from "./convergence.js";
+import { limitedCriteria } from "./convergence-stop.js";
 import { validateEvidence } from "./evidence.js";
 import { requiresSecurityReview } from "./findings.js";
 
@@ -149,6 +150,7 @@ function acceptance(
   if (store.findings(runId).some((f) => !["refuted", "resolved"].includes(f.status)))
     throw new WorkflowFault("OUTPUT_INVALID", "Unresolved findings remain");
   const convergence = state.convergence;
+  const limited = limitedCriteria(state);
   for (const criterion of state.spec.criteria) {
     if (!convergence) {
       // Without a reflection stage the required checks cover the automated criteria.
@@ -187,7 +189,9 @@ function acceptance(
           `Missing trusted manual evidence for ${criterion.id}`,
         );
       validateEvidence(store, runId, state.snapshotId, [manual.evidenceId]);
-    } else if (result?.verdict !== "pass")
+    } else if (result?.verdict !== "pass" && !limited.has(criterion.id))
+      // A known limitation: convergence stopped with this criterion's findings open and a
+      // person (or the assume rule) accepted them; the run report lists them.
       throw new WorkflowFault("OUTPUT_INVALID", `Criterion ${criterion.id} did not pass`);
     if (result?.verdict === "pass")
       validateEvidence(store, runId, state.snapshotId, result.evidenceIds);

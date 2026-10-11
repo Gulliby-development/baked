@@ -2,7 +2,7 @@ import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModel } from "ai";
 import { ToolLoopAgent } from "ai";
 import { loadConfig } from "../../config/index.js";
-import { logBackgroundError } from "../../stores/errors.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import {
   type CacheTTL,
   getEphemeralCache,

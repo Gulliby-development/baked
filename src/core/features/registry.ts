@@ -134,7 +134,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/session history: Ctrl+D in the picker"],
     cli: ["baked session delete"],
     api: ["/v1/sessions/:id: DELETE"],
-    desktop: gap(405),
+    desktop: ["project/chat: Delete chat in the chat menu"],
   },
   {
     id: "session-export",
@@ -142,8 +142,8 @@ export const FEATURES: readonly Feature[] = [
     title: "Export a chat (Markdown, JSON, clipboard)",
     tui: ["/session export", "/session export json", "/session export clipboard"],
     cli: ["baked session export"],
-    api: gap(405),
-    desktop: gap(405),
+    api: ["/v1/sessions/:id/export: Markdown or JSON"],
+    desktop: ["project/chat: Export as Markdown or JSON in the chat menu"],
   },
   {
     id: "session-diagnostics",
@@ -520,7 +520,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "run-decisions",
     group: "Workflow runs",
-    title: "Approve, reject, answer, give evidence, continue",
+    title: "Approve, reject, answer, give evidence, continue, accept a stopped convergence",
     tui: ["/workflow"],
     cli: [
       "baked workflow approve",
@@ -528,6 +528,7 @@ export const FEATURES: readonly Feature[] = [
       "baked workflow answer",
       "baked workflow evidence",
       "baked workflow continue",
+      "baked workflow accept",
     ],
     api: [
       "/v1/workflow/runs/:id/approve",
@@ -535,6 +536,7 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/answer",
       "/v1/workflow/runs/:id/evidence",
       "/v1/workflow/runs/:id/continue",
+      "/v1/workflow/runs/:id/accept",
     ],
     desktop: ["project/runs", "attention"],
   },
@@ -817,8 +819,13 @@ export const FEATURES: readonly Feature[] = [
     title: "Storage cleanup, model events and the error log",
     tui: ["/storage", "/model-events", "/errors"],
     cli: notNeeded("scripts read the log files"),
-    api: gap(408),
-    desktop: gap(408),
+    api: [
+      "/v1/diagnostics/storage",
+      "/v1/diagnostics/storage/cleanup",
+      "/v1/diagnostics/model-events",
+      "/v1/diagnostics/errors",
+    ],
+    desktop: ["project/diagnostics"],
   },
   {
     id: "timeouts",

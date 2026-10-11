@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic indexing), `/errors` (error log, also `Meta+R`) and, before a workflow, `baked doctor`.
+Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic indexing), `/errors` (error log, also `Meta+R`) and, before a workflow, `baked doctor`. In the desktop app, a project's **Diagnostics** page shows the same error log, model events and storage for that project's backend ([desktop app](desktop/app.md#screens)).
 
 ## No models in the picker
 
@@ -25,7 +25,7 @@ See [providers](providers.md#model-fallback).
 
 ## The agent is slow or expensive
 
-Route research and background work to a fast model in `/router` (`spark`, `compact`, `semantic`) and keep the strong model for `ember`. `/model-events` shows per-call latency and errors when several models are in use.
+Route research and background work to a fast model in `/router` (`spark`, `compact`, `semantic`) and keep the strong model for `ember`. `/model-events` (or **Diagnostics** in the desktop app) shows per-call latency and errors when several models are in use. Recording is off until you turn it on, and each process (the terminal UI, each project's `baked serve`) records only its own calls.
 
 ## LSP is not working
 
@@ -56,6 +56,10 @@ Windows Terminal's bracketed paste sends an empty sequence for image clipboards,
 
 The checkout predates `.gitattributes` and has CRLF line endings; see [CONTRIBUTING.md](../CONTRIBUTING.md#verification).
 
+## The .baked folder is large
+
+`/storage` (or **Diagnostics → Storage** in the desktop app) shows what takes the space. The code map rebuilds itself after Clear; chat sessions, plans and prompt history do not come back. Compact databases reclaims the space SQLite keeps after deleted rows without deleting anything. The desktop app refuses to clear sessions or the code map while a chat turn or a workflow run of that project is working.
+
 ## Still stuck
 
-Open an issue at [GitHub](https://github.com/Gulliby-development/baked/issues) with the output of `/status` and `/errors`.
+Open an issue at [GitHub](https://github.com/Gulliby-development/baked/issues) with the output of `/status` and `/errors` (in the desktop app, the project's Diagnostics page).

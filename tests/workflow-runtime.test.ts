@@ -9,7 +9,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { RunStatus, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
@@ -608,6 +608,30 @@ describe("durable SDD runtime", () => {
     expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
     const tasks = service.store.tasks(run.runId).map((t) => JSON.parse(t.definition_json) as { id: string; origin: string });
     expect(tasks.map((t) => t.origin)).toEqual(["planned", "repair"]);
+  });
+  // md-site 2707d602 T004 generation 3: a repair invalidated a planned task that was already
+  // correct; its rerun changed nothing and the run blocked instead of keeping the work.
+  test("a planned task that changes nothing is satisfied on a rerun when its checks pass", async () => {
+    const taskPolicy: RunPolicy = { ...policy, checks: [{ ...policy.checks[0]!, scope: "task" }] };
+    const { service, root } = setup();
+    const { run } = await start(service);
+    await service.drive(run.runId, new AbortController().signal);
+    await approve(service, run.runId);
+    expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
+    const task = { ...(JSON.parse(service.store.tasks(run.runId)[0]!.definition_json) as Task), checkIds: ["check"] };
+    const result = { taskId: task.id, outcome: "implemented", unresolved: [] as string[] };
+    const satisfied = async (outcome = result) => {
+      const child = service.store.beginStep(run.runId, "implement-rerun");
+      return (service.scheduler as unknown as { correctionSatisfied: (...args: unknown[]) => Promise<boolean> })
+        .correctionSatisfied(run.runId, child, taskPolicy, task, outcome, new AbortController().signal, root);
+    };
+    // The first run of a planned task that changed nothing did not do its work.
+    expect(await satisfied()).toBe(false);
+    service.store.transaction(() => service.store.taskStatus(run.runId, task.id, "invalidated"));
+    expect(await satisfied({ ...result, unresolved: ["still open"] })).toBe(false);
+    expect(await satisfied()).toBe(true);
+    writeFileSync(join(root, "value.txt"), "broken");
+    expect(await satisfied()).toBe(false);
   });
   test("stale approval and manual source changes never execute implementation", async () => {
     const { service, root, executor } = setup(); const { run } = await start(service);

@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { runReport } from "../src/core/workflows/run-report.js";
 import { uncommittedEdits } from "../src/core/workflows/rollback.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -20,6 +21,7 @@ import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { executeDefinitionCommand } from "../src/headless/workflow-definitions.js";
+import { executeWorkflowCommand } from "../src/headless/workflow.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -50,6 +52,10 @@ interface Behavior {
   capped?: number;
   /** Severity of the convergence gaps; high by default. */
   gapSeverity?: "high" | "medium";
+  /** Acceptance criteria of the spec, all covered by the one task; 1 by default. */
+  criteria?: number;
+  /** The symbol every convergence gap names, so a later gap can contradict an earlier fix. */
+  gapSymbol?: string;
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
@@ -77,7 +83,16 @@ class V2Executor implements AgentExecutor {
   convergences = 0;
   /** Host tools each review attempt was offered. */
   reviewTools: string[][] = [];
-  constructor(private root: string, private behavior: Behavior = {}) {}
+  private spec: Spec;
+  constructor(private root: string, private behavior: Behavior = {}) {
+    this.spec = {
+      ...spec,
+      criteria: Array.from({ length: behavior.criteria ?? 1 }, (_, i) => ({ ...spec.criteria[0], id: `AC-${String(i + 1).padStart(3, "0")}` })) as Spec["criteria"],
+    };
+  }
+  private passing(evidence: string[], explanation: string) {
+    return this.spec.criteria.map((c) => ({ criterionId: c.id, verdict: "pass" as const, evidenceIds: evidence, explanation }));
+  }
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     this.prompts.push(request.prompt);
@@ -91,15 +106,15 @@ class V2Executor implements AgentExecutor {
         output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
         break;
       case "spec":
-        output = this.behavior.renamedFeature ? { ...spec, featureId: "expense-report" } : spec;
+        output = this.behavior.renamedFeature ? { ...this.spec, featureId: "expense-report" } : this.spec;
         break;
       case "plan": {
         const markdown = "# Plan\n## Context\nCreate value.txt.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\nvalue.txt\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture";
         output = {
           schemaVersion: 1, markdown,
           taskGraph: {
-            schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
-            tasks: [{ id: "T001", title: "Create value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+            schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(this.spec), planHash: hashBytes(markdown),
+            tasks: [{ id: "T001", title: "Create value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: this.spec.criteria.map((c) => c.id), dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
           },
         };
         break;
@@ -129,17 +144,17 @@ class V2Executor implements AgentExecutor {
               // An undefined field in reviewFinding drops the default.
               findings: [Object.fromEntries(Object.entries({ id: "F1", kind: "correctness", severity: "medium", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: evidence, claim: "The change misses an edge case", impact: "A user sees the old value", suggestedFix: "Handle the edge case", repro: oldValueRepro, ...this.behavior.reviewFinding }).filter(([, value]) => value !== undefined))],
             }
-          : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Evidence checked" }], findings: [] };
+          : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Evidence checked"), findings: [] };
         break;
       case "convergence": {
         const round = ++this.convergences;
         output = round <= (this.behavior.gaps ?? 0)
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
-              coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }],
-              findings: [{ id: `G${round}`, kind: "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+              coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }, ...this.passing(evidence, "Command checked the value").slice(1)],
+              findings: [{ id: `G${round}`, kind: "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbol ?? null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
             }
-          : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "Command checked the value" }], findings: [] };
+          : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Command checked the value"), findings: [] };
         break;
       }
       case "report":
@@ -721,6 +736,138 @@ describe("workflow v2 scheduler", () => {
     expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
 
   }, 30000);
+});
+
+describe("a stopped convergence asks for a decision", () => {
+  const pendingConvergence = (service: NativeWorkflowService, runId: string) =>
+    service.store.requests(runId).find((r) => r.kind === "convergence" && r.status === "pending");
+  const decide = async (service: NativeWorkflowService, runId: string, kind: "accept" | "continue" | "reject") => {
+    const request = pendingConvergence(service, runId);
+    if (!request) throw new Error("No pending convergence request");
+    const run = await service.get(runId);
+    const command = { commandId: newId(), expectedRevision: run.revision };
+    return service.decide(runId, command, kind === "reject" ? { kind, requestId: request.id, explanation: "Stop" } : { kind, requestId: request.id });
+  };
+  /** Three gaps against two allowed convergence rounds: the third review cannot start a repair. */
+  const stopped = async (workflow: "sdd" | "v2-sdd", behavior: Behavior = { gaps: 3 }, runPolicy: RunPolicy = policy) => {
+    const fixture = setup(behavior, runPolicy);
+    fixture.define({ ...upgradeWorkflowV1(sddWorkflow, runPolicy), id: "v2-sdd" });
+    const run = await fixture.start(workflow);
+    const waiting = await fixture.complete(run.runId);
+    return { ...fixture, run, waiting };
+  };
+
+  for (const workflow of ["sdd", "v2-sdd"] as const) {
+    test(`${workflow}: the run waits for a decision instead of blocking`, async () => {
+      const { service, run, waiting } = await stopped(workflow);
+      expect(waiting.status).toBe("waiting");
+      expect(service.store.run(run.runId).reason).toBe("no_progress");
+      const body = JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}");
+      expect(body.reason).toBe("rounds");
+      expect(body.setting).toBe("maxConvergenceRounds");
+      expect(body.findings.map((f: { claim: string }) => f.claim)).toEqual(["Gap number 3 remains"]);
+      expect(body.criteria.failing.map((c: { id: string }) => c.id)).toEqual(["AC-001"]);
+      expect(body.checksPassing).toBe(true);
+      expect(service.store.run(run.runId).corrective_tasks).toBe(2);
+    }, 60000);
+
+    test(`${workflow}: accepting lists the findings as known limitations and completes the run`, async () => {
+      const { service, run, complete } = await stopped(workflow);
+      await decide(service, run.runId, "accept");
+      const final = await complete(run.runId);
+      expect(lastError(service, run.runId)).toBe("");
+      expect(final.status).toBe("completed");
+      const state = service.store.state(run.runId);
+      expect(state.limitations.map((l) => [l.claim, l.decidedBy])).toEqual([["Gap number 3 remains", "user"]]);
+      expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+      const report = runReport(service.store, run.runId);
+      expect(report).toContain("## Known limitations");
+      expect(report).toContain("Gap number 3 remains");
+    }, 60000);
+
+    test(`${workflow}: one more round repairs the findings and can complete the run`, async () => {
+      const { service, run, complete, executor } = await stopped(workflow);
+      await decide(service, run.runId, "continue");
+      const final = await complete(run.runId);
+      expect(lastError(service, run.runId)).toBe("");
+      expect(final.status).toBe("completed");
+      expect(service.store.run(run.runId).convergence_rounds).toBe(3);
+      expect(service.store.state(run.runId).limitations).toEqual([]);
+      expect(executor.convergences).toBe(4);
+    }, 60000);
+
+    test(`${workflow}: stopping leaves the run paused and a resume asks again`, async () => {
+      const { service, run, drive } = await stopped(workflow, { gaps: 4 });
+      const paused = await decide(service, run.runId, "reject");
+      expect(paused.status).toBe("paused");
+      expect(pendingConvergence(service, run.runId)).toBeUndefined();
+      await service.resume(run.runId, { commandId: newId(), expectedRevision: paused.revision });
+      expect((await drive(run.runId)).status).toBe("waiting");
+      expect(pendingConvergence(service, run.runId)).toBeDefined();
+    }, 60000);
+  }
+
+  test("the terminal accepts the findings and continues the run", async () => {
+    const { service, run } = await stopped("sdd");
+    const request = pendingConvergence(service, run.runId);
+    const revision = (await service.get(run.runId)).revision;
+    const result = (await executeWorkflowCommand(
+      service,
+      parseWorkflowArgs(["accept", run.runId, "--request", request?.id ?? "", "--expected-revision", String(revision)]),
+      new AbortController().signal,
+    )) as { status: string };
+    expect(result.status).toBe("completed");
+    expect(service.store.state(run.runId).limitations).toHaveLength(1);
+  }, 60000);
+
+  test("an approval decision is refused for a convergence request", async () => {
+    const { service, run } = await stopped("sdd");
+    const request = pendingConvergence(service, run.runId);
+    const current = await service.get(run.runId);
+    await expect(
+      service.decide(run.runId, { commandId: newId(), expectedRevision: current.revision }, { kind: "approve", requestId: request?.id ?? "", digest: "0".repeat(64) }),
+    ).rejects.toThrow();
+  }, 60000);
+
+  test("clarification assume accepts a low-severity residual when the checks pass", async () => {
+    const assume = { ...policy, clarification: "assume" as const };
+    const { service, run, waiting } = await stopped("sdd", { gaps: 3, gapSeverity: "medium", criteria: 5 }, assume);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(waiting.status).toBe("completed");
+    const state = service.store.state(run.runId);
+    expect(state.limitations.map((l) => l.decidedBy)).toEqual(["assume"]);
+    const request = service.store.requests(run.runId).find((r) => r.kind === "convergence");
+    expect(request?.status).toBe("accepted");
+    expect(request?.actor).toBe("auto-approval");
+  }, 60000);
+
+  test("clarification assume still asks when a remaining finding is high severity", async () => {
+    const assume = { ...policy, clarification: "assume" as const };
+    const { waiting, service, run } = await stopped("sdd", { gaps: 3, criteria: 5 }, assume);
+    expect(waiting.status).toBe("waiting");
+    expect(pendingConvergence(service, run.runId)).toBeDefined();
+  }, 60000);
+
+  test("a finding that reverses the fix of an earlier one on the same symbol is sent to a person", async () => {
+    // Two rounds are allowed, so the limit is not what stops the run: the second gap names the
+    // symbol the first repair changed for the same criterion.
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSymbol: "parseValue" });
+    expect(waiting.status).toBe("waiting");
+    const body = JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}");
+    expect(body.reason).toBe("contradiction");
+    expect(body.contradictions).toHaveLength(1);
+    expect(body.contradictions[0].earlierClaim).toBe("Gap number 1 remains");
+    expect(service.store.run(run.runId).convergence_rounds).toBe(1);
+  }, 60000);
+
+  test("one more round repairs a contradicting finding without asking again", async () => {
+    const { service, run, complete } = await stopped("sdd", { gaps: 2, gapSymbol: "parseValue" });
+    await decide(service, run.runId, "continue");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(1);
+  }, 60000);
 });
 
 describe("project gates and protected definitions", () => {

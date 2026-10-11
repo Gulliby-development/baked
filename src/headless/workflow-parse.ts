@@ -31,6 +31,7 @@ const commands = [
   "extend",
   "reroute",
   "continue",
+  "accept",
   "undo",
   "definitions",
   "validate",
@@ -45,7 +46,12 @@ const commands = [
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 /** Decisions that continue the run in the terminal unless `--no-resume` is given. */
-export const DECISION_COMMANDS: readonly WorkflowCommand[] = ["approve", "answer", "evidence"];
+export const DECISION_COMMANDS: readonly WorkflowCommand[] = [
+  "approve",
+  "answer",
+  "evidence",
+  "accept",
+];
 export interface WorkflowArgs {
   command: WorkflowCommand;
   positional: string[];
@@ -229,7 +235,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "after",
   ],
   reroute: ["model", "route", "expected-revision", "command-id", "resume", "events", "after"],
-  continue: ["request", "expected-revision", "command-id"],
+  continue: ["request", "expected-revision", "command-id", ...decisionResumeFlags],
+  accept: ["request", "expected-revision", "command-id", ...decisionResumeFlags],
   undo: ["path", "expected-revision", "command-id"],
   definitions: [],
   validate: ["file"],
@@ -458,7 +465,8 @@ reject RUN_ID --request ID --reason TEXT --expected-revision N
   (see status). approve promotes it: the test file and its command gate with provenance are
   written to the project and confirmed; reject discards it. Neither changes the run's state.
 pause|cancel|fork RUN_ID --expected-revision N
-continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
+continue RUN_ID --request ID --expected-revision N [--resume]   (answer a token checkpoint; resume then spends up to the next one. On a stopped convergence it allows one more repair round)
+accept RUN_ID --request ID --expected-revision N [--no-resume]   (a stopped convergence: accept the remaining findings as known limitations; reject stops the run)
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
   (raise the limits of a run blocked on its budget; resume continues it, or --resume in the same command)
 reroute RUN_ID --expected-revision N [--model ID] [--route STAGE=MODEL,...] [--resume [--events]]

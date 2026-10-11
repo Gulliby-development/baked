@@ -1,5 +1,5 @@
-import { logBackgroundError } from "../../stores/errors.js";
 import type { RetryConfig } from "../../types/index.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 
 export const DEFAULT_AGENT_BASE_DELAY_MS = 2000;
 export const DEFAULT_CHAT_BASE_DELAY_MS = 1000;

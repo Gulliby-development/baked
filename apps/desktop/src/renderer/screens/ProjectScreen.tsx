@@ -27,6 +27,7 @@ const TITLES: Record<ProjectSection, string> = {
   skills: "Skills",
   hooks: "Hooks",
   mcp: "MCP servers",
+  diagnostics: "Diagnostics",
 };
 
 function Closed({ project }: { project: DesktopProject }) {

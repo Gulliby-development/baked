@@ -16,6 +16,27 @@ export interface RecoveryBody {
   intent?: Record<string, unknown>;
   delivery?: boolean;
 }
+/** A convergence that cannot start another repair round (`convergenceBody` in the core). */
+export interface ConvergenceBody {
+  reason?: "rounds" | "tasks" | "repeat" | "contradiction";
+  summary?: string;
+  checksPassing?: boolean;
+  criteria?: {
+    total: number;
+    passing: number;
+    failing: { id: string; verdict: string; explanation: string }[];
+  };
+  findings?: {
+    id: string;
+    severity: string;
+    criterionIds: string[];
+    file: string | null;
+    symbol: string | null;
+    claim: string;
+    impact: string;
+  }[];
+  contradictions?: { findingId: string; earlierId: string; earlierClaim: string }[];
+}
 export interface ClarificationBody {
   questions?: { id?: string; question: string; blocking?: boolean }[];
   findings?: { id?: string; kind?: string; description?: string; blocking?: boolean }[];

@@ -284,10 +284,9 @@ export async function executeWorkflowCommand(
     case "fork":
       return service.fork(runId, identity());
     case "continue":
-      return service.decide(runId, identity(), {
-        kind: "continue",
-        requestId: stringFlag(args, "request"),
-      });
+      return decideThenResume({ kind: "continue", requestId: stringFlag(args, "request") });
+    case "accept":
+      return decideThenResume({ kind: "accept", requestId: stringFlag(args, "request") });
     case "extend": {
       const number = (flag: string): number | undefined =>
         typeof args.flags[flag] === "string" ? Number(args.flags[flag]) : undefined;
@@ -672,7 +671,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
     return ["run", "quick", "resume"].includes(args.command) ||
-      (["revise", "extend", "reroute", ...DECISION_COMMANDS].includes(args.command) &&
+      (["revise", "extend", "reroute", "continue", ...DECISION_COMMANDS].includes(args.command) &&
         args.flags.resume === true)
       ? workflowExit(
           result as RunSnapshot,
