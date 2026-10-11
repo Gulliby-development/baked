@@ -79,6 +79,8 @@ export interface InitiativeView {
   reason: string;
   revision: number;
   planRevision: number;
+  /** The model feature runs start with; null uses the default model. Absent on older backends. */
+  model?: string | null;
   goals: string[];
   features: InitiativeFeature[];
   pendingDecisions: PendingDecision[];
@@ -209,6 +211,20 @@ export const insights = {
       ...command(view),
       requestId: decision.requestId,
       digest: decision.digest,
+    }),
+  /**
+   * Moves the initiative to `model`: features started later use it, its stopped runs are switched,
+   * and blocked rerouted runs and a paused initiative continue in the background.
+   */
+  rerouteInitiative: (
+    key: string,
+    view: Pick<InitiativeView, "initiativeId" | "revision">,
+    model: string,
+  ) =>
+    call<InitiativeView>(key, "POST", initiativePath(view.initiativeId, "reroute"), {
+      ...command(view),
+      model,
+      resume: true,
     }),
   usage: (key: string, query: UsageQuery) =>
     call<UsageSummary>(key, "GET", `/v1/usage?${usageQuery(query)}`),

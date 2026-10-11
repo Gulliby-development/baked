@@ -163,6 +163,7 @@ The `baked workflow initiative` commands over HTTP. Mutations take `commandId` a
 | `POST /v1/initiatives/ID/approve`, `/reject` | `requestId` and `digest`, or `requestId` and `reason` | same; approve drives in the background |
 | `POST /v1/initiatives/ID/resume`, `/pause` | | same; resume drives in the background |
 | `POST /v1/initiatives/ID/extend` | `tokens?`, `calls?`, `timeMs?` | `extend` |
+| `POST /v1/initiatives/ID/reroute` | `model`, `resume?` | `reroute`; with `resume: true` it drives in the background |
 
 Initiative requests also appear in `GET /v1/attention` with `source: "initiative"` and `initiativeId`.
 

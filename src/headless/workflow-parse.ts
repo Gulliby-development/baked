@@ -423,7 +423,7 @@ discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
-  replan, extend; see baked workflow initiative --help
+  replan, extend, reroute; see baked workflow initiative --help
 
 Management mutations accept --command-id UUID for idempotent retries.
 All commands accept --help. Workflows require an explicit workflows.enabled opt-in.

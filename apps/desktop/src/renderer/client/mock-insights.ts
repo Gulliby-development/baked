@@ -50,6 +50,7 @@ function initiative(
     reason: "",
     revision: 7,
     planRevision: 2,
+    model: null,
     goals,
     features,
     pendingDecisions:
@@ -152,7 +153,7 @@ function list(key: string): InitiativeView[] {
   return INITIATIVES[key] ?? [];
 }
 
-const initiativeRoutes: MockRoute = ({ key, method, path }) => {
+const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
   if (method === "GET" && path === "/v1/initiatives")
     return response(200, {
       initiatives: list(key).map((view) => ({
@@ -172,6 +173,18 @@ const initiativeRoutes: MockRoute = ({ key, method, path }) => {
   const action = match[2];
   if (method === "GET" && action === undefined) return response(200, view);
   if (method !== "POST") return undefined;
+  if (action === "reroute") {
+    const model = (body as { model?: string } | undefined)?.model;
+    if (!model) return undefined;
+    const next: InitiativeView = {
+      ...view,
+      model,
+      status: view.status === "paused" ? "active" : view.status,
+      revision: view.revision + 1,
+    };
+    views[index] = next;
+    return response(200, next);
+  }
   const status: InitiativeStatus | undefined =
     action === "pause"
       ? "paused"

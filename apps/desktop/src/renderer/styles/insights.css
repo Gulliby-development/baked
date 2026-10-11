@@ -383,3 +383,13 @@
 .table .num {
   text-align: right;
 }
+
+.ins-model {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 360px;
+}
+.ins-model p {
+  margin: 0;
+}
