@@ -17,6 +17,8 @@ import {
   assumeAccepts,
   convergenceBody,
   convergenceStop,
+  passesWithNotes,
+  requiredChecksPass,
 } from "../verification/convergence-stop.js";
 import {
   currentEvidence,
@@ -1113,6 +1115,30 @@ export class WorkflowScheduler {
                   )
                   .map((c) => c.criterionId),
               );
+              // A low `partial` finding behind verified behavior passes with notes: it is recorded in
+              // the run report and starts no repair, and a criterion that fails only because of
+              // such findings counts as met.
+              const checksPass = requiredChecksPass(this.store, runId, state, policy);
+              const notes = new Set(
+                review.findings
+                  .filter((f) => passesWithNotes(f, review.coverage, checksPass))
+                  .map((f) => f.id),
+              );
+              const noteOnly = (id: string): boolean => {
+                const named = review.findings.filter((f) => f.criterionIds.includes(id));
+                return named.length > 0 && named.every((f) => notes.has(f.id));
+              };
+              const repairing = (f: Review["findings"][number]): boolean =>
+                (severities.includes(f.severity) && findingBlocks(f)) ||
+                f.criterionIds.some((id) => failing.has(id));
+              const noted = review.findings.filter((f) => notes.has(f.id) && repairing(f));
+              for (const id of [...failing]) if (noteOnly(id)) failing.delete(id);
+              if (noted.length) {
+                const recorded = this.recordFindings(runId, review, noted);
+                this.store.transaction(() =>
+                  acceptResidual(this.store, runId, state, { findings: recorded }, "notes"),
+                );
+              }
               // Below the severity floor a finding still repairs when it is why a criterion fails:
               // acceptance needs every automated criterion to pass.
               const findings = this.recordFindings(
@@ -1120,8 +1146,9 @@ export class WorkflowScheduler {
                 review,
                 review.findings.filter(
                   (f) =>
-                    (severities.includes(f.severity) && findingBlocks(f)) ||
-                    f.criterionIds.some((id) => failing.has(id)),
+                    !notes.has(f.id) &&
+                    ((severities.includes(f.severity) && findingBlocks(f)) ||
+                      f.criterionIds.some((id) => failing.has(id))),
                 ),
               );
               if (findings.length) {

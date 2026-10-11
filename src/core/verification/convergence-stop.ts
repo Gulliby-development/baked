@@ -222,7 +222,7 @@ export function acceptResidual(
   store: WorkflowStore,
   runId: string,
   state: RuntimeState,
-  body: Pick<ConvergenceRequestBody, "findings">,
+  body: { findings: Omit<ConvergenceRequestBody["findings"][number], "suggestedFix">[] },
   decidedBy: Limitation["decidedBy"],
 ): void {
   const round = store.run(runId).convergence_rounds;
@@ -242,6 +242,29 @@ export function acceptResidual(
     });
     store.findingStatus(runId, finding.id, "resolved");
   }
+}
+
+/**
+ * Whether a finding passes with notes instead of starting a repair: it is low severity and
+ * `partial` (test strength or documentation completeness, not a defect in behavior), every
+ * required check passes and each criterion it names has evidence in the review. zoneslot 409f3022
+ * F-001 (the Kolkata test did not assert every UTC column) cost 263k, 23% of its run, while the
+ * behavior was already verified.
+ */
+export function passesWithNotes(
+  finding: Finding,
+  coverage: Review["coverage"],
+  checksPass: boolean,
+): boolean {
+  return (
+    checksPass &&
+    finding.severity === "low" &&
+    finding.kind === "partial" &&
+    finding.criterionIds.length > 0 &&
+    finding.criterionIds.every(
+      (id) => (coverage.find((c) => c.criterionId === id)?.evidenceIds.length ?? 0) > 0,
+    )
+  );
 }
 
 /** Criteria whose failing verdict a known limitation covers. */

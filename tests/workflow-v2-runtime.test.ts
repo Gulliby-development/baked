@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { passesWithNotes } from "../src/core/verification/convergence-stop.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { uncommittedEdits } from "../src/core/workflows/rollback.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
@@ -51,7 +52,9 @@ interface Behavior {
   /** Implementations that stop at their token cap after a partial edit. */
   capped?: number;
   /** Severity of the convergence gaps; high by default. */
-  gapSeverity?: "high" | "medium";
+  gapSeverity?: "high" | "medium" | "low";
+  /** The kind of the convergence gaps; `missing` by default. */
+  gapKind?: "missing" | "partial";
   /** Acceptance criteria of the spec, all covered by the one task; 1 by default. */
   criteria?: number;
   /** The symbol every convergence gap names, so a later gap can contradict an earlier fix. */
@@ -152,7 +155,7 @@ class V2Executor implements AgentExecutor {
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
               coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }, ...this.passing(evidence, "Command checked the value").slice(1)],
-              findings: [{ id: `G${round}`, kind: "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbol ?? null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbol ?? null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Command checked the value"), findings: [] };
         break;
@@ -868,6 +871,58 @@ describe("a stopped convergence asks for a decision", () => {
     expect(final.status).toBe("completed");
     expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(1);
   }, 60000);
+});
+
+describe("a low partial finding passes with notes", () => {
+  for (const workflow of ["sdd", "v2-sdd"] as const) {
+    test(`${workflow}: it starts no repair, completes the run and is listed in the report`, async () => {
+      const fixture = setup({ gaps: 1, gapSeverity: "low", gapKind: "partial" });
+      fixture.define({ ...upgradeWorkflowV1(sddWorkflow, policy), id: "v2-sdd" });
+      const run = await fixture.start(workflow);
+      const final = await fixture.complete(run.runId);
+      expect(lastError(fixture.service, run.runId)).toBe("");
+      expect(final.status).toBe("completed");
+      const row = fixture.service.store.run(run.runId);
+      expect([row.repair_rounds, row.convergence_rounds, row.corrective_tasks]).toEqual([0, 0, 0]);
+      expect(fixture.executor.implementations).toBe(1);
+      const state = fixture.service.store.state(run.runId);
+      expect(state.limitations.map((l) => [l.claim, l.decidedBy, l.severity, l.kind])).toEqual([["Gap number 1 remains", "notes", "low", "partial"]]);
+      expect(fixture.service.store.findings(run.runId).map((f) => f.status)).toEqual(["resolved"]);
+      const report = runReport(fixture.service.store, run.runId);
+      expect(report).toContain("## Known limitations");
+      expect(report).toContain("notes rule (behavior verified)");
+    }, 60000);
+  }
+
+  test("a low finding of another kind still starts a repair", async () => {
+    const fixture = setup({ gaps: 1, gapSeverity: "low", gapKind: "missing" });
+    const run = await fixture.start("sdd");
+    const final = await fixture.complete(run.runId);
+    expect(final.status).toBe("completed");
+    expect(fixture.service.store.run(run.runId).convergence_rounds).toBe(1);
+    expect(fixture.service.store.state(run.runId).limitations).toEqual([]);
+  }, 60000);
+
+  test("a medium partial finding still starts a repair", async () => {
+    const fixture = setup({ gaps: 1, gapSeverity: "medium", gapKind: "partial" });
+    const run = await fixture.start("sdd");
+    const final = await fixture.complete(run.runId);
+    expect(final.status).toBe("completed");
+    expect(fixture.service.store.run(run.runId).convergence_rounds).toBe(1);
+  }, 60000);
+});
+
+describe("passesWithNotes", () => {
+  const finding = { id: "F1", kind: "partial", severity: "low", requirementIds: [], criterionIds: ["AC-001"], file: null, symbol: null, evidenceIds: ["E1"], claim: "c", impact: "i", suggestedFix: "f" } as const;
+  const coverage = [{ criterionId: "AC-001", verdict: "fail" as const, evidenceIds: ["E1"], explanation: "x" }];
+  test("needs passing checks, low severity, partial kind and evidence for each criterion", () => {
+    expect(passesWithNotes(finding, coverage, true)).toBe(true);
+    expect(passesWithNotes(finding, coverage, false)).toBe(false);
+    expect(passesWithNotes({ ...finding, severity: "medium" }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, kind: "correctness" }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...finding, criterionIds: [] }, coverage, true)).toBe(false);
+    expect(passesWithNotes(finding, [{ ...coverage[0]!, evidenceIds: [] }], true)).toBe(false);
+  });
 });
 
 describe("project gates and protected definitions", () => {
