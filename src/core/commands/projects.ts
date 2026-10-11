@@ -326,6 +326,23 @@ export async function showCurrentProject(ctx: CommandContext): Promise<void> {
   await ctx.resumeSession(picked.value.id);
 }
 
+/**
+ * /project rename NAME: sets the current folder's display name in the shared project list, which
+ * the picker, `baked projects` and the desktop app all read. No name restores the default.
+ */
+export function renameCurrentProject(input: string, ctx: CommandContext): void {
+  const name = input.replace(/^\s*\/project\s+rename\b/i, "").trim();
+  try {
+    const project = renameKnownProject(ctx.cwd, name);
+    sysMsg(
+      ctx,
+      name ? `Renamed this project to ${project.name}.` : `Restored the name ${project.name}.`,
+    );
+  } catch (error) {
+    sysMsg(ctx, error instanceof Error ? error.message : String(error));
+  }
+}
+
 export function projectHost(ctx: CommandContext): ProjectHost {
   return {
     cwd: ctx.cwd,
@@ -337,4 +354,5 @@ export function projectHost(ctx: CommandContext): ProjectHost {
 export function register(map: Map<string, CommandHandler>): void {
   map.set("/projects", (_input, ctx) => openProjectPicker(projectHost(ctx)));
   map.set("/project", (_input, ctx) => showCurrentProject(ctx));
+  map.set("/project rename", (input, ctx) => renameCurrentProject(input, ctx));
 }

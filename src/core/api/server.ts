@@ -101,6 +101,7 @@ export const CAPABILITIES = [
   "workflow",
   "attention",
   "projects",
+  "project-rename",
   "sessions",
   "setup",
   "initiatives",
