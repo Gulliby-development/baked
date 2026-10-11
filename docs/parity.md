@@ -123,9 +123,9 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Start an initiative | Partial [#399](https://github.com/Gulliby-development/baked/issues/399): no form | `baked workflow initiative` | `/v1/initiatives` | **Gap** [#399](https://github.com/Gulliby-development/baked/issues/399) |
+| Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
-| Reject, merge, split, rename, remove, re-plan, extend | Partial [#399](https://github.com/Gulliby-development/baked/issues/399): re-plan only | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | **Gap** [#399](https://github.com/Gulliby-development/baked/issues/399) |
+| Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |
 
 ### Projects and setup
 
@@ -157,7 +157,6 @@ bun test tests/feature-parity.test.ts
 - [#273](https://github.com/Gulliby-development/baked/issues/273): Checkpoint list and rewind to a checkpoint
 - [#374](https://github.com/Gulliby-development/baked/issues/374): Language servers: status, install, enable, restart; Diagnose LSP, tree-sitter and index health
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
-- [#399](https://github.com/Gulliby-development/baked/issues/399): Start an initiative; Reject, merge, split, rename, remove, re-plan, extend
 - [#402](https://github.com/Gulliby-development/baked/issues/402): MCP servers: list, add, edit, reconnect, tools
 - [#405](https://github.com/Gulliby-development/baked/issues/405): Delete a session; Export a chat (Markdown, JSON, clipboard)
 - [#406](https://github.com/Gulliby-development/baked/issues/406): Instruction files: view and edit content; Instruction files: switch on or off

@@ -680,10 +680,10 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-start",
     group: "Initiatives",
     title: "Start an initiative",
-    tui: partial(["/workflow: typed command"], 399, "no form"),
+    tui: ["/workflow: initiative start form"],
     cli: ["baked workflow initiative"],
     api: ["/v1/initiatives"],
-    desktop: gap(399),
+    desktop: ["project/initiatives: New initiative"],
   },
   {
     id: "initiative-steer",
@@ -705,7 +705,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-edit",
     group: "Initiatives",
     title: "Reject, merge, split, rename, remove, re-plan, extend",
-    tui: partial(["/workflow: re-plan"], 399, "re-plan only"),
+    tui: ["/workflow: initiatives"],
     cli: ["baked workflow initiative"],
     api: [
       "/v1/initiatives/:id/reject",
@@ -716,7 +716,7 @@ export const FEATURES: readonly Feature[] = [
       "/v1/initiatives/:id/replan",
       "/v1/initiatives/:id/extend",
     ],
-    desktop: gap(399),
+    desktop: ["project/initiatives"],
   },
 
   // Projects and setup
