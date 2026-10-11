@@ -112,6 +112,7 @@ export function WorkflowPanel({
   const [confirmExtend, setConfirmExtend] = useState(false);
   const [confirmReroute, setConfirmReroute] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   // The last undo of the open run, shown until Esc or another run.
   const [undone, setUndone] = useState<{ runId: string; report: UndoResult["report"] } | null>(
     null,
@@ -287,6 +288,14 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setConfirmUndo(false);
       return;
     }
+    if (confirmDiscard) {
+      event.preventDefault();
+      if (key === "y") {
+        setConfirmDiscard(false);
+        void act("discard-worktree");
+      } else if (key === "escape" || key === "n") setConfirmDiscard(false);
+      return;
+    }
     if (confirmCancel) {
       event.preventDefault();
       if (key === "y") {
@@ -315,12 +324,14 @@ export function WorkflowPanel({
       snapshot,
       service?.store.budget(snapshot.runId) ?? null,
       switchTo,
+      service?.store.worktree(snapshot.runId)?.present === true,
     ).find((a) => a.key.toLowerCase() === key);
     if (!action || action.action === "decide") return;
     event.preventDefault();
     if (action.action === "extend") setConfirmExtend(true);
     else if (action.action === "reroute") setConfirmReroute(true);
     else if (action.action === "cancel") setConfirmCancel(true);
+    else if (action.action === "discard-worktree") setConfirmDiscard(true);
     else if (action.action === "undo") {
       if (!driving) setConfirmUndo(true);
     } else void act(action.action);
@@ -519,8 +530,11 @@ export function WorkflowPanel({
     };
   });
   const budgetView = service ? service.store.budget(runId) : null;
+  const worktree = service ? service.store.worktree(runId) : null;
   const actions = snapshot
-    ? runActions(snapshot, budgetView, switchTo).filter((a) => !(a.action === "undo" && driving))
+    ? runActions(snapshot, budgetView, switchTo, worktree?.present === true).filter(
+        (a) => !(a.action === "undo" && driving),
+      )
     : [];
   const hints =
     tab === "decision" && pending
@@ -594,6 +608,11 @@ export function WorkflowPanel({
           </text>
         ) : null}
         {undone?.runId === runId ? <UndoReport report={undone.report} /> : null}
+        {confirmDiscard && worktree ? (
+          <text fg={t.warning}>
+            {`Remove this run's worktree ${worktree.path} and delete its branch ${worktree.branch}? Work that was not delivered is lost. Y confirms; N keeps them.`}
+          </text>
+        ) : null}
         {confirmCancel ? (
           <text fg={t.warning}>
             Cancel this run? It cannot be resumed afterwards. Y confirms; N keeps it.

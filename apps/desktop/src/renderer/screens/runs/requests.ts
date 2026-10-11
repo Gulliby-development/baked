@@ -10,6 +10,12 @@ export interface ApprovalBody {
   worktree?: { path: string; branch: string; userChangesInScope: string[] };
   acceptance?: unknown;
 }
+/** An effect of unknown outcome after an interruption (`recoverRun`, or a delivery step). */
+export interface RecoveryBody {
+  effectId?: string;
+  intent?: Record<string, unknown>;
+  delivery?: boolean;
+}
 export interface ClarificationBody {
   questions?: { id?: string; question: string; blocking?: boolean }[];
   findings?: { id?: string; kind?: string; description?: string; blocking?: boolean }[];

@@ -32,6 +32,7 @@ import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
+import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
@@ -252,7 +253,11 @@ export async function executeWorkflowCommand(
       return service.drive(run.runId, signal);
     }
     case "status":
-      return { ...(await service.get(runId)), requests: service.store.requests(runId) };
+      return {
+        ...(await service.get(runId)),
+        requests: service.store.requests(runId),
+        worktree: worktreeView(service.workspace, service.store.state(runId)),
+      };
     case "list":
       return service.list({
         featureId: typeof args.flags.feature === "string" ? args.flags.feature : undefined,
