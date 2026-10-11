@@ -14,13 +14,20 @@ import {
   CHAT_UNDO_CAPABILITY,
   COMPACTION_CAPABILITY,
   DIFF_STATS_CAPABILITY,
+  PLAN_MODE_CAPABILITY,
 } from "../../client/capabilities.js";
-import { type ChatMode, chat, isMissingChatApi, type SessionDiffStats } from "../../client/chat.js";
+import {
+  CHAT_MODES,
+  type ChatMode,
+  chat,
+  isMissingChatApi,
+  type SessionDiffStats,
+} from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
-import { Composer } from "./Composer.js";
+import { BASE_MODES, Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
 import { forkReportLines, rememberForkReport, rewindReportLines, takeForkReport } from "./fork.js";
 import { ChatHeader, type CompactControl, type RewindControl } from "./Header.js";
@@ -200,6 +207,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
   const canRewind = capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
+  const modes: readonly ChatMode[] =
+    capabilities?.includes(PLAN_MODE_CAPABILITY) === true ? CHAT_MODES : BASE_MODES;
 
   // Line counts follow the edited files; a turn that ends may also have changed them on disk.
   const [diff, setDiff] = useState<SessionDiffStats | null>(null);
@@ -431,6 +440,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             {...(draft ? {} : { onFork: fork })}
             onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
+            onReviewPlan={(id, review) =>
+              decide(id, () => chat.reviewPlan(key, sessionId, id, review))
+            }
           />
           {actionError && (
             <p className="notice error" role="alert">
@@ -451,6 +463,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           onStop={interrupt}
           onModel={(model) => update({ model })}
           onMode={(mode) => update({ mode })}
+          modes={modes}
           loadModels={loadModels}
           loadMentions={loadMentions}
         />

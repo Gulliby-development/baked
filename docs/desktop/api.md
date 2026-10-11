@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`) and `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`) and `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -30,7 +30,7 @@ A session is a chat conversation stored in `.baked/sessions/ID/` of the project,
 ### Types
 
 ```ts
-type Mode = "default" | "architect" | "auto";            // "plan" is not offered over the API yet
+type Mode = "default" | "architect" | "plan" | "auto";   // "plan" needs the plan-mode capability
 type SessionState = "idle" | "working" | "waiting";        // waiting: a prompt waits for a person
 
 interface SessionSummary {
@@ -53,6 +53,7 @@ interface SessionDetail extends SessionSummary {
   usage: { input: number; output: number; cacheRead: number };   // whole session
   context: { usedTokens: number; windowTokens: number; percent: number } | null;
   filesEdited: string[];    // paths the session's edit tools wrote, as the tools named them
+  plan: Plan | null;        // the plan being reviewed or carried out
   redo: { index: number; prompt: string }[];   // undone turns Redo puts back, oldest first
   lastSeq: number;          // subscribe to events with ?after=lastSeq to miss nothing
 }
@@ -79,10 +80,34 @@ type Prompt = { id: string; createdAt: number } & (
   | { kind: "fetch-page"; url: string }                          // approve or deny
   | { kind: "question"; question: string; allowSkip: boolean;
       options: { label: string; value: string; description?: string }[] }   // answer
+  | { kind: "plan-review"; title: string; depth: "light" | "full";
+      steps: { id: string; label: string }[];
+      planFile: string;     // relative to the project, e.g. .baked/plans/ID.md
+      content: string }     // the plan as Markdown; answer with an action
 );
+
+interface Plan {
+  title: string;
+  depth: "light" | "full";
+  steps: { id: string; label: string; status: "pending" | "active" | "done" | "skipped"; startedAt?: number }[];
+  createdAt: number;
+}
 ```
 
 In `default` and `architect` mode, writes outside the project, destructive commands, web searches and page fetches wait for a prompt answer, exactly as the terminal UI asks. `auto` approves them without asking. A prompt waits until it is answered or the turn is interrupted; interrupting denies every pending prompt.
+
+### Plan mode
+
+In `plan` mode the agent works as in the terminal UI's [plan mode](../guide.md#modes-and-plan-mode): it researches without editing and writes a plan to `.baked/plans/`, which waits as a `plan-review` prompt. The session's `plan` (and a `plan` event) shows the proposed plan. Answer the prompt with `{action}`:
+
+| `action` | Effect | `prompt-resolved` `outcome` |
+| --- | --- | --- |
+| `execute` | The turn ends as `completed`, the session switches to `default` mode, a `system` note "Plan accepted — executing." joins the transcript (`notice` event), and a new turn starts at once with the plan file's current text (edits made to the file during the review count); its user message in the transcript reads "Execute the plan: TITLE", while the model receives the whole plan. That turn keeps to the plan's tools and marks steps as it goes; each change is a `plan` event | `approved` |
+| `clear-execute` | As `execute`, but the conversation sent to the model starts over with the plan; the transcript keeps every message | `approved` |
+| `revise` | Needs `feedback` (text). The agent revises the plan in the same turn and asks again with a new prompt | `answered` |
+| `cancel` | The agent stops, the session switches to `default` mode and the note "Plan cancelled: TITLE" joins the transcript | `denied` |
+
+`prompt-resolved` of a plan review also carries `action`. Interrupting a turn while its plan waits for review ends the turn and keeps `plan` mode. A plan the agent makes in another mode is carried out without a review, as before. When a turn ends without an accepted plan, and when the turn that carried one out ends, `plan` becomes null.
 
 ### Endpoints
 
@@ -98,7 +123,7 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `POST /v1/sessions/ID/redo` | `{force?}` | `SessionDetail` plus `rollback` after putting back the oldest undone turn and restoring the files it edited to their state after that turn. 409 `SESSION_BUSY` as for undo, 409 `NOTHING_TO_REDO` when nothing was undone |
 | `POST /v1/sessions/ID/messages` | `{text}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the text is steered into it at its next step |
 | `POST /v1/sessions/ID/interrupt` | | `{interrupted: boolean}` |
-| `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
+| `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}`, `{answer: string}` or, for a `plan-review`, `{action: "execute" \| "clear-execute" \| "revise" \| "cancel", feedback?: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended, 400 for a body that does not fit the prompt's kind or a `revise` without `feedback`. `answer: ""` skips a question that allows it |
 | `POST /v1/sessions/ID/compact` | `{}` | 202 `{compactionId}`; the compaction runs in the background and reports with `compaction-start` and `compaction-done`. 409 `SESSION_BUSY` while a turn or a compaction runs, 409 `NOTHING_TO_COMPACT` when the conversation is too short, 501 `NOT_SUPPORTED` when the server cannot compact |
 | `GET /v1/sessions/ID/diff` | | `SessionDiffStats` below |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
@@ -147,7 +172,9 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `steering` | `turnId`, `message` (the steered user `ChatMessage`) |
 | `rewind` | `action` (`undo` or `redo`), `checkpoint` (the checkpoint undone to, or the turn redone), `messageCount`: the transcript changed; fetch `GET /v1/sessions/ID` |
 | `prompt` | `prompt` (`Prompt`) |
-| `prompt-resolved` | `promptId`, `outcome` (`approved`, `denied`, `answered`, `skipped`) |
+| `prompt-resolved` | `promptId`, `outcome` (`approved`, `denied`, `answered`, `skipped`), `action?` (how a `plan-review` was answered) |
+| `plan` | `plan` (`Plan`, or null when it is cleared) when the agent proposes a plan or a step changes status |
+| `notice` | `message` (a `system` `ChatMessage` added to the transcript, such as "Plan accepted — executing."); it follows the `turn-done` of the turn it ends |
 | `step` | `turnId`, `step`, `usage` (this turn so far) |
 | `turn-done` | `turnId`, `status` (`completed`, `interrupted`, `failed`), `error?`, `message` (the assistant `ChatMessage`, null when nothing was produced), `usage`, `durationMs` |
 | `compaction-start` | `compactionId` |
@@ -257,6 +284,6 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 
 ## Not in this contract yet
 
-- Plan mode and its plan review in chat, image attachments, and browsing the checkpoints of a chat. The desktop hides these controls until a later version of this contract adds them.
+- Image attachments and browsing the checkpoints of a chat. The desktop hides these controls until a later version of this contract adds them.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.

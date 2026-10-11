@@ -140,6 +140,7 @@ export function createMockBridge(): DesktopBridge {
             "routing",
             "compaction",
             "diff-stats",
+            "plan-mode",
             "chat-undo",
           ],
         });

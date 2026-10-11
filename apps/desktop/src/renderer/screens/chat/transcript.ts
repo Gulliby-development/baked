@@ -2,9 +2,11 @@ import type { StreamEvent } from "../../../shared/api.js";
 import type {
   ChatEvent,
   ChatMessage,
+  ChatPlan,
   ChatPrompt,
   ContextFill,
   MessageSegment,
+  PlanAction,
   PromptOutcome,
   RedoTurn,
   SessionDetail,
@@ -23,6 +25,8 @@ export interface TranscriptPrompt {
   prompt: ChatPrompt;
   /** Set once the prompt was answered; resolved prompts stay visible until the turn ends. */
   outcome?: PromptOutcome;
+  /** How a plan review was answered. */
+  action?: PlanAction;
 }
 
 export interface Transcript {
@@ -49,6 +53,8 @@ export interface Transcript {
   thinkingSince: number | null;
   /** A manual compaction ("Compact now") is running. */
   compacting: boolean;
+  /** The plan being reviewed or carried out, with its step statuses. */
+  plan: ChatPlan | null;
   /** Turns an undo dropped that Redo puts back, oldest first. */
   redo: RedoTurn[];
 }
@@ -69,6 +75,8 @@ const EVENT_TYPES = new Set([
   "rewind",
   "prompt",
   "prompt-resolved",
+  "plan",
+  "notice",
   "step",
   "turn-done",
   "compaction-start",
@@ -116,13 +124,24 @@ export function emptyTranscript(): Transcript {
     thoughtMs: {},
     thinkingSince: null,
     compacting: false,
+    plan: null,
     redo: [],
   };
 }
 
 export function fromDetail(detail: SessionDetail, previous?: Transcript): Transcript {
-  const { messages, prompts, queued, usage, context, filesEdited, lastSeq, redo, ...session } =
-    detail;
+  const {
+    messages,
+    prompts,
+    queued,
+    usage,
+    context,
+    filesEdited,
+    lastSeq,
+    plan,
+    redo,
+    ...session
+  } = detail;
   const compacting = session.compacting === true;
   const working = session.state !== "idle" && !compacting;
   return {
@@ -134,6 +153,7 @@ export function fromDetail(detail: SessionDetail, previous?: Transcript): Transc
     context,
     filesEdited,
     lastSeq,
+    plan: plan ?? null,
     // A turn that runs while the page loads: its finished message arrives with `turn-done`.
     turnId: working ? "running" : null,
     compacting,
@@ -326,9 +346,16 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
       return {
         ...state,
         prompts: state.prompts.map((p) =>
-          p.prompt.id === event.promptId ? { ...p, outcome: event.outcome } : p,
+          p.prompt.id === event.promptId
+            ? { ...p, outcome: event.outcome, ...(event.action ? { action: event.action } : {}) }
+            : p,
         ),
       };
+    case "plan":
+      return { ...state, plan: event.plan };
+    case "notice":
+      if (state.messages.some((m) => m.id === event.message.id)) return state;
+      return { ...state, messages: [...state.messages, event.message] };
     case "step":
       return { ...state, turnUsage: event.usage };
     case "turn-done": {

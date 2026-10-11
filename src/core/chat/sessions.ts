@@ -12,6 +12,11 @@
  * a turn runs is steered into the turn at its next step, or starts the next turn if the turn ends
  * first.
  *
+ * In plan mode the agent researches and proposes a plan, which waits as a `plan-review` prompt as the
+ * terminal UI's plan review does: executing it switches the session to default mode and starts a
+ * turn that carries out the plan, revising sends the feedback back to the agent, and cancelling
+ * leaves plan mode.
+ *
  * Undo drops the last turns and restores the files they edited, redo puts the oldest undone turn
  * back (see `src/core/checkpoints/undo.ts`); the undone turns are saved with the session until a
  * new turn starts.
@@ -20,6 +25,8 @@
  * terminal UI's `/compact` does; the transcript keeps every message and gains a note. Messages sent
  * while it runs wait and start the next turn when it ends.
  */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import { logBackgroundError } from "../../stores/errors.js";
 import type {
@@ -30,6 +37,8 @@ import type {
   InputContextItem,
   InteractiveCallbacks,
   MessageSegment,
+  Plan,
+  PlanReviewAction,
   ToolCall,
   ToolResult,
 } from "../../types/index.js";
@@ -61,8 +70,15 @@ import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
 import type { MentionSuggestion } from "./mention-suggest.js";
 
-export const CHAT_MODES = ["default", "architect", "auto"] as const;
+export const CHAT_MODES = ["default", "architect", "plan", "auto"] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
+/** How a person answers a `plan-review` prompt. */
+export const PLAN_ACTIONS = ["execute", "clear-execute", "revise", "cancel"] as const;
+export type PlanAction = (typeof PLAN_ACTIONS)[number];
+export type PromptAnswer =
+  | { approve: boolean }
+  | { answer: string }
+  | { action: PlanAction; feedback?: string };
 export type SessionState = "idle" | "working" | "waiting";
 
 /** Tool output carried by a `tool-result` event; the saved message keeps all of it. */
@@ -81,6 +97,16 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       question: string;
       allowSkip: boolean;
       options: { label: string; value: string; description?: string }[];
+    }
+  | {
+      kind: "plan-review";
+      title: string;
+      depth: Plan["depth"];
+      steps: { id: string; label: string }[];
+      /** The plan file, relative to the workspace. */
+      planFile: string;
+      /** The plan as Markdown. */
+      content: string;
     }
 );
 type PromptBody = ChatPrompt extends infer P
@@ -116,6 +142,8 @@ export interface SessionDetail extends SessionSummary {
   usage: Usage;
   context: { usedTokens: number; windowTokens: number; percent: number } | null;
   filesEdited: string[];
+  /** The plan the agent proposed or is carrying out, with its step statuses. */
+  plan: Plan | null;
   /** Turns an undo dropped that a redo can put back, oldest first. */
   redo: { index: number; prompt: string }[];
   lastSeq: number;
@@ -149,8 +177,12 @@ export type ChatEventBody =
   | {
       type: "prompt-resolved";
       promptId: string;
-      outcome: "approved" | "denied" | "answered" | "skipped";
+      outcome: PromptOutcome;
+      /** How a `plan-review` prompt was answered. */
+      action?: PlanAction;
     }
+  | { type: "plan"; plan: Plan | null }
+  | { type: "notice"; message: ChatMessage }
   | { type: "step"; turnId: string; step: number; usage: Usage }
   | {
       type: "turn-done";
@@ -175,6 +207,7 @@ export type ChatEventBody =
     }
   | { type: "session"; session: SessionSummary };
 export type CompactionStatus = "compacted" | "skipped" | "failed" | "interrupted";
+export type PromptOutcome = "approved" | "denied" | "answered" | "skipped";
 export type ChatEvent = ChatEventBody & { seq: number; at: number };
 
 /** The part of an agent stream result a turn reads; `createBakeAgent` agents satisfy it. */
@@ -193,6 +226,8 @@ export interface TurnAgentRequest {
   sessionId: string;
   modelId: string;
   mode: ChatMode;
+  /** The turn carries out an accepted plan: the agent keeps to the plan's tools. */
+  planExecution: boolean;
   callbacks: InteractiveCallbacks;
   onApproveOutsideCwd: (toolName: string, path: string) => Promise<boolean>;
   onApproveDestructive: (description: string) => Promise<boolean>;
@@ -298,9 +333,46 @@ function toolResultOf(output: unknown): ToolResult {
 /** Ends a turn before the model runs, without counting as a failure. */
 class SkipTurn extends Error {}
 
+type PlanChoice = { action: PlanAction; feedback?: string };
+type PromptValue = boolean | string | PlanChoice;
+
 interface Pending {
   prompt: ChatPrompt;
-  resolve: (value: boolean | string) => void;
+  resolve: (value: PromptValue) => void;
+}
+
+/** What happens once a turn whose plan was reviewed ends. */
+interface PlanFollowUp {
+  action: "execute" | "clear-execute" | "cancel";
+  plan: Plan;
+  content: string;
+}
+
+/** The value of a prompt nobody answered: interrupted or denied. */
+function unanswered(kind: ChatPrompt["kind"]): PromptValue {
+  return kind === "question" || kind === "plan-review" ? "__skipped__" : false;
+}
+
+/** The first message of a turn that carries out an accepted plan, as the terminal UI sends it. */
+export function planExecutionPrompt(plan: Plan, content: string): string {
+  const apply =
+    plan.depth === "light"
+      ? "2. Read the target files, then apply the changes described in the step details."
+      : "2. Apply edits: each step has old→new diffs — use edit_file with the exact old/new text.";
+  const note =
+    plan.depth === "light"
+      ? "This is a light plan — read files as needed before editing."
+      : "All file content is included in the code_snippets below. Edits are pre-validated against this content.";
+  return [
+    "Execute this plan. The checklist is already live in the UI.",
+    "Workflow per step:",
+    '1. update_plan_step(stepId, "active")',
+    apply,
+    "3. Run shell commands from the step if present.",
+    '4. update_plan_step(stepId, "done")',
+    "",
+    `${note}\n\n${content}`,
+  ].join("\n");
 }
 
 interface TurnState {
@@ -328,6 +400,10 @@ export class ChatSession {
   private turnDone: Promise<void> = Promise.resolve();
   private readonly prompts = new Map<string, Pending>();
   private queue: string[] = [];
+  private plan: Plan | null = null;
+  private planFollowUp: PlanFollowUp | null = null;
+  /** The next turn carries out this accepted plan. */
+  private executingPlan: Plan | null = null;
   private events: ChatEvent[] = [];
   private seq = 0;
   private readonly listeners = new Set<(event: ChatEvent) => void>();
@@ -448,6 +524,7 @@ export class ChatSession {
       usage: { ...this.usage },
       context: this.context,
       filesEdited: editedFiles(this.messages),
+      plan: this.plan,
       redo: this.redoTurns.map((t) => ({
         index: t.index,
         prompt: t.messages[0]?.content.split("\n")[0]?.slice(0, 120) ?? "",
@@ -707,12 +784,30 @@ export class ChatSession {
     return this.turnDone;
   }
 
-  answer(promptId: string, body: { approve: boolean } | { answer: string }): void {
+  answer(promptId: string, body: PromptAnswer): void {
     const pending = this.prompts.get(promptId);
     if (!pending) {
       throw new ChatError("STALE_PROMPT", `Prompt ${promptId} is not waiting for an answer`);
     }
     const { prompt } = pending;
+    if (prompt.kind === "plan-review") {
+      if (!("action" in body))
+        throw new ChatError("INVALID_REQUEST", "Answer a plan review with {action}");
+      const feedback = body.feedback?.trim();
+      if (body.action === "revise" && !feedback)
+        throw new ChatError("INVALID_REQUEST", "Say what to change in feedback");
+      const outcome: PromptOutcome =
+        body.action === "revise" ? "answered" : body.action === "cancel" ? "denied" : "approved";
+      this.settlePrompt(
+        promptId,
+        { action: body.action, ...(body.action === "revise" && feedback ? { feedback } : {}) },
+        outcome,
+        body.action,
+      );
+      return;
+    }
+    if ("action" in body)
+      throw new ChatError("INVALID_REQUEST", "Only a plan review takes {action}");
     if (prompt.kind === "question") {
       if (!("answer" in body))
         throw new ChatError("INVALID_REQUEST", "Answer a question with {answer}");
@@ -736,26 +831,26 @@ export class ChatSession {
 
   private settlePrompt(
     promptId: string,
-    value: boolean | string,
-    outcome: "approved" | "denied" | "answered" | "skipped",
+    value: PromptValue,
+    outcome: PromptOutcome,
+    action?: PlanAction,
   ): void {
     const pending = this.prompts.get(promptId);
     if (!pending) return;
     this.prompts.delete(promptId);
     pending.resolve(value);
-    this.emit({ type: "prompt-resolved", promptId, outcome });
+    this.emit({ type: "prompt-resolved", promptId, outcome, ...(action ? { action } : {}) });
     this.emitSession();
   }
 
   private denyPrompts(): void {
     for (const [id, pending] of [...this.prompts]) {
-      this.settlePrompt(id, pending.prompt.kind === "question" ? "__skipped__" : false, "denied");
+      this.settlePrompt(id, unanswered(pending.prompt.kind), "denied");
     }
   }
 
-  private ask(body: PromptBody): Promise<boolean | string> {
-    if (this.turn?.abort.signal.aborted)
-      return Promise.resolve(body.kind === "question" ? "__skipped__" : false);
+  private ask(body: PromptBody): Promise<PromptValue> {
+    if (this.turn?.abort.signal.aborted) return Promise.resolve(unanswered(body.kind));
     const prompt = { ...body, id: crypto.randomUUID(), createdAt: Date.now() } as ChatPrompt;
     return new Promise((resolve) => {
       this.prompts.set(prompt.id, { prompt, resolve });
@@ -764,13 +859,62 @@ export class ChatSession {
     });
   }
 
-  private approvalCallbacks(): Omit<TurnAgentRequest, "sessionId" | "modelId" | "mode"> {
+  private setPlan(plan: Plan | null): void {
+    this.plan = plan;
+    this.emit({ type: "plan", plan });
+  }
+
+  /** Waits for a person to review a plan made in plan mode; plans made in other modes go ahead. */
+  private async reviewPlan(
+    plan: Plan,
+    planFile: string,
+    content: string,
+  ): Promise<PlanReviewAction> {
+    if (this.mode !== "plan") return "execute";
+    const value = await this.ask({
+      kind: "plan-review",
+      title: plan.title,
+      depth: plan.depth,
+      steps: plan.steps.map(({ id, label }) => ({ id, label })),
+      planFile,
+      content,
+    });
+    // Interrupted: the turn ends and the session stays in plan mode.
+    if (typeof value !== "object") return "cancel";
+    if (value.action === "revise") return value.feedback ?? "Revise the plan.";
+    if (value.action === "cancel") {
+      this.planFollowUp = { action: "cancel", plan, content };
+      return "cancel";
+    }
+    // The plan file may have been edited during the review; carry out what it says now.
+    const latest = await readFile(join(this.owner.workspace, planFile), "utf-8").catch(
+      () => content,
+    );
+    this.planFollowUp = { action: value.action, plan, content: latest };
+    // The plan runs in a turn of its own, outside plan mode, so this one stops here.
+    this.turn?.abort.abort();
+    return value.action === "clear-execute" ? "clear_execute" : "execute";
+  }
+
+  private approvalCallbacks(): Omit<
+    TurnAgentRequest,
+    "sessionId" | "modelId" | "mode" | "planExecution"
+  > {
     const approve = async (body: PromptBody): Promise<boolean> => (await this.ask(body)) === true;
     const callbacks: InteractiveCallbacks = {
-      onPlanCreate: () => {},
-      onPlanStepUpdate: () => {},
-      // Plan mode is not offered over the API; a plan made in another mode goes ahead.
-      onPlanReview: async () => "execute",
+      onPlanCreate: (plan) => this.setPlan({ ...plan, steps: plan.steps.map((s) => ({ ...s })) }),
+      onPlanStepUpdate: (stepId, status) => {
+        if (!this.plan) return;
+        this.setPlan({
+          ...this.plan,
+          steps: this.plan.steps.map((s) =>
+            s.id === stepId
+              ? { ...s, status, ...(status === "active" ? { startedAt: Date.now() } : {}) }
+              : s,
+          ),
+        });
+      },
+      onPlanReview: (plan, planFile, content) => this.reviewPlan(plan, planFile, content),
       onAskUser: async (question, options, allowSkip) =>
         String(await this.ask({ kind: "question", question, options, allowSkip })),
       onWebSearchApproval: (query) => approve({ kind: "web-search", query }),
@@ -806,6 +950,9 @@ export class ChatSession {
 
   private async runTurn(turn: TurnState, text: string): Promise<void> {
     const started = Date.now();
+    const executing = this.executingPlan;
+    const planExecution = executing !== null;
+    this.executingPlan = null;
     // A new turn makes the undone turns unreachable: forget them and their snapshots.
     const staleRedo = this.redoTurns.length > 0;
     if (staleRedo) this.setTab({ redoTurns: [] });
@@ -813,7 +960,8 @@ export class ChatSession {
     let inputContext: InputContextItem[] | undefined;
     let send = true;
     const { host } = this.owner;
-    if (host.expandInput && hasInputReferences(text)) {
+    // A plan's text is not a typed message: its `@` and `!` are plan content.
+    if (host.expandInput && !executing && hasInputReferences(text)) {
       try {
         const expanded = await host.expandInput({
           sessionId: this.meta.id,
@@ -832,7 +980,8 @@ export class ChatSession {
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: text,
+      // The model gets the whole plan; the transcript names it, as the plan is shown above.
+      content: executing ? `Execute the plan: ${executing.title}` : text,
       timestamp: started,
       ...(inputContext ? { inputContext } : {}),
     };
@@ -889,6 +1038,7 @@ export class ChatSession {
         sessionId: this.meta.id,
         modelId: model,
         mode: this.mode,
+        planExecution,
         ...this.approvalCallbacks(),
       });
       const result = await agent.stream({
@@ -1001,6 +1151,10 @@ export class ChatSession {
     }
 
     this.denyPrompts();
+    const followUp = this.planFollowUp;
+    this.planFollowUp = null;
+    // An accepted plan stops its turn on purpose; the turn is complete, not interrupted.
+    if (followUp && followUp.action !== "cancel" && status === "interrupted") status = "completed";
     if (response.length === 0 && fullText.length > 0)
       response = [{ role: "assistant", content: fullText }];
     const steering = this.steered.map((content) => ({ role: "user" as const, content }));
@@ -1029,6 +1183,8 @@ export class ChatSession {
       output: this.usage.output + usage.output,
       cacheRead: this.usage.cacheRead + usage.cacheRead,
     };
+    const notice = followUp ? this.applyPlanFollowUp(followUp) : null;
+    if (!notice?.execute && this.plan) this.setPlan(null);
     this.turn = null;
     await this.owner.persist(this);
     this.emit({
@@ -1040,7 +1196,17 @@ export class ChatSession {
       usage,
       durationMs: Date.now() - started,
     });
+    if (notice) this.emit({ type: "notice", message: notice.message });
     this.emitSession();
+    if (notice?.execute) {
+      // The accepted plan runs first; messages sent meanwhile are steered into it.
+      const queued = this.queue;
+      this.queue = [];
+      this.executingPlan = notice.execute.plan;
+      this.send(notice.execute.prompt);
+      this.queue.push(...queued);
+      return;
+    }
     // Text that arrived after the last step of the turn starts the next one.
     if (this.queue.length > 0 && status === "completed") {
       // Messages with `@` or `!` start a turn of their own so their expansion stays separate.
@@ -1054,6 +1220,43 @@ export class ChatSession {
     } else this.queue = [];
   }
 
+  /**
+   * Leaves plan mode after a reviewed plan, as the terminal UI does, and returns the transcript note
+   * and, for an accepted plan, the message that starts the turn carrying it out.
+   */
+  private applyPlanFollowUp(followUp: PlanFollowUp): {
+    message: ChatMessage;
+    execute: { plan: Plan; prompt: string } | null;
+  } {
+    this.mode = "default";
+    let content: string;
+    let execute: { plan: Plan; prompt: string } | null = null;
+    if (followUp.action === "cancel") content = `Plan cancelled: ${followUp.plan.title}`;
+    else {
+      if (followUp.action === "clear-execute") {
+        this.core = [];
+        this.context = null;
+      }
+      content =
+        followUp.action === "clear-execute"
+          ? "Context cleared — executing the plan with fresh context."
+          : "Plan accepted — executing.";
+      execute = {
+        plan: followUp.plan,
+        prompt: planExecutionPrompt(followUp.plan, followUp.content),
+      };
+    }
+    const message: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "system",
+      content,
+      timestamp: Date.now(),
+      showInChat: true,
+    };
+    this.messages = [...this.messages, message];
+    return { message, execute };
+  }
+
   /** The state to save: the meta with this tab's model, mode and usage, and every tab's messages. */
   snapshot(): {
     meta: SessionMeta;
@@ -1065,6 +1268,7 @@ export class ChatSession {
       ...this.tab,
       activeModel: this.model ?? "none",
       bakeMode: this.mode,
+      planMode: this.mode === "plan",
       tokenUsage: {
         ...this.tab.tokenUsage,
         prompt: this.usage.input,
@@ -1192,7 +1396,7 @@ export class ChatService {
           label: "Desktop",
           activeModel: input.model ?? this.defaultModel ?? "none",
           sessionId: id,
-          planMode: false,
+          planMode: input.mode === "plan",
           planRequest: null,
           coAuthorCommits: false,
           bakeMode: input.mode ?? "default",

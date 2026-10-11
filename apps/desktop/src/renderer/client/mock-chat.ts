@@ -4,8 +4,10 @@ import type {
   ChatEventBody,
   ChatMessage,
   ChatMode,
+  ChatPlan,
   ChatPrompt,
   MessageSegment,
+  PlanAction,
   SessionDetail,
   SessionDiffStats,
   SessionSummary,
@@ -16,7 +18,8 @@ import { type MockRoute, type MockStream, response } from "./mock-routes.js";
 /**
  * Sample chat sessions for the browser preview: a few sessions per sample project, one long
  * conversation like the mockup, and a scripted reply to every message that streams text, reasoning
- * and tool calls and waits for an approval and a question like a real turn.
+ * and tool calls and waits for an approval and a question like a real turn. In plan mode the
+ * reply proposes a plan and waits for its review; an accepted plan runs in a turn of its own.
  */
 
 const MINUTE = 60_000;
@@ -37,10 +40,13 @@ interface MockTurn {
   id: string;
   cancelled: boolean;
   startedAt: number;
-  waiters: Map<string, (value: boolean | string) => void>;
+  waiters: Map<string, (value: PromptValue) => void>;
   /** Pending waits and how to cancel each. */
   timers: Map<ReturnType<typeof setTimeout>, () => void>;
 }
+
+type PlanChoice = { action: PlanAction; feedback?: string };
+type PromptValue = boolean | string | PlanChoice;
 
 class Cancelled extends Error {}
 
@@ -312,6 +318,7 @@ function detail(session: MockSession): SessionDetail {
     usage: t.usage,
     context: t.context,
     filesEdited: t.filesEdited,
+    plan: t.plan,
     redo: (session.undone ?? []).map((messages, i) => ({
       index: turnStarts(t.messages).length + i + 1,
       prompt: messages[0]?.content.split("\n")[0] ?? "",
@@ -398,7 +405,7 @@ function wait(turn: MockTurn, ms: number): Promise<void> {
   });
 }
 
-function ask(session: MockSession, turn: MockTurn, prompt: ChatPrompt): Promise<boolean | string> {
+function ask(session: MockSession, turn: MockTurn, prompt: ChatPrompt): Promise<PromptValue> {
   return new Promise((resolve, reject) => {
     if (turn.cancelled) return reject(new Cancelled());
     turn.waiters.set(prompt.id, resolve);
@@ -530,7 +537,82 @@ async function script(session: MockSession, turn: MockTurn, text: string): Promi
   );
 }
 
-async function startTurn(session: MockSession, text: string): Promise<string> {
+const PLAN_STEPS = [
+  { id: "1", label: "Move the retry counter into ChainEntry" },
+  { id: "2", label: "Ask the chain for the next model after the last retry" },
+  { id: "3", label: "Cover fallback and exhausted chain in tests/router.test.ts" },
+];
+
+function mockPlan(title: string): ChatPlan {
+  return {
+    title,
+    depth: "light",
+    steps: PLAN_STEPS.map((s) => ({ ...s, status: "pending" })),
+    createdAt: Date.now(),
+  };
+}
+
+/** Plan mode: researches, proposes a plan and waits for its review. */
+async function planScript(
+  session: MockSession,
+  turn: MockTurn,
+  text: string,
+): Promise<PlanChoice | null> {
+  await say(session, turn, "I'll read the router before proposing anything.", "reasoning");
+  await runTool(session, turn, "read", { files: [{ path: "src/core/llm/router.ts" }] }, "1 file");
+  let feedback: string | null = null;
+  for (;;) {
+    const title = feedback ? "Per-model retries (revised)" : "Per-model retries";
+    const plan = mockPlan(title);
+    emit(session, { type: "plan", plan });
+    const content = [
+      `# ${title}`,
+      "",
+      "## Context",
+      "",
+      `Request: ${text}${feedback ? `\n\nRevised for: ${feedback}` : ""}`,
+      "",
+      "## Steps",
+      ...PLAN_STEPS.map((s) => `### ${s.id}. ${s.label}`),
+    ].join("\n");
+    const value = await ask(session, turn, {
+      id: nextId("prompt"),
+      createdAt: Date.now(),
+      kind: "plan-review",
+      title,
+      depth: plan.depth,
+      steps: PLAN_STEPS,
+      planFile: ".baked/plans/mock.md",
+      content,
+    });
+    if (typeof value !== "object") return null;
+    if (value.action !== "revise") return value;
+    feedback = value.feedback ?? "changes";
+    await say(session, turn, "Updating the plan.", "reasoning");
+  }
+}
+
+/** Carries out the accepted plan step by step. */
+async function executeScript(session: MockSession, turn: MockTurn): Promise<void> {
+  let plan = session.transcript.plan;
+  for (const step of PLAN_STEPS) {
+    if (!plan) break;
+    const mark = (status: "active" | "done"): void => {
+      if (!plan) return;
+      plan = {
+        ...plan,
+        steps: plan.steps.map((s) => (s.id === step.id ? { ...s, status } : s)),
+      };
+      emit(session, { type: "plan", plan });
+    };
+    mark("active");
+    await say(session, turn, `${step.label}.\n\n`);
+    mark("done");
+  }
+  await say(session, turn, "All three steps are done and the router tests pass.");
+}
+
+async function startTurn(session: MockSession, text: string, executing = false): Promise<string> {
   const turn: MockTurn = {
     id: nextId("turn"),
     cancelled: false,
@@ -547,8 +629,11 @@ async function startTurn(session: MockSession, text: string): Promise<string> {
   emitSession(session);
   void (async () => {
     let status: "completed" | "interrupted" = "completed";
+    let choice: PlanChoice | null = null;
     try {
-      await script(session, turn, text);
+      if (executing) await executeScript(session, turn);
+      else if (session.summary.mode === "plan") choice = await planScript(session, turn, text);
+      else await script(session, turn, text);
     } catch (error) {
       if (!(error instanceof Cancelled)) throw error;
       status = "interrupted";
@@ -580,7 +665,33 @@ async function startTurn(session: MockSession, text: string): Promise<string> {
         },
       };
     }
-    emitSession(session);
+    if (choice) {
+      // A reviewed plan leaves plan mode; an accepted one runs in the next turn.
+      session.summary = { ...session.summary, mode: "default" };
+      const run = choice.action === "execute" || choice.action === "clear-execute";
+      emit(session, {
+        type: "notice",
+        message: {
+          id: nextId("m"),
+          role: "system",
+          content: run ? "Plan accepted — executing." : "Plan cancelled: Per-model retries",
+          timestamp: Date.now(),
+        },
+      });
+      if (!run) emit(session, { type: "plan", plan: null });
+      emitSession(session);
+      if (run) {
+        void startTurn(
+          session,
+          `Execute the plan: ${session.transcript.plan?.title ?? "plan"}`,
+          true,
+        );
+        return;
+      }
+    } else {
+      if (session.transcript.plan) emit(session, { type: "plan", plan: null });
+      emitSession(session);
+    }
     if (session.queue.length > 0 && status === "completed")
       void startTurn(session, session.queue.splice(0).join("\n\n"));
     else session.queue = [];
@@ -802,8 +913,25 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   const resolve = sub ? session.turn?.waiters.get(sub) : undefined;
   if (!sub || !resolve)
     return response(409, { error: { code: "STALE_PROMPT", message: "Not waiting" } });
-  const answer = (body ?? {}) as { approve?: boolean; answer?: string };
+  const answer = (body ?? {}) as {
+    approve?: boolean;
+    answer?: string;
+    action?: PlanAction;
+    feedback?: string;
+  };
   session.turn?.waiters.delete(sub);
+  if (answer.action) {
+    const action = answer.action;
+    emit(session, {
+      type: "prompt-resolved",
+      promptId: sub,
+      outcome: action === "revise" ? "answered" : action === "cancel" ? "denied" : "approved",
+      action,
+    });
+    emitSession(session);
+    resolve({ action, ...(answer.feedback ? { feedback: answer.feedback } : {}) });
+    return response(200, { resolved: true });
+  }
   const outcome =
     answer.answer !== undefined
       ? answer.answer === ""

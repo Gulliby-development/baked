@@ -110,6 +110,7 @@ const KIND_LABEL: Record<string, string> = {
   "web-search": "web search",
   "fetch-page": "page fetch",
   question: "question",
+  "plan-review": "plan review",
   split_approval: "plan approval",
 };
 

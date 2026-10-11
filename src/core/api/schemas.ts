@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CHAT_MODES } from "../chat/sessions.js";
+import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 
@@ -131,6 +131,7 @@ export const CompactBody = z.strictObject({});
 export const PromptAnswerBody = z.union([
   z.strictObject({ approve: z.boolean() }),
   z.strictObject({ answer: z.string().max(20_000) }),
+  z.strictObject({ action: z.enum(PLAN_ACTIONS), feedback: z.string().max(20_000).optional() }),
 ]);
 export const SessionListQuery = z.strictObject({ limit: z.string().regex(/^\d+$/).optional() });
 export const ModelsQuery = z.strictObject({ provider: z.string().min(1).optional() });
