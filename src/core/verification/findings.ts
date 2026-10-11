@@ -10,6 +10,16 @@ export function fingerprint(finding: Review["findings"][number]): string {
     claim: finding.claim.trim().replace(/\s+/g, " ").toLowerCase(),
   });
 }
+/**
+ * Whether a review or convergence finding may start a correction. An edge case of a standard or
+ * convention the spec does not name stays a note: run de6cf1ab spent every repair round on ISO 8601
+ * forms a link shortener never needed. Security findings and critical ones still block.
+ */
+export function findingBlocks(finding: Review["findings"][number]): boolean {
+  return (
+    finding.basis !== "inferred" || finding.kind === "security" || finding.severity === "critical"
+  );
+}
 export function requiresSecurityReview(paths: string[], forced: boolean): boolean {
   return (
     forced ||

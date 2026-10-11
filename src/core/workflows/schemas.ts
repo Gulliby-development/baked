@@ -414,6 +414,13 @@ export const ReviewSchema = z
               "unrequested",
             ]),
             severity: z.enum(["critical", "high", "medium", "low"]),
+            /**
+             * `spec` when the request, a requirement or a criterion names the behavior or input that
+             * fails; `inferred` when the finding comes from a standard, convention or general
+             * robustness the spec does not name. Inferred findings are notes unless they are
+             * security findings or critical. A finding without a basis counts as `spec`.
+             */
+            basis: z.enum(["spec", "inferred"]).optional(),
             requirementIds: z.array(RequirementId),
             criterionIds: z.array(CriterionId),
             file: RelativePath.nullable(),
