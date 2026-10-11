@@ -59,6 +59,7 @@ import {
 import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
+import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { memoryRoute } from "./memory-routes.js";
@@ -116,6 +117,7 @@ export const CAPABILITIES = [
   "skills-install",
   "custom-commands",
   "settings",
+  "git",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -413,6 +415,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   };
   /** The latest on-demand result of each check. */
   const checkResults = new Map<string, CheckRunRecord>();
+  const gitQueue: { tail: Promise<unknown> } = { tail: Promise.resolve() };
 
   /** Runs that have not ended and froze `absolutePath` as an input. */
   function runsFreezing(absolutePath: string): string[] {
@@ -754,6 +757,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         store: service.store,
         results: checkResults,
         signal: shutdown.signal,
+      })) ??
+      (await gitRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        store: service.store,
+        queue: gitQueue,
       })) ??
       (await setupRoute({
         ...ctx,

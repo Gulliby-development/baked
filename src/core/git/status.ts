@@ -3,7 +3,7 @@ import { buildSafeEnv } from "../spawn.js";
 
 const encoder = new TextEncoder();
 
-interface GitStatus {
+export interface GitStatus {
   isRepo: boolean;
   branch: string | null;
   isDirty: boolean;
@@ -15,7 +15,7 @@ interface GitStatus {
   behind: number;
 }
 
-interface GitLogEntry {
+export interface GitLogEntry {
   hash: string;
   subject: string;
   date: string;
@@ -39,6 +39,33 @@ export function run(
     proc.stdout?.on("data", (d: Buffer) => chunks.push(d.toString()));
     proc.on("close", (code) => resolve({ ok: code === 0, stdout: chunks.join("") }));
     proc.on("error", () => resolve({ ok: false, stdout: "" }));
+  });
+}
+
+/**
+ * Like `run`, but keeps stderr too: push, pull, stash and checkout report progress and failures
+ * there, and the Git menu shows that text when a step fails. Both pipes are drained as they fill.
+ */
+export function runGit(
+  args: string[],
+  cwd: string,
+  timeout = 5_000,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const proc = spawn("git", args, {
+      cwd,
+      timeout,
+      env: buildSafeEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    proc.stdout?.on("data", (d: Buffer) => out.push(d.toString()));
+    proc.stderr?.on("data", (d: Buffer) => err.push(d.toString()));
+    proc.on("close", (code) =>
+      resolve({ ok: code === 0, stdout: out.join(""), stderr: err.join("") }),
+    );
+    proc.on("error", (error) => resolve({ ok: false, stdout: "", stderr: error.message }));
   });
 }
 
@@ -234,13 +261,20 @@ export function setCoAuthorEnabled(enabled: boolean) {
   _coAuthorEnabled = enabled;
 }
 
+/** The text Git records: literal `\n` sequences become line breaks, then the optional trailer. */
+export function commitMessage(message: string, coAuthor = _coAuthorEnabled): string {
+  const cleaned = message.replace(/\\n/g, "\n");
+  return coAuthor ? `${cleaned}\n\n${CO_AUTHOR_LINE}` : cleaned;
+}
+
+/** `coAuthor` overrides the session-wide setting of `setCoAuthorEnabled`. */
 export async function gitCommit(
   cwd: string,
   message: string,
   amend?: boolean,
+  coAuthor = _coAuthorEnabled,
 ): Promise<{ ok: boolean; output: string }> {
-  const cleaned = message.replace(/\\n/g, "\n");
-  const fullMessage = _coAuthorEnabled ? `${cleaned}\n\n${CO_AUTHOR_LINE}` : cleaned;
+  const fullMessage = commitMessage(message, coAuthor);
   const args = amend ? ["commit", "--amend", "-m", fullMessage] : ["commit", "-m", fullMessage];
   const { ok, stdout } = await run(args, cwd);
   return { ok, output: stdout };
