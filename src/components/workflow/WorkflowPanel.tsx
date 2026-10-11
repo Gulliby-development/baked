@@ -377,6 +377,7 @@ export function WorkflowPanel({
         width={popupW}
         height={Math.min(40, height)}
         selectedId={initiativeId}
+        model={activeModel}
         onSelect={(id) => useWorkflowStore.getState().showInitiatives(id)}
         onBack={() => useWorkflowStore.getState().showHome()}
         onOpenRun={(id) => {

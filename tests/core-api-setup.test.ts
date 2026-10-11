@@ -148,6 +148,31 @@ describe("local API setup and workflow additions", () => {
     expect((await post("/v1/initiatives/missing/pause", { commandId: newId(), expectedRevision: 0 })).status).toBe(404);
     expect((await post("/v1/initiatives/missing/explode", {})).status).toBe(404);
     expect((await call("/v1/initiatives/missing/events", { headers: { Accept: "application/json" } })).status).toBe(404);
+    expect((await post("/v1/initiatives/missing/reroute", { commandId: newId(), expectedRevision: 0, model: "spare/model" })).status).toBe(404);
+  });
+
+  test("an initiative switches to another model over the API", async () => {
+    const { post } = await setup();
+    const feature = (id: string) => ({
+      id,
+      title: `Feature ${id}`,
+      boundary: { scope: id, paths: [`${id}.txt`] },
+      contract: `${id}.txt exists`,
+      dependsOn: [],
+      mandatory: true,
+    });
+    const plan = { schemaVersion: 1, title: "Values", goals: ["Values"], completionCriteria: ["Done"], features: ["a", "b", "c"].map(feature) };
+    const started = (await (await post("/v1/initiatives", { commandId: newId(), initiativeId: "big", prompt: "Add values", plan })).json()) as {
+      revision: number;
+      status: string;
+    };
+    expect(started.status).toBe("awaiting_approval");
+    expect((await post("/v1/initiatives/big/reroute", { commandId: newId(), expectedRevision: started.revision })).status).toBe(400);
+    const response = await post("/v1/initiatives/big/reroute", { commandId: newId(), expectedRevision: started.revision, model: "spare/model" });
+    expect(response.status).toBe(200);
+    const view = (await response.json()) as { model: string | null; planRevision: number };
+    expect(view.model).toBe("spare/model");
+    expect(view.planRevision).toBe(2);
   });
 
   test("known projects can be pinned, unpinned and forgotten", async () => {

@@ -77,6 +77,21 @@ describe("initiative view model", () => {
     expect(keys(initiativeView({ status: "completed" }), false, withRun)).toEqual([]);
     expect(keys(initiativeView({ next: { kind: "decide", featureId: "core", runId: "r1", message: "" } }))).toEqual(["pause"]);
   });
+
+  test("offers the tab's model as the initiative's new model while nothing executes", () => {
+    const models = (view: InitiativeView, driving = false, model: string | null = "spare/model") =>
+      initiativeActions(view, driving, null, model).filter((a) => a.action.kind === "reroute");
+    const [option] = models(initiativeView({ status: "paused" }));
+    expect(option?.key).toBe("M");
+    expect(option?.action).toEqual({ kind: "reroute", expectedRevision: 3, model: "spare/model" });
+    expect(option?.confirm).toContain("from the default model to spare/model");
+    expect(models(initiativeView({ model: "spare/model" }))).toEqual([]);
+    expect(models(initiativeView(), false, "none")).toEqual([]);
+    expect(models(initiativeView(), true)).toEqual([]);
+    expect(models(initiativeView({ status: "completed" }))).toEqual([]);
+    const running = featureView("core", { runId: "r1", runStatus: "running", state: "in_progress" });
+    expect(models(initiativeView({ features: [running] }))).toEqual([]);
+  });
 });
 
 describe("initiative commands through the view model", () => {
