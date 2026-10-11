@@ -14,6 +14,7 @@ const PATHS = {
   "working-set": "M2 11h20c0 5-4 9-10 9S2 16 2 11zM8 22h8M6 11c1.2-2.4 3.2-3.5 6-3.5M15 9l4-6.5",
   "run-memory":
     "M6 7h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2zM5 3h14v4H5zM6 11h12M9 15a1 1 0 1 0 2 0a1 1 0 1 0 -2 0zM13 17.5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0z",
+  skills: "M5 3h11l3 3v15H5zM9 13.5l1.8-.6.7-1.9.7 1.9 1.8.6-1.8.6-.7 1.9-.7-1.9zM9 8h6",
   attention: "M3.5 17a8.5 8.5 0 0 1 17 0zM2 17h20v3H2zM12 5v3.5M9.5 5h5",
   projects: "M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z",
   settings: "M4 12a8 8 0 1 0 16 0a8 8 0 1 0 -16 0zM12 12l4-4M12 1.5v1.5M22.5 12H21M1.5 12H3",

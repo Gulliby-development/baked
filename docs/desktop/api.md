@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt) and `images` (`images` on chat messages). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages) and `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -258,7 +258,11 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 | `GET /v1/workflow/checks/suggestions` | | `{suggestions: [{check, source, reason, preselected}]}`: test, lint, typecheck and build commands found in `package.json`, Python, Go and Cargo projects, minus the configured ones |
 | `POST /v1/workflow/checks/ID/run` | `{}` | `{checkId, at, status: "passed" \| "failed" \| "timeout" \| "cancelled" \| "error", exitCode, durationMs, outputTail, truncated}`. Runs the check as a run would but records no evidence; the result becomes the check's `lastResult` until the server stops. 409 `WORKSPACE_BUSY` while a run holds the workspace, 404 for an unknown ID |
 | `GET /v1/commands` | | `{commands: [{name, scope: "project" \| "global", path, description, argumentHint?}]}`: the custom slash commands in `.baked/commands` of the project and the home folder; a project command replaces a global one with the same name |
-| `GET /v1/skills` | | `{skills: [{id, scope, path, description?}]}`: installed `SKILL.md` folders in `.baked/skills`, `.agents/skills` and `.claude/skills` of the project and the home folder |
+| `GET /v1/skills` | | `{skills: [{id, scope, path, description?}]}`: installed `SKILL.md` folders in `.baked/skills`, `.agents/skills` and `.claude/skills` of the project and the home folder; a project skill hides a global one with the same name |
+| `GET /v1/skills/catalog?q=` | | `{skills: [{id, skillId, name, source, installs}]}`: the [skills.sh](https://skills.sh) catalog, popular skills for an empty `q`; 502 `CATALOG_UNAVAILABLE` when skills.sh does not answer |
+| `POST /v1/skills` | `{source, skillId, scope: "project" \| "global"}` | `{skill, skills}`: installs a catalog skill the way `/skills` in the terminal does (`bunx skills add`, `npx` as the fallback; up to 30 seconds), into the skill folders of the project or the home folder; `skill` is the installed entry, `skills` the new list. 422 `INSTALL_FAILED` with the installer's message when no `SKILL.md` arrived |
+| `GET /v1/skills/SCOPE/NAME` | | the skill's entry plus `content` (its `SKILL.md`, at most 256 KiB); `SCOPE` is `project` or `global`; 404 for a skill that is not installed |
+| `DELETE /v1/skills/SCOPE/NAME` | | `{skills}`: deletes the skill's folder. 409 `NOT_REMOVABLE` for a `SKILL.md` lying directly in a skills folder, which is removed by hand |
 
 Changing a file a run froze (an instruction file, a gate or a skill) does not pause the run at once. A run that is driving stops at its next step as `blocked` with reason `input_changed`, which `/v1/attention` shows; resuming a waiting or paused run is refused with 409 `INPUT_CHANGED`. To continue with the new text, stage a candidate (`POST /v1/workflow/runs/RUN_ID/candidate` with only `commandId`) and apply it with `revise`; the plan is approved again before the run resumes. `cancel` or `fork` are the other ways out.
 | `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`: both files as stored and the merged config the server runs with. Provider keys live in the secret store, not here, but values the user put in these files themselves (an MCP server's `env`) are returned as written |
@@ -316,6 +320,7 @@ interface GraphView {
 | Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
+| Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
 

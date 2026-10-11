@@ -145,6 +145,7 @@ export function createMockBridge(): DesktopBridge {
             "run-memory",
             "images",
             "code-graph",
+            "skills-install",
           ],
         });
       const url = new URL(path, "http://mock");

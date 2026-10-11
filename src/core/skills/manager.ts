@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { getCwd } from "../cwd.js";
 
 export interface SkillSearchResult {
@@ -60,12 +60,14 @@ export async function installSkill(
   source: string,
   skillId: string,
   global = false,
+  options: { cwd?: string; home?: string } = {},
 ): Promise<{ installed: boolean; name?: string; error?: string }> {
   const runner = await detectRunner();
   const args = [runner, "skills", "add", source, "--skill", skillId, "-y"];
   if (global) args.push("-g");
 
   const proc = Bun.spawn(args, {
+    ...(options.cwd ? { cwd: options.cwd } : {}),
     stdout: "pipe",
     stderr: "pipe",
     windowsHide: true,
@@ -102,7 +104,7 @@ export async function installSkill(
   }
 
   // Verify skill actually exists on disk — bunx may "succeed" (exit 0) but not install a SKILL.md
-  const installed = listInstalledSkills();
+  const installed = listInstalledSkills(options);
   const lastSegment = skillId.split("/").pop() ?? skillId;
   const match =
     installed.find((s) => s.name === skillId) ??
@@ -204,6 +206,8 @@ export function loadSkill(path: string): string {
 export function removeInstalledSkill(skill: InstalledSkill): boolean {
   try {
     const dir = dirname(skill.path);
+    // A SKILL.md lying directly in a skills folder would take the whole folder with it.
+    if (basename(dirname(dir)) !== "skills") return false;
     if (existsSync(dir)) {
       rmSync(dir, { recursive: true });
       return true;
@@ -211,3 +215,15 @@ export function removeInstalledSkill(skill: InstalledSkill): boolean {
   } catch {}
   return false;
 }
+
+/** The skills.sh catalog and installer; the local API takes another one in tests. */
+export interface SkillCatalog {
+  /** Popular skills for an empty query. */
+  search(query: string): Promise<SkillSearchResult[]>;
+  install: typeof installSkill;
+}
+
+export const skillCatalog: SkillCatalog = {
+  search: (query) => (query.trim() ? searchSkills(query) : listPopularSkills()),
+  install: installSkill,
+};
