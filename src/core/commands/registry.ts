@@ -187,6 +187,13 @@ const COMMAND_DEFS: CommandDef[] = [
   },
   // ── Drafts ──
   {
+    cmd: "/editor",
+    ic: "edit",
+    desc: "Compose a message in $EDITOR and send it (Ctrl+X E)",
+    category: "Session",
+    tags: ["editor", "vim", "nano", "compose", "draft"],
+  },
+  {
     cmd: "/stash",
     ic: "archive",
     desc: "Browse stashed drafts (restore, delete)",
@@ -817,6 +824,7 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Undo last checkpoint (revert files)",
     category: "Session",
     tags: ["revert", "rollback"],
+    aliases: ["/undo"],
   },
   {
     cmd: "/checkpoint redo",
@@ -824,6 +832,7 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Redo last undone checkpoint",
     category: "Session",
     tags: ["restore"],
+    aliases: ["/redo"],
   },
   {
     cmd: "/checkpoint fork",

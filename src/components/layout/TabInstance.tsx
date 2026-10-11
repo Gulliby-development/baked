@@ -851,6 +851,12 @@ export const TabInstance = memo(function TabInstance({
                 onCycleTab={onCycleTab}
                 viewingCheckpoint={checkpointViewing}
                 getRepoMap={getRepoMap}
+                onNotice={(content) =>
+                  chat.setMessages((prev) => [
+                    ...prev,
+                    { id: crypto.randomUUID(), role: "system", content, timestamp: Date.now() },
+                  ])
+                }
               />
             </box>
           </box>

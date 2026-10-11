@@ -1,10 +1,14 @@
 import type { Selection } from "@opentui/core";
-import type { MutableRefObject } from "react";
+import { type MutableRefObject, useRef } from "react";
+import { requestInputEditor } from "../core/chat/external-editor.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";
 import { selectIsAnyModalOpen, useUIStore } from "../stores/ui.js";
 import type { ChatInstance } from "./useChat.js";
 import type { UseTabsReturn } from "./useTabs.js";
 import { useKeyboard } from "./useTerminalEvents.js";
+
+/** How long an idle Ctrl+X waits for its second key. */
+const LEADER_TIMEOUT_MS = 1500;
 
 interface GlobalKeyboardParams {
   shutdownPhase: number;
@@ -29,6 +33,8 @@ export function useGlobalKeyboard({
   cycleMode,
   tabMgr,
 }: GlobalKeyboardParams): void {
+  // Time of an idle Ctrl+X, which waits for a second key (E opens the input in $EDITOR).
+  const leaderAt = useRef<number | null>(null);
   useKeyboard((evt) => {
     if (shutdownPhase >= 0) return;
     const uiModals = useUIStore.getState().modals;
@@ -65,6 +71,13 @@ export function useGlobalKeyboard({
       evt.preventDefault();
     };
 
+    if (leaderAt.current !== null) {
+      const armed = Date.now() - leaderAt.current < LEADER_TIMEOUT_MS;
+      leaderAt.current = null;
+      if (armed && evt.name === "e" && !evt.meta && !evt.option)
+        return consume(() => requestInputEditor());
+    }
+
     if (evt.ctrl && evt.name === "o")
       return consume(() => useUIStore.getState().toggleAllExpanded(tabMgr.activeTabId));
 
@@ -87,7 +100,14 @@ export function useGlobalKeyboard({
       return;
     }
 
-    if (evt.ctrl && evt.name === "x") return consume(() => activeChatRef.current?.abort());
+    // Ctrl+X stops a running turn; when idle it starts the Ctrl+X E chord.
+    if (evt.ctrl && evt.name === "x")
+      return consume(() => {
+        const chat = activeChatRef.current;
+        const busy = chat?.isLoading === true || chat?.isCompacting === true;
+        chat?.abort();
+        leaderAt.current = busy ? null : Date.now();
+      });
     if (evt.ctrl && evt.name === "l")
       return consume(() => useUIStore.getState().toggleModal("llmSelector"));
     if (evt.ctrl && evt.name === "s")

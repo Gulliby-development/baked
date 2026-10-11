@@ -90,7 +90,7 @@ async function handleCheckpointUndo(input: string, ctx: CommandContext): Promise
   const checkpoints = store.tabs[tabId]?.checkpoints ?? [];
 
   // Determine target index
-  const numMatch = input.match(/\/checkpoint\s+undo\s+(\d+)/);
+  const numMatch = input.match(/^\/(?:checkpoint\s+)?undo\s+(\d+)/);
   let targetIndex: number;
 
   if (numMatch) {
@@ -238,6 +238,8 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/checkpoint live", handleCheckpointLive);
   map.set("/checkpoint undo", handleCheckpointUndo as CommandHandler);
   map.set("/checkpoint redo", handleCheckpointRedo as CommandHandler);
+  map.set("/undo", handleCheckpointUndo as CommandHandler);
+  map.set("/redo", handleCheckpointRedo as CommandHandler);
   map.set("/checkpoint save", handleCheckpointSave as CommandHandler);
   map.set("/checkpoint list", handleCheckpointList as CommandHandler);
   map.set("/checkpoint fork", handleCheckpointFork as CommandHandler);
@@ -245,7 +247,7 @@ export function register(map: Map<string, CommandHandler>): void {
 
 export function matchCheckpointPrefix(cmd: string): CommandHandler | null {
   if (/^\/checkpoint\s+\d+$/.test(cmd)) return handleCheckpointView;
-  if (/^\/checkpoint\s+undo\s+\d+$/.test(cmd)) return handleCheckpointUndo as CommandHandler;
+  if (/^\/(checkpoint\s+)?undo\s+\d+$/.test(cmd)) return handleCheckpointUndo as CommandHandler;
   if (/^\/checkpoint\s+fork(\s+\d+)?(\s+--force)?$/.test(cmd))
     return handleCheckpointFork as CommandHandler;
   return null;
