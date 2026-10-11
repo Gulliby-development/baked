@@ -184,6 +184,31 @@ export interface ProviderStatus {
   acceptsKey: boolean;
   source: "env" | "app" | null;
   keyUrl?: string;
+  /** Present for providers that sign in through their own CLI (Claude Code, Codex). */
+  signIn?: CliSignIn;
+}
+
+export type CliLoginState = "running" | "succeeded" | "failed" | "cancelled";
+
+/** A sign-in started through `POST /v1/providers/ID/login`; the CLI keeps the credentials. */
+export interface CliLogin {
+  provider: string;
+  state: CliLoginState;
+  lines: string[];
+  url?: string;
+  error?: string;
+  startedAt: string;
+  endedAt?: string;
+}
+
+export interface CliSignIn {
+  installed: boolean;
+  loggedIn: boolean;
+  message: string;
+  /** The terminal command that does the same sign-in. */
+  command: string;
+  /** The current or last sign-in this backend started, if any. */
+  login: CliLogin | null;
 }
 
 export interface WorkflowDefinition {
@@ -300,6 +325,14 @@ export const setup = {
     ),
   removeProviderKey: (key: string, provider: string) =>
     call<null>(key, "DELETE", `/v1/providers/${json(provider)}/key`),
+  startLogin: (key: string, provider: string) =>
+    call<{ login: CliLogin }>(key, "POST", `/v1/providers/${json(provider)}/login`),
+  login: (key: string, provider: string) =>
+    call<{ login: CliLogin | null }>(key, "GET", `/v1/providers/${json(provider)}/login`),
+  cancelLogin: (key: string, provider: string) =>
+    call<{ login: CliLogin | null }>(key, "DELETE", `/v1/providers/${json(provider)}/login`),
+  logout: (key: string, provider: string) =>
+    call<{ ok: boolean; message: string }>(key, "POST", `/v1/providers/${json(provider)}/logout`),
   definitions: (key: string) => call<WorkflowDefinition[]>(key, "GET", "/v1/workflow/definitions"),
   route: (key: string, workflow: string) =>
     call<RouteExplanation>(key, "GET", `/v1/workflow/route?workflow=${json(workflow)}`),

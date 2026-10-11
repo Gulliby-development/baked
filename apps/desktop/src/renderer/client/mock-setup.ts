@@ -341,8 +341,70 @@ const providers: ProviderStatus[] = [
     acceptsKey: false,
     source: null,
   },
-  { id: "codex", name: "Codex", configured: false, acceptsKey: false, source: null },
+  {
+    id: "codex",
+    name: "Codex",
+    configured: false,
+    acceptsKey: false,
+    source: null,
+    signIn: {
+      installed: true,
+      loggedIn: false,
+      message: "Not logged in",
+      command: "codex login",
+      login: null,
+    },
+  },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    configured: true,
+    acceptsKey: false,
+    source: null,
+    signIn: {
+      installed: true,
+      loggedIn: true,
+      message: "Logged in with claude.ai",
+      command: "claude auth login",
+      login: null,
+    },
+  },
 ];
+
+/** A sample sign-in finishes after a few polls, as if the user completed it in the browser. */
+const LOGIN_POLLS = 3;
+const loginPolls = new Map<string, number>();
+
+function mockLogin(provider: ProviderStatus, method: string): ApiResponse {
+  const signIn = provider.signIn;
+  if (!signIn) return error(404, "NOT_FOUND", "This provider does not sign in through a CLI");
+  if (method === "POST") {
+    if (signIn.login?.state !== "running") {
+      loginPolls.set(provider.id, 0);
+      signIn.login = {
+        provider: provider.id,
+        state: "running",
+        lines: ["Opening browser to sign in…", "Waiting for the sign-in to finish in the browser."],
+        url: "https://example.com/sign-in",
+        startedAt: new Date().toISOString(),
+      };
+    }
+    return response(202, { login: signIn.login });
+  }
+  if (method === "DELETE" && signIn.login?.state === "running")
+    Object.assign(signIn.login, { state: "cancelled", endedAt: new Date().toISOString() });
+  if (method === "GET" && signIn.login?.state === "running") {
+    const polls = (loginPolls.get(provider.id) ?? 0) + 1;
+    loginPolls.set(provider.id, polls);
+    if (polls >= LOGIN_POLLS) {
+      signIn.login.lines.push("Signed in.");
+      Object.assign(signIn.login, { state: "succeeded", endedAt: new Date().toISOString() });
+      Object.assign(signIn, { loggedIn: true, message: "Logged in" });
+      provider.configured = true;
+    }
+  }
+  return response(200, { login: signIn.login ?? null });
+}
 
 const states = new Map<string, SetupState>();
 function state(key: string): SetupState {
@@ -717,6 +779,18 @@ export const setupRoutes: MockRoute = (request) => {
       );
     case "GET /v1/workflow/route":
       return response(200, explain(s, request.query.get("workflow") ?? "sdd"));
+  }
+  const providerSignIn = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout)$/.exec(path);
+  if (providerSignIn) {
+    const provider = providers.find((p) => p.id === providerSignIn[1]);
+    if (!provider?.signIn)
+      return error(404, "NOT_FOUND", "This provider does not sign in through a CLI");
+    if (providerSignIn[2] === "login") return mockLogin(provider, method);
+    if (method === "POST") {
+      Object.assign(provider.signIn, { loggedIn: false, message: "Not logged in", login: null });
+      provider.configured = false;
+      return response(200, { ok: true, message: "Logged out." });
+    }
   }
   const providerKey = /^\/v1\/providers\/([a-z0-9-]+)\/key$/.exec(path);
   if (providerKey) {

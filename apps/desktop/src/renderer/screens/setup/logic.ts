@@ -3,6 +3,7 @@ import type {
   Check,
   CheckRunResult,
   CheckRunStatus,
+  CliSignIn,
   ConfigFile,
   ConfigView,
   Effort,
@@ -366,4 +367,15 @@ export function draftToCheck(draft: CheckDraft): { check: Check } | { error: str
       writes,
     },
   };
+}
+
+/** How a CLI-signed-in provider's row reads, and which sign-in actions it offers. */
+export function signInView(signIn: CliSignIn): {
+  note: string;
+  action: "sign-in" | "sign-out" | "install" | "cancel";
+} {
+  if (signIn.login?.state === "running") return { note: "signing in…", action: "cancel" };
+  if (!signIn.installed) return { note: "CLI not installed", action: "install" };
+  if (signIn.loggedIn) return { note: "signed in through the CLI", action: "sign-out" };
+  return { note: "not signed in", action: "sign-in" };
 }

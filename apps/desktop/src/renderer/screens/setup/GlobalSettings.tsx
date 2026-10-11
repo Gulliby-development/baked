@@ -1,5 +1,8 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
+import { bridge } from "../../client/bridge.js";
 import {
+  type CliLogin,
+  type CliSignIn,
   type ConfigView,
   EFFORTS,
   type Effort,
@@ -8,13 +11,157 @@ import {
   type ProviderStatus,
   setup,
 } from "../../client/setup.js";
+import { Button } from "../../components/ui/button.js";
 import { useDesktop } from "../../store.js";
 import "../../styles/setup.css";
-import { type ClassRow, classRoute, classRows, commandLabel, splitList } from "./logic.js";
+import {
+  type ClassRow,
+  classRoute,
+  classRows,
+  commandLabel,
+  signInView,
+  splitList,
+} from "./logic.js";
 import { errorText, LoadState, NeedsNewer, Tag, useLoad } from "./shared.js";
 
 /** Writes top-level keys of the global config; resolves to whether it worked. */
 type Patch = (set: Record<string, unknown>) => Promise<boolean>;
+
+const LOGIN_POLL_MS = 1000;
+const LOGIN_LINES_SHOWN = 8;
+
+/**
+ * Sign-in for a provider that runs through its own CLI: the backend starts the CLI's login, which
+ * opens the browser; this polls its progress and offers the sign-in page in case none opened.
+ */
+function CliSignInControls({
+  projectKey,
+  provider,
+  signIn,
+  onChanged,
+}: {
+  projectKey: string;
+  provider: ProviderStatus;
+  signIn: CliSignIn;
+  onChanged: () => void;
+}) {
+  const [login, setLogin] = useState<CliLogin | null>(signIn.login);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const running = login?.state === "running";
+
+  useEffect(() => {
+    if (!running) return;
+    let live = true;
+    const timer = setInterval(() => {
+      setup.login(projectKey, provider.id).then(
+        ({ login: next }) => {
+          if (!live) return;
+          setLogin(next);
+          if (next?.state !== "running") onChanged();
+        },
+        (e: unknown) => live && setError(errorText(e)),
+      );
+    }, LOGIN_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [running, projectKey, provider.id, onChanged]);
+
+  const act = async (work: () => Promise<void>): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await work();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const view = signInView({ ...signIn, login });
+  const shown = login?.lines.slice(-LOGIN_LINES_SHOWN) ?? [];
+
+  return (
+    <>
+      {view.action === "sign-in" && (
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() =>
+            void act(async () => {
+              const started = (await setup.startLogin(projectKey, provider.id)).login;
+              setLogin(started);
+              onChanged();
+            })
+          }
+        >
+          Sign in
+        </Button>
+      )}
+      {view.action === "cancel" && login?.url && (
+        <Button
+          size="sm"
+          variant="neutral"
+          onClick={() => void bridge.openExternal(login.url ?? "")}
+        >
+          Open sign-in page
+        </Button>
+      )}
+      {view.action === "cancel" && (
+        <Button
+          size="sm"
+          variant="neutral"
+          disabled={busy}
+          onClick={() =>
+            void act(async () => {
+              setLogin((await setup.cancelLogin(projectKey, provider.id)).login);
+              onChanged();
+            })
+          }
+        >
+          Cancel
+        </Button>
+      )}
+      {view.action === "sign-out" && (
+        <Button
+          size="sm"
+          variant="neutral"
+          disabled={busy}
+          onClick={() =>
+            void act(async () => {
+              const result = await setup.logout(projectKey, provider.id);
+              if (!result.ok) throw new Error(result.message);
+              setLogin(null);
+              onChanged();
+            })
+          }
+        >
+          Sign out
+        </Button>
+      )}
+      {view.action === "install" && (
+        <span className="muted setup-note setup-full">
+          Install the {provider.name} CLI, then sign in here or run{" "}
+          <code className="mono">{signIn.command}</code> in a terminal.
+        </span>
+      )}
+      {running && shown.length > 0 && (
+        <pre className="setup-login-log mono setup-full" aria-live="polite">
+          {shown.join("\n")}
+        </pre>
+      )}
+      {login?.state === "failed" && (
+        <div className="banner error setup-full">
+          {login.error ?? "Sign-in failed."} You can also run{" "}
+          <code className="mono">{signIn.command}</code> in a terminal.
+        </div>
+      )}
+      {error && <div className="banner error setup-full">{error}</div>}
+    </>
+  );
+}
 
 function ProviderRow({
   projectKey,
@@ -50,16 +197,26 @@ function ProviderRow({
       <span className="setup-grow stack">
         <span>{provider.name}</span>
         <span className="muted setup-note">
-          {provider.configured
-            ? provider.source === "env"
-              ? "configured · key from an environment variable"
-              : provider.source === "app"
-                ? "configured · key saved by BAKED"
-                : "configured"
-            : "not configured"}
-          {!provider.acceptsKey && " · signs in without an API key"}
+          {provider.signIn
+            ? signInView(provider.signIn).note
+            : provider.configured
+              ? provider.source === "env"
+                ? "configured · key from an environment variable"
+                : provider.source === "app"
+                  ? "configured · key saved by BAKED"
+                  : "configured"
+              : "not configured"}
+          {!provider.acceptsKey && !provider.signIn && " · signs in without an API key"}
         </span>
       </span>
+      {provider.signIn && (
+        <CliSignInControls
+          projectKey={projectKey}
+          provider={provider}
+          signIn={provider.signIn}
+          onChanged={onChanged}
+        />
+      )}
       {provider.keyUrl && !provider.configured && (
         <a href={provider.keyUrl} target="_blank" rel="noreferrer">
           Get a key
