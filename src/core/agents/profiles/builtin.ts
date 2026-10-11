@@ -138,13 +138,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "implementer",
-    version: "1.5.0",
+    version: "1.6.0",
     description: "Implement one task",
     role: "implementer",
     model: "$coding",
     context: "implementation",
     instructions:
-      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. extra.taskFiles already holds the files the task modifies: edit them directly, using the line numbers shown as lineStart, and read them again only to cite evidence for already_satisfied. Read every other file you need in one call; for a large file where only a few symbols matter, read those symbols or line ranges instead of the whole file. Keep each multi_edit to a few short hunks, and use several calls for a large change.",
+      "Implement the task within its allowed scope. If the behavior already exists, provide evidence and report already_satisfied. Never declare the task verified. extra.taskFiles already holds the files the task modifies (a large one as its outline and the spans of the symbols the task names): edit them directly, using the line numbers shown as lineStart, and read them again only to cite evidence for already_satisfied. Read every other file you need in one call; for a large file where only a few symbols matter, read those symbols or line ranges instead of the whole file. Keep each multi_edit to a few short hunks, and use several calls for a large change.",
     skills: [],
     allowedTools: [
       "read",
