@@ -412,7 +412,8 @@ describe("workflow parallel writers", () => {
     expect(taskId).toBe("T002");
     const files = integration.files as { path: string; integratedDiff: string; taskDiff: string; base: string }[];
     expect(files.map((f) => f.path)).toEqual(["shared.txt"]);
-    expect(files[0]?.base).toBe("one\ntwo\n");
+    // The run worktree is a regular checkout: with `core.autocrlf=true` (Git for Windows) its base is CRLF.
+    expect(files[0]?.base?.replace(/\r\n/g, "\n")).toBe("one\ntwo\n");
     expect(files[0]?.integratedDiff).toContain("+ONE");
     expect(files[0]?.taskDiff).toContain("+TWO");
     expect((integration.spec as { featureId: string }).featureId).toBe("fixture");
