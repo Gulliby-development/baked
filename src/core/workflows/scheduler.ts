@@ -2195,7 +2195,10 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0)
+        (result.outcome === "implemented" &&
+          changed.length === 0 &&
+          task.writes.length > 0 &&
+          !(await this.correctionSatisfied(runId, child, policy, task, result, signal, root)))
       ) {
         if (changed.length > 0 && this.continueAtCap(runId, state, child, task)) {
           // The task is ready again and the next pass of the task loop continues it.
@@ -2579,7 +2582,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" && changed.length === 0)
+        (result.outcome === "implemented" &&
+          changed.length === 0 &&
+          !(await this.correctionSatisfied(runId, entry.child, policy, task, result, signal, root)))
       )
         return {
           kind: "rejected",
@@ -2994,6 +2999,45 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     this.leases.releaseOne(entry.lease());
   }
   /** Runs one task check in `root` under its own host attempt. */
+  /**
+   * A corrective task whose attempt changed nothing is satisfied, not blocked, when the checks it
+   * was created for pass on the current files: a sibling task or an earlier correction already
+   * fixed the cause (zoneslot 51f9d664 T007 and md-site 93fbee70 T010 reported passing tests and
+   * stopped the run). The checks are the task's own and the ones its findings name.
+   */
+  private async correctionSatisfied(
+    runId: string,
+    child: string,
+    policy: RunPolicy,
+    task: Task,
+    result: { taskId: string; outcome: string; unresolved: string[] },
+    signal: AbortSignal,
+    root: string,
+  ): Promise<boolean> {
+    if (
+      task.origin === "planned" ||
+      result.taskId !== task.id ||
+      result.outcome !== "implemented" ||
+      result.unresolved.length > 0
+    )
+      return false;
+    const named = new Set(
+      this.store
+        .findings(runId)
+        .filter((f) => task.findingIds.includes(f.id))
+        .map((f) => /^Required check (\S+) failed$/.exec(JSON.parse(f.body_json).claim)?.[1])
+        .filter((id): id is string => Boolean(id)),
+    );
+    const checks = policy.checks.filter(
+      (c) => c.required && (named.has(c.id) || taskChecks(policy, task).some((t) => t.id === c.id)),
+    );
+    if (!checks.length) return false;
+    for (const check of checks) {
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status !== "passed") return false;
+    }
+    return true;
+  }
   private async runTaskCheck(
     runId: string,
     child: string,
@@ -3148,6 +3192,23 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       });
     }
   }
+  /**
+   * A finding "Required check X failed" is superseded by a later passing run of X: its evidence
+   * no longer describes the files. Closing it keeps a corrective task that the passing run made
+   * moot from being read as an open defect, whatever the other checks report.
+   */
+  private resolveCoveredFindings(runId: string, passedIds: string[]): void {
+    if (!passedIds.length) return;
+    const claims = new Set(passedIds.map((id) => `Required check ${id} failed`));
+    this.store.transaction(() => {
+      for (const finding of this.store.findings(runId))
+        if (
+          ["open", "confirmed"].includes(finding.status) &&
+          claims.has(JSON.parse(finding.body_json).claim)
+        )
+          this.store.findingStatus(runId, finding.id, "resolved");
+    });
+  }
   private async runChecks(
     runId: string,
     stepId: string,
@@ -3159,6 +3220,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     await this.snapshot(runId, state, policy, signal);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
+    const passedIds: string[] = [];
     // A failure is repaired first; the next pass reruns every check, the inconclusive one too.
     let inconclusive: string | undefined;
     for (const check of policy.checks) {
@@ -3171,6 +3233,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      if (result.status === "passed") passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if (result.status === "failed" && check.required) {
         failedIds.push(check.id);
@@ -3191,6 +3254,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         );
       }
     }
+    this.resolveCoveredFindings(runId, passedIds);
     if (
       failures.length &&
       !fixed &&
@@ -3740,6 +3804,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     ];
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
+    const passedIds: string[] = [];
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
@@ -3750,6 +3815,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         attempts: result.attempts,
         flaky: result.flaky,
       });
+      if (result.status === "passed") passedIds.push(check.id);
       if (!check.required || result.status === "passed") continue;
       if (result.status === "inconclusive") {
         inconclusive ??= check.id;
@@ -3777,6 +3843,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         ),
       );
     }
+    this.resolveCoveredFindings(runId, passedIds);
     if (
       failures.length &&
       !fixed &&
