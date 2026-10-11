@@ -4,6 +4,22 @@ import { attentionTitle, kindLabel } from "../../../shared/attention.js";
 import { ApiError } from "../../client/api.js";
 import { ago } from "../../format.js";
 
+/** Class strings the detail panes share; the action buttons pair BTN with `btn` or `btn-primary`. */
+export const BTN = "min-h-[42px] px-[18px] no-underline";
+export const ACTIONS = "flex flex-wrap items-center gap-2";
+export const LEDE = "m-0 leading-[1.6] text-muted-foreground";
+export const NOTE = "m-0 text-[13px] text-muted-foreground";
+export const ASIDE = "text-[12px] text-[color:var(--ok)]";
+export const FACTS = "grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3";
+export const LIST = "card flex flex-col gap-2";
+export const ROW =
+  "flex min-w-0 justify-between gap-3 text-[13px] [&>:first-child]:wrap-anywhere [&>:last-child]:flex-none";
+export const FORM = "flex flex-col gap-3";
+// `!` keeps the fill above the unlayered `textarea` rule in runs.css while that stylesheet exists.
+export const INPUT =
+  "w-full resize-y rounded-base border-2 border-border bg-raised! px-[10px] py-2 text-foreground [font:inherit]";
+export const PROJECT = "text-[color:var(--info)]";
+
 export function errorText(error: unknown): string {
   if (error instanceof ApiError && error.status === 404 && error.message.startsWith("No endpoint"))
     return "Needs a newer BAKED: this project's backend cannot answer this item yet.";
@@ -59,12 +75,12 @@ export function useAction(): {
 export function DetailHeader({ item, aside }: { item: AttentionItem; aside?: ReactNode }) {
   return (
     <>
-      <div className="att-head">
-        <h2>{attentionTitle(item)}</h2>
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="m-0 text-[18px] font-semibold">{attentionTitle(item)}</h2>
         {aside}
       </div>
-      <p className="att-meta">
-        <span className="att-project">{item.projectName}</span> · {kindLabel(item.kind)} ·{" "}
+      <p className="mx-0 -mt-[10px] mb-0 text-[12px] text-dim-foreground">
+        <span className={PROJECT}>{item.projectName}</span> · {kindLabel(item.kind)} ·{" "}
         {item.blocking ? "blocking" : "advisory"} · {ago(item.createdAt)}
       </p>
     </>
@@ -73,7 +89,7 @@ export function DetailHeader({ item, aside }: { item: AttentionItem; aside?: Rea
 
 export function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="card att-fact">
+    <div className="card flex min-w-0 flex-col gap-1 text-[13px] wrap-anywhere">
       <span className="label">{label}</span>
       <span>{children}</span>
     </div>
@@ -120,13 +136,13 @@ export function RejectForm({
   const [reason, setReason] = useState("");
   if (!open)
     return (
-      <button type="button" className="btn att-btn" disabled={busy} onClick={() => setOpen(true)}>
+      <button type="button" className={`btn ${BTN}`} disabled={busy} onClick={() => setOpen(true)}>
         {label}
       </button>
     );
   return (
     <form
-      className="att-reject"
+      className={`${FORM} basis-full`}
       onSubmit={(event) => {
         event.preventDefault();
         if (reason.trim()) onReject(reason.trim());
@@ -137,16 +153,16 @@ export function RejectForm({
       </label>
       <textarea
         id="att-reason"
-        className="att-input"
+        className={INPUT}
         rows={3}
         value={reason}
         onChange={(event) => setReason(event.target.value)}
       />
-      <div className="att-actions">
-        <button type="submit" className="btn att-btn" disabled={busy || !reason.trim()}>
+      <div className={ACTIONS}>
+        <button type="submit" className={`btn ${BTN}`} disabled={busy || !reason.trim()}>
           {label}
         </button>
-        <button type="button" className="btn att-btn" onClick={() => setOpen(false)}>
+        <button type="button" className={`btn ${BTN}`} onClick={() => setOpen(false)}>
           Cancel
         </button>
       </div>

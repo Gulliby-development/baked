@@ -25,16 +25,36 @@ const message = (error: unknown): string =>
 
 export const GLYPH: Record<DoctorStatus, string> = { ok: "✓", warn: "!", fail: "✗", skip: "·" };
 
+const GLYPH_TONE: Record<DoctorStatus, string> = {
+  ok: "text-[color:var(--ok)]",
+  warn: "text-[color:var(--warn)]",
+  fail: "text-[color:var(--err)]",
+  skip: "text-dim-foreground",
+};
+
+const FIT_TONE: Record<ReturnType<typeof fitOf>, string> = {
+  yes: "text-[color:var(--ok)]",
+  maybe: "text-[color:var(--warn)]",
+  no: "text-[color:var(--err)]",
+};
+
+/** A card of the start screens: the doctor, the estimate and the project home's side panels. */
+export const PANEL = "card flex flex-col gap-[10px]";
+export const NOTE = "m-0 text-[13px] leading-[1.5] text-muted-foreground";
+export const NOTE_ERR = "m-0 text-[13px] leading-[1.5] text-[color:var(--err)]";
+const PANEL_HEAD = "flex items-center gap-[10px]";
+const CELL = "px-[10px] py-2";
+
 export function DoctorChecks({ checks, limit }: { checks: DoctorCheck[]; limit?: number }) {
   const shown = orderChecks(checks).slice(0, limit);
   return (
-    <ul className="start-checks">
+    <ul className="m-0 flex list-none flex-col gap-2 p-0">
       {shown.map((check) => (
         <li
           key={`${check.id}:${check.subject ?? check.title}`}
-          className={`start-check ${check.status}`}
+          className="flex gap-[10px] text-[13px] text-soft-foreground"
         >
-          <span className="mono start-glyph" aria-hidden="true">
+          <span className={`mono w-[1ch] flex-none ${GLYPH_TONE[check.status]}`} aria-hidden="true">
             {GLYPH[check.status]}
           </span>
           <span className="stack">
@@ -43,7 +63,7 @@ export function DoctorChecks({ checks, limit }: { checks: DoctorCheck[]; limit?:
               {check.title}
             </span>
             {(check.detail || check.fix) && (
-              <span className="start-check-detail">
+              <span className="text-[12px] text-dim-foreground">
                 {[check.detail, check.fix].filter(Boolean).join(" · ")}
               </span>
             )}
@@ -66,21 +86,23 @@ export function DoctorPanel({
   footer?: ReactNode;
 }) {
   return (
-    <section aria-label="Doctor" className="card start-panel" aria-busy={loading}>
-      <div className="start-panel-head">
+    <section aria-label="Doctor" className={PANEL} aria-busy={loading}>
+      <div className={PANEL_HEAD}>
         <h2 className="label">Doctor</h2>
         {report && (
-          <span className={`start-state ${report.ready ? "ok" : "err"}`}>
+          <span
+            className={`ml-auto text-[13px] ${report.ready ? "text-[color:var(--ok)]" : "text-[color:var(--err)]"}`}
+          >
             {report.ready ? "ready to start" : "not ready"}
           </span>
         )}
       </div>
       {error ? (
-        <p className="start-note err">{error}</p>
+        <p className={NOTE_ERR}>{error}</p>
       ) : report ? (
         <DoctorChecks checks={report.checks} />
       ) : (
-        <p className="start-note">Checking…</p>
+        <p className={NOTE}>Checking…</p>
       )}
       {footer}
     </section>
@@ -103,11 +125,11 @@ export function EstimatePanel({
 }) {
   const fit = estimate ? fitOf(estimate.tokens, cap) : null;
   return (
-    <section aria-label="Estimate" className="card start-panel" aria-busy={loading}>
-      <div className="start-panel-head">
+    <section aria-label="Estimate" className={PANEL} aria-busy={loading}>
+      <div className={PANEL_HEAD}>
         <h2 className="label">Estimate</h2>
         {estimate && (
-          <span className="start-note">
+          <span className={`${NOTE} ml-auto`}>
             {estimate.basis === "defaults"
               ? "generic range: no earlier runs"
               : `${estimate.samples} earlier run${estimate.samples === 1 ? "" : "s"}${
@@ -117,51 +139,53 @@ export function EstimatePanel({
         )}
       </div>
       {error ? (
-        <p className="start-note err">{error}</p>
+        <p className={NOTE_ERR}>{error}</p>
       ) : !estimate ? (
-        <p className="start-note">Estimating…</p>
+        <p className={NOTE}>Estimating…</p>
       ) : (
         <>
-          <div className="start-total">
-            <span className="mono start-tokens">{rangeText(estimate.tokens)} tokens</span>
-            <span className="mono start-cost">
+          <div className="flex flex-wrap items-baseline gap-[18px]">
+            <span className="mono text-[22px]">{rangeText(estimate.tokens)} tokens</span>
+            <span className="mono text-[16px] text-[color:var(--accent-soft)]">
               {usdRange(estimate.costUsd)}
               {estimate.costUsd && !estimate.costComplete ? " (partial)" : ""}
             </span>
             {fit && (
-              <span className={`start-fit ${fit}`}>
+              <span className={`text-[13px] ${FIT_TONE[fit]}`}>
                 {cap === null
                   ? `no token cap, pauses every ${tokens(checkpoint ?? 0)}`
                   : FIT_TEXT[fit]}
               </span>
             )}
           </div>
-          <div className="start-table-wrap">
-            <table className="table start-table">
+          <div className="overflow-x-auto">
+            <table className="table text-[13px] text-soft-foreground [&_tbody_tr:last-child_td]:border-b-0">
               <thead>
                 <tr>
-                  <th>Stage</th>
-                  <th>Model</th>
-                  <th className="num">Tokens</th>
-                  <th className="num">USD</th>
+                  <th className={CELL}>Stage</th>
+                  <th className={CELL}>Model</th>
+                  <th className={`${CELL} text-right`}>Tokens</th>
+                  <th className={`${CELL} text-right`}>USD</th>
                 </tr>
               </thead>
               <tbody>
                 {estimate.stages.map((stage) => (
                   <tr key={stage.stageId}>
-                    <td>{stageLabel(stage.stageId)}</td>
-                    <td className="mono start-model">
+                    <td className={CELL}>{stageLabel(stage.stageId)}</td>
+                    <td
+                      className={`mono ${CELL} whitespace-normal text-muted-foreground wrap-anywhere`}
+                    >
                       {stage.models.length ? stage.models.map(shortModel).join(", ") : "host"}
                     </td>
-                    <td className="mono num">{rangeText(stage.tokens)}</td>
-                    <td className="mono num">{usdRange(stage.costUsd)}</td>
+                    <td className={`mono ${CELL} text-right`}>{rangeText(stage.tokens)}</td>
+                    <td className={`mono ${CELL} text-right`}>{usdRange(stage.costUsd)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           {estimate.notes.length > 0 && (
-            <ul className="start-notes">
+            <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12px] text-dim-foreground">
               {estimate.notes.map((note) => (
                 <li key={note}>{note}</li>
               ))}
