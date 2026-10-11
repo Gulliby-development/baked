@@ -8,11 +8,12 @@ export function Onboarding({ checks, model }: { checks: Check[]; model: string |
   return (
     <box flexDirection="column">
       <Section
-        title="Workflows are off for this project"
+        title="Workflows are turned off for this project"
         description="Spec-driven runs: research → spec → plan → your approval → code → checks → review."
       >
         <text fg={t.textPrimary}>
-          Press E to enable them. This adds a "workflows" block to .baked/config.json:
+          A configuration sets workflows.enabled to false. Press E to turn them back on in
+          .baked/config.json:
         </text>
         <text fg={t.textMuted}>{"  · enabled: true, default workflow: sdd"}</text>
         <text fg={t.textMuted}>

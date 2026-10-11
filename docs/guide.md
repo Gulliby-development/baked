@@ -183,7 +183,7 @@ baked projects rename [PATH] NAME  # "" restores the default name
 baked projects forget [PATH]       # sessions and runs stay in the folder
 ```
 
-A manifest `baked/project.json` groups one piece of work across several checkouts and adds a working set that goes into every new session's context: `baked project init`, `baked project add`, `baked project show`, `baked project register`. See [projects](projects.md).
+A manifest `baked/project.json` groups one piece of work across several checkouts and adds a working set that goes into every new session's context: `baked project init` (BAKED also does this itself when it opens a folder), `baked project add`, `baked project show`, `baked project register`. See [projects](projects.md).
 
 ## Storage
 

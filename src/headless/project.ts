@@ -1,11 +1,14 @@
 import { getCwd } from "../core/cwd.js";
+import { readManifest } from "../core/projects/manifest.js";
+import { scaffoldProject } from "../core/projects/scaffold.js";
 import { ProjectService, type ProjectSummary } from "../core/projects/service.js";
 
 const help = `Usage: baked project <command>
 
 Commands:
   init [--name NAME] [--id ID] [--root PATH]...
-                     Create baked/project.json here and register it
+                     Set up this folder: baked/project.json (registered for
+                     you), .baked/ and the workflow store; keeps what exists
   show [--json]      The project, its working set, sessions and runs
   add <path|glob>... Add entries to the working set
   remove <entry>...  Remove entries from the working set
@@ -64,12 +67,23 @@ export async function runProjectCli(argv: string[]): Promise<number> {
       case "init": {
         const id = option(rest, "--id");
         const name = option(rest, "--name");
-        const project = service.init({
+        const roots = options(rest, "--root");
+        // Explicit options describe a new manifest; without them init completes a partial setup.
+        if ((id || name || roots.length) && readManifest(getCwd()))
+          throw new Error(
+            "This directory already has baked/project.json; edit it or use add/remove.",
+          );
+        const result = scaffoldProject(getCwd(), {
           ...(id ? { id } : {}),
           ...(name ? { name } : {}),
-          roots: options(rest, "--root"),
+          roots,
         });
-        process.stdout.write(`Created baked/project.json for ${project.name} (${project.id}).\n`);
+        if (result.skipped) throw new Error(`BAKED does not set up ${result.skipped}.`);
+        process.stdout.write(
+          result.created.length
+            ? `Created ${result.created.join(", ")}.\n`
+            : "This project is already set up.\n",
+        );
         return 0;
       }
       case "show": {

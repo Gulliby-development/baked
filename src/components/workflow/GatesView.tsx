@@ -505,7 +505,8 @@ export function GatesView({
       ) : null}
       {!canRun ? (
         <Hint kind="warn">
-          Workflows are off in this project, so gates cannot run yet. Press Esc, then E to enable.
+          Workflows are turned off in this project, so gates cannot run. Press Esc, then E to turn
+          them on.
         </Hint>
       ) : null}
     </box>

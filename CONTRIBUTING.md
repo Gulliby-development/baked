@@ -20,7 +20,7 @@ Keep agent logic independent of the UI. Preserve approval callbacks, secret hand
 
 ## Workflow development
 
-- [SDD workflows](docs/workflows/README.md): architecture, the v2 definition format and the opt-in runtime guide. Keep the feature disabled by default.
+- [SDD workflows](docs/workflows/README.md): architecture, the v2 definition format and the runtime guide. Workflows are on by default; `workflows.enabled: false` turns them off.
 - Run `bun test tests/workflow-runtime.test.ts tests/workflow-adapters.test.ts` for deterministic workflow integration, native SDK tool execution and terminal UI coverage. Fixtures do not require provider credentials.
 - Change run state through `NativeWorkflowService`; keep React and UI stores out of the runtime. Durable events and SQLite are authoritative. Never use a model's claim as command evidence or bypass a stale approval.
 

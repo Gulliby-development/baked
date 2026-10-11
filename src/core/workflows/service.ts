@@ -75,8 +75,8 @@ import {
   type RunState,
   SafeId,
   type StartRequest,
-  WorkflowConfigSchema,
   type WorkflowService,
+  workflowsEnabled,
   writerPolicyProblem,
 } from "./schemas.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
@@ -163,10 +163,10 @@ export class NativeWorkflowService implements WorkflowService {
     );
   }
   private enabled(): void {
-    if (!this.config.workflows || !WorkflowConfigSchema.parse(this.config.workflows).enabled)
+    if (!workflowsEnabled(this.config))
       throw new WorkflowFault(
         "CAPABILITY_DENIED",
-        "Workflows are disabled. Enable workflows.enabled in project configuration to opt in.",
+        "Workflows are turned off by workflows.enabled: false in the configuration.",
       );
   }
   async start(request: StartRequest): Promise<RunSnapshot> {

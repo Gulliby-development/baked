@@ -19,7 +19,7 @@ import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-cl
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
 import { explainRoute } from "../core/workflows/routing.js";
-import { PolicySchema } from "../core/workflows/schemas.js";
+import { PolicySchema, workflowsEnabled } from "../core/workflows/schemas.js";
 import { listDefinitions } from "../core/workflows/v2/definitions.js";
 import { readEditorSource, writeDefinitionFile } from "../core/workflows/v2/editor.js";
 import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
@@ -173,7 +173,7 @@ export function useWorkflowRuns(workspace: string, visible: boolean) {
       try {
         // Read configuration locally so a disabled project never starts a worker or creates a DB.
         const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
-        const on = config.workflows?.enabled === true;
+        const on = workflowsEnabled(config);
         setEnabled(on);
         if (!on && !existingWorkflowSession(workspace)) return;
         const service = workflowSession(workspace);
@@ -235,7 +235,7 @@ export function workflowEditorApi(workspace: string): WorkflowEditorApi {
       ),
     save: (definition) => writeDefinitionFile(workspace, definition),
     history: async () => {
-      if (config().workflows?.enabled !== true && !existingWorkflowSession(workspace)) return null;
+      if (!workflowsEnabled(config()) && !existingWorkflowSession(workspace)) return null;
       try {
         return await workflowSession(workspace).history();
       } catch {
@@ -286,7 +286,7 @@ export function workflowInitiativesApi(workspace: string): InitiativesApi {
   return {
     load: async () => {
       const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
-      if (config.workflows?.enabled !== true && !existingWorkflowSession(workspace)) return null;
+      if (!workflowsEnabled(config) && !existingWorkflowSession(workspace)) return null;
       return workflowSession(workspace).initiatives();
     },
     act: (id, action) => workflowSession(workspace).initiativeAction(id, action),

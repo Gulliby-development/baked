@@ -1,10 +1,12 @@
 # SDD runtime: running and operations
 
-The runtime is available through `baked workflow` and `/workflow` in the TUI. It is off by default. Bun is required; SQLite and the existing BAKED providers are used. No separate server or daemon is needed; `baked serve` optionally exposes the same commands to local clients ([Local API](#local-api-baked-serve)).
+The runtime is available through `baked workflow` and `/workflow` in the TUI. It is on by default in every project. Bun is required; SQLite and the existing BAKED providers are used. No separate server or daemon is needed; `baked serve` optionally exposes the same commands to local clients ([Local API](#local-api-baked-serve)).
 
 ## Enabling
 
-Select a configured BAKED model. `defaultModel: "none"` does not allow starting a workflow. Add `workflows` to the existing `.baked/config.json` and keep the other settings. The full example is below; `policy` is required and unknown fields are rejected.
+Workflows need no setup: without a `workflows` block a run uses the default policy below with no checks, and `enabled` defaults to `true`. Select a configured BAKED model; `defaultModel: "none"` does not allow starting a workflow. To change the policy, add `workflows` to `.baked/config.json` (or the global config) and keep the other settings; to turn workflows off, set `"enabled": false`. The full example is below; `policy` is required in a `workflows` block and unknown fields are rejected.
+
+Default checks are not written for you. A check is a command that runs as a trusted gate, so commands taken from a cloned repository's `package.json` become checks only after someone adds them in the gates window (G in `/workflow`), the desktop's Gates and checks screen or `.baked/config.json`. Gates in the repository's `baked/gates` still need the first-use confirmation.
 
 ```json
 {
@@ -237,7 +239,7 @@ The desktop app edits the same settings under Settings, All projects, Run notifi
 A gate is one entry of `workflows.policy.checks` in `.baked/config.json`. `/workflow gates` (or G on the runs screen) opens the window that lists, adds, edits and removes them. N adds a gate, E edits the selected one, D removes it after a confirmation, R runs it now and shows the outcome, the exit code, the duration and the last 40 lines of output, and S shows what the project already offers.
 
 - The command is one line split into an executable and arguments without a shell; quotes group words. Timeout is in seconds. Required, scope (`feature` or `task`), the env names that may be passed through and the generated outputs (`writes`) are the existing check fields. The same validation as for a run applies, so a duplicate ID or a directory outside the workspace is refused at save time.
-- Saving writes only `workflows.policy.checks` and keeps every other setting of the project config. A project without a `workflows` block gets one with `enabled: false`; enabling later only flips the flag.
+- Saving writes only `workflows.policy.checks` and keeps every other setting of the project config. A project without a `workflows` block gets one with the default policy and `enabled: true`.
 - A run takes a copy of the policy when it starts. Changing gates affects the runs created afterwards. Changing the gates of a started run still goes through `candidate` and `revise`.
 - Run now goes through the workflow worker, so the interface stays responsive; Esc stops the process tree. It uses the same safe environment and timeout as a run. It records no evidence. It is refused while a run holds the workspace, because the command could change the files that run is checking. It needs workflows to be enabled, so a disabled project starts no worker.
 
@@ -473,7 +475,7 @@ Workspace and evidence files are written to a unique temp file and renamed into 
 
 `/workflow` without arguments opens the panel with the project's run list. Runs waiting for a user decision come first, then active runs, then finished ones. ↑/↓ select a run, Enter opens it, N opens the new-run form, I opens the [initiatives](#initiatives-in-the-tui), G the gates window, R the [routing screen](#routing-screen) and Esc closes the panel. `/workflow new TEXT` opens the form with the description filled in; `/workflow quick TEXT` does the same with the quick workflow selected. `/workflow edit ID` opens the [workflow editor](#workflow-editor). `/workflow routing` opens the [routing screen](#routing-screen). `/workflow report RUN_ID` prints the [run report](#run-report) in the chat. `/workflow help` prints the full command list; the other CLI commands (`run`, `status`, `approve`, `recover` and so on) are still accepted, and their result is printed in the chat as a short text.
 
-If workflows are off in the project, the panel shows what will be written, and E enables them: a `workflows` block with the default policy and checks found in the `package.json` scripts (`typecheck`, `lint`, `test`) for the project's runner is added to `.baked/config.json`. An existing block only gets `enabled: true`. While the project is off, the panel starts no worker and creates no database.
+If a configuration turned workflows off (`workflows.enabled: false`), the panel shows what will be written, and E turns them back on: an existing project block only gets `enabled: true`; when the global config turned them off, a `workflows` block with the default policy and checks found in the `package.json` scripts (`typecheck`, `lint`, `test`) for the project's runner is added to `.baked/config.json`. While the project is off, the panel starts no worker and creates no database.
 
 The new-run form contains the description, an optional GitHub issue ([starting from a GitHub issue](#starting-from-a-github-issue); with one, the description is optional and adds instructions, and an untouched feature ID is named after the issue), the feature ID (derived from the description; Cyrillic text is transliterated), the workflow (`sdd`, the seven presets and `baked/workflows/*.json`, with the stages of the chosen one and "no file will change" for a workflow that only reads), the budget `quick`/`standard`/`extended`/`checkpoints` (×0.5/×1/×2 of the configured policy's token, call and time limits; `checkpoints` has no token cap and asks every N tokens), an estimate of the spend labeled as an estimate, the execution mode, the writer count, what blocking questions do (Questions: `ask` waits for your answers, `assume` lets the agents settle them with recorded assumptions; ←/→ or Space, starting at the policy's `clarification`), the current chat tab's model and the configured checks. Ctrl+S starts from any field.
 
@@ -702,7 +704,7 @@ Exit codes of `start`, `approve`, `drive`, `resume` and `reroute --resume`: 0 co
 
 ## Local API (`baked serve`)
 
-`baked serve` exposes the workflow commands to a desktop app or another local client over HTTP. It is a thin front end over the same code path as `baked workflow` (`src/core/api/server.ts` builds the CLI's `WorkflowArgs` and calls `executeWorkflowCommand`), so validation, the `workflows.enabled` opt-in, approval digests, expected revisions and command idempotency are identical. The chat endpoints (`/v1/sessions`, `/v1/models`) run conversations with the terminal UI's agent and store them with its sessions; they are specified in `docs/desktop/api.md`.
+`baked serve` exposes the workflow commands to a desktop app or another local client over HTTP. It is a thin front end over the same code path as `baked workflow` (`src/core/api/server.ts` builds the CLI's `WorkflowArgs` and calls `executeWorkflowCommand`), so validation, the `workflows.enabled` setting, approval digests, expected revisions and command idempotency are identical. The chat endpoints (`/v1/sessions`, `/v1/models`) run conversations with the terminal UI's agent and store them with its sessions; they are specified in `docs/desktop/api.md`.
 
 The desktop app's contract over this API, including the chat sessions and project setup endpoints, is [`docs/desktop/api.md`](../desktop/api.md).
 

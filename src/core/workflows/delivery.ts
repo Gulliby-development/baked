@@ -33,8 +33,8 @@ import { PULL_REQUEST_BODY_LIMIT, runReport } from "./run-report.js";
 import {
   type Decision,
   DeliveryConfigSchema,
-  WorkflowConfigSchema,
   type WorkflowErrorCode,
+  workflowsEnabled,
 } from "./schemas.js";
 import { type EffectRow, newId, type RequestRow, type WorkflowStore } from "./store.js";
 import { removeRunWorktree } from "./worktree.js";
@@ -132,12 +132,12 @@ function refuse(
 }
 
 function deliveryConfig(config: AppConfig) {
-  if (!config.workflows || !WorkflowConfigSchema.parse(config.workflows).enabled)
+  if (!workflowsEnabled(config))
     throw new WorkflowFault(
       "CAPABILITY_DENIED",
-      "Workflows are disabled. Enable workflows.enabled in project configuration to opt in.",
+      "Workflows are turned off by workflows.enabled: false in the configuration.",
     );
-  return DeliveryConfigSchema.parse(config.workflows.delivery ?? {});
+  return DeliveryConfigSchema.parse(config.workflows?.delivery ?? {});
 }
 
 /** The pull request provider the configuration names, with its token read from the environment. */

@@ -209,10 +209,10 @@ describe("saving gates", () => {
     expect(saved.workflows.policy.checks.map((c: Check) => c.id)).toEqual(["a", "b"]);
     expect(readGates(root).map((c) => c.id)).toEqual(["a", "b"]);
   });
-  test("a project without a workflow block gets a disabled one", () => {
+  test("a project without a workflow block gets an enabled one", () => {
     const root = workspace({ ".baked/config.json": JSON.stringify({ defaultModel: "p/m" }) });
     writeGates(root, [gate()]);
-    expect(read(root).workflows.enabled).toBe(false);
+    expect(read(root).workflows.enabled).toBe(true);
     expect(read(root).defaultModel).toBe("p/m");
   });
   test("a block inherited from the global config is copied, not lost", () => {

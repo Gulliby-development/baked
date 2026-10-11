@@ -58,7 +58,7 @@ The type of the whole file is `AppConfig` in `src/types/index.ts`; the comments 
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
 | `mcpServers` | `[]` | MCP servers ([extensions](extensions.md#mcp-servers)) |
 | `hooks` | unset | Lifecycle hooks ([extensions](extensions.md#hooks)) |
-| `workflows` | `enabled: false` | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)) |
+| `workflows` | on (`enabled` defaults to `true`; set `false` to turn them off) | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)) |
 | `keyPriority` | `"env"` | Key lookup order, see below |
 | `theme`, `diffStyle`, `chatStyle`, `collapseDiffs`, `showReasoning`, `verbose` | | Display; `/theme`, `/diff-style`, `/chat-style`, `/reasoning`, `/verbose` |
 | `motion` | `"full"` | Brand animations; `"reduced"` shows still frames (`/motion`, or `BAKED_REDUCED_MOTION=1`) ([guide](guide.md#motion)) |

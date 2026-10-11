@@ -200,6 +200,11 @@ status(0.2, "Reading settings");
 import("./core/projects/known.js")
   .then(({ recordProjectOpen }) => recordProjectOpen(getCwd()))
   .catch(() => {});
+// Sets up the opened folder as a project before settings are read, keeping existing files.
+{
+  const { scaffoldProjectQuietly } = await import("./core/projects/scaffold.js");
+  scaffoldProjectQuietly(getCwd());
+}
 const config = loadConfig();
 const projectConfig = loadEffectiveProjectConfig(getCwd());
 
