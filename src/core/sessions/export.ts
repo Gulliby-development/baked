@@ -163,7 +163,11 @@ export function renderChatExport(
 }
 
 /** The file name an export is saved under: slugged title plus a UTC timestamp. */
-export function chatExportFileName(title: string, format: ChatExportFormat, now = new Date()): string {
+export function chatExportFileName(
+  title: string,
+  format: ChatExportFormat,
+  now = new Date(),
+): string {
   const stamp = now.toISOString().slice(0, 19).replace(/[T:]/g, "-");
   return `${slugify(title) || "chat"}-${stamp}${format === "json" ? ".json" : ".md"}`;
 }
