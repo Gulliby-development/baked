@@ -1,5 +1,7 @@
 import { type DependencyList, type ReactNode, useCallback, useEffect, useState } from "react";
 import { isMissingEndpoint, isNoProject } from "../../client/setup.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Empty } from "../../components/ui/empty.js";
 
 /** Class strings the setup screens share (project gates, instructions, working set, settings). */
 export const SETUP = "flex min-w-0 flex-col gap-4 [&_input:disabled]:opacity-70";
@@ -84,25 +86,25 @@ export function useLoad<T>(
 
 export function NeedsNewer({ what }: { what: string }) {
   return (
-    <div className={`banner ${NEEDS}`}>
+    <Alert className={NEEDS}>
       Needs a newer BAKED: this project's backend cannot show {what} yet. Update BAKED, or point
       Settings → BAKED executable at a newer one.
-    </div>
+    </Alert>
   );
 }
 
 /** The non-ready states of a `Loaded`, or null when the data is there. */
 export function LoadState({ value, what }: { value: Loaded<unknown>; what: string }) {
-  if (value.state === "loading") return <div className="muted">Loading {what}…</div>;
+  if (value.state === "loading") return <div className="text-dim-foreground">Loading {what}…</div>;
   if (value.state === "missing") return <NeedsNewer what={what} />;
   if (value.state === "no-project")
     return (
-      <div className="empty">
-        This folder has no <span className="mono">baked/project.json</span> yet. Run{" "}
-        <span className="mono">baked project init</span> in the folder to create one.
-      </div>
+      <Empty>
+        This folder has no <span className="font-mono">baked/project.json</span> yet. Run{" "}
+        <span className="font-mono">baked project init</span> in the folder to create one.
+      </Empty>
     );
-  if (value.state === "error") return <div className="banner error">{value.message}</div>;
+  if (value.state === "error") return <Alert tone="error">{value.message}</Alert>;
   return null;
 }
 
