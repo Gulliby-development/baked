@@ -22,6 +22,14 @@ export const WRITTEN_READ_BYTES = 24_000;
  * as it would resend the same files read in the first step; files past the total are outlined.
  */
 export const PRELOAD_TOTAL_BYTES = 64_000;
+/**
+ * Spans of an outlined written file whose symbol the task names, preloaded under its outline, per
+ * file. A task that names the function it changes then edits it on its first step instead of
+ * spending a step on a range read of it. The spans count toward the preload total.
+ */
+export const NAMED_SPANS_BYTES = 16_000;
+/** Shorter identifiers in a task's text are too often plain words to pick a symbol by. */
+const MIN_NAMED_LENGTH = 4;
 const MAX_OUTLINE_LINES = 200;
 const STRUCTURE = new Set(["class", "interface", "type", "enum", "function", "method"]);
 
@@ -67,7 +75,7 @@ function outlineLines(symbols: SymbolInfo[]): string[] {
     });
 }
 
-async function outline(path: string, label = path): Promise<string | null> {
+async function fileSymbols(path: string): Promise<SymbolInfo[] | null> {
   try {
     // The router is a process-wide singleton bound to the first cwd it is created with.
     const router = getIntelligenceRouter(getCwd());
@@ -80,19 +88,91 @@ async function outline(path: string, label = path): Promise<string | null> {
       (await router.executeWithFallbackTracked(language, "findSymbols", (b) =>
         b.findSymbols ? b.findSymbols(path) : Promise.resolve(null),
       ));
-    const lines = tracked ? outlineLines(tracked.value) : [];
-    if (lines.length === 0) return null;
-    const size = statSync(path).size;
-    const shown = lines.slice(0, MAX_OUTLINE_LINES);
-    const more = lines.length - shown.length;
-    return [
-      `${label} is ${Math.round(size / 1024)} KB, so it is shown as an outline (line spans). Read only what the task needs: {path, ranges:[{start,end}]} for the spans above, or {path, target:"function", name}.`,
-      ...shown,
-      ...(more > 0 ? [`  ... ${more} more declarations`] : []),
-    ].join("\n");
+    return tracked?.value ?? null;
   } catch {
     return null;
   }
+}
+
+function outlineText(path: string, label: string, symbols: SymbolInfo[]): string | null {
+  const lines = outlineLines(symbols);
+  if (lines.length === 0) return null;
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return null;
+  }
+  const shown = lines.slice(0, MAX_OUTLINE_LINES);
+  const more = lines.length - shown.length;
+  return [
+    `${label} is ${Math.round(size / 1024)} KB, so it is shown as an outline (line spans). Read only what the task needs: {path, ranges:[{start,end}]} for the spans above, or {path, target:"function", name}.`,
+    ...shown,
+    ...(more > 0 ? [`  ... ${more} more declarations`] : []),
+  ].join("\n");
+}
+
+async function outline(path: string, label = path): Promise<string | null> {
+  const symbols = await fileSymbols(path);
+  return symbols ? outlineText(path, label, symbols) : null;
+}
+
+/**
+ * Line spans (1-based, inclusive) of the outlined symbols whose names appear as identifiers in
+ * `hint`, merged where they overlap and kept in file order while they fit in `budget` bytes. A
+ * span larger than the budget, or a class whose named members are shown, is left to the outline.
+ */
+export function namedSymbolSpans(
+  symbols: SymbolInfo[],
+  lines: readonly string[],
+  hint: string,
+  budget: number,
+): { start: number; end: number }[] {
+  const named = new Set(
+    (hint.match(/[A-Za-z_$][\w$]*/g) ?? []).filter((word) => word.length >= MIN_NAMED_LENGTH),
+  );
+  if (named.size === 0) return [];
+  const listed = new Set(outlineLines(symbols).map((line) => line.trim()));
+  const spans = symbols
+    .filter((s) => named.has(s.name))
+    .map((s) => ({ symbol: s, start: s.location.line, end: s.location.endLine ?? s.location.line }))
+    // Only declarations the outline shows: a local that shares a name with the task's words is
+    // not what the task changes.
+    .filter(({ symbol, start, end }) =>
+      listed.has(`${start}${end > start ? `-${end}` : ""} ${symbol.kind} ${symbol.name}`),
+    )
+    .filter(
+      ({ start, end }) => Buffer.byteLength(lines.slice(start - 1, end).join("\n")) <= budget,
+    );
+  // A class whose members the task also names is shown by those members: the task changes them,
+  // not the whole class.
+  const innermost = spans
+    .filter(
+      (outer) =>
+        !spans.some(
+          (inner) =>
+            inner !== outer &&
+            inner.start >= outer.start &&
+            inner.end <= outer.end &&
+            (inner.start > outer.start || inner.end < outer.end),
+        ),
+    )
+    .sort((a, b) => a.start - b.start || b.end - a.end);
+  const merged: { start: number; end: number }[] = [];
+  for (const span of innermost) {
+    const last = merged[merged.length - 1];
+    if (last && span.start <= last.end) last.end = Math.max(last.end, span.end);
+    else merged.push({ start: span.start, end: span.end });
+  }
+  const kept: { start: number; end: number }[] = [];
+  let used = 0;
+  for (const span of merged) {
+    const bytes = Buffer.byteLength(lines.slice(span.start - 1, span.end).join("\n"));
+    if (used + bytes > budget) continue;
+    used += bytes;
+    kept.push(span);
+  }
+  return kept;
 }
 
 /**
@@ -122,12 +202,14 @@ export async function outlineLargeReads(
  * The files a task modifies, as the read tool would show them: whole with line numbers up to the
  * written-file limit, outlines above it or past the preload total. An implementer that gets them
  * in its first prompt edits on its first step instead of spending a step reading them, and every
- * later step of the attempt resends one step less. Files that are missing, binary or without an
- * outline are left for the agent to read.
+ * later step of the attempt resends one step less. An outlined file also carries the spans of the
+ * symbols `hint` (the task's title and description) names. Files that are missing, binary or
+ * without an outline are left for the agent to read.
  */
 export async function preloadTaskFiles(
   root: string,
   writes: readonly { path: string; action: string }[],
+  hint = "",
 ): Promise<string> {
   const parts: string[] = [];
   let total = 0;
@@ -152,8 +234,31 @@ export async function preloadTaskFiles(
       parts.push(`--- ${write.path}\n${numbered}\nhash:${contentHash(content)}`);
       continue;
     }
-    const text = await outline(path, write.path);
-    if (text) parts.push(`--- ${write.path}\n${text}`);
+    const symbols = await fileSymbols(path);
+    const text = symbols ? outlineText(path, write.path, symbols) : null;
+    if (!symbols || !text) continue;
+    const content = bytes.toString("utf8");
+    const lines = content.split("\n");
+    const spans = namedSymbolSpans(
+      symbols,
+      lines,
+      hint,
+      Math.min(NAMED_SPANS_BYTES, PRELOAD_TOTAL_BYTES - total),
+    );
+    if (spans.length === 0) {
+      parts.push(`--- ${write.path}\n${text}`);
+      continue;
+    }
+    const shown = spans.map((span) =>
+      lines
+        .slice(span.start - 1, span.end)
+        .map((line, i) => `${String(span.start + i).padStart(4)}  ${line}`)
+        .join("\n"),
+    );
+    total += shown.reduce((sum, part) => sum + Buffer.byteLength(part), 0);
+    parts.push(
+      `--- ${write.path}\n${text}\nThe spans the task names, as a range read shows them:\n${shown.join("\n  ...\n")}\nhash:${contentHash(content)}`,
+    );
   }
   return parts.join("\n\n");
 }
