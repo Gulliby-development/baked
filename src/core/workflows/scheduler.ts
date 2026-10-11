@@ -14,6 +14,13 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
 import { validateEvidence } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import {
+  type ReproOutcome,
+  reproAllows,
+  reproExecutables,
+  reproTool,
+  runRepro,
+} from "../verification/repro.js";
 import { validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { outputSchemas } from "./agent-executor.js";
@@ -80,6 +87,7 @@ import {
   ReasonCode,
   RefutationSchema,
   ReportSchema,
+  type Repro,
   ResearchSchema,
   type Review,
   ReviewSchema,
@@ -3047,6 +3055,14 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const reviewSpec = state.spec;
     const reviewSnapshotId = state.snapshotId;
     const reviewSnapshotHash = state.workspaceHash;
+    const executables = reproExecutables(policy.checks);
+    const repro = (r: Repro) =>
+      runRepro(this.processes, r, {
+        root: this.store.workspace,
+        executables,
+        generated: generatedPaths(policy),
+        signal,
+      });
     const runReviewer = async (reviewer: Reviewer) => {
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
@@ -3061,6 +3077,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           profile,
           { dimension: reviewer.dimension, evidence: this.evidenceContext(runId, state) },
           signal,
+          undefined,
+          0,
+          undefined,
+          undefined,
+          executables.length && profile.allowedTools.includes("run_repro")
+            ? () => ({ run_repro: reproTool(executables, repro) })
+            : undefined,
         ),
       );
       validateReview(
@@ -3087,7 +3110,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         state.reviews[reviewer.key] = result;
         // Advisory reviewers, findings below the blocking severities and inferred notes are
         // recorded, not repaired.
-        const blocking = reviewer.required
+        const candidates = reviewer.required
           ? result.findings.filter(
               (f) =>
                 reviewer.blocking.includes(f.severity) &&
@@ -3095,6 +3118,23 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
                 findingBlocks(f),
             )
           : [];
+        // A claim starts a correction only when its repro shows it (#155).
+        const outcomes = new Map<string, ReproOutcome>();
+        for (const finding of candidates)
+          if (finding.repro && executables.length)
+            outcomes.set(finding.id, await repro(finding.repro));
+        if (outcomes.size)
+          this.store.transaction(() =>
+            this.store.artifact(
+              runId,
+              "repro",
+              `reviews/repro-${newId()}.json`,
+              canonical({ dimension: reviewer.dimension, outcomes: Object.fromEntries(outcomes) }),
+            ),
+          );
+        const blocking = candidates.filter((f) =>
+          reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0),
+        );
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);
           owners.set(finding.id, reviewer);
