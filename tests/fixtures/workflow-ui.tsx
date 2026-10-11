@@ -65,6 +65,8 @@ mock.module("../../src/hooks/useWorkflow.js", () => ({
   useWorkflowRuns: () => ({ runs, info, enabled: true, error: null, reload: () => {} }),
   workflowSession: () => ({ start: async () => snapshot }),
   reloadWorkflowSession: async () => true,
+  existingWorkflowSession: () => null,
+  workflowRoutingApi: () => ({ load: () => ({ global: undefined, project: undefined, workflows: ["sdd"] }), explain: () => { throw new Error("no run model"); }, save: () => {} }),
   workflowGatesApi: () => ({ load: () => defaultWorkflowPolicy.checks.length ? defaultWorkflowPolicy.checks : [{ id: "tests", executable: "bun", args: ["run", "test"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] }], save: async () => {}, suggest: () => [], run: async () => ({ status: "passed", exitCode: 0, durationMs: 10, outputTail: "", truncated: false }) }),
   // The editor reads and writes a temp workspace; user gate and profile folders are temp folders too.
   workflowEditorApi: () => {

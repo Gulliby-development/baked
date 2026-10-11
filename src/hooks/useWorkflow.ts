@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GatesApi } from "../components/workflow/GatesView.js";
 import type { InitiativesApi } from "../components/workflow/InitiativesView.js";
+import type { RoutingApi } from "../components/workflow/RoutingView.js";
 import type { WorkflowEditorApi } from "../components/workflow/WorkflowEditor.js";
-import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
+import {
+  loadConfig,
+  loadEffectiveProjectConfig,
+  loadProjectConfig,
+  mergeConfigs,
+  removeGlobalConfigKeys,
+  removeProjectConfigKeys,
+  saveGlobalConfig,
+  saveProjectConfig,
+} from "../config/index.js";
 import { getIntelligenceClient } from "../core/intelligence/instance.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
+import { explainRoute } from "../core/workflows/routing.js";
 import { PolicySchema } from "../core/workflows/schemas.js";
+import { listDefinitions } from "../core/workflows/v2/definitions.js";
 import { readEditorSource, writeDefinitionFile } from "../core/workflows/v2/editor.js";
 import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
 import { useWorkflowStore } from "../stores/workflow.js";
@@ -228,6 +240,38 @@ export function workflowEditorApi(workspace: string): WorkflowEditorApi {
       } catch {
         return null;
       }
+    },
+  };
+}
+
+/**
+ * Reads and writes `modelRouting` for the routing screen. Each layer is read from its own file, so
+ * saving the project layer never copies global or manifest settings into `.baked/config.json`.
+ */
+export function workflowRoutingApi(workspace: string): RoutingApi {
+  const config = () => mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
+  return {
+    load: () => {
+      const effective = config();
+      const policy = PolicySchema.parse(effective.workflows?.policy ?? defaultWorkflowPolicy);
+      return {
+        global: loadConfig().modelRouting,
+        project: loadProjectConfig(workspace)?.modelRouting,
+        workflows: listDefinitions(workspace, policy).map((d) => d.id),
+        legacy: {
+          coding: effective.taskRouter?.ember ?? effective.taskRouter?.coding ?? undefined,
+          review: effective.taskRouter?.verify ?? undefined,
+        },
+      };
+    },
+    explain: (workflowId, model) =>
+      explainRoute(workspace, config(), { workflowId, model: model ?? undefined }),
+    save: (scope, routing) => {
+      if (scope === "global") {
+        if (routing) saveGlobalConfig({ modelRouting: routing });
+        else removeGlobalConfigKeys(["modelRouting"]);
+      } else if (routing) saveProjectConfig(workspace, { modelRouting: routing });
+      else removeProjectConfigKeys(workspace, ["modelRouting"]);
     },
   };
 }
