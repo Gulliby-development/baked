@@ -232,10 +232,10 @@ function RoutingTables({
       busy={busy}
       problems={problems}
       onCancel={() => onEdit(null)}
-      onSave={(draft, create) =>
+      onSave={({ name, ...route }, create) =>
         void onChange(
-          { target: create ? { kind: "class", name: draft.name } : target, route: draft, create },
-          `Saved ${create ? `classes.${draft.name}` : (row?.path ?? "")}`,
+          { target: create ? { kind: "class", name } : target, route, create },
+          `Saved ${create ? `classes.${name}` : (row?.path ?? "")}`,
         )
       }
     />
@@ -377,7 +377,7 @@ function RouteRow({
             size="sm"
             disabled={busy}
             onClick={onEdit}
-            aria-label={`Edit ${row.label}`}
+            aria-label={`Edit ${row.target.kind} ${row.label}`}
           >
             Edit
           </Button>
@@ -387,7 +387,7 @@ function RouteRow({
               size="sm"
               disabled={busy}
               onClick={onClear}
-              aria-label={`Clear ${row.label}`}
+              aria-label={`Clear ${row.target.kind} ${row.label}`}
             >
               Clear
             </Button>
