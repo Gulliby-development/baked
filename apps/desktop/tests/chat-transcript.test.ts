@@ -8,6 +8,7 @@ import {
   liveId,
   reduceTranscript,
   type Transcript,
+  turnCount,
 } from "../src/renderer/screens/chat/transcript.ts";
 
 const USAGE = { input: 10, output: 5, cacheRead: 0 };
@@ -274,5 +275,19 @@ describe("chat transcript", () => {
       at: 1,
     });
     expect(failed.notice).toEqual({ kind: "error", text: "Compaction failed: model unavailable" });
+  });
+});
+
+describe("undo and redo", () => {
+  test("the redo stack and the turn count come from the session", () => {
+    const messages = [
+      { id: "u1", role: "user" as const, content: "One", timestamp: 1 },
+      { id: "a1", role: "assistant" as const, content: "ok", timestamp: 2 },
+      { id: "s1", role: "user" as const, content: "also", timestamp: 3, isSteering: true },
+    ];
+    const t = fromDetail(detail({ messages, redo: [{ index: 2, prompt: "Two" }] }));
+    expect(t.redo).toEqual([{ index: 2, prompt: "Two" }]);
+    expect(turnCount(t)).toBe(1);
+    expect(fromDetail(detail()).redo).toEqual([]);
   });
 });
