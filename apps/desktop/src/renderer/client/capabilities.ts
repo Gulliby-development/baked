@@ -17,6 +17,8 @@ export const DIFF_STATS_CAPABILITY = "diff-stats";
 export const PLAN_MODE_CAPABILITY = "plan-mode";
 /** `POST /v1/sessions/ID/undo` and `/redo` (Undo and Redo in chat). */
 export const CHAT_UNDO_CAPABILITY = "chat-undo";
+/** `GET|POST /v1/workflow/memory` (the Run memory section). */
+export const RUN_MEMORY_CAPABILITY = "run-memory";
 
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the

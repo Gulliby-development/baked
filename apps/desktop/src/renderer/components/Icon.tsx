@@ -10,6 +10,7 @@ const PATHS = {
   gate: "M3 14V4l5-2 5 2v10M6 14V9h4v5",
   file: "M4 2h6l3 3v9H4zM6 8h5M6 11h5",
   folder: "M3 4h4l1 1.5h5V13H3z",
+  memory: "M3 3.5h10v9H3zM3 6.5h10M3 9.5h10",
   plus: "M8 3v10M3 8h10",
   gear: "M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2",
   undo: "M6 3.5L3 6.5l3 3M3 6.5h7a3 3 0 010 6H8",
