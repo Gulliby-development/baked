@@ -49,6 +49,7 @@ export function buildSessionMeta({
     // so undo→save→restore→redo works)
     const cpStore = useCheckpointStore.getState();
     const checkpointTags = cpStore.snapshotTags(tabState.id);
+    const redoTurns = cpStore.redoTurns(tabState.id);
 
     const uiSnapshot = useUIStore.getState();
     const verboseForTab = uiSnapshot.verboseByTab[tabState.id];
@@ -66,6 +67,7 @@ export function buildSessionMeta({
       tokenUsage: tabState.tokenUsage,
       messageRange: { startLine: 0, endLine: msgs.length },
       ...(checkpointTags.length > 0 ? { checkpointTags } : {}),
+      ...(redoTurns.length > 0 ? { redoTurns } : {}),
       ...(verboseForTab !== undefined ? { verbose: verboseForTab } : {}),
     });
   }
@@ -111,6 +113,7 @@ export function buildTabMeta(args: {
   const msgs = args.messages.filter((m) => m.role !== "system" || m.showInChat);
 
   const checkpointTags = useCheckpointStore.getState().snapshotTags(args.tabId);
+  const redoTurns = useCheckpointStore.getState().redoTurns(args.tabId);
 
   const uiSnapshot = useUIStore.getState();
   const verboseForTab = uiSnapshot.verboseByTab[args.tabId];
@@ -128,6 +131,7 @@ export function buildTabMeta(args: {
     tokenUsage: args.tokenUsage,
     messageRange: { startLine: 0, endLine: msgs.length },
     ...(checkpointTags.length > 0 ? { checkpointTags } : {}),
+    ...(redoTurns.length > 0 ? { redoTurns } : {}),
     ...(verboseForTab !== undefined ? { verbose: verboseForTab } : {}),
   };
 

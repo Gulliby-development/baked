@@ -744,8 +744,10 @@ export function App({
       // Restore checkpoint git tags from saved session (synchronous — must run
       // before React renders TabInstance, which triggers syncFromMessages)
       for (const tab of data.meta.tabs) {
-        if (tab.checkpointTags?.length) {
-          useCheckpointStore.getState().restoreTagsFromMeta(tab.id, tab.checkpointTags ?? []);
+        if (tab.checkpointTags?.length || tab.redoTurns?.length) {
+          useCheckpointStore
+            .getState()
+            .restoreTagsFromMeta(tab.id, tab.checkpointTags ?? [], tab.redoTurns);
         }
       }
       // Restore custom title if user renamed this session
@@ -915,8 +917,10 @@ export function App({
         // Restore checkpoint git tags from saved session (stashed as _pendingTags
         // so syncFromMessages picks them up when it rebuilds checkpoints)
         for (const tab of data.meta.tabs) {
-          if (tab.checkpointTags?.length) {
-            useCheckpointStore.getState().restoreTagsFromMeta(tab.id, tab.checkpointTags ?? []);
+          if (tab.checkpointTags?.length || tab.redoTurns?.length) {
+            useCheckpointStore
+              .getState()
+              .restoreTagsFromMeta(tab.id, tab.checkpointTags ?? [], tab.redoTurns);
           }
         }
         // Restore custom title if user renamed this session

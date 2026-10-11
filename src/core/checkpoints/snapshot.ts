@@ -97,6 +97,13 @@ export async function copyTag(cwd: string, from: string, to: string): Promise<bo
   return (await git(["update-ref", `refs/tags/${to}`, text(target)], cwd)).ok;
 }
 
+/** Deletes the tag; true when it is gone. */
+export async function deleteTag(cwd: string, tag: string): Promise<boolean> {
+  return (
+    (await git(["update-ref", "-d", `refs/tags/${tag}`], cwd)).ok || !(await tagExists(cwd, tag))
+  );
+}
+
 /** True when the tag exists. */
 export async function tagExists(cwd: string, tag: string): Promise<boolean> {
   return (await git(["rev-parse", "--verify", "-q", `refs/tags/${tag}`], cwd)).ok;
