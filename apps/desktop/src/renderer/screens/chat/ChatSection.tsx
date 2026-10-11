@@ -1,4 +1,3 @@
-import "../../styles/chat.css";
 import {
   type ReactNode,
   useCallback,
@@ -22,18 +21,25 @@ import { emptyTranscript, isBusy, reduceTranscript } from "./transcript.js";
 
 const NEW = "new";
 
+const CHAT = "flex-1 min-h-0 flex flex-col";
+const SCROLL = "flex-1 min-h-0 overflow-y-auto flex justify-center px-6 pt-[18px] pb-2";
+const COLUMN = "w-full max-w-[820px] flex flex-col gap-[18px] pb-3";
+const EMPTY = "empty mt-12 flex flex-col items-center gap-[10px]";
+const EMPTY_TITLE = "text-[18px] font-bold text-foreground";
+const EMPTY_P = "m-0 max-w-[480px]";
+
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 function NeedsNewer({ project }: { project: DesktopProject }) {
   return (
-    <div className="chat">
+    <div data-chat className={CHAT}>
       <ChatHeader project={project} title="Chat" sessionId={null} />
-      <div className="chat-scroll">
-        <div className="chat-column">
-          <div className="empty chat-empty">
-            <p className="chat-empty-title">Chat needs a newer BAKED</p>
-            <p>
+      <div className={SCROLL}>
+        <div className={COLUMN}>
+          <div className={EMPTY}>
+            <p className={`${EMPTY_P} ${EMPTY_TITLE}`}>Chat needs a newer BAKED</p>
+            <p className={EMPTY_P}>
               The BAKED that serves {project.name} has no chat API yet. Update BAKED, or point
               Settings → BAKED executable at a newer one, then restart the project.
             </p>
@@ -49,10 +55,10 @@ function NeedsNewer({ project }: { project: DesktopProject }) {
 
 function Centered({ project, children }: { project: DesktopProject; children: ReactNode }) {
   return (
-    <div className="chat">
+    <div data-chat className={CHAT}>
       <ChatHeader project={project} title="Chat" sessionId={null} />
-      <div className="chat-scroll">
-        <div className="chat-column">{children}</div>
+      <div className={SCROLL}>
+        <div className={COLUMN}>{children}</div>
       </div>
     </div>
   );
@@ -249,8 +255,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   if (load === "not-found")
     return (
       <Centered project={project}>
-        <div className="empty chat-empty">
-          <p className="chat-empty-title">This chat no longer exists</p>
+        <div className={EMPTY}>
+          <p className={`${EMPTY_P} ${EMPTY_TITLE}`}>This chat no longer exists</p>
           <a className="btn" href={projectHref(key, "chat", NEW)}>
             Start a new chat
           </a>
@@ -261,7 +267,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const session = transcript.session;
   const empty = !draft && load === "ready" && transcript.messages.length === 0 && !transcript.live;
   return (
-    <div className="chat">
+    <div data-chat className={CHAT}>
       <ChatHeader
         project={project}
         title={draft ? "New chat" : (session?.title ?? "Chat")}
@@ -275,14 +281,14 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               filesEdited: transcript.filesEdited,
             })}
       />
-      <section className="chat-scroll" aria-label="Conversation" ref={scroller} onScroll={onScroll}>
-        <div className="chat-column" aria-live="off">
+      <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
+        <div className={COLUMN} aria-live="off">
           {load === "loading" && <p className="muted">Loading the session…</p>}
           {load !== "loading" && load !== "ready" && <div className="banner error">{load}</div>}
           {(draft || empty) && transcript.pending.length === 0 && (
-            <div className="chat-welcome">
-              <p className="chat-empty-title">What should BAKED do in {project.name}?</p>
-              <p className="muted">
+            <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">
+              <p className={`m-0 ${EMPTY_TITLE}`}>What should BAKED do in {project.name}?</p>
+              <p className="muted m-0">
                 Describe a change, ask about the code, or paste an error. Tool approvals show up
                 here and in Needs you.
               </p>
@@ -295,13 +301,13 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
           />
           {actionError && (
-            <p className="notice error" role="alert">
+            <p className="m-0 px-3 py-0 text-[13px] text-[var(--err)]" role="alert">
               {actionError}
             </p>
           )}
         </div>
       </section>
-      <div className="composer-wrap">
+      <div className="flex justify-center px-6 pt-2 pb-5">
         <Composer
           busy={busy}
           canStop={canStop}

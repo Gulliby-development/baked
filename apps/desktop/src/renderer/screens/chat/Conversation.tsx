@@ -1,13 +1,36 @@
 import { useId, useState } from "react";
 import type { ChatMessage, ToolCall } from "../../client/chat.js";
-import { Markdown } from "./Markdown.js";
-import { CHIP } from "./Popover.js";
+import { INLINE_CODE, Markdown } from "./Markdown.js";
+import { CHIP_SMALL } from "./Popover.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
 
 /** Tools the agent uses for its own bookkeeping; they say nothing to the person. */
 const HIDDEN_TOOLS = new Set(["final_response"]);
 const DIFF_PREVIEW_LINES = 14;
+
+const TOOL_LINE =
+  "flex items-center gap-[10px] min-h-[34px] w-full px-3 py-0 rounded-base border-2 border-border bg-sidebar text-muted-foreground font-mono leading-[inherit] text-[12.5px] text-left cursor-pointer hover:bg-hover hover:text-foreground aria-expanded:bg-hover aria-expanded:text-foreground aria-expanded:shadow-sm-hard";
+const TOOL_BODY =
+  "m-[0_0_0_34px] py-[10px] px-3 border-l-[3px] border-l-border text-muted-foreground leading-[1.6] whitespace-pre-wrap wrap-anywhere max-h-[320px] overflow-y-auto";
+const NOTICE = "m-0 px-3 py-0 text-[13px]";
+const DIFF_LINE: Record<ToolDiff["lines"][number]["kind"], string> = {
+  add: "bg-[var(--diff-add)] text-[var(--ok)]",
+  del: "bg-[var(--diff-del)] text-[var(--err)]",
+  hunk: "text-dim-foreground",
+  ctx: "",
+};
+const PROMPT_CARD =
+  "border-2 border-border rounded-base shadow-shadow px-4 py-[14px] flex flex-col";
+const PROMPT_TITLE = "m-0 font-bold text-main-foreground";
+const ROW = "flex flex-wrap gap-2";
+const SPINNER = "size-3 flex-none inline-flex";
+const SPINNER_RING =
+  "w-full h-full rounded-[50%] border-2 border-[var(--line-strong)] border-t-[var(--accent)] animate-spin [animation-duration:0.8s] motion-reduce:animate-none";
+const OUTCOME_TONE: Record<string, string> = {
+  approved: "text-[var(--ok)]",
+  denied: "text-[var(--err)]",
+};
 
 function Chevron({ open }: { open: boolean }) {
   return (
@@ -19,7 +42,7 @@ function Chevron({ open }: { open: boolean }) {
       stroke="currentColor"
       strokeWidth="2"
       aria-hidden="true"
-      className={`chevron${open ? " open" : ""}`}
+      className={`flex-none [transition:transform_0.12s] motion-reduce:[transition:none]${open ? " [transform:rotate(90deg)]" : ""}`}
     >
       <path d="M6 4l4 4-4 4" />
     </svg>
@@ -29,16 +52,16 @@ function Chevron({ open }: { open: boolean }) {
 function Status({ call }: { call: ToolCall }) {
   if (!call.result)
     return (
-      <span className="spinner" role="img" aria-label="Running">
-        <span />
+      <span className={SPINNER} role="img" aria-label="Running">
+        <span className={SPINNER_RING} />
       </span>
     );
   return call.result.success ? (
-    <span className="tool-ok" role="img" aria-label="Done">
+    <span className="text-[var(--ok)]" role="img" aria-label="Done">
       ✓
     </span>
   ) : (
-    <span className="tool-err" role="img" aria-label="Failed">
+    <span className="text-[var(--err)]" role="img" aria-label="Failed">
       ✕
     </span>
   );
@@ -47,9 +70,11 @@ function Status({ call }: { call: ToolCall }) {
 function Title({ call }: { call: ToolCall }) {
   const title = toolTitle(call.name, call.args);
   return (
-    <span className="tool-title">
+    <span className="min-w-0 truncate">
       {title.verb}
-      {title.subject && <> {title.code ? <code>{title.subject}</code> : title.subject}</>}
+      {title.subject && (
+        <> {title.code ? <code className={INLINE_CODE}>{title.subject}</code> : title.subject}</>
+      )}
     </span>
   );
 }
@@ -59,10 +84,10 @@ function ToolLine({ call }: { call: ToolCall }) {
   const id = useId();
   const output = call.result ? (call.result.error ?? call.result.output) : "";
   return (
-    <div className="tool">
+    <div className="flex flex-col gap-1">
       <button
         type="button"
-        className="tool-line"
+        className={TOOL_LINE}
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((v) => !v)}
@@ -72,7 +97,7 @@ function ToolLine({ call }: { call: ToolCall }) {
         <Title call={call} />
       </button>
       {open && (
-        <pre id={id} className="tool-output">
+        <pre id={id} className={`${TOOL_BODY} font-mono text-[12px]`}>
           {call.result ? output.trim() || "No output." : "Running…"}
         </pre>
       )}
@@ -86,17 +111,20 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
   const lines = all ? diff.lines : diff.lines.slice(0, DIFF_PREVIEW_LINES);
   const hidden = diff.lines.length - lines.length;
   return (
-    <figure className="diff-card" aria-label={`Changes to ${diff.path}`}>
-      <figcaption className="diff-head px-[12px]! py-[10px]! text-muted-foreground!">
+    <figure
+      className="m-0 border-2 border-border rounded-base overflow-hidden bg-background shadow-shadow"
+      aria-label={`Changes to ${diff.path}`}
+    >
+      <figcaption className="flex items-center gap-[10px] px-3 py-[10px] text-[13px] font-semibold text-muted-foreground border-b-2 border-b-border">
         <Status call={call} />
-        <span className="mono diff-path">{diff.path}</span>
+        <span className="mono text-soft-foreground min-w-0 truncate">{diff.path}</span>
         {diff.created && <span className="muted">new file</span>}
-        <span className="mono diff-add-count">+{diff.added}</span>
-        <span className="mono diff-del-count">−{diff.removed}</span>
+        <span className="mono ml-auto text-[var(--ok)]">+{diff.added}</span>
+        <span className="mono text-[var(--err)]">−{diff.removed}</span>
         {(hidden > 0 || all) && (
           <button
             type="button"
-            className={`${CHIP} small`}
+            className={CHIP_SMALL}
             aria-expanded={all}
             onClick={() => setAll((v) => !v)}
           >
@@ -104,11 +132,15 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
           </button>
         )}
       </figcaption>
-      {failed && <p className="diff-failed">{call.result?.error ?? "The edit failed."}</p>}
-      <pre className="diff-body">
+      {failed && (
+        <p className="m-0 px-[14px] py-2 text-[var(--err)] text-[13px]">
+          {call.result?.error ?? "The edit failed."}
+        </p>
+      )}
+      <pre className="m-0 py-[6px] px-0 bg-[var(--bg-code)] font-mono text-[13px] leading-[1.7] text-muted-foreground overflow-x-auto">
         {lines.map((line, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: diff lines are positional
-          <span key={i} className={`diff-line ${line.kind}`}>
+          <span key={i} className={`block px-4 py-0 whitespace-pre ${DIFF_LINE[line.kind]}`}>
             {line.kind === "add" ? "+ " : line.kind === "del" ? "- " : "  "}
             {line.text}
             {"\n"}
@@ -135,10 +167,10 @@ function Reasoning({ text, ms, active }: { text: string; ms?: number; active: bo
   const id = useId();
   const label = active ? "Thinking…" : ms !== undefined ? `Thought for ${seconds(ms)}` : "Thought";
   return (
-    <div className="tool">
+    <div className="flex flex-col gap-1">
       <button
         type="button"
-        className={`tool-line${active ? " thinking" : ""}`}
+        className={TOOL_LINE}
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((v) => !v)}
@@ -147,7 +179,7 @@ function Reasoning({ text, ms, active }: { text: string; ms?: number; active: bo
         {label}
       </button>
       {open && (
-        <div id={id} className="reasoning-text">
+        <div id={id} className={`${TOOL_BODY} text-[13px]`}>
           {text}
         </div>
       )}
@@ -171,7 +203,7 @@ function Assistant({
   ];
   let reasoningIndex = 0;
   return (
-    <div className="assistant">
+    <div className="flex flex-col gap-3 min-w-0">
       {segments.map((segment, i) => {
         const key = `${segment.type}-${i}`;
         if (segment.type === "text")
@@ -198,8 +230,14 @@ function Assistant({
 
 function UserBubble({ text, note }: { text: string; note?: string }) {
   return (
-    <div className={`user-bubble${note === "Sending…" ? " pending" : ""}`}>
-      {note && <span className="bubble-note">{note}</span>}
+    <div
+      className={`self-end max-w-[640px] bg-main text-main-foreground border-2 border-border rounded-base shadow-shadow px-4 py-3 leading-[1.6] text-[15px] whitespace-pre-wrap wrap-anywhere flex flex-col gap-[2px]${note === "Sending…" ? " opacity-[0.65]" : ""}`}
+    >
+      {note && (
+        <span className="font-mono text-[11px] font-bold text-main-foreground opacity-75 uppercase tracking-[0.06em]">
+          {note}
+        </span>
+      )}
       {text}
     </div>
   );
@@ -245,26 +283,28 @@ function PromptCard({
               ? prompt.query
               : prompt.url;
     return (
-      <p className={`prompt-resolved ${outcome}`}>
-        <span className="prompt-resolved-outcome">{OUTCOMES[outcome]}</span>
-        <span className="prompt-resolved-subject">{subject}</span>
+      <p className="m-0 px-3 py-0 flex gap-2 text-[13px] text-dim-foreground min-w-0">
+        <span className={`flex-none font-medium ${OUTCOME_TONE[outcome] ?? ""}`}>
+          {OUTCOMES[outcome]}
+        </span>
+        <span className="truncate">{subject}</span>
       </p>
     );
   }
   if (prompt.kind === "question") {
     return (
       <section
-        className="prompt-card question gap-[6px]! text-soft-foreground!"
+        className={`${PROMPT_CARD} gap-[6px] bg-fill-info text-soft-foreground`}
         aria-label="Question"
       >
-        <p className="prompt-title">{prompt.question}</p>
+        <p className={PROMPT_TITLE}>{prompt.question}</p>
         {prompt.options.length > 0 && (
-          <div className="suggestions">
+          <div className={ROW}>
             {prompt.options.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                className="suggestion"
+                className="min-h-9 px-[14px] py-0 rounded-[999px] border-2 border-border bg-raised text-foreground shadow-sm-hard font-[inherit] leading-[inherit] text-[13px] font-semibold cursor-pointer hover:bg-main hover:text-main-foreground disabled:opacity-50 disabled:cursor-default"
                 disabled={busy}
                 title={option.description}
                 onClick={() => onAnswer(prompt.id, option.value)}
@@ -275,7 +315,7 @@ function PromptCard({
           </div>
         )}
         <form
-          className="prompt-answer"
+          className={ROW}
           onSubmit={(event) => {
             event.preventDefault();
             if (text.trim()) onAnswer(prompt.id, text.trim());
@@ -287,6 +327,7 @@ function PromptCard({
           <input
             id={inputId}
             type="text"
+            className="flex-1 min-w-[200px]"
             placeholder={prompt.options.length > 0 ? "Or write an answer" : "Your answer"}
             value={text}
             onChange={(event) => setText(event.target.value)}
@@ -317,10 +358,15 @@ function PromptCard({
           ? prompt.query
           : prompt.url;
   return (
-    <section className="prompt-card" aria-label={APPROVAL_TITLES[prompt.kind]}>
-      <p className="prompt-title">{APPROVAL_TITLES[prompt.kind]}</p>
-      <pre className="prompt-detail">{detail}</pre>
-      <div className="prompt-actions">
+    <section
+      className={`${PROMPT_CARD} gap-[10px] bg-fill-warn text-main-foreground`}
+      aria-label={APPROVAL_TITLES[prompt.kind]}
+    >
+      <p className={PROMPT_TITLE}>{APPROVAL_TITLES[prompt.kind]}</p>
+      <pre className="m-0 px-[10px] py-2 border-2 border-border rounded-base bg-[var(--bg-code)] font-mono text-[13px] text-soft-foreground whitespace-pre-wrap wrap-anywhere">
+        {detail}
+      </pre>
+      <div className={ROW}>
         <button
           type="button"
           className="btn-primary"
@@ -396,15 +442,21 @@ export function Conversation({
         <UserBubble key={`pending-${i}`} text={text} note="Sending…" />
       ))}
       {running && !waiting && lastLive?.type !== "reasoning" && (
-        <p className="working" aria-live="polite">
-          <span className="spinner" aria-hidden="true">
-            <span />
+        <p
+          className={`${NOTICE} flex items-center gap-[10px] text-dim-foreground`}
+          aria-live="polite"
+        >
+          <span className={SPINNER} aria-hidden="true">
+            <span className={SPINNER_RING} />
           </span>
           Working…
         </p>
       )}
       {notice && (
-        <p className={`notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
+        <p
+          className={`${NOTICE} ${notice.kind === "error" ? "text-[var(--err)]" : "text-dim-foreground"}`}
+          role={notice.kind === "error" ? "alert" : "status"}
+        >
           {notice.kind === "error" ? "Error: " : ""}
           {notice.text}
         </p>

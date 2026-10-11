@@ -16,7 +16,7 @@ export function App() {
       <TitleBar />
       <div className="shell">
         <Sidebar route={route} />
-        <main className="main">
+        <main className="main [&:has(>[data-chat])]:flex [&:has(>[data-chat])]:flex-col [&:has(>[data-chat])]:overflow-hidden">
           {isMock && (
             <div className="banner" style={{ borderRadius: 0, borderWidth: "0 0 1px" }}>
               Preview with sample data: no BAKED backend is connected.
