@@ -22,7 +22,12 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
-const task = (id: string, paths: string[], origin: "planned" | "repair" = "planned") => ({
+const task = (
+  id: string,
+  paths: string[],
+  origin: "planned" | "repair" = "planned",
+  action: "create" | "modify" = "modify",
+) => ({
   id,
   title: id,
   description: id,
@@ -30,7 +35,7 @@ const task = (id: string, paths: string[], origin: "planned" | "repair" = "plann
   criterionIds: ["AC-001"],
   dependsOn: [],
   profileId: "implementer",
-  writes: paths.map((path) => ({ path, action: "modify" as const })),
+  writes: paths.map((path) => ({ path, action })),
   readHints: [],
   checkIds: [],
   origin,
@@ -50,12 +55,20 @@ const policy = (sizing: RunPolicy["sizing"], maxTotalTokens = 800_000): RunPolic
   maxTotalTokens,
   sizing,
 });
-const sample = (kind: SizingSample["kind"], tokens: number, files = 1): SizingSample => ({
+const sample = (
+  kind: SizingSample["kind"],
+  tokens: number,
+  files = 1,
+  more: Partial<SizingSample> = {},
+): SizingSample => ({
   runId: `r-${tokens}`,
   taskId: "T001",
   kind,
+  action: "modify",
+  source: "project",
   files,
   tokens,
+  ...more,
 });
 
 describe("plan-time sizing", () => {
@@ -98,22 +111,72 @@ describe("plan-time sizing", () => {
     expect(codeTaskCheckProblems(plan, featureOnly)).toEqual([]);
   });
 
-  test("files are tests or code by path", () => {
+  test("files are docs, tests or code by path", () => {
     expect(fileKind("tests/workflow-usage.test.ts")).toBe("test");
     expect(fileKind("src/a.spec.tsx")).toBe("test");
     expect(fileKind("src/core/workflows/store.ts")).toBe("code");
+    expect(fileKind("README.md")).toBe("docs");
+    expect(fileKind("docs/workflows/runtime.md")).toBe("docs");
+    expect(fileKind("docs/diagram.svg")).toBe("docs");
+    expect(fileKind("docs/.vitepress/config.ts")).toBe("code");
+    expect(fileKind("requirements.txt")).toBe("code");
   });
 
-  test("each kind is priced per file from tasks of that kind only, or from defaults", () => {
+  test("each kind and action is priced per file from tasks of that kind only, or from defaults", () => {
     const rates = perFileRates([
       sample("code", 28_000),
       sample("code", 82_000),
       sample("test", 471_000),
       sample("mixed", 900_000, 5),
     ]);
-    expect(rates.code).toEqual({ perFile: { low: 28_000, high: 82_000 }, samples: 2, basis: "history" });
-    expect(rates.test.samples).toBe(1);
-    expect(perFileRates([]).test).toEqual({ perFile: DEFAULT_PER_FILE.test, samples: 0, basis: "defaults" });
+    expect(rates.code.modify).toEqual({ perFile: { low: 28_000, high: 82_000 }, samples: 2, basis: "project" });
+    expect(rates.test.modify.samples).toBe(1);
+    // Created code files have no sample of their own: modified ones stand in, with the default's room.
+    expect(rates.code.create).toEqual({
+      perFile: { low: 28_000, high: DEFAULT_PER_FILE.code.create.high },
+      samples: 2,
+      basis: "history",
+    });
+    expect(perFileRates([]).docs.modify).toEqual({ perFile: DEFAULT_PER_FILE.docs.modify, samples: 0, basis: "defaults" });
+  });
+
+  test("this project's history decides alone once it has enough tasks; other projects only widen", () => {
+    const shared = [sample("test", 400_000, 1, { source: "shared" }), sample("test", 450_000, 1, { source: "shared" })];
+    const own = [sample("test", 55_000), sample("test", 59_000)];
+    expect(perFileRates([...shared, ...own]).test.modify).toEqual({
+      perFile: { low: 55_000, high: 59_000 },
+      samples: 2,
+      basis: "project",
+    });
+    const oneOwn = perFileRates([...shared, sample("test", 55_000)]).test.modify;
+    expect(oneOwn.basis).toBe("history");
+    expect(oneOwn.samples).toBe(3);
+    const low = perFileRates([sample("code", 20_000, 1, { source: "shared" })]).code.modify;
+    expect(low.perFile.high).toBe(DEFAULT_PER_FILE.code.modify.high);
+  });
+
+  test("a task is priced per file by its kind and by whether it creates or modifies it", () => {
+    const report = sizePlan({
+      graph: graph(
+        task("T001", ["README.md"]),
+        task("T002", ["src/new.ts"], "planned", "create"),
+        task("T003", ["src/old.ts"]),
+      ),
+      policy: policy({}),
+      samples: [
+        sample("code", 20_000, 1, { action: "create" }),
+        sample("code", 30_000, 1, { action: "create" }),
+        sample("code", 80_000),
+        sample("code", 90_000),
+      ],
+      spent: 0,
+    });
+    expect(report.schemaVersion).toBe(3);
+    expect(report.tasks.map((t) => [t.kind, t.estimate])).toEqual([
+      ["docs", DEFAULT_PER_FILE.docs.modify],
+      ["code", { low: 20_000, high: 30_000 }],
+      ["code", { low: 80_000, high: 90_000 }],
+    ]);
   });
 
   test("a big code file is not priced by its size; a test task gets the larger cap", () => {
@@ -163,9 +226,12 @@ describe("plan-time sizing", () => {
     const sizing = plannerSizing(policy({ maxAttemptTokens: 600_000 }), [
       sample("code", 50_000),
       sample("code", 60_000),
+      sample("code", 40_000, 1, { action: "create" }),
+      sample("code", 45_000, 1, { action: "create" }),
     ]);
     expect(sizing.maxCodeFilesPerTask).toBe(10);
     expect(sizing.note).toContain("Put tests in tasks of their own");
+    expect(sizing.note).toContain(`a documentation file about ${DEFAULT_PER_FILE.docs.modify.high / 1000}k`);
   });
 
   test("history samples are verified planned tasks of finished runs, with their corrections", () => {
@@ -187,9 +253,10 @@ describe("plan-time sizing", () => {
     insert.run("open", "T001", JSON.stringify(task("T001", ["src/store.ts"])), "verified");
     db.close();
     expect(samplesFrom(path)).toEqual([
-      { runId: "done", taskId: "T001", kind: "code", files: 1, tokens: 28_000 },
-      { runId: "done", taskId: "T002", kind: "test", files: 1, tokens: 471_000 },
+      { runId: "done", taskId: "T001", kind: "code", action: "modify", source: "project", files: 1, tokens: 28_000 },
+      { runId: "done", taskId: "T002", kind: "test", action: "modify", source: "project", files: 1, tokens: 471_000 },
     ]);
+    expect(samplesFrom(path, "shared").every((s) => s.source === "shared")).toBe(true);
   });
 });
 
