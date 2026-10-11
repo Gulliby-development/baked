@@ -8,6 +8,8 @@ import {
   bootPose,
   bunRows,
   chipCells,
+  LOCKUP_WIDTH,
+  lockupRows,
   rowsToAnsi,
   SLAB_HEIGHT,
   SLAB_WIDTH,
@@ -73,12 +75,15 @@ export function bootSplashFrames(
   const statusRow =
     layout === "full" ? bunRow + BUN_HEIGHT + 1 : layout === "slab" ? top + SLAB_HEIGHT + 1 : top;
 
+  // The oven logo sits beside the wordmark when the terminal is wide enough.
+  const lockup = cols >= LOCKUP_WIDTH + 2;
   const slab: string[][] = [];
   if (layout !== "line") {
     const last = options.reduced ? 0 : 10;
     for (let step = 0; step <= last; step++) {
       const pose = options.reduced ? { letters: 5, pressed: false } : slabIntroPose(step * 110);
-      slab.push(rowsToAnsi(slabRows(pose, palette), options.truecolor, base));
+      const art = lockup ? lockupRows(pose, palette) : slabRows(pose, palette);
+      slab.push(rowsToAnsi(art, options.truecolor, base));
     }
   }
 
@@ -110,7 +115,7 @@ export function bootSplashFrames(
     rows: { slab: slabRow, bun: bunRow, status: statusRow, bar: statusRow + 1 },
     cols,
     screenRows: rows,
-    slabCol: Math.max(1, Math.floor((cols - SLAB_WIDTH) / 2) + 1),
+    slabCol: Math.max(1, Math.floor((cols - (lockup ? LOCKUP_WIDTH : SLAB_WIDTH)) / 2) + 1),
     bunCol: Math.max(1, Math.floor((cols - BUN_WIDTH) / 2) + 1),
     slab,
     bun,

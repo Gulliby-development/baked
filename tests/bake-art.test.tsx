@@ -12,6 +12,9 @@ import {
   type BunFace,
   bunRows,
   idlePose,
+  LOCKUP_WIDTH,
+  lockupRows,
+  ovenMarkCells,
   rowsToAnsi,
   SLAB_HEIGHT,
   SLAB_WIDTH,
@@ -56,6 +59,16 @@ for (const [name, theme] of [["dark", DARK_THEME], ["light", LIGHT_THEME]] as co
     expect(ink(rest)).toBeGreaterThan(ink(slabRows({ letters: 2, pressed: false }, palette)));
   });
 }
+
+test("oven logo sits beside the wordmark and marks one-line places", () => {
+  const palette = artPalette(DARK_THEME);
+  const rows = lockupRows({ letters: 5, pressed: false }, palette);
+  expect(rows).toHaveLength(SLAB_HEIGHT);
+  expect(rows.every((row) => row.length === LOCKUP_WIDTH)).toBe(true);
+  expect(rows.flat().every((cell) => ART_GLYPHS.has(cell.ch))).toBe(true);
+  expect(ovenMarkCells(palette).map((cell) => cell.ch).join("")).toBe(" > BAKED ");
+  expect(bootSplashFrames(LOCKUP_WIDTH + 2, 24, DARK_THEME, { reduced: true, truecolor: true }).slabCol).toBe(2);
+});
 
 test("timelines: the slab finishes stamping and the dough bakes with progress", () => {
   expect(slabIntroPose(0)).toEqual({ letters: 1, pressed: true });

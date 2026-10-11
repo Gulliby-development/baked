@@ -22,7 +22,7 @@ import { getRestartSpec } from "./core/restart.js";
 import { flushEmergencySession } from "./core/sessions/emergency-save.js";
 import type { PrerequisiteStatus } from "./core/setup/prerequisites.js";
 import { getThemeTokens, useTheme } from "./core/theme/index.js";
-import { artPalette, chipCells, rowsToAnsi, supportsTruecolor } from "./core/utils/bake-art.js";
+import { artPalette, ovenMarkCells, rowsToAnsi, supportsTruecolor } from "./core/utils/bake-art.js";
 import { garble } from "./core/utils/splash.js";
 import { resetStatusBarStore } from "./stores/statusbar.js";
 import { resetUIStore } from "./stores/ui.js";
@@ -94,10 +94,7 @@ function printExitBanner(): void {
   if (exitSessionId) {
     const t = getThemeTokens();
     const palette = artPalette(t);
-    const brand = rowsToAnsi(
-      [chipCells("BAKED", palette.fill, palette.onFill)],
-      supportsTruecolor(),
-    )[0];
+    const brand = rowsToAnsi([ovenMarkCells(palette)], supportsTruecolor())[0];
     const accent = `\x1b[1m${hexToAnsi(t.info)}`;
     const rst = "\x1b[0m";
     const shortId = exitSessionId.slice(0, 8);

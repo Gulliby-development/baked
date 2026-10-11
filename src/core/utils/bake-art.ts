@@ -167,6 +167,79 @@ export function slabRows(pose: SlabPose, palette: ArtPalette): ArtRows {
   return toCells(pose.pressed ? grid : withShadow(grid, palette.shadow));
 }
 
+// ── Oven logo ───────────────────────────────────────────────────────
+
+/** Window colour of the oven logo; the same in both themes, as in the logo SVG. */
+const OVEN_WINDOW = "#191410";
+const OVEN_W = 16;
+const OVEN_H = 9;
+const OVEN_GAP = 2;
+const KNOB = "#fff4e5";
+
+/** Cell size of the oven logo including its shadow. */
+export const OVEN_WIDTH = OVEN_W + 1;
+/** Cell width of the oven and the wordmark slab side by side. */
+export const LOCKUP_WIDTH = OVEN_WIDTH + OVEN_GAP + SLAB_WIDTH;
+
+/**
+ * The BAKED logo, after the oven app icon: an orange body with two knobs and a dial on the
+ * control strip, and a dark window holding a `>_` prompt.
+ */
+export function ovenPixels(pressed: boolean, palette: ArtPalette): PixelGrid {
+  const grid = emptyGrid(OVEN_W + 1, SLAB_HEIGHT * 2);
+  const s = pressed ? 1 : 0;
+  for (let y = 0; y < OVEN_H; y++) {
+    for (let x = 0; x < OVEN_W; x++) {
+      const corner = (y === 0 || y === OVEN_H - 1) && (x === 0 || x === OVEN_W - 1);
+      if (!corner) put(grid, x + s, y + s, palette.fill);
+    }
+  }
+  put(grid, 2 + s, 1 + s, KNOB);
+  put(grid, 4 + s, 1 + s, KNOB);
+  for (let x = 9; x <= 13; x++) put(grid, x + s, 1 + s, palette.onFill);
+  for (let x = 1; x < OVEN_W - 1; x++) put(grid, x + s, 2 + s, palette.onFill);
+  for (let y = 3; y <= 7; y++) {
+    for (let x = 2; x <= 13; x++) put(grid, x + s, y + s, OVEN_WINDOW);
+  }
+  for (const [x, y] of [
+    [4, 4],
+    [5, 5],
+    [4, 6],
+    [7, 6],
+    [8, 6],
+    [9, 6],
+  ] as const) {
+    put(grid, x + s, y + s, palette.fill);
+  }
+  return pressed ? grid : withShadow(grid, palette.shadow);
+}
+
+export function ovenRows(pressed: boolean, palette: ArtPalette): ArtRows {
+  return toCells(ovenPixels(pressed, palette));
+}
+
+/** The oven logo beside the stamped wordmark; both press together while the letters land. */
+export function lockupRows(pose: SlabPose, palette: ArtPalette): ArtRows {
+  const oven = ovenRows(pose.pressed, palette);
+  const slab = slabRows(pose, palette);
+  return slab.map((row, index) => [
+    ...(oven[index] ?? []),
+    ...Array.from({ length: OVEN_GAP }, () => ({ ch: " " })),
+    ...row,
+  ]);
+}
+
+/**
+ * The oven mark for one-line places such as the header: orange body, dark window, `>` prompt.
+ */
+export function ovenMarkCells(palette: ArtPalette): ArtCell[] {
+  return [
+    { ch: " ", bg: palette.fill },
+    { ch: ">", fg: palette.fill, bg: OVEN_WINDOW },
+    ...textCells(" BAKED ", palette.onFill, palette.fill),
+  ];
+}
+
 // ── Bun mascot ──────────────────────────────────────────────────────
 
 export type BunFace = "none" | "sleep" | "open" | "blink" | "left" | "right" | "focus" | "happy";

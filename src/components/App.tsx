@@ -16,7 +16,7 @@ import { openProjectPicker } from "../core/commands/projects.js";
 import { handleCommand } from "../core/commands/registry.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
-import { icon, providerIcon, UI_ICONS } from "../core/icons.js";
+import { providerIcon, UI_ICONS } from "../core/icons.js";
 import { runIntelligenceHealthCheck } from "../core/intelligence/index.js";
 import {
   fetchGroupedModels,
@@ -36,7 +36,9 @@ import {
   artPalette,
   BUN_HEIGHT,
   bunRows,
-  chipCells,
+  LOCKUP_WIDTH,
+  lockupRows,
+  ovenMarkCells,
   SLAB_HEIGHT,
   SLAB_WIDTH,
   slabRows,
@@ -149,7 +151,12 @@ function ShutdownSplash({
         <>
           <text
             wrapMode="none"
-            content={artText(slabRows({ letters: 5, pressed: false }, palette))}
+            content={artText(
+              ((termWidth ?? 80) >= LOCKUP_WIDTH + 2 ? lockupRows : slabRows)(
+                { letters: 5, pressed: false },
+                palette,
+              ),
+            )}
           />
           <box height={1} />
           <text
@@ -158,10 +165,7 @@ function ShutdownSplash({
           />
         </>
       ) : (
-        <text
-          wrapMode="none"
-          content={artText([chipCells("BAKED", palette.fill, palette.onFill, palette.shadow)])}
-        />
+        <text wrapMode="none" content={artText([ovenMarkCells(palette)])} />
       )}
       <box height={1} />
       <box
@@ -1176,9 +1180,7 @@ export function App({
         flexDirection="row"
       >
         <box flexShrink={0} flexDirection="row" gap={0}>
-          <text fg={t.brand} attributes={TextAttributes.BOLD}>
-            {icon("ghost")} baked
-          </text>
+          <text wrapMode="none" content={artText([ovenMarkCells(artPalette(t))])} />
           <text fg={t.textFaint}> v{CURRENT_VERSION}</text>
         </box>
         <box gap={1} flexShrink={1} flexDirection="row" justifyContent="center" overflow="hidden">
