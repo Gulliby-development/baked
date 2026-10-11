@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { resolveEvidenceId } from "../src/core/verification/evidence.js";
+import { capturePreImage } from "../src/core/workflows/rollback.js";
+import { buildReviewBundle } from "../src/core/workflows/review-bundle.js";
 import { completeReview, reviewProblems } from "../src/core/verification/review.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Review, RunPolicy, Spec } from "../src/core/workflows/schemas.js";
@@ -136,5 +138,31 @@ describe("review stage", () => {
     const hint = executor.hints.find((h) => h !== undefined) ?? "";
     expect(hint).toMatch(/snapshotHash is [a-f0-9]{64}\./);
     expect(hint).toContain("E1=");
+  });
+});
+
+describe("review bundle", () => {
+  test("one patch covers every file the run edited, including earlier tasks", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-review-bundle-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+    const service = new NativeWorkflowService(root, config, { execute: async () => { throw new Error("unused"); } });
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    service.leases.acquire("mutation", run.runId);
+    // Two tasks (two steps) edit two files; only the second task's diff would be current at review.
+    writeFileSync(join(root, "a.txt"), "old a\n");
+    for (const [name, text, task] of [["a.txt", "new a\n", "task-T001"], ["b.txt", "created b\n", "task-T002"]] as const) {
+      const step = service.store.beginStep(run.runId, task);
+      const attempt = service.store.reserve(run.runId, step, null, 0, policy);
+      const before = service.store.transaction(() => capturePreImage(service.store, run.runId, join(root, name)));
+      service.scheduler.journal.publish(run.runId, attempt, name, text, before, "file_patch");
+    }
+    const bundle = await buildReviewBundle(service.store, run.runId, root);
+    expect(bundle.changed).toEqual(["a.txt", "b.txt"]);
+    expect(bundle.patch).toContain("-old a");
+    expect(bundle.patch).toContain("+new a");
+    expect(bundle.patch).toContain("+created b");
+    expect(bundle.patch).toContain("--- /dev/null");
   });
 });
