@@ -95,6 +95,7 @@ import {
   type RunPolicy,
   type Spec,
   SpecSchema,
+  specCoverageProblems,
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
@@ -392,11 +393,14 @@ export class WorkflowScheduler {
                     const parsed = SpecSchema.safeParse(output);
                     if (!parsed.success) return [];
                     const questions = parsed.data.openQuestions;
-                    return assumeProblems(
-                      policy,
-                      questions,
-                      (_, index) => questions[index]?.question ?? "",
-                    );
+                    return [
+                      ...specCoverageProblems(parsed.data),
+                      ...assumeProblems(
+                        policy,
+                        questions,
+                        (_, index) => questions[index]?.question ?? "",
+                      ),
+                    ];
                   },
                 ),
               );
