@@ -290,6 +290,8 @@ export function workflowInitiativesApi(workspace: string): InitiativesApi {
       return workflowSession(workspace).initiatives();
     },
     act: (id, action) => workflowSession(workspace).initiativeAction(id, action),
+    start: (input) => workflowSession(workspace).startInitiative(input),
+    info: () => workflowSession(workspace).info(),
   };
 }
 

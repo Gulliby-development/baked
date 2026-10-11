@@ -7,11 +7,26 @@ import type {
   UsageGroup,
   UsageSummary,
 } from "../src/renderer/client/insights.ts";
+import { MOCK_ROUTES, type MockRequest } from "../src/renderer/client/mock-routes.ts";
 import {
+  budgetExtension,
+  budgetFields,
+  canEditSplit,
+  canExtendBudget,
+  canRemoveFeature,
+  canReplanFeature,
+  canSplitFeature,
   canSwitchModel,
   featureCounts,
   featureRow,
   initiativeLine,
+  isInitiativeKey,
+  mergeProblem,
+  parseBudget,
+  parseCount,
+  splitProblem,
+  startBody,
+  suggestInitiativeId,
 } from "../src/renderer/screens/insights/initiative-model.ts";
 import {
   aggregateUsage,
@@ -444,5 +459,249 @@ describe("initiative view model", () => {
     expect(canSwitchModel(view({ features: [feature("in_progress", { runStatus: "running" })] }))).toBe(
       false,
     );
+  });
+});
+
+function initiativeView(extra: Partial<InitiativeView> = {}): InitiativeView {
+  return {
+    initiativeId: "i",
+    title: "I",
+    status: "awaiting_approval",
+    reason: "",
+    revision: 3,
+    planRevision: 1,
+    approvedPlanRevision: null,
+    model: null,
+    goals: [],
+    features: ["a", "b", "c", "d"].map((id) =>
+      feature("proposed", { id, title: id.toUpperCase(), runId: null }),
+    ),
+    pendingDecisions: [],
+    budget: {
+      limits: { maxTotalTokens: 1_000_000, maxAgentCalls: 100, maxActiveMs: 90 * 60_000 },
+      used: { tokens: 0, calls: 0, activeMs: 0 },
+    },
+    next: { kind: "await_split_approval", featureId: null, runId: null, message: "" },
+    ...extra,
+  };
+}
+
+describe("initiative management", () => {
+  test("initiative IDs and suggestions", () => {
+    expect(isInitiativeKey("desktop-app")).toBe(true);
+    expect(isInitiativeKey("Desktop")).toBe(false);
+    expect(isInitiativeKey("-x")).toBe(false);
+    expect(isInitiativeKey("a".repeat(41))).toBe(false);
+    expect(suggestInitiativeId("Add a desktop app, with installers!")).toBe("add-a-desktop-app-with");
+    const long = suggestInitiativeId("internationalization localization accessibility performance");
+    expect(long.length).toBeLessThanOrEqual(40);
+    expect(isInitiativeKey(long)).toBe(true);
+    expect(long.endsWith("-")).toBe(false);
+    expect(suggestInitiativeId("!!!")).toBe("");
+  });
+
+  test("the split is editable while awaiting approval or paused after approval", () => {
+    expect(canEditSplit(initiativeView())).toBe(true);
+    expect(canEditSplit(initiativeView({ status: "paused", approvedPlanRevision: 1 }))).toBe(true);
+    expect(canEditSplit(initiativeView({ status: "paused" }))).toBe(false);
+    expect(canEditSplit(initiativeView({ status: "paused", approvedPlanRevision: undefined }))).toBe(
+      false,
+    );
+    expect(canEditSplit(initiativeView({ status: "active", approvedPlanRevision: 1 }))).toBe(false);
+  });
+
+  test("edits keep 3 to 12 features", () => {
+    const four = initiativeView();
+    const three = initiativeView({ features: four.features.slice(0, 3) });
+    expect(canRemoveFeature(four)).toBe(true);
+    expect(canRemoveFeature(three)).toBe(false);
+    expect(canSplitFeature(three)).toBe(true);
+    const twelve = initiativeView({
+      features: Array.from({ length: 12 }, (_, i) => feature("proposed", { id: `f${i}` })),
+    });
+    expect(canSplitFeature(twelve)).toBe(false);
+    const blank = { id: "", title: "" };
+    expect(mergeProblem(four, ["a", "b"], blank)).toBeNull();
+    expect(mergeProblem(four, ["a"], blank)).toMatch(/two or more/);
+    expect(mergeProblem(four, ["a", "b", "c"], blank)).toMatch(/at least 3/);
+    expect(mergeProblem(four, ["a", "b"], { id: "c", title: "" })).toMatch(/already/);
+    expect(mergeProblem(four, ["a", "b"], { id: "b", title: "" })).toBeNull();
+    expect(mergeProblem(four, ["a", "b"], { id: "Bad", title: "" })).toMatch(/lowercase/);
+    expect(mergeProblem(initiativeView({ status: "active" }), ["a", "b"], blank)).toMatch(
+      /cannot be edited/,
+    );
+  });
+
+  test("split rows", () => {
+    const view = initiativeView();
+    const first = { id: "a-1", title: "One" };
+    const ok = [first, { id: "a", title: "Two" }];
+    expect(splitProblem(view, "a", ok)).toBeNull();
+    expect(splitProblem(view, "a", ok.slice(0, 1))).toMatch(/two or more/);
+    expect(splitProblem(view, "a", [first, { id: "b", title: "B" }])).toMatch(/already/);
+    expect(splitProblem(view, "a", [first, { id: "a-1", title: "X" }])).toMatch(
+      /Two parts/,
+    );
+    expect(splitProblem(view, "a", [first, { id: "a-2", title: " " }])).toMatch(
+      /Part 2 needs a title/,
+    );
+    expect(splitProblem(view, "a", [first, { id: "A_2", title: "X" }])).toMatch(
+      /Part 2: the ID/,
+    );
+  });
+
+  test("re-plan needs an approved split, a run and nothing executing", () => {
+    const run = feature("in_progress", { runId: "r", runStatus: "blocked" });
+    const approved = initiativeView({ status: "active", approvedPlanRevision: 1 });
+    expect(canReplanFeature(approved, run)).toBe(true);
+    expect(canReplanFeature({ ...approved, status: "paused" }, run)).toBe(true);
+    expect(canReplanFeature(approved, { ...run, runStatus: "running" })).toBe(false);
+    expect(canReplanFeature(approved, { ...run, runId: null })).toBe(false);
+    expect(canReplanFeature(initiativeView({ status: "active" }), run)).toBe(false);
+    expect(canReplanFeature({ ...approved, status: "completed" }, run)).toBe(false);
+  });
+
+  test("budget fields", () => {
+    expect(parseCount("6M")).toBe(6_000_000);
+    expect(parseCount("600k")).toBe(600_000);
+    expect(parseCount("1,500")).toBe(1500);
+    expect(parseCount("0")).toBeNull();
+    expect(parseCount("-3")).toBeNull();
+    expect(parseCount("lots")).toBeNull();
+    expect(parseBudget({ tokens: "2M", calls: "50", minutes: "60" })).toEqual({
+      ok: true,
+      limits: { tokens: 2_000_000, calls: 50, timeMs: 3_600_000 },
+    });
+    expect(parseBudget({ tokens: "2M", calls: "", minutes: "60" }).ok).toBe(false);
+
+    const view = initiativeView();
+    expect(canExtendBudget(view)).toBe(true);
+    expect(canExtendBudget({ status: "refused" })).toBe(false);
+    const current = budgetFields(view);
+    expect(current).toEqual({ tokens: "1000000", calls: "100", minutes: "90" });
+    expect(budgetExtension(view, current)).toEqual({ ok: false, error: "Raise at least one limit." });
+    expect(budgetExtension(view, { ...current, tokens: "2M" })).toEqual({
+      ok: true,
+      limits: { tokens: 2_000_000 },
+    });
+    expect(budgetExtension(view, { ...current, calls: "50" }).ok).toBe(false);
+    expect(budgetExtension(view, { ...current, minutes: "120" })).toEqual({
+      ok: true,
+      limits: { timeMs: 120 * 60_000 },
+    });
+    // An odd time limit shows rounded up; leaving it unchanged sends nothing for it.
+    const odd = initiativeView({
+      budget: { ...view.budget, limits: { ...view.budget.limits, maxActiveMs: 90_500 } },
+    });
+    expect(budgetExtension(odd, { ...budgetFields(odd), calls: "200" })).toEqual({
+      ok: true,
+      limits: { calls: 200 },
+    });
+  });
+
+  test("start body", () => {
+    const fields = {
+      prompt: "  Ship it  ",
+      initiativeId: "ship-it",
+      workflow: "sdd",
+      model: "",
+      budget: null,
+      tiered: null,
+    };
+    expect(startBody(fields)).toEqual({
+      ok: true,
+      body: { initiativeId: "ship-it", prompt: "Ship it", workflow: "sdd" },
+    });
+    expect(
+      startBody({
+        ...fields,
+        model: "anthropic/claude",
+        budget: { tokens: "1M", calls: "10", minutes: "30" },
+        tiered: { maxTasks: "5", maxFiles: "10" },
+      }),
+    ).toEqual({
+      ok: true,
+      body: {
+        initiativeId: "ship-it",
+        prompt: "Ship it",
+        workflow: "sdd",
+        model: "anthropic/claude",
+        budget: { tokens: 1_000_000, calls: 10, timeMs: 1_800_000 },
+        tieredApproval: { maxTasks: 5, maxFiles: 10 },
+      },
+    });
+    expect(startBody({ ...fields, prompt: " " }).ok).toBe(false);
+    expect(startBody({ ...fields, initiativeId: "Ship" }).ok).toBe(false);
+    expect(startBody({ ...fields, budget: { tokens: "1M", calls: "", minutes: "" } }).ok).toBe(
+      false,
+    );
+    expect(startBody({ ...fields, tiered: { maxTasks: "0", maxFiles: "10" } }).ok).toBe(false);
+  });
+});
+
+async function mock(method: MockRequest["method"], path: string, body?: object) {
+  const request: MockRequest = {
+    key: "mock-initiatives",
+    method,
+    path,
+    query: new URLSearchParams(),
+    body,
+  };
+  for (const route of MOCK_ROUTES) {
+    const answer = await route(request);
+    if (answer) return answer;
+  }
+  throw new Error(`no mock route answered ${method} ${path}`);
+}
+
+describe("mock initiative backend", () => {
+  test("starts, edits, extends and rejects", async () => {
+    const startedAnswer = await mock("POST", "/v1/initiatives", {
+      commandId: "c1",
+      initiativeId: "new-one",
+      prompt: "Build the thing",
+    });
+    expect(startedAnswer.status).toBe(202);
+    const view = startedAnswer.body as InitiativeView;
+    expect(view.status).toBe("awaiting_approval");
+    expect(view.features).toHaveLength(3);
+    const path = "/v1/initiatives/new-one";
+    const removed = await mock("POST", `${path}/remove`, { feature: "ui" });
+    expect(removed.status).toBe(400);
+    const split = await mock("POST", `${path}/split`, {
+      feature: "ui",
+      parts: [
+        { id: "ui-tui", title: "TUI" },
+        { id: "ui-desktop", title: "Desktop" },
+      ],
+    });
+    const afterSplit = split.body as InitiativeView;
+    expect(afterSplit.features.map((f) => f.id)).toEqual(["core", "api", "ui-tui", "ui-desktop"]);
+    expect(afterSplit.planRevision).toBe(view.planRevision + 1);
+    expect(afterSplit.revision).toBe(view.revision + 1);
+    const merged = (
+      await mock("POST", `${path}/merge`, { features: ["ui-tui", "ui-desktop"], title: "UI" })
+    ).body as InitiativeView;
+    expect(merged.features.map((f) => f.title)).toEqual([
+      "Core model and storage",
+      "Local API endpoints",
+      "UI",
+    ]);
+    const renamed = (await mock("POST", `${path}/rename`, { feature: "core", title: "Core" }))
+      .body as InitiativeView;
+    expect(renamed.features[0]?.title).toBe("Core");
+    const extended = (await mock("POST", `${path}/extend`, { tokens: 9_000_000 }))
+      .body as InitiativeView;
+    expect(extended.budget.limits.maxTotalTokens).toBe(9_000_000);
+    expect((await mock("POST", `${path}/extend`, { tokens: 1 })).status).toBe(400);
+    const rejected = (
+      await mock("POST", `${path}/reject`, { requestId: "x", reason: "Too coarse" })
+    ).body as InitiativeView;
+    expect(rejected.status).toBe("awaiting_approval");
+    expect(rejected.reason).toContain("Too coarse");
+    expect(rejected.pendingDecisions.some((d) => d.scope === "initiative")).toBe(false);
+    const edited = (await mock("POST", `${path}/rename`, { feature: "core", title: "Core 2" }))
+      .body as InitiativeView;
+    expect(edited.pendingDecisions.some((d) => d.scope === "initiative")).toBe(true);
   });
 });
