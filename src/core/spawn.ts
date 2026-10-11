@@ -59,7 +59,9 @@ const ENV_ALLOWLIST = new Set([
 
 export function buildSafeEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [name, value] of Object.entries(process.env)) {
+    // Windows names it `Path`; callers read `env.PATH`, and the child sees it case-insensitively.
+    const key = IS_WIN && name.toUpperCase() === "PATH" ? "PATH" : name;
     if (ENV_ALLOWLIST.has(key) || key.startsWith("LC_") || key.startsWith("XDG_")) {
       env[key] = value;
     } else if (!SECRET_ENV_PATTERN.test(key)) {
