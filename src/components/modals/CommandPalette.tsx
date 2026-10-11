@@ -1,4 +1,5 @@
 import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
+
 /**
  * CommandPalette — search-first command picker.
  *
@@ -10,7 +11,6 @@ import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
  *  - Tab jumps to the next category header (nav aid when browsing).
  */
 
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CATEGORIES,
@@ -21,6 +21,7 @@ import {
 } from "../../core/commands/registry.js";
 import { fuzzyMatch } from "../../core/history/fuzzy.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   buildGroupedRows,
   type GroupedItem,

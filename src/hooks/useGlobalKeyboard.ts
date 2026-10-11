@@ -1,10 +1,10 @@
 import type { Selection } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
 import type { MutableRefObject } from "react";
 import { useCheckpointStore } from "../stores/checkpoints.js";
 import { selectIsAnyModalOpen, useUIStore } from "../stores/ui.js";
 import type { ChatInstance } from "./useChat.js";
 import type { UseTabsReturn } from "./useTabs.js";
+import { useKeyboard } from "./useTerminalEvents.js";
 
 interface GlobalKeyboardParams {
   shutdownPhase: number;

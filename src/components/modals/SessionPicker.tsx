@@ -1,4 +1,5 @@
 import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
+
 /**
  * SessionPicker — saved-session browser.
  *
@@ -10,10 +11,10 @@ import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
  *  - Ctrl+X clear all (with y/n confirmation)
  */
 
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type SessionListEntry, SessionManager } from "../../core/sessions/manager.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { selectHasDialog, useDialogStore } from "../../stores/dialog.js";
 import { timeAgo } from "../../utils/time.js";
 import { Spinner } from "../layout/shared.js";

@@ -13,12 +13,12 @@ import { fitPopupHeight, fitPopupWidth, popupContentWidth } from "../ui/popup-ge
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ContextManager } from "../../core/context/manager.js";
 import type { ScopedMemory } from "../../core/memory/manager.js";
 import type { MemoryRecord, MemoryScope } from "../../core/memory/types.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   buildGroupedRows,
   GroupedList,

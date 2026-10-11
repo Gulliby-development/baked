@@ -1,9 +1,9 @@
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { icon } from "../../core/icons.js";
 import type { MCPManager } from "../../core/mcp/manager.js";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { type MCPServerState, type MCPServerStatus, useMCPStore } from "../../stores/mcp.js";
 import type { MCPServerConfig } from "../../types/index.js";
 import type { ConfigScope } from "../layout/shared.js";

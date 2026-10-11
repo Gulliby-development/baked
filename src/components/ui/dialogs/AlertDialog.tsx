@@ -1,6 +1,6 @@
-import { useKeyboard } from "@opentui/react";
 import { useTheme } from "../../../core/theme/index.js";
 import type { ThemeTokens } from "../../../core/theme/tokens.js";
+import { useKeyboard } from "../../../hooks/useTerminalEvents.js";
 import { PremiumPopup } from "../PremiumPopup.js";
 
 interface Props {

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { type Selection, TextAttributes } from "@opentui/core";
-import { useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useRenderer } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -41,6 +41,7 @@ import { useGitStatus } from "../hooks/useGitStatus.js";
 import { useGlobalKeyboard } from "../hooks/useGlobalKeyboard.js";
 import { buildTabMeta } from "../hooks/useSessionBuilder.js";
 import { useTabs } from "../hooks/useTabs.js";
+import { useTerminalDimensions } from "../hooks/useTerminalEvents.js";
 import { stopWorkflowSessions } from "../hooks/useWorkflow.js";
 import { cleanupAndExit, hardRestart, restart, setExitSessionId } from "../index.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";

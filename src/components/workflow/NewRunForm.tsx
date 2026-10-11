@@ -1,4 +1,3 @@
-import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import { BUDGET_PRESETS } from "../../core/workflows/budget.js";
@@ -11,6 +10,7 @@ import {
   type StartRunInput,
   type WorkflowInfo,
 } from "../../core/workflows/view.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Field, Hint, Section } from "../ui/index.js";
 import {

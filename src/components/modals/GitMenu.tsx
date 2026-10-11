@@ -1,4 +1,3 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import {
   getGitLog,
@@ -8,6 +7,7 @@ import {
   gitStash,
   gitStashPop,
 } from "../../core/git/status.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { selectHasDialog, useDialogStore } from "../../stores/dialog.js";
 import { confirm } from "../ui/dialogs/index.js";
 import {
