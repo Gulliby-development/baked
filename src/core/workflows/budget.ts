@@ -1,3 +1,4 @@
+import { canonical, hashJson } from "../specs/hash.js";
 import { type AgentProfile, PolicySchema, type RunPolicy } from "./schemas.js";
 import type { RunRow, WorkflowStore } from "./store.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
@@ -109,4 +110,112 @@ export function proposeExtension(current: BudgetLimits, usage: BudgetUsage): Bud
     next.maxActiveMs > current.maxActiveMs
     ? next
     : null;
+}
+
+/** Share of the current token budget one automatic growth adds, at least. */
+const GROWTH_STEP = 0.5;
+
+/**
+ * Records a budget growth the host made on its own as a policy revision (`approvedBy: "sizing"`,
+ * never an operator decision), stores the policy and updates the object the caller drives with.
+ */
+function recordGrowth(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+  maxTotalTokens: number,
+  kind: "auto-growth" | "planning-floor",
+  detail: Record<string, unknown>,
+): void {
+  const before = hashJson(policy);
+  const after = PolicySchema.parse({ ...policy, maxTotalTokens });
+  const count = store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === "policy-revision" && a.logical_path.startsWith("policy-revisions/auto-"),
+    ).length;
+  store.transaction(() => {
+    store.artifact(
+      runId,
+      "policy-revision",
+      `policy-revisions/auto-${String(count + 1)}.json`,
+      canonical({
+        kind,
+        approvedBy: "sizing",
+        previousPolicyHash: before,
+        policyHash: hashJson(after),
+        previous: { maxTotalTokens: policy.maxTotalTokens },
+        next: { maxTotalTokens: after.maxTotalTokens },
+        ceiling: policy.sizing?.maxRunTokens ?? null,
+        ...detail,
+      }),
+    );
+    store.setPolicy(runId, after);
+  });
+  policy.maxTotalTokens = after.maxTotalTokens;
+}
+
+/**
+ * Called when a model call would pass the token budget. A run whose policy declares a ceiling
+ * (`sizing.maxRunTokens`) grows its budget toward it, instead of stopping for an operator, while
+ * it is making progress: at least one task is implemented or verified. The new budget covers the
+ * call and is at least half again the old one, never above the ceiling; the growth is recorded as
+ * a policy revision. Returns whether `policy.maxTotalTokens` now covers `projected`.
+ */
+export function growBudgetOnProgress(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+  projected: number,
+): boolean {
+  const ceiling = policy.sizing?.maxRunTokens ?? null;
+  if (ceiling === null) return false;
+  // Another worker of this run may have grown the stored budget already.
+  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+  if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
+  if (projected <= policy.maxTotalTokens) return true;
+  if (policy.maxTotalTokens >= ceiling) return false;
+  const finished = store
+    .tasks(runId)
+    .filter((t) => t.status === "implemented" || t.status === "verified").length;
+  if (finished === 0) return false;
+  const next = Math.min(
+    ceiling,
+    Math.max(projected, Math.ceil(policy.maxTotalTokens * (1 + GROWTH_STEP))),
+  );
+  if (next <= policy.maxTotalTokens) return false;
+  recordGrowth(store, runId, policy, next, "auto-growth", {
+    projectedTokens: projected,
+    finishedTasks: finished,
+  });
+  return projected <= policy.maxTotalTokens;
+}
+
+/**
+ * Before the plan is priced the budget is the policy's default, below the doctor's own high
+ * estimate (cronsay stopped at 768k after 9 plan and 5 specify attempts, before any pricing).
+ * A run with a ceiling and no task yet starts at least at the start estimate's high end, up to
+ * the ceiling, recorded as a policy revision.
+ */
+export function raiseToStartEstimate(
+  store: WorkflowStore,
+  runId: string,
+  policy: RunPolicy,
+): boolean {
+  let estimateHigh: number | null = null;
+  try {
+    const saved = store.latestArtifact(runId, "estimates/start.json");
+    const body = saved
+      ? (JSON.parse(store.readArtifact(runId, saved.id)) as { tokens?: { high?: unknown } })
+      : null;
+    if (typeof body?.tokens?.high === "number") estimateHigh = body.tokens.high;
+  } catch {
+    // The estimate is advice; an unreadable one leaves the budget alone.
+  }
+  const ceiling = policy.sizing?.maxRunTokens ?? null;
+  if (ceiling === null || estimateHigh === null || store.tasks(runId).length > 0) return false;
+  const target = Math.min(ceiling, Math.ceil(estimateHigh));
+  if (target <= policy.maxTotalTokens) return false;
+  recordGrowth(store, runId, policy, target, "planning-floor", { estimateHigh });
+  return true;
 }

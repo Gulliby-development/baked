@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
+import { growBudgetOnProgress } from "./budget.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
@@ -1042,10 +1043,11 @@ export class WorkflowStore {
       const reserved = this.attempts(runId)
         .filter((a) => !a.usage_complete)
         .reduce((n, a) => n + a.reserved_tokens, 0);
+      const projected = row.token_usage + reserved + tokens;
       if (
         row.agent_calls >= policy.maxAgentCalls ||
-        row.token_usage + reserved + tokens > policy.maxTotalTokens ||
-        row.active_ms >= policy.maxActiveMs
+        row.active_ms >= policy.maxActiveMs ||
+        (projected > policy.maxTotalTokens && !growBudgetOnProgress(this, runId, policy, projected))
       )
         throw new WorkflowFault("BUDGET_EXHAUSTED", "Run agent/token/time budget exhausted");
       this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
@@ -1132,7 +1134,11 @@ export class WorkflowStore {
         .reduce((sum, a) => sum + a.reserved_tokens, 0);
       if (run.status !== "running")
         throw new WorkflowFault("CAPABILITY_DENIED", "Run is no longer executing");
-      if (run.token_usage + reserved + tokens > policy.maxTotalTokens)
+      const projected = run.token_usage + reserved + tokens;
+      if (
+        projected > policy.maxTotalTokens &&
+        !growBudgetOnProgress(this, runId, policy, projected)
+      )
         throw new WorkflowFault(
           "BUDGET_EXHAUSTED",
           "Next model step exceeds remaining token budget",

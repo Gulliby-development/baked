@@ -7,7 +7,7 @@ import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
 import { WorkflowConfigSchema } from "../core/workflows/schemas.js";
 import type { AppConfig, MCPServerConfig, TaskRouter } from "../types";
 
-function mergeMCPServers(
+export function mergeMCPServers(
   base?: MCPServerConfig[],
   overlay?: MCPServerConfig[],
 ): MCPServerConfig[] | undefined {

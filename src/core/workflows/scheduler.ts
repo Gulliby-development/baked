@@ -46,7 +46,7 @@ import {
   planScopeAdvice,
   policyDecisions,
 } from "./auto-approval.js";
-import { budgetUsage, reserveTokens } from "./budget.js";
+import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   taskCheckList,
   validateChecks,
@@ -292,6 +292,7 @@ export class WorkflowScheduler {
     // A reroute between drives writes a new routing revision; read it again.
     this.routing.delete(runId);
     const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+    raiseToStartEstimate(this.store, runId, policy);
     // A worktree run holds the lease of its worktree; the project working copy stays free.
     this.mutation =
       executionModeOf(policy) === "worktree"

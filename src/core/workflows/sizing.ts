@@ -55,6 +55,11 @@ export const DEFAULT_TEST_TASK_STEPS = 32;
 export const DEFAULT_MAX_SIZED_ATTEMPT = 600_000;
 /** A correction round of review and convergence on top of one pass. */
 const VERIFICATION_FACTOR = 1.5;
+/**
+ * Share of the priced work kept in the run budget for repair and convergence tasks, which the
+ * price does not include. In round 03 they were 30% of all tokens (md-site 34%, zoneslot 50%).
+ */
+export const REPAIR_RESERVE = 0.3;
 
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const DOCS_EXTENSION = /\.(md|mdx|markdown|rst|adoc)$/i;
@@ -246,6 +251,8 @@ export interface SizingReport {
   tasks: TaskSize[];
   /** Tokens the run is expected to need in total, from what it spent so far. */
   runTokens: number;
+  /** Tokens held on top of the price for repair and convergence tasks. */
+  repairReserve: number;
   budgetBefore: number;
   budgetAfter: number;
   maxAttemptTokens: number;
@@ -298,9 +305,9 @@ export function sizePlan(input: {
   const verification =
     ((DEFAULT_STAGE_RANGES.review?.high ?? 0) + (DEFAULT_STAGE_RANGES.converge?.high ?? 0)) *
     VERIFICATION_FACTOR;
-  const runTokens = Math.round(
-    input.spent + tasks.reduce((total, task) => total + task.estimate.high, 0) + verification,
-  );
+  const priced = tasks.reduce((total, task) => total + task.estimate.high, 0) + verification;
+  const runTokens = Math.round(input.spent + priced);
+  const repairReserve = Math.round(priced * REPAIR_RESERVE);
   const budgetBefore = input.policy.maxTotalTokens;
   const reasons: string[] = [];
   let decision: SizingReport["decision"] = "fits";
@@ -318,16 +325,19 @@ export function sizePlan(input: {
         `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
-  if (runTokens > budgetBefore && maxRunTokens !== null) {
-    budgetAfter = Math.min(maxRunTokens, runTokens);
+  if (runTokens + repairReserve > budgetBefore && maxRunTokens !== null) {
+    budgetAfter = Math.min(maxRunTokens, runTokens + repairReserve);
     if (decision === "fits") decision = "raise-budget";
-    reasons.push(`The run budget grows from ${budgetBefore} to ${budgetAfter} tokens`);
+    reasons.push(
+      `The run budget grows from ${budgetBefore} to ${budgetAfter} tokens (${repairReserve} of it held for repair and convergence)`,
+    );
   }
   return {
     schemaVersion: 3,
     rates,
     tasks,
     runTokens,
+    repairReserve,
     budgetBefore,
     budgetAfter,
     maxAttemptTokens,

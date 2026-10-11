@@ -365,9 +365,9 @@ export const FEATURES: readonly Feature[] = [
     group: "Models and providers",
     title: "MCP servers: list, add, edit, reconnect, tools",
     tui: ["/mcp"],
-    cli: partial(["--headless: connects the configured servers"], 402, "no management"),
-    api: gap(402),
-    desktop: gap(402),
+    cli: ["baked mcp list", "baked mcp enable", "baked mcp disable", "baked mcp remove"],
+    api: ["/v1/mcp", "/v1/mcp/:id", "/v1/mcp/:id/reconnect", "/v1/mcp/:id/ping"],
+    desktop: ["project/mcp"],
   },
 
   // Tools and code intelligence

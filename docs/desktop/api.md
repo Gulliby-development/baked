@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`) and `provider-switch` (`POST /v1/providers/ID/switch`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`) and `mcp` (`/v1/mcp*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -286,6 +286,32 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
 
+## MCP servers
+
+The `mcpServers` entries of the global and project config ([MCP servers](../extensions.md#mcp-servers)) with their live status, and the changes `/mcp` makes in the terminal UI. Changes write only `mcpServers` of the named config file and apply to the running server at once: once anything connected servers (a chat message, a run step, or Reconnect), removed and disabled servers disconnect and changed ones reconnect in the background. Before that, the first chat message or run step connects them. The config logic is in `src/core/mcp/config.ts`; `/mcp` and `baked mcp` use the same.
+
+| Method and path | Body or query | Result |
+| --- | --- | --- |
+| `GET /v1/mcp` | | `McpView` |
+| `POST /v1/mcp` | `{scope: "global" \| "project", server: McpServerConfig}` | `McpView`; 409 `CONFLICT` when the scope already has a server with that name, 400 for a missing command (stdio) or http(s) URL (http, sse) |
+| `PATCH /v1/mcp/NAME` | `{scope, server, toScope?}` or `{scope, disabled: boolean}` | `McpView`; replaces the entry (renaming it when `server.name` differs, moving it to `toScope`) and keeps `disabled` unless `server` sets it, or turns it on or off. 404 when `scope` has no server `NAME` |
+| `DELETE /v1/mcp/NAME` | `?scope=` | `McpView`; a global server with the same name takes a removed project server's place |
+| `POST /v1/mcp/NAME/reconnect` | | `McpView` after one connection attempt with a fresh restart budget; it connects a server nothing connected yet too. 409 `DISABLED` |
+| `POST /v1/mcp/NAME/ping` | | `{ms, ...McpView}`: lists the server's tools as a health check. 409 `NOT_CONNECTED`, 502 `PING_FAILED` |
+
+```ts
+interface McpServerConfig { name; transport?: "stdio" | "http" | "sse"; command?; args?: string[]; env?: Record<string, string>; url?; headers?: Record<string, string>; timeout?: number /* ms */; disabled?: boolean }
+interface McpView {
+  servers: { name; scope: "global" | "project"; overridesGlobal: boolean; transport; config: McpServerConfig;
+    status: "idle" | "disconnected" | "connecting" | "ready" | "error" | "disabled"; error: string | null;
+    tools: { name; description }[]; connectedAt: number | null; lastPingMs: number | null }[];
+  started: boolean; // whether anything connected servers yet; "idle" servers wait for that
+  paths: { global; project };
+}
+```
+
+Project servers come first, then the global servers no project server replaces. `config` holds `env` and `headers` as written, secrets included, as `GET /v1/config` does. A server name is 1 to 64 letters, digits, dots, dashes or underscores.
+
 ## Chat settings
 
 The chat settings the terminal UI edits in its pickers (`/provider-settings`, `/router`, `/model-scope`, `/tools`, `/web-search`, `/agent-features`, `/repo-map`, `/compaction`, `/timeouts`, `/context-window`) are described once in `src/core/settings/schema.ts`. The server validates changes against that schema and the desktop draws its settings pages from it, so a setting added there shows up on every surface. Unlike `PATCH /v1/config`, these routes check every value and write nested keys without replacing their neighbours.
@@ -399,6 +425,7 @@ interface GitOverview {
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
+| Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
 

@@ -79,7 +79,7 @@ bun test tests/feature-parity.test.ts
 | Chat task router and fallback chains | `/router` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Workflow model routing | `/workflow` | `baked workflow route`, `baked workflow routing` | `/v1/workflow/routing`, `/v1/workflow/route` | `settings/routing` |
 | Web search keys (Brave, Jina) | `/web-search` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
-| MCP servers: list, add, edit, reconnect, tools | `/mcp` | Partial [#402](https://github.com/Gulliby-development/baked/issues/402): no management | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) | **Gap** [#402](https://github.com/Gulliby-development/baked/issues/402) |
+| MCP servers: list, add, edit, reconnect, tools | `/mcp` | `baked mcp list`, `baked mcp enable`, `baked mcp disable` +1 | `/v1/mcp`, `/v1/mcp/:id`, `/v1/mcp/:id/reconnect` +1 | `project/mcp` |
 
 ### Tools and code intelligence
 
@@ -157,7 +157,6 @@ bun test tests/feature-parity.test.ts
 - [#273](https://github.com/Gulliby-development/baked/issues/273): Checkpoint list and rewind to a checkpoint
 - [#374](https://github.com/Gulliby-development/baked/issues/374): Language servers: status, install, enable, restart; Diagnose LSP, tree-sitter and index health
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
-- [#402](https://github.com/Gulliby-development/baked/issues/402): MCP servers: list, add, edit, reconnect, tools
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#408](https://github.com/Gulliby-development/baked/issues/408): Storage cleanup, model events and the error log
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
