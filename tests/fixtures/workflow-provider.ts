@@ -97,7 +97,7 @@ try {
   const store = new WorkflowStore(workspace, true);
   const pending = store.requests(initial.runId).find((r) => r.kind === "approval" && r.status === "pending")!;
   store.close();
-  const approved = JSON.parse(await cli(["approve", initial.runId, "--request", pending.id, "--digest", pending.digest, "--expected-revision", String(initial.revision)], 0)) as RunSnapshot;
+  const approved = JSON.parse(await cli(["approve", initial.runId, "--request", pending.id, "--digest", pending.digest, "--expected-revision", String(initial.revision), "--no-resume"], 0)) as RunSnapshot;
   const previousCwd = process.cwd();
   worker = new FixtureWorker();
   const finished = await worker.command(["resume", initial.runId, "--expected-revision", String(approved.revision)]);
