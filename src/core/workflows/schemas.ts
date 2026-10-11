@@ -956,6 +956,11 @@ export interface StartRequest {
   executionMode?: ExecutionMode;
   /** Concurrent writers requested for this run (CLI `--writers N`); it overrides the policy. */
   maxConcurrentWriters?: number;
+  /**
+   * The run model overrides the configured model routes for this run (CLI `--model-strict`);
+   * without it only the `active` class follows the run model.
+   */
+  modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
   /**

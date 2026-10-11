@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assumable, isCountNit, supersedeResearch } from "../src/core/workflows/analysis-notes.js";
+import { assumable, isCountNit, knownRisks, supersedeResearch } from "../src/core/workflows/analysis-notes.js";
 
 describe("count nits", () => {
   test("a finding that only compares task or file counts is recognised (jsondelta, cronsay)", () => {
@@ -41,5 +41,17 @@ describe("answers to analysis findings", () => {
   test("scope findings are never settled by an assumption", () => {
     expect(assumable({ kind: "scope", blocking: true })).toBe(false);
     expect(assumable({ kind: "ambiguity", blocking: true })).toBe(true);
+    expect(assumable({ kind: "inconsistency", blocking: true })).toBe(false);
+  });
+});
+
+describe("known risks for reviewers", () => {
+  test("the assumptions of analysis reach the reviewers as risks to check first", () => {
+    const risks = knownRisks(JSON.stringify({ assumed: [{ id: "F-001", kind: "ambiguity", refs: ["spec.json"], description: "Zero total shows 0%" }] }));
+    expect(risks?.assumed).toEqual([{ id: "F-001", kind: "ambiguity", refs: ["spec.json"], description: "Zero total shows 0%" }]);
+    expect(risks?.note).toContain("Check the result against each of them first");
+    expect(knownRisks(null)).toBeNull();
+    expect(knownRisks("not json")).toBeNull();
+    expect(knownRisks(JSON.stringify({ assumed: [] }))).toBeNull();
   });
 });

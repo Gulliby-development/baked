@@ -328,6 +328,25 @@ describe("answering a clarification", () => {
       const recorded = service.store.artifacts(run.runId).find((a) => a.logical_path === "assumptions/analysis.json");
       expect(recorded?.kind).toBe("assumption");
     });
+    // md-site: root index.md maps to index-page.html, which collides with a real index-page.md.
+    const collision = "Root index.md maps to index-page.html, which collides with the real index-page.md";
+    test("an inconsistency that survives the reroute goes back to the spec once more, with its text", async () => {
+      const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "inconsistency", findingRefs: ["spec.json:FR-001"], findingText: collision });
+      const service = setup(executor);
+      const run = await startAssume(service);
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+      expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+      expect(executor.requests[7]?.prompt).toContain("Do not assume them away");
+      expect(executor.requests[7]?.prompt).toContain(collision);
+      expect(service.store.artifacts(run.runId).some((a) => a.logical_path === "assumptions/analysis.json")).toBe(false);
+    });
+    test("an inconsistency that survives both reroutes is asked, never recorded as an assumption", async () => {
+      const executor = new ScriptedExecutor({ planFinding: 3, findingKind: "inconsistency", findingRefs: ["spec.json:FR-001"], findingText: collision });
+      const service = setup(executor);
+      const run = await startAssume(service);
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
+      expect(service.store.artifacts(run.runId).some((a) => a.logical_path === "assumptions/analysis.json")).toBe(false);
+    });
     test("a scope finding that survives still goes to a person", async () => {
       const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "scope", findingRefs: ["spec.json"] });
       const service = setup(executor);
