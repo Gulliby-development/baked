@@ -22,6 +22,7 @@ const TITLES: Record<ProjectSection, string> = {
   instructions: "Instructions",
   "working-set": "Working set",
   "run-memory": "Run memory",
+  "chat-memory": "Chat memory",
   skills: "Skills",
   mcp: "MCP servers",
 };

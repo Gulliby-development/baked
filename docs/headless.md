@@ -64,6 +64,10 @@ baked attention --json
 
 `baked attention` lists what waits for a person in the project, oldest first: pending decisions of workflow runs, blocked runs and pending initiative decisions. `--json` prints `{items}` in the shape of [`GET /v1/attention`](workflows/runtime.md); advisory acceptance requests have `blocking: false`. Chat prompts appear only in the local API, where the chat sessions run. Both commands only read the workflow database and exit 0, with nothing listed in a project where no run was started.
 
+## Model routing
+
+`baked workflow routing set TARGET MODEL`, `clear TARGET` and `review MODE` change the `modelRouting` of the project (or `--scope global`) with the checks of the terminal routing screen, and `show` prints it; see the [routing screen](workflows/runtime.md#routing-screen) for targets and output.
+
 ## Keys and sign-in
 
 ```sh

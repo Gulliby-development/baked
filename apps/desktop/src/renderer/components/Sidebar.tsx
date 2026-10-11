@@ -33,6 +33,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["instructions", "Instructions", "instructions"],
   ["working-set", "Working set", "working-set"],
   ["run-memory", "Run memory", "run-memory"],
+  ["chat-memory", "Chat memory", "chat-memory"],
   ["skills", "Skills", "skills"],
   ["mcp", "MCP servers", "mcp"],
 ];

@@ -12,6 +12,7 @@ export const PROJECT_SECTIONS = [
   "instructions",
   "working-set",
   "run-memory",
+  "chat-memory",
   "skills",
   "mcp",
 ] as const;

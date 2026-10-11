@@ -1,0 +1,160 @@
+import { getCwd } from "../core/cwd.js";
+import { ROUTED_ROLES, RouteEffort } from "../core/llm/model-routing.js";
+import { WorkflowFault } from "../core/workflows/errors.js";
+import {
+  readRoutingLayers,
+  routingConfigFiles,
+  saveRoutingChange,
+} from "../core/workflows/routing-config.js";
+import type { RoutingChange, RoutingScope, RoutingTarget } from "../core/workflows/routing-edit.js";
+
+export const routingHelp = `Usage: baked workflow routing [show] [--json]
+       baked workflow routing set TARGET MODEL [--effort LEVEL] [--fallback ID,ID] [--scope project|global]
+       baked workflow routing clear TARGET [--scope project|global]
+       baked workflow routing review off|warn|require|unset [--scope project|global]
+
+Changes modelRouting in the project config (.baked/config.json, the default) or the global one
+(--scope global), with the checks of the routing screen and the local API: nothing is written
+when a check fails, and the reasons are printed with exit code 1.
+
+TARGET is a class ($coding or class:coding), a role (role:reviewer), a profile
+(profile:implementer) or a workflow stage (stage:sdd/plan). MODEL is provider/model, or $class
+outside a class. --effort is ${RouteEffort.options.join(", ")}; --fallback names up to three
+models. review sets independentReview; unset removes it. show prints the modelRouting of both
+files; "baked workflow route" shows what each stage resolves to.
+`;
+
+export function parseRoutingTarget(text: string): RoutingTarget {
+  if (text.startsWith("$")) return { kind: "class", name: text.slice(1) };
+  const colon = text.indexOf(":");
+  const kind = colon < 0 ? "" : text.slice(0, colon);
+  const value = text.slice(colon + 1);
+  if (value) {
+    if (kind === "class") return { kind: "class", name: value };
+    if (kind === "profile") return { kind: "profile", id: value };
+    if (kind === "role") {
+      const role = ROUTED_ROLES.find((r) => r === value);
+      if (role) return { kind: "role", role };
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Unknown role ${value}; use one of ${ROUTED_ROLES.join(", ")}`,
+      );
+    }
+    const slash = value.indexOf("/");
+    if (kind === "stage" && slash > 0 && slash < value.length - 1)
+      return { kind: "stage", workflowId: value.slice(0, slash), stageId: value.slice(slash + 1) };
+  }
+  throw new WorkflowFault(
+    "INVALID_DEFINITION",
+    `Invalid target ${text}; use $class, role:NAME, profile:ID or stage:WORKFLOW/STAGE`,
+  );
+}
+
+/** Splits positionals from `--name value` flags; booleans are listed in `booleans`. */
+function split(
+  argv: string[],
+  booleans: string[],
+): { positional: string[]; flags: Map<string, string> } {
+  const positional: string[] = [];
+  const flags = new Map<string, string>();
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] ?? "";
+    if (!arg.startsWith("--")) {
+      positional.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    const name = arg.slice(2, eq < 0 ? undefined : eq);
+    if (booleans.includes(name)) flags.set(name, "true");
+    else {
+      const value = eq < 0 ? argv[++i] : arg.slice(eq + 1);
+      if (value === undefined)
+        throw new WorkflowFault("INVALID_DEFINITION", `--${name} needs a value`);
+      flags.set(name, value);
+    }
+  }
+  return { positional, flags };
+}
+
+function only(flags: Map<string, string>, allowed: string[]): void {
+  const extra = [...flags.keys()].find((name) => !allowed.includes(name));
+  if (extra) throw new WorkflowFault("INVALID_DEFINITION", `Unknown option --${extra}`);
+}
+
+export function runRoutingCli(argv: string[], configDir?: string): number {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(routingHelp);
+    return 0;
+  }
+  const { positional, flags } = split(argv, ["json"]);
+  const [command = "show", ...args] = positional;
+  const workspace = getCwd();
+  const files = routingConfigFiles(workspace, configDir);
+  if (command === "show") {
+    only(flags, ["json"]);
+    if (args.length) throw new WorkflowFault("INVALID_DEFINITION", "show takes no arguments");
+    const layers = readRoutingLayers(files);
+    const view = { global: layers.global ?? null, project: layers.project ?? null, paths: files };
+    process.stdout.write(
+      flags.has("json")
+        ? `${JSON.stringify(view, null, 2)}\n`
+        : `global (${files.global}):\n${JSON.stringify(view.global, null, 2)}\nproject (${files.project}):\n${JSON.stringify(view.project, null, 2)}\n`,
+    );
+    return 0;
+  }
+  const scopeText = flags.get("scope") ?? "project";
+  if (scopeText !== "project" && scopeText !== "global")
+    throw new WorkflowFault("INVALID_DEFINITION", "--scope is project or global");
+  const scope: RoutingScope = scopeText;
+  let change: RoutingChange;
+  if (command === "set") {
+    only(flags, ["scope", "effort", "fallback", "json"]);
+    const [target, model, ...rest] = args;
+    if (!target || model === undefined || rest.length)
+      throw new WorkflowFault("INVALID_DEFINITION", "set takes TARGET MODEL");
+    const effortText = flags.get("effort");
+    const effort = effortText === undefined ? null : RouteEffort.safeParse(effortText);
+    if (effort && !effort.success)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `--effort is one of ${RouteEffort.options.join(", ")}`,
+      );
+    change = {
+      target: parseRoutingTarget(target),
+      route: {
+        model,
+        effort: effort ? effort.data : null,
+        fallback: (flags.get("fallback") ?? "")
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean),
+      },
+    };
+  } else if (command === "clear") {
+    only(flags, ["scope", "json"]);
+    const [target, ...rest] = args;
+    if (!target || rest.length) throw new WorkflowFault("INVALID_DEFINITION", "clear takes TARGET");
+    change = { target: parseRoutingTarget(target), route: null };
+  } else if (command === "review") {
+    only(flags, ["scope", "json"]);
+    const [mode, ...rest] = args;
+    if (rest.length || !mode || !["off", "warn", "require", "unset"].includes(mode))
+      throw new WorkflowFault("INVALID_DEFINITION", "review takes off, warn, require or unset");
+    change = {
+      independentReview: mode === "unset" ? null : (mode as "off" | "warn" | "require"),
+    };
+  } else {
+    process.stderr.write(`Unknown routing command: ${command}\n\n${routingHelp}`);
+    return 1;
+  }
+  const { problems, file } = saveRoutingChange(workspace, files, scope, change);
+  const routing = readRoutingLayers(files)[scope] ?? null;
+  if (flags.has("json"))
+    process.stdout.write(
+      `${JSON.stringify(problems.length ? { saved: false, problems } : { saved: true, file, modelRouting: routing }, null, 2)}\n`,
+    );
+  else if (problems.length)
+    process.stderr.write(`Not saved:\n${problems.map((p) => `  ${p}`).join("\n")}\n`);
+  else process.stdout.write(`Saved modelRouting in ${file}\n`);
+  return problems.length ? 1 : 0;
+}
