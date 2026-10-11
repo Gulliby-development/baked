@@ -66,6 +66,8 @@ interface ChatMessage {          // as stored in messages.jsonl (src/types/index
             | { type: "reasoning"; content: string; id: string })[];   // render order
   durationMs?: number;
   isSteering?: boolean;          // a user message sent while the turn ran
+  inputContext?: { kind: "file" | "directory" | "symbol" | "command"; ref: string;
+                   ok: boolean; summary: string; output?: string }[];   // what @ and ! attached
 }
 
 type Prompt = { id: string; createdAt: number } & (
@@ -95,8 +97,11 @@ In `default` and `architect` mode, writes outside the project, destructive comma
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}` or `{answer: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended. `answer: ""` skips a question that allows it |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
 | `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model` |
+| `GET /v1/mentions` | `?q=&limit=` (default 20, at most 50) | `{mentions: [{kind: "file" \| "directory" \| "symbol", insert, label, detail, indices}]}`: `@` completions for the composer; `insert` is the text after `@`, `indices` the matched characters of `label` |
 
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
+
+A message text with `@` mentions or a leading `!command` is expanded on the server before the model sees it, by the same code as the terminal UI ([user guide](../guide.md#mentions-and-shell-commands-in-the-input)): the stored user message keeps the typed text and lists what was attached in `inputContext`. A destructive `!` command asks with a `destructive` prompt in `default` mode, is denied in `architect` mode with every other command, and runs in `auto` mode. A message that is only a command that did not run ends its turn with `turn-done` `completed` and `message: null`. Text with `@` or `!` sent while a turn runs is not steered into it; it starts its own turn afterwards.
 
 ### Session events
 
@@ -197,7 +202,7 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget` |
 | Project home | `GET /v1/projects/current`, `GET /v1/workflow/runs`, `GET /v1/attention`, `GET /v1/workflow/doctor` |
 | Needs you | `GET /v1/attention` (stream) of every open project; answers go to the owning run, initiative or session |
-| Chat session | `/v1/sessions/*`, `GET /v1/models`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
+| Chat session | `/v1/sessions/*`, `GET /v1/models`, `GET /v1/mentions`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
 | Quick task, New run | `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET /v1/workflow/definitions`, `POST /v1/workflow/runs` |
 | Workflow run, Parallel writers | `GET /v1/workflow/runs/RUN_ID` and its events, artifacts, usage; approve, reject, answer, pause, resume, extend, reroute (the Model panel) |
 | AI acceptance gate | run snapshot requests and artifacts; `evidence` for manual criteria; resume to re-run |

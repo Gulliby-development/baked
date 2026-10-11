@@ -860,3 +860,93 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* `!command` input and `@` mentions */
+.composer {
+  position: relative;
+}
+
+.composer.shell {
+  border-color: var(--fill-warn);
+}
+
+.mention-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow);
+  z-index: 20;
+}
+
+.mention-item[aria-selected="true"] {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--ink);
+}
+
+.mention-item .mono {
+  margin-left: 0;
+  font-size: 13px;
+}
+
+.mention-icon {
+  width: 14px;
+  text-align: center;
+  color: var(--text-3);
+}
+
+.mention-icon.symbol {
+  color: var(--accent);
+}
+
+.mention-detail {
+  margin-left: auto;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.input-context {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: var(--border-w) solid var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.input-context li.failed {
+  opacity: 0.7;
+  text-decoration: line-through;
+}
+
+.input-context-summary {
+  opacity: 0.8;
+}
+
+.input-context-output {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 200px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text);
+  border: var(--border-w) solid var(--ink);
+  white-space: pre;
+}

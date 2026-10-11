@@ -9,29 +9,14 @@ import { classifyPath } from "../security/outside-cwd.js";
 import { emitCacheReset } from "../tools/file-events.js";
 import { runGatedShell } from "../tools/index.js";
 import type { IntelligenceClient } from "../workers/intelligence-client.js";
+import { type InputMention, parseChatInput, SYMBOL_RE } from "./input-parse.js";
 
 /**
  * `@path`, `@Symbol` and `!command` in a chat message. The parser and the expansion are shared by
  * the terminal UI, the headless CLI and the chat API, so each front end only renders the result.
  */
 
-/** One `@` mention in a message. `lines` is the `#10-40` suffix of a file mention. */
-export interface InputMention {
-  target: string;
-  lines?: { start: number; end: number };
-  /** Offsets of the whole mention, `@` included, in the prompt text. */
-  start: number;
-  end: number;
-}
-
-export interface ParsedChatInput {
-  /** The command of a message that starts with `!`, without the `!`. */
-  command: string | null;
-  /** The text sent to the model: the whole message, or the lines after the `!` command. */
-  prompt: string;
-  mentions: InputMention[];
-}
-
+export { hasInputReferences, parseChatInput, parseMentions } from "./input-parse.js";
 export type { InputContextItem };
 
 export interface ExpandedChatInput {
@@ -57,6 +42,8 @@ export interface InputExpansionOptions {
 
 const MAX_FILE_LINES = 2000;
 const MAX_FILE_BYTES = 100_000;
+/** Larger files are refused rather than read whole for a slice. */
+const MAX_READ_BYTES = 10_000_000;
 const MAX_DIR_ENTRIES = 200;
 const MAX_SYMBOL_LINES = 400;
 const MAX_DEFINITIONS = 2;
@@ -64,60 +51,9 @@ const MAX_REFERENCES = 15;
 const MAX_COMMAND_CHARS = 20_000;
 const OUTPUT_PREVIEW_LINES = 12;
 const NOT_FOUND = "not found";
+const GRAPH_NOT_READY = "repository graph is not ready";
 /** Modes in which the agent's shell tool is disabled; `!` follows the same rule. */
 const SHELL_DISABLED_MODES = new Set<BakeMode>(["plan", "architect"]);
-
-const MENTION_RE = /(^|[\s([{,;])@(?:"([^"\n]+)"|([^\s"'`()<>[\]{},;]+))/g;
-const LINES_RE = /#L?(\d+)(?:-L?(\d+))?$/;
-const SYMBOL_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
-
-/** Offsets covered by fenced code blocks and inline code, where `@` is literal. */
-function codeRanges(text: string): [number, number][] {
-  const ranges: [number, number][] = [];
-  const re = /```[\s\S]*?(?:```|$)|`[^`\n]*`/g;
-  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-    ranges.push([m.index, m.index + m[0].length]);
-  }
-  return ranges;
-}
-
-export function parseMentions(text: string): InputMention[] {
-  const code = codeRanges(text);
-  const mentions: InputMention[] = [];
-  for (let m = MENTION_RE.exec(text); m !== null; m = MENTION_RE.exec(text)) {
-    const start = m.index + (m[1]?.length ?? 0);
-    if (code.some(([a, b]) => start >= a && start < b)) continue;
-    const quoted = m[2] !== undefined;
-    let target = quoted ? (m[2] ?? "") : (m[3] ?? "").replace(/[.,:;!?]+$/, "");
-    if (!target) continue;
-    const end = quoted ? m.index + m[0].length : start + 1 + target.length;
-    let lines: InputMention["lines"];
-    const range = LINES_RE.exec(target);
-    if (range) {
-      const first = Number(range[1]);
-      const last = range[2] ? Number(range[2]) : first;
-      if (first >= 1 && last >= first) lines = { start: first, end: last };
-      target = target.slice(0, range.index);
-    }
-    if (!target) continue;
-    mentions.push({ target, ...(lines ? { lines } : {}), start, end });
-  }
-  return mentions;
-}
-
-export function parseChatInput(input: string): ParsedChatInput {
-  const trimmed = input.trimStart();
-  const commandMatch = /^!([^\n]*)/.exec(trimmed);
-  const command = commandMatch?.[1]?.trim() || null;
-  const prompt = command ? trimmed.slice(commandMatch?.[0].length ?? 0).trim() : input;
-  return { command, prompt, mentions: parseMentions(prompt) };
-}
-
-/** True when the input has anything `expandChatInput` would act on. */
-export function hasInputReferences(input: string): boolean {
-  const parsed = parseChatInput(input);
-  return parsed.command !== null || parsed.mentions.length > 0;
-}
 
 function attr(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
@@ -125,6 +61,11 @@ function attr(value: string): string {
 
 function plural(n: number, word: string): string {
   return `${String(n)} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function oneLine(text: string): string {
+  const line = text.split("\n")[0] ?? "";
+  return line.length > 120 ? `${line.slice(0, 119)}…` : line;
 }
 
 function toRel(cwd: string, abs: string): string {
@@ -148,6 +89,7 @@ function attachFile(abs: string, mention: InputMention, cwd: string): Attached {
   const fail = (summary: string): Attached => ({
     item: { kind: "file", ref: mention.target, ok: false, summary },
   });
+  if (statSync(abs).size > MAX_READ_BYTES) return fail("file is larger than 10 MB");
   if (isBinaryFileSync(abs)) return fail("binary file");
   const all = readFileSync(abs, "utf-8").split("\n");
   if (all.at(-1) === "") all.pop();
@@ -205,17 +147,19 @@ async function attachSymbol(
   mention: InputMention,
   cwd: string,
   repoMap: IntelligenceClient | undefined,
+  tabId?: string,
 ): Promise<Attached> {
   const fail = (summary: string): Attached => ({
     item: { kind: "symbol", ref: mention.target, ok: false, summary },
   });
-  if (!repoMap?.isReady) return fail("repository graph is not ready");
+  if (!repoMap?.isReady) return fail(GRAPH_NOT_READY);
   const defs = await repoMap.findSymbolDefinitions(mention.target, MAX_DEFINITIONS);
   if (defs.length === 0) return fail(NOT_FOUND);
   const blocks: string[] = [];
   let refCount = 0;
   for (const def of defs) {
     const abs = join(cwd, def.path);
+    if (denyReason(abs, cwd, tabId)) continue;
     let code = "";
     try {
       const lines = readFileSync(abs, "utf-8").split("\n");
@@ -276,7 +220,7 @@ async function attachMention(
       return { item: { kind, ref: mention.target, ok: false, summary } };
     }
   }
-  if (SYMBOL_RE.test(mention.target)) return attachSymbol(mention, cwd, opts.repoMap);
+  if (SYMBOL_RE.test(mention.target)) return attachSymbol(mention, cwd, opts.repoMap, opts.tabId);
   return { item: { kind: "file", ref: mention.target, ok: false, summary: NOT_FOUND } };
 }
 
@@ -300,21 +244,29 @@ async function runCommand(command: string, opts: InputExpansionOptions): Promise
       cwd: opts.cwd,
     });
     if (pre.blocked) return fail(`blocked by hook: ${pre.reason ?? "no reason given"}`);
-    if (pre.updatedInput) args = { ...args, ...(pre.updatedInput as Partial<typeof args>) };
+    // A hook may rewrite the command; the folder stays the workspace.
+    const updated = pre.updatedInput as { command?: unknown } | undefined;
+    if (typeof updated?.command === "string") args = { ...args, command: updated.command };
   }
   const deny = async (): Promise<boolean> => false;
   const onApproveDestructive =
     opts.mode === "auto" ? undefined : (opts.onApproveDestructive ?? deny);
-  const result = await runGatedShell(
-    args,
-    {
-      ...(onApproveDestructive ? { onApproveDestructive } : {}),
-      ...(opts.tabId ? { tabId: opts.tabId } : {}),
-      ...(opts.tabLabel ? { tabLabel: opts.tabLabel } : {}),
-      ...(opts.repoMap ? { repoMap: opts.repoMap } : {}),
-    },
-    opts.abortSignal,
-  );
+  let result: Awaited<ReturnType<typeof runGatedShell>>;
+  try {
+    result = await runGatedShell(
+      args,
+      {
+        ...(onApproveDestructive ? { onApproveDestructive } : {}),
+        ...(opts.tabId ? { tabId: opts.tabId } : {}),
+        ...(opts.tabLabel ? { tabLabel: opts.tabLabel } : {}),
+        ...(opts.repoMap ? { repoMap: opts.repoMap } : {}),
+      },
+      opts.abortSignal,
+    );
+  } catch (err) {
+    // A workflow lease on the workspace refuses shell commands, as it does for the agent.
+    return fail(err instanceof Error ? err.message : String(err));
+  }
   if (hooks) {
     await runHooks({
       event: "PostToolUse",
@@ -326,8 +278,8 @@ async function runCommand(command: string, opts: InputExpansionOptions): Promise
   }
   // The command may have changed files the agent has already read.
   emitCacheReset();
-  const notRun = /^(Denied:|Access denied:|BLOCKED:)/.test(result.output);
-  if (notRun) return fail(result.error ?? result.output);
+  const notRun = /^(Denied:|Access denied:|BLOCKED:|Cannot read binary file)/.test(result.output);
+  if (notRun) return fail(oneLine(result.error ?? result.output));
   let output = result.output;
   const truncated = output.length > MAX_COMMAND_CHARS;
   if (truncated) output = `${output.slice(0, MAX_COMMAND_CHARS)}\n… output truncated`;
@@ -338,7 +290,7 @@ async function runCommand(command: string, opts: InputExpansionOptions): Promise
       kind: "command",
       ref: command,
       ok: result.success,
-      summary: result.success ? "ran" : `failed${result.error ? `: ${result.error}` : ""}`,
+      summary: result.success ? "ran" : `failed${result.error ? `: ${oneLine(result.error)}` : ""}`,
       output: preview,
     },
     block: `<command cmd="${attr(args.command)}" status="${status}">\n${output}\n</command>`,
@@ -372,18 +324,16 @@ export async function expandChatInput(
   const prompt =
     parsed.prompt ||
     (parsed.command !== null ? "I ran this command in the workspace. Here is its output." : "");
-  // A mention that names nothing is ordinary text (an e-mail handle, a package scope).
+  // A mention that names nothing is ordinary text (a handle, a package scope), so the model is not
+  // told about it; the front end still shows it.
   const failed = attached
-    .filter((a) => !a.block && a.item.summary !== NOT_FOUND)
+    .filter((a) => !a.block && a.item.summary !== NOT_FOUND && a.item.summary !== GRAPH_NOT_READY)
     .map((a) => a.item);
-  const notes =
-    failed.length > 0
-      ? `\n${failed.map((i) => `Not attached: ${i.kind === "command" ? "!" : "@"}${i.ref} (${i.summary})`).join("\n")}`
-      : "";
-  const text =
-    blocks.length > 0 || notes
-      ? `${prompt}\n\n<attached-context>\n${blocks.join("\n")}${notes}\n</attached-context>`
-      : prompt;
+  const notes = failed.map(
+    (i) => `Not attached: ${i.kind === "command" ? "!" : "@"}${i.ref} (${i.summary})`,
+  );
+  const body = [...blocks, ...notes].join("\n");
+  const text = body ? `${prompt}\n\n<attached-context>\n${body}\n</attached-context>` : prompt;
   return {
     text,
     items: attached.map((a) => a.item),

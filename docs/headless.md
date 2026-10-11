@@ -29,7 +29,11 @@ baked --headless --chat                           # interactive multi-turn chat
 
 Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 
-`--events` emits one JSON object per line with a `type` of `start`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`.
+`--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command.
+
+## Mentions and shell commands
+
+Prompts accept the same `@path`, `@path#10-40`, `@Symbol` and leading `!command` as the terminal input ([user guide](guide.md#mentions-and-shell-commands-in-the-input)); each attached item is listed on stderr. `baked --headless '!git diff'` sends the diff to the agent. Destructive commands are denied unless `--mode auto`, and no command runs in `plan` or `architect` mode; a prompt that is only a refused command exits with code 1 in a single run and is skipped in `--chat`.
 
 ## Sessions across runs
 
