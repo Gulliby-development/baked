@@ -13,6 +13,7 @@ import {
   type StartEstimate,
 } from "./estimate.js";
 import {
+  type ClarificationMode,
   type ExecutionMode,
   executionModeOf,
   MAX_CONCURRENT_WRITERS,
@@ -42,6 +43,8 @@ export interface StartRunInput {
   executionMode?: ExecutionMode;
   /** Requested concurrent writers, as `--writers N`; sent only with worktree execution. */
   maxConcurrentWriters?: number;
+  /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
+  clarification?: ClarificationMode;
 }
 
 /** The execution controls of the new-run form. */

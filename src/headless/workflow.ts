@@ -183,6 +183,9 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.writers === "string"
           ? { maxConcurrentWriters: Number(args.flags.writers) }
           : {}),
+        ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
+          ? { clarification: args.flags.clarification }
+          : {}),
       });
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
