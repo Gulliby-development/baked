@@ -36,7 +36,12 @@ import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
 import { formatWorkflowModels, workflowModels } from "./workflow-models.js";
-import { parseWorkflowArgs, type WorkflowArgs, workflowHelp } from "./workflow-parse.js";
+import {
+  DECISION_COMMANDS,
+  parseWorkflowArgs,
+  type WorkflowArgs,
+  workflowHelp,
+} from "./workflow-parse.js";
 import { formatDoctor, formatEstimate, preRunRequest } from "./workflow-pre-run.js";
 
 export function workflowExit(
@@ -160,6 +165,14 @@ export async function executeWorkflowCommand(
 ): Promise<unknown> {
   const runId = args.positional[0] ?? "";
   const artifacts = new WorkflowArtifacts(service);
+  /** Records a decision; with `--resume` the run continues from it when nothing else is pending. */
+  const decideThenResume = async (decision: Decision): Promise<unknown> => {
+    const decided = await service.decide(runId, identity(), decision);
+    if (args.flags.resume !== true || !service.canResumeAfterDecision(runId)) return decided;
+    await service.resume(runId, { commandId: newId(), expectedRevision: decided.revision });
+    onDrive?.(runId);
+    return service.drive(runId, signal);
+  };
   const identity = () => {
     const revision = Number(stringFlag(args, "expected-revision"));
     if (!Number.isSafeInteger(revision) || revision < 0)
@@ -336,7 +349,7 @@ export async function executeWorkflowCommand(
           : {}),
       });
     case "approve":
-      return service.decide(runId, identity(), {
+      return decideThenResume({
         kind: "approve",
         requestId: stringFlag(args, "request"),
         digest: stringFlag(args, "digest"),
@@ -351,7 +364,7 @@ export async function executeWorkflowCommand(
         Object.values(answers).some((v) => typeof v !== "string")
       )
         throw new WorkflowFault("INVALID_DEFINITION", "Answers must be a JSON object of strings");
-      return service.decide(runId, identity(), {
+      return decideThenResume({
         kind: "answer",
         requestId: stringFlag(args, "request"),
         answers: answers as Record<string, string>,
@@ -368,7 +381,7 @@ export async function executeWorkflowCommand(
       const request = service.store.requests(runId).find((r) => r.id === requestId);
       if (!request) throw new WorkflowFault("NOT_FOUND", "Manual request not found");
       const body = JSON.parse(request.body_json) as { criterionId: string };
-      return service.decide(runId, identity(), {
+      return decideThenResume({
         kind: "manual-evidence",
         requestId,
         criterionId: body.criterionId,
@@ -643,7 +656,8 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
     return ["run", "quick", "resume"].includes(args.command) ||
-      (["revise", "extend", "reroute"].includes(args.command) && args.flags.resume === true)
+      (["revise", "extend", "reroute", ...DECISION_COMMANDS].includes(args.command) &&
+        args.flags.resume === true)
       ? workflowExit(
           result as RunSnapshot,
           PolicySchema.parse(
