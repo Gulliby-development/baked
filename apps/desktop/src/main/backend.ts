@@ -43,6 +43,8 @@ export interface Endpoint {
 }
 
 const STDERR_LINES = 40;
+/** Longest wait for the last stderr output after `baked serve` exits. */
+const STDERR_DRAIN_MS = 500;
 
 export class BackendError extends Error {
   constructor(
@@ -176,8 +178,24 @@ export class Backend {
       });
       child.once("exit", (code, signal) => {
         const reason = `baked serve exited (${signal ?? `code ${code}`})`;
-        fail(new BackendError("BACKEND_EXITED", this.stderr.at(-1) ?? reason));
-        this.exited(child, this.stderr.at(-1) ?? reason);
+        const report = (): void => {
+          fail(new BackendError("BACKEND_EXITED", this.stderr.at(-1) ?? reason));
+          this.exited(child, this.stderr.at(-1) ?? reason);
+        };
+        // The exit event can come before the last stderr chunk; the error names that line, so
+        // wait for the stream to end, but not for a grandchild that keeps it open.
+        const stream = child.stderr;
+        if (!stream || stream.readableEnded || stream.destroyed) return report();
+        let reported = false;
+        const once = (): void => {
+          if (reported) return;
+          reported = true;
+          clearTimeout(drain);
+          report();
+        };
+        const drain = setTimeout(once, STDERR_DRAIN_MS);
+        stream.once("end", once);
+        stream.once("close", once);
       });
     });
 
