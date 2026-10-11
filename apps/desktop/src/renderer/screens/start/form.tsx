@@ -23,16 +23,20 @@ export const LEGEND = "p-0 font-medium text-foreground";
 export const FIELD = "flex min-w-0 flex-col gap-2";
 export const FIELDSET = "m-0 flex min-w-0 flex-col gap-2 border-0 p-0";
 export const CHIPS = "flex flex-wrap items-center gap-2";
-/** A `seg` button standing alone in a row of chips. */
+/**
+ * A segment button standing alone in a row of chips: rounded on every side, with a thin left rule.
+ * Written out rather than merged onto `segmentClass`, whose first/last and sibling rules would win.
+ */
 export const CHIP =
-  "seg min-h-8 rounded-[8px] border-l border-l-[color:var(--line)] disabled:cursor-default disabled:opacity-45 aria-pressed:border-[color:var(--accent)]";
+  "min-h-8 cursor-pointer rounded-[8px] border-2 border-l border-border border-l-[color:var(--line)] bg-raised px-[14px] py-0 [font-family:inherit] text-[13px] leading-[inherit] font-semibold text-soft-foreground disabled:cursor-default disabled:opacity-45 aria-pressed:border-[color:var(--accent)] aria-pressed:bg-main aria-pressed:text-main-foreground";
 export const INLINE = "flex flex-wrap items-center gap-2";
 export const FORM = "flex min-w-0 flex-col gap-5";
 export const TITLE = "m-0 text-[20px] font-semibold";
 // `!` keeps these above the unlayered `textarea` rule in runs.css while that stylesheet exists.
 export const GOAL =
   "resize-y rounded-[var(--radius-lg)] border! border-selected! bg-background! px-[14px]! py-3! text-foreground [font-family:inherit] text-[15px]! leading-[1.5]! focus:border-[color:var(--accent)]! focus:outline-none";
-export const SUBMIT = "btn-primary min-h-11 px-[22px]";
+/** Extra classes of the primary submit button. */
+export const SUBMIT = "min-h-11 px-[22px]";
 
 /** The configured policy, or why the presets that scale it are unavailable. */
 export interface PolicyState {

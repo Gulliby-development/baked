@@ -1,5 +1,8 @@
 import { useMemo, useState } from "react";
 import { type DefinitionSummary, MAX_WRITERS, start } from "../../client/start.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { CHECK } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
 import { takeDraft } from "./drafts.js";
 import {
@@ -87,7 +90,7 @@ function WorkflowChoice({
         </div>
       )}
       {chosen && (
-        <span className={`mono ${HINT}`}>{chosen.stages.map(stageLabel).join(" → ")}</span>
+        <span className={`font-mono ${HINT}`}>{chosen.stages.map(stageLabel).join(" → ")}</span>
       )}
       {chosen && chosen.problems.length > 0 && (
         <span className={HINT_ERR}>{chosen.problems.join("; ")}</span>
@@ -197,7 +200,7 @@ export function NewRunScreen({ project }: SectionProps) {
           <input
             id="new-run-feature"
             type="text"
-            className="mono max-w-[520px] aria-[invalid=true]:border-[color:var(--err)]"
+            className="max-w-[520px] aria-[invalid=true]:border-[color:var(--err)]"
             value={feature}
             placeholder="derived from the goal"
             aria-invalid={feature !== "" && !featureValid}
@@ -212,7 +215,7 @@ export function NewRunScreen({ project }: SectionProps) {
         </div>
 
         {definitions.error ? (
-          <div className="banner error">Workflows: {message(definitions.error)}</div>
+          <Alert tone="error">Workflows: {message(definitions.error)}</Alert>
         ) : definitions.value ? (
           <WorkflowChoice
             definitions={definitions.value}
@@ -227,7 +230,7 @@ export function NewRunScreen({ project }: SectionProps) {
           <BudgetPicker value={budget} onChange={setBudget} policy={policy} base={limits.base} />
           <fieldset className={FIELDSET}>
             <legend className={LEGEND}>Mode and writers</legend>
-            <label className="check">
+            <label className={CHECK}>
               <input
                 type="checkbox"
                 checked={worktree}
@@ -264,7 +267,7 @@ export function NewRunScreen({ project }: SectionProps) {
 
         <fieldset className={FIELDSET}>
           <legend className={LEGEND}>Open questions</legend>
-          <label className="check">
+          <label className={CHECK}>
             <input type="checkbox" checked={assume} onChange={(e) => setAssume(e.target.checked)} />
             Settle them with recorded assumptions
           </label>
@@ -291,11 +294,11 @@ export function NewRunScreen({ project }: SectionProps) {
           </select>
         </div>
 
-        {launcher.error && <div className="banner error">{launcher.error}</div>}
+        {launcher.error && <Alert tone="error">{launcher.error}</Alert>}
         <div className={INLINE}>
-          <button type="submit" className={SUBMIT} disabled={!canStart}>
+          <Button type="submit" variant="primary" size="md" className={SUBMIT} disabled={!canStart}>
             {launcher.starting ? "Starting…" : "Start run"}
-          </button>
+          </Button>
           <span className={HINT} aria-live="polite">
             {preRun.doctor ? doctorLine(preRun.doctor) : preRun.loading ? "Checking…" : ""}
           </span>

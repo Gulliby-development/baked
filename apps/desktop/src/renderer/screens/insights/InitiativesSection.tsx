@@ -1,6 +1,9 @@
 import { useState } from "react";
 import type { InitiativeView } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
 import { tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -86,38 +89,38 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
         </span>
         <div className="ml-auto flex gap-2">
           {split && (
-            <button
-              type="button"
-              className="btn-primary"
+            <Button
+              variant="primary"
+              size="md"
               disabled={busy}
               onClick={act((v) => insights.approveSplit(projectKey, v, split))}
             >
               Approve split
-            </button>
+            </Button>
           )}
           {view.status === "paused" && (
-            <button
-              type="button"
-              className="btn"
+            <Button
+              variant="secondary"
+              size="md"
               disabled={busy}
               onClick={act((v) => insights.resumeInitiative(projectKey, v))}
             >
               Resume
-            </button>
+            </Button>
           )}
           {(view.status === "active" || view.status === "decomposing") && (
-            <button
-              type="button"
-              className="btn"
+            <Button
+              variant="secondary"
+              size="md"
               disabled={busy}
               onClick={act((v) => insights.pauseInitiative(projectKey, v))}
             >
               Pause
-            </button>
+            </Button>
           )}
         </div>
       </div>
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
       {view.goals.map((goal) => (
         <p key={goal} className="m-0 max-w-[760px] text-muted-foreground leading-[1.6]">
           {goal}
@@ -156,7 +159,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
         </>
       )}
       {counts.total === 0 ? (
-        <div className="empty">{view.next.message || "No features yet."}</div>
+        <Empty>{view.next.message || "No features yet."}</Empty>
       ) : (
         <ol className="m-0 flex max-w-[900px] list-none flex-col gap-2 p-0" aria-label="Features">
           {view.features.map((feature) => {
@@ -167,7 +170,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
                 className={`flex flex-wrap items-center gap-3 shadow-sm-hard ${PANEL} ${TONE_TEXT[row.tone]} ${FEATURE_TONE[row.tone]}`}
               >
                 <span
-                  className={`mono ${row.tone === "busy" ? "text-[color:var(--accent)]" : ""}`}
+                  className={`font-mono ${row.tone === "busy" ? "text-[color:var(--accent)]" : ""}`}
                   aria-hidden="true"
                 >
                   {row.mark}
@@ -179,7 +182,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
                 </span>
                 <span className="text-[12px]">{row.label}</span>
                 {feature.usage.tokens > 0 && (
-                  <span className="mono text-[12px] text-dim-foreground">
+                  <span className="font-mono text-[12px] text-dim-foreground">
                     {tokens(feature.usage.tokens)}
                   </span>
                 )}
@@ -197,7 +200,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           })}
         </ol>
       )}
-      <p className="muted m-0 text-[12px]">
+      <p className="m-0 text-[12px] text-dim-foreground">
         Shared budget: {tokens(view.budget.used.tokens)} of{" "}
         {tokens(view.budget.limits.maxTotalTokens)} tokens · plan revision {view.planRevision}
         {view.next.message && ` · ${view.next.message}`}
@@ -212,10 +215,10 @@ export function InitiativesSection({ project, id }: SectionProps) {
   const items = state.data;
   if (items.length === 0)
     return (
-      <div className="empty">
+      <Empty>
         No initiatives in this project yet. Start one with{" "}
-        <code className="mono">baked workflow initiative start</code>.
-      </div>
+        <code className="font-mono">baked workflow initiative start</code>.
+      </Empty>
     );
   const selected = id ?? items[0]?.initiativeId ?? null;
   return (

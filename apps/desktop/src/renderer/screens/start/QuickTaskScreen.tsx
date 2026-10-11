@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../client/api.js";
 import { start } from "../../client/start.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { takeDraft } from "./drafts.js";
@@ -69,7 +71,7 @@ export function QuickTaskScreen({ project }: SectionProps) {
     <div className="flex w-full min-w-0 max-w-[900px] flex-col gap-5">
       <form className={`${FORM} flex-none`} onSubmit={submit} aria-labelledby="quick-title">
         <div className={INLINE}>
-          <span className="mono rounded-[6px] bg-selected px-2 py-[3px] text-[12px] text-[color:var(--accent-soft)]">
+          <span className="rounded-[6px] bg-selected px-2 py-[3px] font-mono text-[12px] text-[color:var(--accent-soft)]">
             quick
           </span>
           <h2 id="quick-title" className={TITLE}>
@@ -91,7 +93,7 @@ export function QuickTaskScreen({ project }: SectionProps) {
             placeholder="Fix the off-by-one in the usage table header"
             onChange={(e) => setPrompt(e.target.value)}
           />
-          <span className={`mono ${HINT}`}>
+          <span className={`font-mono ${HINT}`}>
             {feature ? `feature ${feature}` : "The feature ID comes from the text."}
           </span>
         </div>
@@ -109,16 +111,16 @@ export function QuickTaskScreen({ project }: SectionProps) {
           </ol>
         )}
         {definitions.value && !definition && (
-          <div className="banner error">This project has no quick workflow.</div>
+          <Alert tone="error">This project has no quick workflow.</Alert>
         )}
 
         <BudgetPicker value={budget} onChange={setBudget} policy={policy} base={limits.base} />
 
-        {launcher.error && <div className="banner error">{launcher.error}</div>}
+        {launcher.error && <Alert tone="error">{launcher.error}</Alert>}
         <div className={INLINE}>
-          <button type="submit" className={SUBMIT} disabled={!canStart}>
+          <Button type="submit" variant="primary" size="md" className={SUBMIT} disabled={!canStart}>
             {launcher.starting ? "Starting…" : "Plan it"}
-          </button>
+          </Button>
           <span className={HINT} aria-live="polite">
             Plans the change and waits for your approval before it writes anything.
             {preRun.doctor ? ` ${doctorLine(preRun.doctor)}.` : ""}

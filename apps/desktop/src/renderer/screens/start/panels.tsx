@@ -8,6 +8,8 @@ import {
   start,
 } from "../../client/start.js";
 import { tokens } from "../../format.js";
+import { cn } from "../../lib/cn.js";
+import { PANEL as CARD, LABEL, STACK, TABLE } from "../../lib/styles.js";
 import {
   FIT_TEXT,
   fitOf,
@@ -39,7 +41,7 @@ const FIT_TONE: Record<ReturnType<typeof fitOf>, string> = {
 };
 
 /** A card of the start screens: the doctor, the estimate and the project home's side panels. */
-export const PANEL = "card flex flex-col gap-[10px]";
+export const PANEL = cn(CARD, "flex flex-col gap-[10px]");
 export const NOTE = "m-0 text-[13px] leading-[1.5] text-muted-foreground";
 export const NOTE_ERR = "m-0 text-[13px] leading-[1.5] text-[color:var(--err)]";
 const PANEL_HEAD = "flex items-center gap-[10px]";
@@ -54,10 +56,13 @@ export function DoctorChecks({ checks, limit }: { checks: DoctorCheck[]; limit?:
           key={`${check.id}:${check.subject ?? check.title}`}
           className="flex gap-[10px] text-[13px] text-soft-foreground"
         >
-          <span className={`mono w-[1ch] flex-none ${GLYPH_TONE[check.status]}`} aria-hidden="true">
+          <span
+            className={`w-[1ch] flex-none font-mono ${GLYPH_TONE[check.status]}`}
+            aria-hidden="true"
+          >
             {GLYPH[check.status]}
           </span>
-          <span className="stack">
+          <span className={STACK}>
             <span>
               <span className="sr-only">{check.status}: </span>
               {check.title}
@@ -88,7 +93,7 @@ export function DoctorPanel({
   return (
     <section aria-label="Doctor" className={PANEL} aria-busy={loading}>
       <div className={PANEL_HEAD}>
-        <h2 className="label">Doctor</h2>
+        <h2 className={LABEL}>Doctor</h2>
         {report && (
           <span
             className={`ml-auto text-[13px] ${report.ready ? "text-[color:var(--ok)]" : "text-[color:var(--err)]"}`}
@@ -127,7 +132,7 @@ export function EstimatePanel({
   return (
     <section aria-label="Estimate" className={PANEL} aria-busy={loading}>
       <div className={PANEL_HEAD}>
-        <h2 className="label">Estimate</h2>
+        <h2 className={LABEL}>Estimate</h2>
         {estimate && (
           <span className={`${NOTE} ml-auto`}>
             {estimate.basis === "defaults"
@@ -145,8 +150,8 @@ export function EstimatePanel({
       ) : (
         <>
           <div className="flex flex-wrap items-baseline gap-[18px]">
-            <span className="mono text-[22px]">{rangeText(estimate.tokens)} tokens</span>
-            <span className="mono text-[16px] text-[color:var(--accent-soft)]">
+            <span className="font-mono text-[22px]">{rangeText(estimate.tokens)} tokens</span>
+            <span className="font-mono text-[16px] text-[color:var(--accent-soft)]">
               {usdRange(estimate.costUsd)}
               {estimate.costUsd && !estimate.costComplete ? " (partial)" : ""}
             </span>
@@ -159,7 +164,12 @@ export function EstimatePanel({
             )}
           </div>
           <div className="overflow-x-auto">
-            <table className="table text-[13px] text-soft-foreground [&_tbody_tr:last-child_td]:border-b-0">
+            <table
+              className={cn(
+                TABLE,
+                "text-[13px] text-soft-foreground [&_tbody_tr:last-child_td]:border-b-0",
+              )}
+            >
               <thead>
                 <tr>
                   <th className={CELL}>Stage</th>
@@ -173,12 +183,12 @@ export function EstimatePanel({
                   <tr key={stage.stageId}>
                     <td className={CELL}>{stageLabel(stage.stageId)}</td>
                     <td
-                      className={`mono ${CELL} whitespace-normal text-muted-foreground wrap-anywhere`}
+                      className={`font-mono ${CELL} whitespace-normal text-muted-foreground wrap-anywhere`}
                     >
                       {stage.models.length ? stage.models.map(shortModel).join(", ") : "host"}
                     </td>
-                    <td className={`mono ${CELL} text-right`}>{rangeText(stage.tokens)}</td>
-                    <td className={`mono ${CELL} text-right`}>{usdRange(stage.costUsd)}</td>
+                    <td className={`font-mono ${CELL} text-right`}>{rangeText(stage.tokens)}</td>
+                    <td className={`font-mono ${CELL} text-right`}>{usdRange(stage.costUsd)}</td>
                   </tr>
                 ))}
               </tbody>
