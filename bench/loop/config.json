@@ -1,0 +1,47 @@
+{
+  "paths": {
+    "loopRoot": "C:\\Project\\baked-loop",
+    "runner": "C:\\Project\\BAKED-runner",
+    "dev": "C:\\Project\\BAKED-loop-dev",
+    "appsRoot": "C:\\Project\\baked-bench"
+  },
+  "round": {
+    "newApps": 5,
+    "ideaCandidates": 7,
+    "controlApps": ["url-shortener", "md-site", "expenses-py"],
+    "controlRunsB": true,
+    "maxConcurrentRuns": 2,
+    "maxWallClockHours": 30,
+    "difficulty": 1
+  },
+  "runs": {
+    "workflow": "sdd",
+    "worktree": true,
+    "writers": 3,
+    "clarification": "assume",
+    "sizing": { "maxAttemptTokens": 600000, "maxRunTokens": 4000000 },
+    "selfRaiseTokensUpTo": 8000000,
+    "referenceModel": null,
+    "rotateNewAppProviders": true
+  },
+  "budgets": {
+    "roundRunTokens": 30000000,
+    "maxFixIssuesPerRound": 6,
+    "minBroadFeaturesPerRound": 1
+  },
+  "publish": {
+    "mode": "approve-per-round",
+    "org": "Gulliby-development",
+    "license": "MIT",
+    "publishControlApps": false,
+    "logo": "one-shot-svg"
+  },
+  "fix": {
+    "mergeAfterGreenCi": true,
+    "maxPrAttemptsPerIssue": 3
+  },
+  "stop": {
+    "maxRoundsWithoutProgress": 3,
+    "maxRoundsOverBudget": 2
+  }
+}
