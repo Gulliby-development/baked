@@ -172,17 +172,17 @@ export class ContextManager {
   ): Promise<ContextManager> {
     const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
-    onStep?.("Opening the memory vaults…");
+    onStep?.("Loading memory");
     const memoryManager = new MemoryManager(cwd);
     memoryManager.noteSessionStart();
     await tick();
 
-    onStep?.("Mapping the codebase…");
+    onStep?.("Mapping the codebase");
     const repoMap = opts?.intelligence ?? new IntelligenceClient(cwd);
     setIntelligenceClient(repoMap);
     await tick();
 
-    onStep?.("Wiring up Baked…");
+    onStep?.("Wiring up the tools");
     const cm = new ContextManager(cwd, { repoMap, memoryManager });
     cm.isChild = false;
     cm.ownsIntelligence = !opts?.intelligence;

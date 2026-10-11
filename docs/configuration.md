@@ -61,6 +61,7 @@ The type of the whole file is `AppConfig` in `src/types/index.ts`; the comments 
 | `workflows` | `enabled: false` | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)) |
 | `keyPriority` | `"env"` | Key lookup order, see below |
 | `theme`, `diffStyle`, `chatStyle`, `collapseDiffs`, `showReasoning`, `verbose` | | Display; `/theme`, `/diff-style`, `/chat-style`, `/reasoning`, `/verbose` |
+| `motion` | `"full"` | Brand animations; `"reduced"` shows still frames (`/motion`, or `BAKED_REDUCED_MOTION=1`) ([guide](guide.md#motion)) |
 | `coAuthorCommits` | `true` | Co-author trailer on commits made through BAKED |
 | `defaultBakeMode` | `"default"` | Mode of new sessions; the earlier name `defaultForgeMode` is still read |
 | `telemetry`, `telemetryUrl` | `true`, unset | Local usage events and an optional receiver ([privacy](privacy.md)) |
@@ -101,6 +102,7 @@ The list is `INSTRUCTION_SOURCES` in `src/core/instructions.ts`.
 | Variable | Does |
 | --- | --- |
 | `BAKED_NO_REPOMAP=1` | Skip the repository scan at startup |
+| `BAKED_REDUCED_MOTION=1` | Still frames instead of brand animations, including the startup screen |
 | `BAKED_MAX_OUTPUT_TOKENS` | Output token cap per step for all agents (default 64000) |
 | `BAKED_DEBUG_API=1` | Dump each API request to `<project>/.baked/api-export/` |
 | `BAKED_TELEMETRY=0`, `DO_NOT_TRACK=1` | Turn off local telemetry |

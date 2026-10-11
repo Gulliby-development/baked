@@ -118,48 +118,48 @@ function categorizeError(msg: string): {
   if (/rate.?limit|too many requests|429|529/i.test(raw))
     return {
       category: "Rate Limited",
-      flavor: "The furnace is too hot — cooling down",
+      flavor: "The provider asked us to slow down",
       code,
       detail: cleanErrorDetail(raw),
     };
   if (/overloaded|503|capacity/i.test(raw))
     return {
       category: "Overloaded",
-      flavor: "The anvil cracked under pressure",
+      flavor: "The provider is at capacity",
       code,
       detail: cleanErrorDetail(raw),
     };
   if (/unauthorized|401|403|api.?key|invalid.*key/i.test(raw))
     return {
       category: "Auth Error",
-      flavor: "The guild rejected our credentials",
+      flavor: "The provider rejected the key",
       code,
       detail: cleanErrorDetail(raw),
     };
   if (/not permitted|not supported|invalid parameter|unknown parameter/i.test(raw))
     return {
       category: "Config Error",
-      flavor: "Wrong rune inscribed on the blade",
+      flavor: "The model refused a setting",
       code,
       detail: cleanErrorDetail(raw),
     };
   if (/network|ECONNREFUSED|ETIMEDOUT|fetch failed|502/i.test(raw))
     return {
       category: "Network Error",
-      flavor: "The courier pigeon never arrived",
+      flavor: "Could not reach the provider",
       code,
       detail: cleanErrorDetail(raw),
     };
   if (/stream error|INTERNAL_ERROR|api_error/i.test(raw))
     return {
       category: "Stream Error",
-      flavor: "Baked bellows burst mid-swing",
+      flavor: "The response stream broke off",
       code,
       detail: cleanErrorDetail(raw),
     };
   return {
     category: "Error",
-    flavor: "Something broke in the workshop",
+    flavor: "Something went wrong",
     code,
     detail: cleanErrorDetail(raw),
   };

@@ -21,7 +21,7 @@ The inventory follows every `ModalName` in `src/stores/ui.ts`, plus shared dialo
 
 | Screen / component | States reviewed | UI treatment |
 | --- | --- | --- |
-| LandingPage, InputBox, Footer | Empty workspace, conversation, status | Shared Baked palette; bread animation retained |
+| LandingPage, InputBox, Footer | Empty workspace, conversation, status | Shared Baked palette; bun mascot and START HERE card (`components/brand`, art in `core/utils/bake-art.ts`) |
 | TabBar, TabNamePopup | Five sessions, activity, new tab | Responsive tab widths, mouse switching, clear active rail, shared naming dialog |
 | CommandPalette | Categories, filtering, no results | Search-first layout, separated names/descriptions; selection resets after query edits |
 | CommandPicker | Commands, theme/settings choices, scope, toggles | Bounded shell, scrollable content, wrapped action hints |

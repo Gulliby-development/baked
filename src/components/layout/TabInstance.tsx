@@ -1,6 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { type ScrollBoxRenderable, TextAttributes } from "@opentui/core";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { isCustomSlashInput } from "../../core/commands/registry.js";
@@ -20,6 +20,7 @@ import { type ChatInstance, type TabState, useChat } from "../../hooks/useChat.j
 import { useLandingTransition } from "../../hooks/useLandingTransition.js";
 import { useSessionDiffStats } from "../../hooks/useSessionDiffStats.js";
 import type { TabActivity } from "../../hooks/useTabs.js";
+import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { useCheckpointStore } from "../../stores/checkpoints.js";
 import { useStatusBarStore } from "../../stores/statusbar.js";
 import { useUIStore } from "../../stores/ui.js";
@@ -105,6 +106,7 @@ export const TabInstance = memo(function TabInstance({
   onCycleTab,
 }: TabInstanceProps) {
   const t = useTheme();
+  const { width: termWidth } = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable>(null);
 
   // Per-tab ContextManager sharing expensive resources
@@ -723,19 +725,17 @@ export const TabInstance = memo(function TabInstance({
                     </VerboseProvider>
                   </CodeExpandedProvider>
                 </ExpandToggleProvider>
-                {tabVerbose ? (
-                  <LoadingStatus
-                    isLoading={chat.isLoading}
-                    isCompacting={chat.isCompacting}
-                    loadingStartedAt={loadingStartedAtRef.current}
-                  />
-                ) : chat.isLoading ? (
-                  <box paddingX={1} height={1} flexShrink={0}>
-                    <text fg={t.error} attributes={TextAttributes.BOLD}>
-                      {icon("stop")} ^X to stop
-                    </text>
-                  </box>
-                ) : null}
+                <LoadingStatus
+                  isLoading={chat.isLoading}
+                  isCompacting={chat.isCompacting}
+                  loadingStartedAt={loadingStartedAtRef.current}
+                  width={Math.max(
+                    20,
+                    (termWidth ?? 80) -
+                      (changesExpanded ? Math.floor((termWidth ?? 80) * 0.2) : 0) -
+                      4,
+                  )}
+                />
               </scrollbox>
             </AnimatedBorder>
             {checkpoints.length >= 1 && (

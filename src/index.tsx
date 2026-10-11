@@ -22,7 +22,8 @@ import { getRestartSpec } from "./core/restart.js";
 import { flushEmergencySession } from "./core/sessions/emergency-save.js";
 import type { PrerequisiteStatus } from "./core/setup/prerequisites.js";
 import { getThemeTokens, useTheme } from "./core/theme/index.js";
-import { BAKED_COLORS, garble } from "./core/utils/splash.js";
+import { artPalette, chipCells, rowsToAnsi, supportsTruecolor } from "./core/utils/bake-art.js";
+import { garble } from "./core/utils/splash.js";
 import { resetStatusBarStore } from "./stores/statusbar.js";
 import { resetUIStore } from "./stores/ui.js";
 import type { AppConfig } from "./types/index.js";
@@ -92,13 +93,16 @@ function printExitBanner(): void {
   process.stdout.write("\x1b[2J\x1b[H");
   if (exitSessionId) {
     const t = getThemeTokens();
-    const brand = `\x1b[1m${hexToAnsi(BAKED_COLORS.orange)}`;
+    const palette = artPalette(t);
+    const brand = rowsToAnsi(
+      [chipCells("BAKED", palette.fill, palette.onFill)],
+      supportsTruecolor(),
+    )[0];
     const accent = `\x1b[1m${hexToAnsi(t.info)}`;
     const rst = "\x1b[0m";
     const shortId = exitSessionId.slice(0, 8);
     process.stdout.write(
-      `${brand}${icon("ghost")} Baked${rst} session saved.\n` +
-        `  Resume: ${accent}baked --session ${shortId}${rst}\n\n`,
+      `${brand} Session saved.\n` + `  Resume: ${accent}baked --session ${shortId}${rst}\n\n`,
     );
   }
 }
@@ -230,10 +234,10 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const RESTART_STEPS = [
-  "Quenching active flames…",
-  "Rereading the scrolls…",
-  "Consulting the LLM gods…",
-  "Restarting Baked…",
+  "Stopping active work…",
+  "Reloading settings…",
+  "Reconnecting providers…",
+  "Restarting BAKED…",
 ];
 
 const RESTART_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

@@ -92,14 +92,17 @@ if (IS_COMPILED) {
 
 import { getCwd } from "./core/cwd.js";
 import { applyTheme, getThemeTokens } from "./core/theme/index.js";
+import { supportsTruecolor } from "./core/utils/bake-art.js";
+import { BOOT_SPLASH_PAINTER, bootSplashFrames } from "./core/utils/boot-splash.js";
+import { reducedMotion, setMotion } from "./core/utils/motion.js";
 import { resolveCwdFromArgv } from "./core/utils/resolve-cwd.js";
-import { BAKED_COLORS, pickWordmark } from "./core/utils/splash.js";
 import { logBackgroundError } from "./stores/errors.js";
 
 // Sync-load theme name from config before React mounts
 try {
   const raw = readFileSync(join(configDir(), "config.json"), "utf-8");
   const cfg = JSON.parse(raw);
+  setMotion(cfg.motion);
   if (cfg.theme?.name)
     applyTheme(cfg.theme.name, cfg.theme?.transparent, {
       userMessageOpacity: cfg.theme?.userMessageOpacity,
@@ -110,58 +113,13 @@ try {
   applyTheme("dark", false);
 }
 
-const _t = getThemeTokens();
-
 const cols = process.stdout.columns ?? 80;
 const rows = process.stdout.rows ?? 24;
 
-const bootStartWall = Date.now();
+// ── Boot splash: the BAKED slab and dough that rises with startup progress ──
+// A child process paints it because this thread is blocked on module imports. Frames are
+// pre-rendered here and sent over stdin, so the painter only picks which one to show.
 
-// ── Boot splash — wordmark animates, status line tracks modules ─────
-// Hand-drawn "baked" wordmark (shared via splash.ts) recolored by
-// the subprocess so Baked warms up as it loads.
-
-const WORDMARK = pickWordmark(cols);
-const WM_W = WORDMARK[0]?.length ?? 0;
-const WM_H = WORDMARK.length;
-
-// Layout: word (WM_H) + gap(1) + tagline(1) + gap(1) + status(1).
-const LAYOUT_H = WM_H + 4;
-const base = Math.max(1, Math.floor((rows - LAYOUT_H) / 2));
-
-const ROW = {
-  word: base,
-  tagline: base + WM_H + 1,
-  status: base + WM_H + 3,
-};
-
-// Minimal rune spinner — purposefully quiet. One glyph, rotating slowly.
-const RUNES = ["ᛝ", "ᛉ", "ᛋ", "ᛏ", "ᚦ", "ᚱ", "ᚦ", "ᛏ", "ᛋ", "ᛉ"];
-
-// Hex → ANSI SGR for the subprocess — backslash-escaped for embedding.
-function hexToAnsi(hex: string): string {
-  let h = hex.slice(1);
-  if (h.length <= 4) h = [...h].map((c) => c + c).join("");
-  const n = parseInt(h, 16);
-  return `\\x1b[38;2;${(n >> 16) & 0xff};${(n >> 8) & 0xff};${n & 0xff}m`;
-}
-
-// Main-thread ANSI (for the one-time static paint).
-function rgb(hex: string): string {
-  let h = hex.slice(1);
-  if (h.length <= 4) h = [...h].map((c) => c + c).join("");
-  const n = parseInt(h, 16);
-  return `\x1b[38;2;${(n >> 16) & 0xff};${(n >> 8) & 0xff};${n & 0xff}m`;
-}
-const RST = "\x1b[0m";
-const ITALIC = "\x1b[3m";
-
-// Main-thread colors (for the one-time tagline paint only).
-const AMBER_C = rgb(_t.amber);
-const MUTED_C = rgb(_t.textMuted);
-
-// Ensure spinner subprocess is killed if boot crashes or is interrupted.
-// This runs BEFORE index.tsx's signal handlers are registered.
 function killSpinner(): void {
   try {
     spinnerProc?.kill();
@@ -171,162 +129,27 @@ process.on("exit", killSpinner);
 process.on("SIGINT", killSpinner);
 process.on("SIGTERM", killSpinner);
 
-// Spinner subprocess — recolors the wordmark each tick (smooth color
-// cycle through brand → brandAlt → amber, applied uniformly to all
-// rows so the chiseled forms stay readable) and draws the status line.
-const spinnerProc = Bun.spawn(
-  [
-    process.execPath,
-    "-e",
-    `
-const RST = "\\x1b[0m";
-const BOLD_C = "\\x1b[1m";
-const DIM_C = "\\x1b[2m";
-
-const AMBER = "${hexToAnsi(_t.amber)}";
-const MUTED = "${hexToAnsi(_t.textMuted)}";
-const SUBTLE = "${hexToAnsi(_t.textFaint)}";
-
-const PALETTE = ${JSON.stringify([BAKED_COLORS.orange, BAKED_COLORS.highlight, BAKED_COLORS.ember])};
-const WORDMARK = ${JSON.stringify(WORDMARK)};
-const WM_W = ${WM_W};
-const WM_H = ${WM_H};
-const wmRow = ${ROW.word};
-const wmCol = Math.max(1, Math.floor((${cols} - WM_W) / 2) + 1);
-
-const statusRow = ${ROW.status};
-const cols = ${cols};
-const bootStart = ${bootStartWall};
-const RUNES = ${JSON.stringify(RUNES)};
-
-const at = (r, c) => "\\x1b[" + r + ";" + c + "H";
-
-// Cycle through PALETTE every CYCLE_MS ms. Returns the interpolated
-// hex (#rrggbb) so callers can further blend (e.g. sweep highlight).
-const CYCLE_MS = 6000;
-function cycledHex(now) {
-  const t = ((now - bootStart) % CYCLE_MS) / CYCLE_MS; // 0..1
-  const segments = PALETTE.length;
-  const scaled = t * segments;
-  const i = Math.floor(scaled);
-  const frac = scaled - i;
-  const a = PALETTE[i % segments];
-  const b = PALETTE[(i + 1) % segments];
-  return lerpHexRaw(a, b, frac);
-}
-
-// lerpHex returns an ANSI escape; lerpHexRaw returns "#rrggbb" so we
-// can blend further before emitting.
-function lerpHexRaw(a, b, t) {
-  const ar = parseInt(a.slice(1, 3), 16);
-  const ag = parseInt(a.slice(3, 5), 16);
-  const ab = parseInt(a.slice(5, 7), 16);
-  const br = parseInt(b.slice(1, 3), 16);
-  const bg = parseInt(b.slice(3, 5), 16);
-  const bb = parseInt(b.slice(5, 7), 16);
-  const r = Math.round(ar + (br - ar) * t);
-  const g = Math.round(ag + (bg - ag) * t);
-  const bl = Math.round(ab + (bb - ab) * t);
-  const hx = (v) => v.toString(16).padStart(2, "0");
-  return "#" + hx(r) + hx(g) + hx(bl);
-}
-
-function hexToEsc(h) {
-  const r = parseInt(h.slice(1, 3), 16);
-  const g = parseInt(h.slice(3, 5), 16);
-  const b = parseInt(h.slice(5, 7), 16);
-  return "\\x1b[38;2;" + r + ";" + g + ";" + b + "m";
-}
-
-let msgs = ["Awakening"];
-let msgIdx = 0;
-let msgSetAt = Date.now();
-let tick = 0;
-
-process.stdin.setEncoding("utf-8");
-let buf = "";
-process.stdin.on("data", (chunk) => {
-  buf += chunk;
-  let nl;
-  while ((nl = buf.indexOf("\\n")) !== -1) {
-    const line = buf.slice(0, nl);
-    buf = buf.slice(nl + 1);
-    if (line === "EXIT") { process.exit(0); }
-    try { msgs = JSON.parse(line); msgIdx = 0; msgSetAt = Date.now(); } catch {}
-  }
+const spinnerProc = Bun.spawn([process.execPath, "-e", BOOT_SPLASH_PAINTER], {
+  stdin: "pipe",
+  stdout: "inherit",
+  stderr: "ignore",
+  env: { ...process.env, BUN_BE_BUN: "1" },
+  windowsHide: true,
 });
 
-// Slow highlight sweep — a 3-cell bright band travels across the
-// wordmark every SWEEP_MS ms, lifting glyphs toward HOT.
-const SWEEP_MS = 4200;
-const HOT = "#ffd68a"; // warm highlight target (amber-cream)
-
-function sweepX(now) {
-  const t = ((now - bootStart) % SWEEP_MS) / SWEEP_MS;
-  return Math.floor(t * (WM_W + 8)) - 4;
-}
-
-function renderWordmark(now) {
-  const baseHex = cycledHex(now);
-  const baseEsc = hexToEsc(baseHex) + BOLD_C;
-  const warmEsc = hexToEsc(lerpHexRaw(baseHex, HOT, 0.55)) + BOLD_C;
-  const sx = sweepX(now);
-  let out = "";
-  for (let r = 0; r < WM_H; r++) {
-    const line = WORDMARK[r];
-    out += at(wmRow + r, wmCol);
-    let curColor = "";
-    for (let x = 0; x < line.length; x++) {
-      const ch = line.charAt(x);
-      if (ch === " ") { out += " "; continue; }
-      const d = Math.abs(x - sx);
-      const want = d <= 1 ? warmEsc : baseEsc;
-      if (want !== curColor) {
-        out += RST + want;
-        curColor = want;
-      }
-      out += ch;
-    }
-    out += RST;
-  }
-  process.stdout.write(out);
-}
-
-function renderStatus(now) {
-  if (msgs.length > 1 && now - msgSetAt > 1200) {
-    msgIdx = (msgIdx + 1) % msgs.length;
-    msgSetAt = now;
-  }
-  const msg = msgs[msgIdx % msgs.length] || msgs[0];
-  const rune = RUNES[tick % RUNES.length];
-  const plainW = 1 + 2 + msg.length;
-  const c = Math.max(1, Math.floor((cols - plainW) / 2) + 1);
-  process.stdout.write(
-    at(statusRow, 1) + "\\x1b[2K" + at(statusRow, c)
-    + AMBER + BOLD_C + rune + RST + "  "
-    + MUTED + msg + RST
-  );
-}
-
-setInterval(() => {
-  tick++;
-  const now = Date.now();
-  renderWordmark(now);
-  renderStatus(now);
-}, 100);
-`,
-  ],
-  {
-    stdin: "pipe",
-    stdout: "inherit",
-    stderr: "ignore",
-    env: { ...process.env, BUN_BE_BUN: "1" },
-    windowsHide: true,
-  },
+process.stdout.write("\x1b[?25l\x1b[2J\x1b[H");
+spinnerProc.stdin.write(
+  `${JSON.stringify(
+    bootSplashFrames(cols, rows, getThemeTokens(), {
+      reduced: reducedMotion(),
+      truecolor: supportsTruecolor(),
+    }),
+  )}\n`,
 );
 
-function status(...msgs: string[]): void {
-  spinnerProc.stdin.write(`${JSON.stringify(msgs)}\n`);
+/** Reports a startup step; `progress` runs from 0 to 1 and never moves back. */
+function status(progress: number, ...msgs: string[]): void {
+  spinnerProc.stdin.write(`${JSON.stringify([progress, ...msgs])}\n`);
 }
 
 function stopSpinner(): void {
@@ -338,29 +161,6 @@ function stopSpinner(): void {
   process.removeListener("SIGTERM", killSpinner);
 }
 
-process.stdout.write("\x1b[?25l\x1b[2J\x1b[H");
-
-// Paint the tagline once. Wordmark is animated by the subprocess.
-const QUIPS = [
-  "Baked · code-aware AI",
-  "runes tempered · embers rising",
-  "every edit leaves a trace on the anvil",
-  "Baked remembers your project",
-  "steel on graph · intent on wire",
-];
-const TAGLINE = QUIPS[Math.floor(Math.random() * QUIPS.length)] ?? QUIPS[0] ?? "";
-
-{
-  const tagCol = Math.max(1, Math.floor((cols - TAGLINE.length) / 2) + 1);
-  let tag = `\x1b[${ROW.tagline};${tagCol}H`;
-  for (const ch of TAGLINE) {
-    if (ch === "·") tag += AMBER_C + ch + RST;
-    else tag += MUTED_C + ITALIC + ch + RST;
-  }
-  tag += RST;
-  process.stdout.write(tag);
-}
-
 const earlyModules = Promise.all([
   import("./config/index.js"),
   import("./core/icons.js"),
@@ -370,7 +170,7 @@ const earlyModules = Promise.all([
 // App.tsx pulls in the entire tool/hook/AI SDK module graph (~3s).
 // Kick it off here so the spinner (child process) shows progress.
 
-status("Loading Baked", "Preparing Baked");
+status(0.05, "Loading BAKED");
 const appReady = import("./components/App.js");
 const [configMod, , installMod] = await earlyModules;
 
@@ -395,7 +195,7 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-status("Reading the scrolls");
+status(0.2, "Reading settings");
 // The project list behind the project picker; a failed write never blocks startup.
 import("./core/projects/known.js")
   .then(({ recordProjectOpen }) => recordProjectOpen(getCwd()))
@@ -421,11 +221,11 @@ const projectConfig = loadEffectiveProjectConfig(getCwd());
 // Pre-init ContextManager async — yields between heavy sync steps so the spinner stays alive.
 const repoMapEnabled = (projectConfig?.repoMap ?? config.repoMap) !== false;
 const contextManagerReady = import("./core/context/manager.js").then(({ ContextManager }) =>
-  ContextManager.createAsync(getCwd(), (step) => status(step), { repoMapEnabled }),
+  ContextManager.createAsync(getCwd(), (step) => status(0.35, step), { repoMapEnabled }),
 );
 
 if (!getVendoredPath("rg")) {
-  status("Sharpening the search blade");
+  status(0.4, "Installing ripgrep");
   installRipgrep().catch((err) => {
     logBackgroundError(
       "boot",
@@ -435,7 +235,7 @@ if (!getVendoredPath("rg")) {
 }
 
 if (!getVendoredPath("fd")) {
-  status("Summoning the file finder");
+  status(0.45, "Installing fd");
   installFd().catch((err) => {
     logBackgroundError(
       "boot",
@@ -447,7 +247,7 @@ if (!getVendoredPath("fd")) {
 // ast-grep powers structural_edit (polyglot AST edits) — a first-class edit
 // tool, so vendor it eagerly like rg/fd. Skipped if a system copy is on PATH.
 if (!getVendoredPath("ast-grep") && !commandExists("ast-grep") && !commandExists("sg")) {
-  status("Preparing code intelligence");
+  status(0.5, "Installing ast-grep");
   installAstGrep().catch((err) => {
     logBackgroundError(
       "boot",
@@ -456,7 +256,7 @@ if (!getVendoredPath("ast-grep") && !commandExists("ast-grep") && !commandExists
   });
 }
 
-status("Reaching out to the LLM gods", "Negotiating API keys");
+status(0.55, "Checking providers and keys");
 const { checkProviders, notifyProviderSwitch } = await import("./core/llm/provider.js");
 const { checkPrerequisites } = await import("./core/setup/prerequisites.js");
 const { prewarmAllModels } = await import("./core/llm/models.js");
@@ -487,7 +287,7 @@ prewarmAllModels();
   startClipboardDaemon();
 }
 
-status("Kicking the neurons awake", "Waking the tree-sitter");
+status(0.7, "Warming up code intelligence");
 // Ensure setIntelligenceClient() has run before warmup to avoid spawning
 // duplicate LSP servers on both main thread and worker.
 contextManagerReady
@@ -500,17 +300,17 @@ contextManagerReady
     );
   });
 
-status("Starting Baked", "Almost there", "Sharpening the tools");
+status(0.8, "Loading the interface", "Almost baked");
 const [{ App }, contextManager] = await Promise.all([appReady, contextManagerReady]);
 // Instant — App.tsx already pulled these into the module cache
 const { createCliRenderer } = await import("@opentui/core");
 const { createRoot } = await import("@opentui/react");
 const { start } = await import("./index.js");
 
-status("Igniting");
+status(1, "Ready");
 
 stopSpinner();
-process.stdout.write("\x1b[?25h\x1b[2J\x1b[H");
+process.stdout.write("\x1b[0m\x1b[?25h\x1b[2J\x1b[H");
 
 await start({
   App,

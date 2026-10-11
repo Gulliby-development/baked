@@ -1,117 +1,92 @@
-import { fg as fgStyle, StyledText, type TextRenderable } from "@opentui/core";
+import type { StyledText, TextRenderable } from "@opentui/core";
 import { useEffect, useRef } from "react";
 import { getThemeTokens } from "../../core/theme/index.js";
+import {
+  type ArtCell,
+  artPalette,
+  BAKE_ART_TICK_MS,
+  chipCells,
+  textCells,
+} from "../../core/utils/bake-art.js";
+import { reducedMotion } from "../../core/utils/motion.js";
 import { formatElapsed } from "../../hooks/useElapsed.js";
 import { useStatusBarStore } from "../../stores/statusbar.js";
-import { BAKE_TICK_MS, bakeSpinnerChunks } from "./BakeSpinner.js";
+import { artText } from "../brand/artText.js";
 
+/** Plain-language steps with a bakery touch; one is picked per turn. */
 const BAKE_STATUSES = [
-  "Baked is responding",
-  "Stoking the flames",
-  "Summoning spirits",
-  "Channeling the ether",
-  "Tempering thoughts",
-  "Conjuring words",
-  "Consulting the runes",
-  "Weaving spellwork",
-  "Preparing Baked",
-  "Gathering arcana",
+  "Working on it",
+  "Kneading the plan",
+  "Thinking it through",
+  "Mixing in context",
+  "Proofing the idea",
+  "Checking the oven",
 ];
 
-const DOTS_CYCLE = [".", "..", "...", "..", ".", ".."];
-const DOTS_SPEED = 4;
+const METER_WIDTH = 8;
+const METER_BLOCK = 3;
 
-// ── Color interpolation for breathing effect ────────────────────────
-
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace("#", "");
-  return [
-    parseInt(h.substring(0, 2), 16) || 0,
-    parseInt(h.substring(2, 4), 16) || 0,
-    parseInt(h.substring(4, 6), 16) || 0,
-  ];
-}
-
-function rgbToHex(r: number, g: number, b: number): string {
-  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
-}
-
-function lerpColor(a: string, b: string, t: number): string {
-  const [ar, ag, ab] = hexToRgb(a);
-  const [br, bg, bb] = hexToRgb(b);
-  return rgbToHex(
-    Math.round(ar + (br - ar) * t),
-    Math.round(ag + (bg - ag) * t),
-    Math.round(ab + (bb - ab) * t),
+/** A block of filled cells that slides back and forth across a light track. */
+export function meterCells(tick: number, fill: string, track: string): ArtCell[] {
+  const span = METER_WIDTH - METER_BLOCK;
+  const step = tick % (span * 2);
+  const left = step <= span ? step : span * 2 - step;
+  return Array.from({ length: METER_WIDTH }, (_, index) =>
+    index >= left && index < left + METER_BLOCK ? { ch: "█", fg: fill } : { ch: "░", fg: track },
   );
 }
 
-const BREATH_PERIOD = 20;
-
-function breathe(tick: number): number {
-  return (Math.sin((tick / BREATH_PERIOD) * Math.PI * 2 - Math.PI / 2) + 1) / 2;
-}
-
-// ── Build single-line StyledText content ─────────────────────────────
-
-function buildBusyLine(
-  spinnerFrame: number,
+/** The busy bar: `[ BAKING ]▌ ███░░░░░  Kneading the plan  12s      [ ^X STOP ]` */
+export function busyLine(
+  tick: number,
   isCompacting: boolean,
-  bakeStatus: string,
+  status: string,
   elapsedSec: number,
+  width: number,
 ): StyledText {
   const tk = getThemeTokens();
-  const baseColor = isCompacting ? tk.info : tk.brand;
-  const statusText = isCompacting ? "Compacting context" : bakeStatus;
-  const dots = DOTS_CYCLE[Math.floor(spinnerFrame / DOTS_SPEED) % DOTS_CYCLE.length] ?? ".";
-
-  const t = breathe(spinnerFrame);
-  const textColor = lerpColor(tk.textMuted, baseColor, t);
-
-  const runeChunks = bakeSpinnerChunks(
-    spinnerFrame,
-    tk.brand,
-    tk.textMuted,
-    tk.textFaint,
-    tk.warning,
-  );
-
-  const parts: ReturnType<ReturnType<typeof fgStyle>>[] = [
-    fgStyle(tk.textFaint)(" "),
-    ...runeChunks,
-    fgStyle(tk.textFaint)(" "),
-    fgStyle(textColor)(statusText),
-    fgStyle(tk.textFaint)(`${dots.padEnd(3)}`),
+  const palette = artPalette(tk);
+  const fill = isCompacting ? tk.info : palette.fill;
+  const left: ArtCell[] = [
+    { ch: " " },
+    ...chipCells(isCompacting ? "COMPACTING" : "BAKING", fill, palette.onFill, palette.shadow),
+    { ch: " " },
+    ...meterCells(tick, fill, tk.textFaint),
+    ...textCells(`  ${isCompacting ? "Compacting context" : status}`, tk.textSecondary),
   ];
-  if (elapsedSec > 0) {
-    parts.push(fgStyle(tk.textFaint)(` ${formatElapsed(elapsedSec)}`));
-  }
-  parts.push(fgStyle(tk.textFaint)("  "));
-  return new StyledText(parts);
+  if (elapsedSec > 0) left.push(...textCells(`  ${formatElapsed(elapsedSec)}`, tk.textMuted));
+  const stop = chipCells("^X STOP", tk.error, palette.onFill);
+  const gap = width - left.length - stop.length - 1;
+  const row = gap >= 2 ? [...left, ...textCells(" ".repeat(gap)), ...stop] : left;
+  return artText([row]);
 }
 
 interface LoadingStatusProps {
   isLoading: boolean;
   isCompacting: boolean;
   loadingStartedAt?: number;
+  width?: number;
 }
 
-export function LoadingStatus({ isLoading, isCompacting, loadingStartedAt }: LoadingStatusProps) {
+export function LoadingStatus({
+  isLoading,
+  isCompacting,
+  loadingStartedAt,
+  width = 80,
+}: LoadingStatusProps) {
   const textRef = useRef<TextRenderable>(null);
-  const bakeStatusRef = useRef("");
+  const statusRef = useRef("");
   const wasLoadingRef = useRef(false);
   const loadingStartRef = useRef(0);
   const elapsedSecRef = useRef(0);
-  const spinnerTickRef = useRef(0);
-  const propsRef = useRef({ isLoading, isCompacting });
-  propsRef.current = { isLoading, isCompacting };
+  const tickRef = useRef(0);
+  const propsRef = useRef({ isLoading, isCompacting, width });
+  propsRef.current = { isLoading, isCompacting, width };
 
   const showBusy = isLoading || isCompacting;
 
   if (isLoading && !wasLoadingRef.current) {
-    bakeStatusRef.current = BAKE_STATUSES[
-      Math.floor(Math.random() * BAKE_STATUSES.length)
-    ] as string;
+    statusRef.current = BAKE_STATUSES[Math.floor(Math.random() * BAKE_STATUSES.length)] as string;
     loadingStartRef.current = loadingStartedAt || Date.now();
     elapsedSecRef.current = 0;
   }
@@ -120,26 +95,26 @@ export function LoadingStatus({ isLoading, isCompacting, loadingStartedAt }: Loa
 
   useEffect(() => {
     if (!showBusy) return;
-    const timer = setInterval(() => {
-      spinnerTickRef.current++;
-      const { isLoading: ld, isCompacting: cp } = propsRef.current;
-      const elapsed = cp
-        ? useStatusBarStore.getState().compactElapsed
-        : ld
-          ? Math.floor((Date.now() - loadingStartRef.current) / 1000)
-          : 0;
-      elapsedSecRef.current = elapsed;
-      try {
-        if (textRef.current) {
-          textRef.current.content = buildBusyLine(
-            spinnerTickRef.current,
-            cp,
-            bakeStatusRef.current,
-            elapsed,
-          );
-        }
-      } catch {}
-    }, BAKE_TICK_MS);
+    // Reduced motion keeps the meter still and only refreshes the elapsed time.
+    const reduced = reducedMotion();
+    const timer = setInterval(
+      () => {
+        if (!reduced) tickRef.current++;
+        const { isLoading: ld, isCompacting: cp, width: w } = propsRef.current;
+        const elapsed = cp
+          ? useStatusBarStore.getState().compactElapsed
+          : ld
+            ? Math.floor((Date.now() - loadingStartRef.current) / 1000)
+            : 0;
+        elapsedSecRef.current = elapsed;
+        try {
+          if (textRef.current) {
+            textRef.current.content = busyLine(tickRef.current, cp, statusRef.current, elapsed, w);
+          }
+        } catch {}
+      },
+      reduced ? 1000 : BAKE_ART_TICK_MS,
+    );
     return () => clearInterval(timer);
   }, [showBusy]);
 
@@ -149,11 +124,13 @@ export function LoadingStatus({ isLoading, isCompacting, loadingStartedAt }: Loa
     <box height={1} flexShrink={0}>
       <text
         ref={textRef}
-        content={buildBusyLine(
-          spinnerTickRef.current,
+        wrapMode="none"
+        content={busyLine(
+          tickRef.current,
           isCompacting,
-          bakeStatusRef.current,
+          statusRef.current,
           elapsedSecRef.current,
+          width,
         )}
       />
     </box>

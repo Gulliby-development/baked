@@ -123,6 +123,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/diff-style` | Change diff display style |
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |
 | `/mode` | Switch Baked mode |
+| `/motion` | Full or reduced animation |
 | `/reasoning` | Show or hide reasoning content |
 | `/settings` | Settings hub — all options in one place |
 | `/theme` | Switch color theme (live preview) |

@@ -300,6 +300,8 @@ export interface AppConfig {
     /** Border visibility strength: default, strong, op */
     borderStrength?: "default" | "strong" | "op";
   };
+  /** Brand animations: `full` (default) or `reduced` for still frames. `BAKED_REDUCED_MOTION=1` forces reduced. */
+  motion?: "full" | "reduced";
   codeIntelligence?: CodeIntelligenceConfig;
   thinking?: ThinkingConfig;
   performance?: PerformanceConfig;
