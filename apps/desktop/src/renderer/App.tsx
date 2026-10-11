@@ -1,6 +1,7 @@
 import { isMock } from "./client/bridge.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TitleBar } from "./components/TitleBar.js";
+import { Alert } from "./components/ui/alert.js";
 import { useRoute } from "./router.js";
 import { AttentionScreen } from "./screens/AttentionScreen.js";
 import { ProjectScreen } from "./screens/ProjectScreen.js";
@@ -12,20 +13,20 @@ export function App() {
   const route = useRoute();
   const { error } = useDesktop();
   return (
-    <div className="frame m-0 overflow-hidden rounded-[var(--radius-lg)] border-2 border-border bg-background shadow-shadow">
+    <div className="m-0 flex h-full flex-col overflow-hidden rounded-[var(--radius-lg)] border-2 border-border bg-background shadow-shadow">
       <TitleBar />
-      <div className="shell">
+      <div className="flex min-h-0 min-w-0 flex-1">
         <Sidebar route={route} />
-        <main className="main [&:has(>[data-chat])]:flex [&:has(>[data-chat])]:flex-col [&:has(>[data-chat])]:overflow-hidden">
+        <main className="min-w-0 flex-1 overflow-auto [&:has(>[data-chat])]:flex [&:has(>[data-chat])]:flex-col [&:has(>[data-chat])]:overflow-hidden">
           {isMock && (
-            <div className="banner" style={{ borderRadius: 0, borderWidth: "0 0 1px" }}>
+            <Alert className="rounded-none border-0 border-b">
               Preview with sample data: no BAKED backend is connected.
-            </div>
+            </Alert>
           )}
           {error && (
-            <div className="banner error" role="alert" style={{ margin: "12px 28px 0" }}>
+            <Alert tone="error" role="alert" className="mx-7 mt-3">
               {error}
-            </div>
+            </Alert>
           )}
           {route.name === "projects" && <ProjectsScreen />}
           {route.name === "attention" && (

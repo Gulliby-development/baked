@@ -40,13 +40,3 @@ export const FIELD =
 
 /** A checkbox with its label. */
 export const CHECK = "flex min-h-9 items-center gap-2.5";
-
-/** A small status dot; add one of DOT_TONE for its colour. */
-export const DOT = "size-2 flex-none rounded-full bg-[var(--text-4)]";
-
-export const DOT_TONE = {
-  ok: "bg-[var(--ok)]",
-  warn: "bg-[var(--warn)]",
-  err: "bg-[var(--err)]",
-  busy: "bg-[var(--info)]",
-} as const;

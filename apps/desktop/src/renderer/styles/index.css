@@ -6,7 +6,7 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "./tokens.css" layer(legacy);
-@import "./app.css" layer(legacy);
+@import "./base.css" layer(legacy);
 
 /* Class names the older screens use for their own rules; never generate utilities for them. */
 @source not inline("table ring bg-accent bg-ok bg-warn bg-err");
