@@ -3,7 +3,12 @@ import type { AttentionItem, DesktopProject } from "../../shared/api.js";
 import { attentionTitle } from "../../shared/attention.js";
 import type { ProjectAction } from "../../shared/bridge.js";
 import { bridge } from "../client/bridge.js";
+import { Alert } from "../components/ui/alert.js";
+import { Button, buttonVariants } from "../components/ui/button.js";
+import { Empty } from "../components/ui/empty.js";
 import { ago, backendLabel, initial } from "../format.js";
+import { cn } from "../lib/cn.js";
+import { LEDE, PAGE, PANEL, STACK, SUB_LINE } from "../lib/styles.js";
 import { href, projectHref } from "../router.js";
 import { useDesktop } from "../store.js";
 
@@ -56,15 +61,18 @@ function Card({
   const state = projectState(project, waiting);
   return (
     <article
-      className="card group flex min-w-0 flex-col gap-3 px-[18px] py-4 data-open:border-border data-open:bg-selected"
+      className={cn(
+        PANEL,
+        "group flex min-w-0 flex-col gap-3 px-[18px] py-4 data-open:border-border data-open:bg-selected",
+      )}
       aria-label={project.name}
       data-open={project.open || undefined}
     >
       <div className="flex min-w-0 items-center gap-3">
-        <span className="avatar h-9 w-9 rounded-[9px] text-[14px] text-[var(--bg)] group-data-open:bg-[var(--accent)]">
+        <span className="flex size-9 flex-none items-center justify-center rounded-[9px] border-2 border-border bg-fill-info font-mono text-[14px] font-medium text-[var(--bg)] group-data-open:bg-[var(--accent)]">
           {initial(project.name)}
         </span>
-        <div className="stack">
+        <div className={STACK}>
           <h2 className="m-0 text-[16px] font-semibold">
             {project.open ? (
               <a
@@ -77,7 +85,7 @@ function Card({
               project.name
             )}
           </h2>
-          <span className="sub-line" title={project.path}>
+          <span className={SUB_LINE} title={project.path}>
             {project.path}
             {project.branch ? ` · ${project.branch}` : ""}
           </span>
@@ -105,13 +113,15 @@ function Card({
             : "No active runs"}
         </span>
         {!project.open && project.exists && (
-          <span className="muted">Opening starts its backend and language servers</span>
+          <span className="text-dim-foreground">
+            Opening starts its backend and language servers
+          </span>
         )}
       </div>
       {project.backend.kind === "failed" && (
-        <div className="banner error mono whitespace-pre-wrap text-[12px]">
+        <Alert tone="error" className="whitespace-pre-wrap font-mono text-[12px]">
           {project.backend.stderr.slice(-5).join("\n") || project.backend.lastError}
-        </div>
+        </Alert>
       )}
       {confirmForget ? (
         <fieldset
@@ -121,39 +131,45 @@ function Card({
           <span className="basis-full text-[13px] text-muted-foreground">
             Remove it from the list? Its sessions and runs stay in the folder.
           </span>
-          <button type="button" className="btn" disabled={busy} onClick={() => onAction("forget")}>
+          <Button variant="secondary" size="md" disabled={busy} onClick={() => onAction("forget")}>
             Forget
-          </button>
-          <button type="button" className="btn" onClick={() => setConfirmForget(false)}>
+          </Button>
+          <Button variant="secondary" size="md" onClick={() => setConfirmForget(false)}>
             Keep
-          </button>
+          </Button>
         </fieldset>
       ) : (
         <div className={`${ACTIONS} mt-auto`}>
           {project.open ? (
             <>
-              <a className="btn-primary" href={projectHref(project.key)}>
+              <a
+                className={buttonVariants({ variant: "primary", size: "md" })}
+                href={projectHref(project.key)}
+              >
                 Go to project
               </a>
               {items.length > 0 && (
-                <a className="btn" href={href({ name: "attention" })}>
+                <a
+                  className={buttonVariants({ variant: "secondary", size: "md" })}
+                  href={href({ name: "attention" })}
+                >
                   Answer
                 </a>
               )}
               {project.backend.kind === "failed" && (
-                <button type="button" className="btn" onClick={() => void restart(project.key)}>
+                <Button variant="secondary" size="md" onClick={() => void restart(project.key)}>
                   Restart
-                </button>
+                </Button>
               )}
-              <button type="button" className="btn" onClick={() => void close(project.key)}>
+              <Button variant="secondary" size="md" onClick={() => void close(project.key)}>
                 Close
-              </button>
+              </Button>
             </>
           ) : (
             <>
-              <button
-                type="button"
-                className="btn-primary"
+              <Button
+                variant="primary"
+                size="md"
                 disabled={!project.exists}
                 onClick={() =>
                   void open(project.key).then(() => {
@@ -162,22 +178,23 @@ function Card({
                 }
               >
                 Open
-              </button>
-              <button type="button" className="btn" onClick={() => setConfirmForget(true)}>
+              </Button>
+              <Button variant="secondary" size="md" onClick={() => setConfirmForget(true)}>
                 Forget
-              </button>
+              </Button>
             </>
           )}
-          <button
-            type="button"
-            className="btn ml-auto aria-pressed:text-[var(--accent-soft)]"
+          <Button
+            variant="secondary"
+            size="md"
+            className="ml-auto aria-pressed:text-[var(--accent-soft)]"
             aria-pressed={project.pinned}
             aria-label={project.pinned ? `Unpin ${project.name}` : `Pin ${project.name}`}
             disabled={busy}
             onClick={() => onAction(project.pinned ? "unpin" : "pin")}
           >
             {project.pinned ? "★ Pinned" : "☆ Pin"}
-          </button>
+          </Button>
         </div>
       )}
     </article>
@@ -202,7 +219,7 @@ export function ProjectsScreen() {
     }
   };
   return (
-    <div className="page">
+    <div className={PAGE}>
       <header className="flex flex-wrap items-center gap-[10px]">
         <h1 className="mr-auto">All projects</h1>
         <label htmlFor="proj-search" className="sr-only">
@@ -216,27 +233,27 @@ export function ProjectsScreen() {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
-        <button type="button" className="btn" onClick={() => void refresh()}>
+        <Button variant="secondary" size="md" onClick={() => void refresh()}>
           Refresh
-        </button>
-        <button type="button" className="btn-primary" onClick={() => void addFolder()}>
+        </Button>
+        <Button variant="primary" size="md" onClick={() => void addFolder()}>
           Open folder…
-        </button>
+        </Button>
       </header>
-      <p className="lede">
+      <p className={LEDE}>
         Every folder you open becomes a project with its own sessions, runs, memory and settings.
         Open projects keep working in the background, each with its own backend; a closed project
         pauses its runs until you open it again.
       </p>
       {error && (
-        <div className="banner error" role="alert">
+        <Alert tone="error" role="alert">
           {error}
-        </div>
+        </Alert>
       )}
       {projects.length === 0 ? (
-        <div className="empty">No projects yet. Open a folder to start.</div>
+        <Empty>No projects yet. Open a folder to start.</Empty>
       ) : shown.length === 0 ? (
-        <div className="empty">No project matches “{query}”.</div>
+        <Empty>No project matches “{query}”.</Empty>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(380px,1fr))] gap-4 [@media(max-width:520px)]:grid-cols-[minmax(0,1fr)]">
           {shown.map((project) => (
