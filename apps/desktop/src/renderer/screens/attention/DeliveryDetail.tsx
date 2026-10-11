@@ -6,6 +6,9 @@ import {
   exclusionReason,
   parseBody,
 } from "../../client/attention.js";
+import { Button } from "../../components/ui/button.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import {
   ACTIONS,
@@ -16,6 +19,7 @@ import {
   FACTS,
   Fact,
   LEDE,
+  LINK_BTN,
   LIST,
   Loading,
   NOTE,
@@ -62,10 +66,10 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
             </p>
             <div className={FACTS}>
               <Fact label="Branch">
-                <span className="mono">{plan.branch ?? "–"}</span>
+                <span className="font-mono">{plan.branch ?? "–"}</span>
               </Fact>
               <Fact label="Remote">
-                <span className="mono">
+                <span className="font-mono">
                   {plan.remote?.name ?? "–"} → {plan.base?.branch ?? "–"}
                 </span>
               </Fact>
@@ -74,19 +78,19 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
               </Fact>
             </div>
             <section className={LIST} aria-label="Files in the commit">
-              <span className="label">Files in the commit</span>
+              <span className={LABEL}>Files in the commit</span>
               {(plan.files ?? []).map((line) => {
                 const file = deliveryFile(line);
                 return (
                   <div key={line} className={ROW}>
-                    <span className="mono">{file.path}</span>
-                    <span className="muted">{file.action}</span>
+                    <span className="font-mono">{file.path}</span>
+                    <span className="text-dim-foreground">{file.action}</span>
                   </div>
                 );
               })}
               {(plan.excluded ?? []).map((excluded) => (
-                <div key={excluded.path} className={`${ROW} muted`}>
-                  <span className="mono">{excluded.path}</span>
+                <div key={excluded.path} className={cn(ROW, "text-dim-foreground")}>
+                  <span className="font-mono">{excluded.path}</span>
                   <span>{exclusionReason(excluded.reason)}</span>
                 </div>
               ))}
@@ -95,26 +99,27 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
               <p className={NOTE}>
                 Left untouched: {plan.userChanges.length} other uncommitted{" "}
                 {plan.userChanges.length === 1 ? "file" : "files"} (
-                <span className="mono">{plan.userChanges.slice(0, 3).join(", ")}</span>
+                <span className="font-mono">{plan.userChanges.slice(0, 3).join(", ")}</span>
                 {plan.userChanges.length > 3 ? ", …" : ""}).
               </p>
             ) : null}
             <section className={LIST} aria-label="Commit message">
-              <span className="label">Commit message</span>
+              <span className={LABEL}>Commit message</span>
               <span className="whitespace-pre-wrap text-[13px] text-soft-foreground">
                 {plan.commitMessage ?? "–"}
               </span>
               {pr && pr.title !== plan.commitMessage && (
-                <span className="muted">
+                <span className="text-dim-foreground">
                   Pull request: {pr.title} ({pr.repository})
                 </span>
               )}
             </section>
             <ActionError error={action.error} />
             <div className={ACTIONS}>
-              <button
-                type="button"
-                className={`btn-primary ${BTN}`}
+              <Button
+                variant="primary"
+                size="md"
+                className={BTN}
                 disabled={action.busy}
                 onClick={() =>
                   void action.run(async () => {
@@ -127,11 +132,12 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                 }
               >
                 Approve and deliver
-              </button>
+              </Button>
               {pr && (
-                <button
-                  type="button"
-                  className={`btn ${BTN}`}
+                <Button
+                  variant="secondary"
+                  size="md"
+                  className={BTN}
                   disabled={action.busy}
                   onClick={() =>
                     void action.run(async () => {
@@ -147,7 +153,7 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                   }
                 >
                   Commit only, no PR
-                </button>
+                </Button>
               )}
               <RejectForm
                 busy={action.busy}
@@ -158,7 +164,7 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
                   })
                 }
               />
-              <a className={`btn ${BTN}`} href={projectHref(item.projectKey, "runs", runId)}>
+              <a className={LINK_BTN} href={projectHref(item.projectKey, "runs", runId)}>
                 Open run
               </a>
             </div>

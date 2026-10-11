@@ -2,16 +2,22 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { AttentionItem } from "../../../shared/api.js";
 import { attentionTitle, kindLabel } from "../../../shared/attention.js";
 import { ApiError } from "../../client/api.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button, buttonVariants } from "../../components/ui/button.js";
 import { ago } from "../../format.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL, PANEL } from "../../lib/styles.js";
 
-/** Class strings the detail panes share; the action buttons pair BTN with `btn` or `btn-primary`. */
+/** Class strings the detail panes share; BTN sizes the action buttons up from the `md` button. */
 export const BTN = "min-h-[42px] px-[18px] no-underline";
+/** A link styled as a secondary action button. */
+export const LINK_BTN = cn(buttonVariants({ variant: "secondary", size: "md" }), BTN);
 export const ACTIONS = "flex flex-wrap items-center gap-2";
 export const LEDE = "m-0 leading-[1.6] text-muted-foreground";
 export const NOTE = "m-0 text-[13px] text-muted-foreground";
 export const ASIDE = "text-[12px] text-[color:var(--ok)]";
 export const FACTS = "grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3";
-export const LIST = "card flex flex-col gap-2";
+export const LIST = cn(PANEL, "flex flex-col gap-2");
 export const ROW =
   "flex min-w-0 justify-between gap-3 text-[13px] [&>:first-child]:wrap-anywhere [&>:last-child]:flex-none";
 export const FORM = "flex flex-col gap-3";
@@ -89,8 +95,8 @@ export function DetailHeader({ item, aside }: { item: AttentionItem; aside?: Rea
 
 export function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="card flex min-w-0 flex-col gap-1 text-[13px] wrap-anywhere">
-      <span className="label">{label}</span>
+    <div className={cn(PANEL, "flex min-w-0 flex-col gap-1 text-[13px] wrap-anywhere")}>
+      <span className={LABEL}>{label}</span>
       <span>{children}</span>
     </div>
   );
@@ -103,12 +109,12 @@ export function Loading<T>({
   load: Load<T>;
   children: (value: T) => ReactNode;
 }) {
-  if (load.state === "loading") return <p className="muted">Loading…</p>;
+  if (load.state === "loading") return <p className="text-dim-foreground">Loading…</p>;
   if (load.state === "error")
     return (
-      <div className="banner error" role="alert">
+      <Alert tone="error" role="alert">
         {load.message}
-      </div>
+      </Alert>
     );
   return <>{children(load.value)}</>;
 }
@@ -116,9 +122,9 @@ export function Loading<T>({
 export function ActionError({ error }: { error: string | null }) {
   if (!error) return null;
   return (
-    <div className="banner error" role="alert">
+    <Alert tone="error" role="alert">
       {error}
-    </div>
+    </Alert>
   );
 }
 
@@ -136,19 +142,25 @@ export function RejectForm({
   const [reason, setReason] = useState("");
   if (!open)
     return (
-      <button type="button" className={`btn ${BTN}`} disabled={busy} onClick={() => setOpen(true)}>
+      <Button
+        variant="secondary"
+        size="md"
+        className={BTN}
+        disabled={busy}
+        onClick={() => setOpen(true)}
+      >
         {label}
-      </button>
+      </Button>
     );
   return (
     <form
-      className={`${FORM} basis-full`}
+      className={cn(FORM, "basis-full")}
       onSubmit={(event) => {
         event.preventDefault();
         if (reason.trim()) onReject(reason.trim());
       }}
     >
-      <label className="label" htmlFor="att-reason">
+      <label className={LABEL} htmlFor="att-reason">
         Why? The agents read this.
       </label>
       <textarea
@@ -159,12 +171,18 @@ export function RejectForm({
         onChange={(event) => setReason(event.target.value)}
       />
       <div className={ACTIONS}>
-        <button type="submit" className={`btn ${BTN}`} disabled={busy || !reason.trim()}>
+        <Button
+          type="submit"
+          variant="secondary"
+          size="md"
+          className={BTN}
+          disabled={busy || !reason.trim()}
+        >
           {label}
-        </button>
-        <button type="button" className={`btn ${BTN}`} onClick={() => setOpen(false)}>
+        </Button>
+        <Button variant="secondary" size="md" className={BTN} onClick={() => setOpen(false)}>
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );

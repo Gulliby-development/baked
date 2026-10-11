@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import type { ChatMessage, ToolCall } from "../../client/chat.js";
+import { Button } from "../../components/ui/button.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
@@ -117,10 +118,10 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
     >
       <figcaption className="flex items-center gap-[10px] px-3 py-[10px] text-[13px] font-semibold text-muted-foreground border-b-2 border-b-border">
         <Status call={call} />
-        <span className="mono text-soft-foreground min-w-0 truncate">{diff.path}</span>
-        {diff.created && <span className="muted">new file</span>}
-        <span className="mono ml-auto text-[var(--ok)]">+{diff.added}</span>
-        <span className="mono text-[var(--err)]">−{diff.removed}</span>
+        <span className="font-mono text-soft-foreground min-w-0 truncate">{diff.path}</span>
+        {diff.created && <span className="text-dim-foreground">new file</span>}
+        <span className="font-mono ml-auto text-[var(--ok)]">+{diff.added}</span>
+        <span className="font-mono text-[var(--err)]">−{diff.removed}</span>
         {(hidden > 0 || all) && (
           <button
             type="button"
@@ -332,18 +333,18 @@ function PromptCard({
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
-          <button type="submit" className="btn-primary" disabled={busy || !text.trim()}>
+          <Button type="submit" variant="primary" size="md" disabled={busy || !text.trim()}>
             Answer
-          </button>
+          </Button>
           {prompt.allowSkip && (
-            <button
-              type="button"
-              className="btn"
+            <Button
+              variant="secondary"
+              size="md"
               disabled={busy}
               onClick={() => onAnswer(prompt.id, "")}
             >
               Skip
-            </button>
+            </Button>
           )}
         </form>
       </section>
@@ -367,22 +368,22 @@ function PromptCard({
         {detail}
       </pre>
       <div className={ROW}>
-        <button
-          type="button"
-          className="btn-primary"
+        <Button
+          variant="primary"
+          size="md"
           disabled={busy}
           onClick={() => onApprove(prompt.id, true)}
         >
           Allow
-        </button>
-        <button
-          type="button"
-          className="btn"
+        </Button>
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy}
           onClick={() => onApprove(prompt.id, false)}
         >
           Deny
-        </button>
+        </Button>
       </div>
     </section>
   );

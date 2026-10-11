@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { attentionApi, type ChatPrompt } from "../../client/attention.js";
+import { Button } from "../../components/ui/button.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import {
   ACTIONS,
@@ -9,6 +11,7 @@ import {
   FORM,
   INPUT,
   LEDE,
+  LINK_BTN,
   Loading,
   NOTE,
   useAction,
@@ -46,7 +49,7 @@ export function ChatDetail({ item, onDone }: DetailProps) {
       onDone(message);
     });
   const openChat = (
-    <a className={`btn ${BTN}`} href={projectHref(item.projectKey, "chat", sessionId)}>
+    <a className={LINK_BTN} href={projectHref(item.projectKey, "chat", sessionId)}>
       Open chat
     </a>
   );
@@ -70,22 +73,25 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                 {prompt.options.length > 0 && (
                   <div className="flex flex-col gap-2">
                     {prompt.options.map((option) => (
-                      <button
+                      <Button
                         key={option.value}
-                        type="button"
-                        className="btn min-h-[42px] flex-col items-start px-[14px] py-2 text-left"
+                        variant="secondary"
+                        size="md"
+                        className="min-h-[42px] flex-col items-start whitespace-normal px-[14px] py-2 text-left"
                         disabled={action.busy}
                         onClick={() =>
                           send({ answer: option.value }, `Answered "${option.label}".`)
                         }
                       >
                         <span>{option.label}</span>
-                        {option.description && <span className="muted">{option.description}</span>}
-                      </button>
+                        {option.description && (
+                          <span className="text-dim-foreground">{option.description}</span>
+                        )}
+                      </Button>
                     ))}
                   </div>
                 )}
-                <label className="label" htmlFor="att-chat-answer">
+                <label className={LABEL} htmlFor="att-chat-answer">
                   {prompt.options.length ? "Or answer in your own words" : "Your answer"}
                 </label>
                 <textarea
@@ -97,22 +103,25 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                 />
                 <ActionError error={action.error} />
                 <div className={ACTIONS}>
-                  <button
+                  <Button
                     type="submit"
-                    className={`btn-primary ${BTN}`}
+                    variant="primary"
+                    size="md"
+                    className={BTN}
                     disabled={action.busy || !text.trim()}
                   >
                     Send answer
-                  </button>
+                  </Button>
                   {prompt.allowSkip && (
-                    <button
-                      type="button"
-                      className={`btn ${BTN}`}
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      className={BTN}
                       disabled={action.busy}
                       onClick={() => send({ answer: "" }, "Skipped the question.")}
                     >
                       Skip
-                    </button>
+                    </Button>
                   )}
                   {openChat}
                 </div>
@@ -125,22 +134,24 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                 </p>
                 <ActionError error={action.error} />
                 <div className={ACTIONS}>
-                  <button
-                    type="button"
-                    className={`btn-primary ${BTN}`}
+                  <Button
+                    variant="primary"
+                    size="md"
+                    className={BTN}
                     disabled={action.busy}
                     onClick={() => send({ approve: true }, "Approved. The chat continues.")}
                   >
                     Approve
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn ${BTN}`}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    className={BTN}
                     disabled={action.busy}
                     onClick={() => send({ approve: false }, "Denied. The agent was told no.")}
                   >
                     Deny
-                  </button>
+                  </Button>
                   {openChat}
                 </div>
               </>

@@ -10,7 +10,11 @@ import {
   kindLabel,
   sourceOf,
 } from "../../shared/attention.js";
+import { Alert } from "../components/ui/alert.js";
+import { Empty } from "../components/ui/empty.js";
 import { ago } from "../format.js";
+import { cn } from "../lib/cn.js";
+import { ITEM, LABEL, LEDE, STACK } from "../lib/styles.js";
 import { href } from "../router.js";
 import { useDesktop } from "../store.js";
 import { ChatDetail } from "./attention/ChatDetail.js";
@@ -56,18 +60,21 @@ function Entry({ item, selected }: { item: AttentionItem; selected: boolean }) {
   const owner = source === "run" ? item.featureId : source === "chat" ? "chat" : "initiative";
   return (
     <a
-      className="item no-underline aria-[current=true]:border-border aria-[current=true]:bg-hover aria-[current=true]:shadow-sm-hard"
+      className={cn(
+        ITEM,
+        "no-underline aria-[current=true]:border-border aria-[current=true]:bg-hover aria-[current=true]:shadow-sm-hard",
+      )}
       href={itemHref(item)}
       aria-current={selected ? "true" : undefined}
     >
       <span
-        className="mono"
+        className="font-mono"
         style={{ color: item.blocking ? MARK[kind].tone : "var(--info)" }}
         aria-hidden="true"
       >
         {MARK[kind].mark}
       </span>
-      <span className="stack" style={{ gap: 2 }}>
+      <span className={STACK} style={{ gap: 2 }}>
         <span className="text-foreground">{attentionTitle(item)}</span>
         <span className="text-[12px] text-dim-foreground">
           <span className={PROJECT}>{item.projectName}</span> · {owner} · {kindLabel(item.kind)} ·{" "}
@@ -111,7 +118,7 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
         aria-label="Waiting items"
       >
         <h1 className="mx-0 mt-0 mb-1 text-[20px] font-semibold">Needs you</h1>
-        <p className="lede">
+        <p className={LEDE}>
           Everything in every open project that waits for a person. Each item opens in its own
           project; new ones also arrive as system notifications.
         </p>
@@ -141,10 +148,8 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
             ))}
           </fieldset>
         )}
-        {shown.length === 0 && (
-          <div className="empty">Nothing waits for you in the open projects.</div>
-        )}
-        {groups.blocking.length > 0 && <p className="label">Blocking</p>}
+        {shown.length === 0 && <Empty>Nothing waits for you in the open projects.</Empty>}
+        {groups.blocking.length > 0 && <p className={LABEL}>Blocking</p>}
         {groups.blocking.map((item) => (
           <Entry
             key={`${item.projectKey}:${attentionItemId(item)}`}
@@ -153,7 +158,7 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
           />
         ))}
         {groups.advisory.length > 0 && (
-          <p className="label" style={{ marginTop: 10 }}>
+          <p className={LABEL} style={{ marginTop: 10 }}>
             Advisory
           </p>
         )}
@@ -171,9 +176,9 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
         aria-live="polite"
       >
         {notice && (
-          <div className="banner border-[color:var(--ok)]" role="status">
+          <Alert className="border-[color:var(--ok)]" role="status">
             {notice.text}
-          </div>
+          </Alert>
         )}
         {selected && Detail ? (
           <Detail
@@ -182,9 +187,9 @@ export function AttentionScreen({ projectKey, itemId }: { projectKey?: string; i
             onDone={done(selected.projectKey)}
           />
         ) : itemId && !notice?.next ? (
-          <p className="muted">This item was answered or is no longer waiting.</p>
+          <p className="text-dim-foreground">This item was answered or is no longer waiting.</p>
         ) : !notice && shown.length > 0 ? (
-          <p className="muted">Select an item.</p>
+          <p className="text-dim-foreground">Select an item.</p>
         ) : null}
       </section>
     </div>
