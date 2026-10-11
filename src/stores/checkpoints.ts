@@ -1,7 +1,7 @@
-import { relative } from "node:path";
+import { dirname, relative } from "node:path";
 import { create } from "zustand";
 import { checkpointTagName, ensureBaseSnapshot } from "../core/checkpoints/fork.js";
-import { snapshotWorkspace } from "../core/checkpoints/snapshot.js";
+import { isIgnored, snapshotWorkspace } from "../core/checkpoints/snapshot.js";
 import { type CheckpointTag, extractFilesFromToolCalls } from "../core/checkpoints/turns.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
 import { run as gitRun } from "../core/git/status.js";
@@ -409,9 +409,10 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
           if (result.ok) {
             await writeFile(absPath, result.stdout);
             restoredFiles.push(absPath);
-          } else {
+          } else if (!(await isIgnored(cwd, relPath))) {
             // File didn't exist at restore point — it was created by the undone
-            // checkpoint(s) (new file or rename target). Remove it.
+            // checkpoint(s) (new file or rename target). Remove it. Git-ignored
+            // files are in no snapshot, so their absence says nothing; keep them.
             try {
               await unlink(absPath);
               restoredFiles.push(absPath);
@@ -469,13 +470,23 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
     const restoredFiles: string[] = [];
     if (redoCp.gitTag && allFiles.size > 0) {
       await withGitLock(cwd, async () => {
-        const { writeFile } = await import("node:fs/promises");
+        const { mkdir, unlink, writeFile } = await import("node:fs/promises");
         for (const absPath of allFiles) {
           const relPath = relative(cwd, absPath);
           const result = await gitRun(["show", `${redoCp.gitTag}:${relPath}`], cwd, 10_000);
           if (result.ok) {
+            // The undo may have removed a directory this checkpoint created.
+            await mkdir(dirname(absPath), { recursive: true });
             await writeFile(absPath, result.stdout);
             restoredFiles.push(absPath);
+          } else if (!(await isIgnored(cwd, relPath))) {
+            // Absent from the checkpoint's snapshot: the redone turn deleted it.
+            try {
+              await unlink(absPath);
+              restoredFiles.push(absPath);
+            } catch {
+              // Already gone
+            }
           }
         }
       });

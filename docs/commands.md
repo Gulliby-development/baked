@@ -19,6 +19,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 | `Ctrl+D` | Cycle mode |
 | `Ctrl+B` / `Ctrl+F` | Previous / next checkpoint |
 | `Ctrl+X` | Stop the agent |
+| `Ctrl+X` then `E` (while the agent is idle) | Open the input in your editor and send what you save; see [composing in an editor](guide.md#composing-in-an-editor) |
 | `Ctrl+O` | Expand or collapse code and reasoning |
 | `Ctrl+C` | Copy the selection, or exit |
 | `Meta+R` (`Alt+R` on Linux) | Error log |
@@ -27,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -36,6 +37,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/project` | This project: sessions, workflow runs, what waits for you |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
+| `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |
 | `/stash` (`/drafts`) | Browse stashed drafts (restore, delete) |
 | `/compact` | Compact — run, settings, logs |
 | `/compact logs` | View compaction events |
@@ -53,8 +55,8 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/session rename` | Rename current session |
 | `/session plan` | Toggle plan mode (research & plan only) |
 | `/checkpoint` | Browse checkpoints — undo, redo, save |
-| `/checkpoint undo` | Undo last checkpoint (revert files) |
-| `/checkpoint redo` | Redo last undone checkpoint |
+| `/checkpoint undo` (`/undo`) | Undo last checkpoint (revert files) |
+| `/checkpoint redo` (`/redo`) | Redo last undone checkpoint |
 | `/checkpoint fork` | Fork a checkpoint into a new tab (rolls back files): `/checkpoint fork [N] [--force]` |
 | `/checkpoint save` | Force save current state as git tag |
 | `/checkpoint live` | Back to live view |
