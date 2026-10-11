@@ -337,6 +337,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.worktree) flags.worktree = true;
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
+  if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   return validateWorkflowArgs({
     command: "run",
@@ -862,6 +863,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (query.workflow) flags.workflow = query.workflow;
       if (query.model) flags.model = query.model;
       if (query.route) flags.route = query.route;
+      if (query.modelStrict === "true") flags["model-strict"] = true;
       if (query.worktree === "true") flags.worktree = true;
       if (query.writers) flags.writers = query.writers;
       if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
