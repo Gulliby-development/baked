@@ -15,6 +15,7 @@ import { validatePackage } from "../specs/validate.js";
 import { hostDiff } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { approvalDigest } from "./approval.js";
+import { AttentionNotifier } from "./attention-notify.js";
 import {
   type BudgetLimits,
   budgetUsage,
@@ -115,6 +116,8 @@ export class NativeWorkflowService implements WorkflowService {
    * context on it, and `baked serve` gives it to the chat host too. The service disposes it on close.
    */
   readonly rootContext: SharedRootContext;
+  /** Announces runs that start waiting for a person; null on a read-only service. */
+  readonly attention: AttentionNotifier | null;
   constructor(
     readonly workspace: string,
     readonly config: AppConfig,
@@ -126,6 +129,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
+    this.attention = readonly ? null : new AttentionNotifier(this.store, workspace, config);
     this.scheduler = new WorkflowScheduler(
       this.store,
       this.leases,
@@ -1294,6 +1298,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.leases.release();
     this.scheduler.dispose();
     void this.rootContext.dispose().catch(() => {});
+    this.attention?.dispose();
     this.store.close();
   }
 }

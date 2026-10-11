@@ -114,7 +114,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |
 | Initiatives, Usage | Initiative features and their runs; tokens by stage and model, cost. |
 | Project setup | Gates and checks, Instructions, Working set. In a folder without `baked/project.json`, Working set and the project panels say to run `baked project init` instead of showing an error. |
-| Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, telemetry). |
+| Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, run notifications, telemetry). |
 
 ## Repository layout and builds
 

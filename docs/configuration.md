@@ -64,6 +64,7 @@ The type of the whole file is `AppConfig` in `src/types/index.ts`; the comments 
 | `coAuthorCommits` | `true` | Co-author trailer on commits made through BAKED |
 | `defaultBakeMode` | `"default"` | Mode of new sessions; the earlier name `defaultForgeMode` is still read |
 | `telemetry`, `telemetryUrl` | `true`, unset | Local usage events and an optional receiver ([privacy](privacy.md)) |
+| `notifications` | `system: true`, no webhook | Announce a workflow run that waits for a person: a native notification and an optional webhook ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 
 ## Provider keys
 
