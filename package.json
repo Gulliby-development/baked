@@ -72,13 +72,13 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.75",
-    "@ai-sdk/mcp": "^2.0.69",
-    "@ai-sdk/openai": "^4.0.87",
+    "@ai-sdk/anthropic": "^4.0.76",
+    "@ai-sdk/mcp": "^2.0.71",
+    "@ai-sdk/openai": "^4.0.89",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "0.6.0",
-    "@opentui/react": "0.5.16",
-    "ai": "^7.0.131",
+    "@opentui/react": "0.5.17",
+    "ai": "^7.0.133",
     "ignore": "^7.0.12",
     "isbinaryfile": "6.0.0",
     "jsonrepair": "^3.15.0",
@@ -96,11 +96,11 @@
     "zustand": "5.0.15"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-arm64": "0.5.16",
-    "@opentui/core-darwin-x64": "0.5.16",
-    "@opentui/core-linux-arm64": "0.5.16",
-    "@opentui/core-linux-x64": "0.5.16",
-    "@opentui/core-win32-arm64": "0.5.16",
-    "@opentui/core-win32-x64": "0.5.16"
+    "@opentui/core-darwin-arm64": "0.5.17",
+    "@opentui/core-darwin-x64": "0.5.17",
+    "@opentui/core-linux-arm64": "0.5.17",
+    "@opentui/core-linux-x64": "0.5.17",
+    "@opentui/core-win32-arm64": "0.5.17",
+    "@opentui/core-win32-x64": "0.5.17"
   }
 }
