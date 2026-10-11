@@ -41,6 +41,8 @@ export const CODE_GRAPH_CAPABILITY = "code-graph";
 
 /** `GET /v1/git` and `POST /v1/git/actions` (the Git section). */
 export const GIT_CAPABILITY = "git";
+/** `/v1/diagnostics/*` (the Diagnostics section: storage, model events, error log). */
+export const DIAGNOSTICS_CAPABILITY = "diagnostics";
 
 /** `GET /v1/hooks` and `POST /v1/hooks/session` (the Hooks section). */
 export const HOOKS_CAPABILITY = "hooks";

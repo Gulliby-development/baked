@@ -1,18 +1,22 @@
-import { Database } from "bun:sqlite";
-import { existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { confirm } from "../../components/ui/dialogs/index.js";
+import {
+  clearHistory,
+  clearPlans,
+  clearSavedSessions,
+  computeStorageSizes,
+  formatBytes,
+  storageDirs,
+  vacuumDatabases,
+} from "../diagnostics/storage.js";
 import { icon } from "../icons.js";
-import { SessionManager } from "../sessions/manager.js";
 import { getThemeTokens } from "../theme/index.js";
 import type { CommandContext, CommandHandler } from "./types.js";
-import { computeStorageSizes, fileSize, formatBytes, sysMsg } from "./utils.js";
+import { sysMsg } from "./utils.js";
 
 function openStorageMenu(ctx: CommandContext): void {
   const show = () => {
-    const s = computeStorageSizes(ctx.cwd);
-    const sm = new SessionManager(ctx.cwd);
-    const sessionCount = sm.sessionCount();
+    const s = computeStorageSizes(storageDirs(ctx.cwd));
+    const sessionCount = s.sessionCount;
     const memMgr = ctx.contextManager.getMemoryManager();
     const projectMemCount = memMgr.listByScope("project").length;
     const globalMemCount = memMgr.listByScope("global").length;
@@ -116,11 +120,10 @@ function openStorageMenu(ctx: CommandContext): void {
               danger: true,
             });
             if (!ok) return;
-            const cleared = sm.clearAllSessions();
+            const cleared = clearSavedSessions(ctx.cwd);
             sysMsg(ctx, `Cleared ${String(cleared)} sessions (freed ~${formatBytes(s.sessions)}).`);
           } else if (value === "clear-history") {
-            const historyPath = join(s.globalDir, "history.db");
-            if (existsSync(historyPath) && s.history > 0) {
+            if (s.history > 0) {
               const ok = await confirm({
                 title: "Clear search history?",
                 message: `Prompt history and stash entries (${formatBytes(s.history)}) will be deleted globally. This cannot be undone.`,
@@ -128,47 +131,25 @@ function openStorageMenu(ctx: CommandContext): void {
               });
               if (!ok) return;
               try {
-                const db = new Database(historyPath);
-                db.run("DELETE FROM history");
-                db.run("VACUUM");
-                db.close();
+                clearHistory(s);
                 sysMsg(ctx, `Cleared search history (freed ~${formatBytes(s.history)}).`);
               } catch {
                 sysMsg(ctx, "Failed to clear history database.");
               }
             }
           } else if (value === "clear-plans") {
-            const plansDir = join(s.projectDir, "plans");
-            if (existsSync(plansDir) && s.plans > 0) {
+            if (s.plans > 0) {
               const ok = await confirm({
                 title: "Clear plans?",
                 message: `All saved plans (${formatBytes(s.plans)}) for this project will be deleted. This cannot be undone.`,
                 danger: true,
               });
               if (!ok) return;
-              rmSync(plansDir, { recursive: true });
+              clearPlans(s);
               sysMsg(ctx, `Cleared plans (freed ~${formatBytes(s.plans)}).`);
             }
           } else if (value === "vacuum") {
-            let freed = 0;
-            const dbs = [
-              join(s.projectDir, "repomap.db"),
-              join(s.projectDir, "memory.db"),
-              join(s.globalDir, "history.db"),
-              join(s.globalDir, "memory.db"),
-            ];
-            for (const dbPath of dbs) {
-              if (!existsSync(dbPath)) continue;
-              try {
-                const before = fileSize(dbPath);
-                const db = new Database(dbPath);
-                db.run("VACUUM");
-                db.close();
-                freed += Math.max(0, before - fileSize(dbPath));
-              } catch {
-                // skip
-              }
-            }
+            const freed = vacuumDatabases(s);
             sysMsg(
               ctx,
               freed > 0

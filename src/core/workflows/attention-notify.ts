@@ -9,8 +9,8 @@
  * run and what it waits for; it carries no request body, prompt or file content.
  */
 import { basename } from "node:path";
-import { logBackgroundError } from "../../stores/errors.js";
 import type { AppConfig } from "../../types/index.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { runHooks } from "../hooks/index.js";
 import { showSystemNotification } from "../platform/notify.js";
 import type { WorkflowEvent } from "./schemas.js";

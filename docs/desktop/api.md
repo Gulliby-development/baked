@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`) and `mcp` (`/v1/mcp*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`) and `diagnostics` (`/v1/diagnostics/*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -401,6 +401,42 @@ interface GitOverview {
 }
 ```
 
+## Diagnostics
+
+Disk use and cleanup of BAKED's own data, the model calls and the background errors of this server process: what the terminal UI shows with `/storage`, `/model-events` and `/errors`. The logic is in `src/core/diagnostics/`. Project data is the workspace's `.baked` folder; global data is the user configuration directory (`~/.baked`, or `%LOCALAPPDATA%\baked` on Windows).
+
+| Method and path | Body | Result |
+| --- | --- | --- |
+| `GET /v1/diagnostics/storage` | | `StorageView` below |
+| `POST /v1/diagnostics/storage/cleanup` | `{target: "repo-map" \| "sessions" \| "plans" \| "history" \| "vacuum", confirm?: true}` | `{target, freedBytes, removed?, storage: StorageView}`; `removed` is the number of sessions deleted. Every target except `vacuum` deletes data and needs `confirm: true`, or the request fails with 400 `INVALID_REQUEST`. Nothing to clear is not an error (`freedBytes: 0`). 409 `SESSION_BUSY` while a chat turn of this server runs (`sessions`, `repo-map`), 409 `WORKSPACE_BUSY` while this server drives a workflow run (`repo-map`) or when the history database cannot be opened |
+| `GET /v1/diagnostics/errors` | | `{errors: {id, source, message, timestamp}[]}`, newest first. The log of failures off the chat transcript (hooks, language servers, agents, session saves) since the server started, at most 500. Read-only, like the terminal `/errors` view |
+| `GET /v1/diagnostics/model-events` | | `ModelEventsView` below |
+| `POST /v1/diagnostics/model-events` | `{action: "enable" \| "disable" \| "clear"}` | `ModelEventsView` after the change. Recording is off when the server starts; `disable` also drops the recorded calls |
+
+The cleanup targets: `repo-map` deletes the repository map (`.baked/repomap.db`) through the server's context manager, which starts indexing again; `sessions` deletes every saved chat session of the workspace, including those the terminal UI saved; `plans` deletes `.baked/plans`; `history` deletes the terminal UI's prompt history in `history.db` for every project; `vacuum` runs SQLite `VACUUM` on the repository map, memory and history databases and keeps all data.
+
+```ts
+interface StorageView {
+  projectDir: string; globalDir: string;
+  project: { totalBytes; repoMapBytes; sessionsBytes; sessionCount; memoryBytes; plansBytes; configBytes };
+  global: { totalBytes; historyBytes; memoryBytes; configBytes; binariesBytes };
+}
+interface ModelEventsView {
+  enabled: boolean;
+  events: ModelCallEvent[];   // newest first, at most 500
+  models: { modelId; calls; errors; totalMs; avgMs; lastMs; input; output; cacheRead; cacheWrite; lastAt }[];
+}
+interface ModelCallEvent {
+  id: string; modelId: string;
+  source: "main" | "subagent" | "compaction" | "embed" | "run" | "other"; // main: a chat turn step; run: a workflow attempt step
+  startedAt: number; durationMs: number; state: "ok" | "error";
+  sessionId?: string; runId?: string; agentId?: string;                  // agentId: the run's agent profile
+  input?: number; output?: number; cacheRead?: number; cacheWrite?: number; errorMessage?: string;
+}
+```
+
+Events and errors live in the server's memory: they cover the chats and runs this `baked serve` process drove and are gone when it stops.
+
 ## Screen map
 
 | Mockup | Endpoints |
@@ -429,6 +465,7 @@ interface GitOverview {
 | Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
+| Project setup: diagnostics | `GET /v1/diagnostics/storage`, `POST /v1/diagnostics/storage/cleanup`, `GET\|POST /v1/diagnostics/model-events`, `GET /v1/diagnostics/errors` |
 
 ## Not in this contract yet
 

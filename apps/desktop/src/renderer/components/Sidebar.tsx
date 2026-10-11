@@ -38,6 +38,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["skills", "Skills", "skills"],
   ["hooks", "Hooks", "hooks"],
   ["mcp", "MCP servers", "mcp"],
+  ["diagnostics", "Diagnostics", "diagnostics"],
 ];
 
 const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };

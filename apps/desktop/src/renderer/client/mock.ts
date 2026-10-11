@@ -163,6 +163,7 @@ export function createMockBridge(): DesktopBridge {
             "hooks",
             "provider-switch",
             "chat-export",
+            "diagnostics",
           ],
         });
       const url = new URL(path, "http://mock");

@@ -819,8 +819,13 @@ export const FEATURES: readonly Feature[] = [
     title: "Storage cleanup, model events and the error log",
     tui: ["/storage", "/model-events", "/errors"],
     cli: notNeeded("scripts read the log files"),
-    api: gap(408),
-    desktop: gap(408),
+    api: [
+      "/v1/diagnostics/storage",
+      "/v1/diagnostics/storage/cleanup",
+      "/v1/diagnostics/model-events",
+      "/v1/diagnostics/errors",
+    ],
+    desktop: ["project/diagnostics"],
   },
   {
     id: "timeouts",
