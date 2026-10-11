@@ -158,6 +158,7 @@ export function createMockBridge(): DesktopBridge {
             "skills-install",
             "custom-commands",
             "settings",
+            "git",
           ],
         });
       const url = new URL(path, "http://mock");

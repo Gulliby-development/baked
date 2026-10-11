@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCwd, setCwd } from "../src/core/cwd.js";
@@ -150,6 +150,31 @@ describe("baked session list and delete", () => {
     expect(deleted.code).toBe(0);
     expect(JSON.parse(deleted.stdout)).toEqual({ deleted: "abc-222", title: "Second" });
     expect(store.listSessions().map((s) => s.id)).toEqual(["abc-111"]);
+  });
+});
+
+describe("baked session export", () => {
+  test("writes the active tab as Markdown or JSON", async () => {
+    const dir = tempDir();
+    const store = new SessionManager(dir);
+    const messages = [
+      { id: "m1", role: "user", content: "hello export", timestamp: 1 },
+      { id: "m2", role: "assistant", content: "hi back", timestamp: 2 },
+    ] as unknown as ChatMessage[];
+    await store.saveSession(meta("exp-1", "Export me", dir), new Map([["tab-1", messages]]));
+
+    const md = await cli(dir, () => runSessionCli(["export", "exp", "--output", "out/chat.md", "--json"]));
+    expect(md.code).toBe(0);
+    expect(JSON.parse(md.stdout)).toMatchObject({ sessionId: "exp-1", format: "markdown", messageCount: 2, path: join(dir, "out", "chat.md") });
+    const text = readFileSync(join(dir, "out", "chat.md"), "utf8");
+    expect(text).toContain("hello export");
+    expect(text).toContain("hi back");
+
+    const json = await cli(dir, () => runSessionCli(["export", "exp-1", "--format", "json"]));
+    expect(json.code).toBe(0);
+    expect(json.stdout).toMatch(/^Exported 2 messages of exp-1 to \.baked[\\/]exports[\\/]export-me-/);
+    expect((await cli(dir, () => runSessionCli(["export", "exp-1", "--format", "html"]))).code).toBe(1);
+    expect((await cli(dir, () => runSessionCli(["export", "nope"]))).code).toBe(1);
   });
 });
 
