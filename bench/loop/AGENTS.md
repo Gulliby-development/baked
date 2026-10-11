@@ -8,7 +8,7 @@ The loop runs on the owner's PC (Windows today; nothing here may assume one OS),
 
 1. Measure BAKED on varied, realistic greenfield work, with numbers that stay comparable from round to round.
 2. Turn every problem a run shows into a GitHub issue with a point fix **and** a broader option, then implement the best of them.
-3. Ship each app that passes verification as a public MIT repository in `Gulliby-development`, so BAKED gains a public portfolio ("Built with BAKED").
+3. Ship each app that passes verification as a public MIT repository in `Gulliby-development` right after verification, so BAKED gains a public portfolio ("Built with BAKED").
 
 Success is measured on the control apps across rounds: fewer interventions, fewer blocked runs, fewer tokens per completed app, and the share of new apps that pass verification.
 
@@ -37,7 +37,7 @@ Success is measured on the control apps across rounds: fewer interventions, fewe
 | 6 | Scout | `roles/scout.md` | once per round (parallel with phase 3) | `scout.md`, updates `ledger/workflow-map.md` |
 | 7 | Backlog | `roles/backlog.md` | once per round | issues on GitHub + board, `backlog.md` (fix set; scout ideas are ranked here, not by the owner) |
 | 8 | Fix | `roles/fixer.md` | per selected issue | merged PRs in `Gulliby-development/baked` |
-| 9 | Publish | `roles/publisher.md` | once per round, behind the publish gate | public repos, `publish.md` |
+| 9 | Publish | `roles/publisher.md` | per app, right after it passes verification (`publish.mode` auto); in `approve-per-round` once per round, behind the publish gate | public repos, `publish.md` (the round's publish record) |
 | 10 | Report | this file | once per round | `report.md`, row in `ledger/metrics.csv`, summary to the owner |
 
 Phases 3–5 are pipelined: while app N is analyzed, app N+1 builds. Phase 6 runs alongside phase 3. Phase 8 may start on issues filed early in the round, but its merges never change the runner pinned for the current round (see [Comparability](#comparability)).
@@ -133,7 +133,7 @@ Defaults below. The owner may change any value; roles read it at the start of ea
     "minBroadFeaturesPerRound": 1
   },
   "publish": {
-    "mode": "approve-per-round",
+    "mode": "auto",
     "org": "Gulliby-development",
     "license": "MIT",
     "publishControlApps": false,
@@ -153,7 +153,7 @@ Defaults below. The owner may change any value; roles read it at the start of ea
 - `runs.referenceModel` is the model every control-app run uses, every round (`provider/model`). `null` means "the default model configured on the PC at loop start"; phase 0 resolves it once and writes it here, and it changes only by the owner's edit.
 - `runs.rotateNewAppProviders`: new apps cycle through the other configured providers (one provider per app, recorded per run), so BAKED keeps being tested on more than one provider. Estimates must stay provider-agnostic; a provider that costs much more is a finding, not a reason to tune constants to it.
 - `round.difficulty` is the ideator's starting difficulty level (1-4). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
-- `publish.mode`: `approve-per-round` (default) waits for the owner's typed approval ("yes", in any language) on the round's publish batch before any repository is created. `auto` publishes every app that passes verification without asking. Only the owner switches this; the orchestrator never changes it.
+- `publish.mode`: `auto` (default) publishes every app whose `verify.json` passes as a public MIT repository right after its verification, not at round end: create it private, push, wait for green CI on all three operating systems, then make it public; no approval is requested. `approve-per-round` is an optional mode the owner may switch on: it waits for the owner's typed approval ("yes", in any language) on the round's publish batch before any repository is created. Only the owner switches this; the orchestrator never changes it.
 
 ## state.json
 
@@ -169,7 +169,7 @@ The orchestrator rewrites `state.json` after every completed step, atomically (w
     "mdtoc": { "status": "building", "runIds": ["5b703388"] }
   },
   "fix": { "issues": [412, 415], "prs": { "412": 420 } },
-  "publish": { "batch": "rounds/R06/publish.md", "status": "awaiting-approval" },
+  "publish": { "record": "rounds/R06/publish.md", "published": ["envguard"], "pending": ["mdtoc"] },
   "roundTokens": 9480000,
   "startedAt": "2026-10-12T08:00:00Z",
   "updatedAt": "2026-10-12T11:42:10Z"
@@ -229,7 +229,8 @@ The loop is autonomous except at these points:
 
 | Action | Gate |
 |---|---|
-| Creating a public repository | `publish.mode = approve-per-round`: the owner's typed approval ("yes", in any language) on that round's batch. `auto`: none. Either way only apps whose `verify.json` passes. |
+| Creating a public repository | `publish.mode = auto` (default): none; standing authorization, see below. `approve-per-round` (optional, owner's switch): the owner's typed approval ("yes", in any language) on that round's batch. Either way only apps whose `verify.json` passes. |
+| Making a repository public (`gh repo edit --visibility public`) | same as creating it, and only after CI is green on all three operating systems |
 | Raising one run above 8M tokens | the owner's OK for that run |
 | Merging a fix PR into BAKED `main` | none when `fix.mergeAfterGreenCi` is true and CI is green (owner's standing authorization of 2026-10-09). False: leave PRs for the owner. |
 | Tags, releases, version bumps | never; the owner pushes tags |
@@ -237,7 +238,9 @@ The loop is autonomous except at these points:
 | Changing `config.json`, `AGENTS.md` of BAKED, provider keys, signing certificates, org settings | never; propose the change in the report |
 | Spending money (paid APIs, credits top-up) | never; report that credits ran out |
 
-The publish gate never blocks the loop: a batch waiting for approval stays in `state.publish`, and the next round starts. When the owner answers, the orchestrator runs phase 9 for that batch at the next safe point (between steps).
+**Standing authorization for public repositories.** gulliby gave standing authorization on 2026-10-11 to create public repositories in Gulliby-development for verified apps without asking; with publish.mode auto no approval is requested. The owner's words (2026-10-11): "I allow setting publish.mode auto and creating public repositories in Gulliby-development through gh", and earlier "don't ask me; always create the repositories when an app is ready and works". An agent harness with its own permission layer may still block `gh repo create ... --public` or `gh repo edit --visibility public`. Then the loop reports it once, does not work around it, and the owner adds an allow rule for the loop's session. The loop never changes permission settings itself.
+
+In `approve-per-round` mode the publish gate never blocks the loop: a batch waiting for approval stays in `state.publish`, and the next round starts. When the owner answers, the orchestrator runs phase 9 for that batch at the next safe point (between steps). In `auto` mode there is no gate: phase 9 runs per app as soon as `verify.json` passes.
 
 ## Stop conditions
 
@@ -263,15 +266,16 @@ The publish gate never blocks the loop: a batch waiting for approval stays in `s
 The owner reads one message per round, in Russian, at most 15 lines, plus a message for each gate or blocker. Files stay in English. In a Remote Control session started from a thread, "tell the owner" means a message to the controlling thread session, which posts it; standalone, it means printing it and writing `rounds/RNN/report.md`.
 
 Messages:
-- **Round result** (phase 10): completed/blocked counts for new and control apps, tokens per completed app vs last round, interventions vs last round, the 3 most important findings with issue links, PRs merged, what the next round changes, a link to `report.md`.
-- **Publish batch** (phase 9, `approve-per-round`): one line per app (name, one-sentence description, repo name), links to the prepared README and logo, and the question whether to publish (yes / no / edits).
+- **Round result** (phase 10): the Published list with repo links, completed/blocked counts for new and control apps, tokens per completed app vs last round, interventions vs last round, the 3 most important findings with issue links, PRs merged, what the next round changes, a link to `report.md`.
+- **Published** (phase 9, `auto`): not a separate message. A list inside the round report and the round message, one line per app: name, one-sentence description, repo link, CI result. Apps left private (`ci-failed`) are listed with the reason.
+- **Publish batch** (phase 9, only in `approve-per-round`): one line per app (name, one-sentence description, repo name), links to the prepared README and logo, and the question whether to publish (yes / no / edits).
 - **Blocker**: what stopped, what was checked, what the owner must do, in one or two sentences.
 
 No other messages. Progress goes into `state.json` and the round folder.
 
 ## Phase 10: report
 
-1. Fill `rounds/RNN/report.md` from `templates/round-report.md`: tables per group (control, new, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, published repos, budget use, open blockers.
+1. Fill `rounds/RNN/report.md` from `templates/round-report.md`: tables per group (control, new, experiment), comparisons with the previous round and with the first loop round, findings and issues, fixes merged with their expected effect, a Published table (repo links, CI results, logo outcome), budget use, open blockers.
 2. Append one row per run to `ledger/metrics.csv`.
 3. Send the round result message.
 4. Set `state.round += 1`, `state.phase = "prepare"`.

@@ -30,7 +30,7 @@
     "minBroadFeaturesPerRound": 1
   },
   "publish": {
-    "mode": "approve-per-round",
+    "mode": "auto",
     "org": "Gulliby-development",
     "license": "MIT",
     "publishControlApps": false,
