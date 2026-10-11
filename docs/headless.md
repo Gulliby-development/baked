@@ -78,4 +78,4 @@ There is no one to ask in headless mode: actions that would ask for approval in 
 
 ## Custom commands and workflows
 
-`baked --headless "/fix-ci lint"` expands [custom commands](custom-commands.md). For multi-stage work with approvals, checks and budgets, use `baked workflow` ([runtime guide](workflows/runtime.md)), which is scriptable on its own and has its own exit codes.
+`baked --headless "/fix-ci lint"` expands [custom commands](custom-commands.md). For multi-stage work with approvals, checks and budgets, use `baked workflow` ([runtime guide](workflows/runtime.md)), which is scriptable on its own and has its own exit codes. `approve`, `answer` and `evidence` record the decision and then continue the run (resume and drive, with the exit codes of `resume`), as the terminal app and the desktop app do; `--no-resume` only records it, and a run that still has another request waiting for a person stops there with exit code 3.

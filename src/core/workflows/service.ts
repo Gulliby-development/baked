@@ -454,6 +454,16 @@ export class NativeWorkflowService implements WorkflowService {
       this.store.transition(runId, "paused", "none");
     });
   }
+  /**
+   * Whether a run can continue right after a decision: it is not finished and no request that
+   * blocks it is still pending (another question or approval waits for a person first).
+   */
+  canResumeAfterDecision(runId: string): boolean {
+    return (
+      !["completed", "cancelled", "failed"].includes(this.store.run(runId).status) &&
+      !this.store.requests(runId).some(blocksRun)
+    );
+  }
   async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
       const named = this.store.requests(runId).find((r) => r.id === decision.requestId);

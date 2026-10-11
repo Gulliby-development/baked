@@ -44,6 +44,8 @@ const commands = [
   "estimate",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
+/** Decisions that continue the run in the terminal unless `--no-resume` is given. */
+export const DECISION_COMMANDS: readonly WorkflowCommand[] = ["approve", "answer", "evidence"];
 export interface WorkflowArgs {
   command: WorkflowCommand;
   positional: string[];
@@ -108,6 +110,7 @@ const flags = new Set([
   "exclude-user-changes",
   "route",
   "resume",
+  "no-resume",
   "clarification",
   "issue",
   "output",
@@ -127,6 +130,7 @@ const booleanFlags = new Set([
   "worktree",
   "exclude-user-changes",
   "resume",
+  "no-resume",
 ]);
 /** `doctor` and `estimate` take the `run` options that change whether and how a run starts. */
 const preRunFlags = [
@@ -139,6 +143,7 @@ const preRunFlags = [
   "confirm-auto-approval",
   "json",
 ];
+const decisionResumeFlags = ["resume", "no-resume", "events", "after"];
 const commandFlags: Record<WorkflowCommand, string[]> = {
   run: [
     "feature",
@@ -174,9 +179,23 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   status: [],
   list: ["feature", "limit", "cursor", "status"],
   resume: ["expected-revision", "command-id", "events", "after"],
-  approve: ["request", "digest", "expected-revision", "command-id", "exclude-user-changes"],
-  answer: ["request", "answers-file", "expected-revision", "command-id"],
-  evidence: ["request", "file", "accept", "expected-revision", "command-id"],
+  approve: [
+    "request",
+    "digest",
+    "expected-revision",
+    "command-id",
+    "exclude-user-changes",
+    ...decisionResumeFlags,
+  ],
+  answer: ["request", "answers-file", "expected-revision", "command-id", ...decisionResumeFlags],
+  evidence: [
+    "request",
+    "file",
+    "accept",
+    "expected-revision",
+    "command-id",
+    ...decisionResumeFlags,
+  ],
   reject: ["request", "reason", "expected-revision", "command-id"],
   pause: ["expected-revision", "command-id"],
   cancel: ["expected-revision", "command-id"],
@@ -240,6 +259,15 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
         throw new WorkflowFault("INVALID_DEFINITION", `${token} needs a value`);
       result.flags[name] = value;
     }
+  }
+  if (DECISION_COMMANDS.includes(result.command)) {
+    if (result.flags.resume && result.flags["no-resume"])
+      throw new WorkflowFault("INVALID_DEFINITION", "--resume and --no-resume exclude each other");
+    // The terminal continues the run after a decision, as the terminal app and the desktop do.
+    if (result.flags["no-resume"]) {
+      if ("events" in result.flags || "after" in result.flags)
+        throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
+    } else result.flags.resume = true;
   }
   return validateWorkflowArgs(result);
 }
@@ -409,10 +437,12 @@ memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | m
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]
-approve RUN_ID --request ID --digest SHA256 --expected-revision N [--exclude-user-changes]
+approve RUN_ID --request ID --digest SHA256 --expected-revision N [--exclude-user-changes] [--no-resume]
   --exclude-user-changes is required when a worktree run's approved files have uncommitted changes in your working copy
-answer RUN_ID --request ID --answers-file FILE --expected-revision N
-evidence RUN_ID --request ID --file FILE --accept --expected-revision N
+answer RUN_ID --request ID --answers-file FILE --expected-revision N [--no-resume]
+evidence RUN_ID --request ID --file FILE --accept --expected-revision N [--no-resume]
+  approve, answer and evidence continue the run after the decision (resume and drive, exit codes
+  as resume) unless another request still waits for a person; --no-resume only records the decision
 reject RUN_ID --request ID --reason TEXT --expected-revision N
   An AI walk-through's verified test waits as an approval request with an acceptance body
   (see status). approve promotes it: the test file and its command gate with provenance are
