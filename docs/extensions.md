@@ -44,7 +44,7 @@ Hooks run shell commands at lifecycle events. The format is the one Claude Code 
 4. the global BAKED `config.json`
 5. `.baked/config.json`
 
-`"disableAllHooks": true` in any of them turns hooks off. `/hooks` lists active hooks and toggles them for the session.
+`"disableAllHooks": true` in any of them turns hooks off. `/hooks` lists active hooks and toggles them for the session. In the desktop app, the project's Hooks section lists them with their files and switches an event off until the project's backend restarts (`GET /v1/hooks`, `POST /v1/hooks/session` in the [desktop API](desktop/api.md)); neither writes a file, and hooks are added or changed only in the files above.
 
 ```json
 {

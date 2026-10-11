@@ -9,22 +9,25 @@
 // ── Hook events ──────────────────────────────────────────────────────
 
 /** Events that fire during the agent lifecycle. */
-export type HookEventName =
-  | "PreToolUse"
-  | "PostToolUse"
-  | "PostToolUseFailure"
-  | "UserPromptSubmit"
-  | "Stop"
-  | "StopFailure"
-  | "SessionStart"
-  | "SessionEnd"
-  | "PreCompact"
-  | "PostCompact"
-  | "SubagentStart"
-  | "SubagentStop"
-  | "Notification"
+export const HOOK_EVENTS = [
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "UserPromptSubmit",
+  "Stop",
+  "StopFailure",
+  "SessionStart",
+  "SessionEnd",
+  "PreCompact",
+  "PostCompact",
+  "SubagentStart",
+  "SubagentStop",
+  "Notification",
   /** A workflow run waits for a person: a request, or a blocked run. Matcher: the kind. */
-  | "RunAttention";
+  "RunAttention",
+] as const;
+
+export type HookEventName = (typeof HOOK_EVENTS)[number];
 
 // ── Hook handler types ───────────────────────────────────────────────
 

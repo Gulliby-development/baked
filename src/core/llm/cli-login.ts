@@ -219,6 +219,31 @@ export async function logoutCli(
   return result;
 }
 
+/** What {@link switchCliAccount} did: the logout's result and the login it started, if any. */
+export interface CliAccountSwitch {
+  ok: boolean;
+  message: string;
+  login: CliLogin | null;
+}
+
+/**
+ * Switches the CLI to another account, as `/codex switch` does: signs the current account out
+ * with the CLI's own logout, then starts its login so the user picks an account in the browser.
+ * The CLI keeps one account at a time and its own credentials, so there is no account list. When
+ * the logout fails and the CLI is still signed in, no login starts.
+ */
+export async function switchCliAccount(provider: CliLoginProvider): Promise<CliAccountSwitch> {
+  const running = logins.get(provider);
+  if (running?.login.state === "running") {
+    return { ok: true, message: "A sign-in is already running.", login: snapshot(running.login) };
+  }
+  const logout = await logoutCli(provider);
+  if (!logout.ok && backends[provider].status().loggedIn) {
+    return { ok: false, message: logout.message, login: null };
+  }
+  return { ok: true, message: logout.message, login: startCliLogin(provider) };
+}
+
 async function refreshProvider(provider: CliLoginProvider): Promise<void> {
   invalidateProviderModelCache(provider);
   await checkProviders().catch(() => {});
