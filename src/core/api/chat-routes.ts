@@ -1,5 +1,5 @@
 /**
- * The chat endpoints of the local API: `/v1/sessions` and `/v1/models`. The contract is
+ * The chat endpoints of the local API: `/v1/sessions`, `/v1/models` and `/v1/mentions`. The contract is
  * `docs/desktop/api.md`; the sessions themselves live in `ChatService`.
  */
 import type { ChatError, ChatService } from "../chat/sessions.js";
@@ -7,8 +7,10 @@ import { fetchProviderModels } from "../llm/models.js";
 import { checkProviders } from "../llm/provider.js";
 import type { RouteContext } from "./route-context.js";
 import {
+  CompactBody,
   CreateSessionBody,
   ForkSessionBody,
+  MentionsQuery,
   MessageBody,
   ModelsQuery,
   PromptAnswerBody,
@@ -22,7 +24,7 @@ export interface ChatRouteContext extends RouteContext {
 
 const ID = "[A-Za-z0-9-]+";
 const SESSION = new RegExp(
-  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts)(?:/(${ID}))?)?$`,
+  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff)(?:/(${ID}))?)?$`,
 );
 
 export function chatErrorStatus(error: ChatError): number {
@@ -31,6 +33,8 @@ export function chatErrorStatus(error: ChatError): number {
       return 404;
     case "INVALID_REQUEST":
       return 400;
+    case "NOT_SUPPORTED":
+      return 501;
     default:
       return 409;
   }
@@ -43,6 +47,13 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
   if (path === "/v1/models") {
     only("GET");
     return ctx.json(200, await models(ctx.query(ModelsQuery).provider));
+  }
+  if (path === "/v1/mentions") {
+    only("GET");
+    const { q, limit } = ctx.query(MentionsQuery);
+    const max = Math.min(50, limit ? Number(limit) : 20);
+    const mentions = chat.host.suggestMentions ? await chat.host.suggestMentions(q ?? "", max) : [];
+    return ctx.json(200, { mentions });
   }
   if (path === "/v1/sessions") {
     only("GET", "POST");
@@ -94,6 +105,11 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
       return () => {};
     });
   }
+  if (action === "diff") {
+    only("GET");
+    if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
+    return ctx.json(200, await chat.get(id).diffStats());
+  }
   only("POST");
   if (action === "prompts") {
     if (!sub) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
@@ -104,7 +120,12 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
   if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
   if (action === "fork") {
     const body = ForkSessionBody.parse(await ctx.readJson());
-    return ctx.json(201, (await chat.fork(id, body.atMessageId)).detail());
+    const { session, rollback } = await chat.fork(id, body.atMessageId, body);
+    return ctx.json(201, { ...session.detail(), ...(rollback ? { rollback } : {}) });
+  }
+  if (action === "compact") {
+    CompactBody.parse(await ctx.readJson());
+    return ctx.json(202, chat.get(id).compact());
   }
   if (action === "messages") {
     const body = MessageBody.parse(await ctx.readJson());

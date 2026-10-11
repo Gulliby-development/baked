@@ -550,7 +550,7 @@ printf "\n"
 
 if [[ -d "$BAKED_DIR" ]]; then
   (rm -rf "${BAKED_DIR}/bin") &
-  spin "Extinguishing the forge" $!
+  spin "Cooling the oven" $!
 
   (rm -rf "${BAKED_DIR}/installs") &
   spin "Removing tool installs" $!

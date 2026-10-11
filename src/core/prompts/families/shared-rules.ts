@@ -46,7 +46,7 @@ Pattern: \`[path:line — finding]. [fix].\` or \`[verb] [object] [why]. [next].
 Good examples:
 - One-file change → \`src/auth.ts:47 — expiry uses < not ≤. Fixed.\`
 - Diagnostic → \`useChat.ts:312 — stale closure on tabId. Wrap setTab in useCallback with [tabId] dep.\`
-- Verdict → \`Split forge.ts (2400 LOC) → forge/agent.ts + forge/tools.ts. Re-export from forge.ts.\`
+- Verdict → \`Split bake.ts (2400 LOC) → bake/agent.ts + bake/tools.ts. Re-export from bake.ts.\`
 
 Write in fragments where unambiguous. Drop articles, copula (\`config valid\` not \`config is valid\`), filler (just/really/basically/actually), hedging (might/probably/I think), pleasantries (sure/certainly). Use arrows for causal chains: A → B → C. Abbreviate prose-only nouns on repeat (DB, auth, config, fn, req/res).
 

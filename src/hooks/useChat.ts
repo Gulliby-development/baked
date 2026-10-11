@@ -14,10 +14,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { StreamSegment } from "../components/chat/StreamSegmentList.js";
 import type { LiveToolCall } from "../components/chat/ToolCallDisplay.js";
 import { normalizePath } from "../core/agents/agent-bus.js";
-import { createForgeAgent } from "../core/agents/index.js";
+import { createBakeAgent } from "../core/agents/index.js";
 import { AbnormalFinishError } from "../core/agents/stream-options.js";
 import { onAgentStats, onMultiAgentEvent, onSubagentStep } from "../core/agents/subagent-events.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
+import { expandChatInput, hasInputReferences } from "../core/chat/input-expansion.js";
 import { expandCustomSlashInput } from "../core/commands/registry.js";
 import {
   buildV2Summary,
@@ -28,6 +29,13 @@ import {
   extractFromUserMessage,
   WorkingStateManager,
 } from "../core/compaction/index.js";
+import {
+  assembleCompacted,
+  messageChars,
+  rehydrateWorkingState,
+  splitForCompaction,
+  v1CompactionPrompt,
+} from "../core/compaction/manual.js";
 import type { ContextManager } from "../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
 import { getCwd } from "../core/cwd.js";
@@ -88,8 +96,8 @@ import type {
 import { clampWatchdogTimeouts } from "../types/index.js";
 import { compressImageForApi } from "../utils/image-compress.js";
 import { reprimeContextFromMessages, safeParseArgs } from "./chat/message-processing.js";
+import { cycleBakeMode } from "./useBakeMode.js";
 import { buildAssistantMessage, hasRenderableAssistantContent } from "./useChat-content.js";
-import { cycleForgeMode } from "./useForgeMode.js";
 import { buildTabMeta } from "./useSessionBuilder.js";
 
 export interface TabState {
@@ -105,7 +113,7 @@ export interface TabState {
   sessionId: string;
   planMode: boolean;
   planRequest: string | null;
-  forgeMode: import("../types/index.js").ForgeMode;
+  bakeMode: import("../types/index.js").BakeMode;
 }
 
 interface TokenUsage {
@@ -250,9 +258,9 @@ export interface ChatInstance {
   setPendingPlanReview: React.Dispatch<React.SetStateAction<PendingPlanReview | null>>;
   snapshot: (label: string) => TabState;
   contextManager: ContextManager;
-  forgeMode: import("../types/index.js").ForgeMode;
-  setForgeMode: (mode: import("../types/index.js").ForgeMode) => void;
-  cycleMode: () => import("../types/index.js").ForgeMode;
+  bakeMode: import("../types/index.js").BakeMode;
+  setBakeMode: (mode: import("../types/index.js").BakeMode) => void;
+  cycleMode: () => import("../types/index.js").BakeMode;
   rotateRoutingSession: () => void;
 }
 
@@ -469,34 +477,34 @@ export function useChat({
   );
   const [coAuthorCommits, setCoAuthorCommits] = useState(initialState?.coAuthorCommits ?? true);
 
-  const [forgeMode, setForgeModeState] = useState<import("../types/index.js").ForgeMode>(
-    initialState?.forgeMode ?? effectiveConfig.defaultForgeMode ?? "default",
+  const [bakeMode, setBakeModeState] = useState<import("../types/index.js").BakeMode>(
+    initialState?.bakeMode ?? effectiveConfig.defaultBakeMode ?? "default",
   );
-  const forgeModeRef = useRef(forgeMode);
-  forgeModeRef.current = forgeMode;
+  const bakeModeRef = useRef(bakeMode);
+  bakeModeRef.current = bakeMode;
 
-  const setForgeMode = useCallback(
-    (mode: import("../types/index.js").ForgeMode) => {
-      setForgeModeState(mode);
-      forgeModeRef.current = mode;
-      contextManager.setForgeMode(mode);
+  const setBakeMode = useCallback(
+    (mode: import("../types/index.js").BakeMode) => {
+      setBakeModeState(mode);
+      bakeModeRef.current = mode;
+      contextManager.setBakeMode(mode);
     },
     [contextManager],
   );
 
-  const cycleModeFn = useCallback((): import("../types/index.js").ForgeMode => {
-    const next = cycleForgeMode(forgeModeRef.current);
-    setForgeMode(next);
+  const cycleModeFn = useCallback((): import("../types/index.js").BakeMode => {
+    const next = cycleBakeMode(bakeModeRef.current);
+    setBakeMode(next);
     return next;
-  }, [setForgeMode]);
+  }, [setBakeMode]);
 
-  // Sync forgeMode to contextManager on mount (covers session resume) and on
+  // Sync bakeMode to contextManager on mount (covers session resume) and on
   // every change. Each tab has its own contextManager (TabInstance.tsx), so
-  // syncing for inactive tabs is safe — the agent only reads forgeMode at
+  // syncing for inactive tabs is safe — the agent only reads bakeMode at
   // turn start, which only happens when the tab is active anyway.
   useEffect(() => {
-    contextManager.setForgeMode(forgeMode);
-  }, [forgeMode, contextManager]);
+    contextManager.setBakeMode(bakeMode);
+  }, [bakeMode, contextManager]);
 
   // Sync co-author flag with git module + shell interceptor
   useEffect(() => {
@@ -593,7 +601,7 @@ export function useChat({
           planMode: planModeRef.current,
           planRequest: planRequestRef.current,
           coAuthorCommits,
-          forgeMode: forgeModeRef.current,
+          bakeMode: bakeModeRef.current,
           tokenUsage: tokenUsageRef.current,
           messages: filtered,
           coreMessages: cores,
@@ -603,7 +611,7 @@ export function useChat({
             title: customTitleRef.current ?? SessionManager.deriveTitle(filtered),
             customTitle: customTitleRef.current,
             cwd,
-            forgeMode: forgeModeRef.current,
+            bakeMode: bakeModeRef.current,
             activeTabId: tabId,
           })
           .catch(() => {});
@@ -761,27 +769,7 @@ export function useChat({
   const didRehydrate = useRef(false);
   if (!didRehydrate.current && workingStateRef.current && initialState?.coreMessages?.length) {
     didRehydrate.current = true;
-    const wsm = workingStateRef.current;
-    for (const msg of initialState.coreMessages) {
-      if (msg.role === "user") {
-        extractFromUserMessage(wsm, msg);
-      } else if (msg.role === "assistant" && Array.isArray(msg.content)) {
-        extractFromAssistantMessage(wsm, msg);
-        for (const part of msg.content) {
-          if (typeof part === "object" && "type" in part && part.type === "tool-call") {
-            const tc = part as { toolName: string; input: Record<string, unknown> };
-            extractFromToolCall(wsm, tc.toolName, tc.input);
-          }
-        }
-      } else if (msg.role === "tool" && Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (typeof part === "object" && "type" in part && part.type === "tool-result") {
-            const tr = part as { toolName: string; output: unknown };
-            extractFromToolResult(wsm, tr.toolName, tr.output);
-          }
-        }
-      }
-    }
+    rehydrateWorkingState(workingStateRef.current, initialState.coreMessages);
   }
   const prevCompactionStrategy = useRef(effectiveConfig.compaction?.strategy);
 
@@ -911,18 +899,10 @@ export function useChat({
         const compactionCfg = effectiveConfig.compaction;
         const isV2 = compactionCfg?.strategy === "v2";
         const KEEP_RECENT = compactionCfg?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
-        let keepStart = Math.max(0, currentCore.length - KEEP_RECENT);
-        // Never split between assistant tool-call and its tool-result pair
-        while (keepStart > 0 && currentCore[keepStart]?.role === "tool") {
-          keepStart--;
-        }
-        // After ackMsg (assistant), recentMessages must start with "user" to maintain alternation.
-        // If it starts with "assistant", back up one more to include the preceding user message.
-        if (keepStart > 0 && currentCore[keepStart]?.role === "assistant") {
-          keepStart--;
-        }
-        const olderMessages = currentCore.slice(0, keepStart);
-        const recentMessages = currentCore.slice(keepStart);
+        const { older: olderMessages, recent: recentMessages } = splitForCompaction(
+          currentCore,
+          KEEP_RECENT,
+        );
 
         if (olderMessages.length < 2) {
           isCompactingRef.current = false;
@@ -1039,38 +1019,11 @@ export function useChat({
               diaryParts.push(`DISCOVERIES:${ws.discoveries.join("|")}`);
             if (ws.failures.length > 0) diaryParts.push(`FAILURES:${ws.failures.join("|")}`);
             diaryParts.push(`FILES:${[...ws.files.keys()].slice(0, 10).join("|")}`);
-            writeDiary("forge", diaryParts.join("|"));
+            writeDiary("bake", diaryParts.join("|"));
           }
 
           wsm.reset();
         } else {
-          const formatMessage = (m: ModelMessage, charLimit: number) => {
-            const role = m.role;
-            if (typeof m.content === "string") {
-              return `${role}: ${m.content.slice(0, charLimit)}`;
-            }
-            if (Array.isArray(m.content)) {
-              const parts = m.content
-                .map((p) => {
-                  if (typeof p === "object" && p !== null) {
-                    if ("text" in p)
-                      return String((p as { text: string }).text).slice(0, charLimit);
-                    if ("type" in p && (p as { type: string }).type === "tool-result") {
-                      const tr = p as { toolName?: string; result?: unknown };
-                      const resultStr = tr.result != null ? JSON.stringify(tr.result) : "null";
-                      return `[tool-result: ${tr.toolName ?? "unknown"} → ${resultStr.slice(0, 8000)}]`;
-                    }
-                  }
-                  return JSON.stringify(p).slice(0, 3000);
-                })
-                .join("\n");
-              return `${role}: ${parts}`;
-            }
-            return `${role}: [complex content]`;
-          };
-
-          const convoText = olderMessages.map((m) => formatMessage(m, 6000)).join("\n\n");
-
           const compactStartedAt = Date.now();
           const v1Result = await generateText({
             model,
@@ -1081,43 +1034,7 @@ export function useChat({
               ? { providerOptions }
               : {}),
             ...(headers ? { headers } : {}),
-            prompt: [
-              "You are summarizing the older portion of a coding assistant conversation.",
-              "The most recent messages will be preserved verbatim — focus on summarizing what came before.",
-              "Output ONLY the structured summary below. Do not include any meta-commentary about the summarization process.",
-              "",
-              "Create a structured summary with these sections:",
-              "",
-              "## Environment",
-              "Project type, key technologies, working directory, any config details mentioned.",
-              "",
-              "## Files Touched",
-              "Every file path that was read, edited, or created. For EDITS: include the specific old→new changes (function signatures, variable names, logic). For READS: note key content found.",
-              "",
-              "## Tool Results",
-              "Key tool results that inform future decisions: grep matches, test output, diagnostics, build errors. Include literal output where it matters — don't just say 'tests passed', say which tests and any warnings.",
-              "",
-              "## Key Decisions",
-              "Architectural choices, design patterns chosen, trade-offs discussed.",
-              "",
-              "## Work Completed",
-              "What was accomplished. Include specific function names, variable names, code patterns.",
-              "",
-              "## Errors & Resolutions",
-              "Problems encountered and how they were resolved. Include the actual error messages.",
-              "",
-              "## Current State",
-              "What was being worked on at the end of this section. What remains to be done.",
-              planContext
-                ? `\n${planContext}\nINCLUDE the plan progress above VERBATIM in ## Current State so the agent knows which steps are done/active/pending.`
-                : "",
-              "",
-              "Be thorough — preserve specific details (file contents, error messages, code changes).",
-              "CRITICAL: Preserve specific details from tool results (file contents, error messages, test output). Generic summaries like 'edited file X' are useless — include WHAT was changed.",
-              "",
-              "CONVERSATION TO SUMMARIZE:",
-              convoText,
-            ].join("\n"),
+            prompt: v1CompactionPrompt(olderMessages, planContext),
           });
           summary = v1Result.text;
           const v1u = v1Result.usage;
@@ -1160,60 +1077,8 @@ export function useChat({
           return;
         }
 
-        const summaryMsg: ModelMessage = {
-          role: "user" as const,
-          content: summary,
-        };
-
-        const ackMsg: ModelMessage = {
-          role: "assistant" as const,
-          content: "Continuing.",
-        };
-
-        // Structural validation of recentMessages.
-        // After compaction, messages may have broken invariants:
-        // 1. Orphaned tool_result at the start (no preceding assistant with tool_use)
-        // 2. Two user messages in a row after ackMsg (assistant) + recentMessages[0] (user skipped, next is user)
-        // 3. tool messages in the middle without their assistant counterpart
-        //
-        // Fix: drop leading tool messages, then ensure alternation is valid.
-        let validStart = 0;
-        for (let i = 0; i < recentMessages.length; i++) {
-          if (recentMessages[i]?.role === "tool") {
-            validStart = i + 1;
-          } else {
-            break;
-          }
-        }
-        // After ackMsg (assistant), next must be user or tool-with-assistant.
-        // If recentMessages starts with assistant, drop it to avoid assistant→assistant.
-        if (
-          validStart < recentMessages.length &&
-          recentMessages[validStart]?.role === "assistant"
-        ) {
-          validStart++;
-        }
-        const validRecent = validStart > 0 ? recentMessages.slice(validStart) : recentMessages;
-
-        // Final pass: strip any remaining orphaned tool messages throughout.
-        // A tool message is valid only if preceded by an assistant message.
-        const sanitized: typeof validRecent = [];
-        for (const msg of validRecent) {
-          if (msg.role === "tool") {
-            const prev = sanitized[sanitized.length - 1];
-            if (prev?.role !== "assistant") continue; // drop orphan
-          }
-          sanitized.push(msg);
-        }
-
-        // If sanitization removed everything, keep at least one recent user message
-        // to maintain valid conversation structure.
-        if (sanitized.length === 0) {
-          const lastUser = recentMessages.findLast((m) => m.role === "user");
-          if (lastUser) sanitized.push(lastUser);
-        }
-
-        const newMessages = [summaryMsg, ackMsg, ...sanitized];
+        const newMessages = assembleCompacted(summary, recentMessages);
+        const sanitized = newMessages.slice(2);
         setCoreMessages(newMessages);
         emitCacheReset(); // Old read results are gone — allow re-reads
         const trackedFiles = contextManager.getTrackedFiles();
@@ -1228,15 +1093,7 @@ export function useChat({
         for (const f of trackedFiles.mentioned) contextManager.trackMentionedFile(f);
         reprimeContextFromMessages(contextManager, sanitized);
 
-        const newCoreChars = newMessages.reduce((sum, m) => {
-          if (typeof m.content === "string") return sum + m.content.length;
-          if (Array.isArray(m.content)) {
-            return (
-              sum + m.content.reduce((s: number, p: unknown) => s + JSON.stringify(p).length, 0)
-            );
-          }
-          return sum;
-        }, 0);
+        const newCoreChars = messageChars(newMessages);
         const afterChars = systemChars + newCoreChars;
         const afterPct = Math.round((afterChars / charsPerToken / contextWindow) * 100);
         const estimatedTokens = Math.ceil(afterChars / charsPerToken);
@@ -1601,12 +1458,53 @@ export function useChat({
         }
       }
 
+      // `@` mentions and a leading `!command` expand into context for the model; the chat shows
+      // the message as typed with what was attached under it.
+      let modelInput = input;
+      let inputContext: ChatMessage["inputContext"];
+      if (hasInputReferences(input)) {
+        const expandAbort = new AbortController();
+        abortRef.current = expandAbort;
+        setIsLoading(true);
+        let expanded: Awaited<ReturnType<typeof expandChatInput>>;
+        try {
+          expanded = await expandChatInput(input, {
+            cwd,
+            mode: bakeModeRef.current,
+            repoMap: contextManager.isRepoMapReady() ? contextManager.getRepoMap() : undefined,
+            onApproveDestructive: promptDestructive,
+            tabId,
+            ...(tabLabel ? { tabLabel } : {}),
+            abortSignal: expandAbort.signal,
+          });
+        } finally {
+          if (abortRef.current === expandAbort) abortRef.current = null;
+        }
+        if (expandAbort.signal.aborted) return;
+        for (const f of expanded.files) contextManager.trackMentionedFile(f);
+        modelInput = expanded.text;
+        if (expanded.items.length > 0) inputContext = expanded.items;
+        if (!expanded.send) {
+          setIsLoading(false);
+          const shown: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: "user",
+            content: input,
+            timestamp: Date.now(),
+            inputContext,
+          };
+          setMessages((prev) => [...prev, shown]);
+          return;
+        }
+      }
+
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
         content: input,
         timestamp: Date.now(),
         images: images && images.length > 0 ? images : undefined,
+        ...(inputContext ? { inputContext } : {}),
       };
       setMessages((prev) => {
         const allMsgs = [...prev, userMsg];
@@ -1623,7 +1521,7 @@ export function useChat({
       // Build user content: text + optional image parts for multimodal models
       let userContent: string | Array<TextPart | ImagePart>;
       if (images && images.length > 0) {
-        const parts: Array<TextPart | ImagePart> = [{ type: "text" as const, text: input }];
+        const parts: Array<TextPart | ImagePart> = [{ type: "text" as const, text: modelInput }];
         for (const img of images) {
           const raw = Buffer.from(img.base64, "base64");
           const { data, mediaType } = await compressImageForApi(raw, img.mediaType);
@@ -1635,7 +1533,7 @@ export function useChat({
         }
         userContent = parts;
       } else {
-        userContent = input;
+        userContent = modelInput;
       }
       const userCoreMsg: ModelMessage = { role: "user" as const, content: userContent };
       // Sanitize: strip empty assistant text blocks that would cause Anthropic to reject.
@@ -2125,9 +2023,14 @@ export function useChat({
 
           const drainSteering = (): { text: string; images?: ImageAttachment[] } | null => {
             if (steeringAbortedRef.current) return null;
-            const queue = messageQueueRef.current;
+            // A queued message with `@` mentions or a `!command` waits for the turn to end, so it is
+            // expanded like a typed message; the ones before it steer now.
+            const pending = messageQueueRef.current;
+            const firstRef = pending.findIndex((m) => hasInputReferences(m.content));
+            const queue = firstRef === -1 ? pending : pending.slice(0, firstRef);
+            const rest = firstRef === -1 ? [] : pending.slice(firstRef);
             if (queue.length === 0) return null;
-            // Drain ALL queued steering messages at once
+            // Drain the queued steering messages at once
             const drained: ChatMessage[] = [];
             const texts: string[] = [];
             const allImages: ImageAttachment[] = [];
@@ -2147,8 +2050,8 @@ export function useChat({
                 if (item.images) allImages.push(...item.images);
               }
             }
-            messageQueueRef.current = [];
-            setMessageQueue([]);
+            messageQueueRef.current = rest;
+            setMessageQueue(rest);
 
             if (drained.length > 0) {
               // Flush current progress + steering into messages
@@ -2249,11 +2152,11 @@ export function useChat({
             contextManager.maybeReseedExpiredCache(idleMs);
           }
 
-          const agent = createForgeAgent({
+          const agent = createBakeAgent({
             model,
             fullModelId: modelId,
             contextManager,
-            forgeMode: contextManager.getForgeMode(),
+            bakeMode: contextManager.getBakeMode(),
             interactive: interactiveCallbacks,
             subagentModels,
             webSearchModel: effectiveWebSearchModel,
@@ -2291,11 +2194,11 @@ export function useChat({
                   ? agent
                   : (() => {
                       const degraded = degradeProviderOptions(activeModelRef.current, degradeLevel);
-                      return createForgeAgent({
+                      return createBakeAgent({
                         model,
                         fullModelId: modelId,
                         contextManager,
-                        forgeMode: contextManager.getForgeMode(),
+                        bakeMode: contextManager.getBakeMode(),
                         interactive: interactiveCallbacks,
                         subagentModels,
                         webSearchModel: effectiveWebSearchModel,
@@ -3765,7 +3668,7 @@ export function useChat({
             } else {
               planModeRef.current = false;
               planRequestRef.current = null;
-              setForgeMode("default");
+              setBakeMode("default");
 
               if (postAction.action === "cancel") {
                 clearTasks(tabId);
@@ -3878,7 +3781,7 @@ export function useChat({
       promptDestructive,
       tabId,
       tabLabel,
-      setForgeMode,
+      setBakeMode,
       onModelChange,
       setCoreMessagesEager,
       // setCoreMessagesEager updates the ref synchronously inside its
@@ -3963,7 +3866,7 @@ export function useChat({
       sessionId: sessionIdRef.current,
       planMode: planModeRef.current,
       planRequest: planRequestRef.current,
-      forgeMode,
+      bakeMode,
     }),
     [
       messages,
@@ -3973,7 +3876,7 @@ export function useChat({
       sidebarPlan,
       tokenUsage,
       coAuthorCommits,
-      forgeMode,
+      bakeMode,
     ],
   );
 
@@ -4030,8 +3933,8 @@ export function useChat({
     setPendingPlanReview,
     snapshot,
     contextManager,
-    forgeMode,
-    setForgeMode,
+    bakeMode,
+    setBakeMode,
     cycleMode: cycleModeFn,
   };
 }

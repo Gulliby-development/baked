@@ -81,10 +81,10 @@ function handleMode(input: string, ctx: CommandContext): void {
   const modeName = trimmed.slice(5).trim().toLowerCase();
   const validModes = ["default", "architect", "plan", "auto"] as const;
   type Mode = (typeof validModes)[number];
-  const patch = (v: string) => ({ defaultForgeMode: v as Mode });
+  const patch = (v: string) => ({ defaultBakeMode: v as Mode });
 
   const applyMode = (mode: Mode, scope?: ConfigScope) => {
-    ctx.setForgeMode(mode);
+    ctx.setBakeMode(mode);
     ctx.saveToScope(patch(mode), scope ?? "project");
     sysMsg(ctx, `Baked mode set to: ${mode} (${scope ?? "project"})`);
   };
@@ -100,7 +100,7 @@ function handleMode(input: string, ctx: CommandContext): void {
       icon: icon("ai"),
       currentValue: ctx.currentMode,
       scopeEnabled: true,
-      initialScope: ctx.detectScope("defaultForgeMode"),
+      initialScope: ctx.detectScope("defaultBakeMode"),
       options: [
         {
           value: "default",
@@ -129,7 +129,7 @@ function handleMode(input: string, ctx: CommandContext): void {
       ],
       onSelect: (value, scope) => applyMode(value as Mode, scope),
       onScopeMove: (value, from, to) => {
-        ctx.setForgeMode(value as Mode);
+        ctx.setBakeMode(value as Mode);
         ctx.saveToScope(patch(value), to, from);
       },
     });

@@ -82,7 +82,7 @@ describe("doctor", () => {
     expect(badRoute.checks.find((c) => c.id === "start")?.detail).toContain("$nope");
   });
 
-  test("a routed model without credentials or provider fails and names who uses it", async () => {
+  test("a routed model without credentials fails, one without a known provider warns, and both name who uses it", async () => {
     const { root, config } = fixture();
     const routed = { ...config, modelRouting: { roles: { researcher: "other/model" } } };
     const report = await runDoctor(
@@ -101,16 +101,16 @@ describe("doctor", () => {
     expect(key?.subject).toBe("fixture/model");
     expect(key?.fix).toContain("FIXTURE_API_KEY");
     const provider = report.checks.find((c) => c.id === "models.provider");
-    expect(provider).toMatchObject({ status: "fail", subject: "other/model" });
-    expect(provider?.detail).toContain("stage research");
+    expect(provider).toMatchObject({ status: "warn", subject: "other/model" });
+    expect(provider?.detail).toContain("profile researcher");
   });
 
-  test("checkModels reports a model ID without a provider", async () => {
+  test("checkModels warns about a model ID without a provider", async () => {
     const checks = await checkModels([{ model: "bare", usedBy: ["stage plan"] }], async () => ({
       known: true,
       ready: true,
     }));
-    expect(checks[0]?.status).toBe("fail");
+    expect(checks[0]).toMatchObject({ id: "models.provider", status: "warn", title: "bare is not a provider/model ID" });
   });
 
   test("a missing required check command fails; an optional one warns", async () => {

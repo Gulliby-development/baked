@@ -15,6 +15,7 @@ import {
 } from "./routing.js";
 import { GATES_ARTIFACT } from "./scheduler.js";
 import {
+  clarificationOf,
   type ExecutionMode,
   executionModeOf,
   PolicySchema,
@@ -78,6 +79,7 @@ export async function prepareStart(
     | "autoApprovalConfirmation"
     | "executionMode"
     | "maxConcurrentWriters"
+    | "clarification"
   >,
 ): Promise<PreparedStart> {
   const model = request.model ?? config.defaultModel;
@@ -149,13 +151,21 @@ export async function prepareStart(
     request.executionMode ??
     (loaded.schemaVersion === 2 ? loaded.definition.execution : undefined) ??
     executionModeOf(policy);
-  const { executionMode: _previous, allowOverlappingWrites, ...rest } = policy;
+  const {
+    executionMode: _previous,
+    clarification: _clarification,
+    allowOverlappingWrites,
+    ...rest
+  } = policy;
+  // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
+  const clarification = request.clarification ?? clarificationOf(policy);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
     ...rest,
     ...(mode === "worktree" ? { executionMode: mode } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
+    ...(clarification === "assume" ? { clarification } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),

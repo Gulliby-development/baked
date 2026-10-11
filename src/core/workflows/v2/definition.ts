@@ -86,6 +86,11 @@ export const CommandGate = z
         cwd: z.union([z.literal("."), RelativePath]),
         envNames: UniqueStrings,
         writes: z.array(RelativePath),
+        /** A fixer for what the command reports; the file path is appended (see `Check.fix`). */
+        fix: z
+          .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+          .strict()
+          .optional(),
       })
       .strict(),
     /** Set on a gate written from an accepted AI walk-through; the test file is pinned by hash. */

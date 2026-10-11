@@ -1,4 +1,5 @@
 export { anthropic } from "./anthropic.js";
+export { claudeCode } from "./claude-code.js";
 export { codex } from "./codex.js";
 export { copilot } from "./copilot.js";
 export { githubModels } from "./github-models.js";
@@ -6,13 +7,21 @@ export { openai } from "./openai.js";
 export type { ProviderDefinition, ProviderModelInfo } from "./types.js";
 
 import { anthropic } from "./anthropic.js";
+import { claudeCode } from "./claude-code.js";
 import { codex } from "./codex.js";
 import { copilot } from "./copilot.js";
 import { githubModels } from "./github-models.js";
 import { openai } from "./openai.js";
 import type { ProviderDefinition } from "./types.js";
 
-const BUILTIN_PROVIDERS: ProviderDefinition[] = [anthropic, openai, codex, copilot, githubModels];
+const BUILTIN_PROVIDERS: ProviderDefinition[] = [
+  anthropic,
+  claudeCode,
+  openai,
+  codex,
+  copilot,
+  githubModels,
+];
 
 const allProviders: ProviderDefinition[] = [...BUILTIN_PROVIDERS];
 const providerMap = new Map(allProviders.map((p) => [p.id, p]));

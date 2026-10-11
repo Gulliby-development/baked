@@ -1,8 +1,11 @@
-import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import { BUDGET_PRESETS } from "../../core/workflows/budget.js";
-import { MAX_CONCURRENT_WRITERS } from "../../core/workflows/schemas.js";
+import {
+  type ClarificationMode,
+  clarificationOf,
+  MAX_CONCURRENT_WRITERS,
+} from "../../core/workflows/schemas.js";
 import {
   type BudgetPresetId,
   clampWriters,
@@ -11,6 +14,7 @@ import {
   type StartRunInput,
   type WorkflowInfo,
 } from "../../core/workflows/view.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Field, Hint, Section } from "../ui/index.js";
 import {
@@ -24,11 +28,13 @@ import {
 
 const FIELDS = [
   "prompt",
+  "issue",
   "feature",
   "workflow",
   "budget",
   "execution",
   "writers",
+  "clarification",
   "start",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
@@ -60,6 +66,7 @@ export function NewRunForm({
   const t = useTheme();
   const [focus, setFocus] = useState<FieldId>(initialPrompt ? "feature" : "prompt");
   const [prompt, setPrompt] = useState(initialPrompt);
+  const [issue, setIssue] = useState("");
   const [feature, setFeature] = useState(initialPrompt ? featureSlug(initialPrompt) : "");
   const [featureTouched, setFeatureTouched] = useState(false);
   const [workflow, setWorkflow] = useState<string | null>(initialWorkflow);
@@ -67,6 +74,8 @@ export function NewRunForm({
   // Null follows the chosen workflow's own execution mode; a toggle overrides it.
   const [worktreeOverride, setWorktreeOverride] = useState<boolean | null>(null);
   const [writers, setWriters] = useState<number | null>(null);
+  // Null follows the policy; a toggle overrides it for this run.
+  const [clarificationOverride, setClarification] = useState<ClarificationMode | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workflows = info?.workflows ?? ["sdd"];
@@ -75,15 +84,21 @@ export function NewRunForm({
   const modelMissing = !model || model === "none";
   const checks = info?.policy.checks ?? [];
   const initial = initialExecution(info, workflowId);
+  const clarification = clarificationOverride ?? (info ? clarificationOf(info.policy) : "ask");
   const execution = {
     worktree: worktreeOverride ?? initial.worktree,
     writers: writers ?? initial.writers,
   };
   // The core's own refusal text; the start request would be refused with the same words.
   const worktreeRefusal = execution.worktree ? (definition?.worktreeRefusal ?? null) : null;
+  const fromIssue = issue.trim() !== "";
+  // With an issue and no feature typed, the core names the feature after the issue.
+  const sentFeature = fromIssue && !featureTouched ? "" : feature;
   const problems = [
-    !prompt.trim() && "Describe the feature",
-    !isFeatureId(feature) && "Feature ID: letters, digits, - and _ only",
+    !prompt.trim() && !fromIssue && "Describe the feature or give a GitHub issue",
+    (sentFeature || !fromIssue) &&
+      !isFeatureId(sentFeature) &&
+      "Feature ID: letters, digits, - and _ only",
     modelMissing && "Select a model (Esc, then Ctrl+L)",
     worktreeRefusal,
   ].filter((p): p is string => typeof p === "string");
@@ -105,11 +120,13 @@ export function NewRunForm({
     try {
       await onStart({
         workflowId,
-        featureId: feature,
+        featureId: sentFeature,
         prompt: prompt.trim(),
+        ...(fromIssue ? { issue: issue.trim() } : {}),
         model: model ?? "",
         budget,
         ...executionRequest(execution),
+        clarification,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -137,12 +154,11 @@ export function NewRunForm({
       move(evt.name === "up" || (evt.name === "tab" && evt.shift) ? -1 : 1);
       return;
     }
-    const choice = focus === "workflow" || focus === "budget" || focus === "execution";
+    const toggle = focus === "execution" || focus === "clarification";
+    const choice = focus === "workflow" || focus === "budget" || toggle;
     if (
       (choice || focus === "writers") &&
-      (evt.name === "left" ||
-        evt.name === "right" ||
-        (focus === "execution" && evt.name === "space"))
+      (evt.name === "left" || evt.name === "right" || (toggle && evt.name === "space"))
     ) {
       evt.preventDefault();
       const delta = evt.name === "left" ? -1 : 1;
@@ -151,6 +167,8 @@ export function NewRunForm({
         setWorktreeOverride(null);
       } else if (focus === "budget") setBudget(cycle(PRESETS, budget, delta));
       else if (focus === "execution") setWorktreeOverride(!execution.worktree);
+      else if (focus === "clarification")
+        setClarification(clarification === "assume" ? "ask" : "assume");
       else setWriters(clampWriters(execution.writers + delta));
       return;
     }
@@ -205,18 +223,33 @@ export function NewRunForm({
             backgroundColor={t.bgPopup}
           />
         </box>
+        <text fg={focus === "issue" ? t.brand : t.textMuted}>
+          {"GitHub issue (optional; the delivered PR closes it)"}
+        </text>
+        <box {...box(focus === "issue")}>
+          <input
+            value={issue}
+            onInput={setIssue}
+            onSubmit={() => move(1)}
+            placeholder="issue URL, owner/name#N or #N; the description above adds to it"
+            focused={active && focus === "issue"}
+            backgroundColor={t.bgPopup}
+          />
+        </box>
         <text fg={focus === "feature" ? t.brand : t.textMuted}>
           {"Feature ID (artifacts go to specs/<id>)"}
         </text>
         <box {...box(focus === "feature")}>
           <input
-            value={feature}
+            value={sentFeature}
             onInput={(value: string) => {
               setFeature(value);
               setFeatureTouched(true);
             }}
             onSubmit={() => move(1)}
-            placeholder="filled from the description"
+            placeholder={
+              fromIssue ? "issue-N-title, from the issue" : "filled from the description"
+            }
             focused={active && focus === "feature"}
             backgroundColor={t.bgPopup}
           />
@@ -270,6 +303,19 @@ export function NewRunForm({
               execution.worktree
                 ? `‹ ${execution.writers} › of ${MAX_CONCURRENT_WRITERS}${execution.writers > 1 ? "  tasks at once, own worktrees" : "  one task at a time"}`
                 : "1  (more needs worktree mode)"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
+        <FocusTarget active={focus === "clarification"}>
+          <Field
+            label="Questions"
+            labelWidth={10}
+            focused={focus === "clarification"}
+            value={
+              clarification === "assume"
+                ? "‹ assume ›  agents record defaults; you review them at approval"
+                : "‹ ask ›  the run waits for your answers"
             }
             keyHint="←/→"
           />

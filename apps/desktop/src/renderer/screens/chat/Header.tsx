@@ -3,12 +3,13 @@ import type { DesktopProject } from "../../../shared/api.js";
 import {
   type ContextFill,
   chat,
+  type SessionDiffStats,
   type SessionState,
   type SessionSummary,
   type Usage,
 } from "../../client/chat.js";
 import { Icon } from "../../components/Icon.js";
-import { setSidebarExpanded, useSidebarExpanded } from "../../components/rail-state.js";
+import { Button } from "../../components/ui/button.js";
 import { ago, tokens } from "../../format.js";
 import { projectHref } from "../../router.js";
 import { shortModel } from "./Composer.js";
@@ -27,9 +28,9 @@ function SessionMenu({
 }) {
   return (
     <Popover
-      label="Sessions"
+      label="Chats"
       className="session-title"
-      buttonLabel={`${title}, switch session`}
+      buttonLabel={`${title}, switch chat`}
       button={
         <>
           <h1>{title}</h1>
@@ -76,14 +77,14 @@ function SessionList({
   return (
     <div className="menu-list sessions">
       <a className="btn-primary" href={projectHref(project.key, "chat", "new")} onClick={close}>
-        New session
+        New chat
       </a>
       <p className="label" style={{ padding: "6px 4px 2px" }}>
         Recent
       </p>
       {error && <p className="menu-note">{error}</p>}
       {!sessions && !error && <p className="menu-note">Loading…</p>}
-      {sessions?.length === 0 && <p className="menu-note">No sessions yet.</p>}
+      {sessions?.length === 0 && <p className="menu-note">No chats yet.</p>}
       {sessions?.map((s) => (
         <a
           key={s.id}
@@ -122,15 +123,23 @@ function Ring({ percent }: { percent: number }) {
   );
 }
 
+/** "Compact now" in the context panel; `disabled` says why it cannot run, if it cannot. */
+export interface CompactControl {
+  run: () => void;
+  disabled: string | null;
+}
+
 /** Context fill; expands on hover or focus with the breakdown the API gives. */
 function ContextChip({
   context,
   usage,
   model,
+  compact,
 }: {
   context: ContextFill | null;
   usage: Usage;
   model: string | null;
+  compact?: CompactControl | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -209,6 +218,22 @@ function ContextChip({
             <span>Model</span>
             <span className="mono">{shortModel(model)}</span>
           </div>
+          {compact && (
+            <div className="compact-now">
+              <Button
+                size="sm"
+                variant="neutral"
+                disabled={compact.disabled !== null}
+                onClick={compact.run}
+              >
+                Compact now
+              </Button>
+              <p className="menu-note">
+                {compact.disabled ??
+                  "Summarizes the older messages to free context; recent ones stay as they are."}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -231,6 +256,76 @@ function FilesChip({ files }: { files: string[] }) {
             </li>
           ))}
         </ul>
+      )}
+    </Popover>
+  );
+}
+
+const STATUS_NOTE: Record<string, string> = {
+  added: "new",
+  deleted: "deleted",
+  unchanged: "no change now",
+  outside: "outside the project",
+  unknown: "",
+};
+
+/** Lines added and removed in the files the chat edited, against the last commit. */
+function DiffChip({ diff }: { diff: SessionDiffStats }) {
+  if (diff.files.length === 0) return null;
+  const { totals } = diff;
+  const counted = diff.base !== null;
+  return (
+    <Popover
+      label="Changes"
+      align="right"
+      buttonLabel={`${totals.files} files changed${counted ? `, ${totals.added} lines added, ${totals.removed} removed` : ""}`}
+      button={
+        counted ? (
+          <>
+            <span className="mono diff-stat-add">+{totals.added}</span>
+            <span className="mono diff-stat-del">−{totals.removed}</span>
+            <span>
+              {totals.files} file{totals.files === 1 ? "" : "s"}
+            </span>
+          </>
+        ) : (
+          `${totals.files} file${totals.files === 1 ? "" : "s"} changed`
+        )
+      }
+    >
+      {() => (
+        <>
+          <p className="label">{counted ? "Changes since the last commit" : "Files edited"}</p>
+          <ul className="file-list diff-stats">
+            {diff.files.map((file) => (
+              <li
+                key={file.path}
+                className={
+                  file.status === "unchanged" || file.status === "outside" ? "unchanged" : ""
+                }
+              >
+                <span className="mono path" title={file.path}>
+                  {file.path}
+                </span>
+                {STATUS_NOTE[file.status] ? (
+                  <span className="muted">{STATUS_NOTE[file.status]}</span>
+                ) : null}
+                {counted && file.status !== "unchanged" && file.status !== "outside" && (
+                  <span className="mono">
+                    {file.binary ? (
+                      "binary"
+                    ) : (
+                      <>
+                        <span className="diff-stat-add">+{file.added}</span>{" "}
+                        <span className="diff-stat-del">−{file.removed}</span>
+                      </>
+                    )}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </Popover>
   );
@@ -264,6 +359,8 @@ export function ChatHeader({
   usage,
   model,
   filesEdited,
+  diff,
+  compact,
 }: {
   project: DesktopProject;
   title: string;
@@ -272,21 +369,12 @@ export function ChatHeader({
   usage?: Usage;
   model?: string | null;
   filesEdited?: string[];
+  /** Line counts when the server offers them; the edited file names are shown otherwise. */
+  diff?: SessionDiffStats | null;
+  compact?: CompactControl;
 }) {
-  const expanded = useSidebarExpanded();
   return (
     <header className="chat-head">
-      {expanded && (
-        <button
-          type="button"
-          className="chip icon"
-          aria-label="Collapse the sidebar"
-          title="Collapse the sidebar"
-          onClick={() => setSidebarExpanded(false)}
-        >
-          <Icon name="panel" size={14} />
-        </button>
-      )}
       <a className="crumb" href={projectHref(project.key)} title={project.path}>
         {project.name} · {project.path}
       </a>
@@ -295,9 +383,22 @@ export function ChatHeader({
       </span>
       <SessionMenu project={project} title={title} currentId={sessionId} />
       <div className="chat-chips">
-        {usage && <ContextChip context={context ?? null} usage={usage} model={model ?? null} />}
-        {filesEdited && <FilesChip files={filesEdited} />}
+        {usage && (
+          <ContextChip
+            context={context ?? null}
+            usage={usage}
+            model={model ?? null}
+            compact={compact}
+          />
+        )}
+        {diff ? <DiffChip diff={diff} /> : filesEdited && <FilesChip files={filesEdited} />}
         <WorkingSetChip project={project} />
+        {sessionId !== null && (
+          <a className="chip" href={projectHref(project.key, "chat", "new")}>
+            <Icon name="plus" size={13} />
+            New chat
+          </a>
+        )}
       </div>
     </header>
   );

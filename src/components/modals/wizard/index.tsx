@@ -1,5 +1,5 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useKeyboard, useTerminalDimensions } from "../../../hooks/useTerminalEvents.js";
 import { PremiumPopup, type SidebarTab } from "../../ui/index.js";
 import { fitPopupHeight, fitPopupWidth, popupContentWidth } from "../../ui/popup-geometry.js";
 import { MAX_W, SIDEBAR_W, STEP_BLURBS, STEP_ICONS, STEP_LABELS, STEPS } from "./data.js";

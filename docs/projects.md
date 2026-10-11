@@ -100,7 +100,7 @@ Paths are relative to the session's working directory (`../baked-docs/guide.md` 
 
 ### Chat
 
-`ContextManager` captures the block once per session, at the first system prompt build, and adds it to the instructions after the bake map and skills (`buildInstructions` in `forge.ts`). Child context managers (subagents) never capture it. The block is frozen so prompt caching keeps working; `refreshWorkingSet()` re-captures it and is called by `/clear`; the API will call it after it changes the working set. `getInstructionsCacheKey` includes the block's hash. Editing the manifest by hand takes effect at the next `/clear` or session.
+`ContextManager` captures the block once per session, at the first system prompt build, and adds it to the instructions after the bake map and skills (`buildInstructions` in `bake.ts`). Child context managers (subagents) never capture it. The block is frozen so prompt caching keeps working; `refreshWorkingSet()` re-captures it and is called by `/clear`; the API will call it after it changes the working set. `getInstructionsCacheKey` includes the block's hash. Editing the manifest by hand takes effect at the next `/clear` or session.
 
 ### Workflow runs
 

@@ -137,6 +137,9 @@ export function createMockBridge(): DesktopBridge {
             "initiatives",
             "checks",
             "library",
+            "routing",
+            "compaction",
+            "diff-stats",
           ],
         });
       const url = new URL(path, "http://mock");
@@ -172,5 +175,7 @@ export function createMockBridge(): DesktopBridge {
       window.open(url, "_blank", "noopener");
     },
     onNavigate: () => () => {},
+    windowAction: async () => {},
+    onMaximized: () => () => {},
   };
 }

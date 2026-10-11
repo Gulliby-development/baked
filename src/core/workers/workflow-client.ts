@@ -4,14 +4,34 @@ import type { PastRun } from "../workflows/estimate.js";
 import type { GateRunResult } from "../workflows/gates.js";
 import type { InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction, InitiativeListView } from "../workflows/initiatives/view-model.js";
+import type { RollbackReport } from "../workflows/rollback.js";
 import type { RunFileDiff } from "../workflows/run-diff.js";
 import type { Decision, RunSnapshot } from "../workflows/schemas.js";
 import type { Check } from "../workflows/types.js";
 import type { RunSummary, StartRunInput, WorkflowInfo, WorkflowView } from "../workflows/view.js";
+import type { IntelligenceClient } from "./intelligence-client.js";
+import {
+  INTELLIGENCE_RELAY_CALLBACK,
+  type IntelligenceRelayRequest,
+  serveIntelligenceRelay,
+} from "./intelligence-relay.js";
 import { workerPath } from "./path.js";
 import { WorkerClient } from "./rpc.js";
 
-export type WorkflowAction = "resume" | "pause" | "cancel" | "fork" | "extend" | Decision;
+/** `reroute` moves a stopped run to another run model and continues it in one decision. */
+export type WorkflowAction =
+  | "resume"
+  | "pause"
+  | "cancel"
+  | "fork"
+  | "extend"
+  | { reroute: string }
+  | Decision;
+/** The run after an undo, and the `workspace-rollback` report it wrote; null when nothing was undone. */
+export interface UndoResult {
+  snapshot: RunSnapshot;
+  report: RollbackReport | null;
+}
 
 export class WorkflowClient extends WorkerClient {
   private views = new Map<string, WorkflowView>();
@@ -24,12 +44,31 @@ export class WorkflowClient extends WorkerClient {
   get exitedOwner(): string | null {
     return this.closed ? this.owner : null;
   }
-  constructor(workspace: string, config: AppConfig, exitedOwners: string[] = []) {
+  private stopRelay: (() => void) | null = null;
+  /**
+   * `intelligence` returns this thread's intelligence client; run steps in the worker borrow it
+   * instead of starting a second one. Without it, the worker starts its own.
+   */
+  constructor(
+    workspace: string,
+    config: AppConfig,
+    exitedOwners: string[] = [],
+    intelligence?: () => IntelligenceClient | null,
+  ) {
     super(
       workerPath("workflow", import.meta.url, import.meta.dir),
       { workspace, config, exitedOwners },
       { smol: true },
     );
+    if (intelligence) {
+      const relay = serveIntelligenceRelay(intelligence, (event, data) =>
+        this.fire("intelligenceEvent", event, data),
+      );
+      this.registerCallback(INTELLIGENCE_RELAY_CALLBACK, (request) =>
+        relay.handle(request as IntelligenceRelayRequest),
+      );
+      this.stopRelay = () => relay.dispose();
+    }
     this.on("owner", (owner) => {
       if (typeof owner === "string") this.owner = owner;
     });
@@ -141,6 +180,7 @@ export class WorkflowClient extends WorkerClient {
     configuredChecks: (id: string) => this.views.get(id)?.configuredChecks ?? [],
     findings: (id: string) => this.views.get(id)?.findings ?? [],
     requests: (id: string) => this.views.get(id)?.requests ?? [],
+    runModel: (id: string) => this.views.get(id)?.runModel ?? null,
   };
   async command(
     argv: string[],
@@ -174,11 +214,17 @@ export class WorkflowClient extends WorkerClient {
       if (drives) this.driving.delete(runId);
     }
   }
+  /** Undoes the run's uncommitted task edits; the run must not be running. */
+  undo(runId: string): Promise<UndoResult> {
+    return this.callWithTimeout<UndoResult>(null, "undo", runId);
+  }
   async shutdown(): Promise<void> {
     if (this.closed) return;
     await this.callWithTimeout(30000, "shutdown");
   }
   close(): void {
+    this.stopRelay?.();
+    this.stopRelay = null;
     this.dispose();
   }
 }

@@ -1,26 +1,58 @@
 import "../../styles/start.css";
-import { useState } from "react";
+import type { VariantProps } from "class-variance-authority";
+import { type ReactNode, useState } from "react";
 import type { AttentionItem, RunSnapshot, RunState } from "../../../shared/api.js";
 import { attentionHash, attentionId } from "../../../shared/attention.js";
-import { ApiError, api } from "../../client/api.js";
+import { api } from "../../client/api.js";
+import { isNoProject } from "../../client/setup.js";
 import { type ProjectSummary, start } from "../../client/start.js";
+import { Badge, type badgeVariants } from "../../components/ui/badge.js";
+import { Button, buttonVariants } from "../../components/ui/button.js";
+import { Card } from "../../components/ui/card.js";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../../components/ui/table.js";
+import { Textarea } from "../../components/ui/textarea.js";
 import { ago, tokens, usd } from "../../format.js";
+import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
 import { useDesktop } from "../../store.js";
 import type { SectionProps } from "../sections.js";
 import { type DraftTarget, putDraft } from "./drafts.js";
 import { DoctorChecks, message, useLoad } from "./panels.js";
 
-const RUN_GLYPH: Record<RunState, [string, string]> = {
-  created: ["·", ""],
-  running: ["⟳", "info"],
-  waiting: ["⚑", "warn"],
-  paused: ["‖", ""],
-  blocked: ["!", "warn"],
-  completed: ["✓", "ok"],
-  failed: ["✗", "err"],
-  cancelled: ["✗", ""],
+type Tone = VariantProps<typeof badgeVariants>["tone"];
+
+const RUN_TONE: Record<RunState, Tone> = {
+  created: "neutral",
+  running: "accent",
+  waiting: "warn",
+  paused: "neutral",
+  blocked: "err",
+  completed: "ok",
+  failed: "err",
+  cancelled: "neutral",
 };
+
+const HINT = "text-xs text-dim-foreground";
+const LINK =
+  "text-sm font-heading text-foreground underline decoration-2 underline-offset-[3px] hover:text-foreground";
+
+function SectionHead({ id, title, children }: { id: string; title: string; children?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between">
+      <h2 id={id} className="label">
+        {title}
+      </h2>
+      {children}
+    </div>
+  );
+}
 
 const ATTENTION_TEXT: Record<string, [string, string]> = {
   approval: ["Approve the spec, plan and tasks", "Review"],
@@ -32,9 +64,6 @@ const ATTENTION_TEXT: Record<string, [string, string]> = {
 const kb = (bytes: number): string =>
   bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024).toLocaleString("en-US")} KB`;
 
-const noProject = (error: unknown): boolean =>
-  error instanceof ApiError && error.status === 404 && /No project here/.test(error.message);
-
 function TaskBox({ projectKey }: { projectKey: string }) {
   const [text, setText] = useState("");
   const go = (target: DraftTarget): void => {
@@ -45,78 +74,90 @@ function TaskBox({ projectKey }: { projectKey: string }) {
         : projectHref(projectKey, "runs", target === "quick" ? "new-quick" : "new");
   };
   return (
-    <form
-      className="card start-taskbox"
-      onSubmit={(e) => {
-        e.preventDefault();
-        go("quick");
-      }}
-    >
-      <label htmlFor="home-task" className="start-taskbox-label">
-        What should change?
-      </label>
-      <textarea
-        id="home-task"
-        rows={2}
-        value={text}
-        placeholder="Fix the off-by-one in the usage table header"
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            go("quick");
-          }
+    <Card className="gap-3 px-4">
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          go("quick");
         }}
-      />
-      <div className="start-inline">
-        <button type="submit" className="btn-primary">
-          Quick
-        </button>
-        <button type="button" className="btn" onClick={() => go("run")}>
-          Full run
-        </button>
-        <button type="button" className="btn" onClick={() => go("chat")}>
-          Ask in chat
-        </button>
-        <span className="start-hint start-taskbox-hint">
-          Quick plans the change, waits for your approval, then implements, checks and reviews.
-        </span>
-      </div>
-    </form>
+      >
+        <label htmlFor="home-task" className="label">
+          What should change?
+        </label>
+        <Textarea
+          id="home-task"
+          rows={2}
+          className="min-h-16 text-[15px]"
+          value={text}
+          placeholder="Fix the off-by-one in the usage table header"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              go("quick");
+            }
+          }}
+        />
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Button type="submit">Quick</Button>
+          <Button type="button" variant="neutral" onClick={() => go("run")}>
+            Full run
+          </Button>
+          <Button type="button" variant="neutral" onClick={() => go("chat")}>
+            Ask in chat
+          </Button>
+          <span className={cn(HINT, "ml-auto")}>
+            Quick plans the change, waits for your approval, then implements, checks and reviews.
+          </span>
+        </div>
+      </form>
+    </Card>
   );
 }
 
 function NeedsYou({ items }: { items: AttentionItem[] }) {
   if (items.length === 0) return null;
   return (
-    <section aria-labelledby="home-needs" className="start-section">
-      <div className="start-section-head">
-        <h2 id="home-needs" className="label">
-          Needs you
-        </h2>
-        <a href="#/attention">All {items.length}</a>
-      </div>
+    <section aria-labelledby="home-needs" className="flex flex-col gap-3">
+      <SectionHead id="home-needs" title="Needs you">
+        <a className={LINK} href="#/attention">
+          All {items.length}
+        </a>
+      </SectionHead>
       {items.slice(0, 4).map((item) => {
         const [title, action] = ATTENTION_TEXT[item.kind] ?? [item.kind, "Open"];
         return (
-          <div
+          <Card
             key={attentionId(item)}
-            className={`card start-attention${item.blocking ? " blocking" : ""}`}
+            className={cn(
+              "flex-row items-center gap-3.5 px-3.5 py-3",
+              item.blocking && "bg-fill-warn text-main-foreground",
+            )}
           >
-            <span className="mono start-glyph warn" aria-hidden="true">
-              {item.kind === "clarification" ? "?" : item.kind === "delivery" ? "↗" : "⚑"}
+            <span
+              className="grid size-8 flex-none place-items-center rounded-full border-2 border-border bg-secondary-background font-mono font-heading text-foreground"
+              aria-hidden="true"
+            >
+              {item.kind === "clarification" ? "?" : item.kind === "delivery" ? "↗" : "!"}
             </span>
-            <span className="stack start-grow">
-              <span>{title}</span>
-              <span className="start-hint">
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="font-heading">{title}</span>
+              <span className={cn("text-xs", item.blocking ? "opacity-80" : "text-dim-foreground")}>
                 {item.featureId ?? item.title ?? item.source} · {item.kind} · waiting{" "}
                 {ago(item.createdAt).replace(" ago", "")}
               </span>
             </span>
-            <a className={item.blocking ? "btn-primary" : "btn"} href={attentionHash(item)}>
+            <a
+              className={cn(
+                buttonVariants({ variant: item.blocking ? "default" : "neutral", size: "sm" }),
+                "no-underline",
+              )}
+              href={attentionHash(item)}
+            >
               {action}
             </a>
-          </div>
+          </Card>
         );
       })}
     </section>
@@ -126,59 +167,56 @@ function NeedsYou({ items }: { items: AttentionItem[] }) {
 function RunsCard({ projectKey }: { projectKey: string }) {
   const runs = useLoad(projectKey, (key) => api.runs(key, 8));
   return (
-    <section aria-labelledby="home-runs" className="start-section">
-      <div className="start-section-head">
-        <h2 id="home-runs" className="label">
-          Runs in this project
-        </h2>
-        <a href={projectHref(projectKey, "runs")}>All runs</a>
-      </div>
+    <section aria-labelledby="home-runs" className="flex flex-col gap-3">
+      <SectionHead id="home-runs" title="Runs in this project">
+        <a className={LINK} href={projectHref(projectKey, "runs")}>
+          All runs
+        </a>
+      </SectionHead>
       {runs.error ? (
         <div className="banner error">{message(runs.error)}</div>
       ) : !runs.value ? (
-        <p className="start-hint">Loading runs…</p>
+        <p className={HINT}>Loading runs…</p>
       ) : runs.value.items.length === 0 ? (
         <div className="empty">
           No workflow runs yet. Describe a change above and pick Quick or Full run.
         </div>
       ) : (
-        <div className="card start-table-card">
-          <table className="table start-table">
-            <thead>
-              <tr>
-                <th>Run</th>
-                <th>Status</th>
-                <th>Stage</th>
-                <th className="num">Tokens</th>
-                <th className="num">Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.value.items.map((run: RunSnapshot) => {
-                const [glyph, tone] = RUN_GLYPH[run.status];
-                return (
-                  <tr key={run.runId}>
-                    <td>
-                      <a
-                        className="start-run-link"
-                        href={projectHref(projectKey, "runs", run.runId)}
-                      >
-                        <span className={`start-glyph ${tone}`} aria-hidden="true">
-                          {glyph}
-                        </span>{" "}
-                        {run.featureId}
-                      </a>
-                    </td>
-                    <td>{run.status}</td>
-                    <td>{run.stageId ?? "–"}</td>
-                    <td className="mono num">{tokens(run.tokenUsage)}</td>
-                    <td className="mono num">{usd(run.estimatedCostUsd)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Run</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Stage</TableHead>
+              <TableHead className="text-right">Tokens</TableHead>
+              <TableHead className="text-right">Cost</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {runs.value.items.map((run: RunSnapshot) => (
+              <TableRow key={run.runId}>
+                <TableCell>
+                  <a
+                    className="font-heading text-foreground no-underline hover:underline"
+                    href={projectHref(projectKey, "runs", run.runId)}
+                  >
+                    {run.featureId}
+                  </a>
+                </TableCell>
+                <TableCell>
+                  <Badge tone={RUN_TONE[run.status]}>{run.status}</Badge>
+                </TableCell>
+                <TableCell className="text-soft-foreground">{run.stageId ?? "–"}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {tokens(run.tokenUsage)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {usd(run.estimatedCostUsd)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       )}
     </section>
   );
@@ -186,28 +224,32 @@ function RunsCard({ projectKey }: { projectKey: string }) {
 
 function SessionsCard({ projectKey, summary }: { projectKey: string; summary: ProjectSummary }) {
   return (
-    <section aria-labelledby="home-sessions" className="start-section">
-      <div className="start-section-head">
-        <h2 id="home-sessions" className="label">
-          Recent sessions
-        </h2>
-        <a href={projectHref(projectKey, "chat")}>Chat</a>
-      </div>
+    <section aria-labelledby="home-sessions" className="flex flex-col gap-3">
+      <SectionHead id="home-sessions" title="Recent sessions">
+        <a className={LINK} href={projectHref(projectKey, "chat")}>
+          Chat
+        </a>
+      </SectionHead>
       {summary.sessions.length === 0 ? (
         <div className="empty">No chat sessions in this project yet.</div>
       ) : (
-        <ul className="card start-list">
-          {summary.sessions.slice(0, 5).map((session) => (
-            <li key={session.id}>
-              <a className="start-list-row" href={projectHref(projectKey, "chat", session.id)}>
-                <span className="start-grow start-ellipsis">{session.title || "Untitled"}</span>
-                <span className="mono start-hint">
-                  {session.messageCount} msg · {ago(session.updatedAt)}
-                </span>
-              </a>
-            </li>
-          ))}
-        </ul>
+        <Card className="gap-0 py-0">
+          <ul className="m-0 list-none p-0">
+            {summary.sessions.slice(0, 5).map((session) => (
+              <li key={session.id} className="border-b border-border/60 last:border-0">
+                <a
+                  className="flex items-center gap-3 px-3.5 py-2.5 text-foreground no-underline hover:bg-secondary-background"
+                  href={projectHref(projectKey, "chat", session.id)}
+                >
+                  <span className="min-w-0 flex-1 truncate">{session.title || "Untitled"}</span>
+                  <span className={cn(HINT, "font-mono")}>
+                    {session.messageCount} msg · {ago(session.updatedAt)}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </Card>
       )}
     </section>
   );
@@ -218,14 +260,14 @@ function WorkingSetCard({ projectKey, summary }: { projectKey: string; summary: 
   const total = files.reduce((n, f) => n + f.bytes, 0);
   return (
     <section aria-labelledby="home-ws" className="card start-panel">
-      <div className="start-panel-head">
-        <h2 id="home-ws" className="label">
-          Working set
-        </h2>
-        <a className="btn start-small" href={projectHref(projectKey, "working-set")}>
+      <SectionHead id="home-ws" title="Working set">
+        <a
+          className={cn(buttonVariants({ variant: "neutral", size: "sm" }), "no-underline")}
+          href={projectHref(projectKey, "working-set")}
+        >
           Edit
         </a>
-      </div>
+      </SectionHead>
       <p className="start-note">
         Sent to every new chat and to the research stage, so the agent does not search for them
         again.
@@ -234,21 +276,21 @@ function WorkingSetCard({ projectKey, summary }: { projectKey: string; summary: 
         <p className="start-note">Nothing in the working set yet.</p>
       ) : (
         <>
-          <ul className="start-files">
+          <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[13px]">
             {files.slice(0, 6).map((file) => (
-              <li key={file.path}>
-                <span className="mono start-ellipsis">{file.path}</span>
-                <span className="mono start-hint">{kb(file.bytes)}</span>
+              <li key={file.path} className="flex items-baseline gap-3">
+                <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+                <span className={cn(HINT, "font-mono")}>{kb(file.bytes)}</span>
               </li>
             ))}
             {skipped.map((entry) => (
-              <li key={entry.path} className="skipped">
-                <span className="mono start-ellipsis">{entry.path}</span>
-                <span className="start-hint">skipped, {entry.reason}</span>
+              <li key={entry.path} className="flex items-baseline gap-3 text-dim-foreground">
+                <span className="min-w-0 flex-1 truncate font-mono">{entry.path}</span>
+                <span className={HINT}>skipped, {entry.reason}</span>
               </li>
             ))}
           </ul>
-          <span className="start-hint">
+          <span className={HINT}>
             {entries.length} entr{entries.length === 1 ? "y" : "ies"}, {files.length} file
             {files.length === 1 ? "" : "s"}, {kb(total)}
             {files.length > 6 ? ` · ${files.length - 6} more files` : ""}
@@ -264,16 +306,11 @@ function DoctorCard({ projectKey }: { projectKey: string }) {
   const report = doctor.value;
   return (
     <section aria-labelledby="home-doctor" className="card start-panel">
-      <div className="start-panel-head">
-        <h2 id="home-doctor" className="label">
-          Doctor
-        </h2>
+      <SectionHead id="home-doctor" title="Doctor">
         {report && (
-          <span className={`start-state ${report.ready ? "ok" : "err"}`}>
-            {report.ready ? "ready" : "not ready"}
-          </span>
+          <Badge tone={report.ready ? "ok" : "err"}>{report.ready ? "ready" : "not ready"}</Badge>
         )}
-      </div>
+      </SectionHead>
       {doctor.error ? (
         <p className="start-note err">{message(doctor.error)}</p>
       ) : report ? (
@@ -281,7 +318,9 @@ function DoctorCard({ projectKey }: { projectKey: string }) {
       ) : (
         <p className="start-note">Checking…</p>
       )}
-      <a href={projectHref(projectKey, "runs", "new")}>Open full report</a>
+      <a className={LINK} href={projectHref(projectKey, "runs", "new")}>
+        Open full report
+      </a>
     </section>
   );
 }
@@ -296,43 +335,46 @@ export function ProjectHome({ project }: SectionProps) {
     ? summary.value.roots.filter((root) => root !== summary.value?.root)
     : [];
   return (
-    <div className="start-home">
-      <div className="start-chips-line">
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center gap-2">
         {summary.value?.branch && (
-          <span className="mono start-pill" title="Git branch">
+          <Badge tone="info" className="normal-case tracking-normal" title="Git branch">
             {summary.value.branch}
-          </span>
+          </Badge>
         )}
         {summary.value && summary.value.id.toLowerCase() !== project.name.toLowerCase() && (
-          <span className="mono start-pill" title="Project ID">
+          <Badge className="normal-case tracking-normal" title="Project ID">
             {summary.value.id}
-          </span>
+          </Badge>
         )}
         {extraRoots.map((root) => (
-          <span key={root} className="mono start-pill muted-pill">
+          <Badge key={root} className="normal-case tracking-normal text-soft-foreground">
             + {root} as extra root
-          </span>
+          </Badge>
         ))}
-        <span className="start-hint">own sessions, runs, memory and settings</span>
-        <a className="btn start-settings" href={projectHref(key, "gates")}>
+        <span className={HINT}>own sessions, runs, memory and settings</span>
+        <a
+          className={cn(buttonVariants({ variant: "neutral", size: "sm" }), "ml-auto no-underline")}
+          href={projectHref(key, "gates")}
+        >
           Project settings
         </a>
       </div>
 
       <TaskBox projectKey={key} />
 
-      <div className="start-columns">
-        <div className="start-main-col">
+      <div className="grid items-start gap-6 [grid-template-columns:minmax(0,1fr)_300px] max-[980px]:grid-cols-1">
+        <div className="flex min-w-0 flex-col gap-6">
           <NeedsYou items={waiting} />
           <RunsCard projectKey={key} />
           {summary.value && <SessionsCard projectKey={key} summary={summary.value} />}
         </div>
-        <aside className="start-side-col" aria-label="Project setup">
+        <aside className="flex min-w-0 flex-col gap-5" aria-label="Project setup">
           {summary.error ? (
             <section className="card start-panel">
               <h2 className="label">Project</h2>
               <p className="start-note">
-                {noProject(summary.error)
+                {isNoProject(summary.error)
                   ? "This folder has no baked/project.json, so it has no working set or project sessions. Run baked project init in the folder to create one."
                   : message(summary.error)}
               </p>
@@ -340,7 +382,7 @@ export function ProjectHome({ project }: SectionProps) {
           ) : summary.value ? (
             <WorkingSetCard projectKey={key} summary={summary.value} />
           ) : (
-            <p className="start-hint">Loading project…</p>
+            <p className={HINT}>Loading project…</p>
           )}
           <DoctorCard projectKey={key} />
         </aside>

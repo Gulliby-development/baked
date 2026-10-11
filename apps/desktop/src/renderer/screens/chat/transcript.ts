@@ -46,6 +46,8 @@ export interface Transcript {
   thoughtMs: Record<string, number[]>;
   /** When the reasoning segment that is streaming now started. */
   thinkingSince: number | null;
+  /** A manual compaction ("Compact now") is running. */
+  compacting: boolean;
 }
 
 export type TranscriptAction =
@@ -65,6 +67,8 @@ const EVENT_TYPES = new Set([
   "prompt-resolved",
   "step",
   "turn-done",
+  "compaction-start",
+  "compaction-done",
   "session",
 ]);
 
@@ -107,12 +111,14 @@ export function emptyTranscript(): Transcript {
     notice: null,
     thoughtMs: {},
     thinkingSince: null,
+    compacting: false,
   };
 }
 
 export function fromDetail(detail: SessionDetail, previous?: Transcript): Transcript {
   const { messages, prompts, queued, usage, context, filesEdited, lastSeq, ...session } = detail;
-  const working = session.state !== "idle";
+  const compacting = session.compacting === true;
+  const working = session.state !== "idle" && !compacting;
   return {
     ...emptyTranscript(),
     session,
@@ -124,6 +130,7 @@ export function fromDetail(detail: SessionDetail, previous?: Transcript): Transc
     lastSeq,
     // A turn that runs while the page loads: its finished message arrives with `turn-done`.
     turnId: working ? "running" : null,
+    compacting,
     ...(previous?.session?.id === session.id
       ? { pending: previous.pending, thoughtMs: previous.thoughtMs, notice: previous.notice }
       : {}),
@@ -344,6 +351,30 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
         session: stopped.session ? { ...stopped.session, state: "idle" } : null,
       };
     }
+    case "compaction-start":
+      return {
+        ...state,
+        compacting: true,
+        notice: null,
+        session: state.session ? { ...state.session, state: "working", compacting: true } : null,
+      };
+    case "compaction-done": {
+      const message = event.message;
+      const known = message !== null && state.messages.some((m) => m.id === message.id);
+      return {
+        ...state,
+        compacting: false,
+        messages: message && !known ? [...state.messages, message] : state.messages,
+        context: event.context ?? state.context,
+        notice:
+          event.status === "failed"
+            ? { kind: "error", text: `Compaction failed: ${event.error ?? "unknown error"}` }
+            : event.status === "interrupted"
+              ? { kind: "interrupted", text: "Compaction stopped." }
+              : null,
+        session: state.session ? { ...state.session, state: "idle", compacting: false } : null,
+      };
+    }
     case "session":
       return { ...state, session: event.session };
   }
@@ -374,7 +405,11 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
   }
 }
 
-/** True while a turn runs or waits for a prompt answer. */
+/** True while a turn runs, waits for a prompt answer, or the session is being compacted. */
 export function isBusy(state: Transcript): boolean {
-  return state.turnId !== null || (state.session !== null && state.session.state !== "idle");
+  return (
+    state.turnId !== null ||
+    state.compacting ||
+    (state.session !== null && state.session.state !== "idle")
+  );
 }

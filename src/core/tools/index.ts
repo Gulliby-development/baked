@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { tool } from "ai";
 import { z } from "zod";
+import type { ToolResult } from "../../types/index.js";
 import {
   checkAndClaim,
   claimAfterCompoundEdit,
@@ -320,6 +321,63 @@ function buildCrossTabDestructiveWarning(tabId?: string): string | null {
   }
   if (lines.length === 0) return null;
   return `⚠️ Other tabs are editing files:\n${lines.join("\n")}`;
+}
+
+/** What gates a shell command outside the tool loop shares with the agent's `shell` tool. */
+export interface ShellGates {
+  onApproveDestructive?: (description: string) => Promise<boolean>;
+  tabId?: string;
+  tabLabel?: string;
+  repoMap?: IntelligenceClient;
+}
+
+/**
+ * Runs a shell command behind the agent's shell gates: the dispatch git guard, approval of
+ * destructive commands, forbidden paths (inside `shellTool`), then repository map and file claim
+ * updates. Without `onApproveDestructive`, destructive commands run unasked, as in auto mode.
+ */
+export async function runGatedShell(
+  args: { command: string; cwd?: string; timeout?: number },
+  gates: ShellGates,
+  abortSignal?: AbortSignal,
+): Promise<ToolResult> {
+  // Block git-mutating commands during active dispatch (same guard as git tool)
+  if (gates.tabId && isGitMutatingShellCommand(args.command)) {
+    const wc = getWorkspaceCoordinator();
+    const activeTabs = wc.getTabsWithActiveAgents(gates.tabId);
+    if (activeTabs.length > 0) {
+      const tabNames = activeTabs.map((t: string) => `"${t}"`).join(", ");
+      return {
+        success: false,
+        output: `BLOCKED: Tab ${tabNames} has dispatch agents actively editing files. Your edits are saved to disk. Inform the user the git command is pending — do not attempt again.`,
+        error: "active dispatch",
+      };
+    }
+  }
+  if (gates.onApproveDestructive && isDestructiveCommand(args.command)) {
+    const desc = describeDestructiveCommand(args.command);
+    const crossTabWarning = buildCrossTabDestructiveWarning(gates.tabId);
+    const prompt = crossTabWarning
+      ? `Shell: ${desc}\n\n\`${args.command}\`\n\n${crossTabWarning}`
+      : `Shell: ${desc}\n\n\`${args.command}\``;
+    const approved = await gates.onApproveDestructive(prompt);
+    if (!approved) {
+      const msg = `Denied: ${desc}`;
+      return { success: false, output: msg, error: msg };
+    }
+  }
+  const result = await shellTool.execute(args, abortSignal);
+  if (result.success && gates.repoMap?.isReady) {
+    gates.repoMap.recheckModifiedFiles();
+  }
+  // Post-hoc claim files written by shell commands (sed -i, cp, mv, tee, >)
+  if (result.success && gates.tabId && gates.tabLabel) {
+    const written = extractWrittenFiles(args.command);
+    if (written.length > 0) {
+      claimAfterCompoundEdit(gates.tabId, gates.tabLabel, written);
+    }
+  }
+  return result;
 }
 
 /** @internal — exported for testing only */
@@ -1067,43 +1125,7 @@ export function buildTools(
           const gate = await gateOutsideCwd("shell", resolve(args.cwd));
           if (gate.blocked) return gate.result;
         }
-        // Block git-mutating commands during active dispatch (same guard as git tool)
-        if (opts?.tabId && isGitMutatingShellCommand(args.command)) {
-          const wc = getWorkspaceCoordinator();
-          const activeTabs = wc.getTabsWithActiveAgents(opts.tabId);
-          if (activeTabs.length > 0) {
-            const tabNames = activeTabs.map((t: string) => `"${t}"`).join(", ");
-            return {
-              success: false,
-              output: `BLOCKED: Tab ${tabNames} has dispatch agents actively editing files. Your edits are saved to disk. Inform the user the git command is pending — do not attempt again.`,
-              error: "active dispatch",
-            };
-          }
-        }
-        if (opts?.onApproveDestructive && isDestructiveCommand(args.command)) {
-          const desc = describeDestructiveCommand(args.command);
-          const crossTabWarning = buildCrossTabDestructiveWarning(opts.tabId);
-          const prompt = crossTabWarning
-            ? `Shell: ${desc}\n\n\`${args.command}\`\n\n${crossTabWarning}`
-            : `Shell: ${desc}\n\n\`${args.command}\``;
-          const approved = await opts.onApproveDestructive(prompt);
-          if (!approved) {
-            const msg = `Denied: ${desc}`;
-            return { success: false, output: msg, error: msg };
-          }
-        }
-        const result = await shellTool.execute(args, abortSignal);
-        if (result.success && opts?.repoMap?.isReady) {
-          opts.repoMap.recheckModifiedFiles();
-        }
-        // Post-hoc claim files written by shell commands (sed -i, cp, mv, tee, >)
-        if (result.success && opts?.tabId && opts?.tabLabel) {
-          const written = extractWrittenFiles(args.command);
-          if (written.length > 0) {
-            claimAfterCompoundEdit(opts.tabId, opts.tabLabel, written);
-          }
-        }
-        return result;
+        return runGatedShell(args, opts ?? {}, abortSignal);
       },
     }),
 
@@ -2036,7 +2058,7 @@ export function buildEmberExploreTools(opts?: {
   };
 }
 
-/** Lean code schemas use the same approval, hook and identity path as Forge. */
+/** Lean code schemas use the same approval, hook and identity path as Bake. */
 export function buildSubagentCodeTools(opts?: {
   webSearchModel?: import("ai").LanguageModel;
   onApproveWebSearch?: (query: string) => Promise<boolean>;

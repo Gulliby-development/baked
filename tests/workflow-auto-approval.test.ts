@@ -1,7 +1,14 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { canonical, hashJson } from "../src/core/specs/hash.js";
 import { WorkflowArtifacts } from "../src/core/workflows/artifacts.js";
-import { evaluateAutoApproval, policyDecisions } from "../src/core/workflows/auto-approval.js";
+import {
+  evaluateAutoApproval,
+  planScopeAdvice,
+  plannerApprovalLimits,
+  policyDecisions,
+} from "../src/core/workflows/auto-approval.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   type InputManifest,
@@ -11,7 +18,8 @@ import {
   type TaskGraph,
 } from "../src/core/workflows/schemas.js";
 import { type ArtifactRow, newId, type RequestRow } from "../src/core/workflows/store.js";
-import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const hash = "a".repeat(64);
 const manifest: InputManifest = {
@@ -285,5 +293,80 @@ describe("renewal in a run", () => {
     expect(after.status).toBe("waiting");
     const pending = fixture.service.store.requests(runId).find((r) => r.status === "pending");
     expect(JSON.parse(pending!.body_json).autoApproval.declined).toContain("Renewal: tool web_fetch was added");
+  });
+});
+
+describe("planner scope advice", () => {
+  test("the planner is told the limits only when auto approval has them", () => {
+    expect(plannerApprovalLimits(defaultWorkflowPolicy)).toBeNull();
+    expect(plannerApprovalLimits(renewing)).toBeNull();
+    expect(plannerApprovalLimits(limited)).toMatchObject({ maxTasks: 2, maxFiles: 3, allowedPaths: ["src/**", "tests/**"], allowDelete: false });
+  });
+  test("names every write that would send the plan to a person", () => {
+    expect(planScopeAdvice(limited, graph([modify("src/a.ts")], [modify("tests/a.test.ts")]))).toEqual([]);
+    expect(planScopeAdvice(defaultWorkflowPolicy, graph([modify("scripts/run.ts")]))).toEqual([]);
+    const [advice] = planScopeAdvice(
+      limited,
+      graph([modify("src/a.ts"), modify("src/b.ts"), modify("docs/a.md"), modify("package.json")], [{ path: "src/c.ts", action: "delete" }]),
+    );
+    expect(advice).toContain("5 files exceed 3");
+    expect(advice).toContain("docs/a.md is outside the allowed paths");
+    expect(advice).toContain("package.json always needs a person");
+    expect(advice).toContain("src/c.ts would be deleted");
+    expect(advice).toContain("submit the same plan again");
+  });
+});
+
+describe("planner scope advice in a run", () => {
+  const cleanups: (() => void | Promise<void>)[] = [];
+  afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+  const scoped: RunPolicy = {
+    ...fixturePolicy,
+    autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["value.txt"], maxTotalTokens: fixturePolicy.maxTotalTokens } },
+  };
+
+  /** Submits a plan with an extra file outside the limits, then follows the advice or keeps it. */
+  class ScopedPlanner extends FixtureExecutor {
+    advice: string[][] = [];
+    constructor(root: string, private keep: boolean) { super(root); }
+    override async execute(request: ExecutionRequest) {
+      const result = await super.execute(request);
+      if (request.profile.output !== "plan") return result;
+      const plan = result.output as { taskGraph: TaskGraph };
+      const [task] = plan.taskGraph.tasks;
+      const wide = { ...plan, taskGraph: { ...plan.taskGraph, tasks: [{ ...task!, writes: [...task!.writes, { path: "store.ts", action: "modify" as const }] }] } };
+      this.advice.push(request.validate?.(wide) ?? []);
+      this.advice.push(request.validate?.(wide) ?? []);
+      return this.keep ? { ...result, output: wide } : result;
+    }
+  }
+  async function run(keep: boolean) {
+    const fixture = workflowFixture({ policy: scoped, executor: (root) => new ScopedPlanner(root, keep) });
+    cleanups.push(fixture.dispose);
+    writeFileSync(join(fixture.root, "store.ts"), "export {};\n");
+    const started = await fixture.start();
+    for (let i = 0; i < 12; i++) {
+      const current = await fixture.service.get(started.runId);
+      if (["waiting", "completed", "blocked", "failed"].includes(current.status)) break;
+      if (current.status === "paused" || current.status === "created") await fixture.resume(started.runId);
+      await fixture.service.drive(started.runId, new AbortController().signal);
+    }
+    return { fixture, runId: started.runId };
+  }
+
+  test("a planner that drops the extra file is approved without a person", async () => {
+    const { fixture, runId } = await run(false);
+    expect(fixture.executor.prompts.plan?.[0]).toContain('"approvalLimits"');
+    expect(fixture.executor.advice[0]?.join("\n")).toContain("store.ts is outside the allowed paths");
+    // The advice is given once, so a planner that needs the file can keep it.
+    expect(fixture.executor.advice[1]).toEqual([]);
+    const approvals = fixture.service.store.requests(runId).filter((r) => r.kind === "approval" && r.status === "accepted");
+    expect(approvals[0]?.actor).toBe("auto-approval");
+  });
+  test("a plan that keeps the file waits for a person", async () => {
+    const { fixture, runId } = await run(true);
+    expect((await fixture.service.get(runId)).status).toBe("waiting");
+    const pending = fixture.service.store.requests(runId).find((r) => r.status === "pending");
+    expect(JSON.parse(pending!.body_json).autoApproval.declined).toContain("Limits: store.ts is outside the allowed paths");
   });
 });

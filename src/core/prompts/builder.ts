@@ -8,13 +8,13 @@
  * 4. Mode overlay appended if active
  *
  * Cache strategy:
- * - The system prompt string returned here is marked with EPHEMERAL_CACHE in forge.ts
+ * - The system prompt string returned here is marked with EPHEMERAL_CACHE in bake.ts
  * - Baked Map is injected as a separate user→assistant message pair (aider pattern)
  *   so it can update after edits without invalidating the cached system prompt
  * - Skills are injected as a separate message pair (same pattern)
  */
 
-import type { ForgeMode } from "../../types/index.js";
+import type { BakeMode } from "../../types/index.js";
 import { detectModelFamily, extractBaseModel } from "../llm/provider-options.js";
 import {
   CLAUDE_PROMPT,
@@ -55,7 +55,7 @@ export interface PromptBuilderOptions {
   modelId: string;
   hasRepoMap: boolean;
   hasSymbols: boolean;
-  forgeMode: ForgeMode;
+  bakeMode: BakeMode;
   contextPercent?: number;
   projectInstructions: string | null;
   cwd?: string;
@@ -65,7 +65,7 @@ export interface PromptBuilderOptions {
 /**
  * Build the complete system prompt.
  *
- * Returns a single string. The caller (forge.ts) wraps it in a system message
+ * Returns a single string. The caller (bake.ts) wraps it in a system message
  * with EPHEMERAL_CACHE for Anthropic prompt caching.
  *
  * The Baked Map is NOT included here — it's injected as a separate user message
@@ -120,7 +120,7 @@ export function buildSystemPrompt(opts: PromptBuilderOptions): string {
   if (opts.projectInstructions) parts.push(opts.projectInstructions);
 
   // Mode overlay is NOT baked into the cached system prompt — it's injected as
-  // a cache-stable user message in prepareStep (forge.ts) so switching modes
+  // a cache-stable user message in prepareStep (bake.ts) so switching modes
   // doesn't invalidate the system cache breakpoint (discussion #85, source #1).
 
   // 9. Skills reference (skills are injected as message pairs, not here)

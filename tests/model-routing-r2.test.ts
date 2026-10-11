@@ -6,9 +6,9 @@ import {
   resolveProfileModel,
   ROUTING_ARTIFACT,
 } from "../src/core/llm/model-routing.js";
-import { modelReadinessProblem } from "../src/core/llm/provider.js";
 import { withRouteEffort } from "../src/core/llm/provider-options.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
+import { providerReadiness } from "../src/core/workflows/doctor.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { explainRoute } from "../src/core/workflows/routing.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -160,7 +160,8 @@ describe("fallback models", () => {
 
   test("a request the provider refuses, or a workflow fault, does not fall back", async () => {
     for (const error of [
-      Object.assign(new Error("unauthorized"), { statusCode: 401 }),
+      // A refused account goes to a fallback on another provider (workflow-provider-account.test.ts).
+      Object.assign(new Error("invalid request"), { statusCode: 400 }),
       new WorkflowFault("OUTPUT_INVALID", "bad output"),
     ]) {
       const { calls, start, drive } = routedRun(
@@ -232,55 +233,53 @@ describe("independent review", () => {
 });
 
 describe("preflight", () => {
+  const keyless = async (id: string) =>
+    id === "nokey" ? { known: true, ready: false, envVar: "NOKEY_API_KEY" } : { known: true, ready: true };
+
   test("refuses a start when a bound model's provider has no credentials", async () => {
     const { fixture, start } = routedRun({ independentReview: "off", roles: { researcher: "nokey/model" } });
-    fixture.service.modelReadiness = async (model) =>
-      model.startsWith("nokey/") ? { problem: `${model}: no key`, missingCredentials: true } : null;
+    fixture.service.providerReady = keyless;
     const refused = start();
-    await expect(refused).rejects.toThrow(/nokey\/model: no key; used by profile researcher/);
+    await expect(refused).rejects.toThrow(/No credentials for nokey \(nokey\/model\); Used by profile researcher; fix: .*NOKEY_API_KEY/);
     await expect(refused).rejects.toMatchObject({ code: "CAPABILITY_DENIED" });
     expect((await fixture.service.list({ limit: 10 })).items).toHaveLength(0);
   });
 
-  test("fallback models, unbound profiles and unknown providers only warn", async () => {
+  test("fallback models, unbound profiles, unknown providers and unanswered probes only warn", async () => {
     const { fixture, start, record } = routedRun({
       independentReview: "off",
-      roles: { researcher: { model: "fixture/model", fallback: ["nokey/backup"] }, reporter: "nokey/reporter" },
+      roles: { researcher: { model: "slow/model", fallback: ["nokey/backup"] }, planner: "nowhere/model", reporter: "nokey/reporter" },
     });
-    fixture.service.modelReadiness = async (model) =>
-      model.startsWith("nokey/")
-        ? { problem: `${model}: no key`, missingCredentials: true }
-        : model.startsWith("fixture/")
-          ? { problem: `${model}: unknown provider fixture`, missingCredentials: false }
-          : null;
+    fixture.service.providerReady = async (id) =>
+      id === "slow"
+        ? { known: true, ready: false, timedOut: true }
+        : id === "nowhere"
+          ? { known: false, ready: false }
+          : keyless(id);
     const warnings = record((await start()).runId).warnings ?? [];
-    expect(warnings).toContainEqual(expect.stringContaining("nokey/backup: no key; used by profile researcher (fallback)"));
-    expect(warnings).toContainEqual(expect.stringContaining("nokey/reporter: no key; used by profile reporter"));
-    expect(warnings).toContainEqual(expect.stringContaining("fixture/model: unknown provider fixture"));
+    expect(warnings).toContainEqual(expect.stringContaining("No credentials for nokey (nokey/backup); Used by profile researcher (fallback)"));
+    expect(warnings).toContainEqual(expect.stringContaining("No credentials for nokey (nokey/reporter); Used by profile reporter"));
+    expect(warnings).toContainEqual(expect.stringContaining("Unknown provider for nowhere/model; Used by profile planner"));
+    expect(warnings).toContainEqual(expect.stringContaining("slow did not answer its availability check (slow/model)"));
   });
 });
 
-describe("model readiness", () => {
-  test("a malformed ID or unknown provider is a problem without missing credentials", async () => {
-    expect(await modelReadinessProblem("no-slash")).toMatchObject({ missingCredentials: false });
-    expect(await modelReadinessProblem("nowhere/model")).toMatchObject({
-      problem: expect.stringContaining("unknown provider nowhere"),
-      missingCredentials: false,
-    });
+describe("provider readiness", () => {
+  test("an unknown provider is not known", async () => {
+    expect(await providerReadiness("nowhere")).toEqual({ known: false, ready: false });
   });
 
-  test("an availability check that does not answer in time does not count as missing credentials", async () => {
+  test("an availability check that does not answer in time is reported as timed out, not as missing credentials", async () => {
     const provider = getProvider("copilot");
     if (!provider) throw new Error("copilot provider missing");
     const original = provider.checkAvailability;
     provider.checkAvailability = () => new Promise<boolean>(() => {});
     try {
-      expect(await modelReadinessProblem("copilot/gpt-5", 20)).toMatchObject({
-        problem: expect.stringContaining("did not answer"),
-        missingCredentials: false,
-      });
+      expect(await providerReadiness("copilot", 20)).toMatchObject({ ready: false, timedOut: true });
       provider.checkAvailability = async () => false;
-      expect(await modelReadinessProblem("copilot/gpt-5", 20)).toMatchObject({ missingCredentials: true });
+      const answered = await providerReadiness("copilot", 20);
+      expect(answered).toMatchObject({ known: true, ready: false });
+      expect(answered.timedOut).toBeUndefined();
     } finally {
       provider.checkAvailability = original;
     }

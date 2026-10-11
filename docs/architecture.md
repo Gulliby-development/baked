@@ -8,7 +8,7 @@ BAKED is one core with three front ends: the terminal UI (`src/components/`, `sr
 
 ## The agent loop
 
-The main agent, Forge (`src/core/agents/forge.ts`), assembles each turn's system prompt, context, tools, approval callbacks and mode, and runs the model loop through a provider from `src/core/llm/providers/`. For larger tasks it dispatches subagents (`src/core/agents/subagent-tools.ts`, `agent-runner.ts`): `spark` for read-only research and `ember` for edits, each on its router model. Dispatched agents share a bus (`agent-bus.ts`): a file and tool-result cache, serialized writes per file, and a findings channel that reaches the others at their next step.
+The main agent, Bake (`src/core/agents/bake.ts`), assembles each turn's system prompt, context, tools, approval callbacks and mode, and runs the model loop through a provider from `src/core/llm/providers/`. For larger tasks it dispatches subagents (`src/core/agents/subagent-tools.ts`, `agent-runner.ts`): `spark` for read-only research and `ember` for edits, each on its router model. Dispatched agents share a bus (`agent-bus.ts`): a file and tool-result cache, serialized writes per file, and a findings channel that reaches the others at their next step.
 
 ## Context
 
@@ -17,6 +17,12 @@ The prompt is assembled in `src/core/context/manager.ts` and `src/core/prompts/`
 ## Code intelligence
 
 `src/core/intelligence/` keeps the repository graph (tree-sitter parsing, import edges, PageRank, Git co-change, SQLite index) and routes code questions to the best backend: standalone language servers, ts-morph for TypeScript and JavaScript, tree-sitter, then regex. The graph runs in a worker so the UI stays responsive.
+
+One process runs one intelligence worker, so one repository scan and one set of language servers serve everything in it. The root context (`src/core/context/shared-root.ts`) is created on first use; chat tabs, chat sessions and workflow steps build their own context managers on top of it.
+
+- `baked serve`: the workflow service owns the root context and the chat host borrows it, so desktop chat and runs share the worker. Language servers start on the first chat turn or run step and stop when the server stops.
+- Terminal UI: workflow runs execute in the workflow worker thread, which borrows the main thread's intelligence worker through a relay (`src/core/workers/intelligence-relay.ts`). Only the owner scans, clears or closes the worker; the borrower follows its scan state. When no worker is shared for the workspace, the workflow worker starts its own.
+- `baked workflow` runs in its own process with its own worker.
 
 ## Tools and safety
 

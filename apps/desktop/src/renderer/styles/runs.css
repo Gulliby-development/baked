@@ -97,7 +97,7 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--border-w) solid var(--ink);
 }
 
 .run-title-row {
@@ -228,10 +228,64 @@
   margin: 0;
 }
 
+/* Undo report */
+.undo-report {
+  border: var(--border-w) solid var(--ink);
+  border-left: 8px solid var(--bg-raised);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  background: var(--bg-panel);
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.undo-report.ok {
+  border-left-color: var(--fill-ok);
+}
+
+.undo-report.warn {
+  border-left-color: var(--fill-warn);
+}
+
+.undo-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.undo-head > .label {
+  margin: 0;
+}
+
+.undo-summary {
+  flex: 1;
+  font-weight: 600;
+}
+
+.undo-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.undo-files .kept {
+  color: var(--warn);
+}
+
 /* Decision card */
 .decision {
-  border: 1px solid var(--warn);
-  border-radius: 12px;
+  border: var(--border-w) solid var(--ink);
+  border-left: 8px solid var(--fill-warn);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   background: color-mix(in srgb, var(--warn) 7%, var(--bg-panel));
   padding: 18px 20px;
   display: flex;
@@ -252,6 +306,13 @@
   line-height: 1.6;
 }
 
+.decision-assumptions ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
 .field-label {
   font-size: 12px;
   color: var(--text-4);
@@ -261,7 +322,7 @@ textarea,
 .stack-form input[type="text"],
 .decision input[type="text"] {
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   color: var(--text);
   padding: 8px 10px;
@@ -295,7 +356,8 @@ textarea,
 }
 
 .art-card {
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
+  box-shadow: var(--shadow-sm);
   border-radius: var(--radius-lg);
   background: var(--bg-panel);
   padding: 14px;
@@ -309,7 +371,7 @@ textarea,
 }
 
 .art-card:hover {
-  border-color: var(--line-strong);
+  background: var(--bg-hover);
 }
 
 .art-name {
@@ -355,7 +417,7 @@ textarea,
 
 .code {
   background: var(--bg-code);
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius-lg);
   padding: 12px 14px;
 }
@@ -368,7 +430,7 @@ textarea,
 }
 
 .facts div {
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   padding: 10px 12px;
 }
@@ -445,8 +507,9 @@ textarea,
 }
 
 .writer {
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   background: var(--bg-panel);
   padding: 14px;
   display: flex;
@@ -457,7 +520,7 @@ textarea,
 
 .writer.integrator {
   border-style: dashed;
-  border-color: var(--line-strong);
+  box-shadow: none;
   background: var(--bg-sunken);
 }
 
@@ -475,7 +538,7 @@ textarea,
 }
 
 .task-card {
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   padding: 10px;
   display: flex;
@@ -485,7 +548,8 @@ textarea,
 }
 
 .task-card.current {
-  border-color: var(--bg-selected);
+  background: var(--bg-selected);
+  box-shadow: var(--shadow-sm);
   background: var(--bg-raised);
 }
 
@@ -611,7 +675,9 @@ textarea,
 }
 
 .acceptance-list .item[aria-current="page"] {
-  border-color: var(--accent);
+  border-color: var(--ink);
+  background: var(--bg-selected);
+  box-shadow: var(--shadow-sm);
   background: var(--bg-hover);
 }
 
@@ -668,7 +734,8 @@ textarea,
 }
 
 .criterion {
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
+  box-shadow: var(--shadow-sm);
   border-radius: var(--radius-lg);
   background: var(--bg-panel);
   padding: 12px 14px;
@@ -727,7 +794,8 @@ textarea,
 
 .frame {
   margin: 0;
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
+  box-shadow: var(--shadow);
   border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--bg-panel);
@@ -735,7 +803,7 @@ textarea,
 
 .frame-bar {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--border-w) solid var(--ink);
   font-size: 12px;
   color: var(--text-4);
 }
@@ -765,4 +833,17 @@ textarea,
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.report-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.report-head > .lede {
+  flex: 1;
+  margin: 0;
 }

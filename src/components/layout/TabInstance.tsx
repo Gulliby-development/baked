@@ -55,7 +55,7 @@ interface TabInstanceProps {
   sessionManager: SessionManager;
   cwd: string;
   onCommand: (input: string, chat: ChatInstance) => void;
-  onModeChange?: (mode: import("../../types/index.js").ForgeMode) => void;
+  onModeChange?: (mode: import("../../types/index.js").BakeMode) => void;
   onModelChange?: (modelId: string) => void;
   onExit: () => void;
   registerChat: (id: string, chat: ChatInstance) => void;
@@ -110,6 +110,11 @@ export const TabInstance = memo(function TabInstance({
   const contextManager = useMemo(
     () => new ContextManager(cwd, sharedResources),
     [cwd, sharedResources],
+  );
+
+  const getRepoMap = useCallback(
+    () => (contextManager.isRepoMapReady() ? contextManager.getRepoMap() : undefined),
+    [contextManager],
   );
 
   // Register tabId with contextManager for cross-tab awareness
@@ -186,8 +191,8 @@ export const TabInstance = memo(function TabInstance({
 
   // Sync Baked mode to header when it changes in the active tab
   useEffect(() => {
-    if (visible && onModeChange) onModeChange(chat.forgeMode);
-  }, [visible, chat.forgeMode, onModeChange]);
+    if (visible && onModeChange) onModeChange(chat.bakeMode);
+  }, [visible, chat.bakeMode, onModeChange]);
 
   // Sync status bar when this tab is active
   useEffect(() => {
@@ -538,6 +543,7 @@ export const TabInstance = memo(function TabInstance({
       // Branch-on-submit: if viewing a past checkpoint, undo to that point (reverts files + messages)
       const cpStore = useCheckpointStore.getState();
       const viewingIdx = cpStore.getViewing(tabId);
+      let current = chat.messages;
       if (viewingIdx !== null) {
         if (branchingRef.current) return; // guard against double-submit during async undo
         branchingRef.current = true;
@@ -545,6 +551,7 @@ export const TabInstance = memo(function TabInstance({
           const undoResult = await cpStore.undoToCheckpoint(tabId, viewingIdx, cwd, chat.messages);
           const msgs = undoResult?.messages;
           if (msgs) {
+            current = msgs;
             chat.setMessages(msgs);
             try {
               const { rebuildCoreMessages } = await import("../../core/sessions/rebuild.js");
@@ -558,6 +565,8 @@ export const TabInstance = memo(function TabInstance({
           branchingRef.current = false;
         }
       }
+      // The first turn of a tab snapshots the workspace, so forks can roll back to before it
+      if (!chat.isLoading) await cpStore.ensureBaseTag(tabId, cwd, current);
       chat.handleSubmit(input, images);
 
       // Re-engage sticky scroll so new messages are visible
@@ -841,6 +850,7 @@ export const TabInstance = memo(function TabInstance({
                 }
                 onCycleTab={onCycleTab}
                 viewingCheckpoint={checkpointViewing}
+                getRepoMap={getRepoMap}
               />
             </box>
           </box>

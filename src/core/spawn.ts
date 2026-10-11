@@ -84,8 +84,10 @@ export const SAFE_STDIO: SpawnOptions["stdio"] = ["ignore", "pipe", "pipe"];
  *   so it has no controlling terminal and cannot read /dev/tty.
  *   Prevents tools like `security`, `ssh`, `sudo`, `gpg`, `pass`, etc.
  *   from prompting the user (and hanging) when stdin is closed.
+ * - windowsHide: true → on Windows a detached child would otherwise open its own console window.
  */
-export const SAFE_SPAWN_OPTS: Pick<SpawnOptions, "stdio" | "detached"> = {
+export const SAFE_SPAWN_OPTS: Pick<SpawnOptions, "stdio" | "detached" | "windowsHide"> = {
   stdio: SAFE_STDIO,
   detached: true,
+  windowsHide: true,
 };

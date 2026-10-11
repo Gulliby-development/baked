@@ -393,7 +393,7 @@ export function buildPrepareStep({
   const stepNudgeAt = isExplore ? STEP_NUDGE_EXPLORE : STEP_NUDGE_CODE;
   const maxSteps = isExplore ? EXPLORE_MAX_STEPS : CODE_MAX_STEPS;
 
-  // Cache-stable inject tracking (same pattern as forge.ts).
+  // Cache-stable inject tracking (same pattern as bake.ts).
   // All dynamic hints go into user message injects instead of result.system
   // to keep the system prompt stable for prefix caching.
   const previousInjects: Array<{ cleanInsertAt: number; message: ModelMessage }> = [];

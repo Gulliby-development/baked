@@ -7,6 +7,7 @@ import type {
   ChatPrompt,
   MessageSegment,
   SessionDetail,
+  SessionDiffStats,
   SessionSummary,
   ToolCall,
 } from "./chat.js";
@@ -294,7 +295,7 @@ function find(key: string, id: string): MockSession | undefined {
 
 function stateOf(session: MockSession): SessionSummary["state"] {
   if (session.transcript.prompts.some((p) => p.outcome === undefined)) return "waiting";
-  return session.turn ? "working" : "idle";
+  return session.turn || session.transcript.compacting ? "working" : "idle";
 }
 
 function detail(session: MockSession): SessionDetail {
@@ -323,6 +324,7 @@ function emitSession(session: MockSession): void {
   session.summary = {
     ...session.summary,
     state: stateOf(session),
+    compacting: session.transcript.compacting,
     updatedAt: Date.now(),
     messageCount: session.transcript.messages.length,
   };
@@ -580,8 +582,60 @@ function create(
   return session;
 }
 
+/** Summarizes all but the last four messages after a short pause, as the server would. */
+function compact(session: MockSession) {
+  if (session.turn || session.transcript.compacting)
+    return response(409, { error: { code: "SESSION_BUSY", message: "Busy" } });
+  const older = session.transcript.messages.filter((m) => m.role !== "system").length;
+  if (older < 2)
+    return response(409, {
+      error: { code: "NOTHING_TO_COMPACT", message: "Not enough conversation to compact." },
+    });
+  const compactionId = nextId("compact");
+  emit(session, { type: "compaction-start", compactionId });
+  emitSession(session);
+  setTimeout(() => {
+    const context = session.transcript.context;
+    const after = context
+      ? { ...context, usedTokens: 9_000, percent: Math.round((9_000 / context.windowTokens) * 100) }
+      : null;
+    emit(session, {
+      type: "compaction-done",
+      compactionId,
+      status: "compacted",
+      compacted: older,
+      context: after,
+      message: {
+        id: nextId("m"),
+        role: "system",
+        content: `Compacted ${older} messages into a summary (v2 strategy).${after ? ` Context is now about ${after.percent}%.` : ""}`,
+        timestamp: Date.now(),
+      },
+    });
+    emitSession(session);
+  }, 1200);
+  return response(202, { compactionId });
+}
+
+/** Made-up line counts per edited file, stable for a path. */
+function diffStats(session: MockSession): SessionDiffStats {
+  const files = session.transcript.filesEdited.map((path) => {
+    const seed = [...path].reduce((sum, c) => sum + c.charCodeAt(0), 0);
+    return { path, status: "modified" as const, added: (seed % 40) + 2, removed: seed % 9 };
+  });
+  return {
+    base: "HEAD",
+    files,
+    totals: {
+      files: files.length,
+      added: files.reduce((sum, f) => sum + f.added, 0),
+      removed: files.reduce((sum, f) => sum + f.removed, 0),
+    },
+  };
+}
+
 const SESSION_PATH =
-  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts)(?:\/([A-Za-z0-9-]+))?)?$/;
+  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork|compact|diff)(?:\/([A-Za-z0-9-]+))?)?$/;
 
 const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (path === "/v1/models" && method === "GET")
@@ -604,6 +658,20 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
         { id: "openai", name: "OpenAI", configured: false, models: [] },
       ],
     });
+  if (path === "/v1/mentions" && method === "GET") {
+    const q = (query.get("q") ?? "").toLowerCase();
+    const all = [
+      { kind: "directory", insert: "src/core/llm/", detail: "directory" },
+      { kind: "file", insert: "src/core/llm/models.ts", detail: "file" },
+      { kind: "file", insert: "src/core/llm/provider.ts", detail: "file" },
+      { kind: "file", insert: "README.md", detail: "file" },
+      { kind: "symbol", insert: "resolveModel", detail: "function · src/core/llm/provider.ts:42" },
+    ];
+    const mentions = all
+      .filter((m) => m.insert.toLowerCase().includes(q))
+      .map((m) => ({ ...m, label: m.insert, indices: [] }));
+    return response(200, { mentions });
+  }
   if (path === "/v1/projects/current" && method === "GET")
     return response(200, {
       workingSet: {
@@ -654,6 +722,26 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     return response(202, { turnId: await startTurn(session, text), queued: false });
   }
   if (action === "interrupt") return response(200, { interrupted: interrupt(session) });
+  if (action === "fork") {
+    const request = (body ?? {}) as { atMessageId?: string; rollbackFiles?: boolean };
+    const all = session.transcript.messages;
+    const at = request.atMessageId
+      ? all.findIndex((m) => m.id === request.atMessageId)
+      : all.length - 1;
+    if (at < 0) return response(404, { error: { code: "NOT_FOUND", message: "No such message" } });
+    const forked = create(key, {
+      title: `${session.summary.title} (fork)`,
+      mode: session.summary.mode,
+    });
+    forked.transcript = { ...forked.transcript, messages: all.slice(0, at + 1) };
+    forked.summary = { ...forked.summary, messageCount: at + 1 };
+    const rollback = request.rollbackFiles
+      ? { checkpoint: 1, snapshot: null, backupTag: null, restored: [], removed: [], skipped: [] }
+      : undefined;
+    return response(201, { ...detail(forked), ...(rollback ? { rollback } : {}) });
+  }
+  if (action === "compact") return compact(session);
+  if (action === "diff") return response(200, diffStats(session));
   const resolve = sub ? session.turn?.waiters.get(sub) : undefined;
   if (!sub || !resolve)
     return response(409, { error: { code: "STALE_PROMPT", message: "Not waiting" } });

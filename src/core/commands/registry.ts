@@ -1,6 +1,7 @@
 import { getCwd } from "../cwd.js";
 import { matchCheckpointPrefix, register as registerCheckpoint } from "./checkpoint.js";
 import { matchClaimsPrefix, register as registerClaims } from "./claims.js";
+import { register as registerClaudeCode } from "./claude-code.js";
 import { register as registerCodex } from "./codex.js";
 import { matchConfigPrefix, register as registerConfig } from "./config.js";
 import { matchContextPrefix, register as registerContext } from "./context.js";
@@ -27,6 +28,7 @@ registerNavigation(commandMap);
 registerStorage(commandMap);
 registerClaims(commandMap);
 registerCodex(commandMap);
+registerClaudeCode(commandMap);
 registerHooks(commandMap);
 registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
@@ -413,6 +415,34 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["codex", "auth", "status", "account"],
   },
   {
+    cmd: "/claude-code",
+    ic: "model",
+    desc: "Show Claude Code login status",
+    category: "Models",
+    tags: ["claude", "claude-code", "auth", "status", "account"],
+  },
+  {
+    cmd: "/claude-code login",
+    ic: "model",
+    desc: "Log in to Claude Code with your Claude subscription",
+    category: "Models",
+    tags: ["claude", "claude-code", "auth", "browser", "subscription"],
+  },
+  {
+    cmd: "/claude-code logout",
+    ic: "model",
+    desc: "Log out of the current Claude Code account",
+    category: "Models",
+    tags: ["claude", "claude-code", "auth", "logout", "account"],
+  },
+  {
+    cmd: "/claude-code status",
+    ic: "model",
+    desc: "Show Claude Code login status",
+    category: "Models",
+    tags: ["claude", "claude-code", "auth", "status", "account"],
+  },
+  {
     cmd: "/model-scope",
     ic: "cog",
     desc: "Set model scope (project/global)",
@@ -794,6 +824,13 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Redo last undone checkpoint",
     category: "Session",
     tags: ["restore"],
+  },
+  {
+    cmd: "/checkpoint fork",
+    ic: "bookmark",
+    desc: "Fork a checkpoint into a new tab (rolls back files)",
+    category: "Session",
+    tags: ["branch", "rollback", "tab"],
   },
   {
     cmd: "/checkpoint save",

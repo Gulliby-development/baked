@@ -1,4 +1,3 @@
-import { useKeyboard } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
@@ -13,6 +12,7 @@ import {
   pendingSplitApproval,
   summarizeInitiative,
 } from "../../core/workflows/initiatives/view-model.js";
+import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, PremiumPopup, Section } from "../ui/index.js";
 import { errorHint, formatDuration, formatTokens } from "./format.js";
@@ -102,6 +102,7 @@ export function InitiativesPopup({
   onSelect,
   onBack,
   onOpenRun,
+  model = null,
 }: {
   api: InitiativesApi;
   width: number;
@@ -111,6 +112,8 @@ export function InitiativesPopup({
   onSelect: (id: string | null) => void;
   onBack: () => void;
   onOpenRun: (runId: string) => void;
+  /** The chat tab's model; M switches the initiative to it. */
+  model?: string | null;
 }) {
   const t = useTheme();
   const [data, setData] = useState<InitiativeListView | null | undefined>(undefined);
@@ -160,7 +163,7 @@ export function InitiativesPopup({
   const features = selected?.features ?? [];
   const feature = features[Math.min(featureCursor, Math.max(0, features.length - 1))] ?? null;
   const driving = !!(selected && data?.driving.includes(selected.initiativeId));
-  const actions = selected ? initiativeActions(selected, driving, feature) : [];
+  const actions = selected ? initiativeActions(selected, driving, feature, model) : [];
   useEffect(() => {
     if (cursor >= ordered.length && ordered.length) setCursor(ordered.length - 1);
   }, [ordered.length, cursor]);
@@ -426,7 +429,7 @@ export function InitiativeDetail({
       </text>
       <text fg={t.textMuted}>
         {clip(
-          `Plan ${plan} · ${view.workflowId}${view.featureAutoApproval ? " · tiered approval" : ""}`,
+          `Plan ${plan} · ${view.workflowId} · ${view.model ?? "default model"}${view.featureAutoApproval ? " · tiered approval" : ""}`,
           width,
         )}
       </text>

@@ -7,9 +7,9 @@ import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
  */
 
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { InfoLine, type InfoLineData, PremiumPopup, Section } from "../ui/index.js";
 import { listScrollAccel } from "../ui/scroll.js";
 

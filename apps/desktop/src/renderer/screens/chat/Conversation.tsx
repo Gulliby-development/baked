@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { ChatMessage, ToolCall } from "../../client/chat.js";
+import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
 import { Markdown } from "./Markdown.js";
 import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
@@ -195,11 +195,75 @@ function Assistant({
   );
 }
 
-function UserBubble({ text, note }: { text: string; note?: string }) {
+function ForkAction({
+  disabled,
+  onFork,
+}: {
+  disabled: boolean;
+  onFork: (rollbackFiles: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!open)
+    return (
+      <div className="fork-row">
+        <button
+          type="button"
+          className="fork-link"
+          disabled={disabled}
+          onClick={() => setOpen(true)}
+        >
+          Fork from here
+        </button>
+      </div>
+    );
+  const pick = (rollbackFiles: boolean) => {
+    setOpen(false);
+    onFork(rollbackFiles);
+  };
+  return (
+    <fieldset className="fork-row fork-confirm" aria-label="Fork from here">
+      <span>Continue in a new chat from this point. Roll the files back too?</span>
+      <button type="button" className="btn" onClick={() => pick(false)}>
+        Chat only
+      </button>
+      <button type="button" className="btn-primary" onClick={() => pick(true)}>
+        Chat and files
+      </button>
+      <button type="button" className="fork-link" onClick={() => setOpen(false)}>
+        Cancel
+      </button>
+    </fieldset>
+  );
+}
+
+function UserBubble({
+  text,
+  note,
+  context,
+}: {
+  text: string;
+  note?: string;
+  context?: InputContextItem[];
+}) {
   return (
     <div className={`user-bubble${note === "Sending…" ? " pending" : ""}`}>
       {note && <span className="bubble-note">{note}</span>}
       {text}
+      {context && context.length > 0 && (
+        <ul className="input-context" aria-label="Attached context">
+          {context.map((item, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: items keep their order
+            <li key={i} className={item.ok ? "ok" : "failed"}>
+              <span className="mono">
+                {item.kind === "command" ? "!" : "@"}
+                {item.ref}
+              </span>{" "}
+              <span className="input-context-summary">{item.summary}</span>
+              {item.output && <pre className="input-context-output">{item.output}</pre>}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -343,11 +407,16 @@ export function Conversation({
   deciding,
   onApprove,
   onAnswer,
+  forking,
+  onFork,
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
   onApprove: (id: string, approve: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
+  forking?: boolean;
+  /** Forks the session after `messageId`; absent while the session cannot be forked. */
+  onFork?: (messageId: string, rollbackFiles: boolean) => void;
 }) {
   const { messages, live, prompts, pending, notice, thoughtMs } = transcript;
   const running = transcript.turnId !== null;
@@ -361,15 +430,23 @@ export function Conversation({
             key={message.id}
             text={message.content}
             {...(message.isSteering ? { note: "Sent while working" } : {})}
+            {...(message.inputContext ? { context: message.inputContext } : {})}
           />
         ) : message.role === "assistant" ? (
-          <Assistant
-            key={message.id}
-            message={message}
-            thoughtMs={thoughtMs[message.id]}
-            thinking={false}
-          />
-        ) : null,
+          <div key={message.id} className="assistant-turn">
+            <Assistant message={message} thoughtMs={thoughtMs[message.id]} thinking={false} />
+            {onFork && !running && (
+              <ForkAction
+                disabled={forking === true}
+                onFork={(rollbackFiles) => onFork(message.id, rollbackFiles)}
+              />
+            )}
+          </div>
+        ) : (
+          <p key={message.id} className="chat-note">
+            {message.content}
+          </p>
+        ),
       )}
       {live && (
         <Assistant
@@ -397,6 +474,14 @@ export function Conversation({
             <span />
           </span>
           Working…
+        </p>
+      )}
+      {transcript.compacting && (
+        <p className="working" aria-live="polite">
+          <span className="spinner" aria-hidden="true">
+            <span />
+          </span>
+          Compacting the conversation…
         </p>
       )}
       {notice && (

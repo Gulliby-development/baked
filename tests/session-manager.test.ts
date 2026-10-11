@@ -29,7 +29,7 @@ function makeMeta(id: string, tabs: Array<{ id: string }> = [{ id: "tab-1" }]): 
 		updatedAt: Date.now(),
 		activeTabId: tabs[0]!.id,
 		cwd: TEST_DIR,
-		forgeMode: "default",
+		bakeMode: "default",
 		tabs: tabs.map((t) => makeTab(t.id)),
 	};
 }
@@ -236,7 +236,7 @@ describe("SessionManager.saveTab", () => {
 	const fallback = (activeTabId: string) => ({
 		title: "Test",
 		cwd: TEST_DIR,
-		forgeMode: "default" as const,
+		bakeMode: "default" as const,
 		activeTabId,
 	});
 
@@ -387,5 +387,19 @@ describe("SessionManager.saveTab", () => {
 			"A-core",
 		);
 		expect(loaded!.tabCoreMessages?.get("tab-b")).toHaveLength(2);
+	});
+
+	it("reads forgeMode from sessions saved before the rename as bakeMode", async () => {
+		const meta = makeMeta("sess-legacy");
+		await manager.saveSession(meta, new Map([["tab-1", [makeMessage("user", "hi")]]]));
+		const metaPath = join(TEST_DIR, ".baked", "sessions", "sess-legacy", "meta.json");
+		const { bakeMode: _mode, tabs, ...rest } = JSON.parse(readFileSync(metaPath, "utf-8")) as SessionMeta;
+		const legacy = { ...rest, forgeMode: "plan", tabs: tabs.map((t) => ({ ...t, forgeMode: "architect" })) };
+		writeFileSync(metaPath, JSON.stringify(legacy));
+
+		const loaded = manager.loadSession("sess-legacy");
+		expect(loaded!.meta.bakeMode).toBe("plan");
+		expect(loaded!.meta.tabs[0]!.bakeMode).toBe("architect");
+		expect("forgeMode" in loaded!.meta).toBe(false);
 	});
 });

@@ -3,13 +3,11 @@ import type {
   Check,
   CheckRunResult,
   CheckRunStatus,
+  CliSignIn,
   ConfigFile,
   ConfigView,
-  Effort,
   GateEntry,
   InstructionFile,
-  ModelRouting,
-  Route,
   WorkingSetView,
 } from "../../client/setup.js";
 
@@ -157,74 +155,6 @@ export function upsertCheck(checks: Check[], check: Check, previousId: string | 
   return checks.map((c, i) => (i === at ? check : c));
 }
 
-export interface ClassRow {
-  name: string;
-  model: string | null;
-  effort: Effort;
-  fallback: string[];
-  usedBy: string[];
-  /** True for classes BAKED knows without configuration. */
-  builtin: boolean;
-}
-
-const BUILTIN_CLASSES = ["active", "fast", "coding", "review"] as const;
-
-function routeParts(route: Route): { model: string; effort: Effort; fallback: string[] } {
-  return typeof route === "string"
-    ? { model: route, effort: "default", fallback: [] }
-    : { model: route.model, effort: route.effort ?? "default", fallback: route.fallback ?? [] };
-}
-
-/** The model classes of the routing, built-in ones first, with the roles and profiles using each. */
-export function classRows(routing: ModelRouting | undefined): ClassRow[] {
-  const classes = routing?.classes ?? {};
-  const names = [
-    ...BUILTIN_CLASSES,
-    ...Object.keys(classes)
-      .filter((n) => !isBuiltin(n))
-      .sort(),
-  ];
-  const users = new Map<string, string[]>();
-  const note = (route: Route, who: string): void => {
-    const { model } = routeParts(route);
-    if (!model.startsWith("$")) return;
-    const list = users.get(model.slice(1)) ?? [];
-    list.push(who);
-    users.set(model.slice(1), list);
-  };
-  for (const [role, route] of Object.entries(routing?.roles ?? {})) note(route, role);
-  for (const [profile, route] of Object.entries(routing?.profiles ?? {})) note(route, profile);
-  for (const [workflow, entry] of Object.entries(routing?.workflows ?? {}))
-    for (const [stage, route] of Object.entries(entry.stages ?? {}))
-      note(route, `${workflow} ${stage}`);
-  return names.map((name) => {
-    const route = classes[name];
-    const parts = route ? routeParts(route) : null;
-    return {
-      name,
-      model: parts?.model ?? null,
-      effort: parts?.effort ?? "default",
-      fallback: parts?.fallback ?? [],
-      usedBy: users.get(name) ?? [],
-      builtin: isBuiltin(name),
-    };
-  });
-}
-
-function isBuiltin(name: string): boolean {
-  return (BUILTIN_CLASSES as readonly string[]).includes(name);
-}
-
-/** A class route as config stores it: a bare model when it has no effort or fallback. */
-export function classRoute(model: string, effort: Effort, fallback: string[]): Route {
-  if (effort === "default" && fallback.length === 0) return model;
-  return {
-    model,
-    ...(effort === "default" ? {} : { effort }),
-    ...(fallback.length ? { fallback } : {}),
-  };
-}
-
 /** The family part of a `provider/model` ID, used to tell whether two models are independent. */
 export function modelName(id: string): string {
   return id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
@@ -366,4 +296,15 @@ export function draftToCheck(draft: CheckDraft): { check: Check } | { error: str
       writes,
     },
   };
+}
+
+/** How a CLI-signed-in provider's row reads, and which sign-in actions it offers. */
+export function signInView(signIn: CliSignIn): {
+  note: string;
+  action: "sign-in" | "sign-out" | "install" | "cancel";
+} {
+  if (signIn.login?.state === "running") return { note: "signing in…", action: "cancel" };
+  if (!signIn.installed) return { note: "CLI not installed", action: "install" };
+  if (signIn.loggedIn) return { note: "signed in through the CLI", action: "sign-out" };
+  return { note: "not signed in", action: "sign-in" };
 }

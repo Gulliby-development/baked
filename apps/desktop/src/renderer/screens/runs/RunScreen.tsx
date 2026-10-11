@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { RunSnapshot } from "../../../shared/api.js";
-import { errorText } from "../../client/runs.js";
+import { chat } from "../../client/chat.js";
+import { errorText, type RollbackReport, undoRun } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
 import { tokens, usd } from "../../format.js";
 import { projectHref } from "../../router.js";
@@ -9,6 +10,7 @@ import { GateView } from "./GateView.js";
 import { type RunData, useRun } from "./load.js";
 import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
 import { Meter, Panel, StatusPill } from "./parts.js";
+import { ReportView } from "./ReportView.js";
 import {
   ChangesView,
   ChecksView,
@@ -20,6 +22,7 @@ import {
 } from "./RunTabs.js";
 import { blockingRequests } from "./requests.js";
 import { TasksTab } from "./TasksTab.js";
+import { UndoReport } from "./UndoReport.js";
 import "../../styles/runs.css";
 
 const TABS = [
@@ -32,6 +35,7 @@ const TABS = [
   "checks",
   "criteria",
   "findings",
+  "report",
 ] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABEL: Record<Tab, string> = {
@@ -44,6 +48,7 @@ const TAB_LABEL: Record<Tab, string> = {
   checks: "Checks",
   criteria: "Criteria",
   findings: "Findings",
+  report: "Report",
 };
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -52,10 +57,12 @@ function Controls({
   projectKey,
   run,
   onDone,
+  onUndone,
 }: {
   projectKey: string;
   run: RunSnapshot;
   onDone: () => Promise<void>;
+  onUndone: (report: RollbackReport | null) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,13 +78,33 @@ function Controls({
       await onDone();
     }
   };
-  if (TERMINAL.has(run.status)) return null;
+  const ended = TERMINAL.has(run.status);
+  // Undo needs the run's leases, so it is offered only while nothing executes the run.
+  const canUndo = run.status !== "created" && run.status !== "running";
+  if (ended && !canUndo) return null;
   return (
     <div className="run-controls">
       {error && (
         <span className="err-text small" role="alert">
           {error}
         </span>
+      )}
+      {canUndo && (
+        <button
+          type="button"
+          className="btn"
+          disabled={busy}
+          onClick={() => {
+            if (
+              window.confirm(
+                "Undo this run's uncommitted task edits? Files changed since the run wrote them stay as they are.",
+              )
+            )
+              void act(async () => onUndone(await undoRun(projectKey, run)));
+          }}
+        >
+          Undo edits
+        </button>
       )}
       {run.status === "running" && (
         <button
@@ -99,17 +126,19 @@ function Controls({
           Resume
         </button>
       )}
-      <button
-        type="button"
-        className="btn"
-        disabled={busy}
-        onClick={() => {
-          if (window.confirm(`Cancel ${run.featureId}? A cancelled run cannot continue.`))
-            void act(() => workflow.cancel(projectKey, run));
-        }}
-      >
-        Cancel run
-      </button>
+      {!ended && (
+        <button
+          type="button"
+          className="btn"
+          disabled={busy}
+          onClick={() => {
+            if (window.confirm(`Cancel ${run.featureId}? A cancelled run cannot continue.`))
+              void act(() => workflow.cancel(projectKey, run));
+          }}
+        >
+          Cancel run
+        </button>
+      )}
     </div>
   );
 }
@@ -194,6 +223,124 @@ function Budget({
           {error && <div className="banner error">{error}</div>}
           <button type="submit" className="btn-primary" disabled={busy}>
             Extend and resume
+          </button>
+        </form>
+      )}
+    </Panel>
+  );
+}
+
+/** Statuses in which nothing executes the run, so its models can change. */
+const STOPPED = new Set(["created", "paused", "blocked", "waiting"]);
+
+/**
+ * The run model, and a switch to another one for a run that is not executing: completed stages
+ * and tasks stay, the next agent calls use the new model, and a blocked or paused run resumes.
+ */
+function Models({
+  projectKey,
+  data,
+  onDone,
+}: {
+  projectKey: string;
+  data: RunData;
+  onDone: () => Promise<void>;
+}) {
+  const run = data.status;
+  const routing = data.artifacts.routing;
+  const [model, setModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const stopped = STOPPED.has(run.status);
+  useEffect(() => {
+    if (!stopped) return;
+    let live = true;
+    chat.models(projectKey).then(
+      (result) =>
+        live &&
+        setModels(
+          result.providers.filter((p) => p.configured).flatMap((p) => p.models.map((m) => m.id)),
+        ),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [projectKey, stopped]);
+  if (!routing) return null;
+  const routed = Object.entries(routing.stages);
+  const providerStop =
+    run.status === "blocked" &&
+    (run.reason === "provider_account" || run.reason === "provider_unavailable");
+  const reroute = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await workflow.reroute(projectKey, run, { model: model.trim() });
+      if (next.status === "blocked" || next.status === "paused")
+        await workflow.resume(projectKey, next);
+      setModel("");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+      await onDone();
+    }
+  };
+  return (
+    <Panel title="Model">
+      <p className="small">
+        Run model <span className="mono">{routing.runModel}</span>
+      </p>
+      {routed.length > 0 && (
+        <ul className="small sub-text">
+          {routed.map(([stage, entry]) => (
+            <li key={stage}>
+              {stage}: <span className="mono">{entry.model}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {stopped && (
+        <form
+          className="stack-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (model.trim()) void reroute();
+          }}
+        >
+          {providerStop && (
+            <p className="warn-text small">
+              The provider stopped this run. Switch it to another model to continue; completed work
+              stays.
+            </p>
+          )}
+          <label htmlFor="reroute-model" className="field-label">
+            Switch to model
+          </label>
+          <input
+            id="reroute-model"
+            type="text"
+            list="reroute-models"
+            value={model}
+            placeholder="provider/model"
+            onChange={(e) => setModel(e.target.value)}
+          />
+          <datalist id="reroute-models">
+            {models.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          {error && <div className="banner error">{error}</div>}
+          <button
+            type="submit"
+            className="btn"
+            disabled={busy || !model.trim() || model.trim() === routing.runModel}
+          >
+            {run.status === "blocked" || run.status === "paused"
+              ? "Switch and resume"
+              : "Switch model"}
           </button>
         </form>
       )}
@@ -307,6 +454,8 @@ function RunBody({
   const run = data.status;
   const pending = blockingRequests(run.requests);
   const [tab, setTab] = useState<Tab>(pending.length ? "decision" : "overview");
+  // The last undo of this run, shown until dismissed; `report` is null when nothing was undone.
+  const [undone, setUndone] = useState<{ report: RollbackReport | null } | null>(null);
   const graph = data.artifacts.graph;
   const findings = findingsOf(data, trace).length || trace.findings.size;
   const criteria =
@@ -335,7 +484,12 @@ function RunBody({
             {run.status === "running" && run.stageId ? ` · ${run.stageId}` : ""}
           </StatusPill>
           {meta.length > 0 && <span className="meta">{meta.join(" · ")}</span>}
-          <Controls projectKey={projectKey} run={run} onDone={refresh} />
+          <Controls
+            projectKey={projectKey}
+            run={run}
+            onDone={refresh}
+            onUndone={(report) => setUndone({ report })}
+          />
         </div>
         <Stages data={data} trace={trace} />
         <div className="tabs" role="tablist" aria-label="Run sections">
@@ -358,6 +512,7 @@ function RunBody({
       </header>
       <div className="run-body">
         <div className="run-main" role="tabpanel" id="run-tabpanel" aria-labelledby={`tab-${tab}`}>
+          {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
           {tab === "decision" && (
             <>
               {pending.map((r) => (
@@ -392,9 +547,13 @@ function RunBody({
             <GateView projectKey={projectKey} data={data} trace={trace} onDone={refresh} />
           )}
           {tab === "findings" && <FindingsView data={data} trace={trace} />}
+          {tab === "report" && (
+            <ReportView projectKey={projectKey} runId={run.runId} stamp={run.eventSeq} />
+          )}
         </div>
         <aside className="run-side" aria-label="Run status">
           <Budget projectKey={projectKey} data={data} onDone={refresh} />
+          <Models projectKey={projectKey} data={data} onDone={refresh} />
           <Activity trace={trace} />
         </aside>
       </div>

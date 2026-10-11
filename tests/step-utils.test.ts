@@ -1637,7 +1637,7 @@ describe("compactOldToolResults + stripBookkeepingTools — audit conversation s
 		expect(upsResultCount).toBe(18);
 
 		console.log(`UPS calls: ${String(upsCallCount)}, results: ${String(upsResultCount)}`);
-		console.log("These are stripped by forge prepareStep (not by compactOldToolResults)");
+		console.log("These are stripped by bake prepareStep (not by compactOldToolResults)");
 	});
 
 	it("dispatch results pruned to one-liners, edit results preserved", () => {

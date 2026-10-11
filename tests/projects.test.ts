@@ -209,7 +209,7 @@ describe("projectId on sessions", () => {
     await manager.saveTab("s1", tab, [{ id: "m1", role: "user", content: "hi", timestamp: 1 }], undefined, {
       title: "Hello",
       cwd: app,
-      forgeMode: "default",
+      bakeMode: "default",
       activeTabId: "t1",
     });
     expect(JSON.parse(readFileSync(join(app, ".baked", "sessions", "s1", "meta.json"), "utf8")).projectId).toBe("demo");
@@ -272,7 +272,7 @@ describe("projectId and working set on workflow runs", () => {
     }
     const store = new WorkflowStore(root);
     try {
-      expect(store.schemaVersion()).toBe(7);
+      expect(store.schemaVersion()).toBe(8);
       expect(store.run("r1").project_id).toBeNull();
       expect(store.projectRuns("demo")).toEqual([]);
     } finally {

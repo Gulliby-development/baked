@@ -50,7 +50,7 @@ A `git commit` run by the agent first runs the project's native checks (for exam
 
 ## Dispatch
 
-For larger tasks the main agent (Forge) dispatches subagents in parallel: `spark` agents for read-only research and `ember` agents for edits, each on the model of its [router slot](guide.md#models-and-the-task-router). They share a file cache, serialize writes to the same file, and pass findings to each other at their next step. Forge decides when to dispatch; typing while they run steers them.
+For larger tasks the main agent (Bake) dispatches subagents in parallel: `spark` agents for read-only research and `ember` agents for edits, each on the model of its [router slot](guide.md#models-and-the-task-router). They share a file cache, serialize writes to the same file, and pass findings to each other at their next step. Bake decides when to dispatch; typing while they run steers them.
 
 ## Code intelligence
 
@@ -62,6 +62,8 @@ Each operation tries the best backend and falls back:
 4. **regex**: the last resort.
 
 `/lsp status` shows attached servers; `/lsp install` installs servers from the Mason registry into the BAKED data directory (`lsp-servers/`), through npm, pip, cargo, go or GitHub releases. Servers already on `PATH` are found automatically. `/diagnose` checks LSP, tree-sitter and semantic indexing.
+
+Chat and workflow runs in one BAKED process share the same language servers: the terminal UI and `baked serve` each start one set per project, not one for chat and another for runs ([architecture](architecture.md#code-intelligence)).
 
 ## Repository graph
 

@@ -12,7 +12,7 @@ import {
 } from "electron";
 import type { AppSettings, AttentionItem, DesktopProject } from "../shared/api.js";
 import { attentionHash, attentionTitle, kindLabel } from "../shared/attention.js";
-import { type HttpMethod, IPC, type ProjectAction } from "../shared/bridge.js";
+import { type HttpMethod, IPC, type ProjectAction, type WindowAction } from "../shared/bridge.js";
 import { AttentionHub } from "./attention.js";
 import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
@@ -226,6 +226,19 @@ function registerIpc(): void {
     if (!/^https:\/\//.test(url)) throw new Error("Only https links open outside the app");
     await shell.openExternal(url);
   });
+  handle(IPC.windowAction, (event, action: WindowAction) => {
+    const target = BrowserWindow.fromWebContents(event.sender);
+    if (!target) return;
+    if (action === "minimize") target.minimize();
+    else if (action === "maximize") {
+      if (target.isMaximized()) target.unmaximize();
+      else target.maximize();
+    } else if (action === "close") target.close();
+  });
+  handle(
+    IPC.windowState,
+    (event) => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false,
+  );
 }
 
 function createWindow(): void {
@@ -237,6 +250,11 @@ function createWindow(): void {
     backgroundColor: "#191410",
     title: "BAKED",
     show: false,
+    // The app draws its own title bar: macOS keeps its traffic lights inset in it, Windows and
+    // Linux get the app's own window buttons (TitleBar.tsx).
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 14, y: 11 } }
+      : { frame: false }),
     webPreferences: {
       preload: join(app.getAppPath(), "out", "preload", "index.cjs"),
       contextIsolation: true,
@@ -279,6 +297,8 @@ function createWindow(): void {
       });
   });
   window.on("show", () => tray.hide());
+  window.on("maximize", () => broadcast(IPC.windowMaximized, true));
+  window.on("unmaximize", () => broadcast(IPC.windowMaximized, false));
   window.on("closed", () => {
     window = null;
   });

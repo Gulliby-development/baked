@@ -1,8 +1,8 @@
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import { useMarqueeScroll } from "../../hooks/useMarqueeScroll.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import type { ConfigScope } from "../layout/shared.js";
 import { CONFIG_SCOPES } from "../layout/shared.js";
 import { KeyCap, PremiumPopup, SegmentedControl, Toggle } from "../ui/index.js";

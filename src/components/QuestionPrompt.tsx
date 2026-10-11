@@ -1,9 +1,9 @@
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import { icon } from "../core/icons.js";
 import { useTheme } from "../core/theme/index.js";
 import type { ThemeTokens } from "../core/theme/tokens.js";
+import { useKeyboard } from "../hooks/useTerminalEvents.js";
 import type { PendingQuestion } from "../types/index.js";
 import { Markdown } from "./chat/Markdown.js";
 import { KeyCaps } from "./ui/index.js";

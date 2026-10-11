@@ -93,6 +93,8 @@ const REASONS: Record<string, string> = {
   no_progress: "repairs stopped making progress",
   verification_failed: "checks or reviews did not pass",
   provider_unavailable: "the model provider is unavailable",
+  provider_account:
+    "the model provider refused the account: add credits, fix the API key or switch the run to another model",
   tool_denied: "a tool call was denied by policy",
   storage_failure: "workflow storage failed",
   invalid_output: "a model returned output that failed validation",
@@ -133,6 +135,11 @@ export function headline(
           now: `Blocked at ${at}: ${budget ? budgetLimitText(budget) : reasonText(snapshot.reason)}.`,
           next: `${budget && extensionFor(budget) ? `Press B to raise the limits (${extensionText(budget)}) and continue from this stage. ` : ""}F forks a new run with the same limits and fresh counters${stage && ["research", "specify", "plan", "analyze"].includes(stage.kind) ? " (it starts again from Research)" : ""}. For broad requests, narrow the description first. C cancels.`,
         };
+      if (snapshot.reason === "provider_account" || snapshot.reason === "provider_unavailable")
+        return {
+          now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.`,
+          next: "Press R to retry once the provider works again, or M to continue on this tab's model (Ctrl+L picks another); completed work stays. F forks, C cancels.",
+        };
       return {
         now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.`,
         next: "Press R to retry, F to fork, or C to cancel.",
@@ -160,7 +167,7 @@ export function budgetLimitText(budget: BudgetView): string {
 export interface RunAction {
   key: string;
   label: string;
-  action: "resume" | "pause" | "cancel" | "fork" | "decide" | "extend";
+  action: "resume" | "pause" | "cancel" | "fork" | "decide" | "extend" | "undo" | "reroute";
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
@@ -186,7 +193,15 @@ export function extensionText(budget: BudgetView): string {
     .filter(Boolean)
     .join(", ");
 }
-export function runActions(snapshot: RunSnapshot, budget: BudgetView | null = null): RunAction[] {
+/**
+ * The run screen's actions. `switchTo` is the model a stopped run can move to (the tab's model
+ * when it differs from the run model); null hides the action.
+ */
+export function runActions(
+  snapshot: RunSnapshot,
+  budget: BudgetView | null = null,
+  switchTo: string | null = null,
+): RunAction[] {
   const actions: RunAction[] = [];
   const s = snapshot.status;
   if (snapshot.pendingRequestIds.length)
@@ -208,7 +223,12 @@ export function runActions(snapshot: RunSnapshot, budget: BudgetView | null = nu
     (!budget || extensionFor(budget))
   )
     actions.push({ key: "B", label: "raise limits", action: "extend" });
+  if (switchTo && (s === "created" || s === "paused" || s === "blocked" || s === "waiting"))
+    actions.push({ key: "M", label: "switch model", action: "reroute" });
   if (s === "blocked" || isTerminal(s)) actions.push({ key: "F", label: "fork", action: "fork" });
+  // Undo needs the run's leases, so it is offered only while nothing executes the run.
+  if (s !== "created" && s !== "running")
+    actions.push({ key: "U", label: "undo edits", action: "undo" });
   if (!isTerminal(s)) actions.push({ key: "C", label: "cancel", action: "cancel" });
   return actions;
 }
@@ -306,6 +326,10 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
     case "run.state_changed":
       if (event.payload.from === event.payload.to) return null;
       return `Run ${event.payload.from} → ${event.payload.to}${event.payload.reason !== "none" ? ` (${reasonText(event.payload.reason)})` : ""}`;
+    case "run.rerouted":
+      return event.payload.runModel.from === event.payload.runModel.to
+        ? `Routes changed: ${event.payload.changes.length} stage or profile route(s)`
+        : `Switched to ${event.payload.runModel.to} (was ${event.payload.runModel.from})`;
     case "stage.started":
       return `${kindOf(event.payload.stageId)} started${event.payload.generation > 0 ? ` (round ${event.payload.generation + 1})` : ""}`;
     case "stage.finished":

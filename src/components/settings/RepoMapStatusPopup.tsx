@@ -1,7 +1,7 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { type RepoMapStatus, useRepoMapStore } from "../../stores/repomap.js";
 import { SPINNER_FRAMES } from "../layout/shared.js";
 import {

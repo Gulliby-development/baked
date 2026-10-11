@@ -16,7 +16,7 @@ SDD ends with confirmation of the engineering criteria. Post-release metrics are
 
 | Code today | Use | Change |
 | --- | --- | --- |
-| [Forge](../../src/core/agents/forge.ts) | Assembling context, models and tools | Add a restricted execution context; do not put the scheduler into prepareStep |
+| [Bake](../../src/core/agents/bake.ts) | Assembling context, models and tools | Add a restricted execution context; do not put the scheduler into prepareStep |
 | [dispatch](../../src/core/agents/subagent-tools.ts) and [runner](../../src/core/agents/agent-runner.ts) | Executing child tasks | Extract AgentExecutor; separate the transport result from task acceptance |
 | [AgentBus](../../src/core/agents/agent-bus.ts) | Cache and local coordination | Use it inside an attempt; do not keep durable run state in it |
 | [Verifier](../../src/core/agents/agent-verification.ts) | Existing checks | Extract CheckRunner and a typed ReviewResult; keep a text formatter for the old dispatch |
@@ -27,7 +27,7 @@ SDD ends with confirmation of the engineering criteria. Post-release metrics are
 | [Sessions](../../src/core/sessions/types.ts) | Conversation and tabs | Add an optional workflowRunId; a run exists independently of a session |
 | [MemoryDB](../../src/core/memory/db.ts) | Bun SQLite and project memory | Reuse the way the DB is opened; a new DB with its own migrations |
 | [WorkspaceCoordinator](../../src/core/coordination/WorkspaceCoordinator.ts) | Tab warnings and claims | Add a shared mutation guard for every change path while a workflow is active |
-| [Tools](../../src/core/tools/index.ts), [hooks](../../src/core/hooks/runner.ts) | Executing actions and extensions | One policy wrapper for Forge, subagents, checks and workflows |
+| [Tools](../../src/core/tools/index.ts), [hooks](../../src/core/hooks/runner.ts) | Executing actions and extensions | One policy wrapper for Bake, subagents, checks and workflows |
 | [cwd](../../src/core/cwd.ts), [boot](../../src/boot.tsx) | One cwd per process | Do not switch cwd for parallel tasks |
 
 Fix the following contracts before enabling workflows:
@@ -73,8 +73,8 @@ flowchart TB
   SCHED --> CHECK[CheckRunner]
   SCHED --> ART[ArtifactStore]
   SCHED --> POLICY[ExecutionPolicy]
-  EXEC --> FORGE[Existing providers and ToolLoopAgent]
-  FORGE --> TOOLS[Shared tool wrapper]
+  EXEC --> BAKE[Existing providers and ToolLoopAgent]
+  BAKE --> TOOLS[Shared tool wrapper]
   CHECK --> TOOLS
   TOOLS --> COORD[Workspace mutation guard]
   TOOLS --> HOOKS[Allowed hooks]
@@ -84,7 +84,7 @@ flowchart TB
   EVENTS --> CLI
 ```
 
-WorkflowService does not import React, components, Zustand or CommandContext. The runtime receives adapters for model resolution, tools, logging and context. UI stores are projections. The existing imports of `stores/errors` and `stores/model-events` in agents are gradually closed behind an EventSink interface; the whole of Forge is not rewritten for this change.
+WorkflowService does not import React, components, Zustand or CommandContext. The runtime receives adapters for model resolution, tools, logging and context. UI stores are projections. The existing imports of `stores/errors` and `stores/model-events` in agents are gradually closed behind an EventSink interface; the whole of Bake is not rewritten for this change.
 
 AgentExecutor accepts `ExecutionContext { workspaceRoot, runId, stepId, attemptId, ownerEpoch, policy, signal, eventSink }`, the selected profile and an input manifest, and returns a validated result plus the actual effects. Workflow task IDs are always strings. The legacy dispatch adapter keeps accepting numeric task_list IDs separately.
 
@@ -280,12 +280,12 @@ ProfileRegistry looks up the built-in definitions, then global ones, then projec
 | spec-author | Reading and submit_artifact | Spec candidate |
 | planner | Reading and submit_artifact | Plan and TaskGraph |
 | implementer | Allowed edits and request_check | ImplementationResult |
-| reviewer | Reading the snapshot and evidence, submit_review | Review |
+| reviewer | Reading the snapshot and evidence, run_repro, submit_review | Review |
 | spec-auditor | Reading requirements and code, submit_review | Criterion coverage |
 
 submit_artifact and submit_review do not write an arbitrary path. They validate the type and write a candidate through ArtifactStore. The model has no write access to SQLite, run blobs, policy, profiles, workflows, AGENTS.md, the constitution or the spec, unless the current stage is meant to form the corresponding candidate.
 
-Effective capabilities are computed as the intersection of BAKED global permissions, the user's run policy, the stage profile and the task scope. Neither a skill, project config nor hook output extends this intersection. Tool names are an allowlist only; an unknown tool is forbidden. `auto` in Forge does not lift workflow restrictions. For the legacy chat, its semantics stay the same.
+Effective capabilities are computed as the intersection of BAKED global permissions, the user's run policy, the stage profile and the task scope. Neither a skill, project config nor hook output extends this intersection. Tool names are an allowlist only; an unknown tool is forbidden. `auto` in Bake does not lift workflow restrictions. For the legacy chat, its semantics stay the same.
 
 Wrapper order: schema parse; canonical path/tool classification; role/scope check; acquire the needed lease; call the allowed PreToolUse; re-check the input changed by the hook; apply approvals; record the effect intent; execute; record the outcome; PostToolUse. Any deny takes precedence over allow. Mandatory internal gates work even with disableAllHooks.
 
@@ -307,7 +307,7 @@ A passed check result requires exit=0, a finished process, a stable source snaps
 
 Review dimensions in v1: correctness always; security when auth, secret handling, network, process execution, SQL or file access change; language review optional. Policy.reviewProfiles sets the profile IDs for correctness/security/language; the review stage profileId must match correctness. Policy.forceSecurityReview forces security on. The trigger considers semantic signals, not only a regex over file names. When the security area cannot be excluded with confidence, security review is enabled. Every mandatory dimension has its own attempt. A missing answer means inconclusive.
 
-A reviewer returns ReviewSchema. The runtime checks the existence of evidence IDs, the snapshot hash, requirement/criterion refs and the validity of file paths. Evidence is created by tools, CheckRunner or a trusted manual decision. An agent cannot present invented shell output as command evidence. A positive verdict without coverage of the needed criteria is insufficient.
+A reviewer returns ReviewSchema. The runtime checks the existence of evidence IDs, the snapshot hash, requirement/criterion refs and the validity of file paths. Evidence is created by tools, CheckRunner or a trusted manual decision. An agent cannot present invented shell output as command evidence. A positive verdict without coverage of the needed criteria is insufficient. Each finding carries a `basis`: `spec` when the request, a requirement or a criterion names the behavior or input that fails, `inferred` when it rests on a standard, convention or edge case the spec does not name. A finding without a basis counts as `spec`. A finding that claims how the code behaves on an input carries a `repro`: an `executable` and `args` run without a shell in the workspace root, the `expected` value the spec requires and the `actual` value the code gives. The runtime runs the repro of every finding that would start a correction, with a safe environment and a 30 s limit, and records the outcomes as a `repro` artifact. The repro may start only a program that one of the run's approved checks starts. It is `reproduced` when a line of its output equals `actual` (or the output contains a multi-line `actual`), `refuted` when it exits 0 without that line, and `inconclusive` when it cannot start, fails without the line, times out or changes source files.
 
 Finding fingerprint = hash(featureId, requirement/criterion IDs, kind, canonical path, symbol, normalized evidence snippet). The line number is stored in evidence and is not used as the only identity. Different causes at one place are not merged automatically. A doubtful match keeps two records. Original reports are immutable; dedup changes the projection and keeps the source evidence IDs.
 
@@ -319,7 +319,7 @@ A repair round creates corrective tasks and repeats task-graph, checks, review a
 
 The advance authorization of corrective tasks is part of the digest as the bounded-correction rule. The service may only append new tasks to the original graph and may not change their earlier definitions. New tasks reference existing requirements/criteria and confirmed findings and use a subset of the accepted write paths, operations, profile IDs and check IDs. The DAG is validated again. CorrectionSchema records parentDigest, parentGraphHash, newGraphHash, findingIds, taskIds and the round number as an immutable artifact. The effective authorization is a chain from the human approval through valid corrections. The inputHash changes; the human approval digest stays the root of the chain. Acceptance checks the whole chain and the current effective graph hash. Any change beyond this rule requires a new human approval. A separate request.decided on behalf of the user is not created for an automatic correction.
 
-Default limits: 2 repair rounds, 2 convergence rounds, at most 20 corrective tasks in total. No progress: two consecutive passes have the same set of open fingerprints and no new confirming evidence or reduction of unclosed criteria. The run becomes blocked/no_progress. A formatting change does not count as progress. A technical provider retry does not count as a reflection round but uses the shared budget.
+Default limits: 2 repair rounds, 2 convergence rounds, at most 20 corrective tasks in total. No progress: two consecutive passes have the same set of open fingerprints and no new confirming evidence or reduction of unclosed criteria. The run becomes blocked/no_progress. Reaching `maxRepairRounds`, `maxConvergenceRounds` or `maxCorrectiveTasks` with findings still open also gives blocked/no_progress, with a message naming the setting; `workflow extend` raises only tokens, calls and time, so these limits change through `workflow revise` or a fork. A formatting change does not count as progress. A technical provider retry does not count as a reflection round but uses the shared budget.
 
 Converge checks all criteria, including those already marked as met. The agent cannot adjust the spec to the current code. The allowed results for a criterion are pass/fail/inconclusive/deferred. A manual criterion requires a trusted evidence request. A post-release criterion cannot contain an obligation needed for engineering readiness disguised as a business metric; analyze checks this semantically and shows it to a human before approval.
 

@@ -11,21 +11,44 @@
  * terminal UI waits for a key. Interrupting a turn denies its pending prompts. A message sent while
  * a turn runs is steered into the turn at its next step, or starts the next turn if the turn ends
  * first.
+ *
+ * Compacting a session ("Compact now") replaces its older model messages with a summary, as the
+ * terminal UI's `/compact` does; the transcript keeps every message and gains a note. Messages sent
+ * while it runs wait and start the next turn when it ends.
  */
 import type { ModelMessage } from "ai";
+import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AppConfig,
+  BakeMode,
   ChatMessage,
-  ForgeMode,
   ImageAttachment,
+  InputContextItem,
   InteractiveCallbacks,
   MessageSegment,
   ToolCall,
   ToolResult,
 } from "../../types/index.js";
+import {
+  checkpointTagName,
+  copyCheckpointTags,
+  ensureBaseSnapshot,
+  forkPoint,
+  RollbackError,
+  type RollbackReport,
+  rollbackToCheckpoint,
+} from "../checkpoints/fork.js";
+import { snapshotWorkspace } from "../checkpoints/snapshot.js";
+import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
+import { type CompactResult, compactionBlocker, messageChars } from "../compaction/manual.js";
+import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
+import type { ExpandedChatInput } from "./input-expansion.js";
+import { hasInputReferences } from "./input-parse.js";
+import type { MentionSuggestion } from "./mention-suggest.js";
 
 export const CHAT_MODES = ["default", "architect", "auto"] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
@@ -71,6 +94,8 @@ export interface SessionSummary {
   state: SessionState;
   model: string | null;
   mode: ChatMode;
+  /** True while a manual compaction runs; the state is then `working`. */
+  compacting: boolean;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -115,10 +140,23 @@ export type ChatEventBody =
       usage: Usage;
       durationMs: number;
     }
+  | { type: "compaction-start"; compactionId: string }
+  | {
+      type: "compaction-done";
+      compactionId: string;
+      status: CompactionStatus;
+      /** The note added to the transcript; null when the compaction failed or was interrupted. */
+      message: ChatMessage | null;
+      /** Model messages the summary replaced. */
+      compacted: number;
+      error?: string;
+      context: SessionDetail["context"];
+    }
   | { type: "session"; session: SessionSummary };
+export type CompactionStatus = "compacted" | "skipped" | "failed" | "interrupted";
 export type ChatEvent = ChatEventBody & { seq: number; at: number };
 
-/** The part of an agent stream result a turn reads; `createForgeAgent` agents satisfy it. */
+/** The part of an agent stream result a turn reads; `createBakeAgent` agents satisfy it. */
 export interface TurnAgent {
   stream(args: {
     messages: ModelMessage[];
@@ -140,9 +178,38 @@ export interface TurnAgentRequest {
   drainSteering: () => { text: string; images?: ImageAttachment[] } | null;
 }
 
+export interface InputExpansionRequest {
+  sessionId: string;
+  mode: ChatMode;
+  text: string;
+  onApproveDestructive: (description: string) => Promise<boolean>;
+  abortSignal: AbortSignal;
+}
+
+export interface CompactionRequest {
+  sessionId: string;
+  /** The session's model; the host may compact with the task router's `compact` model instead. */
+  modelId: string;
+  messages: ModelMessage[];
+  abortSignal: AbortSignal;
+}
+
+export interface CompactionResponse {
+  result: CompactResult;
+  /** Characters of the system prompt and context, for estimating the context fill afterwards. */
+  systemChars?: number;
+  contextWindow?: number;
+}
+
 /** Builds the agent of each turn; the API server uses a host backed by `createChatAgent`. */
 export interface ChatAgentHost {
   agent(request: TurnAgentRequest): Promise<{ agent: TurnAgent; contextWindow: number }>;
+  /** Expands the `@` mentions and `!` command of a message; without it, text goes as typed. */
+  expandInput?(request: InputExpansionRequest): Promise<ExpandedChatInput>;
+  /** `@` completions for a chat input, from the workspace files and the repository graph. */
+  suggestMentions?(query: string, limit?: number): Promise<MentionSuggestion[]>;
+  /** Summarizes a session's older messages; without it, sessions cannot be compacted. */
+  compact?(request: CompactionRequest): Promise<CompactionResponse>;
   /** Frees what the host keeps for a session that is no longer loaded. */
   release(sessionId: string): void;
   dispose(): Promise<void>;
@@ -150,7 +217,14 @@ export interface ChatAgentHost {
 
 export class ChatError extends Error {
   constructor(
-    readonly code: "NOT_FOUND" | "SESSION_BUSY" | "STALE_PROMPT" | "INVALID_REQUEST",
+    readonly code:
+      | "NOT_FOUND"
+      | "SESSION_BUSY"
+      | "STALE_PROMPT"
+      | "INVALID_REQUEST"
+      | "ROLLBACK_UNAVAILABLE"
+      | "NOTHING_TO_COMPACT"
+      | "NOT_SUPPORTED",
     message: string,
   ) {
     super(message);
@@ -161,7 +235,7 @@ function emptyUsage(): Usage {
   return { input: 0, output: 0, cacheRead: 0 };
 }
 
-function toChatMode(mode: ForgeMode | undefined): ChatMode {
+function toChatMode(mode: BakeMode | undefined): ChatMode {
   return mode && (CHAT_MODES as readonly string[]).includes(mode) ? (mode as ChatMode) : "default";
 }
 
@@ -198,7 +272,8 @@ function toolResultOf(output: unknown): ToolResult {
   return { success: true, output: typeof output === "string" ? output : JSON.stringify(output) };
 }
 
-const EDIT_TOOLS = new Set(["edit_file", "write_file", "create_file", "multi_edit"]);
+/** Ends a turn before the model runs, without counting as a failure. */
+class SkipTurn extends Error {}
 
 interface Pending {
   prompt: ChatPrompt;
@@ -209,6 +284,9 @@ interface TurnState {
   id: string;
   abort: AbortController;
 }
+
+/** Characters per token when estimating the context fill after a compaction, as the TUI does. */
+const CHARS_PER_TOKEN = 3;
 
 /** One loaded session: its messages, live turn, prompts and event buffer. */
 export class ChatSession {
@@ -221,6 +299,7 @@ export class ChatSession {
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
+  private compaction: TurnState | null = null;
   private turnDone: Promise<void> = Promise.resolve();
   private readonly prompts = new Map<string, Pending>();
   private queue: string[] = [];
@@ -242,7 +321,7 @@ export class ChatSession {
     this.tabId = tab.id;
     this.model =
       tab.activeModel && tab.activeModel !== "none" ? tab.activeModel : owner.defaultModel;
-    this.mode = toChatMode(tab.forgeMode ?? meta.forgeMode);
+    this.mode = toChatMode(tab.bakeMode ?? meta.bakeMode);
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -264,6 +343,26 @@ export class ChatSession {
     return this.tabMessages.get(this.tabId) ?? [];
   }
 
+  /** The workspace snapshots of this conversation's checkpoints. */
+  get checkpointTags(): CheckpointTag[] {
+    return this.tab.checkpointTags ?? [];
+  }
+
+  /** The key of this conversation's snapshot tags; API sessions all share one tab id. */
+  get tagOwner(): string {
+    return this.tabId === API_TAB ? this.meta.id : this.tabId;
+  }
+
+  addCheckpointTag(tag: CheckpointTag): void {
+    const tags = [...this.checkpointTags.filter((t) => t.index !== tag.index), tag];
+    this.meta = {
+      ...this.meta,
+      tabs: this.meta.tabs.map((t) =>
+        t.id === this.tabId ? { ...t, checkpointTags: tags.sort((a, b) => a.index - b.index) } : t,
+      ),
+    };
+  }
+
   private set messages(value: ChatMessage[]) {
     this.tabMessages.set(this.tabId, value);
   }
@@ -277,12 +376,12 @@ export class ChatSession {
   }
 
   get busy(): boolean {
-    return this.turn !== null;
+    return this.turn !== null || this.compaction !== null;
   }
 
   get state(): SessionState {
     if (this.prompts.size > 0) return "waiting";
-    return this.turn ? "working" : "idle";
+    return this.busy ? "working" : "idle";
   }
 
   get pendingPrompts(): ChatPrompt[] {
@@ -304,17 +403,11 @@ export class ChatSession {
       state: this.state,
       model: this.model,
       mode: this.mode,
+      compacting: this.compaction !== null,
     };
   }
 
   detail(): SessionDetail {
-    const files = new Set<string>();
-    for (const message of this.messages)
-      for (const call of message.toolCalls ?? []) {
-        if (EDIT_TOOLS.has(call.name) && typeof call.args.path === "string")
-          files.add(call.args.path);
-        for (const file of call.result?.filesEdited ?? []) files.add(file);
-      }
     return {
       ...this.summary(),
       messages: this.messages,
@@ -322,7 +415,7 @@ export class ChatSession {
       queued: [...this.queue],
       usage: { ...this.usage },
       context: this.context,
-      filesEdited: [...files].sort(),
+      filesEdited: editedFiles(this.messages),
       lastSeq: this.seq,
     };
   }
@@ -368,9 +461,10 @@ export class ChatSession {
 
   /** Starts a turn, or steers the text into the running one. */
   send(text: string): { turnId: string; queued: boolean } {
-    if (this.turn) {
+    const running = this.turn ?? this.compaction;
+    if (running) {
       this.queue.push(text);
-      return { turnId: this.turn.id, queued: true };
+      return { turnId: running.id, queued: true };
     }
     if (!this.model)
       throw new ChatError(
@@ -384,10 +478,119 @@ export class ChatSession {
   }
 
   interrupt(): boolean {
+    if (this.compaction) {
+      this.compaction.abort.abort();
+      return true;
+    }
     if (!this.turn) return false;
     this.turn.abort.abort();
     this.denyPrompts();
     return true;
+  }
+
+  /** Line counts of the files this session edited, against the repository's last commit. */
+  diffStats(): Promise<SessionDiffStats> {
+    return sessionDiffStats(this.owner.workspace, editedFiles(this.messages));
+  }
+
+  /**
+   * Starts compacting the conversation. Refused while a turn runs, when the host cannot compact,
+   * and when the conversation is too short for a summary to save anything.
+   */
+  compact(): { compactionId: string } {
+    if (this.busy) throw new ChatError("SESSION_BUSY", "Wait for the running turn to finish");
+    const { host } = this.owner;
+    if (!host.compact) throw new ChatError("NOT_SUPPORTED", "This server cannot compact sessions");
+    const model = this.model;
+    if (!model)
+      throw new ChatError(
+        "INVALID_REQUEST",
+        "No model configured. Choose a model for the session or set defaultModel.",
+      );
+    const blocker = compactionBlocker(this.core, this.owner.keepRecent);
+    if (blocker) throw new ChatError("NOTHING_TO_COMPACT", blocker);
+    const compaction: TurnState = { id: crypto.randomUUID(), abort: new AbortController() };
+    this.compaction = compaction;
+    this.emit({ type: "compaction-start", compactionId: compaction.id });
+    this.emitSession();
+    this.turnDone = this.runCompaction(compaction, model, host.compact.bind(host)).catch(() => {});
+    return { compactionId: compaction.id };
+  }
+
+  private async runCompaction(
+    compaction: TurnState,
+    modelId: string,
+    compact: NonNullable<ChatAgentHost["compact"]>,
+  ): Promise<void> {
+    let status: CompactionStatus;
+    let note: string | null = null;
+    let compacted = 0;
+    let error: string | undefined;
+    try {
+      const response = await compact({
+        sessionId: this.meta.id,
+        modelId,
+        messages: [...this.core],
+        abortSignal: compaction.abort.signal,
+      });
+      const { result } = response;
+      if (compaction.abort.signal.aborted) status = "interrupted";
+      else if (result.status === "skipped") {
+        status = "skipped";
+        note = result.reason;
+      } else {
+        status = "compacted";
+        compacted = result.compacted;
+        this.core = result.messages;
+        const window = response.contextWindow ?? this.context?.windowTokens ?? 0;
+        if (window > 0) {
+          const used = Math.ceil(
+            ((response.systemChars ?? 0) + messageChars(result.messages)) / CHARS_PER_TOKEN,
+          );
+          this.context = {
+            usedTokens: used,
+            windowTokens: window,
+            percent: Math.round((used / window) * 100),
+          };
+        }
+        if (result.usage)
+          this.usage = {
+            input: this.usage.input + result.usage.inputTokens,
+            output: this.usage.output + result.usage.outputTokens,
+            cacheRead: this.usage.cacheRead + (result.usage.cacheReadTokens ?? 0),
+          };
+        note = `Compacted ${compacted} messages into a summary (${result.strategy} strategy).${
+          this.context ? ` Context is now about ${this.context.percent}%.` : ""
+        }`;
+      }
+    } catch (err) {
+      status = compaction.abort.signal.aborted ? "interrupted" : "failed";
+      if (status === "failed") error = errorText(err);
+    }
+    const message: ChatMessage | null = note
+      ? { id: crypto.randomUUID(), role: "system", content: note, timestamp: Date.now() }
+      : null;
+    if (message) this.messages = [...this.messages, message];
+    this.compaction = null;
+    await this.owner.persist(this);
+    this.emit({
+      type: "compaction-done",
+      compactionId: compaction.id,
+      status,
+      message,
+      compacted,
+      ...(error ? { error } : {}),
+      context: this.context,
+    });
+    this.emitSession();
+    // Messages sent while compacting start the next turn.
+    if (this.queue.length > 0 && status !== "interrupted") {
+      const first = this.queue.shift() ?? "";
+      const rest = this.queue;
+      this.queue = [];
+      this.send(first);
+      this.queue.push(...rest);
+    } else this.queue = [];
   }
 
   /** Resolves when the running turn, if any, has ended and been saved. */
@@ -470,7 +673,11 @@ export class ChatSession {
       onApproveDestructive: (description) => approve({ kind: "destructive", description }),
       drainSteering: () => {
         if (!this.turn || this.queue.length === 0) return null;
-        const text = this.queue.splice(0).join("\n\n");
+        // A message with `@` mentions or a `!command` waits for the next turn, which expands it.
+        const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+        const count = firstRef === -1 ? this.queue.length : firstRef;
+        if (count === 0) return null;
+        const text = this.queue.splice(0, count).join("\n\n");
         const message: ChatMessage = {
           id: crypto.randomUUID(),
           role: "user",
@@ -490,14 +697,36 @@ export class ChatSession {
 
   private async runTurn(turn: TurnState, text: string): Promise<void> {
     const started = Date.now();
+    let modelText = text;
+    let inputContext: InputContextItem[] | undefined;
+    let send = true;
+    const { host } = this.owner;
+    if (host.expandInput && hasInputReferences(text)) {
+      try {
+        const expanded = await host.expandInput({
+          sessionId: this.meta.id,
+          mode: this.mode,
+          text,
+          onApproveDestructive: this.approvalCallbacks().onApproveDestructive,
+          abortSignal: turn.abort.signal,
+        });
+        modelText = expanded.text;
+        send = expanded.send && !turn.abort.signal.aborted;
+        if (expanded.items.length > 0) inputContext = expanded.items;
+      } catch (err) {
+        logBackgroundError("chat:input-expansion", errorText(err));
+      }
+    }
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
       content: text,
       timestamp: started,
+      ...(inputContext ? { inputContext } : {}),
     };
-    const history = [...this.core, { role: "user" as const, content: text }];
-    this.messages = [...this.messages, userMessage];
+    const history = [...this.core, { role: "user" as const, content: modelText }];
+    const before = this.messages;
+    this.messages = [...before, userMessage];
     this.steered = [];
     this.emit({ type: "turn-start", turnId: turn.id, message: userMessage });
     this.emitSession();
@@ -529,8 +758,17 @@ export class ChatSession {
     };
 
     try {
+      const base = await ensureBaseSnapshot(
+        this.owner.workspace,
+        this.tagOwner,
+        before,
+        this.checkpointTags,
+      );
+      if (base) this.addCheckpointTag(base);
       const model = this.model;
       if (!model) throw new Error("No model configured");
+      // A `!` command that did not run leaves nothing to answer.
+      if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
         sessionId: this.meta.id,
         modelId: model,
@@ -638,7 +876,8 @@ export class ChatSession {
       }
       if (turn.abort.signal.aborted) status = "interrupted";
     } catch (err) {
-      if (turn.abort.signal.aborted) status = "interrupted";
+      if (err instanceof SkipTurn) status = turn.abort.signal.aborted ? "interrupted" : "completed";
+      else if (turn.abort.signal.aborted) status = "interrupted";
       else {
         status = "failed";
         error = errorText(err);
@@ -649,7 +888,7 @@ export class ChatSession {
     if (response.length === 0 && fullText.length > 0)
       response = [{ role: "assistant", content: fullText }];
     const steering = this.steered.map((content) => ({ role: "user" as const, content }));
-    this.core = [...history, ...steering, ...response];
+    if (send) this.core = [...history, ...steering, ...response];
     const assistant: ChatMessage | null =
       fullText.length > 0 || calls.length > 0
         ? {
@@ -663,6 +902,12 @@ export class ChatSession {
           }
         : null;
     if (assistant) this.messages = [...this.messages, assistant];
+    if (assistant && extractFilesFromToolCalls(assistant).edited.length > 0) {
+      const index = buildTurns(this.messages).length;
+      const tag = checkpointTagName(this.tagOwner, index, text);
+      if (await snapshotWorkspace(this.owner.workspace, tag, `baked checkpoint ${String(index)}`))
+        this.addCheckpointTag({ index, anchorMessageId: userMessage.id, gitTag: tag });
+    }
     this.usage = {
       input: this.usage.input + usage.input,
       output: this.usage.output + usage.output,
@@ -682,8 +927,14 @@ export class ChatSession {
     this.emitSession();
     // Text that arrived after the last step of the turn starts the next one.
     if (this.queue.length > 0 && status === "completed") {
-      const next = this.queue.splice(0).join("\n\n");
+      // Messages with `@` or `!` start a turn of their own so their expansion stays separate.
+      const firstRef = this.queue.findIndex((q) => hasInputReferences(q));
+      const count = firstRef === 0 ? 1 : firstRef === -1 ? this.queue.length : firstRef;
+      const next = this.queue.splice(0, count).join("\n\n");
+      const rest = this.queue;
+      this.queue = [];
       this.send(next);
+      this.queue.push(...rest);
     } else this.queue = [];
   }
 
@@ -697,7 +948,7 @@ export class ChatSession {
     const tab: TabMeta = {
       ...this.tab,
       activeModel: this.model ?? "none",
-      forgeMode: this.mode,
+      bakeMode: this.mode,
       tokenUsage: {
         ...this.tab.tokenUsage,
         prompt: this.usage.input,
@@ -711,7 +962,7 @@ export class ChatSession {
       ...this.meta,
       title: this.messages.length > 0 ? derived : this.meta.title,
       updatedAt: now,
-      forgeMode: this.mode,
+      bakeMode: this.mode,
       tabs: this.meta.tabs.map((t) => (t.id === this.tabId ? tab : t)),
     };
     return { meta: this.meta, tabMessages: this.tabMessages, tabCore: this.tabCore };
@@ -739,6 +990,15 @@ export class ChatService {
     this.store = new SessionManager(options.workspace);
   }
 
+  get workspace(): string {
+    return this.options.workspace;
+  }
+
+  /** Model messages a compaction keeps verbatim. */
+  get keepRecent(): number {
+    return this.options.config.compaction?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
+  }
+
   get defaultModel(): string | null {
     const model = this.options.config.defaultModel;
     return model && model !== "none" ? model : null;
@@ -757,6 +1017,7 @@ export class ChatService {
         state: "idle",
         model: null,
         mode: "default",
+        compacting: false,
       });
     }
     for (const session of this.live.values()) summaries.set(session.id, session.summary());
@@ -802,7 +1063,7 @@ export class ChatService {
       startedAt: now,
       updatedAt: now,
       activeTabId: API_TAB,
-      forgeMode: input.mode ?? "default",
+      bakeMode: input.mode ?? "default",
       tabs: [
         {
           id: API_TAB,
@@ -812,7 +1073,7 @@ export class ChatService {
           planMode: false,
           planRequest: null,
           coAuthorCommits: false,
-          forgeMode: input.mode ?? "default",
+          bakeMode: input.mode ?? "default",
           tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
           messageRange: { startLine: 0, endLine: messages.length },
         },
@@ -829,23 +1090,54 @@ export class ChatService {
     return session;
   }
 
-  /** A new session with the messages up to and including `atMessageId`, or all of them. */
-  async fork(idOrPrefix: string, atMessageId?: string): Promise<ChatSession> {
+  /**
+   * A new session with the messages up to and including `atMessageId`, or all of them. With
+   * `rollbackFiles` the workspace files the agent edited after that message's checkpoint are
+   * restored to the checkpoint (see `src/core/checkpoints/fork.ts`).
+   */
+  async fork(
+    idOrPrefix: string,
+    atMessageId?: string,
+    options: { rollbackFiles?: boolean; force?: boolean } = {},
+  ): Promise<{ session: ChatSession; rollback: RollbackReport | null }> {
     const source = this.get(idOrPrefix);
     const all = source.messages;
-    let messages = all;
-    if (atMessageId !== undefined) {
-      const index = all.findIndex((m) => m.id === atMessageId);
-      if (index < 0) throw new ChatError("NOT_FOUND", `Message ${atMessageId} not found`);
-      messages = all.slice(0, index + 1);
-    }
+    const point = forkPoint(all, atMessageId);
+    if (!point) throw new ChatError("NOT_FOUND", `Message ${atMessageId} not found`);
+    if (options.rollbackFiles && [...this.live.values()].some((s) => s.busy))
+      throw new ChatError("SESSION_BUSY", "Wait for running turns to finish before rolling back");
     const summary = source.summary();
-    return this.create({
+    const session = await this.create({
       title: `${summary.title} (fork)`,
       ...(summary.model ? { model: summary.model } : {}),
       mode: summary.mode,
-      messages: messages.map((m) => ({ ...m })),
+      messages: point.messages.map((m) => ({ ...m })),
     });
+    if (!options.rollbackFiles) return { session, rollback: null };
+    try {
+      const rollback = await rollbackToCheckpoint({
+        cwd: this.options.workspace,
+        messages: all,
+        checkpoint: point.checkpoint,
+        tags: source.checkpointTags,
+        backupTag: `baked/fork-backup-${session.id.slice(0, 8)}`,
+        force: options.force === true,
+      });
+      const copied = await copyCheckpointTags(
+        this.options.workspace,
+        source.checkpointTags,
+        point.checkpoint,
+        session.tagOwner,
+      );
+      for (const tag of copied) session.addCheckpointTag(tag);
+      await this.persist(session);
+      return { session, rollback };
+    } catch (err) {
+      this.live.delete(session.id);
+      this.store.deleteSession(session.id);
+      if (err instanceof RollbackError) throw new ChatError("ROLLBACK_UNAVAILABLE", err.message);
+      throw err;
+    }
   }
 
   delete(idOrPrefix: string): void {

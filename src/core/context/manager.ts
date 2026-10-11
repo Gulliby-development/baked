@@ -6,7 +6,7 @@ import { loadConfig } from "../../config/index.js";
 import { logBackgroundError } from "../../stores/errors.js";
 import { recordModelCall } from "../../stores/model-events.js";
 import { useRepoMapStore } from "../../stores/repomap.js";
-import type { ForgeMode, TaskRouter } from "../../types/index.js";
+import type { BakeMode, TaskRouter } from "../../types/index.js";
 import { toErrorMessage } from "../../utils/errors.js";
 import { getIntelligenceClient, setIntelligenceClient } from "../intelligence/instance.js";
 import type { SymbolForSummary } from "../intelligence/repo-map.js";
@@ -76,7 +76,7 @@ export class ContextManager {
   private recallEditEpoch = 0;
   /** Memory ids surfaced earlier in this turn-stream — skipped on subsequent recall to avoid duplicate <recalled_memories> blocks. Cleared on cache reset (compaction, /clear, session restore). */
   private surfacedMemoryIds = new Set<string>();
-  private forgeMode: ForgeMode = "default";
+  private bakeMode: BakeMode = "default";
   private fileTreeCache: { tree: string; at: number } | null = null;
   private projectInfoCache: { info: string | null; at: number } | null = null;
   private repoMap: IntelligenceClient;
@@ -112,6 +112,8 @@ export class ContextManager {
   /** True when user explicitly set mode to "off" — prevents auto-enable in onScanComplete */
   private semanticModeExplicit = false;
   private isChild = false;
+  /** False when the root borrows an intelligence worker another thread owns and scans. */
+  private ownsIntelligence = true;
   private projectInstructions = "";
   private projectInstructionsVersion = 0;
   /** The project working set captured for this session; undefined until first needed. */
@@ -162,7 +164,11 @@ export class ContextManager {
   static async createAsync(
     cwd: string,
     onStep?: (label: string) => void,
-    opts?: { repoMapEnabled?: boolean },
+    opts?: {
+      repoMapEnabled?: boolean;
+      /** Borrowed client of a worker another thread owns; this root neither scans nor closes it. */
+      intelligence?: IntelligenceClient;
+    },
   ): Promise<ContextManager> {
     const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -172,15 +178,17 @@ export class ContextManager {
     await tick();
 
     onStep?.("Mapping the codebase…");
-    const repoMap = new IntelligenceClient(cwd);
+    const repoMap = opts?.intelligence ?? new IntelligenceClient(cwd);
     setIntelligenceClient(repoMap);
     await tick();
 
     onStep?.("Wiring up Baked…");
     const cm = new ContextManager(cwd, { repoMap, memoryManager });
     cm.isChild = false;
+    cm.ownsIntelligence = !opts?.intelligence;
     if (opts?.repoMapEnabled === false) cm.repoMapEnabled = false;
-    if (cm.repoMapEnabled) {
+    if (cm.repoMapEnabled && !cm.ownsIntelligence) cm.followSharedScan();
+    else if (cm.repoMapEnabled) {
       cm.wireRepoMapCallbacks();
       cm.startRepoMapScan();
     }
@@ -349,8 +357,19 @@ export class ContextManager {
   }
 
   private startRepoMapScan(): void {
+    if (!this.ownsIntelligence) return;
     this.syncRepoMapStore("scanning");
     this.repoMap.scan().catch((err: unknown) => this.handleScanError(err));
+  }
+
+  /** Tracks readiness of a borrowed worker; its owner scans and generates summaries. */
+  private followSharedScan(): void {
+    this.repoMapReady = this.repoMap.isReady;
+    this.repoMap.onScanComplete = () => {
+      this.repoMapReady = this.repoMap.isReady;
+      this.repoMapCache = null;
+      this.bakeMapSnapshot = null;
+    };
   }
 
   private wireRepoMapCallbacks(): void {
@@ -459,8 +478,8 @@ export class ContextManager {
     return this.memoryManager;
   }
 
-  getForgeMode(): ForgeMode {
-    return this.forgeMode;
+  getBakeMode(): BakeMode {
+    return this.bakeMode;
   }
 
   setProjectInstructions(content: string): void {
@@ -469,8 +488,8 @@ export class ContextManager {
     this.projectInstructionsVersion++;
   }
 
-  setForgeMode(mode: ForgeMode): void {
-    this.forgeMode = mode;
+  setBakeMode(mode: BakeMode): void {
+    this.bakeMode = mode;
   }
 
   setContextWindow(tokens: number): void {
@@ -483,8 +502,8 @@ export class ContextManager {
     return Math.round((this.conversationTokens / window) * 100);
   }
 
-  buildModeMessage(modeOverride?: ForgeMode): string | null {
-    const mode = modeOverride ?? this.forgeMode;
+  buildModeMessage(modeOverride?: BakeMode): string | null {
+    const mode = modeOverride ?? this.bakeMode;
     if (mode === "default") return null;
     const instructions = getModeInstructions(mode, {
       contextPercent: this.getContextPercent(),
@@ -714,7 +733,7 @@ export class ContextManager {
     const skillCount = this.skills.size;
     const skillNames = [...this.skills.keys()].sort().join(",");
     const memGen = this.memoryManager.generation;
-    const mode = this.forgeMode;
+    const mode = this.bakeMode;
     return `${String(gen)}|${modelId}|${mode}|${String(skillCount)}:${skillNames}|m${String(memGen)}|pi${String(this.projectInstructionsVersion)}|ws${String(this.workingSetVersion)}`;
   }
 
@@ -756,6 +775,8 @@ export class ContextManager {
       this.repoMap.onStaleSymbols = null;
       this.repoMapReady = false;
       this.syncRepoMapStore("off");
+    } else if (!this.ownsIntelligence) {
+      this.followSharedScan();
     } else {
       // Re-wire and kick off a scan if one hasn't run yet or was interrupted
       this.wireRepoMapCallbacks();
@@ -1105,7 +1126,9 @@ export class ContextManager {
     this._unsubProviderSwitch = null;
     if (!this.isChild) {
       if (getIntelligenceClient() === this.repoMap) setIntelligenceClient(null);
-      const closed = this.repoMap.close();
+      const closed = this.ownsIntelligence
+        ? this.repoMap.close()
+        : Promise.resolve(this.repoMap.dispose());
       this.memoryManager.close();
       if (!options?.preserveSharedIO) {
         import("../workers/io-client.js")
@@ -1175,7 +1198,7 @@ export class ContextManager {
   getContextBreakdown(): { section: string; chars: number; active: boolean }[] {
     const sections: { section: string; chars: number; active: boolean }[] = [];
 
-    // System prompt size — use actual cached size from forge if available, else estimate
+    // System prompt size — use actual cached size from bake if available, else estimate
     const cachedSize = this.getInstructionsSize();
     sections.push({
       section: "System prompt + tools",
@@ -1215,11 +1238,11 @@ export class ContextManager {
       active: memoryContext !== null,
     });
 
-    const modeInstructions = getModeInstructions(this.forgeMode, {
+    const modeInstructions = getModeInstructions(this.bakeMode, {
       contextPercent: this.getContextPercent(),
     });
     sections.push({
-      section: `Mode (${this.forgeMode})`,
+      section: `Mode (${this.bakeMode})`,
       chars: modeInstructions?.length ?? 0,
       active: modeInstructions !== null,
     });
@@ -1276,7 +1299,7 @@ export class ContextManager {
       modelId: modelIdOverride || this.lastActiveModel,
       hasRepoMap: this.isRepoMapReady(),
       hasSymbols: this.isRepoMapReady() && this.repoMap.getStatsCached().symbols > 0,
-      forgeMode: this.forgeMode,
+      bakeMode: this.bakeMode,
       projectInstructions: this.projectInstructions || null,
       cwd: this.cwd,
       hasGhCli: this.hasGhCli,

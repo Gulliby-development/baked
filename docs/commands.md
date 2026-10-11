@@ -22,10 +22,12 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 | `Ctrl+O` | Expand or collapse code and reasoning |
 | `Ctrl+C` | Copy the selection, or exit |
 | `Meta+R` (`Alt+R` on Linux) | Error log |
+| `@` in the input | Mention a file, folder or symbol (`Tab`/`Enter` inserts, `Esc` closes); see [mentions and shell commands](guide.md#mentions-and-shell-commands-in-the-input) |
+| `!` at the start of a message | Run a shell command and add its output to the context |
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT` and `/workflow edit ID` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -53,6 +55,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/checkpoint` | Browse checkpoints — undo, redo, save |
 | `/checkpoint undo` | Undo last checkpoint (revert files) |
 | `/checkpoint redo` | Redo last undone checkpoint |
+| `/checkpoint fork` | Fork a checkpoint into a new tab (rolls back files): `/checkpoint fork [N] [--force]` |
 | `/checkpoint save` | Force save current state as git tag |
 | `/checkpoint live` | Back to live view |
 
@@ -83,6 +86,10 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/codex logout` | Log out of the current Codex account |
 | `/codex switch` | Switch to a different Codex account |
 | `/codex status` | Show Codex login status |
+| `/claude-code` | Show Claude Code login status |
+| `/claude-code login` | Log in to Claude Code with your Claude subscription |
+| `/claude-code logout` | Log out of the current Claude Code account |
+| `/claude-code status` | Show Claude Code login status |
 | `/model-scope` | Set model scope (project/global) |
 | `/models` | Switch LLM model (Ctrl+L) |
 | `/provider-settings` | Provider options — thinking, effort, speed, context |
@@ -167,6 +174,7 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked quick TEXT` | A small task through the quick workflow ([quick workflow](workflows/quick.md)) |
 | `baked doctor` | Checks before a workflow run: keys, routed models, check commands, Git, budget |
 | `baked serve [--port N] [--allow-origin ORIGIN]` | Local HTTP API on 127.0.0.1 for the desktop app ([local API](workflows/runtime.md#local-api-baked-serve)) |
+| `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
 | `baked telemetry [--json]` | The locally recorded usage events ([privacy](privacy.md)) |
 | `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |

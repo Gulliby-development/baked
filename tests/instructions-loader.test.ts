@@ -173,7 +173,7 @@ describe("instruction loading", () => {
       repoMapGeneration: 0,
       skills: new Map(),
       memoryManager: { generation: 0 },
-      forgeMode: "default",
+      bakeMode: "default",
       projectInstructions: "",
       projectInstructionsVersion: 0,
       isChild: false,

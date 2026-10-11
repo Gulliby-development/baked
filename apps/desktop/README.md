@@ -43,6 +43,8 @@ xvfb-run -a bun run smoke                     # Linux: launches dist/linux-unpac
 `deps/` folder next to it, as in the release bundles from `scripts/bundle.sh` and
 `scripts/bundle-windows.ps1`) and runs electron-builder (`electron-builder.yml`) for the current
 platform: an NSIS installer on Windows, a DMG and a ZIP on macOS, an AppImage and a DEB on Linux.
+`--target portable` builds a Windows exe that runs without installing
+(`baked-desktop-<version>-win-x64-portable.exe`) instead of the installer; CI does not build it.
 Installers land in `dist/` and carry the repository's version. Take the binary from an unpacked
 bundle (for example `dist/bundle/baked-<version>-linux-x64/baked` after
 `bash scripts/bundle.sh x64 linux` at the root): workflows need its `deps/` folder.

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { type Selection, TextAttributes } from "@opentui/core";
-import { useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useRenderer } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -34,13 +34,14 @@ import { useTheme } from "../core/theme/index.js";
 import { restoreSessionImages } from "../core/tools/show-image.js";
 import { pickWordmark } from "../core/utils/splash.js";
 import { CURRENT_VERSION } from "../core/version.js";
+import { getModeColor, getModeLabel } from "../hooks/useBakeMode.js";
 import type { ChatInstance, WorkspaceSnapshot } from "../hooks/useChat.js";
 import { useConfigSync } from "../hooks/useConfigSync.js";
-import { getModeColor, getModeLabel } from "../hooks/useForgeMode.js";
 import { useGitStatus } from "../hooks/useGitStatus.js";
 import { useGlobalKeyboard } from "../hooks/useGlobalKeyboard.js";
 import { buildTabMeta } from "../hooks/useSessionBuilder.js";
 import { useTabs } from "../hooks/useTabs.js";
+import { useTerminalDimensions } from "../hooks/useTerminalEvents.js";
 import { stopWorkflowSessions } from "../hooks/useWorkflow.js";
 import { cleanupAndExit, hardRestart, restart, setExitSessionId } from "../index.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";
@@ -109,9 +110,9 @@ const DEFAULT_TASK_ROUTER: TaskRouter = {
 
 const SHUTDOWN_STEPS = [
   "quenching active flames",
-  "forging session to disk",
+  "baking session to disk",
   "sealing the vault",
-  "until next time, forgemaster",
+  "until next time, master baker",
 ];
 
 // Linear interpolate two #rrggbb hex colors → #rrggbb. Mirrors boot.tsx.
@@ -561,10 +562,9 @@ export function App({
   }, []);
 
   const git = useGitStatus(cwd);
-  const [forgeMode, setForgeModeHeader] =
-    useState<import("../types/index.js").ForgeMode>("default");
-  const modeLabel = getModeLabel(forgeMode);
-  const modeColor = getModeColor(forgeMode);
+  const [bakeMode, setBakeModeHeader] = useState<import("../types/index.js").BakeMode>("default");
+  const modeLabel = getModeLabel(bakeMode);
+  const modeColor = getModeColor(bakeMode);
 
   useConfigSync({
     effectiveConfig,
@@ -665,7 +665,7 @@ export function App({
                 planMode: chat.planMode,
                 planRequest: chat.planRequest,
                 coAuthorCommits: chat.coAuthorCommits,
-                forgeMode: chat.forgeMode,
+                bakeMode: chat.bakeMode,
                 tokenUsage: chat.tokenUsage,
                 messages: filtered,
                 coreMessages: chat.coreMessages,
@@ -674,7 +674,7 @@ export function App({
                 title: fallbackTitle,
                 customTitle: activeChat?.customTitle ?? null,
                 cwd,
-                forgeMode: activeChat?.forgeMode ?? "default",
+                bakeMode: activeChat?.bakeMode ?? "default",
                 activeTabId,
               });
             }
@@ -739,7 +739,7 @@ export function App({
         data.tabMessages,
         data.tabCoreMessages,
       );
-      setForgeModeHeader(data.meta.forgeMode);
+      setBakeModeHeader(data.meta.bakeMode);
       setExitSessionId(data.meta.id);
       // Restore checkpoint git tags from saved session (synchronous — must run
       // before React renders TabInstance, which triggers syncFromMessages)
@@ -776,7 +776,7 @@ export function App({
     activeChatRef.current = chat;
     if (chat) {
       setActiveModelForHeader(chat.activeModel);
-      setForgeModeHeader(chat.forgeMode);
+      setBakeModeHeader(chat.bakeMode);
       const hasContent = chat.messages.some(
         (m: ChatMessage) => m.role === "user" || m.role === "assistant",
       );
@@ -872,7 +872,7 @@ export function App({
               planMode: chat.planMode,
               planRequest: chat.planRequest,
               coAuthorCommits: chat.coAuthorCommits,
-              forgeMode: chat.forgeMode,
+              bakeMode: chat.bakeMode,
               tokenUsage: chat.tokenUsage,
               messages: filtered,
               coreMessages: chat.coreMessages,
@@ -881,7 +881,7 @@ export function App({
               title: fallbackTitle,
               customTitle: activeChat?.customTitle ?? null,
               cwd,
-              forgeMode: activeChat?.forgeMode ?? "default",
+              bakeMode: activeChat?.bakeMode ?? "default",
               activeTabId,
             });
           }
@@ -910,7 +910,7 @@ export function App({
           data.tabMessages,
           data.tabCoreMessages,
         );
-        setForgeModeHeader(data.meta.forgeMode);
+        setBakeModeHeader(data.meta.bakeMode);
         setExitSessionId(data.meta.id);
         // Restore checkpoint git tags from saved session (stashed as _pendingTags
         // so syncFromMessages picks them up when it rebuilds checkpoints)
@@ -985,7 +985,7 @@ export function App({
             planMode: chat.planMode,
             planRequest: chat.planRequest,
             coAuthorCommits: chat.coAuthorCommits,
-            forgeMode: chat.forgeMode,
+            bakeMode: chat.bakeMode,
             tokenUsage: chat.tokenUsage,
             messages: filtered,
             coreMessages: chat.coreMessages,
@@ -994,7 +994,7 @@ export function App({
             title: fallbackTitle,
             customTitle: activeChat.customTitle ?? null,
             cwd,
-            forgeMode: activeChat.forgeMode,
+            bakeMode: activeChat.bakeMode,
             activeTabId,
           });
         }
@@ -1041,8 +1041,8 @@ export function App({
         if (chat.planMode) {
           chat.setPlanMode(false);
           chat.setPlanRequest(null);
-          chat.setForgeMode("default");
-          setForgeModeHeader("default");
+          chat.setBakeMode("default");
+          setBakeModeHeader("default");
           chat.setPendingPlanReview(null);
           chat.setMessages((prev: ChatMessage[]) => [
             ...prev,
@@ -1056,8 +1056,8 @@ export function App({
         } else {
           chat.setPlanMode(true);
           chat.setPlanRequest(desc || null);
-          chat.setForgeMode("plan");
-          setForgeModeHeader("plan");
+          chat.setBakeMode("plan");
+          setBakeModeHeader("plan");
           chat.setMessages((prev: ChatMessage[]) => [
             ...prev,
             {
@@ -1091,12 +1091,12 @@ export function App({
         refreshGit: () => {
           git.refresh();
         },
-        setForgeMode: (mode: import("../types/index.js").ForgeMode) => {
-          chat.setForgeMode(mode);
-          setForgeModeHeader(mode);
+        setBakeMode: (mode: import("../types/index.js").BakeMode) => {
+          chat.setBakeMode(mode);
+          setBakeModeHeader(mode);
         },
-        currentMode: chat.forgeMode,
-        currentModeLabel: getModeLabel(chat.forgeMode),
+        currentMode: chat.bakeMode,
+        currentModeLabel: getModeLabel(chat.bakeMode),
         contextManager,
         chatStyle: uiState.chatStyle,
         setChatStyle: uiState.setChatStyle,
@@ -1193,7 +1193,7 @@ export function App({
       const chat = tabMgrRef.current?.getActiveChat();
       if (chat) {
         const next = chat.cycleMode();
-        setForgeModeHeader(next);
+        setBakeModeHeader(next);
       }
     }, []),
     tabMgr,
@@ -1255,7 +1255,7 @@ export function App({
               </text>
             </>
           )}
-          {tabMgr.tabCount <= 1 && forgeMode !== "default" && (
+          {tabMgr.tabCount <= 1 && bakeMode !== "default" && (
             <>
               <text fg={t.textFaint}>│</text>
               <text fg={modeColor} attributes={TextAttributes.BOLD}>
@@ -1282,7 +1282,7 @@ export function App({
             onSwitch={tabMgr.switchTab}
             getActivity={tabMgr.getTabActivity}
             getMode={(id) =>
-              id === tabMgr.activeTabId ? forgeMode : (tabMgr.getChat(id)?.forgeMode ?? "default")
+              id === tabMgr.activeTabId ? bakeMode : (tabMgr.getChat(id)?.bakeMode ?? "default")
             }
             getModelLabel={(id) => {
               const model =
@@ -1311,7 +1311,7 @@ export function App({
             sessionManager={sessionManager}
             cwd={cwd}
             onCommand={handleTabCommand}
-            onModeChange={setForgeModeHeader}
+            onModeChange={setBakeModeHeader}
             onModelChange={(modelId) => {
               setActiveModelForHeader(modelId);
             }}
@@ -1518,8 +1518,8 @@ export function App({
         activeModel={activeModelForHeader}
         contextManager={contextManager}
         tabMgr={tabMgr}
-        currentMode={activeChatRef.current?.forgeMode ?? "default"}
-        currentModeLabel={getModeLabel(activeChatRef.current?.forgeMode ?? "default")}
+        currentMode={activeChatRef.current?.bakeMode ?? "default"}
+        currentModeLabel={getModeLabel(activeChatRef.current?.bakeMode ?? "default")}
       />
 
       <DiagnosePopup

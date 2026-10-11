@@ -19,7 +19,9 @@ import { trackProcess } from "../../../process-tracker.js";
 
 export interface CodexRunnerCall {
   modelId: string;
+  /** The whole request as one text, as `serializeCodexPrompt` renders it. */
   prompt: string;
+  parts: CodexPromptParts;
   schema: JSONSchema7;
   abortSignal?: AbortSignal;
 }
@@ -44,11 +46,14 @@ interface SerializedTool {
   inputSchema: JSONSchema7;
 }
 
-type PromptArrayContent = Exclude<LanguageModelV2CallOptions["prompt"][number]["content"], string>;
+export type PromptArrayContent = Exclude<
+  LanguageModelV2CallOptions["prompt"][number]["content"],
+  string
+>;
 type PromptPart = PromptArrayContent[number];
-type ToolResultPromptPart = Extract<PromptPart, { type: "tool-result" }>;
+export type ToolResultPromptPart = Extract<PromptPart, { type: "tool-result" }>;
 
-function getFunctionTools(options: LanguageModelV2CallOptions): SerializedTool[] {
+export function getFunctionTools(options: LanguageModelV2CallOptions): SerializedTool[] {
   return (options.tools ?? []).flatMap((tool) => {
     if (tool.type !== "function") return [];
     return [
@@ -68,7 +73,7 @@ function renderDataValue(data: unknown): string {
   return String(data);
 }
 
-function renderToolResult(output: ToolResultPromptPart): string {
+export function renderToolResult(output: ToolResultPromptPart): string {
   switch (output.output.type) {
     case "text":
     case "error-text":
@@ -89,7 +94,7 @@ function renderToolResult(output: ToolResultPromptPart): string {
   }
 }
 
-function renderMessageContent(content: PromptArrayContent): string {
+export function renderMessageContent(content: PromptArrayContent): string {
   return content
     .map((part: PromptPart) => {
       switch (part.type) {
@@ -120,22 +125,34 @@ function describeToolChoice(options: LanguageModelV2CallOptions): string {
   return `You must call the tool named ${choice.toolName} before responding.`;
 }
 
-export function serializeCodexPrompt(options: LanguageModelV2CallOptions): string {
+export interface CodexTranscriptEntry {
+  role: string;
+  text: string;
+}
+
+/**
+ * A Codex request split by stability: `instructions` (adapter rules and tool list)
+ * stays fixed for a conversation, `messages` only grow, and `step` carries the
+ * per-call rules. Keeping the variable part last lets Codex reuse a cached prefix.
+ */
+export interface CodexPromptParts {
+  instructions: string;
+  messages: CodexTranscriptEntry[];
+  step: string;
+}
+
+export function buildCodexPromptParts(options: LanguageModelV2CallOptions): CodexPromptParts {
   const tools = getFunctionTools(options);
-  const transcript = options.prompt
-    .map((message, index) => {
-      const role = message.role.toUpperCase();
-      const content =
-        typeof message.content === "string"
-          ? message.content
-          : renderMessageContent(message.content);
-      return `${index + 1}. ${role}\n${content}`;
-    })
-    .join("\n\n");
+  const messages = options.prompt.map((message, index) => {
+    const role = message.role.toUpperCase();
+    const content =
+      typeof message.content === "string" ? message.content : renderMessageContent(message.content);
+    return { role: message.role, text: `${index + 1}. ${role}\n${content}` };
+  });
 
   const toolBlock =
     tools.length === 0
-      ? "No tools are available for this step."
+      ? "No tools are available."
       : tools
           .map(
             (tool, index) =>
@@ -148,23 +165,46 @@ export function serializeCodexPrompt(options: LanguageModelV2CallOptions): strin
       ? `If you choose finishReason=stop, the text field must contain raw JSON matching this schema exactly:\n${JSON.stringify(options.responseFormat.schema ?? {}, null, 2)}`
       : "If you choose finishReason=stop, the text field must contain the assistant reply as plain text with no markdown wrapper.";
 
-  return [
+  const instructions = [
     "You are Codex running as the language-model backend for baked.",
     "Operate only as a model adapter.",
     "Do not execute shell commands, edit files, browse the web, or use Codex internal tools.",
     "The tools listed below are external client tools. You ARE allowed to request them by returning toolCalls in your JSON response.",
-    "Decide the next assistant step for the conversation transcript below.",
+    "Each user turn carries numbered messages of one conversation transcript; a later turn continues the transcript from earlier turns. Your earlier JSON replies are the assistant steps the client already received.",
+    "Decide the next assistant step for the conversation transcript.",
     "Return ONLY valid JSON that matches the provided output schema.",
     "When finishReason is tool-calls, leave text empty and fill toolCalls with the exact tool names and an inputJson string that is valid JSON for that tool.",
-    jsonInstruction,
-    describeToolChoice(options),
     "",
     "AVAILABLE TOOLS",
     toolBlock,
-    "",
-    "CONVERSATION TRANSCRIPT",
-    transcript,
   ].join("\n");
+
+  return {
+    instructions,
+    messages,
+    step: [jsonInstruction, describeToolChoice(options)].join("\n"),
+  };
+}
+
+/** Renders the transcript entries from `fromIndex` on, followed by the step rules. */
+export function renderCodexTurnInput(parts: CodexPromptParts, fromIndex = 0): string {
+  const heading =
+    fromIndex === 0 ? "CONVERSATION TRANSCRIPT" : "CONVERSATION TRANSCRIPT (continued)";
+  return [
+    heading,
+    parts.messages
+      .slice(fromIndex)
+      .map((message) => message.text)
+      .join("\n\n"),
+    "",
+    "CURRENT STEP",
+    parts.step,
+  ].join("\n");
+}
+
+export function serializeCodexPrompt(options: LanguageModelV2CallOptions): string {
+  const parts = buildCodexPromptParts(options);
+  return [parts.instructions, "", renderCodexTurnInput(parts)].join("\n");
 }
 
 export function buildCodexSchema(options: LanguageModelV2CallOptions): JSONSchema7 {
@@ -266,7 +306,7 @@ export function parseCodexResponse(text: string): ParsedCodexResponse {
   return { content, finishReason: "stop" };
 }
 
-function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
+export function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
   const warnings: LanguageModelV2CallWarning[] = [];
   for (const setting of [
     "maxOutputTokens",
@@ -289,11 +329,47 @@ function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2Ca
   return warnings;
 }
 
-class CodexCliRunner implements CodexRunner {
+/**
+ * Config overrides that strip what a model adapter never uses: Codex's built-in
+ * tools, skills, project docs (BAKED sends its own context) and environment notes.
+ * Unknown keys only produce a warning, so older Codex versions still start.
+ */
+export const CODEX_ADAPTER_CONFIG: Record<string, string | boolean | number> = {
+  approval_policy: "never",
+  web_search: "disabled",
+  project_doc_max_bytes: 0,
+  "skills.include_instructions": false,
+  include_permissions_instructions: false,
+  include_apps_instructions: false,
+  include_environment_context: false,
+  "features.shell_tool": false,
+  "features.unified_exec": false,
+  "features.view_image": false,
+  "features.goals": false,
+  "features.plugins": false,
+  "features.apps": false,
+  "features.multi_agent": false,
+  "features.image_generation": false,
+  "features.tool_suggest": false,
+  "features.sleep_tool": false,
+  "features.skill_search": false,
+};
+
+export function codexConfigArgs(config: Record<string, string | boolean | number>): string[] {
+  return Object.entries(config).flatMap(([key, value]) => [
+    "--config",
+    `${key}=${typeof value === "string" ? JSON.stringify(value) : String(value)}`,
+  ]);
+}
+
+/** Runs each step as a separate `codex exec`; the fallback when app-server is unavailable. */
+export class CodexCliRunner implements CodexRunner {
   async run(call: CodexRunnerCall): Promise<CodexRunnerResult> {
     const dir = await mkdtemp(join(tmpdir(), "baked-codex-"));
     const schemaPath = join(dir, "schema.json");
+    const instructionsPath = join(dir, "instructions.md");
     await writeFile(schemaPath, JSON.stringify(call.schema, null, 2), "utf8");
+    await writeFile(instructionsPath, call.parts.instructions, "utf8");
 
     const args = [
       "exec",
@@ -304,8 +380,7 @@ class CodexCliRunner implements CodexRunner {
       "read-only",
       "--color",
       "never",
-      "--config",
-      'approval_policy="never"',
+      ...codexConfigArgs({ ...CODEX_ADAPTER_CONFIG, model_instructions_file: instructionsPath }),
       "--cd",
       getCwd(),
       "--output-schema",
@@ -315,7 +390,7 @@ class CodexCliRunner implements CodexRunner {
     ];
 
     try {
-      return await runCodexProcess(args, call.prompt, call.abortSignal);
+      return await runCodexProcess(args, renderCodexTurnInput(call.parts), call.abortSignal);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -439,9 +514,11 @@ export function createCodexLanguageModel(
     supportedUrls: {},
     async doGenerate(options) {
       const warnings = warningsFor(options);
+      const parts = buildCodexPromptParts(options);
       const result = await runner.run({
         modelId,
-        prompt: serializeCodexPrompt(options),
+        prompt: [parts.instructions, "", renderCodexTurnInput(parts)].join("\n"),
+        parts,
         schema: buildCodexSchema(options),
         abortSignal: options.abortSignal,
       });

@@ -1,11 +1,12 @@
 /**
  * Builds the app and packages it for the current platform with electron-builder.
  *
- *   bun run package -- --baked <path-to-baked-binary> [--arch x64|arm64]
+ *   bun run package -- --baked <path-to-baked-binary> [--arch x64|arm64] [--target <name>]
  *
  * The binary (or BAKED_BINARY) is copied to resources/bin; a `deps/` folder next to it, as in the
  * release bundles, goes along so the compiled binary can hydrate its workers and native libraries.
- * Installers land in dist/.
+ * Installers land in dist/. `--target` replaces the platform's targets from electron-builder.yml,
+ * e.g. `--target portable` for a Windows exe that runs without installing.
  */
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -26,6 +27,7 @@ const { values } = parseArgs({
   options: {
     baked: { type: "string" },
     arch: { type: "string" },
+    target: { type: "string" },
   },
 });
 
@@ -72,6 +74,7 @@ run([
   "node",
   cli,
   platformFlag,
+  ...(values.target ? [values.target] : []),
   `--${arch}`,
   "--publish",
   "never",

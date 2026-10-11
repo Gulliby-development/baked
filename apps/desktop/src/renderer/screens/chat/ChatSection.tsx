@@ -10,13 +10,16 @@ import {
 } from "react";
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
-import { type ChatMode, chat, isMissingChatApi } from "../../client/chat.js";
+import { COMPACTION_CAPABILITY, DIFF_STATS_CAPABILITY } from "../../client/capabilities.js";
+import { type ChatMode, chat, isMissingChatApi, type SessionDiffStats } from "../../client/chat.js";
+import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
 import { Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
-import { ChatHeader } from "./Header.js";
+import { forkReportLines, rememberForkReport, takeForkReport } from "./fork.js";
+import { ChatHeader, type CompactControl } from "./Header.js";
 import { emptyTranscript, isBusy, reduceTranscript } from "./transcript.js";
 
 const NEW = "new";
@@ -118,6 +121,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [draftMode, setDraftMode] = useState<ChatMode>("default");
+  const [forking, setForking] = useState(false);
+  const [forkReport] = useState(() => (draft ? null : takeForkReport(sessionId)));
   // A task typed on the project home ("Ask in chat") starts the new session's composer.
   const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
   useEffect(() => {
@@ -145,7 +150,10 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           if (!live) return;
           dispatch(event);
           // The saved session carries context fill and edited files the events leave out.
-          if (event.type === "turn-done") refresh();
+          if (event.type === "turn-done" || event.type === "compaction-done") {
+            refresh();
+            chatSessionsChanged();
+          }
         });
       },
       async (error: unknown) => {
@@ -168,6 +176,35 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   useEffect(() => {
     if (transcript.needsReset) setGeneration((g) => g + 1);
   }, [transcript.needsReset]);
+
+  // Capabilities decide whether "Compact now" and line counts show; older servers have neither.
+  const [capabilities, setCapabilities] = useState<string[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    chat.capabilities(key).then((caps) => live && setCapabilities(caps));
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
+  const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
+
+  // Line counts follow the edited files; a turn that ends may also have changed them on disk.
+  const [diff, setDiff] = useState<SessionDiffStats | null>(null);
+  const editedKey = transcript.filesEdited.join("\n");
+  const turnRunning = transcript.turnId !== null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch when edits or turns change
+  useEffect(() => {
+    if (draft || !hasDiffStats || turnRunning) return;
+    let live = true;
+    chat.diff(key, sessionId).then(
+      (stats) => live && setDiff(stats),
+      () => live && setDiff(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, sessionId, draft, hasDiffStats, editedKey, turnRunning]);
 
   const busy = !draft && isBusy(transcript);
   const canStop = busy;
@@ -197,6 +234,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           mode: draftMode,
           ...(draftModel ? { model: draftModel } : {}),
         });
+        chatSessionsChanged();
         window.location.replace(projectHref(key, "chat", created.id));
         return true;
       } catch (error) {
@@ -213,6 +251,20 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       setActionError(message(error));
       return false;
     }
+  };
+
+  const fork = (atMessageId: string, rollbackFiles: boolean): void => {
+    setForking(true);
+    setActionError(null);
+    chat
+      .fork(key, sessionId, { atMessageId, rollbackFiles })
+      .then((created) => {
+        rememberForkReport(created.id, forkReportLines(created.rollback));
+        chatSessionsChanged();
+        window.location.assign(projectHref(key, "chat", created.id));
+      })
+      .catch((e: unknown) => setActionError(message(e)))
+      .finally(() => setForking(false));
   };
 
   const decide = (promptId: string, work: () => Promise<unknown>): void => {
@@ -238,16 +290,37 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     chat.update(key, sessionId, changes).catch((e: unknown) => setActionError(message(e)));
   };
 
+  const compact = (): void => {
+    setActionError(null);
+    stick();
+    chat.compact(key, sessionId).catch((e: unknown) => setActionError(message(e)));
+  };
+  const compactControl: CompactControl | undefined =
+    canCompact && !draft
+      ? {
+          run: compact,
+          disabled: transcript.compacting
+            ? "Compacting…"
+            : busy
+              ? "Available when the turn ends."
+              : null,
+        }
+      : undefined;
+
   const loadModels = useCallback(() => chat.models(key).then((result) => result.providers), [key]);
+  const loadMentions = useCallback(
+    (query: string) => chat.mentions(key, query).then((result) => result.mentions),
+    [key],
+  );
 
   if (load === "missing") return <NeedsNewer project={project} />;
   if (load === "not-found")
     return (
       <Centered project={project}>
         <div className="empty chat-empty">
-          <p className="chat-empty-title">This session no longer exists</p>
+          <p className="chat-empty-title">This chat no longer exists</p>
           <a className="btn" href={projectHref(key, "chat", NEW)}>
-            Start a new session
+            Start a new chat
           </a>
         </div>
       </Centered>
@@ -259,7 +332,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     <div className="chat">
       <ChatHeader
         project={project}
-        title={draft ? "New session" : (session?.title ?? "Chat")}
+        title={draft ? "New chat" : (session?.title ?? "Chat")}
         sessionId={draft ? null : sessionId}
         {...(draft
           ? {}
@@ -268,6 +341,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               usage: transcript.usage,
               model: session?.model ?? null,
               filesEdited: transcript.filesEdited,
+              diff,
+              ...(compactControl ? { compact: compactControl } : {}),
             })}
       />
       <section className="chat-scroll" aria-label="Conversation" ref={scroller} onScroll={onScroll}>
@@ -283,9 +358,18 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               </p>
             </div>
           )}
+          {forkReport && (
+            <div className="banner fork-report" role="status">
+              {forkReport.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          )}
           <Conversation
             transcript={transcript}
             deciding={deciding}
+            forking={forking}
+            {...(draft ? {} : { onFork: fork })}
             onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
           />
@@ -309,6 +393,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           onModel={(model) => update({ model })}
           onMode={(mode) => update({ mode })}
           loadModels={loadModels}
+          loadMentions={loadMentions}
         />
       </div>
     </div>

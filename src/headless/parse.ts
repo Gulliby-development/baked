@@ -1,5 +1,5 @@
 import { getAllProviders } from "../core/llm/providers/index.js";
-import type { ForgeMode } from "../types/index.js";
+import type { BakeMode } from "../types/index.js";
 import { BOLD, EXIT_ERROR, EXIT_OK, RED, RST, VALID_MODES } from "./constants.js";
 import type { HeadlessAction } from "./types.js";
 
@@ -32,6 +32,7 @@ ${BOLD}Management:${RST}
 
 ${BOLD}Automation:${RST}
   baked workflow <command>                           Durable workflow runs (see --help)
+  baked session fork <id> [--rollback-files]         Fork a saved session (see --help)
   baked serve [--port N] [--allow-origin ORIGIN]     Local workflow API on 127.0.0.1
 
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort
@@ -72,7 +73,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
   if (!argv.includes("--headless")) return null;
 
   let modelId: string | undefined;
-  let mode: ForgeMode | undefined;
+  let mode: BakeMode | undefined;
   let json = false;
   let events = false;
   let quiet = false;
@@ -97,7 +98,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
     } else if (arg?.startsWith("--model=")) {
       modelId = arg.slice("--model=".length);
     } else if (arg === "--mode" && argv[i + 1]) {
-      const m = argv[++i] as ForgeMode;
+      const m = argv[++i] as BakeMode;
       if (!VALID_MODES.includes(m)) {
         process.stderr.write(`${RED()}Error:${RST} Unknown mode "${m}"\n`);
         process.stderr.write(`Valid: ${VALID_MODES.join(", ")}\n`);

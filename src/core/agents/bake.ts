@@ -8,7 +8,7 @@ import { loadConfig } from "../../config/index.js";
 import { logBackgroundError } from "../../stores/errors.js";
 import type {
   AgentFeatures,
-  ForgeMode,
+  BakeMode,
   ImageAttachment,
   InteractiveCallbacks,
 } from "../../types/index.js";
@@ -54,7 +54,7 @@ import { buildSubagentTools, type SharedCacheRef } from "./subagent-tools.js";
  *  evicted messages garbage-collect their entries automatically. */
 const loopSigCache = new WeakMap<object, string>();
 
-const RESTRICTED_MODES = new Set<ForgeMode>(["architect", "plan"]);
+const RESTRICTED_MODES = new Set<BakeMode>(["architect", "plan"]);
 
 const PLAN_NUDGE_STEP = 10;
 const PLAN_FORCE_STEP = 20;
@@ -90,7 +90,7 @@ function lastStepHadPlanCall(messages: ModelMessage[]): boolean {
   return false;
 }
 
-function buildForgePrepareStep(
+function buildBakePrepareStep(
   isPlanMode: boolean,
   drainSteering?: () => { text: string; images?: ImageAttachment[] } | null,
   contextManager?: {
@@ -98,7 +98,7 @@ function buildForgePrepareStep(
     buildBakeMapDiff(modelId?: string): string | null;
     hasBakeMapDiff?(): boolean;
     commitBakeMapDiff(): void;
-    buildModeMessage(modeOverride?: ForgeMode): string | null;
+    buildModeMessage(modeOverride?: BakeMode): string | null;
     buildSkillsBlock(): string | null;
     buildMemoryRecallMessages(
       lastUserMessage: string,
@@ -114,7 +114,7 @@ function buildForgePrepareStep(
    *  this exact mode for the whole turn, so the injected mode banner must
    *  reflect it too — not live contextManager state, which can drift mid-turn
    *  on steering. A mode change takes effect on the next turn's agent rebuild. */
-  frozenMode: ForgeMode = "default",
+  frozenMode: BakeMode = "default",
 ) {
   // Cache-stable inject tracking: each step starts from the clean history
   // (initialMessages + responseMessages, see cleanStepMessages), without the
@@ -145,7 +145,7 @@ function buildForgePrepareStep(
   // context-threshold re-render of plan instructions doesn't re-inject. We emit
   // once on the first step, then only when the name changes. `undefined` = never
   // emitted yet.
-  let lastEmittedMode: ForgeMode | undefined;
+  let lastEmittedMode: BakeMode | undefined;
 
   type StepEntry = {
     providerMetadata?: Record<string, unknown>;
@@ -231,7 +231,7 @@ function buildForgePrepareStep(
     // text would re-inject mid-session on a threshold cross the user never
     // triggered. A switch back to default emits an explicit "restrictions
     // lifted" note. Tools are always in the schema; the execution-time gate
-    // in createForgeAgent enforces restrictions. Stable mode → no re-emit →
+    // in createBakeAgent enforces restrictions. Stable mode → no re-emit →
     // byte-identical prefix.
     if (contextManager) {
       if (frozenMode !== lastEmittedMode) {
@@ -496,7 +496,7 @@ function buildForgePrepareStep(
         .join("\n---\n");
       import("../tools/tee.js").then(({ saveTee }) => {
         saveTee(
-          `forge-step-${String(stepNumber)}`,
+          `bake-step-${String(stepNumber)}`,
           `Baked Step ${String(stepNumber)} — ${String(msgs.length)} messages\n\n=== MESSAGES ===\n${dump}`,
         );
       });
@@ -560,7 +560,7 @@ function buildForgePrepareStep(
         : null;
 
       const exportData = {
-        agent: "forge",
+        agent: "bake",
         step: stepNumber,
         timestamp: new Date().toISOString(),
         messageCount: msgs.length,
@@ -594,7 +594,7 @@ function buildForgePrepareStep(
         const dir = `${getCwd()}/.baked/api-export`;
         mkdirSync(dir, { recursive: true });
         writeFileSync(
-          `${dir}/forge-step-${String(stepNumber).padStart(2, "0")}.json`,
+          `${dir}/bake-step-${String(stepNumber).padStart(2, "0")}.json`,
           JSON.stringify(exportData, null, 2),
           "utf-8",
         );
@@ -632,12 +632,12 @@ function buildInstructions(cm: ContextManager, modelId: string): string {
   return text;
 }
 
-interface ForgeAgentOptions {
+interface BakeAgentOptions {
   model: LanguageModel;
   /** Full model ID with provider prefix, e.g. "anthropic/claude-sonnet-4-6" */
   fullModelId?: string;
   contextManager: ContextManager;
-  forgeMode?: ForgeMode;
+  bakeMode?: BakeMode;
   interactive?: InteractiveCallbacks;
   subagentModels?: {
     /** Model for ⚡ spark agents — explore/investigate. */
@@ -670,11 +670,11 @@ interface ForgeAgentOptions {
 }
 
 /** Creates the main Baked ToolLoopAgent — model can change between turns (Ctrl+L). */
-export function createForgeAgent({
+export function createBakeAgent({
   model,
   fullModelId,
   contextManager,
-  forgeMode = "default",
+  bakeMode = "default",
   interactive,
   subagentModels,
   webSearchModel,
@@ -697,18 +697,18 @@ export function createForgeAgent({
   disabledTools,
   tabId,
   tabLabel,
-}: ForgeAgentOptions) {
-  const isRestricted = RESTRICTED_MODES.has(forgeMode);
+}: BakeAgentOptions) {
+  const isRestricted = RESTRICTED_MODES.has(bakeMode);
   const repoMap = contextManager.isRepoMapReady() ? contextManager.getRepoMap() : undefined;
   const skills = contextManager.getActiveSkillEntries();
 
   // Auto mode: bypass all permission prompts — fully autonomous execution.
   const autoApprove = () => Promise.resolve(true);
-  const effectiveApproveWebSearch = forgeMode === "auto" ? autoApprove : onApproveWebSearch;
-  const effectiveApproveFetchPage = forgeMode === "auto" ? autoApprove : onApproveFetchPage;
+  const effectiveApproveWebSearch = bakeMode === "auto" ? autoApprove : onApproveWebSearch;
+  const effectiveApproveFetchPage = bakeMode === "auto" ? autoApprove : onApproveFetchPage;
   const effectiveApproveOutsideCwd =
-    forgeMode === "auto" ? (autoApprove as typeof onApproveOutsideCwd) : onApproveOutsideCwd;
-  const effectiveApproveDestructive = forgeMode === "auto" ? autoApprove : onApproveDestructive;
+    bakeMode === "auto" ? (autoApprove as typeof onApproveOutsideCwd) : onApproveOutsideCwd;
+  const effectiveApproveDestructive = bakeMode === "auto" ? autoApprove : onApproveDestructive;
 
   const modelId =
     typeof model === "object" && model !== null && "modelId" in model
@@ -822,10 +822,10 @@ export function createForgeAgent({
   // The Anthropic cache prefix is tools → system → messages. Sharing both tools AND instructions
   // means the entire [tools + system] prefix is a cache HIT on every spark's first step.
   // buildInstructions is WeakMap-cached, so this call is effectively free.
-  const forgeInstructions = buildInstructions(contextManager, modelId);
-  const forgeTools = orderedTools;
+  const bakeInstructions = buildInstructions(contextManager, modelId);
+  const bakeTools = orderedTools;
 
-  // Doppelganger ref: mutable container updated by prepareStep on every forge step.
+  // Doppelganger ref: mutable container updated by prepareStep on every bake step.
   // Spark mirror agents clone from this snapshot — they inherit the full conversation prefix
   // so the API sees an identical cache-hit prefix (tools + system + messages).
   const parentMessagesRef: { current: ModelMessage[] | null } = { current: null };
@@ -856,8 +856,8 @@ export function createForgeAgent({
           skills,
           disablePruning,
           tabId: tabId ?? contextManager.getTabId() ?? undefined,
-          forgeInstructions,
-          forgeTools,
+          bakeInstructions,
+          bakeTools,
           parentMessagesRef,
         }).dispatch,
       }
@@ -880,8 +880,8 @@ export function createForgeAgent({
         skills,
         disablePruning,
         tabId: tabId ?? contextManager.getTabId() ?? undefined,
-        forgeInstructions,
-        forgeTools,
+        bakeInstructions,
+        bakeTools,
         parentMessagesRef,
       });
 
@@ -904,7 +904,7 @@ export function createForgeAgent({
     {
       ...orderedTools,
       ...subagentTools,
-      ...buildInteractiveTools(interactiveCallbacks, { cwd, sessionId, forgeMode }),
+      ...buildInteractiveTools(interactiveCallbacks, { cwd, sessionId, bakeMode }),
     },
     cwd ?? process.cwd(),
   );
@@ -924,7 +924,7 @@ export function createForgeAgent({
   // discussion #85); restriction is enforced at call time, not by omitting the
   // schema. Reads only the frozen closure values (isRestricted / planExecution
   // / the *Set constants) — no shared mutable state, so it is inherently
-  // createForgeAgent). activeTools still handles the genuinely-dynamic filters
+  // createBakeAgent). activeTools still handles the genuinely-dynamic filters
   // (addon-absent, agent-deferred, user /tools) below.
   const modeAllows = (name: string): boolean => {
     if (isRestricted) return restrictedSet.has(name);
@@ -933,7 +933,7 @@ export function createForgeAgent({
   };
   const modeDenyReason = (name: string): string => {
     if (isRestricted) {
-      return `Tool "${name}" is disabled in ${forgeMode} mode (read-only/analysis only). Use read/navigate/bake_* to investigate, or plan to propose changes. To make edits, the user must switch out of ${forgeMode} mode.`;
+      return `Tool "${name}" is disabled in ${bakeMode} mode (read-only/analysis only). Use read/navigate/bake_* to investigate, or plan to propose changes. To make edits, the user must switch out of ${bakeMode} mode.`;
     }
     return `Tool "${name}" is not available during plan execution. The plan already contains the intended changes — use edit_file/multi_edit/shell/project and update_plan_step to execute them.`;
   };
@@ -944,7 +944,7 @@ export function createForgeAgent({
       if (typeof tool.execute !== "function") continue;
       // Rebuild the entry as a fresh object (spread) with only execute swapped
       // for a deny stub — never mutate the source tool object in place. Some
-      // entries (MCP tools from the singleton manager, spark-shared forgeTools)
+      // entries (MCP tools from the singleton manager, spark-shared bakeTools)
       // alias objects that outlive this agent; in-place mutation would leak the
       // stub across tabs/modes. The schema fields are copied verbatim, so the
       // serialized tools prefix stays byte-identical to non-restricted mode.
@@ -995,7 +995,7 @@ export function createForgeAgent({
   const { maxTransientRetries: retryMaxRetries } = resolveRetrySettings(loadConfig().retry);
 
   return new ToolLoopAgent({
-    id: "forge",
+    id: "bake",
     model,
     maxRetries: retryMaxRetries,
     ...(supportsTemperature(fullModelId ?? getModelId(model)) ? { temperature: 0 } : {}),
@@ -1004,9 +1004,9 @@ export function createForgeAgent({
     stopWhen: () => false,
     onStepEnd: (step) => {
       if (isAbnormalFinish(step.finishReason)) {
-        logBackgroundError("agent-error", `forge: ${describeAbnormalFinish(step.finishReason)}`);
+        logBackgroundError("agent-error", `bake: ${describeAbnormalFinish(step.finishReason)}`);
         // NOTE: throwing here is swallowed by the SDK (callbacks run under Promise.allSettled).
-        // Actual surfacing happens in prepareStep — see buildForgePrepareStep above.
+        // Actual surfacing happens in prepareStep — see buildBakePrepareStep above.
       }
       // Record tool failures into the delta channel so prepareStep can surface
       // a [recent failure: tool — reason] marker on affected files.
@@ -1045,8 +1045,8 @@ export function createForgeAgent({
         ...(activeTools ? { activeTools } : {}),
       };
     },
-    prepareStep: buildForgePrepareStep(
-      forgeMode === "plan",
+    prepareStep: buildBakePrepareStep(
+      bakeMode === "plan",
       drainSteering,
       contextManager,
       tabId,

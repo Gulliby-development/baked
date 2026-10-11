@@ -1,7 +1,9 @@
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { getCwd } from "../cwd.js";
 import { getIntelligenceRouter } from "../intelligence/index.js";
 import type { SymbolInfo } from "../intelligence/types.js";
+import { workspacePath } from "../specs/validate.js";
+import { contentHash } from "../tools/tool-utils.js";
 
 /**
  * A whole-file read above this size gets the file's outline instead of its content. Every later
@@ -15,6 +17,11 @@ export const LARGE_READ_BYTES = 20_000;
  * 60 KB written file whole on every attempt, at 45-49k input tokens per step).
  */
 export const WRITTEN_READ_BYTES = 24_000;
+/**
+ * Whole files placed in an implementer's first prompt, in total. Each later step resends them,
+ * as it would resend the same files read in the first step; files past the total are outlined.
+ */
+export const PRELOAD_TOTAL_BYTES = 64_000;
 const MAX_OUTLINE_LINES = 200;
 const STRUCTURE = new Set(["class", "interface", "type", "enum", "function", "method"]);
 
@@ -60,7 +67,7 @@ function outlineLines(symbols: SymbolInfo[]): string[] {
     });
 }
 
-async function outline(path: string): Promise<string | null> {
+async function outline(path: string, label = path): Promise<string | null> {
   try {
     // The router is a process-wide singleton bound to the first cwd it is created with.
     const router = getIntelligenceRouter(getCwd());
@@ -79,7 +86,7 @@ async function outline(path: string): Promise<string | null> {
     const shown = lines.slice(0, MAX_OUTLINE_LINES);
     const more = lines.length - shown.length;
     return [
-      `${path} is ${Math.round(size / 1024)} KB, so it is shown as an outline (line spans). Read only what the task needs: {path, ranges:[{start,end}]} for the spans above, or {path, target:"function", name}.`,
+      `${label} is ${Math.round(size / 1024)} KB, so it is shown as an outline (line spans). Read only what the task needs: {path, ranges:[{start,end}]} for the spans above, or {path, target:"function", name}.`,
       ...shown,
       ...(more > 0 ? [`  ... ${more} more declarations`] : []),
     ].join("\n");
@@ -109,4 +116,44 @@ export async function outlineLargeReads(
     else kept.push(spec);
   }
   return { files: kept, outlines };
+}
+
+/**
+ * The files a task modifies, as the read tool would show them: whole with line numbers up to the
+ * written-file limit, outlines above it or past the preload total. An implementer that gets them
+ * in its first prompt edits on its first step instead of spending a step reading them, and every
+ * later step of the attempt resends one step less. Files that are missing, binary or without an
+ * outline are left for the agent to read.
+ */
+export async function preloadTaskFiles(
+  root: string,
+  writes: readonly { path: string; action: string }[],
+): Promise<string> {
+  const parts: string[] = [];
+  let total = 0;
+  for (const write of writes) {
+    if (write.action !== "modify") continue;
+    let path: string;
+    let bytes: Buffer;
+    try {
+      path = workspacePath(root, write.path);
+      bytes = readFileSync(path);
+    } catch {
+      continue;
+    }
+    if (bytes.includes(0)) continue;
+    if (bytes.length <= WRITTEN_READ_BYTES && total + bytes.length <= PRELOAD_TOTAL_BYTES) {
+      total += bytes.length;
+      const content = bytes.toString("utf8");
+      const numbered = content
+        .split("\n")
+        .map((line, i) => `${String(i + 1).padStart(4)}  ${line}`)
+        .join("\n");
+      parts.push(`--- ${write.path}\n${numbered}\nhash:${contentHash(content)}`);
+      continue;
+    }
+    const text = await outline(path, write.path);
+    if (text) parts.push(`--- ${write.path}\n${text}`);
+  }
+  return parts.join("\n\n");
 }

@@ -654,6 +654,53 @@ function UserImageAttachments({ images }: { images: ImageAttachment[] }) {
   );
 }
 
+/** What a message's `@` mentions and `!` command attached, one row each; command output below. */
+const InputContextRows = memo(function InputContextRows({
+  items,
+  expanded,
+}: {
+  items: NonNullable<ChatMessage["inputContext"]>;
+  expanded: boolean;
+}) {
+  const t = useTheme();
+  return (
+    <box flexDirection="column" marginTop={1}>
+      {items.map((item, i) => {
+        const sigil = item.kind === "command" ? "!" : "@";
+        const outputLines = item.output ? item.output.split("\n") : [];
+        const shown = expanded ? outputLines : outputLines.slice(0, 4);
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: items keep their order
+          <box key={i} flexDirection="column">
+            <text truncate>
+              <span fg={item.ok ? t.info : t.warning}>
+                {sigil}
+                {item.ref}
+              </span>
+              <span fg={t.textDim}> · {item.summary}</span>
+            </text>
+            {shown.length > 0 && (
+              <box flexDirection="column" paddingLeft={2}>
+                {shown.map((line, j) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: output lines are static
+                  <text key={j} fg={t.textMuted} truncate>
+                    {line || " "}
+                  </text>
+                ))}
+                {!expanded && outputLines.length > shown.length && (
+                  <text fg={t.textFaint}>
+                    … {String(outputLines.length - shown.length)} more lines ^O
+                  </text>
+                )}
+              </box>
+            )}
+          </box>
+        );
+      })}
+    </box>
+  );
+});
+
 const UserMessageAccent = memo(function UserMessageAccent({ msg }: { msg: ChatMessage }) {
   const t = useTheme();
   const [hovered, hoverHandlers] = useHover();
@@ -730,6 +777,9 @@ const UserMessageAccent = memo(function UserMessageAccent({ msg }: { msg: ChatMe
         t,
       )}
       {msg.images && msg.images.length > 0 && <UserImageAttachments images={msg.images} />}
+      {msg.inputContext && msg.inputContext.length > 0 && (
+        <InputContextRows items={msg.inputContext} expanded={expanded} />
+      )}
     </box>
   );
 });
@@ -758,6 +808,9 @@ const UserMessageBubble = memo(function UserMessageBubble({ msg }: { msg: ChatMe
           t,
         )}
         {msg.images && msg.images.length > 0 && <UserImageAttachments images={msg.images} />}
+        {msg.inputContext && msg.inputContext.length > 0 && (
+          <InputContextRows items={msg.inputContext} expanded={expanded} />
+        )}
       </box>
       <text fg={t.textMuted}>
         {" "}

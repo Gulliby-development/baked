@@ -179,9 +179,9 @@ export async function runVerifier(
 
   try {
     // Verifier must NOT inherit parentMessagesRef — doppelganger mode would
-    // replay the parent forge's full chat history as the prefix, which Anthropic
+    // replay the parent bake's full chat history as the prefix, which Anthropic
     // cannot cache (different breakpoint position vs the parent's last call).
-    // Without parentMessagesRef, verifier runs as a regular spark: same forge
+    // Without parentMessagesRef, verifier runs as a regular spark: same bake
     // instructions + tools as parent → prefix cache hits the parent's prior prefix.
     const { resultText } = await runAgentTask(
       verifyTask,

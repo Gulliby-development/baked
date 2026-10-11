@@ -466,11 +466,11 @@ export function formatResult(toolName: string, result?: string): string {
         if (obj.return_code !== 0) return "the metal cracked";
         const out = String(obj.stdout ?? "");
         const lines = out.split("\n").filter(Boolean).length;
-        return lines > 0 ? `${String(lines)} lines forged` : "cooled";
+        return lines > 0 ? `${String(lines)} lines baked` : "cooled";
       }
     } catch {}
     const lines = result.split("\n").length;
-    if (lines > 1) return `${String(lines)} lines forged`;
+    if (lines > 1) return `${String(lines)} lines baked`;
     return result.length > 40 ? `${result.slice(0, 37)}...` : result;
   }
   try {

@@ -298,7 +298,10 @@ function pythonGates(workspace: string): GateSuggestion[] {
           : null;
   if (ruffSource)
     out.push({
-      check: gate("ruff", "ruff", ["check", "."], 120000),
+      check: {
+        ...gate("ruff", "ruff", ["check", "."], 120000),
+        fix: { executable: "ruff", args: ["check", "--fix"] },
+      },
       source: ruffSource,
       reason: "ruff check .",
       preselected: true,

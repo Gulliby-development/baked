@@ -1,4 +1,3 @@
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useState } from "react";
 import { spawnShell } from "../../core/platform/index.js";
 import {
@@ -6,6 +5,7 @@ import {
   getInstallCommands,
   type PrerequisiteStatus,
 } from "../../core/setup/prerequisites.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   buildGroupedRows,
   type GroupedItem,

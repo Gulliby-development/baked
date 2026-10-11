@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core";
-import { useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import type { ChatMessage } from "../../types/index.js";
 
 const DISMISS_DELAY = 5000;

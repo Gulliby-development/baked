@@ -1,9 +1,9 @@
-import type { ForgeMode, InteractiveCallbacks } from "../types/index.js";
+import type { BakeMode, InputContextItem, InteractiveCallbacks } from "../types/index.js";
 
 export interface HeadlessRunOptions {
   prompt: string;
   modelId?: string;
-  mode?: ForgeMode;
+  mode?: BakeMode;
   json?: boolean;
   events?: boolean;
   quiet?: boolean;
@@ -29,7 +29,7 @@ export type HeadlessEvent =
   | {
       type: "start";
       model: string;
-      mode: ForgeMode;
+      mode: BakeMode;
       chat?: boolean;
       session?: string | null;
       repoMap?: { files: number; symbols: number } | null;
@@ -74,6 +74,8 @@ export type HeadlessEvent =
   | { type: "warning"; message: string }
   | { type: "error"; error: string }
   | { type: "reasoning"; content: string }
+  /** What a prompt's `@` mentions and `!` command attached, before the turn starts. */
+  | { type: "input-context"; items: InputContextItem[] }
   | {
       type: "ask-user";
       callbackId: string;
@@ -96,7 +98,7 @@ export type HeadlessEvent =
 
 export interface HeadlessChatOptions {
   modelId?: string;
-  mode?: ForgeMode;
+  mode?: BakeMode;
   json?: boolean;
   events?: boolean;
   quiet?: boolean;

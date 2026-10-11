@@ -83,10 +83,13 @@ export function NewRunScreen({ project }: SectionProps) {
   const key = project.key;
   const [prompt, setPrompt] = useState(() => takeDraft("run", key));
   const [featureEdit, setFeatureEdit] = useState<string | null>(null);
+  const [issue, setIssue] = useState("");
   const [workflow, setWorkflow] = useState("sdd");
   const [budget, setBudget] = useState<BudgetPreset>("standard");
   const [worktree, setWorktree] = useState(false);
   const [writers, setWriters] = useState(1);
+  // Null follows the configured policy; the checkbox overrides it for this run.
+  const [assumeOverride, setAssume] = useState<boolean | null>(null);
   const [model, setModel] = useState("");
 
   const definitions = useLoad(key, start.definitions);
@@ -104,15 +107,18 @@ export function NewRunScreen({ project }: SectionProps) {
     preRun.estimate ?? preRun.doctor?.estimate ?? null,
   );
   const launcher = useStartRun(key);
+  const assume = assumeOverride ?? policy.policy?.clarification === "assume";
 
   const definition = useMemo(
     () => definitions.value?.find((d) => d.id === workflow) ?? null,
     [definitions.value, workflow],
   );
   const worktreeRefusal = definition?.worktreeRefusal ?? null;
-  const feature = featureEdit ?? featureSlug(prompt);
-  const featureValid = isFeatureId(feature);
-  const canStart = prompt.trim().length > 0 && featureValid && !launcher.starting;
+  const fromIssue = issue.trim() !== "";
+  // With an issue and no feature typed, the core names the feature after the issue.
+  const feature = featureEdit ?? (fromIssue ? "" : featureSlug(prompt));
+  const featureValid = isFeatureId(feature) || (fromIssue && feature === "");
+  const canStart = (prompt.trim().length > 0 || fromIssue) && featureValid && !launcher.starting;
 
   const pickWorkflow = (next: DefinitionSummary): void => {
     setWorkflow(next.id);
@@ -135,13 +141,16 @@ export function NewRunScreen({ project }: SectionProps) {
     if (!canStart) return;
     const scaled = policyFor(budget, policy.policy);
     void launcher.run({
-      feature,
-      prompt: prompt.trim(),
+      ...(feature ? { feature } : {}),
+      ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
+      ...(fromIssue ? { issue: issue.trim() } : {}),
       workflow,
       ...(scaled ? { policy: scaled } : {}),
       ...(model ? { model } : {}),
       ...(worktree ? { worktree: true } : {}),
       ...(writers > 1 ? { writers } : {}),
+      // Sent only when changed here, so a backend without the field still starts the run.
+      ...(assumeOverride !== null ? { clarification: assume ? "assume" : "ask" } : {}),
     });
   };
 
@@ -165,6 +174,25 @@ export function NewRunScreen({ project }: SectionProps) {
           />
         </div>
         <div className="start-field">
+          <label htmlFor="new-run-issue" className="start-legend">
+            GitHub issue
+          </label>
+          <input
+            id="new-run-issue"
+            type="text"
+            className="mono start-input"
+            value={issue}
+            placeholder="optional: issue URL, owner/name#N or #N"
+            aria-describedby="new-run-issue-hint"
+            onChange={(e) => setIssue(e.target.value)}
+          />
+          <span id="new-run-issue-hint" className="start-hint">
+            {fromIssue
+              ? "The issue's title and body are the goal; text above adds instructions. The delivered pull request closes the issue."
+              : "Start from an issue instead of typing the goal."}
+          </span>
+        </div>
+        <div className="start-field">
           <label htmlFor="new-run-feature" className="start-legend">
             Feature ID
           </label>
@@ -173,7 +201,7 @@ export function NewRunScreen({ project }: SectionProps) {
             type="text"
             className="mono start-input"
             value={feature}
-            placeholder="derived from the goal"
+            placeholder={fromIssue ? "issue-N-title, from the issue" : "derived from the goal"}
             aria-invalid={feature !== "" && !featureValid}
             aria-describedby="new-run-feature-hint"
             onChange={(e) => setFeatureEdit(e.target.value)}
@@ -235,6 +263,19 @@ export function NewRunScreen({ project }: SectionProps) {
             </span>
           </fieldset>
         </div>
+
+        <fieldset className="start-fieldset">
+          <legend className="start-legend">Open questions</legend>
+          <label className="check">
+            <input type="checkbox" checked={assume} onChange={(e) => setAssume(e.target.checked)} />
+            Settle them with recorded assumptions
+          </label>
+          <span className="start-hint">
+            {assume
+              ? "The agents pick conventional defaults and list them at approval; only questions without a safe default wait for you."
+              : "The run waits for your answers to blocking questions."}
+          </span>
+        </fieldset>
 
         <div className="start-inline">
           <label htmlFor="new-run-model" className="start-legend">

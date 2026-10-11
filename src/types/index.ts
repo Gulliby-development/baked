@@ -147,6 +147,20 @@ export interface ChatMessage {
    *  When true, text segments after the last `tools` segment stream as the final
    *  answer; the rest renders as a collapsed rail. */
   finalResponseCalled?: boolean;
+  /** What the message's `@` mentions and `!` command added to the context. */
+  inputContext?: InputContextItem[];
+}
+
+/** One `@` mention or `!` command of a user message and what it attached. */
+export interface InputContextItem {
+  kind: "file" | "directory" | "symbol" | "command";
+  /** The mention target or the command as typed. */
+  ref: string;
+  ok: boolean;
+  /** A short line such as "120 lines", "ran" or "not found". */
+  summary: string;
+  /** The start of the command output, for display. */
+  output?: string;
 }
 
 export interface ToolCall {
@@ -311,7 +325,7 @@ export interface AppConfig {
   /** Add co-author trailer on AI-assisted commits. Default: true */
   coAuthorCommits?: boolean;
   /** Default Baked mode for new sessions. Default: "default" */
-  defaultForgeMode?: ForgeMode;
+  defaultBakeMode?: BakeMode;
   /** Enable/disable Baked map (AST index). Disabling saves ~4-8k prompt tokens. Default: true. Toggle via /repo-map → 'e'. */
   repoMap?: boolean;
   /** Semantic summary mode: "off", "ast" (docstrings only), "synthetic" (ast + name-derived, free), "llm" (ast + AI-generated), "full" (ast + llm + synthetic). Boolean compat: true → "synthetic", false → "off". "on" is legacy alias for "full". */
@@ -327,7 +341,7 @@ export interface AppConfig {
   agentFeatures?: AgentFeatures;
   /** Tools disabled by the user. Persisted across sessions. */
   disabledTools?: string[];
-  /** Instruction files to load into system prompt. Default: ["forge"] (FORGE.md only). */
+  /** Instruction files to load into system prompt. Default: ["baked"] (baked.md only). */
   instructionFiles?: string[];
   /** API key resolution priority: "env" = env vars first (default), "app" = keychain/file first. */
   keyPriority?: "env" | "app";
@@ -371,6 +385,22 @@ export interface AppConfig {
   telemetryUrl?: string;
   /** Set once the one-time telemetry first-run notice has been shown. */
   telemetryNoticeShown?: boolean;
+  /** How BAKED announces a workflow run that waits for a person. */
+  notifications?: NotificationsConfig;
+}
+
+/** Announcements of workflow runs that wait for a person; see `src/core/workflows/attention-notify.ts`. */
+export interface NotificationsConfig {
+  /** Native desktop notifications from the terminal app and the CLI. Default: true. */
+  system?: boolean;
+  /** Unset by default: nothing is sent. Receives one JSON POST per waiting request or blocked run. */
+  webhook?: {
+    url: string;
+    /** Extra request headers, such as an authorization token. */
+    headers?: Record<string, string>;
+    /** Skip advisory acceptance decisions, which the run does not wait for. Default: false. */
+    blockingOnly?: boolean;
+  };
 }
 
 export interface RetryConfig {
@@ -432,6 +462,6 @@ export interface MCPServerConfig {
   headers?: Record<string, string>;
 }
 
-export type ForgeMode = "default" | "architect" | "plan" | "auto";
+export type BakeMode = "default" | "architect" | "plan" | "auto";
 
 export type ChatStyle = "accent" | "bubble";

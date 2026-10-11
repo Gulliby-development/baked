@@ -133,6 +133,17 @@ function Approval({
           : "Approving lets the run continue."}{" "}
         Rejecting sends your note back to the agents.
       </p>
+      {body.assumptions?.length ? (
+        <div className="decision-assumptions">
+          <span className="field-label">Assumptions the agents made instead of asking</span>
+          <ul>
+            {body.assumptions.map((assumption, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: assumptions may repeat
+              <li key={i}>{assumption}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {scope.length > 0 && (
         <label className="check">
           <input type="checkbox" checked={exclude} onChange={(e) => setExclude(e.target.checked)} />

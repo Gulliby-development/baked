@@ -1,5 +1,14 @@
+import { relative } from "node:path";
 import type { InfoPopupLine } from "../../components/modals/InfoPopup.js";
 import { useCheckpointStore } from "../../stores/checkpoints.js";
+import {
+  checkpointEndMessageId,
+  copyCheckpointTags,
+  forkPoint,
+  type RollbackReport,
+  rollbackToCheckpoint,
+} from "../checkpoints/fork.js";
+import { getWorkspaceCoordinator } from "../coordination/WorkspaceCoordinator.js";
 import { icon } from "../icons.js";
 import { rebuildCoreMessages } from "../sessions/rebuild.js";
 import { getThemeTokens } from "../theme/index.js";
@@ -147,6 +156,83 @@ async function handleCheckpointSave(_input: string, ctx: CommandContext): Promis
   }
 }
 
+function forkSummary(report: RollbackReport, cwd: string): string {
+  const rel = (p: string) => relative(cwd, p) || p;
+  const parts = [`Restored ${String(report.restored.length)} file(s)`];
+  if (report.removed.length > 0) parts.push(`removed ${String(report.removed.length)}`);
+  let text = `${parts.join(", ")}.`;
+  if (report.skipped.length > 0)
+    text += `\nLeft in place:\n${report.skipped.map((s) => `  ${rel(s.path)}: ${s.reason}`).join("\n")}`;
+  if (report.backupTag)
+    text += `\nThe files before the rollback are in Git tag ${report.backupTag}.`;
+  return text;
+}
+
+/** `/checkpoint fork [N] [--force]`: a new tab with history and files at checkpoint N. */
+async function handleCheckpointFork(input: string, ctx: CommandContext): Promise<void> {
+  const tabId = ctx.tabMgr.activeTabId;
+  const store = useCheckpointStore.getState();
+  if (ctx.chat.isLoading) {
+    sysMsg(ctx, "Wait for the turn to finish before forking.");
+    return;
+  }
+  const force = /\s--force\b/.test(input);
+  const active = (store.tabs[tabId]?.checkpoints ?? []).filter((c) => !c.undone);
+  const numMatch = input.match(/\/checkpoint\s+fork\s+(\d+)/);
+  const index = numMatch
+    ? parseInt(numMatch[1] ?? "0", 10)
+    : (store.getViewing(tabId) ?? active.at(-1)?.index ?? 0);
+  const messages = ctx.chat.messages;
+  const endId = checkpointEndMessageId(messages, index);
+  const point = endId ? forkPoint(messages, endId) : null;
+  if (!point) {
+    sysMsg(ctx, `Checkpoint #${String(index)} not found.`);
+    return;
+  }
+  const source = ctx.tabMgr.getAllTabStates().find((t) => t.id === tabId);
+  if (!source) return;
+  if (!ctx.tabMgr.canCreateTab) {
+    sysMsg(ctx, "Close a tab first: the tab limit is reached.");
+    return;
+  }
+
+  const tags = store.snapshotTags(tabId);
+  const coordinator = getWorkspaceCoordinator();
+  let report: RollbackReport;
+  try {
+    report = await rollbackToCheckpoint({
+      cwd: ctx.cwd,
+      messages,
+      checkpoint: point.checkpoint,
+      tags,
+      backupTag: `baked/fork-backup-${crypto.randomUUID().slice(0, 8)}`,
+      force,
+      claimedBy: (path) => coordinator.getConflicts(tabId, [path])[0]?.ownerTabLabel ?? null,
+    });
+  } catch (err) {
+    sysMsg(ctx, `Fork failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  const label = `${source.label}-fork`;
+  const newId = ctx.tabMgr.createTab(label);
+  if (!newId) return;
+  const forkMessages = point.messages.map((m) => ({ ...m }));
+  ctx.tabMgr.initialStates.current.set(newId, {
+    ...source,
+    id: newId,
+    label,
+    messages: forkMessages,
+    coreMessages: rebuildCoreMessages(forkMessages),
+    activePlan: null,
+    sidebarPlan: null,
+  });
+  const copied = await copyCheckpointTags(ctx.cwd, tags, point.checkpoint, newId);
+  if (copied.length > 0) store.restoreTagsFromMeta(newId, copied);
+  ctx.refreshGit();
+  sysMsg(ctx, `Forked checkpoint #${String(index)} into ${label}. ${forkSummary(report, ctx.cwd)}`);
+}
+
 export function register(map: Map<string, CommandHandler>): void {
   map.set("/checkpoint", handleCheckpointList as CommandHandler);
   map.set("/checkpoint live", handleCheckpointLive);
@@ -154,10 +240,13 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/checkpoint redo", handleCheckpointRedo as CommandHandler);
   map.set("/checkpoint save", handleCheckpointSave as CommandHandler);
   map.set("/checkpoint list", handleCheckpointList as CommandHandler);
+  map.set("/checkpoint fork", handleCheckpointFork as CommandHandler);
 }
 
 export function matchCheckpointPrefix(cmd: string): CommandHandler | null {
   if (/^\/checkpoint\s+\d+$/.test(cmd)) return handleCheckpointView;
   if (/^\/checkpoint\s+undo\s+\d+$/.test(cmd)) return handleCheckpointUndo as CommandHandler;
+  if (/^\/checkpoint\s+fork(\s+\d+)?(\s+--force)?$/.test(cmd))
+    return handleCheckpointFork as CommandHandler;
   return null;
 }

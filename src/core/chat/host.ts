@@ -1,11 +1,24 @@
 import type { AppConfig } from "../../types/index.js";
 import type { SharedCacheRef } from "../agents/subagent-tools.js";
+import { compactConversation } from "../compaction/manual.js";
 import { ContextManager } from "../context/manager.js";
+import { SharedRootContext } from "../context/shared-root.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { resolveModel } from "../llm/provider.js";
 import { buildProviderOptions } from "../llm/provider-options.js";
+import { resolveTaskModel } from "../llm/task-router.js";
+import { emitCacheReset } from "../tools/file-events.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
-import type { ChatAgentHost, TurnAgent, TurnAgentRequest } from "./sessions.js";
+import { type ExpandedChatInput, expandChatInput } from "./input-expansion.js";
+import { type MentionSuggestion, suggestMentions } from "./mention-suggest.js";
+import type {
+  ChatAgentHost,
+  CompactionRequest,
+  CompactionResponse,
+  InputExpansionRequest,
+  TurnAgent,
+  TurnAgentRequest,
+} from "./sessions.js";
 
 interface SessionResources {
   context: ContextManager;
@@ -16,23 +29,27 @@ interface SessionResources {
 /**
  * Builds chat turns with the same agent as the terminal UI. The repository map, memory and MCP
  * servers are started once, on the first turn, and shared by every session; each session gets its
- * own context manager and file cache.
+ * own context manager and file cache. Given the workflow service's root context, chat and workflow
+ * runs share one code-intelligence worker and one set of language servers.
  */
-export class ForgeChatHost implements ChatAgentHost {
-  private parent: Promise<ContextManager> | undefined;
+export class BakeChatHost implements ChatAgentHost {
+  private readonly root: SharedRootContext;
+  private readonly ownsRoot: boolean;
   private readonly sessions = new Map<string, SessionResources>();
   private mcpConnected = false;
 
+  /** Without `root`, the host creates a root of its own and disposes it with the host. */
   constructor(
     private readonly workspace: string,
     private readonly config: AppConfig,
-  ) {}
+    root?: SharedRootContext,
+  ) {
+    this.root = root ?? SharedRootContext.forWorkspace(workspace, config);
+    this.ownsRoot = !root;
+  }
 
   private parentContext(): Promise<ContextManager> {
-    this.parent ??= ContextManager.createAsync(this.workspace, undefined, {
-      repoMapEnabled: this.config.repoMap !== false && process.env.BAKED_NO_REPOMAP !== "1",
-    });
-    return this.parent;
+    return this.root.get();
   }
 
   private async resources(sessionId: string): Promise<SessionResources> {
@@ -60,7 +77,7 @@ export class ForgeChatHost implements ChatAgentHost {
     context.setProjectInstructions(
       buildInstructionPrompt(loadInstructions(this.workspace, this.config.instructionFiles)),
     );
-    context.setForgeMode(request.mode);
+    context.setBakeMode(request.mode);
     const agent = createChatAgent({
       config: this.config,
       cwd: this.workspace,
@@ -81,6 +98,63 @@ export class ForgeChatHost implements ChatAgentHost {
     return { agent: turnAgent, contextWindow: provider.contextWindow };
   }
 
+  /**
+   * Compacts a session as the terminal UI's `/compact` does: with the task router's `compact`
+   * model, the configured strategy, and a context manager that forgets what the summary replaced.
+   */
+  async compact(request: CompactionRequest): Promise<CompactionResponse> {
+    const modelId = resolveTaskModel("compact", this.config.taskRouter, request.modelId);
+    const provider = await buildProviderOptions(modelId, this.config);
+    const result = await compactConversation({
+      core: request.messages,
+      config: this.config.compaction,
+      modelId,
+      model: resolveModel(modelId),
+      providerOptions: provider.providerOptions,
+      ...(provider.headers ? { headers: provider.headers } : {}),
+      abortSignal: request.abortSignal,
+    });
+    if (result.status !== "compacted") return { result };
+    const { context } = await this.resources(request.sessionId);
+    emitCacheReset();
+    const tracked = context.getTrackedFiles();
+    context.resetForCompaction();
+    for (const file of tracked.edited) {
+      try {
+        context.onFileChanged(file);
+      } catch {
+        // The file may have been deleted since.
+      }
+    }
+    for (const file of tracked.mentioned) context.trackMentionedFile(file);
+    const systemChars = (await context.getContextBreakdown()).reduce((sum, s) => sum + s.chars, 0);
+    const window = (await buildProviderOptions(request.modelId, this.config)).contextWindow;
+    return { result, systemChars, contextWindow: window };
+  }
+
+  async expandInput(request: InputExpansionRequest): Promise<ExpandedChatInput> {
+    const { context } = await this.resources(request.sessionId);
+    const expanded = await expandChatInput(request.text, {
+      cwd: this.workspace,
+      mode: request.mode,
+      ...(context.isRepoMapReady() ? { repoMap: context.getRepoMap() } : {}),
+      onApproveDestructive: request.onApproveDestructive,
+      tabId: request.sessionId,
+      abortSignal: request.abortSignal,
+    });
+    for (const f of expanded.files) context.trackMentionedFile(f);
+    return expanded;
+  }
+
+  async suggestMentions(query: string, limit?: number): Promise<MentionSuggestion[]> {
+    const parent = await this.parentContext();
+    return suggestMentions(query, {
+      cwd: this.workspace,
+      ...(parent.isRepoMapReady() ? { repoMap: parent.getRepoMap() } : {}),
+      ...(limit ? { limit } : {}),
+    });
+  }
+
   release(sessionId: string): void {
     const resources = this.sessions.get(sessionId);
     if (!resources) return;
@@ -95,8 +169,6 @@ export class ForgeChatHost implements ChatAgentHost {
       const { disposeMCPManager } = await import("../mcp/index.js");
       await disposeMCPManager();
     }
-    const parent = this.parent;
-    this.parent = undefined;
-    if (parent) await (await parent).dispose();
+    if (this.ownsRoot) await this.root.dispose();
   }
 }

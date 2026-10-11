@@ -4,6 +4,7 @@ import {
   loadConfig,
   loadProjectConfig,
   mergeConfigs,
+  migrateLegacyConfigKeys,
   saveGlobalConfig,
   saveProjectConfig,
 } from "../src/config/index.js";
@@ -158,6 +159,18 @@ describe("config retry deep-merge", () => {
   });
 });
 
+describe("config modelRouting merge", () => {
+  test("a project layer adds to the global routing instead of replacing it", () => {
+    const base = { defaultModel: "a/b", modelRouting: { classes: { deep: "a/deep" }, independentReview: "warn" } } as AppConfig;
+    const layer = { modelRouting: { roles: { reviewer: "$deep" } } } as Partial<AppConfig>;
+    expect(mergeConfigs(base, layer).modelRouting).toMatchObject({
+      classes: { deep: "a/deep" },
+      roles: { reviewer: "$deep" },
+      independentReview: "warn",
+    });
+  });
+});
+
 describe("invalid config.json exits with error", () => {
   test("loadConfig exits with code 1 on malformed JSON", () => {
     const sandbox = join(tmpdir(), `sf-invalid-cfg-${process.pid}-${Date.now()}`);
@@ -212,5 +225,29 @@ describe("invalid config.json exits with error", () => {
       stderrSpy.mockRestore();
       rmSync(sandbox, { recursive: true, force: true });
     }
+  });
+});
+
+describe("legacy config keys", () => {
+  test("defaultForgeMode is read as defaultBakeMode", () => {
+    const sandbox = join(tmpdir(), `baked-legacy-mode-${process.pid}-${Date.now()}`);
+    try {
+      mkdirSync(join(sandbox, ".baked"), { recursive: true });
+      writeFileSync(
+        join(sandbox, ".baked", "config.json"),
+        JSON.stringify({ defaultForgeMode: "plan" }),
+      );
+      const result = loadProjectConfig(sandbox) as Record<string, unknown>;
+      expect(result.defaultBakeMode).toBe("plan");
+      expect("defaultForgeMode" in result).toBe(false);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test("the current key wins over its legacy one", () => {
+    expect(
+      migrateLegacyConfigKeys({ defaultForgeMode: "plan", defaultBakeMode: "auto" }),
+    ).toEqual({ defaultBakeMode: "auto" });
   });
 });

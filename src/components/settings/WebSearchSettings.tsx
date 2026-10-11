@@ -1,5 +1,5 @@
 import { decodePasteBytes, type PasteEvent } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useRenderer } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import {
@@ -9,6 +9,7 @@ import {
   type SecretKey,
   setSecret,
 } from "../../core/secrets.js";
+import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   buildGroupedRows,
   type GroupedItem,

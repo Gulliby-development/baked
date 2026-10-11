@@ -3,9 +3,9 @@
  * Each mode appends additional instructions to the base family prompt.
  * Modes that restrict tools (architect, plan) keep the
  * full tool schema (cache-stable) and deny disallowed tools at execution time
- * in forge.ts — the prompt here is for behavioral guidance.
+ * in bake.ts — the prompt here is for behavioral guidance.
  */
-import type { ForgeMode } from "../../../types/index.js";
+import type { BakeMode } from "../../../types/index.js";
 
 const READ_ONLY =
   "Read-only mode. Edit/shell/git tools stay visible but are disabled here — calling one returns a denial, not an action. Don't attempt them; investigate or plan instead.";
@@ -50,7 +50,7 @@ Then use ask_user to confirm before generating the plan. Do NOT call plan until 
 
 If you're past 8 tool calls, call plan with what you have.`;
 
-const MODE_INSTRUCTIONS: Record<ForgeMode, string | null> = {
+const MODE_INSTRUCTIONS: Record<BakeMode, string | null> = {
   default: null,
 
   architect: `ARCHITECT MODE — design and analyze, no implementation.
@@ -86,7 +86,7 @@ Verify after each logical unit of work, not just at the end.`,
 };
 
 export function getModeInstructions(
-  mode: ForgeMode,
+  mode: BakeMode,
   opts?: { contextPercent?: number },
 ): string | null {
   if (mode === "plan") {

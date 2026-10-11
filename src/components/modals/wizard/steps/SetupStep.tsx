@@ -1,5 +1,5 @@
 import { decodePasteBytes, type PasteEvent, TextAttributes } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useRenderer } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import { fetchGroupedModels, fetchProviderModels } from "../../../../core/llm/models.js";
 import { getAllProviders, getProvider } from "../../../../core/llm/providers/index.js";
@@ -11,6 +11,7 @@ import {
   setSecret,
 } from "../../../../core/secrets.js";
 import { useTheme } from "../../../../core/theme/index.js";
+import { useKeyboard, useTerminalDimensions } from "../../../../hooks/useTerminalEvents.js";
 import { KeyCaps, Search, VirtualList, VSpacer } from "../../../ui/index.js";
 import { fitPopupHeight } from "../../../ui/popup-geometry.js";
 import { StepHeader } from "../primitives.js";

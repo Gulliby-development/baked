@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { isBinaryFile } from "isbinaryfile";
+import { parseSessionMeta } from "../sessions/meta.js";
 import { createWorkerHandler } from "./rpc.js";
 
 const MAX_READ_LINES = 2000;
@@ -172,7 +173,7 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
     const metaPath = join(dir, "meta.json");
     if (!existsSync(metaPath)) return null;
 
-    const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    const meta = parseSessionMeta(readFileSync(metaPath, "utf-8"));
     const jsonlPath = join(dir, "messages.jsonl");
     const allMessages: unknown[] = [];
 

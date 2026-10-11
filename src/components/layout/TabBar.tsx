@@ -1,8 +1,8 @@
-import { useTerminalDimensions } from "@opentui/react";
 import { useTheme } from "../../core/theme/index.js";
-import { getModeLabel } from "../../hooks/useForgeMode.js";
+import { getModeLabel } from "../../hooks/useBakeMode.js";
 import type { Tab, TabActivity } from "../../hooks/useTabs.js";
-import type { ForgeMode } from "../../types/index.js";
+import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
+import type { BakeMode } from "../../types/index.js";
 import { Spinner } from "./shared.js";
 
 interface TabBarProps {
@@ -10,7 +10,7 @@ interface TabBarProps {
   activeTabId: string;
   onSwitch: (id: string) => void;
   getActivity: (id: string) => TabActivity;
-  getMode: (id: string) => ForgeMode;
+  getMode: (id: string) => BakeMode;
   getModelLabel: (id: string) => string | null;
 }
 

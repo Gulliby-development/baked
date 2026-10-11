@@ -29,7 +29,11 @@ baked --headless --chat                           # interactive multi-turn chat
 
 Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 
-`--events` emits one JSON object per line with a `type` of `start`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`.
+`--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command.
+
+## Mentions and shell commands
+
+Prompts accept the same `@path`, `@path#10-40`, `@Symbol` and leading `!command` as the terminal input ([user guide](guide.md#mentions-and-shell-commands-in-the-input)); each attached item is listed on stderr. `baked --headless '!git diff'` sends the diff to the agent. Destructive commands are denied unless `--mode auto`, and no command runs in `plan` or `architect` mode; a prompt that is only a refused command exits with code 1 in a single run and is skipped in `--chat`.
 
 ## Sessions across runs
 
@@ -37,6 +41,17 @@ Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 baked --headless --save-session "analyze the auth module, find all issues"
 baked --headless --session <id> --save-session "now fix them"
 ```
+
+## Forking a session
+
+```sh
+baked session fork <id> --checkpoint 2 --rollback-files
+baked --headless --session <new-id> "try the other approach"
+```
+
+`baked session fork ID` saves a new session with the active conversation of session `ID` and prints its id. `--at MESSAGE_ID` keeps the messages up to and including that message, `--checkpoint N` up to the end of checkpoint (turn) N; without either the whole conversation is copied. `--rollback-files` also restores the files the agent edited after that point to their state there, with the same safeguards as `/checkpoint fork` in the terminal UI ([forking a checkpoint](guide.md#forking-a-checkpoint)): a backup tag first, and files changed since the agent last touched them are left as they are unless `--force`. `--json` prints `{sessionId, title, messageCount, checkpoint, rollback}`, where `rollback` is the report described in the [local API](desktop/api.md). The command exits 1 when the session, message or checkpoint does not exist, or when files need restoring and the project is not a Git repository.
+
+Headless runs do not snapshot the workspace, so a session made only with `--save-session` can be forked but its files cannot be rolled back.
 
 ## Approvals
 

@@ -20,6 +20,22 @@ function mergeMCPServers(
   return [...map.values()];
 }
 
+/** Config keys renamed since earlier releases, as [legacy, current]. */
+const LEGACY_CONFIG_KEYS: ReadonlyArray<readonly [string, keyof AppConfig]> = [
+  ["defaultForgeMode", "defaultBakeMode"],
+];
+
+/** Moves legacy config keys to their current names; a current key wins over its legacy one. */
+export function migrateLegacyConfigKeys<T extends object>(config: T): T {
+  const out = { ...config } as Record<string, unknown>;
+  for (const [legacy, current] of LEGACY_CONFIG_KEYS) {
+    if (!(legacy in out)) continue;
+    if (out[current] === undefined) out[current] = out[legacy];
+    delete out[legacy];
+  }
+  return out as T;
+}
+
 function getConfigDir(): string {
   return configDir();
 }
@@ -59,7 +75,9 @@ export function loadConfig(): AppConfig {
     fileExists = true;
   } else {
     try {
-      userConfig = JSON.parse(readFileSync(configFile, "utf-8")) as Partial<AppConfig>;
+      userConfig = migrateLegacyConfigKeys(
+        JSON.parse(readFileSync(configFile, "utf-8")) as Partial<AppConfig>,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(
@@ -125,7 +143,7 @@ export function loadProjectConfig(cwd: string): Partial<AppConfig> | null {
   if (!existsSync(projectFile)) return null;
   try {
     const raw = readFileSync(projectFile, "utf-8");
-    return JSON.parse(raw) as Partial<AppConfig>;
+    return migrateLegacyConfigKeys(JSON.parse(raw) as Partial<AppConfig>);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(
@@ -146,7 +164,7 @@ export function loadEffectiveProjectConfig(cwd: string): Partial<AppConfig> | nu
   const file = loadProjectConfig(cwd);
   const defaults = activeProject(cwd)?.manifest.defaults.config as Partial<AppConfig> | undefined;
   if (!defaults || Object.keys(defaults).length === 0) return file;
-  return { ...defaults, ...file };
+  return { ...migrateLegacyConfigKeys(defaults), ...file };
 }
 
 /**
@@ -174,6 +192,8 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       : merged.compaction;
     const retry = layer.retry ? { ...merged.retry, ...layer.retry } : merged.retry;
     const mcpServers = mergeMCPServers(merged.mcpServers, layer.mcpServers);
+    // Merged before the spread below replaces merged.modelRouting with the layer's own.
+    const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
     merged = {
       ...merged,
       ...layer,
@@ -186,7 +206,6 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       retry,
       mcpServers,
     };
-    const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
     if (routing) merged.modelRouting = routing;
   }
   if (merged.workflows) merged.workflows = WorkflowConfigSchema.parse(merged.workflows);
@@ -209,7 +228,9 @@ export function saveProjectConfig(cwd: string, patch: Partial<AppConfig>): void 
 
   let existing: Partial<AppConfig> = {};
   try {
-    existing = JSON.parse(readFileSync(file, "utf-8")) as Partial<AppConfig>;
+    existing = migrateLegacyConfigKeys(
+      JSON.parse(readFileSync(file, "utf-8")) as Partial<AppConfig>,
+    );
   } catch {
     // no existing file
   }
@@ -234,7 +255,10 @@ export function saveGlobalConfig(patch: Partial<AppConfig>): void {
 
   let existing: AppConfig = DEFAULT_CONFIG;
   try {
-    existing = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(configFile, "utf-8")) };
+    existing = {
+      ...DEFAULT_CONFIG,
+      ...migrateLegacyConfigKeys(JSON.parse(readFileSync(configFile, "utf-8")) as object),
+    };
   } catch {
     // no existing file
   }

@@ -12,7 +12,6 @@ const PATHS = {
   folder: "M3 4h4l1 1.5h5V13H3z",
   plus: "M8 3v10M3 8h10",
   gear: "M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2",
-  panel: "M2 3h12v10H2zM6 3v10",
 } as const;
 
 export type IconName = keyof typeof PATHS;

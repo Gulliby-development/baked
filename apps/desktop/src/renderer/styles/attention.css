@@ -9,7 +9,7 @@
 .att-list-pane {
   flex: 1 1 360px;
   max-width: 480px;
-  border-right: 1px solid var(--line);
+  border-right: 3px solid var(--ink);
   padding: 22px 20px;
   display: flex;
   flex-direction: column;
@@ -46,7 +46,7 @@
   min-height: 26px;
   padding: 0 10px;
   border-radius: 13px;
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   background: var(--bg-raised);
   color: var(--text-3);
   font: inherit;
@@ -57,7 +57,9 @@
 
 .att-chip[aria-pressed="true"] {
   background: var(--bg-selected);
-  border-color: var(--accent);
+  border-color: var(--ink);
+  background: var(--fill-accent);
+  color: var(--on-fill);
   color: var(--text);
 }
 
@@ -66,7 +68,9 @@
 }
 
 .att-item[aria-current="true"] {
-  border-color: var(--accent);
+  border-color: var(--ink);
+  background: var(--bg-selected);
+  box-shadow: var(--shadow-sm);
   background: var(--bg-hover);
 }
 
@@ -200,7 +204,7 @@
 .att-input {
   width: 100%;
   background: var(--bg-raised);
-  border: 1px solid var(--line);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
   color: var(--text);
   padding: 8px 10px;

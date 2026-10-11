@@ -7,6 +7,7 @@
 - **MCP servers** you configure receive the tool calls addressed to them.
 - **Installing** language servers, skills or other optional tools, and listing a provider's models, use the network.
 - **Telemetry** is not sent anywhere unless you configure a receiver (below).
+- **A run attention webhook** you configure (`notifications.webhook`) receives the ids, kind and status of a workflow run that waits for a person, never its content ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)).
 
 Everything else stays local: config, sessions, memory, the repository graph and workflow runs (see [architecture](architecture.md#storage)). Keys are kept in the OS credential store ([configuration](configuration.md#provider-keys)).
 

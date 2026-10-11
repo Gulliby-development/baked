@@ -1,7 +1,7 @@
 /**
  * Battle-hardened tests for the Spark/Ember dispatch overhaul.
  *
- * Covers: classifyTask, selectModel, guardForgeTools, multi-agent display,
+ * Covers: classifyTask, selectModel, guardBakeTools, multi-agent display,
  * pricing accuracy, cost computation, AgentBus deadlocks, cross-agent
  * security, and headless model resolution.
  */
@@ -72,7 +72,7 @@ describe("selectModel", () => {
 // ── Tool guarding ────────────────────────────────────────────────────────
 
 describe("tool blocking sets", () => {
-  // We can't import guardForgeTools (not exported), but we can verify the
+  // We can't import guardBakeTools (not exported), but we can verify the
   // blocking sets are correct by importing the constants indirectly.
   // The sets are module-level constants — we verify their behavior through
   // the public createAgent API in integration tests. Here we verify the
@@ -417,7 +417,7 @@ describe("normalizePath edge cases", () => {
 describe("FinalResponseView dispatch pairs", () => {
   test("module loads without errors", async () => {
     // FinalResponseView is a React component — verify the module loads
-    // and doesn't contain stale miniforge/fork terminology
+    // and doesn't contain stale minibake/fork terminology
     const mod = await import("../src/components/chat/FinalResponseView.js");
     // Module should have exports (component may be default or named)
     expect(Object.keys(mod).length).toBeGreaterThan(0);

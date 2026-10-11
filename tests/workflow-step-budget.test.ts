@@ -145,6 +145,21 @@ describe("AttemptStepController", () => {
     expect(second.messages?.at(-1)).toEqual(longer.at(-1));
   });
 
+  test("a step floor lets an expensive provider take its minimum steps within the ceiling", () => {
+    const options = { maxSteps: 30, maxTokens: 150_000, submitTools: ["submit_result"], fallbackStepTokens: 100 };
+    // Codex-like steps of 50k: a 150k cap alone finalizes after two steps.
+    const steps = [usage(48_000, 2000), usage(48_000, 2000)];
+    const plain = new AttemptStepController(options);
+    expect(plain.prepare({ stepNumber: 2, steps, messages: history(1) }).activeTools).toEqual(["submit_result"]);
+    const floored = new AttemptStepController({ ...options, minSteps: 10, ceilingTokens: 400_000 });
+    expect(floored.tokenCap(steps)).toBe(400_000);
+    expect(floored.prepare({ stepNumber: 2, steps, messages: history(1) }).activeTools).toBeUndefined();
+    expect(new AttemptStepController({ ...options, minSteps: 10, ceilingTokens: 1_000_000 }).tokenCap(steps)).toBe(500_000);
+    // Cheap steps keep the sized cap.
+    expect(floored.tokenCap([usage(9000, 1000)])).toBe(150_000);
+    expect(floored.record(steps, false, { profileId: "implementer", taskId: "T001" }).maxTokens).toBe(400_000);
+  });
+
   test("tells the agent once that a step was cut off at the output cap, and keeps it in place", () => {
     const controller = new AttemptStepController({
       maxSteps: 14,
@@ -217,6 +232,7 @@ describe("AttemptStepController", () => {
       inputTokens: null,
       outputTokens: null,
       cacheReadTokens: null,
+      cacheWriteTokens: null,
       toolCalls: 0,
       compactedBytes: 0,
     });

@@ -16,7 +16,7 @@ import { join } from "node:path";
 // (which logs disk-I/O noise on teardown). Must be set before ContextManager.
 process.env.BAKED_NO_REPOMAP = "1";
 
-import { createForgeAgent } from "../src/core/agents/forge.js";
+import { createBakeAgent } from "../src/core/agents/bake.js";
 import { ContextManager } from "../src/core/context/manager.js";
 
 let TMP: string;
@@ -37,11 +37,11 @@ const mockModel = (id: string) => ({ modelId: id, doGenerate: async () => ({}) }
 
 type Agent = { tools: Record<string, { execute?: (...a: unknown[]) => unknown }> };
 
-function makeAgent(forgeMode: "default" | "architect", planExecution = false): Agent {
-  return createForgeAgent({
+function makeAgent(bakeMode: "default" | "architect", planExecution = false): Agent {
+  return createBakeAgent({
     model: mockModel("anthropic/claude-sonnet-4-6"),
     contextManager: context(),
-    forgeMode,
+    bakeMode,
     planExecution,
   }) as unknown as Agent;
 }
@@ -93,13 +93,13 @@ describe("mode tool gating", () => {
 describe("buildModeMessage — cache-stable mode injection", () => {
   test("default mode returns null (absence of banner = default)", () => {
     const cm = context();
-    cm.setForgeMode("default");
+    cm.setBakeMode("default");
     expect(cm.buildModeMessage()).toBeNull();
   });
 
   test("architect mode returns banner + instructions", () => {
     const cm = context();
-    cm.setForgeMode("architect");
+    cm.setBakeMode("architect");
     const msg = cm.buildModeMessage();
     expect(msg).toContain("Active mode: ARCHITECT.");
     expect(msg).toContain("ARCHITECT MODE");
@@ -107,7 +107,7 @@ describe("buildModeMessage — cache-stable mode injection", () => {
 
   test("plan mode returns banner + plan instructions", () => {
     const cm = context();
-    cm.setForgeMode("plan");
+    cm.setBakeMode("plan");
     const msg = cm.buildModeMessage();
     expect(msg).toContain("Active mode: PLAN.");
     expect(msg).toContain("PLAN MODE");
@@ -115,7 +115,7 @@ describe("buildModeMessage — cache-stable mode injection", () => {
 
   test("message is byte-stable for an unchanged mode", () => {
     const cm = context();
-    cm.setForgeMode("architect");
+    cm.setBakeMode("architect");
     expect(cm.buildModeMessage()).toBe(cm.buildModeMessage());
   });
 
@@ -123,14 +123,14 @@ describe("buildModeMessage — cache-stable mode injection", () => {
     // The deny gate enforces the mode frozen at agent build. The banner must
     // reflect that same frozen mode even if live state changed mid-turn.
     const cm = context();
-    cm.setForgeMode("default"); // live state = default
+    cm.setBakeMode("default"); // live state = default
     const msg = cm.buildModeMessage("architect"); // frozen = architect
     expect(msg).toContain("Active mode: ARCHITECT.");
   });
 
   test("override default returns null even when live state is restricted", () => {
     const cm = context();
-    cm.setForgeMode("architect");
+    cm.setBakeMode("architect");
     expect(cm.buildModeMessage("default")).toBeNull();
   });
 });

@@ -78,19 +78,7 @@ export function evaluateAutoApproval(
   }
   if (config.limits) {
     const limits = config.limits;
-    const problems: string[] = [];
-    if (graph.tasks.length > limits.maxTasks)
-      problems.push(`${graph.tasks.length} tasks exceed ${limits.maxTasks}`);
-    const files = new Set(writes.map((write) => write.path.toLowerCase()));
-    if (files.size > limits.maxFiles)
-      problems.push(`${files.size} files exceed ${limits.maxFiles}`);
-    const globs = limits.allowedPaths.map((pattern) => new Bun.Glob(pattern.toLowerCase()));
-    for (const write of writes) {
-      if (!globs.some((glob) => glob.match(write.path.toLowerCase())))
-        problems.push(`${write.path} is outside the allowed paths`);
-      if (write.action === "delete" && !limits.allowDelete)
-        problems.push(`${write.path} would be deleted`);
-    }
+    const problems = scopeProblems(limits, graph);
     if (policy.maxTotalTokens > limits.maxTotalTokens)
       problems.push(`the token budget ${policy.maxTotalTokens} exceeds ${limits.maxTotalTokens}`);
     if (!common.length && !problems.length)
@@ -98,6 +86,67 @@ export function evaluateAutoApproval(
     reasons.push(...problems.map((reason) => `Limits: ${reason}`));
   }
   return { approval: null, reasons: [...new Set(reasons)] };
+}
+
+type Limits = NonNullable<NonNullable<RunPolicy["autoApproval"]>["limits"]>;
+
+/** Where a task graph leaves the limits' scope: task and file counts, paths and deletions. */
+function scopeProblems(limits: Limits, graph: TaskGraph): string[] {
+  const writes = graph.tasks.flatMap((task) => task.writes);
+  const problems: string[] = [];
+  if (graph.tasks.length > limits.maxTasks)
+    problems.push(`${graph.tasks.length} tasks exceed ${limits.maxTasks}`);
+  const files = new Set(writes.map((write) => write.path.toLowerCase()));
+  if (files.size > limits.maxFiles) problems.push(`${files.size} files exceed ${limits.maxFiles}`);
+  const globs = limits.allowedPaths.map((pattern) => new Bun.Glob(pattern.toLowerCase()));
+  for (const write of writes) {
+    if (!globs.some((glob) => glob.match(write.path.toLowerCase())))
+      problems.push(`${write.path} is outside the allowed paths`);
+    if (write.action === "delete" && !limits.allowDelete)
+      problems.push(`${write.path} would be deleted`);
+  }
+  return problems;
+}
+
+/**
+ * The scope the host approves without a person, for the planner: without it the planner picks
+ * its writes blind to the limits, and an optional extra file sends the plan to a person.
+ */
+export function plannerApprovalLimits(policy: RunPolicy): {
+  maxTasks: number;
+  maxFiles: number;
+  allowedPaths: string[];
+  allowDelete: boolean;
+  alwaysHuman: string;
+} | null {
+  const limits = policy.autoApproval?.limits;
+  if (!limits) return null;
+  return {
+    maxTasks: limits.maxTasks,
+    maxFiles: limits.maxFiles,
+    allowedPaths: limits.allowedPaths,
+    allowDelete: limits.allowDelete,
+    alwaysHuman:
+      "repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests, lockfiles, tool configs (tsconfig, biome), .env files and keys",
+  };
+}
+
+/**
+ * Why a submitted plan would not be approved within the limits. The planner gets these once as
+ * advice: a plan that still needs such a write is accepted and goes to a person at approval.
+ */
+export function planScopeAdvice(policy: RunPolicy, graph: TaskGraph): string[] {
+  const limits = policy.autoApproval?.limits;
+  if (!limits) return [];
+  const always = graph.tasks
+    .flatMap((task) => task.writes)
+    .filter((write) => alwaysHuman.test(write.path))
+    .map((write) => `${write.path} always needs a person`);
+  const problems = [...new Set([...always, ...scopeProblems(limits, graph)])];
+  if (!problems.length) return [];
+  return [
+    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks; if every listed write is needed, submit the same plan again and a person approves it.`,
+  ];
 }
 
 /**

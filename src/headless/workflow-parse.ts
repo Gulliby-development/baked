@@ -26,7 +26,9 @@ const commands = [
   "recover",
   "candidate",
   "usage",
+  "report",
   "extend",
+  "reroute",
   "continue",
   "undo",
   "definitions",
@@ -104,6 +106,9 @@ const flags = new Set([
   "exclude-user-changes",
   "route",
   "resume",
+  "clarification",
+  "issue",
+  "output",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -146,6 +151,8 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "worktree",
     "writers",
     "route",
+    "clarification",
+    "issue",
   ],
   quick: [
     "feature",
@@ -181,6 +188,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top"],
+  report: ["output"],
   extend: [
     "tokens",
     "calls",
@@ -191,6 +199,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "events",
     "after",
   ],
+  reroute: ["model", "route", "expected-revision", "command-id", "resume", "events", "after"],
   continue: ["request", "expected-revision", "command-id"],
   undo: ["path", "expected-revision", "command-id"],
   definitions: [],
@@ -279,7 +288,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       );
   }
   if (
-    (result.command === "revise" || result.command === "extend") &&
+    ["revise", "extend", "reroute"].includes(result.command) &&
     !result.flags.resume &&
     ("events" in result.flags || "after" in result.flags)
   )
@@ -306,12 +315,21 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "INVALID_DEFINITION",
         "Specify at most one workflow ID, positional or --workflow",
       );
-    if (Number(!!result.flags.prompt) + Number(!!result.flags["prompt-file"]) !== 1)
+    const prompts = Number(!!result.flags.prompt) + Number(!!result.flags["prompt-file"]);
+    if (result.flags.issue ? prompts > 1 : prompts !== 1)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "Specify exactly one of --prompt or --prompt-file",
+        result.flags.issue
+          ? "Specify at most one of --prompt or --prompt-file with --issue"
+          : "Specify exactly one of --prompt, --prompt-file or --issue",
       );
   }
+  if (
+    !result.flags.help &&
+    "clarification" in result.flags &&
+    !["ask", "assume"].includes(String(result.flags.clarification))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -337,10 +355,17 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume]
+run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
+  --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
+  and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
+  Closes #N, so merging it closes the issue. #N reads the origin remote's repository
   --route sends every agent of a stage to a model or a modelRouting class ($name) for this run
   --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
   --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
+  --clarification assume lets research, spec and analysis settle blocking questions with recorded
+  assumptions, shown at approval; only questions without a safe default wait for you. Default: the
+  policy's clarification, otherwise ask
 quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--events] [--worktree] [--confirm-auto-approval HASH]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from
@@ -361,12 +386,17 @@ pause|cancel|fork RUN_ID --expected-revision N
 continue RUN_ID --request ID --expected-revision N   (answer a token checkpoint; resume then spends up to the next one)
 extend RUN_ID --expected-revision N [--tokens N] [--calls N] [--time-ms N] [--resume [--events]]
   (raise the limits of a run blocked on its budget; resume continues it, or --resume in the same command)
+reroute RUN_ID --expected-revision N [--model ID] [--route STAGE=MODEL,...] [--resume [--events]]
+  (move a stopped run to other models: completed stages and tasks stay, the next agent calls use
+  the new models; routes resolve again through modelRouting with the new run model, the start
+  model checks and independentReview apply, and the change is recorded in routing.json)
 candidate RUN_ID [--spec FILE] [--plan FILE] [--tasks FILE] [--policy FILE] [--workflow FILE [--confirm-auto-approval HASH]]
   --workflow stages a revised schema 2 definition for a started v2 run; it is refused with the
   reasons when the current or a completed stage is gone or changed, or a contract the run needs
   is no longer produced
 revise RUN_ID --candidate SHA256 --expected-revision N [--resume [--events]]   (applies the candidate; the plan is approved again)
-  Implemented tasks the revision leaves unchanged keep their implementation; their checks run again.
+  Implemented tasks the revision leaves unchanged, or only gives added criteria, keep their
+  implementation; their checks run again.
   --resume resumes and drives the revised run in the same command (exit codes as resume)
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
@@ -386,6 +416,9 @@ estimate [WORKFLOW] (same options as doctor)
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
 usage RUN_ID [--model ID] [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
+report RUN_ID [--output FILE] [--json]
+  One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
+  tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new
@@ -399,7 +432,7 @@ discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
-  replan, extend; see baked workflow initiative --help
+  replan, extend, reroute; see baked workflow initiative --help
 
 Management mutations accept --command-id UUID for idempotent retries.
 All commands accept --help. Workflows require an explicit workflows.enabled opt-in.

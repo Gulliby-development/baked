@@ -1,7 +1,7 @@
+// Agents
+export { createBakeAgent } from "./agents/bake.js";
 export { createCodeAgent } from "./agents/code.js";
 export { createExploreAgent } from "./agents/explore.js";
-// Agents
-export { createForgeAgent } from "./agents/forge.js";
 export { buildSubagentTools } from "./agents/subagent-tools.js";
 // Icons
 export { providerIcon, UI_ICONS } from "./icons.js";
