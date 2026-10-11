@@ -377,8 +377,8 @@ export class ChatSession {
   private queue: string[] = [];
   private plan: Plan | null = null;
   private planFollowUp: PlanFollowUp | null = null;
-  /** The next turn carries out the accepted plan. */
-  private executingPlan = false;
+  /** The next turn carries out this accepted plan. */
+  private executingPlan: Plan | null = null;
   private events: ChatEvent[] = [];
   private seq = 0;
   private readonly listeners = new Set<(event: ChatEvent) => void>();
@@ -841,13 +841,15 @@ export class ChatSession {
 
   private async runTurn(turn: TurnState, text: string): Promise<void> {
     const started = Date.now();
-    const planExecution = this.executingPlan;
-    this.executingPlan = false;
+    const executing = this.executingPlan;
+    const planExecution = executing !== null;
+    this.executingPlan = null;
     let modelText = text;
     let inputContext: InputContextItem[] | undefined;
     let send = true;
     const { host } = this.owner;
-    if (host.expandInput && hasInputReferences(text)) {
+    // A plan's text is not a typed message: its `@` and `!` are plan content.
+    if (host.expandInput && !executing && hasInputReferences(text)) {
       try {
         const expanded = await host.expandInput({
           sessionId: this.meta.id,
@@ -866,7 +868,8 @@ export class ChatSession {
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: text,
+      // The model gets the whole plan; the transcript names it, as the plan is shown above.
+      content: executing ? `Execute the plan: ${executing.title}` : text,
       timestamp: started,
       ...(inputContext ? { inputContext } : {}),
     };
@@ -1083,8 +1086,8 @@ export class ChatSession {
       // The accepted plan runs first; messages sent meanwhile are steered into it.
       const queued = this.queue;
       this.queue = [];
-      this.executingPlan = true;
-      this.send(notice.execute);
+      this.executingPlan = notice.execute.plan;
+      this.send(notice.execute.prompt);
       this.queue.push(...queued);
       return;
     }
@@ -1107,11 +1110,11 @@ export class ChatSession {
    */
   private applyPlanFollowUp(followUp: PlanFollowUp): {
     message: ChatMessage;
-    execute: string | null;
+    execute: { plan: Plan; prompt: string } | null;
   } {
     this.mode = "default";
     let content: string;
-    let execute: string | null = null;
+    let execute: { plan: Plan; prompt: string } | null = null;
     if (followUp.action === "cancel") content = `Plan cancelled: ${followUp.plan.title}`;
     else {
       if (followUp.action === "clear-execute") {
@@ -1122,7 +1125,10 @@ export class ChatSession {
         followUp.action === "clear-execute"
           ? "Context cleared — executing the plan with fresh context."
           : "Plan accepted — executing.";
-      execute = planExecutionPrompt(followUp.plan, followUp.content);
+      execute = {
+        plan: followUp.plan,
+        prompt: planExecutionPrompt(followUp.plan, followUp.content),
+      };
     }
     const message: ChatMessage = {
       id: crypto.randomUUID(),

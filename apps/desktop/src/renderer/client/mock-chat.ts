@@ -626,7 +626,11 @@ async function startTurn(session: MockSession, text: string, executing = false):
       if (!run) emit(session, { type: "plan", plan: null });
       emitSession(session);
       if (run) {
-        void startTurn(session, "Execute this plan.", true);
+        void startTurn(
+          session,
+          `Execute the plan: ${session.transcript.plan?.title ?? "plan"}`,
+          true,
+        );
         return;
       }
     } else {

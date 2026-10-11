@@ -582,6 +582,7 @@ describe("local API chat sessions", () => {
     expect(after.mode).toBe("default");
     expect(after.plan).toBeNull();
     expect(after.messages.map((m) => m.role)).toEqual(["user", "assistant", "system", "user", "assistant"]);
+    expect(after.messages[3]?.content).toBe("Execute the plan: Add a flag");
   });
 
   test("cancelling a plan review leaves plan mode; interrupting it keeps plan mode", async () => {
