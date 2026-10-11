@@ -46,6 +46,7 @@
     "selfextract:windows-arm64": "bun build --compile --target=bun-windows-arm64 --minify --outfile=bin/baked-installer-arm64.exe scripts/installer-cli.mjs",
     "lint": "biome check src/",
     "check:conflicts": "bun scripts/check-conflict-markers.ts",
+    "parity:docs": "bun scripts/parity-docs.ts",
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/",
     "test": "bun test --timeout 30000",
