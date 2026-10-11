@@ -259,6 +259,7 @@ export class NativeWorkflowService implements WorkflowService {
       workspaceHash: null,
       expectedFiles: null,
       reviews: {},
+      reviewGaps: {},
       convergence: null,
       approvalRoot: null,
       correctionHashes: [],

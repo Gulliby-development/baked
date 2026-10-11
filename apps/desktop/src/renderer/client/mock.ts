@@ -146,6 +146,7 @@ export function createMockBridge(): DesktopBridge {
             "images",
             "code-graph",
             "skills-install",
+            "custom-commands",
             "settings",
           ],
         });

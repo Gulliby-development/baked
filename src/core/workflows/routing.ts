@@ -27,6 +27,77 @@ function inputs(config: AppConfig, model: string): RoutingInputs {
   };
 }
 
+/**
+ * The configuration of a run whose model is strict: no configured route applies, so the run model
+ * serves every class, role, profile and stage. Routes given for the run itself (`--route`) still do.
+ */
+export function strictRoutingConfig(config: AppConfig): AppConfig {
+  const { modelRouting: _routing, taskRouter: _router, ...rest } = config;
+  return rest;
+}
+
+/**
+ * Warnings for an explicit run model that configured routes override: only the `active` class
+ * follows the run model, so a configured class, role, profile or stage route silently wins unless
+ * the operator is told. One line per route source, naming what runs on another model.
+ */
+export function shadowedModelWarnings(
+  record: RoutingRecord,
+  profiles: readonly Pick<AgentProfile, "id" | "role">[],
+): string[] {
+  const groups = new Map<string, { model: string; source: string; targets: string[] }>();
+  const add = (target: string, entry: RoutingEntry): void => {
+    if (entry.model === record.runModel || !/^(modelRouting|taskRouter)/.test(entry.source)) return;
+    const key = `${entry.model}|${entry.source}`;
+    const group = groups.get(key) ?? { model: entry.model, source: entry.source, targets: [] };
+    if (!group.targets.includes(target)) group.targets.push(target);
+    groups.set(key, group);
+  };
+  const roleOf = new Map(profiles.map((p) => [p.id, p.role]));
+  for (const [id, entry] of Object.entries(record.profiles)) add(roleOf.get(id) ?? id, entry);
+  for (const [id, entry] of Object.entries(record.stages)) add(`stage ${id}`, entry);
+  return [...groups.values()].map(
+    ({ model, source, targets }) =>
+      `Model ${record.runModel} applies to the active class only; ${targets.join(", ")} use${targets.length === 1 ? "s" : ""} ${model} (${source}). Use --model-strict to run everything on ${record.runModel}.`,
+  );
+}
+
+/** What a run effectively uses: the models by role (and stage), with where each came from. */
+export interface RoutingSummary {
+  runModel: string;
+  /** The run model overrode the configured routes (`--model-strict`). */
+  strict: boolean;
+  warnings: string[];
+  effective: { target: string; model: string; source: string; fallback?: string[] }[];
+}
+
+/** The effective models of a routing record by role and stage, one row per distinct route. */
+export function routingSummary(
+  record: RoutingRecord,
+  profiles: readonly Pick<AgentProfile, "id" | "role">[],
+): RoutingSummary {
+  const roleOf = new Map(profiles.map((p) => [p.id, p.role]));
+  const rows = new Map<string, RoutingSummary["effective"][number]>();
+  const add = (target: string, entry: RoutingEntry): void => {
+    const key = `${target}|${entry.model}|${entry.source}`;
+    if (rows.has(key)) return;
+    rows.set(key, {
+      target,
+      model: entry.model,
+      source: entry.source,
+      ...(entry.fallback?.length ? { fallback: entry.fallback } : {}),
+    });
+  };
+  for (const [id, entry] of Object.entries(record.profiles)) add(roleOf.get(id) ?? id, entry);
+  for (const [id, entry] of Object.entries(record.stages)) add(`stage ${id}`, entry);
+  return {
+    runModel: record.runModel,
+    strict: record.strict === true,
+    warnings: record.warnings ?? [],
+    effective: [...rows.values()].sort((a, b) => a.target.localeCompare(b.target)),
+  };
+}
+
 /** Profiles with their models resolved through `modelRouting` and the legacy router slots. */
 export function routedProfiles(
   workspace: string,
@@ -327,7 +398,7 @@ const ROUTE_OVERRIDE = "route override ";
  */
 export function rerouteRecord(
   workspace: string,
-  config: AppConfig,
+  configured: AppConfig,
   previous: RoutingRecord,
   workflowId: string,
   stageIds: string[],
@@ -335,6 +406,7 @@ export function rerouteRecord(
   request: RerouteRequest,
 ): RoutingRecord {
   const model = request.model?.trim() || previous.runModel;
+  const config = previous.strict ? strictRoutingConfig(configured) : configured;
   const moved = (id: string): string => (id === previous.runModel ? model : id);
   const carried: Record<string, string> = {};
   for (const [stageId, entry] of Object.entries(previous.stages))
@@ -347,7 +419,13 @@ export function rerouteRecord(
     const entry = fresh.profiles[id] ?? previous.profiles[id];
     if (entry) profiles[id] = fresh.profiles[id] ? entry : { ...entry, model: moved(entry.model) };
   }
-  return { schemaVersion: 1, runModel: model, profiles, stages: fresh.stages };
+  return {
+    schemaVersion: 1,
+    runModel: model,
+    profiles,
+    stages: fresh.stages,
+    ...(previous.strict ? { strict: true } : {}),
+  };
 }
 
 /** The stage and profile routes whose model or fallback chain differ between two records. */

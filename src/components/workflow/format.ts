@@ -108,6 +108,7 @@ const REASONS: Record<string, string> = {
   tool_denied: "a tool call was denied by policy",
   storage_failure: "workflow storage failed",
   invalid_output: "a model returned output that failed validation",
+  host_state: "the host's own state was stale or incomplete (not a model's output)",
   interrupted_effect: "an interrupted command needs recovery",
   dependency_failed: "a dependency did not complete",
 };

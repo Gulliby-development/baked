@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
@@ -42,6 +44,21 @@ export function reproExecutables(checks: readonly { executable: string }[]): str
 }
 
 /**
+ * The environment of a repro: the safe environment, plus `PYTHONPATH` for a Python project with
+ * a `src` layout, so `python -c "import pkg"` finds the package without an install (endfix
+ * 2295dbbd: "repro failed to import endfix"; a check cannot install, and a reviewer must not).
+ */
+export function reproEnv(root: string): Record<string, string | undefined> {
+  const env = buildSafeEnv();
+  const python = ["pyproject.toml", "setup.py", "setup.cfg"].some((name) =>
+    existsSync(join(root, name)),
+  );
+  if (python && existsSync(join(root, "src")))
+    env.PYTHONPATH = [join(root, "src"), root, env.PYTHONPATH].filter(Boolean).join(delimiter);
+  return env;
+}
+
+/**
  * Runs a finding's repro in the workspace and judges the claim by its output (#155). Run 5b703388
  * corrected a "regex accepts a trailing newline" claim that is true in Python but false in
  * JavaScript, and spent about 200k tokens on it.
@@ -69,7 +86,7 @@ export async function runRepro(
   try {
     result = await processes.execute(executable, repro.args, {
       cwd: options.root,
-      env: buildSafeEnv(),
+      env: reproEnv(options.root),
       timeoutMs: REPRO_TIMEOUT_MS,
       signal: options.signal,
     });

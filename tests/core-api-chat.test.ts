@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import { startApiServer } from "../src/core/api/server.js";
 import type { SessionDiffStats } from "../src/core/chat/diff-stats.js";
@@ -78,15 +81,19 @@ afterEach(async () => {
 async function setup() {
   const fixture = workflowFixture();
   const host = new ScriptedHost();
+  // Global custom commands come from this folder, not the developer's home.
+  const home = mkdtempSync(join(tmpdir(), "baked-chat-home-"));
   const chat = new ChatService({
     workspace: fixture.root,
     config: { ...fixture.service.config, defaultModel: "openai/gpt-test" },
     host,
+    homeDir: home,
   });
   const server = await startApiServer({ service: fixture.service, chat, pollMs: 20, log: () => {} });
   cleanups.push(async () => {
     await server.stop();
     await fixture.dispose();
+    rmSync(home, { recursive: true, force: true });
   });
   const call = (path: string, init: RequestInit = {}) =>
     fetch(`${server.url}${path}`, {
@@ -97,7 +104,7 @@ async function setup() {
     call(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const post = (path: string, body: unknown = {}) => send("POST", path, body);
   const detail = async (id: string) => (await (await call(`/v1/sessions/${id}`)).json()) as SessionDetail;
-  return { fixture, host, chat, server, call, send, post, detail };
+  return { fixture, host, chat, server, call, send, post, detail, home };
 }
 
 /** Reads session events until `done` holds for the latest one, then disconnects. */
@@ -324,6 +331,45 @@ describe("local API chat sessions", () => {
       ["user", "Also this", true],
       ["assistant", "First then second", false],
     ]);
+  });
+
+  test("custom slash commands expand as in the terminal UI, steered messages too", async () => {
+    const { host, post, detail, fixture, home } = await setup();
+    const project = join(fixture.root, ".baked", "commands");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, "fix-ci.md"), "---\ndescription: Fix CI\n---\nFix the $1 job. Notes: $ARGUMENTS");
+    mkdirSync(join(home, ".baked", "commands"), { recursive: true });
+    writeFileSync(join(home, ".baked", "commands", "standup.md"), "Write a standup.");
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let steered: string | undefined;
+    host.scripts.push(async function* ({ request }) {
+      yield step();
+      await gate;
+      steered = request.drainSteering()?.text;
+      yield { type: "text-delta", text: "ok" };
+      yield step();
+    });
+    const session = (await (await post("/v1/sessions", { text: "/fix-ci lint flaky" })).json()) as SessionDetail;
+    await until(() => detail(session.id), (d) => d.state === "working");
+    await post(`/v1/sessions/${session.id}/messages`, { text: "/standup" });
+    release();
+    const done = await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 3);
+    expect(steered).toBe("Write a standup.");
+    expect(done.messages.map((m) => m.content).slice(0, 2)).toEqual([
+      "Fix the lint job. Notes: lint flaky",
+      "Write a standup.",
+    ]);
+    const firstTurn = host.seen[0]?.messages.at(-1);
+    expect(firstTurn?.role).toBe("user");
+    expect(JSON.stringify(firstTurn?.content)).toContain("Fix the lint job.");
+
+    host.scripts.push(reply("plain"));
+    await post(`/v1/sessions/${session.id}/messages`, { text: "/unknown stays as typed" });
+    const plain = await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 5);
+    expect(plain.messages[3]?.content).toBe("/unknown stays as typed");
   });
 
   test("a message that arrives after the last step starts the next turn", async () => {
