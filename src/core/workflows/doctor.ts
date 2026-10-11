@@ -48,6 +48,8 @@ export interface PreRunRequest {
   workflowId?: string;
   model?: string;
   routes?: Record<string, string>;
+  /** The run model overrides configured model routes, as `--model-strict`. */
+  modelStrict?: boolean;
   /** A policy object as `--policy FILE` holds it; defaults to the configured policy. */
   policy?: unknown;
   worktree?: boolean;
@@ -233,6 +235,7 @@ function startRequest(config: AppConfig, request: PreRunRequest) {
     policy: PolicySchema.parse(request.policy ?? config.workflows?.policy ?? defaultWorkflowPolicy),
     ...(request.model ? { model: request.model } : {}),
     ...(request.routes ? { routes: request.routes } : {}),
+    ...(request.modelStrict ? { modelStrict: true } : {}),
     ...(request.autoApprovalConfirmation
       ? { autoApprovalConfirmation: request.autoApprovalConfirmation }
       : {}),

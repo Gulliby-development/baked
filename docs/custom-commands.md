@@ -44,6 +44,7 @@ Built-in commands win. A custom command whose name equals a built-in command, it
   - `TabInstance` sends a custom command to `chat.handleSubmit` instead of the built-in dispatcher, and `useChat.handleSubmit` expands it. Expansion at that single point also covers prompts queued while the agent is busy; `InputBox` queues custom commands like plain messages instead of running them immediately.
   - The chat shows the expanded prompt; what its `@` mentions and `!` command attached is listed under it.
 - Headless CLI: the `--headless` prompt and each chat-mode prompt are expanded. The headless CLI has no built-in slash commands, so no name is reserved there.
+- Local API and desktop app: `ChatSession.send` (`src/core/chat/sessions.ts`) expands a message from `POST /v1/sessions` or `POST /v1/sessions/ID/messages` before it starts a turn, is queued or is steered into a running turn, so the session stores and the model receives the expanded prompt, as in the terminal UI. Global commands come from the home folder of the user running `baked serve`. The API has no built-in slash commands, so no name is reserved there either. Servers that expand commands list the `custom-commands` capability; on those, the desktop composer lists the commands (`GET /v1/commands`) when a message starts with `/`, with their argument hint, description and scope, and Tab or Enter completes the highlighted name.
 
 ## Not included
 

@@ -22,6 +22,9 @@ export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `images` on chat messages (paste and drop in the composer). */
 export const IMAGES_CAPABILITY = "images";
 
+/** Chat messages that start with a custom slash command expand on the server (the composer lists them). */
+export const CUSTOM_COMMANDS_CAPABILITY = "custom-commands";
+
 /** `GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME` (the Skills section). */
 export const SKILLS_INSTALL_CAPABILITY = "skills-install";
 

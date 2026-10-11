@@ -21,6 +21,7 @@ export function preRunRequest(args: WorkflowArgs, cwd: string): PreRunRequest {
     ...(route ? { routes: parseRouteOverrides(route) } : {}),
     ...(policy ? { policy: JSON.parse(readFileSync(resolve(cwd, policy), "utf8")) } : {}),
     ...(args.flags.worktree === true ? { worktree: true } : {}),
+    ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
     ...(writers ? { writers: Number(writers) } : {}),
     ...(confirmation ? { autoApprovalConfirmation: confirmation } : {}),
   };
