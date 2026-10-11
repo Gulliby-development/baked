@@ -12,6 +12,8 @@ Project settings override global ones; a setting changed for the session only ov
 
 The type of the whole file is `AppConfig` in `src/types/index.ts`; the comments there are the reference for each field.
 
+The chat settings that the terminal pickers edit (provider options, chat router and fallbacks, default chat model, tools and web search keys, agent features, Baked map, compaction, timeouts and context-window overrides) are also described in `src/core/settings/schema.ts`: key, type, allowed values, default, label, help and the scopes each may be saved in. The local API serves and validates them through `GET|PATCH /v1/settings` ([API contract](desktop/api.md#chat-settings)), and the desktop draws its chat settings pages from that description. Nested keys saved in different scopes merge: a project file may set only `taskRouter.spark` and keep the other router slots, `agentFeatures`, `cache` and `watchdogTimeouts` fields from the global file.
+
 ## Example
 
 ```json

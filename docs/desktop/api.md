@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) and `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded) `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) and `settings` (`GET|PATCH /v1/settings`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -249,6 +249,7 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 | Method and path | Body | Result |
 | --- | --- | --- |
 | `POST /v1/projects/pin`, `/unpin`, `/forget` | `{path}` (absolute) | the `GET /v1/projects` list; 404 for a folder that is not known |
+| `POST /v1/projects/rename` | `{path, name}` (absolute path; `name` at most 120 characters, trimmed) | the `GET /v1/projects` list with the new `name`; `""` restores the manifest or folder name. Only the shared list changes, not `baked/project.json`. 404 for a folder that is not known. Capability `project-rename` |
 | `GET /v1/projects/current/instructions` | | `{files: [{order, path, absolutePath, source, sourceLabel, scope: "project" \| "global", enabled, bytes, hash, content}], sources: [{id, label, files, enabled, defaultEnabled}], sourcesScope: "project" \| "global", promptBytes}`: every non-empty instruction file in the project and home folder, in the order agents read them, with the project manifest's files last; `enabled` is false (and `order` null) when the file's source is switched off; `hash` is the SHA-256 of the file's bytes; `sources` are the instruction sources and whether each is on, and `sourcesScope` the config file that sets `instructionFiles` (older servers send neither `enabled` nor `sources`) |
 | `PUT /v1/projects/current/instructions` | `{path, content, expectedHash}` | the file entry plus `affectedRuns` (IDs of runs that have not ended and froze this file); only a listed file can be written, switched on or not (404 otherwise; a project file wins over a global one with the same path), 409 `INPUT_CHANGED` when `expectedHash` no longer matches. `expectedHash: null` creates a project file at a path a source reads (`AGENTS.md`, `baked.md`, ...; 404 for any other path, 409 when a non-empty file is there); creating does not switch its source on |
 | `PUT /v1/projects/current/instructions/sources` | `{source, enabled, scope?: "project" \| "global"}` | the `GET` answer after switching the source on or off; writes `instructionFiles` to `scope`, by default the config file that already sets it (the project's when neither does); 404 for an unknown source |
@@ -275,6 +276,39 @@ Changing a file a run froze (an instruction file, a gate or a skill) does not pa
 | `POST /v1/providers/ID/logout` | | `{ok, message}`: runs the CLI's own logout (`claude auth logout`, `codex logout`) |
 | `PUT /v1/providers/ID/key` | `{key}` | `{configured, storage: "keychain" \| "file"}`; 404 for a provider that takes no key |
 | `DELETE /v1/providers/ID/key` | | 204 |
+
+## Chat settings
+
+The chat settings the terminal UI edits in its pickers (`/provider-settings`, `/router`, `/model-scope`, `/tools`, `/web-search`, `/agent-features`, `/repo-map`, `/compaction`, `/timeouts`, `/context-window`) are described once in `src/core/settings/schema.ts`. The server validates changes against that schema and the desktop draws its settings pages from it, so a setting added there shows up on every surface. Unlike `PATCH /v1/config`, these routes check every value and write nested keys without replacing their neighbours.
+
+| Method and path | Body | Result |
+| --- | --- | --- |
+| `GET /v1/settings` | | `SettingsView` below |
+| `PATCH /v1/settings` | `{scope: "global" \| "project", set?: {[id]: value}, reset?: id[]}` | `SettingsView` after the change; the running server uses it at once. A `null` model or number unsets it. `reset` removes the setting from that scope's file, so the other scope or the default applies. A `secret` setting takes the key itself in `set` and is stored in the secret store (keychain or `secrets.json`) whatever the scope; `reset` deletes it. 400 `INVALID_SETTING` names the setting for an unknown ID, a value the schema refuses, or a scope the setting is not saved in |
+
+```ts
+interface SettingsView {
+  pages: { id; title; description; command }[];         // command: the terminal command for the same settings
+  settings: SettingDefinition[];                           // in display order
+  values: { [id]: { id; value; source: "project" | "global" | "default" | "env" | "keychain" | "file"; global?; project? } };
+  catalogs: { tools: { name; description }[] };            // choices of string-list settings
+}
+interface SettingDefinition {
+  id: string;            // dotted config path, e.g. "performance.effort"; a secret's store key, e.g. "brave-api-key"
+  page; section; label; help: string;
+  scopes: ("global" | "project")[];
+  enabledWhen?: { id; values: (string | boolean)[] };   // only meaningful while that setting has one of these values
+  type: "boolean" | "enum" | "number" | "model" | "string-list" | "model-list-map" | "model-number-map" | "secret";
+  default: unknown;
+  options?: { value; label; help? }[];                     // enum
+  min?; max?; step?; integer?; nullable?;                  // number; model-number-map has min and max
+  display?: { unit; factor };                              // number shown as value / factor, e.g. ms as s
+  catalog?: "tools";                                       // string-list
+  envVar?: string;                                         // secret: the environment variable that also supplies it
+}
+```
+
+A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
 
 ## Code graph
 
@@ -305,7 +339,7 @@ interface GraphView {
 
 | Mockup | Endpoints |
 | --- | --- |
-| All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget` |
+| All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget\|rename` |
 | Project home | `GET /v1/projects/current`, `GET /v1/workflow/runs`, `GET /v1/attention`, `GET /v1/workflow/doctor` |
 | Needs you | `GET /v1/attention` (stream) of every open project; answers go to the owning run, initiative or session |
 | Chat session | `/v1/sessions/*`, `GET /v1/models`, `GET /v1/mentions`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
@@ -316,6 +350,7 @@ interface GraphView {
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
+| Settings: chat settings pages | `GET|PATCH /v1/settings`, `GET /v1/models` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Run memory | `GET\|POST /v1/workflow/memory` |
 | Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
