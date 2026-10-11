@@ -124,6 +124,10 @@ export const PromptAnswerBody = z.union([
 ]);
 export const SessionListQuery = z.strictObject({ limit: z.string().regex(/^\d+$/).optional() });
 export const ModelsQuery = z.strictObject({ provider: z.string().min(1).optional() });
+export const MentionsQuery = z.strictObject({
+  q: z.string().max(200).optional(),
+  limit: z.string().regex(/^\d+$/).optional(),
+});
 
 export const ContinueBody = Command.extend({ requestId: SafeId }).strict();
 export const EvidenceBody = Command.extend({

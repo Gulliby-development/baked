@@ -5,6 +5,7 @@ import type { LanguageModel, ModelMessage } from "ai";
 import type { createBakeAgent } from "../core/agents/index.js";
 import type { SharedCacheRef } from "../core/agents/subagent-tools.js";
 import { createChatAgent, createSharedCacheRef } from "../core/chat/agent.js";
+import { expandChatInput, hasInputReferences } from "../core/chat/input-expansion.js";
 import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getCwd } from "../core/cwd.js";
@@ -13,7 +14,13 @@ import { buildProviderOptions } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { setActiveSessionId } from "../stores/session.js";
-import type { AppConfig, BakeMode, ChatMessage, InteractiveCallbacks } from "../types/index.js";
+import type {
+  AppConfig,
+  BakeMode,
+  ChatMessage,
+  InputContextItem,
+  InteractiveCallbacks,
+} from "../types/index.js";
 import { DIM, EXIT_ABORT, EXIT_ERROR, EXIT_OK, EXIT_TIMEOUT, PURPLE, RST } from "./constants.js";
 import {
   formatDuration,
@@ -447,7 +454,20 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
     }
   }
 
-  env.contextManager.updateConversationContext(prompt, 0);
+  const typedPrompt = prompt;
+  const references = await expandHeadlessReferences(prompt, env, {
+    showProgress,
+    emit: isEvents ? (event) => writeEvent(event as unknown as Record<string, unknown>) : undefined,
+  });
+  if (!references.send) {
+    stderrError("The command did not run; nothing to send.");
+    env.contextManager.dispose();
+    await disposeMCPManager();
+    process.exit(EXIT_ERROR);
+  }
+  prompt = references.text;
+
+  env.contextManager.updateConversationContext(typedPrompt, 0);
 
   // Header
   if (isEvents) {
@@ -514,7 +534,13 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
   if (opts.saveSession) {
     const chatMessages: ChatMessage[] = [
       ...priorChatMessages,
-      { id: crypto.randomUUID(), role: "user", content: prompt, timestamp: startTime },
+      {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: typedPrompt,
+        timestamp: startTime,
+        ...(references.items.length > 0 ? { inputContext: references.items } : {}),
+      },
       { id: crypto.randomUUID(), role: "assistant", content: turn.output, timestamp: Date.now() },
     ];
     const savedId = await saveSession(env, chatMessages, turn.tokens, showProgress, isEvents);
@@ -589,6 +615,44 @@ function expandHeadlessPrompt(prompt: string, cwd: string, showProgress: boolean
     stderrDim(`Custom command ${expanded.command.name} (${expanded.command.scope})`);
   }
   return expanded.prompt;
+}
+
+/**
+ * Runs the prompt's `!` command and attaches what its `@` mentions name, reporting each item on
+ * stderr (or as an `input-context` event).
+ */
+async function expandHeadlessReferences(
+  prompt: string,
+  env: AgentEnv,
+  opts: {
+    showProgress: boolean;
+    emit: ((event: HeadlessEvent) => void) | undefined;
+    onApproveDestructive?: (description: string) => Promise<boolean>;
+    tabId?: string;
+    tabLabel?: string;
+  },
+): Promise<{ text: string; send: boolean; items: InputContextItem[] }> {
+  if (!hasInputReferences(prompt)) return { text: prompt, send: true, items: [] };
+  const expanded = await expandChatInput(prompt, {
+    cwd: env.cwd,
+    mode: env.mode,
+    ...(env.repoMap ? { repoMap: env.repoMap } : {}),
+    ...(opts.onApproveDestructive ? { onApproveDestructive: opts.onApproveDestructive } : {}),
+    ...(opts.tabId ? { tabId: opts.tabId } : {}),
+    ...(opts.tabLabel ? { tabLabel: opts.tabLabel } : {}),
+  });
+  for (const f of expanded.files) env.contextManager.trackMentionedFile(f);
+  if (opts.emit && expanded.items.length > 0) {
+    opts.emit({ type: "input-context", items: expanded.items });
+  } else if (opts.showProgress) {
+    for (const item of expanded.items) {
+      const sigil = item.kind === "command" ? "!" : "@";
+      const line = `${sigil}${item.ref} · ${item.summary}`;
+      if (item.ok) stderrDim(line);
+      else stderrWarn(line);
+    }
+  }
+  return { text: expanded.text, send: expanded.send, items: expanded.items };
 }
 
 /**
@@ -797,7 +861,19 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   while (!aborted) {
     const rawPrompt = await readPrompt();
     if (rawPrompt === null) break;
-    const prompt = expandHeadlessPrompt(rawPrompt, env.cwd, showProgress);
+    const typed = expandHeadlessPrompt(rawPrompt, env.cwd, showProgress);
+    const references = await expandHeadlessReferences(typed, env, {
+      showProgress,
+      emit: isEvents ? emit : undefined,
+      onApproveDestructive: opts.onApproveDestructive,
+      tabId: opts.tabId,
+      tabLabel: opts.tabLabel,
+    });
+    if (!references.send) {
+      if (showProgress) process.stderr.write(`${PURPLE()}▸${RST} `);
+      continue;
+    }
+    const prompt = references.text;
 
     turns++;
     const turnStart = Date.now();
@@ -806,11 +882,12 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
     chatHistory.push({
       id: crypto.randomUUID(),
       role: "user",
-      content: prompt,
+      content: typed,
       timestamp: turnStart,
+      ...(references.items.length > 0 ? { inputContext: references.items } : {}),
     });
 
-    env.contextManager.updateConversationContext(prompt, totalTokens.input);
+    env.contextManager.updateConversationContext(typed, totalTokens.input);
 
     turnAbort = new AbortController();
     if (opts.timeout) {

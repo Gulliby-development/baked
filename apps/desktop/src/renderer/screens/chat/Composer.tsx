@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatMode, ModelProvider } from "../../client/chat.js";
+import type { ChatMode, MentionSuggestion, ModelProvider } from "../../client/chat.js";
 import { Popover } from "./Popover.js";
 
 export const MODE_LABELS: Record<ChatMode, { name: string; detail: string }> = {
@@ -15,6 +15,20 @@ export const MODE_LABELS: Record<ChatMode, { name: string; detail: string }> = {
 };
 
 const MAX_TEXTAREA_PX = 240;
+
+/** The `@` token that ends at the caret; `@` on a `!command` line is shell text. */
+export function mentionAtCaret(
+  text: string,
+  caret: number,
+): { query: string; start: number } | null {
+  const before = text.slice(0, caret);
+  const m = /(^|[\s([{,;])@([^\s"'`()<>[\]{},;@]*)$/.exec(before);
+  if (!m) return null;
+  if (!before.includes("\n") && before.trimStart().startsWith("!")) return null;
+  return { query: m[2] ?? "", start: m.index + (m[1]?.length ?? 0) };
+}
+
+const MENTION_ICONS = { file: "·", directory: "▸", symbol: "ƒ" } as const;
 
 export function shortModel(model: string | null): string {
   if (!model) return "Default model";
@@ -89,6 +103,7 @@ export function Composer({
   onModel,
   onMode,
   loadModels,
+  loadMentions,
 }: {
   busy: boolean;
   canStop: boolean;
@@ -103,8 +118,52 @@ export function Composer({
   onModel: (model: string) => void;
   onMode: (mode: ChatMode) => void;
   loadModels: () => Promise<ModelProvider[]>;
+  /** `@` completions; without it the composer offers none. */
+  loadMentions?: (query: string) => Promise<MentionSuggestion[]>;
 }) {
   const [text, setText] = useState(initialText);
+  const [caret, setCaret] = useState(initialText.length);
+  const [mentions, setMentions] = useState<MentionSuggestion[]>([]);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const token = loadMentions ? mentionAtCaret(text, caret) : null;
+  const query = token?.query ?? null;
+  useEffect(() => {
+    if (query === null || !loadMentions) {
+      setMentions([]);
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      loadMentions(query).then(
+        (list) => {
+          if (!live) return;
+          setMentions(list);
+          setMentionIdx(0);
+        },
+        () => live && setMentions([]),
+      );
+    }, 80);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [query, loadMentions]);
+  const showMentions = token !== null && mentions.length > 0 && dismissed !== text;
+  const acceptMention = (pick: MentionSuggestion | undefined): void => {
+    if (!pick || !token) return;
+    const target = /\s/.test(pick.insert) ? `"${pick.insert}"` : pick.insert;
+    const insert = `@${target}${pick.kind === "directory" ? "" : " "}`;
+    const next = text.slice(0, token.start) + insert + text.slice(caret);
+    const at = token.start + insert.length;
+    setText(next);
+    setCaret(at);
+    setMentions([]);
+    requestAnimationFrame(() => {
+      area.current?.focus();
+      area.current?.setSelectionRange(at, at);
+    });
+  };
   const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refocus when the session changes
@@ -129,12 +188,33 @@ export function Composer({
   };
   return (
     <form
-      className="composer"
+      className={`composer${text.trimStart().startsWith("!") ? " shell" : ""}`}
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
+      {showMentions && (
+        <div id="chat-mentions" className="mention-list" role="listbox" aria-label="Mentions">
+          {mentions.map((m, i) => (
+            <button
+              key={`${m.kind}:${m.insert}`}
+              type="button"
+              role="option"
+              aria-selected={i === mentionIdx}
+              className="menu-item mention-item"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => acceptMention(m)}
+            >
+              <span className={`mention-icon ${m.kind}`} aria-hidden="true">
+                {MENTION_ICONS[m.kind]}
+              </span>
+              <span className="mono">{m.label}</span>
+              {m.kind === "symbol" && <span className="muted mention-detail">{m.detail}</span>}
+            </button>
+          ))}
+        </div>
+      )}
       <label htmlFor="chat-prompt" className="sr-only">
         Message BAKED
       </label>
@@ -143,9 +223,38 @@ export function Composer({
         ref={area}
         rows={2}
         value={text}
-        placeholder={busy ? "Add to the running turn…" : "Ask BAKED to do something"}
-        onChange={(event) => setText(event.target.value)}
+        placeholder={
+          busy
+            ? "Add to the running turn…"
+            : "Ask BAKED to do something · @ adds a file or symbol · ! runs a command"
+        }
+        aria-autocomplete="list"
+        aria-controls={showMentions ? "chat-mentions" : undefined}
+        onChange={(event) => {
+          setText(event.target.value);
+          setCaret(event.target.selectionStart);
+        }}
+        onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
         onKeyDown={(event) => {
+          if (showMentions) {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              const step = event.key === "ArrowDown" ? 1 : -1;
+              setMentionIdx((i) => (i + step + mentions.length) % mentions.length);
+              return;
+            }
+            if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+              event.preventDefault();
+              acceptMention(mentions[mentionIdx]);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setDismissed(text);
+              return;
+            }
+          }
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             void submit();

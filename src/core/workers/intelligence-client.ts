@@ -406,6 +406,33 @@ export class IntelligenceClient extends WorkerClient {
     return symbols;
   }
 
+  async findSymbolDefinitions(
+    query: string,
+    limit?: number,
+  ): Promise<
+    Array<{
+      name: string;
+      qualifiedName: string | null;
+      kind: string;
+      path: string;
+      line: number;
+      endLine: number;
+    }>
+  > {
+    return this.call("findSymbolDefinitions", query, limit);
+  }
+
+  async getSymbolReferences(
+    name: string,
+    relPath: string,
+    limit?: number,
+  ): Promise<{
+    calls: Array<{ path: string; line: number; caller: string }>;
+    importers: string[];
+  }> {
+    return this.call("getSymbolReferences", name, relPath, limit);
+  }
+
   getFileSymbolsCached(
     relPath: string,
   ): Array<{ name: string; kind: string; isExported: boolean; line: number; endLine: number }> {

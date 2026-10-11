@@ -109,6 +109,24 @@ Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instr
 
 Markdown files in `.baked/commands/` and `~/.baked/commands/` become slash commands: `fix-ci.md` is `/fix-ci`. See [custom commands](custom-commands.md).
 
+## Mentions and shell commands in the input
+
+`@` in the chat input opens a fuzzy list of the project's files, folders and, when the repository graph is ready, symbols. `Up`/`Down` choose, `Tab` or `Enter` inserts, `Esc` closes the list. When the message is sent, each mention attaches context for the model; the message shows as typed, with one line per mention under it:
+
+| Mention | Attaches |
+| --- | --- |
+| `@src/auth.ts` | The file (up to 2000 lines or 100 KB) |
+| `@src/auth.ts#10-40` | Lines 10 to 40 of the file |
+| `@src/auth/` | The folder listing |
+| `@"docs/my notes.md"` | A path with spaces |
+| `@AuthService`, `@AuthService.login` | The definition from the repository graph with its call sites and importers |
+
+A mention that names nothing (an e-mail address, `@types/node`) stays plain text. Files outside the project and files matching the [forbidden patterns](configuration.md) are not attached; the line under the message says why. `@` inside inline code or a code block is literal.
+
+A message that starts with `!` runs the rest of its first line as a shell command in the project folder, for example `!git log -5`. Its output (up to 20 000 characters) goes into the context, and the first lines show under the message. Lines after the command are the question for the model: `!bun test` then `why does this fail?` on the next line. A bare `!command` sends the output with a short note, so the agent comments on it. The command goes through the same rules as the agent's `shell` tool: it does not run in `plan` or `architect` mode, `PreToolUse`/`PostToolUse` hooks for `shell` apply, forbidden paths are refused, and a destructive command (`rm -rf`, `git reset --hard`, ...) asks for approval in default mode and runs unasked in auto mode. When the command does not run and the message has nothing else, no turn starts. `Ctrl+X` stops a running command.
+
+A message with `@` or `!` typed while the agent works waits for the turn to end instead of steering it, so it is expanded like a new message.
+
 ## Web search
 
 The agent can search the web and read pages; each search asks for approval. `/web-search` sets the keys (Brave, with DuckDuckGo as the fallback; Jina Reader for pages, with Readability as the fallback). With a `webSearch` model in `/router`, searches run in a dedicated agent that can follow links and returns one summary.

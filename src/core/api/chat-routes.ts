@@ -1,5 +1,5 @@
 /**
- * The chat endpoints of the local API: `/v1/sessions` and `/v1/models`. The contract is
+ * The chat endpoints of the local API: `/v1/sessions`, `/v1/models` and `/v1/mentions`. The contract is
  * `docs/desktop/api.md`; the sessions themselves live in `ChatService`.
  */
 import type { ChatError, ChatService } from "../chat/sessions.js";
@@ -9,6 +9,7 @@ import type { RouteContext } from "./route-context.js";
 import {
   CreateSessionBody,
   ForkSessionBody,
+  MentionsQuery,
   MessageBody,
   ModelsQuery,
   PromptAnswerBody,
@@ -43,6 +44,13 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
   if (path === "/v1/models") {
     only("GET");
     return ctx.json(200, await models(ctx.query(ModelsQuery).provider));
+  }
+  if (path === "/v1/mentions") {
+    only("GET");
+    const { q, limit } = ctx.query(MentionsQuery);
+    const max = Math.min(50, limit ? Number(limit) : 20);
+    const mentions = chat.host.suggestMentions ? await chat.host.suggestMentions(q ?? "", max) : [];
+    return ctx.json(200, { mentions });
   }
   if (path === "/v1/sessions") {
     only("GET", "POST");
