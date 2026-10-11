@@ -289,6 +289,35 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check"]);
   }, 30000);
 
+  test("the fix-ci preset hands the failing output to research and verifies with the same check", async () => {
+    const loud = {
+      ...valueCheck,
+      args: ["-e", "const v = await Bun.file('value.txt').text().catch(() => ''); if (v.trim() !== 'ready') { console.log('expected ready, got nothing'); process.exit(1); }"],
+    };
+    const { start, complete, service, executor } = setup({}, { ...policy, checks: [loud] });
+    const run = await start("fix-ci", "Fix the failing value check");
+    expect((await complete(run.runId)).status).toBe("completed");
+    expect(executor.calls).toEqual(["research", "plan", "implementation"]);
+    expect(executor.prompts[0]).toContain("Required check check failed");
+    expect(executor.prompts[0]).toContain("expected ready, got nothing");
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual([
+      "check:failed",
+      "check:passed",
+    ]);
+    const taken = ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId);
+    expect(taken[0]).toBe("reproduce-research");
+    expect(taken.at(-1)).toBe("verify-done");
+  }, 30000);
+
+  test("the fix-ci preset ends without changes when the checks already pass", async () => {
+    const { root, start, complete, executor, service } = setup();
+    writeFileSync(join(root, "value.txt"), "ready");
+    const run = await start("fix-ci", "Fix the failing value check");
+    expect((await complete(run.runId)).status).toBe("completed");
+    expect(executor.calls).toEqual([]);
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:passed"]);
+  }, 30000);
+
   test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
     const { start, drive, service, executor } = setup({ analysisFindings: 1 });
     const run = await start("standard");

@@ -350,7 +350,15 @@ export const DefinitionAutoApprovalSchema = z
   })
   .strict();
 
-export const PRESETS = ["quick", "quick-fix", "standard", "full", "spike", "review-only"] as const;
+export const PRESETS = [
+  "quick",
+  "quick-fix",
+  "standard",
+  "full",
+  "spike",
+  "review-only",
+  "fix-ci",
+] as const;
 export const WorkflowV2Schema = z
   .object({
     schemaVersion: z.literal(2),

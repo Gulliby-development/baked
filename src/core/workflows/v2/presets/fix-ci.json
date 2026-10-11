@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 2,
+  "id": "fix-ci",
+  "version": "1.0.0",
+  "description": "Reproduce failing checks, research the failure, plan, approve, fix and rerun the same checks.",
+  "preset": "fix-ci",
+  "inputs": [
+    "request"
+  ],
+  "entry": "reproduce",
+  "stages": [
+    {
+      "id": "reproduce",
+      "title": "Reproduce",
+      "type": "check",
+      "consumes": [],
+      "produces": "gates",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "typecheck"
+        },
+        {
+          "gateId": "lint"
+        },
+        {
+          "gateId": "tests"
+        }
+      ]
+    },
+    {
+      "id": "research",
+      "type": "agent",
+      "profileId": "researcher",
+      "consumes": [
+        "gates"
+      ],
+      "produces": "research",
+      "effects": "none"
+    },
+    {
+      "id": "plan",
+      "type": "agent",
+      "profileId": "planner",
+      "consumes": [
+        "research"
+      ],
+      "produces": "plan",
+      "effects": "none"
+    },
+    {
+      "id": "approve",
+      "type": "approval",
+      "consumes": [
+        "plan"
+      ],
+      "produces": "decision",
+      "effects": "none",
+      "decision": "human",
+      "covers": [
+        "implement"
+      ]
+    },
+    {
+      "id": "implement",
+      "type": "tasks",
+      "consumes": [
+        "plan",
+        "decision"
+      ],
+      "produces": "implementation",
+      "effects": "workspace-write"
+    },
+    {
+      "id": "verify",
+      "title": "Verify",
+      "type": "check",
+      "consumes": [
+        "implementation"
+      ],
+      "produces": "gates",
+      "effects": "none",
+      "gates": [
+        {
+          "gateId": "typecheck"
+        },
+        {
+          "gateId": "lint"
+        },
+        {
+          "gateId": "tests"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "reproduce-clean",
+      "from": "reproduce",
+      "to": "done",
+      "on": "passed",
+      "carries": "gates",
+      "gates": []
+    },
+    {
+      "id": "reproduce-research",
+      "from": "reproduce",
+      "to": "research",
+      "on": "failed",
+      "carries": "gates",
+      "gates": []
+    },
+    {
+      "id": "research-plan",
+      "from": "research",
+      "to": "plan",
+      "on": "passed",
+      "carries": "research",
+      "gates": []
+    },
+    {
+      "id": "plan-approve",
+      "from": "plan",
+      "to": "approve",
+      "on": "passed",
+      "carries": "plan",
+      "gates": []
+    },
+    {
+      "id": "approve-implement",
+      "from": "approve",
+      "to": "implement",
+      "on": "passed",
+      "carries": "decision",
+      "gates": []
+    },
+    {
+      "id": "implement-verify",
+      "from": "implement",
+      "to": "verify",
+      "on": "passed",
+      "carries": "implementation",
+      "gates": [
+        {
+          "gateId": "task-tests"
+        }
+      ]
+    },
+    {
+      "id": "verify-done",
+      "from": "verify",
+      "to": "done",
+      "on": "passed",
+      "carries": "gates",
+      "gates": []
+    },
+    {
+      "id": "verify-repair",
+      "from": "verify",
+      "to": "implement",
+      "on": "failed",
+      "carries": "gates",
+      "gates": [],
+      "loop": {
+        "maxIterations": 2
+      }
+    }
+  ],
+  "limits": {
+    "maxStageVisits": 40
+  },
+  "autoApproval": null
+}
