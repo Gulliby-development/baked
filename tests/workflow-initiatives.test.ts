@@ -20,6 +20,7 @@ import {
   runFeatureId,
 } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
+import { RoutingRecordSchema } from "../src/core/llm/model-routing.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
@@ -71,9 +72,13 @@ class InitiativeExecutor implements AgentExecutor {
   /** Extra path a feature's plan writes, to step outside its boundary. */
   extraWrites: Record<string, string> = {};
   writes: Record<string, number> = {};
+  /** Models whose implementation calls fail as an account without credits. */
+  refused = new Set<string>();
   constructor(private root: string, public split: unknown = threeFeatures, private tokens = 100) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
+    if (this.refused.has(request.profile.model) && request.profile.output === "implementation")
+      throw Object.assign(new Error("You have no credits remaining. Add credits to continue."), { statusCode: 429 });
     const [documents, attempt] = request.prompt.split("\n").slice(-2);
     const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as {
       inputHash: string; snapshotHash: string; spec: Spec | null;
@@ -455,7 +460,12 @@ describe("initiative CLI", () => {
     expect(() => parseInitiativeArgs(["approve"])).toThrow("expects 1 positional");
     expect(() => parseInitiativeArgs(["launch", "values"])).toThrow("Unknown initiative command");
     expect(workflowHelp).toContain("initiative <command>");
-    for (const command of ["start", "merge", "split", "remove", "rename", "approve", "drive", "pause", "resume", "replan", "extend"])
+    expect(parseInitiativeArgs(["reroute", "values", "--model", "spare/model", "--resume", "--expected-revision", "4"]).flags).toEqual({
+      model: "spare/model",
+      resume: true,
+      "expected-revision": "4",
+    });
+    for (const command of ["start", "merge", "split", "remove", "rename", "approve", "drive", "pause", "resume", "replan", "extend", "reroute"])
       expect(initiativeHelp).toContain(command);
   });
 
@@ -481,5 +491,114 @@ describe("initiative CLI", () => {
     expect(listed.map((i) => [i.initiativeId, i.status])).toEqual([["values", "paused"]]);
     const events = (await run(["events", "values"])) as { type: string }[];
     expect(events.map((e) => e.type)).toContain("plan.revised");
+  });
+});
+
+describe("initiative reroute", () => {
+  const runModel = (workflows: NativeWorkflowService, runId: string): string => {
+    const row = workflows.store.latestArtifact(runId, "routing.json");
+    if (!row) throw new Error("No routing record");
+    return RoutingRecordSchema.parse(JSON.parse(workflows.store.readArtifact(runId, row.id))).runModel;
+  };
+
+  test("moves stopped runs and the features started later to the new model", async () => {
+    const t = setup();
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    let view = await t.drive();
+    const core = t.featureOf(view, "core");
+    expect(core.state).toBe("needs_decision");
+    expect(runModel(t.workflows, core.runId ?? "")).toBe("fixture/model");
+
+    view = await t.initiatives.reroute("values", t.id(), { model: "spare/model" });
+    expect(view.model).toBe("spare/model");
+    expect(runModel(t.workflows, core.runId ?? "")).toBe("spare/model");
+    const runEvent = t.workflows.store.events(core.runId ?? "").find((e) => e.type === "run.rerouted");
+    expect(runEvent?.type === "run.rerouted" && runEvent.payload.runModel).toEqual({ from: "fixture/model", to: "spare/model" });
+    const event = t.initiatives.events("values").find((e) => e.type === "initiative.rerouted");
+    expect(event?.payload).toEqual({
+      model: { from: null, to: "spare/model" },
+      runs: [{ featureId: "core", runId: core.runId, result: "rerouted", from: "fixture/model" }],
+    });
+    // The approved split stays approved; only the model changed.
+    expect(view.status).toBe("active");
+    expect(view.approvedPlanRevision).toBe(1);
+
+    await t.approveFeature("core");
+    view = await t.drive();
+    const later = view.features.filter((f) => f.id !== "core" && f.runId);
+    expect(later.length).toBeGreaterThan(0);
+    for (const feature of later) expect(runModel(t.workflows, feature.runId ?? "")).toBe("spare/model");
+
+    await expect(t.initiatives.reroute("values", t.id(), { model: "spare/model" })).rejects.toThrow("already uses this model");
+  });
+
+  test("a feature blocked by its provider continues on the new model with --resume", async () => {
+    const t = setup();
+    t.executor.refused.add("fixture/model");
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    await t.drive();
+    await t.approveFeature("core");
+    let view = await t.drive();
+    const core = t.featureOf(view, "core");
+    expect(core.runStatus).toBe("blocked");
+    expect(core.runReason).toBe("provider_account");
+    view = await t.initiatives.reroute("values", t.id(), { model: "spare/model", resume: true });
+    expect(t.workflows.store.run(core.runId ?? "").status).not.toBe("blocked");
+    view = await t.drive();
+    expect(t.featureOf(view, "core").state).toBe("accepted");
+  });
+
+  test("a split waiting for approval is proposed again, since its digest covers the model", async () => {
+    const t = setup();
+    let view = await t.start({ plan: threeFeatures });
+    const first = view.pendingDecisions.find((d) => d.scope === "initiative");
+    view = await t.initiatives.reroute("values", t.id(), { model: "spare/model" });
+    const second = view.pendingDecisions.find((d) => d.scope === "initiative");
+    expect(view.planRevision).toBe(2);
+    expect(second?.digest).not.toBe(first?.digest);
+    expect(t.initiatives.store.requests("values").find((r) => r.id === first?.requestId)?.status).toBe("superseded");
+    view = await t.approveSplit();
+    view = await t.drive();
+    expect(runModel(t.workflows, t.featureOf(view, "core").runId ?? "")).toBe("spare/model");
+  });
+
+  test("refuses while a run executes, after completion, on a stale revision, and replays a repeated command", async () => {
+    const t = setup();
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    const view = await t.drive();
+    const runId = t.featureOf(view, "core").runId ?? "";
+    await expect(t.initiatives.reroute("values", { commandId: newId(), expectedRevision: view.revision - 1 }, { model: "spare/model" })).rejects.toThrow("revision changed");
+    await expect(t.initiatives.reroute("values", t.id(), { model: "none" })).rejects.toThrow("Select a model");
+    const status = t.workflows.store.run(runId).status;
+    t.workflows.store.transition(runId, "running");
+    await expect(t.initiatives.reroute("values", t.id(), { model: "spare/model" })).rejects.toThrow("pause the initiative");
+    expect(runModel(t.workflows, runId)).toBe("fixture/model");
+    t.workflows.store.transition(runId, status);
+
+    const command = t.id();
+    const first = await t.initiatives.reroute("values", command, { model: "spare/model" });
+    const again = await t.initiatives.reroute("values", command, { model: "spare/model" });
+    expect(again.revision).toBe(first.revision);
+    expect(t.initiatives.events("values").filter((e) => e.type === "initiative.rerouted")).toHaveLength(1);
+
+    t.initiatives.store.setStatus("values", "completed");
+    await expect(t.initiatives.reroute("values", t.id(), { model: "other/model" })).rejects.toThrow("completed cannot switch");
+  });
+
+  test("--resume continues a paused initiative through the CLI", async () => {
+    const t = setup();
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    let view = await t.drive();
+    view = await t.initiatives.pause("values", t.id());
+    expect(view.status).toBe("paused");
+    const args = parseInitiativeArgs(["reroute", "values", "--model", "spare/model", "--resume", "--expected-revision", String(view.revision)]);
+    view = (await executeInitiativeCommand(t.initiatives, args, new AbortController().signal)) as InitiativeView;
+    expect(view.status).toBe("active");
+    expect(view.model).toBe("spare/model");
+    expect(initiativeExit(view)).toBe(3);
   });
 });

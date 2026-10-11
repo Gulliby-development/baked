@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test";
 import type {
   AttemptUsageRow,
   InitiativeFeature,
+  InitiativeView,
   RunUsageReport,
   UsageGroup,
   UsageSummary,
 } from "../src/renderer/client/insights.ts";
 import {
+  canSwitchModel,
   featureCounts,
   featureRow,
   initiativeLine,
@@ -414,5 +416,33 @@ describe("initiative view model", () => {
     expect(
       initiativeLine({ initiativeId: "i", title: "I", status: "completed", features: 3, next }),
     ).toBe("completed");
+  });
+
+  test("model switch is offered while nothing executes and the backend reports the model", () => {
+    const view = (extra: Partial<InitiativeView> = {}): InitiativeView => ({
+      initiativeId: "i",
+      title: "I",
+      status: "active",
+      reason: "",
+      revision: 1,
+      planRevision: 1,
+      model: null,
+      goals: [],
+      features: [feature("needs_decision", { runStatus: "waiting" })],
+      pendingDecisions: [],
+      budget: {
+        limits: { maxTotalTokens: 1, maxAgentCalls: 1, maxActiveMs: 1 },
+        used: { tokens: 0, calls: 0, activeMs: 0 },
+      },
+      next: { kind: "decide", featureId: null, runId: null, message: "" },
+      ...extra,
+    });
+    expect(canSwitchModel(view())).toBe(true);
+    expect(canSwitchModel(view({ status: "paused", model: "a/b" }))).toBe(true);
+    expect(canSwitchModel(view({ model: undefined }))).toBe(false);
+    expect(canSwitchModel(view({ status: "completed" }))).toBe(false);
+    expect(canSwitchModel(view({ features: [feature("in_progress", { runStatus: "running" })] }))).toBe(
+      false,
+    );
   });
 });

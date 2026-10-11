@@ -47,6 +47,10 @@ const ExtendBody = Command.extend({
   calls: PositiveInt.optional(),
   timeMs: PositiveInt.optional(),
 }).strict();
+const RerouteBody = Command.extend({
+  model: z.string().min(1),
+  resume: z.boolean().optional(),
+}).strict();
 const EventsQuery = z.strictObject({
   after: z.string().regex(/^\d+$/).optional(),
   limit: z.string().regex(/^\d+$/).optional(),
@@ -63,6 +67,7 @@ const ACTIONS = new Set([
   "pause",
   "resume",
   "extend",
+  "reroute",
 ]);
 const PATH = /^\/v1\/initiatives\/([^/]+)(?:\/([a-z]+))?$/;
 const identity = (body: z.infer<typeof Command>) => ({
@@ -230,6 +235,15 @@ export async function initiativeRoute(ctx: InitiativeRouteContext): Promise<Resp
           ...(body.timeMs !== undefined ? { maxActiveMs: body.timeMs } : {}),
         }),
       );
+    }
+    case "reroute": {
+      const body = RerouteBody.parse(raw);
+      const view = await initiatives.reroute(id, identity(body), {
+        model: body.model,
+        resume: body.resume === true,
+      });
+      if (body.resume) ctx.launch(id);
+      return ctx.json(200, view);
     }
     default:
       return ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);

@@ -112,7 +112,7 @@ From the mockups; the sidebar and three settings levels follow gulliby's review 
 | Run | Stage pipeline, approval card, tabs (overview, decision, tasks, changes, spec, plan, checks, criteria, findings, report), budget and activity. The Report tab shows the [run report](../workflows/runtime.md#run-report) in Markdown, the text delivery uses as the pull request body, with Copy and Save as .md. Pause, Resume, Cancel run, and Undo edits while the run is neither created nor running: after a confirmation it runs `baked workflow undo` and shows the `workspace-rollback` report (files restored, files left in place with the reason, or nothing to undo). The Model panel shows the run model and routed stages; while nothing executes the run it switches the run to another model (configured models are suggested) and resumes a blocked or paused run, keeping completed work. |
 | Parallel writers | Writer columns with worktrees, integrator, task graph. |
 | Acceptance | Criteria with verdicts and evidence; manual observation input. |
-| Initiatives, Usage | Initiative features and their runs; tokens by stage and model, cost. |
+| Initiatives, Usage | Initiative features and their runs, and the initiative's model with a switch to another one (features started later use it, stopped runs move to it, and the initiative continues; offered while no feature run executes); tokens by stage and model, cost. |
 | Project setup | Gates and checks, Instructions, Working set. In a folder without `baked/project.json`, Working set and the project panels say to run `baked project init` instead of showing an error. |
 | Settings | This app (stored on this computer) and All projects (`~/.baked/config.json`: providers, model routing, global commands, run notifications, telemetry). |
 
