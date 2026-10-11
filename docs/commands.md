@@ -35,6 +35,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | Command | Does |
 | --- | --- |
 | `/project` | This project: sessions, workflow runs, what waits for you |
+| `/project rename` | `/project rename NAME` renames this project in the picker, `baked projects` and the desktop app; without a name it restores the default |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
 | `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |
@@ -99,6 +100,8 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/web-search` | Web search keys & settings |
 | `/mcp` | MCP servers — status, tools, reconnect |
 
+Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` sign the same CLIs in and out, and `baked --set-key` / `baked --remove-key` save and remove API keys ([headless CLI](headless.md#keys-and-sign-in)).
+
 ### Intelligence
 
 | Command | Does |
@@ -125,8 +128,10 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |
 | `/mode` | Switch Baked mode |
 | `/motion` | Full or reduced animation |
+| `/notifications` | System notifications and the webhook for runs that wait for you; `/notifications system on\|off`, `/notifications webhook URL\|off`, `/notifications blocking-only on\|off` ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 | `/reasoning` | Show or hide reasoning content |
 | `/settings` | Settings hub — all options in one place |
+| `/telemetry` | Turn anonymous usage telemetry on or off; `/telemetry on\|off` ([privacy](privacy.md)) |
 | `/theme` | Switch color theme (live preview) |
 | `/verbose` | Toggle verbose tool output |
 | `/verbose-tab` | Toggle verbose render for this tab — off folds tools into a rail, on shows raw stream |
@@ -181,5 +186,5 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
 | `baked session undo ID [--to N] [--force] [--json]`, `baked session redo ID [--force] [--json]` | Undo the last turn of a saved session with its file edits, or put the oldest undone turn back ([undoing a turn](headless.md#undoing-a-turn)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
-| `baked telemetry [--json]` | The locally recorded usage events ([privacy](privacy.md)) |
+| `baked telemetry [--json]`, `baked telemetry on\|off` | The locally recorded usage events, or turn recording on or off in the global config ([privacy](privacy.md)) |
 | `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |

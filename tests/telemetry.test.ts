@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -181,5 +181,32 @@ describe("maybeShowTelemetryNotice", () => {
     });
     expect(marked).toBe(0);
     writeSpy.mockRestore();
+  });
+});
+
+describe("runTelemetryCli", () => {
+  const configFile = () => join(tmp, ".baked", "config.json");
+
+  test("on and off write telemetry to the global config", async () => {
+    const { runTelemetryCli } = await load();
+    const out = spyOn(process.stdout, "write").mockReturnValue(true);
+    expect(await runTelemetryCli(["off"])).toBe(0);
+    expect(JSON.parse(readFileSync(configFile(), "utf8")).telemetry).toBe(false);
+    expect(String(out.mock.calls.at(-1)?.[0])).toContain("Recording is off");
+    expect(await runTelemetryCli(["on"])).toBe(0);
+    expect(JSON.parse(readFileSync(configFile(), "utf8")).telemetry).toBe(true);
+    out.mockRestore();
+  });
+
+  test("the summary reports a config opt-out and rejects unknown words", async () => {
+    const { runTelemetryCli } = await load();
+    const out = spyOn(process.stdout, "write").mockReturnValue(true);
+    const err = spyOn(process.stderr, "write").mockReturnValue(true);
+    await runTelemetryCli(["off"]);
+    expect(await runTelemetryCli([])).toBe(0);
+    expect(String(out.mock.calls.at(-1)?.[0])).toContain("config telemetry: false");
+    expect(await runTelemetryCli(["maybe"])).toBe(2);
+    out.mockRestore();
+    err.mockRestore();
   });
 });

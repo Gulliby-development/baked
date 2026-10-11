@@ -230,7 +230,7 @@ Each announcement goes to three places:
 }
 ```
 
-The desktop app edits the same settings under Settings, All projects, Run notifications.
+The desktop app edits the same settings under Settings, All projects, Run notifications. In the terminal app, `/notifications` shows them and opens a menu, and `/notifications system on|off`, `/notifications webhook URL|off` and `/notifications blocking-only on|off` change them in the global config; an idle workflow worker restarts to apply the change, and a worker driving a run applies it after BAKED restarts. Headers stay in the config file on both.
 
 ## Gates, budgets and estimates
 
@@ -579,6 +579,19 @@ The edit form has Model (a `provider/model` ID, or `$class` outside a class), Ef
 
 The desktop app shows and edits the same entries in Settings > Model routing, through `GET` and `PATCH /v1/workflow/routing` of the [local API](../desktop/api.md), with the same checks. Its Model and Fallback models fields offer the same list from `GET /v1/models`.
 
+Scripts and CI change the same entries with `baked workflow routing`, which runs the same checks and writes only the `modelRouting` section of the project config (or the global one with `--scope global`):
+
+```sh
+baked workflow routing set role:reviewer openai/gpt-5 --effort high --fallback anthropic/claude-sonnet-4-6
+baked workflow routing set '$coding' anthropic/claude-sonnet-4-6 --scope global
+baked workflow routing set stage:sdd/plan '$review'
+baked workflow routing clear role:reviewer
+baked workflow routing review require      # independentReview; unset removes it
+baked workflow routing show --json         # modelRouting of both files
+```
+
+A target is a class (`$name` or `class:name`), a role (`role:NAME`), a profile (`profile:ID`) or a stage (`stage:WORKFLOW/STAGE`). A refused change is not written; the reasons go to stderr (or `{saved: false, problems}` with `--json`) and the command exits 1. `--json` prints `{saved: true, file, modelRouting}` for a saved change.
+
 `baked workflow models [--model ID] [--provider ID] [--json]` prints what a route, `--route`, `--model`, a reroute or a fallback can name: the model names with the model each resolves to for the run model (`--model`, else `defaultModel`), then the models of each provider, and the providers without a key or login with that reason. `--json` prints `{runModel, classes: [{ref, model, source}], providers}`, where `providers` has the shape of `GET /v1/models`.
 
 ### Effort and fallback models
@@ -752,9 +765,9 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
 | `POST /v1/workflow/runs/RUN_ID/candidate`, `/revise` | `candidate`, `revise` | candidate takes `commandId` and inline `spec`, `plan`, `tasks`, `policy`; revise takes `candidate` plus `commandId`, `expectedRevision` |
 | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; `GET /v1/commands`, `GET /v1/skills` | | the terminal UI's gate editor, custom commands and skills; see `docs/desktop/api.md` |
-| `GET /v1/usage` | | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads, cache writes) and estimated cost of every attempt started in the window, grouped |
+| `GET /v1/usage` | `baked usage --json` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads, cache writes) and estimated cost of every attempt started in the window, grouped |
 | `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `docs/desktop/api.md`; start, approve, resume and reroute with `resume: true` drive the initiative in the background |
-| `GET /v1/attention` | | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
+| `GET /v1/attention` | `baked attention --json` (runs and initiatives) | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |
 | `GET /v1/projects` | `projects list --json` | every folder BAKED was opened in (`~/.baked/known-projects.json`), pinned first: `path`, `name`, `projectId` (null without `baked/project.json`), `pinned`, `exists`, `current` and `overview` (`sessions`, `lastSessionAt`, `activeRuns`, `attention`). Each folder is served by its own `baked serve`. |
 | `GET /v1/projects/current` | `project show` | the workspace's project: roots, working set, instruction files, latest sessions and runs; 404 without `baked/project.json` |
 | `POST /v1/projects/current/working-set` | `project add`, `project remove` | `add`, `remove` (path or glob lists, removals first); returns the project; an entry outside the project roots is 400 |

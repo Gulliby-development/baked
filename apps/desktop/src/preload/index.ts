@@ -23,6 +23,7 @@ const bridge: DesktopBridge = {
   restartProject: (key) => ipcRenderer.invoke(IPC.restartProject, key),
   addFolder: () => ipcRenderer.invoke(IPC.addFolder),
   manageProject: (key, action) => ipcRenderer.invoke(IPC.manageProject, key, action),
+  renameProject: (key, name) => ipcRenderer.invoke(IPC.renameProject, key, name),
   onProjects: (listener) => listen(IPC.projectsChanged, listener),
   request: (key, method, path, body) => ipcRenderer.invoke(IPC.request, key, method, path, body),
   subscribe: (key, path, listener, lastEventId) => {

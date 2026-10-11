@@ -51,6 +51,35 @@ baked --headless --save-session "analyze the auth module, find all issues"
 baked --headless --session <id> --save-session "now fix them"
 ```
 
+`baked session list` prints the saved sessions of the project, most recently updated first (`--limit N`, default 50); `--json` prints `{sessions: [{id, title, messageCount, startedAt, updatedAt, sizeBytes, projectId?}]}`. `baked session delete ID` deletes one, by its id or a prefix that matches only that session, together with the checkpoint tags it made; the workspace files stay as they are. It exits 1 when no session or more than one matches. The terminal UI and the desktop app list the same sessions, so do not delete one they have open. `baked session export ID` writes the conversation of the session's active tab as Markdown (or `--format json`) to `--output FILE`, or to `.baked/exports/` as `/session export` does in the terminal UI; `--json` prints `{sessionId, path, messageCount, format}`.
+
+## Usage and attention
+
+```sh
+baked usage --days 30 --group-by stage,model --json
+baked attention --json
+```
+
+`baked usage` adds up the tokens and estimated cost of every workflow attempt that started in the last `--days N` days (default 7, at most 366), across runs. `--group-by` takes one or two of `model`, `stage` and `day` (default `model`); `--model ID` (`(host)` for host attempts) and `--stage ID` filter. `--json` prints the answer of the local API's [`GET /v1/usage`](desktop/api.md); without it a table prints. For one run use `baked workflow usage RUN_ID`.
+
+`baked attention` lists what waits for a person in the project, oldest first: pending decisions of workflow runs, blocked runs and pending initiative decisions. `--json` prints `{items}` in the shape of [`GET /v1/attention`](workflows/runtime.md); advisory acceptance requests have `blocking: false`. Chat prompts appear only in the local API, where the chat sessions run. Both commands only read the workflow database and exit 0, with nothing listed in a project where no run was started.
+
+## Model routing
+
+`baked workflow routing set TARGET MODEL`, `clear TARGET` and `review MODE` change the `modelRouting` of the project (or `--scope global`) with the checks of the terminal routing screen, and `show` prints it; see the [routing screen](workflows/runtime.md#routing-screen) for targets and output.
+
+## Keys and sign-in
+
+```sh
+baked --set-key openai sk-...       # save an API key (system keychain or ~/.baked/secrets.json)
+baked --remove-key openai           # remove it again
+baked login                         # whether the Codex and Claude Code CLIs are installed and signed in
+baked login claude-code             # sign the CLI in with your subscription
+baked logout codex
+```
+
+`--remove-key` removes the saved key of a provider and says so when an environment variable still provides one. `baked login codex|claude-code` runs the same sign-in as `/codex login` and `/claude-code login` in the terminal UI: it prints the CLI's progress and the page to open on stderr and waits until the sign-in ends, with exit code 0 when signed in, 1 when it failed or the CLI is not installed, and 130 when interrupted. A CLI that is already signed in succeeds at once. `baked logout` runs the CLI's own logout. `--json` prints the `Login` object of the local API's [`GET /v1/providers/ID/login`](desktop/api.md); `baked login --json` prints `{providers: [{provider, installed, loggedIn, message, command}]}`. BAKED never reads or stores the CLI's tokens.
+
 ## Forking a session
 
 ```sh

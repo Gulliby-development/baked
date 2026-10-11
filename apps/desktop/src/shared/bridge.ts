@@ -31,6 +31,11 @@ export interface DesktopBridge {
    * command when none runs; returns the new list.
    */
   manageProject(key: string, action: ProjectAction): Promise<DesktopProject[]>;
+  /**
+   * Sets a known folder's display name ("" restores the manifest or folder name) the same way;
+   * returns the new list.
+   */
+  renameProject(key: string, name: string): Promise<DesktopProject[]>;
   /** Shows the folder picker and adds the chosen folder; null when cancelled. */
   addFolder(): Promise<DesktopProject | null>;
   onProjects(listener: (projects: DesktopProject[]) => void): () => void;
@@ -73,6 +78,7 @@ export const IPC = {
   restartProject: "baked:projects:restart",
   addFolder: "baked:projects:add-folder",
   manageProject: "baked:projects:manage",
+  renameProject: "baked:projects:rename",
   projectsChanged: "baked:projects:changed",
   request: "baked:api:request",
   subscribe: "baked:api:subscribe",

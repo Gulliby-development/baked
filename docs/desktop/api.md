@@ -14,14 +14,14 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 ## Conventions
 
 - JSON bodies, `Content-Type: application/json`, at most 1 MiB (20 MiB for `POST /v1/sessions` and `POST /v1/sessions/ID/messages`, which carry [images](#images)). Methods: `GET`, `POST`, `PATCH`, `DELETE`.
-- Errors: `{"error":{"code":"...","message":"..."}}` with the HTTP status. Codes in use: `INVALID_REQUEST` 400, `UNAUTHORIZED` 401, `CAPABILITY_DENIED`/`ORIGIN_REJECTED` 403, `NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405, `REVISION_CONFLICT`/`COMMAND_CONFLICT`/`STALE_DECISION`/`WORKSPACE_BUSY`/`INPUT_CHANGED`/`RUN_TERMINAL`/`SESSION_BUSY`/`STALE_PROMPT` 409, `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `HOST_REJECTED` 421, `INTERNAL` 500, `SHUTTING_DOWN` 503. Messages have secrets redacted.
+- Errors: `{"error":{"code":"...","message":"..."}}` with the HTTP status. Codes in use: `INVALID_REQUEST` 400, `UNAUTHORIZED` 401, `CAPABILITY_DENIED`/`ORIGIN_REJECTED` 403, `NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405, `REVISION_CONFLICT`/`COMMAND_CONFLICT`/`STALE_DECISION`/`WORKSPACE_BUSY`/`NOT_A_REPOSITORY`/`INPUT_CHANGED`/`RUN_TERMINAL`/`SESSION_BUSY`/`STALE_PROMPT` 409, `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `HOST_REJECTED` 421, `INTERNAL` 500, `SHUTTING_DOWN` 503. Messages have secrets redacted.
 - Workflow and initiative mutations carry `commandId` (client-chosen, safe id) and `expectedRevision`; a retry with the same `commandId` returns the first result.
 - Streams are Server-Sent Events. Each event has `id:` (a sequence number), the client resumes with `Last-Event-ID` or `?after=`, and the server sends `: keep-alive` comments every 15 s. A client that asks only for `application/json` gets a JSON page instead of a stream where noted.
 - Timestamps are milliseconds since the epoch.
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`) and `settings` (`GET|PATCH /v1/settings`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`) and `git` (`GET /v1/git`, `POST /v1/git/actions`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -250,12 +250,18 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 | Method and path | Body | Result |
 | --- | --- | --- |
 | `POST /v1/projects/pin`, `/unpin`, `/forget` | `{path}` (absolute) | the `GET /v1/projects` list; 404 for a folder that is not known |
+| `POST /v1/projects/rename` | `{path, name}` (absolute path; `name` at most 120 characters, trimmed) | the `GET /v1/projects` list with the new `name`; `""` restores the manifest or folder name. Only the shared list changes, not `baked/project.json`. 404 for a folder that is not known. Capability `project-rename` |
 | `GET /v1/projects/current/instructions` | | `{files: [{order, path, absolutePath, source, scope: "project" \| "global", bytes, hash, content}], promptBytes}`: the instruction files every chat and workflow agent reads, in order; `hash` is the SHA-256 of the file's bytes |
 | `PUT /v1/projects/current/instructions` | `{path, content, expectedHash}` | the file entry plus `affectedRuns` (IDs of runs that have not ended and froze this file); only a listed file can be written (404 otherwise; a project file wins over a global one with the same path), 409 `INPUT_CHANGED` when `expectedHash` no longer matches |
 | `GET /v1/workflow/checks` | | `{checks: [Check & {lastResult?}], workflowsEnabled}`: the commands runs use as evidence (`workflows.policy.checks`, project config first) |
 | `PUT /v1/workflow/checks` | `{checks: Check[]}` | as `GET`; replaces the list in the project's `.baked/config.json` and keeps every other setting there (a project without a `workflows` block gets the effective one, so the global policy is copied once, not merged). New runs use the list at once; started runs keep the copy they froze. 400 for an invalid check or a repeated ID |
 | `GET /v1/workflow/memory` | | `{enabled, entries, hidden, rendered}`: the [project memory](../workflows/runtime.md#viewing-and-editing-project-memory) a run started now reads. Each entry is `{id, kind: "note" \| "answer" \| "assumption" \| "check", text, question?, runId?, runs?, recorded?, hidden}`; `entries` add `sent` (false for a check the workspace policy already lists), `hidden` holds forgotten entries, `recorded` is what runs recorded when a person reworded the entry, `rendered` is the text the next run receives (null when empty) and `enabled` is false when the policy sets `projectMemory: false` |
 | `POST /v1/workflow/memory` | `{action: "add", text}`, `{action: "edit", id, text}`, `{action: "forget", id}` or `{action: "restore", id}` | `{id, ...}` as `GET`, `id` naming the changed entry. Same as `baked workflow memory`; runs started afterwards read the result. 400 for empty text, rewording a check, restoring a note or a thirteenth note; 404 for an unknown ID |
+| `GET /v1/memory` | | `{settings, entries, hidden, cleanupHint}`: the chat agent's [long-term memory](../guide.md#memory), the same store as the terminal's `/memory`. `settings` is `{writeScope: "project" \| "global" \| "none", readScope: "project" \| "global" \| "all" \| "none", settingsScope: "project" \| "global"}`; each entry is `{id, scope: "project" \| "global", category: "pref" \| "decision" \| "gotcha" \| "context" \| null, summary, details, topics, source: "user" \| "agent", createdAt, lastUsedAt, useCount, pinned, hidden}`; `entries` are active memories of both scopes, `hidden` the hidden ones; `cleanupHint` is `{sessions, total, stale}` when a cleanup is due, else null |
+| `POST /v1/memory` | `{action: "pin" \| "unpin" \| "hide" \| "restore", scope, id}`, `{action: "edit", scope, id, summary, details?, category?}` or `{action: "purge", scope: "project" \| "global" \| "all"}` | as `GET`; `purge` adds `cleared` (how many it deleted, hidden ones included; it cannot be undone). `edit` keeps the ID, topics and pin and makes a hidden memory visible. 404 for an ID the scope does not have, 409 `DUPLICATE_MEMORY` when another memory already has the edited text |
+| `PUT /v1/memory/settings` | `{writeScope?, readScope?, settingsScope?}`, at least one | as `GET`. `writeScope: "none"` stops saving, `readScope: "none"` stops recall; `settingsScope` moves the saved settings between `<project>/.baked` and the global data directory. Chat sessions that already started pick the change up on their next turn when the server's chat runs in the same process |
+| `GET /v1/memory/cleanup` | | `{candidates: [{id, scope, kind: "duplicate" \| "dead" \| "stale" \| "similar", summary, detail, keeperId?}]}`: what the terminal's Cleanup tab lists; a memory appears once |
+| `POST /v1/memory/cleanup` | `{actions: [{scope, id, action: "hide" \| "pin"}]}` | `{applied: {hidden, pinned}, ...}` as `GET`; records the cleanup, which resets `cleanupHint` |
 | `GET /v1/workflow/checks/suggestions` | | `{suggestions: [{check, source, reason, preselected}]}`: test, lint, typecheck and build commands found in `package.json`, Python, Go and Cargo projects, minus the configured ones |
 | `POST /v1/workflow/checks/ID/run` | `{}` | `{checkId, at, status: "passed" \| "failed" \| "timeout" \| "cancelled" \| "error", exitCode, durationMs, outputTail, truncated}`. Runs the check as a run would but records no evidence; the result becomes the check's `lastResult` until the server stops. 409 `WORKSPACE_BUSY` while a run holds the workspace, 404 for an unknown ID |
 | `GET /v1/commands` | | `{commands: [{name, scope: "project" \| "global", path, description, argumentHint?}]}`: the custom slash commands in `.baked/commands` of the project and the home folder; a project command replaces a global one with the same name |
@@ -307,7 +313,7 @@ interface SettingDefinition {
 }
 ```
 
-A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`.
+A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
 
 ## Code graph
 
@@ -334,11 +340,41 @@ interface GraphView {
 
 `tone` 0 to 2 cycle over the top-level folders by size and 3 marks tests. `key` is a file in the top 3% by rank. Each edge sums the file links between two visible units; `top` keeps its strongest file pairs. With `typeEdges: false` links into type-heavy files are left out, with `tests: false` test files.
 
+## Git
+
+The terminal Git menu (`Ctrl+G`, `/git`) for the project folder, with the `git` capability. Both run the actions of `src/core/git/menu.ts` with Git's own configuration, credentials and hooks; Git never prompts (`GIT_TERMINAL_PROMPT=0`), so a remote that needs a password it does not have fails with Git's message.
+
+| Method and path | Body or query | Result |
+| --- | --- | --- |
+| `GET /v1/git` | | `GitOverview`; `{isRepo: false, ...}` with empty lists outside a repository |
+| `POST /v1/git/actions` | one of the actions below | `{ok, message, output, overview: GitOverview}`. A step Git refuses (no upstream, merge conflict, nothing to commit) answers 200 with `ok: false` and Git's reason in `message`. 400 for an unknown action or field and for a destructive action without `confirm: true`; 409 `NOT_A_REPOSITORY` outside a repository and `WORKSPACE_BUSY` while a workflow run holds the workspace. Actions of one server run one at a time |
+
+| Action | Body | Git |
+| --- | --- | --- |
+| Commit | `{action: "commit", message, stageAll?}` | With `stageAll`, or when nothing is staged, stages every modified and untracked file first, then `git commit -m`. The co-author trailer follows `coAuthorCommits` (on by default). `message` is at most 10,000 characters |
+| Push, pull | `{action: "push"}`, `{action: "pull"}` | `git push`, `git pull` with Git's own defaults; 30 s limit |
+| Stash | `{action: "stash", message?}`, `{action: "stash-pop"}` | `git stash push [-m message]` (at most 200 characters, on one line), `git stash pop` |
+| Branches | `{action: "create-branch", name}`, `{action: "switch-branch", name}` | `git checkout -b name`; `git checkout name --` for an existing local branch only. Names that start with `-`, contain `@{` or whitespace, or fail `git check-ref-format --branch` are refused |
+| Force push | `{action: "force-push", confirm: true}` | `git push --force-with-lease`. Never a plain `--force` |
+| Reset hard | `{action: "reset-hard", confirm: true}` | `git reset --hard HEAD`; untracked files are kept |
+
+```ts
+interface GitOverview {
+  isRepo: boolean; branch: string | null; upstream: string | null; // "origin/main"
+  isDirty: boolean; staged: string[]; modified: string[]; untracked: string[]; conflicts: string[];
+  ahead: number; behind: number;
+  branches: string[];   // local, most recently committed first, at most 200
+  stashes: string[];    // `git stash list` lines, newest first
+  log: { hash: string; subject: string; date: string }[]; // the 20 latest commits, relative dates
+  busy: boolean;        // a workflow run holds the workspace; actions answer WORKSPACE_BUSY
+}
+```
+
 ## Screen map
 
 | Mockup | Endpoints |
 | --- | --- |
-| All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget` |
+| All projects | desktop main process for open/clone/close; `GET /v1/projects` of any server; `POST /v1/projects/pin\|unpin\|forget\|rename` |
 | Project home | `GET /v1/projects/current`, `GET /v1/workflow/runs`, `GET /v1/attention`, `GET /v1/workflow/doctor` |
 | Needs you | `GET /v1/attention` (stream) of every open project; answers go to the owning run, initiative or session |
 | Chat session | `/v1/sessions/*`, `GET /v1/models`, `GET /v1/mentions`; context chip from `context`, files chip from `filesEdited`, working set chip from the project summary |
@@ -352,6 +388,8 @@ interface GraphView {
 | Settings: chat settings pages | `GET|PATCH /v1/settings`, `GET /v1/models` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `GET /v1/models` |
 | Run memory | `GET\|POST /v1/workflow/memory` |
+| Chat memory | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |
+| Git | `GET /v1/git`, `POST /v1/git/actions` |
 | Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |

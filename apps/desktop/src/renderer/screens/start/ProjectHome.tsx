@@ -338,9 +338,11 @@ export function ProjectHome({ project }: SectionProps) {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-2">
         {summary.value?.branch && (
-          <Badge tone="info" className="normal-case tracking-normal" title="Git branch">
-            {summary.value.branch}
-          </Badge>
+          <a href={projectHref(key, "git")} className="no-underline" title="Git branch: open Git">
+            <Badge tone="info" className="normal-case tracking-normal">
+              {summary.value.branch}
+            </Badge>
+          </a>
         )}
         {summary.value && summary.value.id.toLowerCase() !== project.name.toLowerCase() && (
           <Badge className="normal-case tracking-normal" title="Project ID">

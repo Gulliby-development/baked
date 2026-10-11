@@ -5,7 +5,16 @@ import type { ProjectAction } from "../../shared/bridge.js";
 import { bridge } from "../client/bridge.js";
 import { Alert } from "../components/ui/alert.js";
 import { Button, buttonVariants } from "../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog.js";
 import { Empty } from "../components/ui/empty.js";
+import { Input } from "../components/ui/input.js";
+import { Label } from "../components/ui/label.js";
 import { ago, backendLabel, initial } from "../format.js";
 import { cn } from "../lib/cn.js";
 import { LEDE, PAGE, PANEL, STACK, SUB_LINE } from "../lib/styles.js";
@@ -43,19 +52,100 @@ export function matchesProject(project: DesktopProject, query: string): boolean 
   );
 }
 
+/** The longest display name the project list keeps (`renameKnownProject`). */
+export const PROJECT_NAME_MAX = 120;
+
+/** The rename form: an empty name restores the manifest or folder name. */
+function RenameProject({
+  project,
+  onRename,
+  onDone,
+}: {
+  project: DesktopProject;
+  onRename: (name: string) => Promise<void>;
+  onDone: () => void;
+}) {
+  const [name, setName] = useState(project.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const tooLong = name.trim().length > PROJECT_NAME_MAX;
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onRename(name);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="flex flex-col gap-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!tooLong) void submit();
+      }}
+    >
+      <DialogHeader>
+        <DialogTitle>Rename project</DialogTitle>
+        <DialogDescription>
+          How BAKED shows <span className="font-mono">{project.path}</span> in every app. An empty
+          name restores the folder or manifest name.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="project-rename">Name</Label>
+        <Input
+          id="project-rename"
+          value={name}
+          maxLength={PROJECT_NAME_MAX + 40}
+          aria-invalid={tooLong || undefined}
+          disabled={busy}
+          autoFocus
+          onChange={(event) => setName(event.target.value)}
+        />
+        {tooLong && (
+          <span className="text-[12px] text-[var(--err)]">
+            At most {PROJECT_NAME_MAX} characters.
+          </span>
+        )}
+      </div>
+      {error && (
+        <Alert tone="error" role="alert">
+          {error}
+        </Alert>
+      )}
+      <div className={ACTIONS}>
+        <Button type="submit" variant="primary" size="md" disabled={busy || tooLong}>
+          Rename
+        </Button>
+        <Button type="button" variant="secondary" size="md" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function Card({
   project,
   items,
   onAction,
+  onRename,
   busy,
 }: {
   project: DesktopProject;
   items: AttentionItem[];
   onAction: (action: ProjectAction) => void;
+  onRename: (name: string) => Promise<void>;
   busy: boolean;
 }) {
   const { open, close, restart } = useDesktop();
   const [confirmForget, setConfirmForget] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const { overview } = project;
   const waiting = project.open ? items.length : overview.attention;
   const state = projectState(project, waiting);
@@ -187,7 +277,17 @@ function Card({
           <Button
             variant="secondary"
             size="md"
-            className="ml-auto aria-pressed:text-[var(--accent-soft)]"
+            className="ml-auto"
+            aria-label={`Rename ${project.name}`}
+            disabled={busy}
+            onClick={() => setRenaming(true)}
+          >
+            Rename…
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            className="aria-pressed:text-[var(--accent-soft)]"
             aria-pressed={project.pinned}
             aria-label={project.pinned ? `Unpin ${project.name}` : `Pin ${project.name}`}
             disabled={busy}
@@ -197,6 +297,17 @@ function Card({
           </Button>
         </div>
       )}
+      <Dialog open={renaming} onOpenChange={setRenaming}>
+        <DialogContent className="w-[min(480px,calc(100vw-48px))]">
+          {renaming && (
+            <RenameProject
+              project={project}
+              onRename={onRename}
+              onDone={() => setRenaming(false)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </article>
   );
 }
@@ -263,6 +374,9 @@ export function ProjectsScreen() {
               items={attention.filter((i) => i.projectKey === project.key && i.blocking)}
               busy={busy === project.key}
               onAction={(action) => void act(project.key, action)}
+              onRename={async (name) => {
+                await bridge.renameProject(project.key, name);
+              }}
             />
           ))}
         </div>
