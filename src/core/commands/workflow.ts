@@ -50,6 +50,7 @@ const SHORT_HELP = `
 /workflow quick [text] The same form on the quick workflow for a small task
 /workflow gates      Add, edit, remove and try the checks every run uses
 /workflow edit ID    Edit a workflow definition: stages, transitions and their gates
+/workflow routing    Which model runs each class, role, stage and profile (modelRouting)
 /workflow report ID  The run's report in Markdown (--output FILE writes it)
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
 
@@ -71,6 +72,11 @@ export function register(map: Map<string, CommandHandler>): void {
     }
     if (tokens[0] === "gates") {
       ui.showGates();
+      useUIStore.getState().openModal("workflow");
+      return;
+    }
+    if (tokens[0] === "routing") {
+      ui.showRouting();
       useUIStore.getState().openModal("workflow");
       return;
     }

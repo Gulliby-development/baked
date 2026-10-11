@@ -6,12 +6,14 @@ import { defaultWorkflowPolicy } from "../../core/workflows/defaults.js";
 import type { StartRunInput } from "../../core/workflows/view.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
+  existingWorkflowSession,
   reloadWorkflowSession,
   useWorkflow,
   useWorkflowRuns,
   workflowEditorApi,
   workflowGatesApi,
   workflowInitiativesApi,
+  workflowRoutingApi,
   workflowSession,
 } from "../../hooks/useWorkflow.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
@@ -34,6 +36,7 @@ import { GATES_HINTS, type GatesMode, GatesView } from "./GatesView.js";
 import { InitiativesPopup } from "./InitiativesView.js";
 import { NewRunForm } from "./NewRunForm.js";
 import { Onboarding } from "./Onboarding.js";
+import { RoutingPopup } from "./RoutingView.js";
 import { orderRuns, RunList } from "./RunList.js";
 import { RunOverview } from "./RunOverview.js";
 import { TaskGraphView } from "./TaskGraphView.js";
@@ -120,6 +123,7 @@ export function WorkflowPanel({
   const gatesApi = useMemo(() => workflowGatesApi(workspace), [workspace]);
   const editorApi = useMemo(() => workflowEditorApi(workspace), [workspace]);
   const initiativesApi = useMemo(() => workflowInitiativesApi(workspace), [workspace]);
+  const routingApi = useMemo(() => workflowRoutingApi(workspace), [workspace]);
   const pending =
     service && runId
       ? service.store.requests(runId).find((r) => r.status === "pending")
@@ -194,7 +198,13 @@ export function WorkflowPanel({
     if (!visible || event.defaultPrevented) return;
     const key = event.name.toLowerCase();
     // These screens own their keys.
-    if (screen === "new" || screen === "gates" || screen === "editor" || screen === "initiatives")
+    if (
+      screen === "new" ||
+      screen === "gates" ||
+      screen === "editor" ||
+      screen === "initiatives" ||
+      screen === "routing"
+    )
       return;
     if (!onRun) {
       if (key === "escape") {
@@ -212,6 +222,11 @@ export function WorkflowPanel({
       if (key === "g") {
         event.preventDefault();
         useWorkflowStore.getState().showGates();
+        return;
+      }
+      if (key === "r") {
+        event.preventDefault();
+        useWorkflowStore.getState().showRouting();
         return;
       }
       if (enabled === false) return;
@@ -321,6 +336,7 @@ export function WorkflowPanel({
     { key: "N", label: "new run" },
     { key: "I", label: "initiatives" },
     { key: "G", label: "gates" },
+    { key: "R", label: "routing" },
     { key: "Esc", label: "close" },
   ];
   if (screen === "new")
@@ -387,6 +403,22 @@ export function WorkflowPanel({
       />
     );
 
+  if (screen === "routing")
+    return (
+      <RoutingPopup
+        api={routingApi}
+        model={activeModel && activeModel !== "none" ? activeModel : null}
+        width={popupW}
+        height={Math.min(40, height)}
+        onBack={() => useWorkflowStore.getState().showHome()}
+        onSaved={() => {
+          // An idle worker restarts so new runs read the saved routing; a busy one keeps going.
+          const driving = existingWorkflowSession(workspace)?.drivingRuns() ?? [];
+          void reloadWorkflowSession(workspace, driving);
+        }}
+      />
+    );
+
   if (screen === "gates")
     return (
       <PremiumPopup
@@ -433,6 +465,7 @@ export function WorkflowPanel({
             ? [
                 { key: "E", label: "enable" },
                 { key: "G", label: "gates" },
+                { key: "R", label: "routing" },
                 { key: "Esc", label: "close" },
               ]
             : listHints
