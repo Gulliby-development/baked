@@ -136,6 +136,25 @@ A run starts with what earlier runs of the same workspace learned, so it does no
 
 Answers to analysis findings are left out, since they are about one run's plan. The result is stored as the run's `project/run-memory.md` artifact, its hash joins the run's inputs, and a fork keeps it; a candidate revision keeps the memory the run captured. The researcher, the spec author and the planner receive it as `projectMemory` in their input, framed as background that the request, the answers in it and the run's policy override; implementers, reviewers and the auditor do not. A workspace with nothing to remember adds nothing. The policy field `projectMemory: false` turns it off (absent means on, so stored policies keep their hash), and runs removed by `baked workflow gc` drop out of it.
 
+#### Viewing and editing project memory
+
+People can review and correct the memory before the next run. Each entry has a stable ID (`a-` answer, `s-` assumption, `c-` check, `n-` note) derived from its question, assumption or command, so an edit keeps applying when later runs record the same entry again. Changes are stored in the `project_memory_edits` table of `.baked/workflows.sqlite` and apply to runs created afterwards; started runs keep the memory they captured.
+
+- **Add** a note of your own (at most 12, 600 characters each). Notes come first in what research, spec and planning read.
+- **Edit** rewords a note, an answer or an assumption. A reworded entry keeps your text even when a later run records a newer answer to the same question; the original stays visible as "runs recorded". Check commands cannot be reworded: forget them or change the workspace checks.
+- **Forget** deletes a note, or hides a recorded entry from new runs. A hidden entry frees its place, so the next entry of its kind moves in.
+- **Restore** brings a forgotten or reworded entry back as runs recorded it.
+
+```sh
+baked workflow memory [list] [--json]          # what a run started now reads, then forgotten entries
+baked workflow memory add --text "Public APIs keep their names"
+baked workflow memory edit a-91d0c3e2aa --text "Yes, and mark them as failed"
+baked workflow memory forget s-0b7e55d1c4
+baked workflow memory restore s-0b7e55d1c4
+```
+
+The listing marks a check the workspace policy already lists as not sent, and `--json` returns `{enabled, entries, hidden, rendered}`, where `rendered` is the exact text the next run would receive (null when empty). In the TUI the **Runs** tab of `/memory` lists the same entries: Enter edits, Ctrl+N adds a note, Ctrl+D forgets, Ctrl+R restores and typing filters. The desktop app has a **Run memory** section under the project's setup, and the local API serves `GET|POST /v1/workflow/memory`.
+
 ### The run's own edits and undo
 
 A run keeps the edits it executed. A revision, a failed or interrupted task attempt and a fork leave the files as they are, and the runtime recognises content the run itself wrote by the effect journal:
