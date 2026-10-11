@@ -49,17 +49,7 @@ function SessionMenu({
       button={
         <>
           <h1 className="m-0 text-[15px] font-bold truncate">{title}</h1>
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            aria-hidden="true"
-          >
-            <path d="M4 6l4 4 4-4" />
-          </svg>
+          <Icon name="chevron-down" size={12} />
         </>
       }
     >
@@ -465,7 +455,7 @@ export function ChatHeader({
         {rewind && <RewindChips rewind={rewind} />}
         {sessionId !== null && (
           <a className={CHIP} href={projectHref(project.key, "chat", "new")}>
-            <Icon name="plus" size={13} />
+            <Icon name="new" size={13} />
             New chat
           </a>
         )}

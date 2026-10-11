@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/wordmark-dark.svg">
+  <img alt="BAKED" src="docs/assets/brand/wordmark-light.svg" height="72">
+</picture>
+
 # BAKED
 
 BAKED is a coding agent for the terminal. It builds a graph of your repository with language servers and tree-sitter, so the agent navigates code by symbols and imports rather than by raw text search. It edits, runs checks and commits through tools that ask before they write, and it keeps sessions, memory and workflow state locally in SQLite.

@@ -48,8 +48,8 @@ platform: an NSIS installer on Windows, a DMG and a ZIP on macOS, an AppImage an
 Installers land in `dist/` and carry the repository's version. Take the binary from an unpacked
 bundle (for example `dist/bundle/baked-<version>-linux-x64/baked` after
 `bash scripts/bundle.sh x64 linux` at the root): workflows need its `deps/` folder.
-`build/icon.png` (1024 px, a placeholder) is the app icon; electron-builder derives the Windows
-and macOS icons from it.
+`build/icon.png` (1024 px, the oven logo exported from `build/icon.svg`) is the app icon;
+electron-builder derives the Windows, macOS and Linux icons from it.
 
 Builds are unsigned. macOS gets an ad-hoc signature, so the first launch has to be allowed under
 System Settings → Privacy & Security; Windows SmartScreen warns about an unknown publisher.
@@ -77,5 +77,7 @@ the smoke test. Releases attach the installers.
   renderer reaches the main process.
 - `src/renderer/`: the React app. `client/mock.ts` replaces the bridge with fixtures outside
   Electron.
-- `build/`: app icons. `tray.png` and `tray@2x.png` are rendered from `tray.svg`.
+- `build/`: app icons, exported from the SVG next to each PNG ([brand](../../docs/brand.md)).
+  `tray.png` and `tray@2x.png` come from `tray.svg`; macOS uses `trayTemplate.png` and
+  `trayTemplate@2x.png` from `trayTemplate.svg`.
 - `tests/`: `bun:test` tests; `tests/fixtures/fake-serve.ts` stands in for `baked serve`.

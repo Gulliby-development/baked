@@ -1,5 +1,6 @@
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from "react";
 import type { ChatMode, ImageUpload, MentionSuggestion, ModelProvider } from "../../client/chat.js";
+import { Icon } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
 import { type Attachment, dataUrl, MAX_IMAGES, pickImages, readAttachment } from "./images.js";
@@ -434,9 +435,7 @@ export function Composer({
             aria-label="Stop"
             onClick={onStop}
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor" />
-            </svg>
+            <Icon name="stop" size={14} filled />
           </button>
         )}
         <button
@@ -445,17 +444,7 @@ export function Composer({
           aria-label={busy ? "Add to the running turn" : "Send"}
           disabled={!canSend}
         >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            aria-hidden="true"
-          >
-            <path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" />
-          </svg>
+          <Icon name="send" size={18} />
         </button>
       </div>
     </form>

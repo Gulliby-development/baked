@@ -19,8 +19,11 @@ export class AppTray {
   /** Shows the tray icon; the window was hidden into it. */
   show(): void {
     if (this.tray) return;
-    const icon = nativeImage.createFromPath(join(app.getAppPath(), "build", "tray.png"));
-    if (process.platform === "darwin") icon.setTemplateImage(true);
+    // macOS draws the one-colour template in the menu bar colour; elsewhere the orange oven shows.
+    const mac = process.platform === "darwin";
+    const file = mac ? "trayTemplate.png" : "tray.png";
+    const icon = nativeImage.createFromPath(join(app.getAppPath(), "build", file));
+    if (mac) icon.setTemplateImage(true);
     this.tray = new Tray(icon);
     this.tray.on("click", () => this.actions.show());
     this.render();

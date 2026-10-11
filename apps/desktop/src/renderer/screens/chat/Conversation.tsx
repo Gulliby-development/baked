@@ -7,6 +7,7 @@ import type {
   StoredImage,
   ToolCall,
 } from "../../client/chat.js";
+import { Icon } from "../../components/Icon.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { storedImageUrl } from "./images.js";
@@ -45,18 +46,11 @@ const RESOLVED = "m-0 px-3 py-0 flex gap-2 text-[13px] text-dim-foreground min-w
 
 function Chevron({ open }: { open: boolean }) {
   return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      aria-hidden="true"
+    <Icon
+      name="chevron-right"
+      size={12}
       className={`flex-none [transition:transform_0.12s] motion-reduce:[transition:none]${open ? " [transform:rotate(90deg)]" : ""}`}
-    >
-      <path d="M6 4l4 4-4 4" />
-    </svg>
+    />
   );
 }
 

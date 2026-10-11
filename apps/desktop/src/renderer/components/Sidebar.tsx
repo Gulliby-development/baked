@@ -20,19 +20,19 @@ const SIDEBAR_CHATS = 5;
 const COUNTED_CHATS = 200;
 
 const WORK: [ProjectSection, string, IconName][] = [
-  ["overview", "Overview", "home"],
+  ["overview", "Overview", "overview"],
   ["chat", "Chat", "chat"],
   ["runs", "Runs", "runs"],
-  ["initiatives", "Initiatives", "flag"],
-  ["acceptance", "Acceptance", "shield"],
-  ["usage", "Usage", "bars"],
+  ["initiatives", "Initiatives", "initiatives"],
+  ["acceptance", "Acceptance", "acceptance"],
+  ["usage", "Usage", "usage"],
 ];
 
 const SETUP: [ProjectSection, string, IconName][] = [
-  ["gates", "Gates and checks", "gate"],
-  ["instructions", "Instructions", "file"],
-  ["working-set", "Working set", "folder"],
-  ["run-memory", "Run memory", "memory"],
+  ["gates", "Gates and checks", "gates"],
+  ["instructions", "Instructions", "instructions"],
+  ["working-set", "Working set", "working-set"],
+  ["run-memory", "Run memory", "run-memory"],
 ];
 
 const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", waiting: "warn" };
@@ -139,7 +139,7 @@ function SelectedProject({
                 href={projectHref(project.key, "chat", "new")}
                 aria-current={current(chatId === "new")}
               >
-                <Icon name="plus" size={13} />
+                <Icon name="new" size={13} />
                 New chat
               </a>
               {chats?.slice(0, SIDEBAR_CHATS).map((session) => (
@@ -196,7 +196,7 @@ export function Sidebar({ route }: { route: Route }) {
           href={href({ name: "attention" })}
           aria-current={current(route.name === "attention")}
         >
-          <Icon name="bell" />
+          <Icon name="attention" />
           Needs you
           {blocking > 0 && (
             <Badge tone="err" className="ml-auto">
@@ -209,7 +209,7 @@ export function Sidebar({ route }: { route: Route }) {
           href={href({ name: "projects" })}
           aria-current={current(route.name === "projects")}
         >
-          <Icon name="grid" />
+          <Icon name="projects" />
           All projects
         </a>
       </div>
@@ -219,7 +219,7 @@ export function Sidebar({ route }: { route: Route }) {
           <ProjectEntry key={project.key} project={project} route={route} />
         ))}
         <button type="button" className={NAV} onClick={() => void addFolder()}>
-          <Icon name="plus" />
+          <Icon name="new" />
           Open folder…
         </button>
       </div>
@@ -229,7 +229,7 @@ export function Sidebar({ route }: { route: Route }) {
           href={href({ name: "settings", section: "app" })}
           aria-current={current(route.name === "settings")}
         >
-          <Icon name="gear" />
+          <Icon name="settings" />
           Settings
         </a>
         <div className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-dim-foreground">
