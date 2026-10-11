@@ -162,6 +162,7 @@ export function createMockBridge(): DesktopBridge {
             "git",
             "hooks",
             "provider-switch",
+            "chat-export",
           ],
         });
       const url = new URL(path, "http://mock");
@@ -186,6 +187,8 @@ export function createMockBridge(): DesktopBridge {
       }
       return () => {};
     },
+    exportChat: async (_key, sessionId, format) =>
+      `/mock/exports/${sessionId}.${format === "json" ? "json" : "md"}`,
     attention: async () => mockAttention.items(),
     onAttention: (listener) => mockAttention.subscribe(listener),
     settings: async () => settings,

@@ -124,6 +124,7 @@ export const CAPABILITIES = [
   "git",
   "hooks",
   "provider-switch",
+  "chat-export",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;

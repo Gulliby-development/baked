@@ -35,6 +35,8 @@ const bridge: DesktopBridge = {
       void ipcRenderer.invoke(IPC.unsubscribe, id);
     };
   },
+  exportChat: (key, sessionId, format) =>
+    ipcRenderer.invoke(IPC.exportChat, key, sessionId, format),
   attention: () => ipcRenderer.invoke(IPC.attention),
   onAttention: (listener) => listen(IPC.attentionChanged, listener),
   settings: () => ipcRenderer.invoke(IPC.settings),

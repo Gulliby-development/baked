@@ -1,3 +1,4 @@
+import type { ChatExportFormat } from "../../shared/bridge.js";
 import { parseChatEvent } from "../screens/chat/transcript.js";
 import { ApiError, call } from "./api.js";
 import { bridge } from "./bridge.js";
@@ -272,6 +273,11 @@ export const chat = {
   get: (key: string, id: string) => call<SessionDetail>(key, "GET", sessionPath(id)),
   update: (key: string, id: string, body: { title?: string; model?: string; mode?: ChatMode }) =>
     call<SessionSummary>(key, "PATCH", sessionPath(id), body),
+  /** Deletes a saved session; the server refuses one with a running turn. */
+  remove: (key: string, id: string) => call<null>(key, "DELETE", sessionPath(id)),
+  /** Saves `GET /v1/sessions/ID/export` through a save dialog; the path, or null when cancelled. */
+  exportTo: (key: string, id: string, format: ChatExportFormat) =>
+    bridge.exportChat(key, id, format),
   /** A new session with the messages up to `atMessageId`, optionally with the files rolled back. */
   fork: (
     key: string,

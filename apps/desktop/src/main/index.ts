@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   app,
@@ -12,7 +12,13 @@ import {
 } from "electron";
 import type { AppSettings, AttentionItem, DesktopProject } from "../shared/api.js";
 import { attentionHash, attentionTitle, kindLabel } from "../shared/attention.js";
-import { type HttpMethod, IPC, type ProjectAction, type WindowAction } from "../shared/bridge.js";
+import {
+  type ChatExportFormat,
+  type HttpMethod,
+  IPC,
+  type ProjectAction,
+  type WindowAction,
+} from "../shared/bridge.js";
 import { AttentionHub } from "./attention.js";
 import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
@@ -233,6 +239,33 @@ function registerIpc(): void {
     map?.get(id)?.close();
     map?.delete(id);
   });
+  handle(
+    IPC.exportChat,
+    async (event, key: string, sessionId: string, format: ChatExportFormat) => {
+      if (format !== "markdown" && format !== "json") throw new Error("Unknown export format");
+      const { text, fileName } = await supervisor.download(
+        key,
+        `/v1/sessions/${encodeURIComponent(sessionId)}/export?format=${format}`,
+      );
+      const project = supervisor.projects().find((p) => p.key === key);
+      const name = fileName ?? (format === "json" ? "chat.json" : "chat.md");
+      const options = {
+        title: "Export chat",
+        defaultPath: project ? join(project.path, name) : name,
+        filters:
+          format === "json"
+            ? [{ name: "JSON", extensions: ["json"] }]
+            : [{ name: "Markdown", extensions: ["md"] }],
+      };
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const result = owner
+        ? await dialog.showSaveDialog(owner, options)
+        : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return null;
+      writeFileSync(result.filePath, text, "utf-8");
+      return result.filePath;
+    },
+  );
   handle(IPC.attention, () => attention.items());
   handle(IPC.settings, () => settings.get());
   handle(IPC.updateSettings, (_e, patch: Partial<AppSettings>) => settings.update(patch));
