@@ -198,6 +198,25 @@ export function NewRunScreen({ project }: SectionProps) {
           />
         </div>
         <div className={FIELD}>
+          <label htmlFor="new-run-issue" className={LEGEND}>
+            GitHub issue
+          </label>
+          <input
+            id="new-run-issue"
+            type="text"
+            className="max-w-[520px]"
+            value={issue}
+            placeholder="optional: issue URL, owner/name#N or #N"
+            aria-describedby="new-run-issue-hint"
+            onChange={(e) => setIssue(e.target.value)}
+          />
+          <span id="new-run-issue-hint" className={HINT}>
+            {fromIssue
+              ? "The issue's title and body are the goal; text above adds instructions. The delivered pull request closes the issue."
+              : "Start from an issue instead of typing the goal."}
+          </span>
+        </div>
+        <div className={FIELD}>
           <label htmlFor="new-run-feature" className={LEGEND}>
             Feature ID
           </label>
