@@ -85,6 +85,12 @@ const press = async (view: View, key: string, times = 1) => {
       else view.mockInput.pressKey(key);
     });
 };
+/** Ctrl+S saves the route form from any field. */
+const save = async (view: View) => {
+  await act(async () => {
+    view.mockInput.pressKey("s", { ctrl: true });
+  });
+};
 const type = async (view: View, text: string) => {
   await act(async () => { await view.mockInput.typeText(text); });
 };
@@ -122,14 +128,14 @@ for (const [width, height] of SIZES) {
     expect(text).toContain("roles.researcher");
     await press(view, "return");
     await type(view, "$nope");
-    await press(view, "return");
+    await save(view);
     text = await frame(view, width, height, `${size} refused`);
     expect(text).toContain("which no class");
     expect(layers.global?.roles).toBeUndefined();
     await press(view, "escape");
     await press(view, "return");
     await type(view, "$deep");
-    await press(view, "return");
+    await save(view);
     expect(layers.global?.roles).toEqual({ researcher: "$deep" });
     text = await frame(view, width, height, `${size} routed role`);
     expect(text).toContain("Resolves to x/big · low");
@@ -156,7 +162,7 @@ for (const [width, height] of SIZES) {
     expect(text).toContain("workflows.sdd.stages.");
     await press(view, "return");
     await type(view, "a/stage");
-    await press(view, "return");
+    await save(view);
     const stages = layers.project?.workflows?.sdd?.stages ?? {};
     expect(Object.values(stages)).toEqual(["a/stage"]);
     text = await frame(view, width, height, `${size} stage routed`);
@@ -180,6 +186,80 @@ for (const [width, height] of SIZES) {
     await press(view, "escape");
     expect(state.backs).toBe(1);
     expect(state.saves).toBe(saves);
+    view.renderer.destroy();
+  });
+}
+
+for (const [width, height] of SIZES) {
+  test(`routing form at ${width}x${height}: models and fallback models come from the model list`, async () => {
+    const { api, layers } = harness();
+    let asked = 0;
+    api.models = async () => {
+      asked++;
+      return {
+        providers: [
+          { id: "alpha", name: "Alpha", configured: true, models: [
+            { id: "alpha/one", name: "One", contextWindow: 200_000 },
+            { id: "alpha/two", name: "Two" },
+          ] },
+          { id: "beta", name: "Beta", configured: false, models: [] },
+        ],
+      };
+    };
+    const view = await mount(api, { width, height }, () => {});
+    const size = `${width}x${height}`;
+
+    // The researcher role: Enter on the Model field opens the list, with model names on top.
+    for (let i = 0; i < 20; i++) {
+      const text = await frame(view, width, height, `${size} to researcher`);
+      if (text.includes("roles.researcher")) break;
+      await press(view, "down");
+    }
+    await press(view, "return");
+    await press(view, "return");
+    let text = await frame(view, width, height, `${size} list`);
+    expect(text).toContain("$active");
+    expect(text).toContain("alpha/one");
+    if (height >= 24) expect(text).toContain("no key or login");
+    expect(asked).toBe(1);
+
+    // Typing filters; Enter puts the choice in the field, and the form saves it.
+    await type(view, "two");
+    text = await frame(view, width, height, `${size} filtered`);
+    expect(text).toContain("alpha/two");
+    expect(text).not.toContain("alpha/one");
+    await press(view, "return");
+    text = await frame(view, width, height, `${size} picked`);
+    expect(text).toContain("alpha/two");
+    await save(view);
+    expect(layers.global?.roles).toEqual({ researcher: "alpha/two" });
+
+    // Fallback models are added one at a time from the list, which offers no model names.
+    await press(view, "return");
+    await press(view, "down", 2);
+    await press(view, "return");
+    text = await frame(view, width, height, `${size} fallback list`);
+    expect(text).not.toContain("$active");
+    await type(view, "one");
+    await press(view, "return");
+    // A model the list does not show is used as typed.
+    await press(view, "return");
+    await type(view, "gamma/x");
+    text = await frame(view, width, height, `${size} typed`);
+    expect(text).toContain("as typed");
+    await press(view, "return");
+    await save(view);
+    expect(layers.global?.roles).toEqual({
+      researcher: { model: "alpha/two", fallback: ["alpha/one", "gamma/x"] },
+    });
+
+    // Esc leaves the list without changing the field.
+    await press(view, "return");
+    await press(view, "return");
+    await press(view, "escape");
+    text = await frame(view, width, height, `${size} back to form`);
+    expect(text).toContain("Fallback");
+    expect(asked).toBe(1);
     view.renderer.destroy();
   });
 }
