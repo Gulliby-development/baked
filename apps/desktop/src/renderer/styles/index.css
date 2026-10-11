@@ -7,9 +7,6 @@
 @import "./tokens.css" layer(base);
 @import "./base.css" layer(base);
 
-/* Class names the older screens use for their own rules; never generate utilities for them. */
-@source not inline("table ring bg-accent bg-ok bg-warn bg-err");
-
 /* The neobrutalism.dev token names, mapped onto BAKED's palette (tokens.css). */
 @theme inline {
   --color-main: var(--fill-accent);

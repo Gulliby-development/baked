@@ -124,7 +124,7 @@ function Ring({ percent }: { percent: number }) {
   const length = 2 * Math.PI * r;
   const filled = Math.min(1, Math.max(0, percent / 100)) * length;
   return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" className="ring">
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="8" cy="8" r={r} fill="none" strokeWidth="2.5" className="stroke-[var(--line)]" />
       <circle
         cx="8"

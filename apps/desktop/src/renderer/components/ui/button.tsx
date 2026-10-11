@@ -30,8 +30,9 @@ const buttonVariants = cva(
         lg: "h-11 px-8",
         icon: "size-10",
         "icon-sm": "size-8",
-        // Inherits the surrounding font and line height, so links styled as buttons match too.
-        md: "h-auto min-h-[34px] gap-1.5 whitespace-normal px-3 py-0 [font-family:inherit] text-[13px] leading-[inherit] font-bold no-underline",
+        // Inherits the surrounding font and line height, so links styled as buttons match too, and
+        // keeps the app-wide accent focus outline.
+        md: "h-auto min-h-[34px] gap-1.5 whitespace-normal px-3 py-0 [font-family:inherit] text-[13px] leading-[inherit] font-bold no-underline transition-[transform,box-shadow] duration-[80ms] motion-reduce:transition-none focus-visible:outline-3 focus-visible:outline-solid focus-visible:outline-ring focus-visible:outline-offset-2 focus-visible:ring-0 focus-visible:ring-offset-0",
       },
     },
     defaultVariants: { variant: "default", size: "default" },
