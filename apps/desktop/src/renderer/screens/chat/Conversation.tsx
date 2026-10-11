@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { ChatMessage, ToolCall } from "../../client/chat.js";
+import type { ChatMessage, InputContextItem, ToolCall } from "../../client/chat.js";
 import { Button } from "../../components/ui/button.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
@@ -229,7 +229,15 @@ function Assistant({
   );
 }
 
-function UserBubble({ text, note }: { text: string; note?: string }) {
+function UserBubble({
+  text,
+  note,
+  context,
+}: {
+  text: string;
+  note?: string;
+  context?: InputContextItem[];
+}) {
   return (
     <div
       className={`self-end max-w-[640px] bg-main text-main-foreground border-2 border-border rounded-base shadow-shadow px-4 py-3 leading-[1.6] text-[15px] whitespace-pre-wrap wrap-anywhere flex flex-col gap-[2px]${note === "Sending…" ? " opacity-[0.65]" : ""}`}
@@ -240,6 +248,28 @@ function UserBubble({ text, note }: { text: string; note?: string }) {
         </span>
       )}
       {text}
+      {context && context.length > 0 && (
+        <ul
+          className="list-none m-[8px_0_0] p-[8px_0_0] border-t-2 border-t-border flex flex-col gap-1 text-[13px]"
+          aria-label="Attached context"
+        >
+          {context.map((item, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: items keep their order
+            <li key={i} className={item.ok ? undefined : "opacity-70 line-through"}>
+              <span className="font-mono">
+                {item.kind === "command" ? "!" : "@"}
+                {item.ref}
+              </span>{" "}
+              <span className="opacity-80">{item.summary}</span>
+              {item.output && (
+                <pre className="m-[4px_0_0] px-2 py-[6px] max-h-[200px] overflow-auto font-mono text-[12px] rounded-base bg-background text-foreground border-2 border-border whitespace-pre">
+                  {item.output}
+                </pre>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
