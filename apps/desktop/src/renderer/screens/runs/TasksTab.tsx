@@ -1,4 +1,7 @@
 import type { RunRequest } from "../../client/runs.js";
+import { Empty } from "../../components/ui/empty.js";
+import { cn } from "../../lib/cn.js";
+import { LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
 import { Questions } from "./Decision.js";
 import type { RunData } from "./load.js";
 import {
@@ -78,13 +81,15 @@ function WriterColumn({
       <div className={WRITER_HEAD}>
         <h3>Writer {index + 1}</h3>
         <span
-          className={question ? "text-[var(--warn)]" : running ? "text-[var(--info)]" : "muted"}
+          className={
+            question ? "text-[var(--warn)]" : running ? "text-[var(--info)]" : "text-dim-foreground"
+          }
         >
           {question ? "⚑ needs decision" : running ? "⟳ working" : "idle"}
         </span>
       </div>
       {current && (
-        <span className="mono muted text-[12px]">
+        <span className="font-mono text-[12px] text-dim-foreground">
           {writerWorktree(data.status.runId, current.id)}
         </span>
       )}
@@ -116,7 +121,7 @@ function WriterColumn({
         </div>
       )}
       {followers.map((t) => (
-        <div key={t.id} className={`${TASK} muted border-border`}>
+        <div key={t.id} className={`${TASK} border-border text-dim-foreground`}>
           <span>
             {t.id} · {t.title}
           </span>
@@ -124,7 +129,7 @@ function WriterColumn({
         </div>
       ))}
       {done.length > 0 && (
-        <span className="muted text-[12px]">Finished here: {done.join(", ")}</span>
+        <span className="text-[12px] text-dim-foreground">Finished here: {done.join(", ")}</span>
       )}
     </section>
   );
@@ -142,7 +147,7 @@ export function TasksTab({
   onDone: () => Promise<void>;
 }) {
   const graph = data.artifacts.graph;
-  if (!graph) return <div className="empty">This run has no task graph yet. Plan creates it.</div>;
+  if (!graph) return <Empty>This run has no task graph yet. Plan creates it.</Empty>;
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
   const questions = data.status.requests.filter(
     (r) => r.status === "pending" && clarificationTask(r) !== null,
@@ -152,7 +157,7 @@ export function TasksTab({
   const levels = taskLevels(graph);
   return (
     <div className="flex flex-col gap-5">
-      <p className="lede">
+      <p className={LEDE}>
         {writers.length > 1
           ? "Each writer works in its own git worktree. The integrator merges finished tasks back into the run branch in dependency order."
           : "Tasks run one at a time in the run's workspace, in dependency order."}
@@ -179,7 +184,9 @@ export function TasksTab({
             <h3>Integrator</h3>
             <span className="text-[var(--ok)]">✓ {trace.integrated.length} merged</span>
           </div>
-          <span className="mono muted text-[12px]">baked/wf/{data.status.runId}</span>
+          <span className="font-mono text-[12px] text-dim-foreground">
+            baked/wf/{data.status.runId}
+          </span>
           {trace.integrated
             .slice(-4)
             .reverse()
@@ -192,7 +199,7 @@ export function TasksTab({
               </div>
             ))}
           {next.length > 0 && (
-            <div className={`${TASK} muted border-border`}>
+            <div className={`${TASK} border-border text-dim-foreground`}>
               <span>
                 Next: {next.slice(0, 2).join(", then ")}
                 {next.length > 2 ? ` +${next.length - 2}` : ""}
@@ -203,8 +210,8 @@ export function TasksTab({
         </section>
       </div>
 
-      <section className="card flex flex-col gap-[10px]" aria-label="Task graph">
-        <h3 className="label">Task graph</h3>
+      <section className={cn(PANEL, "flex flex-col gap-[10px]")} aria-label="Task graph">
+        <h3 className={LABEL}>Task graph</h3>
         <ol className={`${LIST} flex flex-wrap items-start gap-[10px]`}>
           {levels.map((level, depth) => (
             <li key={level.map((t) => t.id).join()} className="flex items-start gap-[10px]">
@@ -222,7 +229,7 @@ export function TasksTab({
                       className={CHIP_STATE[state]}
                       title={t.dependsOn.length ? `after ${t.dependsOn.join(", ")}` : undefined}
                     >
-                      <span className="mono">{t.id}</span> {t.title}
+                      <span className="font-mono">{t.id}</span> {t.title}
                       <span className="sr-only">, {STATE_TEXT[state]}</span>
                     </li>
                   );
@@ -234,7 +241,7 @@ export function TasksTab({
       </section>
 
       <div className="overflow-x-auto">
-        <table className="table">
+        <table className={TABLE}>
           <thead>
             <tr>
               <th>Task</th>
@@ -247,13 +254,13 @@ export function TasksTab({
           <tbody>
             {graph.tasks.map((t) => (
               <tr key={t.id}>
-                <td className="mono">{t.id}</td>
+                <td className="font-mono">{t.id}</td>
                 <td>{t.title}</td>
                 <td className={STATE_TONE[taskState(t, trace)]}>
                   {STATE_TEXT[taskState(t, trace)]}
                 </td>
-                <td className="mono muted">{t.dependsOn.join(", ") || "–"}</td>
-                <td className="mono muted">{t.writes.length}</td>
+                <td className="font-mono text-dim-foreground">{t.dependsOn.join(", ") || "–"}</td>
+                <td className="font-mono text-dim-foreground">{t.writes.length}</td>
               </tr>
             ))}
           </tbody>

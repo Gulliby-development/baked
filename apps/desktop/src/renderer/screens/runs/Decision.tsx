@@ -8,6 +8,9 @@ import {
   runs,
 } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
+import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
+import { CHECK } from "../../lib/styles.js";
 import { href } from "../../router.js";
 import type { RunData } from "./load.js";
 import { stageLabel } from "./model.js";
@@ -83,7 +86,7 @@ export function Questions({
       {questions.map((q, i) => (
         <label key={q.key} className="flex flex-col gap-[6px] text-soft-foreground">
           <span>
-            {!compact && <span className="mono muted">{q.key} </span>}
+            {!compact && <span className="font-mono text-dim-foreground">{q.key} </span>}
             {q.text}
             {q.blocking && !compact && <span className="text-[var(--warn)]"> · blocking</span>}
           </span>
@@ -99,11 +102,11 @@ export function Questions({
           />
         </label>
       ))}
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
       <div className={ROW_ACTIONS}>
-        <button type="submit" className="btn-primary" disabled={busy || !filled}>
+        <Button type="submit" variant="primary" size="md" disabled={busy || !filled}>
           {compact ? "Answer" : "Send answers"}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -157,7 +160,7 @@ function Approval({
         </div>
       ) : null}
       {scope.length > 0 && (
-        <label className="check">
+        <label className={CHECK}>
           <input type="checkbox" checked={exclude} onChange={(e) => setExclude(e.target.checked)} />
           <span>
             Leave out my uncommitted changes in {scope.join(", ")} (the worktree starts from HEAD)
@@ -175,26 +178,26 @@ function Approval({
         placeholder="What should change before implementation"
         onChange={(e) => setNote(e.target.value)}
       />
-      {error && <div className="banner error">{error}</div>}
+      {error && <Alert tone="error">{error}</Alert>}
       <div className={ROW_ACTIONS}>
-        <button
-          type="button"
-          className="btn-primary"
+        <Button
+          variant="primary"
+          size="md"
           disabled={busy || (scope.length > 0 && !exclude)}
           onClick={() => void decide(() => approveRequest(projectKey, run, request, exclude))}
         >
           {tasks ? "Approve and implement" : "Approve"}
-        </button>
-        <button
-          type="button"
-          className="btn"
+        </Button>
+        <Button
+          variant="secondary"
+          size="md"
           disabled={busy || !note.trim()}
           onClick={() =>
             void decide(() => workflow.reject(projectKey, run, request.id, note.trim()))
           }
         >
           Reject with note
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -232,9 +235,9 @@ export function DecisionCard({
           <h3>A criterion needs your observation</h3>
           <p>Check it by hand and record what you saw in Criteria.</p>
           <div className={ROW_ACTIONS}>
-            <button type="button" className="btn-primary" onClick={onCriteria}>
+            <Button variant="primary" size="md" onClick={onCriteria}>
               Open criteria
-            </button>
+            </Button>
           </div>
         </div>
       );
@@ -243,22 +246,22 @@ export function DecisionCard({
         <div className={DECISION}>
           <h3>The run paused at a budget checkpoint</h3>
           <p>Continue to spend up to the next checkpoint, or leave it paused.</p>
-          {error && <div className="banner error">{error}</div>}
+          {error && <Alert tone="error">{error}</Alert>}
           {groupB ? (
             <div className={ROW_ACTIONS}>
-              <button
-                type="button"
-                className="btn-primary"
+              <Button
+                variant="primary"
+                size="md"
                 disabled={busy}
                 onClick={() =>
                   void decide(() => runs.continue(projectKey, data.status, request.id))
                 }
               >
                 Continue
-              </button>
+              </Button>
             </div>
           ) : (
-            <p className="muted">Continuing from the app needs a newer BAKED.</p>
+            <p className="text-dim-foreground">Continuing from the app needs a newer BAKED.</p>
           )}
         </div>
       );
@@ -278,7 +281,7 @@ export function DecisionCard({
           <h3>An effect needs a recovery decision</h3>
           <p>
             Resolve it in the terminal:{" "}
-            <code className="mono">
+            <code className="font-mono">
               baked workflow recover {data.status.runId} --request {request.id}
             </code>
           </p>
