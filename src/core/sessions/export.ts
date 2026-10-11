@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ChatMessage, ToolCall } from "../../types/index.js";
 import { copyToClipboard } from "../platform/clipboard.js";
 
@@ -181,7 +181,7 @@ export function exportChat(
 
   let outPath: string;
   if (opts.outPath) {
-    outPath = opts.outPath.startsWith("/") ? opts.outPath : join(opts.cwd, opts.outPath);
+    outPath = resolve(opts.cwd, opts.outPath);
   } else {
     const exportDir = join(opts.cwd, ".baked", "exports");
     mkdirSync(exportDir, { recursive: true });

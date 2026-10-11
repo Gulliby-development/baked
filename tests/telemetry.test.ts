@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configDir } from "../src/core/platform/index.js";
 
 // Isolate config/anon-id writes into a throwaway dir.
 let tmp: string;
@@ -191,7 +192,7 @@ describe("maybeShowTelemetryNotice", () => {
 });
 
 describe("runTelemetryCli", () => {
-  const configFile = () => join(tmp, ".baked", "config.json");
+  const configFile = () => join(configDir(), "config.json");
 
   test("on and off write telemetry to the global config", async () => {
     const { runTelemetryCli } = await load();
