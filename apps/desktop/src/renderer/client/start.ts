@@ -36,12 +36,37 @@ export interface ProjectSummary {
   runs: RunSnapshot[];
 }
 
+/** One stage of `WorkflowLine` (src/core/workflows/v2/line.ts). */
+export interface LineStage {
+  id: string;
+  type: "agent" | "tasks" | "check" | "approval" | "review" | "reflection" | "learn";
+  consumes: string[];
+  produces: string;
+  human: boolean;
+}
+
+/** A transition back to the same or an earlier stage. */
+export interface LineLoop {
+  from: string;
+  to: string;
+  on: string;
+  carries: string;
+}
+
+/** A workflow as a production line: stages with their contracts, and the repair loops. */
+export interface WorkflowLine {
+  stages: LineStage[];
+  loops: LineLoop[];
+}
+
 export interface DefinitionSummary {
   id: string;
   source: "builtin" | "project";
   preset: string | null;
   description: string;
   stages: string[];
+  /** Absent from older backends; the screens then guess each stage's role from its ID. */
+  line?: WorkflowLine;
   writes: boolean;
   problems: string[];
   execution: "inline" | "worktree" | null;

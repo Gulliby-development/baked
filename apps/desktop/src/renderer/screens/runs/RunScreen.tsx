@@ -2,15 +2,30 @@ import { useEffect, useState } from "react";
 import type { RunSnapshot } from "../../../shared/api.js";
 import { chat } from "../../client/chat.js";
 import { errorText, type RollbackReport, undoRun } from "../../client/runs.js";
+import type { LineLoop } from "../../client/start.js";
 import { workflow } from "../../client/workflow.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
+import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
+import { Conveyor } from "./Conveyor.js";
 import { DecisionCard, FIELD_LABEL, STACK_FORM, TEXT_INPUT } from "./Decision.js";
 import { GateView } from "./GateView.js";
+import {
+  describe,
+  focusStation,
+  lineOf,
+  SECTION_LABEL,
+  SECTIONS,
+  type Section,
+  type Station,
+  sectionsOf,
+  stations,
+} from "./line-model.js";
 import { type RunData, useRun } from "./load.js";
 import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
 import { Meter, Panel, StatusPill, TONE_TEXT } from "./parts.js";
@@ -28,48 +43,10 @@ import { blockingRequests } from "./requests.js";
 import { TasksTab } from "./TasksTab.js";
 import { UndoReport } from "./UndoReport.js";
 
-const TABS = [
-  "overview",
-  "decision",
-  "tasks",
-  "changes",
-  "spec",
-  "plan",
-  "checks",
-  "criteria",
-  "findings",
-  "report",
-] as const;
-type Tab = (typeof TABS)[number];
-const TAB_LABEL: Record<Tab, string> = {
-  overview: "Overview",
-  decision: "Decision",
-  tasks: "Tasks",
-  changes: "Changes",
-  spec: "Spec",
-  plan: "Plan",
-  checks: "Checks",
-  criteria: "Criteria",
-  findings: "Findings",
-  report: "Report",
-};
-
 export const RUN_TITLE_ROW = "flex flex-wrap items-center gap-3";
 export const RUN_TITLE = "m-0 text-[20px] font-semibold";
 const SMALL_SUB = "text-[12px] text-muted-foreground";
 const WARN_NOTE = "text-[12px] text-[var(--warn)]";
-const STAGE = "rounded-[6px] px-[10px] py-[6px]";
-const STAGE_STATE: Record<string, string> = {
-  done: `${STAGE} bg-[color-mix(in_srgb,var(--ok)_14%,var(--bg))] text-[var(--ok)]`,
-  current: `${STAGE} bg-selected text-foreground outline outline-[color:var(--accent)]`,
-  waiting: `${STAGE} bg-[color-mix(in_srgb,var(--warn)_16%,var(--bg))] text-[var(--warn)] outline outline-[color:var(--warn)]`,
-  failed: `${STAGE} bg-[color-mix(in_srgb,var(--err)_14%,var(--bg))] text-[var(--err)]`,
-  skipped: `${STAGE} bg-raised text-dim-foreground line-through`,
-  pending: `${STAGE} bg-raised text-dim-foreground`,
-};
-const TAB =
-  "cursor-pointer border-x-0 border-t-0 border-b-2 border-b-transparent bg-transparent px-[2px] py-[10px] text-[14px] text-muted-foreground [font-family:inherit] [font-style:inherit] [font-weight:inherit] [line-height:inherit] hover:text-foreground aria-selected:border-b-[color:var(--accent)] aria-selected:text-foreground";
-
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
 function Controls({
@@ -397,11 +374,11 @@ function ArtifactCards({
 }: {
   data: RunData;
   trace: RunTrace;
-  go: (t: Tab) => void;
+  go: (t: Section) => void;
 }) {
   const { spec, plan, graph } = data.artifacts;
   const tasks = taskCount(graph, trace);
-  const cards: { tab: Tab; name: string; line: string; note: string; tone: string }[] = [];
+  const cards: { tab: Section; name: string; line: string; note: string; tone: string }[] = [];
   if (spec)
     cards.push({
       tab: "spec",
@@ -453,22 +430,169 @@ function ArtifactCards({
   );
 }
 
-function Stages({ data, trace }: { data: RunData; trace: RunTrace }) {
-  const stages = pipeline(data.stages, trace, data.status);
-  const MARK = { done: "✓", current: "⟳", waiting: "⚑", failed: "✗", skipped: "–", pending: "·" };
+/** A contract as a chip: filled once a finished station made it, dashed while it is still to come. */
+function ContractChip({ name, state }: { name: string; state: "made" | "failed" | "coming" }) {
   return (
-    <ol className="m-0 flex list-none flex-wrap gap-[6px] p-0 text-[13px]" aria-label="Stages">
-      {stages.map((s) => (
-        <li
-          key={s.id}
-          className={STAGE_STATE[s.state]}
-          aria-current={s.state === "current" || s.state === "waiting" ? "step" : undefined}
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border-2 border-border px-2 font-mono text-[12px] leading-5 font-semibold",
+        state === "made" && "bg-fill-info text-main-foreground",
+        state === "failed" && "bg-fill-err text-main-foreground",
+        state === "coming" && "border-dashed bg-[var(--bg-sunken)] text-muted-foreground",
+      )}
+    >
+      {name}
+    </span>
+  );
+}
+
+/** Tokens, cost and model on one line; the budget, model and activity panels open below it. */
+function RunMeter({
+  projectKey,
+  data,
+  trace,
+  refresh,
+}: {
+  projectKey: string;
+  data: RunData;
+  trace: RunTrace;
+  refresh: () => Promise<void>;
+}) {
+  const run = data.status;
+  const limit = data.artifacts.estimate?.maxTokens ?? null;
+  // A run stopped on its budget or its provider needs these panels, so they open on their own.
+  const needed =
+    run.status === "blocked" &&
+    (run.reason === "budget_exhausted" ||
+      run.reason === "provider_account" ||
+      run.reason === "provider_unavailable");
+  const [open, setOpen] = useState(needed);
+  useEffect(() => {
+    if (needed) setOpen(true);
+  }, [needed]);
+  const share = limit && limit > 0 ? Math.min(1, run.tokenUsage / limit) : null;
+  const model = data.artifacts.routing?.runModel;
+  return (
+    <section aria-label="Budget and activity" className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px] text-soft-foreground">
+        <span>Tokens</span>
+        {share !== null && (
+          <span
+            className="h-[10px] w-[120px] overflow-hidden rounded-[4px] border-2 border-border bg-[var(--bg-sunken)]"
+            aria-hidden="true"
+          >
+            <span className="block h-full bg-main" style={{ width: `${share * 100}%` }} />
+          </span>
+        )}
+        <span className="font-mono">
+          {tokens(run.tokenUsage)}
+          {limit ? ` / ${tokens(limit)}` : ""} · {usd(run.estimatedCostUsd)} ·{" "}
+          {duration(run.activeMs)} active
+        </span>
+        {model && (
+          <span className="rounded-full border-2 border-border px-2 font-mono leading-5">
+            {model}
+          </span>
+        )}
+        <Button
+          variant="secondary"
+          size="md"
+          aria-expanded={open}
+          aria-controls="run-meter-details"
+          onClick={() => setOpen(!open)}
         >
-          <span aria-hidden="true">{MARK[s.state]}</span> {s.label}
-          <span className="sr-only">, {s.state}</span>
-        </li>
-      ))}
-    </ol>
+          {open ? "Hide details" : "Budget, model and activity"}
+        </Button>
+      </div>
+      {open && (
+        <div
+          id="run-meter-details"
+          className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] items-start gap-[18px]"
+        >
+          <Budget projectKey={projectKey} data={data} onDone={refresh} />
+          <Models projectKey={projectKey} data={data} onDone={refresh} />
+          <Activity trace={trace} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StationCard({
+  station,
+  index,
+  total,
+  loops,
+  contractState,
+  waiting,
+}: {
+  station: Station;
+  index: number;
+  total: number;
+  loops: LineLoop[];
+  contractState: (name: string) => "made" | "failed" | "coming";
+  /** Requests wait for the user; they are shown above the station. */
+  waiting: number;
+}) {
+  const takes = station.consumes;
+  return (
+    <section
+      aria-label={`Station ${station.label}`}
+      className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 max-[760px]:grid-cols-1"
+    >
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className={LABEL}>
+          {station.type === "finish" ? "Finish" : `Station ${index + 1} of ${total}`}
+          {station.round > 1 ? ` · round ${station.round}` : ""}
+        </span>
+        <h3 className="m-0 text-[17px] font-bold">{station.label}</h3>
+        <p className="m-0 text-[13px] text-muted-foreground">{describe(station, loops)}</p>
+        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+          {takes.length > 0 && <span className="font-semibold">Takes</span>}
+          {takes.map((name) =>
+            name === "request" ? (
+              <ContractChip key={name} name="your goal" state="made" />
+            ) : (
+              <ContractChip key={name} name={name} state={contractState(name)} />
+            ),
+          )}
+          {station.produces && (
+            <>
+              <span className="font-semibold">Makes</span>
+              <ContractChip
+                name={station.produces}
+                state={
+                  station.state === "done"
+                    ? "made"
+                    : station.state === "failed"
+                      ? "failed"
+                      : "coming"
+                }
+              />
+            </>
+          )}
+        </div>
+      </div>
+      <div
+        className={cn(
+          "flex flex-col gap-1 self-start rounded-base border-2 border-border px-4 py-3 shadow-sm-hard",
+          waiting ? "bg-fill-warn text-main-foreground" : "bg-background",
+        )}
+      >
+        <span className={cn(LABEL, waiting && "text-main-foreground")}>Your part</span>
+        <p className="m-0 text-[13px]">
+          {waiting
+            ? `${waiting} decision${waiting === 1 ? " waits" : "s wait"} for you above.`
+            : station.state === "current"
+              ? "Nothing is needed from you. This station is working."
+              : station.state === "failed"
+                ? "This station failed. The activity and its sections below say why."
+                : station.state === "done"
+                  ? "Done. Its results are in the sections below."
+                  : "Nothing yet. This station has not started."}
+        </p>
+      </div>
+    </section>
   );
 }
 
@@ -485,15 +609,16 @@ function RunBody({
 }) {
   const run = data.status;
   const pending = blockingRequests(run.requests);
-  const [tab, setTab] = useState<Tab>(pending.length ? "decision" : "overview");
   // The last undo of this run, shown until dismissed; `report` is null when nothing was undone.
   const [undone, setUndone] = useState<{ report: RollbackReport | null } | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [section, setSection] = useState<Section | null>(null);
   const graph = data.artifacts.graph;
   const findings = findingsOf(data, trace).length || trace.findings.size;
   const criteria =
     (data.artifacts.spec?.criteria.length ?? 0) +
     data.artifacts.gates.reduce((n, g) => n + (g.acceptance?.scenario.expectations.length ?? 0), 0);
-  const count: Partial<Record<Tab, number>> = {
+  const count: Partial<Record<Section, number>> = {
     tasks: graph?.tasks.length ?? 0,
     criteria,
     findings,
@@ -502,14 +627,40 @@ function RunBody({
   const estimate = data.artifacts.estimate;
   const meta = [
     estimate?.workflowId,
-    estimate ? `${tokens(estimate.maxTokens)} token budget` : null,
     trace.writers.length > 1 ? `${trace.writers.length} writers` : null,
     run.featureId !== title ? run.featureId : null,
   ].filter(Boolean);
-  const tabs = TABS.filter((t) => t !== "decision" || pending.length > 0 || tab === "decision");
+
+  const stages = pipeline(data.stages, trace, run);
+  const line = lineOf(
+    stages.map((s) => s.id),
+    data.line,
+  );
+  const rounds = new Map([...trace.stages].map(([id, s]) => [id, s.generation]));
+  const list = stations(stages, line, rounds, run.status);
+  const selectedId = picked && list.some((s) => s.id === picked) ? picked : focusStation(list);
+  const index = Math.max(
+    0,
+    list.findIndex((s) => s.id === selectedId),
+  );
+  const station = list[index] as Station;
+  const own = sectionsOf(station);
+  const shown = section ?? (pending.length ? "decision" : own[0]) ?? "overview";
+  const tabs = own.includes(shown) ? own : [...own, shown];
+  const others = SECTIONS.filter((s) => !tabs.includes(s));
+  const contractState = (name: string): "made" | "failed" | "coming" => {
+    const maker = [...list].reverse().find((s) => s.produces === name);
+    if (!maker) return "made";
+    return maker.state === "done" ? "made" : maker.state === "failed" ? "failed" : "coming";
+  };
+  const select = (id: string): void => {
+    setPicked(id);
+    setSection(null);
+  };
+
   return (
-    <div className="flex flex-col">
-      <header className="flex flex-col gap-[14px] border-b-2 border-border">
+    <div className="flex flex-col gap-5">
+      <header className="flex flex-col gap-[14px]">
         <div className={RUN_TITLE_ROW}>
           <h2 className={RUN_TITLE}>{title}</h2>
           <StatusPill status={run.status}>
@@ -525,78 +676,110 @@ function RunBody({
             onUndone={(report) => setUndone({ report })}
           />
         </div>
-        <Stages data={data} trace={trace} />
-        <div className="flex flex-wrap gap-[22px]" role="tablist" aria-label="Run sections">
-          {tabs.map((t) => (
-            <button
-              key={t}
-              type="button"
-              role="tab"
-              id={`tab-${t}`}
-              aria-selected={tab === t}
-              aria-controls="run-tabpanel"
-              className={TAB}
-              onClick={() => setTab(t)}
-            >
-              {TAB_LABEL[t]}
-              {count[t] ? (
-                <span className="font-mono text-[12px] text-dim-foreground"> {count[t]}</span>
-              ) : null}
-            </button>
-          ))}
-        </div>
+        <RunMeter projectKey={projectKey} data={data} trace={trace} refresh={refresh} />
       </header>
-      <div className="flex flex-wrap gap-6 pt-[22px]">
+      <Conveyor
+        stations={list}
+        loops={line.loops}
+        selected={station.id}
+        running={run.status === "running"}
+        onSelect={select}
+      />
+      {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
+      {pending.length > 0 && (
+        <section aria-label="Your part" className="flex flex-col gap-3">
+          {pending.map((r) => (
+            <DecisionCard
+              key={r.id}
+              projectKey={projectKey}
+              data={data}
+              request={r}
+              onDone={refresh}
+              onCriteria={() => setSection("criteria")}
+            />
+          ))}
+        </section>
+      )}
+      <StationCard
+        station={station}
+        index={index}
+        total={list.length - 1}
+        loops={line.loops}
+        contractState={contractState}
+        waiting={pending.length}
+      />
+      <div className="flex flex-col gap-[18px] border-t-2 border-border pt-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <SegmentGroup aria-label={`${station.label} sections`} role="tablist">
+            {tabs.map((t) => (
+              <Segment
+                key={t}
+                role="tab"
+                id={`tab-${t}`}
+                aria-selected={shown === t}
+                aria-pressed={shown === t}
+                aria-controls="run-tabpanel"
+                onClick={() => setSection(t)}
+              >
+                {SECTION_LABEL[t]}
+                {count[t] ? <span className="font-mono text-[12px]"> {count[t]}</span> : null}
+              </Segment>
+            ))}
+          </SegmentGroup>
+          {others.length > 0 && (
+            <label className="flex items-center gap-2 text-[12px] text-muted-foreground">
+              Other sections
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setSection(e.target.value as Section);
+                }}
+              >
+                <option value="">Choose…</option>
+                {others.map((t) => (
+                  <option key={t} value={t}>
+                    {SECTION_LABEL[t]}
+                    {count[t] ? ` (${count[t]})` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
         <div
-          className="flex min-w-0 flex-[999_1_480px] flex-col gap-[18px]"
+          className="flex min-w-0 flex-col gap-[18px]"
           role="tabpanel"
           id="run-tabpanel"
-          aria-labelledby={`tab-${tab}`}
+          aria-labelledby={`tab-${shown}`}
         >
-          {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
-          {tab === "decision" && (
+          {shown === "decision" && (
             <>
-              {pending.map((r) => (
-                <DecisionCard
-                  key={r.id}
-                  projectKey={projectKey}
-                  data={data}
-                  request={r}
-                  onDone={refresh}
-                  onCriteria={() => setTab("criteria")}
-                />
-              ))}
               {pending.length === 0 && <Empty>Nothing waits for you here.</Empty>}
-              <ArtifactCards data={data} trace={trace} go={setTab} />
+              <ArtifactCards data={data} trace={trace} go={setSection} />
               {data.artifacts.spec && <SpecView data={data} preview />}
             </>
           )}
-          {tab === "overview" && (
+          {shown === "overview" && (
             <>
-              <ArtifactCards data={data} trace={trace} go={setTab} />
+              <ArtifactCards data={data} trace={trace} go={setSection} />
               <OverviewView data={data} trace={trace} />
             </>
           )}
-          {tab === "tasks" && (
+          {shown === "tasks" && (
             <TasksTab projectKey={projectKey} data={data} trace={trace} onDone={refresh} />
           )}
-          {tab === "changes" && <ChangesView data={data} trace={trace} />}
-          {tab === "spec" && <SpecView data={data} />}
-          {tab === "plan" && <PlanView data={data} />}
-          {tab === "checks" && <ChecksView trace={trace} />}
-          {tab === "criteria" && (
+          {shown === "changes" && <ChangesView data={data} trace={trace} />}
+          {shown === "spec" && <SpecView data={data} />}
+          {shown === "plan" && <PlanView data={data} />}
+          {shown === "checks" && <ChecksView trace={trace} />}
+          {shown === "criteria" && (
             <GateView projectKey={projectKey} data={data} trace={trace} onDone={refresh} />
           )}
-          {tab === "findings" && <FindingsView data={data} trace={trace} />}
-          {tab === "report" && (
+          {shown === "findings" && <FindingsView data={data} trace={trace} />}
+          {shown === "report" && (
             <ReportView projectKey={projectKey} runId={run.runId} stamp={run.eventSeq} />
           )}
         </div>
-        <aside className="flex flex-[1_1_280px] flex-col gap-[18px]" aria-label="Run status">
-          <Budget projectKey={projectKey} data={data} onDone={refresh} />
-          <Models projectKey={projectKey} data={data} onDone={refresh} />
-          <Activity trace={trace} />
-        </aside>
       </div>
     </div>
   );

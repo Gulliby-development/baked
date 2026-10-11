@@ -125,6 +125,8 @@ export interface StageView {
   kind: string;
   status: StageState;
   generation: number;
+  /** The contract a schema 2 stage makes; absent for schema 1 stages. */
+  produces?: string;
 }
 export interface BudgetView {
   tokens: number;
@@ -250,8 +252,12 @@ function stagesOf(row: RunRow, steps: StepRow[]): StageView[] {
   const stages =
     parsed.schemaVersion === 1
       ? parsed.definition.stages
-      : parsed.definition.stages.map((s) => ({ id: s.id, kind: stageKind(s) ?? s.type }));
-  return stages.map((stage) => {
+      : parsed.definition.stages.map((s) => ({
+          id: s.id,
+          kind: stageKind(s) ?? s.type,
+          produces: s.produces,
+        }));
+  return stages.map((stage: { id: string; kind: string; produces?: string | undefined }) => {
     const latest = steps
       .filter((s) => s.stage_id === stage.id && s.parent_step_id === null)
       .reduce<StepRow | null>((a, b) => (!a || b.generation >= a.generation ? b : a), null);
@@ -260,6 +266,7 @@ function stagesOf(row: RunRow, steps: StepRow[]): StageView[] {
       kind: stage.kind,
       status: latest?.status ?? "pending",
       generation: latest?.generation ?? 0,
+      ...(stage.produces ? { produces: stage.produces } : {}),
     };
   });
 }

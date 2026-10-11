@@ -10,6 +10,7 @@ import {
   runs,
   type WorkflowEvent,
 } from "../../client/runs.js";
+import type { WorkflowLine } from "../../client/start.js";
 import type { AcceptanceGate, WalkRecord } from "./acceptance.js";
 import {
   latestByPath,
@@ -118,13 +119,19 @@ export function definitions(key: string): Promise<DefinitionSummary[]> {
   }
   return found;
 }
+export async function definitionOf(
+  key: string,
+  estimate: SavedEstimate | null,
+): Promise<DefinitionSummary | null> {
+  const id = estimate?.workflowId;
+  if (!id) return null;
+  return (await definitions(key)).find((d) => d.id === id) ?? null;
+}
 export async function stagesOf(
   key: string,
   estimate: SavedEstimate | null,
 ): Promise<string[] | null> {
-  const id = estimate?.workflowId;
-  if (!id) return null;
-  return (await definitions(key)).find((d) => d.id === id)?.stages ?? null;
+  return (await definitionOf(key, estimate))?.stages ?? null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -135,6 +142,8 @@ export interface RunData {
   artifacts: RunArtifacts;
   usage: RunUsage | null;
   stages: string[] | null;
+  /** The workflow's stages with their contracts and repair loops, when the backend sends them. */
+  line: WorkflowLine | null;
   capabilities: string[];
 }
 
@@ -217,11 +226,18 @@ export function useRun(key: string, runId: string): LiveRun {
         ]);
         const seen = replay(history);
         const artifacts = await loadArtifacts(key, runId, [...seen.findings.values()]);
-        const stages = await stagesOf(key, artifacts.estimate);
+        const definition = await definitionOf(key, artifacts.estimate);
         if (!live) return;
         eventsRef.current = history;
         setEvents(history);
-        setData({ status, artifacts, usage, stages, capabilities });
+        setData({
+          status,
+          artifacts,
+          usage,
+          stages: definition?.stages ?? null,
+          line: definition?.line ?? null,
+          capabilities,
+        });
         const lastSeq = history.at(-1)?.seq ?? 0;
         stop = bridge.subscribe(
           key,

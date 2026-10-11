@@ -1,5 +1,6 @@
 import type { RunList, RunSnapshot, RunState } from "../../shared/api.js";
 import { ApiError, call } from "./api.js";
+import type { WorkflowLine } from "./start.js";
 import { type RunStatus, workflow } from "./workflow.js";
 
 /**
@@ -46,6 +47,7 @@ export interface RunUsage {
 export interface DefinitionSummary {
   id: string;
   stages: string[];
+  line?: WorkflowLine;
 }
 
 /** A durable workflow event (`EventSchema`), payload by event type. */

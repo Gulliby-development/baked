@@ -66,6 +66,16 @@ const STAGE_LABELS: Record<string, string> = {
   report: "Report",
 };
 export const stageLabel = (kind: string): string => STAGE_LABELS[kind] ?? kind;
+/**
+ * A stage's entry in the run's stage row: glyph, name and round, plus the contract the current
+ * stage is making (the desktop conveyor shows the same).
+ */
+export function stageText(stage: StageView, current: boolean, glyph: string): string {
+  const round = stage.generation > 0 ? `×${stage.generation + 1}` : "";
+  const label = `${glyph} ${stageLabel(stage.kind)}${round}`;
+  return current ? `[${label}${stage.produces ? ` → ${stage.produces}` : ""}]` : label;
+}
+
 export function stageGlyph(
   stage: StageView,
   current: boolean,
