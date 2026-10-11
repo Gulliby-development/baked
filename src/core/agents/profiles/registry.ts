@@ -9,6 +9,7 @@ import {
 } from "../../llm/model-routing.js";
 import { hashJson } from "../../specs/hash.js";
 import { WorkflowFault } from "../../workflows/errors.js";
+import { isMcpGrant } from "../../workflows/mcp-grants.js";
 import { builtinProfiles } from "./builtin.js";
 import { type AgentProfile, ProfileSchema } from "./schema.js";
 
@@ -87,7 +88,10 @@ export class ProfileRegistry {
     if (resolved.role === "acceptance-writer") available.add("write_test");
     // Reviewers try a finding's repro with the runtime's own runner (#155).
     if (resolved.role === "reviewer") available.add("run_repro");
-    if (resolved.allowedTools.some((t) => !available.has(t)))
+    // MCP grants (#133) are open to agent roles; the acceptance roles run on host tools only.
+    const mcpAllowed =
+      resolved.role !== "acceptance-walker" && resolved.role !== "acceptance-writer";
+    if (resolved.allowedTools.some((t) => !available.has(t) && !(mcpAllowed && isMcpGrant(t))))
       throw new WorkflowFault("CAPABILITY_DENIED", `Unsupported tool in profile ${profile.id}`);
     if (
       resolved.role !== "implementer" &&

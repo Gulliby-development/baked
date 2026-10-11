@@ -54,6 +54,7 @@ export class MCPManager {
   private static MAX_RESTARTS = 3;
   private pendingSync: MCPServerConfig[] | null = null;
   private syncing = false;
+  private connecting = new Map<string, Promise<void>>();
 
   async connectAll(configs: MCPServerConfig[]): Promise<void> {
     // Serialize: if already syncing, queue the latest config and return.
@@ -215,6 +216,41 @@ export class MCPManager {
       // HTTP/SSE are remote — if they fail, the user should retry manually.
       if (isCustomTransport) this.scheduleRestart(config);
     }
+  }
+
+  /**
+   * Connects the given servers that are not connected yet and leaves connected ones alone, so a
+   * workflow attempt can start only the servers it was granted next to a running chat. Concurrent
+   * calls for one server share one connection attempt; a failed server stays absent.
+   */
+  async ensureConnected(configs: readonly MCPServerConfig[]): Promise<void> {
+    const pending = configs
+      .filter((config) => !config.disabled && !this.connections.has(config.name))
+      .map((config) => {
+        const running = this.connecting.get(config.name);
+        if (running) return running;
+        useMCPStore.setState((s) =>
+          s.servers[config.name]
+            ? s
+            : {
+                servers: {
+                  ...s.servers,
+                  [config.name]: {
+                    config,
+                    status: "disconnected",
+                    tools: [],
+                    error: null,
+                    connectedAt: null,
+                    lastPingMs: null,
+                  },
+                },
+              },
+        );
+        const attempt = this.connect(config).finally(() => this.connecting.delete(config.name));
+        this.connecting.set(config.name, attempt);
+        return attempt;
+      });
+    await Promise.allSettled(pending);
   }
 
   async disconnect(name: string): Promise<void> {
