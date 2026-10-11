@@ -129,9 +129,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
-    this.attention = readonly
-      ? null
-      : new AttentionNotifier(this.store, workspace, config);
+    this.attention = readonly ? null : new AttentionNotifier(this.store, workspace, config);
     this.scheduler = new WorkflowScheduler(
       this.store,
       this.leases,

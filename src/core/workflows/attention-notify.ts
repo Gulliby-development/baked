@@ -175,7 +175,12 @@ export class AttentionNotifier {
     }
   }
   private async system(payload: RunAttentionPayload): Promise<void> {
-    if (!this.systemNotifications || this.config.notifications?.system === false || !payload.blocking) return;
+    if (
+      !this.systemNotifications ||
+      this.config.notifications?.system === false ||
+      !payload.blocking
+    )
+      return;
     await this.channels.system(`${payload.project}: ${payload.featureId}`, payload.message);
   }
   /** Waits for a scheduled check and every announcement in flight; a CLI calls it before exit. */
