@@ -13,6 +13,10 @@ BAKED runner: <commit> · reference model: <provider/model> · experiment: <none
 | App | Task type | Provider/model | Outcome | Tokens | Interventions | Verified | Published |
 |---|---|---|---|---|---|---|---|
 
+## Published
+| App | Repository | CI (ubuntu / windows / macos) | Logo | Notes |
+|---|---|---|---|---|
+
 ## Experiment
 <what changed, on which app, result vs the map's default>
 
@@ -31,4 +35,4 @@ BAKED runner: <commit> · reference model: <provider/model> · experiment: <none
 Run tokens: <used> / <roundRunTokens> · wall clock: <h> · fix PRs: <n>
 
 ## Waiting on the owner
-<publish batch, `needs-gulliby` items, runs above 8M, blockers>
+<`needs-gulliby` items, runs above 8M, blockers; publish batches only when `publish.mode` is `approve-per-round`>
