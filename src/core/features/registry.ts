@@ -76,8 +76,6 @@ const notNeeded = (reason: string): Exempt => ({ status: "not-needed", reason })
 const terminalOnly = (reason: string): Exempt => ({ status: "terminal-only", reason });
 const desktopOnly = (reason: string): Exempt => ({ status: "desktop-only", reason });
 
-const RAW_CONFIG = "only through the generic config route";
-
 export const FEATURES: readonly Feature[] = [
   // Chat and sessions
   {
@@ -108,8 +106,8 @@ export const FEATURES: readonly Feature[] = [
     title: "Run custom slash commands (.baked/commands) in chat",
     tui: ["key /: a custom command typed in the composer"],
     cli: ["--headless: expands a custom command in the prompt"],
-    api: gap(397, "the chat core does not expand them"),
-    desktop: gap(397, "sent to the model as plain text"),
+    api: ["/v1/sessions/:id/messages: expands the command"],
+    desktop: ["project/chat: composer"],
   },
   {
     id: "custom-commands-list",
@@ -207,7 +205,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Compaction strategy, thresholds and logs",
     tui: ["/compact settings", "/compact logs"],
     cli: notNeeded("set in config.json"),
-    api: partial(["/v1/config"], 401, RAW_CONFIG),
+    api: ["/v1/settings: compaction page, no logs"],
     desktop: gap(401),
   },
   {
@@ -323,7 +321,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Default chat model (project or global)",
     tui: ["/model-scope"],
     cli: notNeeded("--model picks the model per run"),
-    api: partial(["/v1/config"], 401, RAW_CONFIG),
+    api: ["/v1/settings: chat-model page"],
     desktop: gap(401, "the model is set per chat only"),
   },
   {
@@ -332,7 +330,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Provider options: thinking, speed, cache TTL, server compaction, tool streaming",
     tui: ["/provider-settings"],
     cli: notNeeded("set in config.json"),
-    api: partial(["/v1/config"], 401, RAW_CONFIG),
+    api: ["/v1/settings: provider-options page"],
     desktop: gap(401),
   },
   {
@@ -341,7 +339,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Chat task router and fallback chains",
     tui: ["/router"],
     cli: notNeeded("set in config.json"),
-    api: partial(["/v1/config"], 401, RAW_CONFIG),
+    api: ["/v1/settings: chat-router page"],
     desktop: gap(401),
   },
   {
@@ -359,7 +357,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Web search keys (Brave, Jina)",
     tui: ["/web-search"],
     cli: notNeeded("set in config.json"),
-    api: gap(401),
+    api: ["/v1/settings: tools page"],
     desktop: gap(401),
   },
   {
@@ -397,7 +395,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Baked map settings: on and off, regenerate, summaries, budget",
     tui: ["/repo-map"],
     cli: ["--no-repomap"],
-    api: partial(["/v1/config"], 401, RAW_CONFIG),
+    api: ["/v1/settings: baked-map page"],
     desktop: gap(401),
   },
   {
@@ -415,7 +413,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Enable or disable tools",
     tui: ["/tools"],
     cli: notNeeded("set disabledTools in config.json"),
-    api: gap(401),
+    api: ["/v1/settings: tools page"],
     desktop: gap(401),
   },
   {
@@ -424,7 +422,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Agent features: de-sloppify, verify edits, tier routing",
     tui: ["/agent-features"],
     cli: notNeeded("set in config.json"),
-    api: partial(["/v1/config"], 401, RAW_CONFIG),
+    api: ["/v1/settings: agent-features page"],
     desktop: gap(401),
   },
   {
@@ -556,7 +554,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/workflow"],
     cli: ["baked workflow recover"],
     api: ["/v1/workflow/runs/:id/recover"],
-    desktop: gap(398, "shows the CLI command"),
+    desktop: ["project/runs"],
   },
   {
     id: "run-control",
@@ -588,7 +586,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/workflow"],
     cli: ["baked workflow fork"],
     api: ["/v1/workflow/runs/:id/fork"],
-    desktop: gap(398),
+    desktop: ["project/runs"],
   },
   {
     id: "run-discard-worktree",
@@ -597,7 +595,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/workflow: typed command"],
     cli: ["baked workflow discard-worktree"],
     api: ["/v1/workflow/runs/:id/discard-worktree"],
-    desktop: gap(398),
+    desktop: ["project/runs"],
   },
   {
     id: "run-deliver",
@@ -828,7 +826,7 @@ export const FEATURES: readonly Feature[] = [
     title: "Tool and watchdog timeouts, context-window overrides",
     tui: ["/timeouts"],
     cli: ["--timeout"],
-    api: partial(["/v1/config"], 401, RAW_CONFIG),
+    api: ["/v1/settings: limits page"],
     desktop: gap(401),
   },
   {
