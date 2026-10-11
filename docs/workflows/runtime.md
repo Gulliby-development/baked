@@ -39,7 +39,7 @@ Select a configured BAKED model. `defaultModel: "none"` does not allow starting 
 }
 ```
 
-Check definitions contain an executable and argv. They run reviewed project code; this is not an OS sandbox. `envNames` allows specific additional variables on top of `buildSafeEnv`; values are not stored in definitions. `writes` marks only generated outputs. An optional `fix` (`{"executable": "ruff", "args": ["check", "--fix"]}`) names the fixer for what the check reports; an implementer runs it with `apply_fix` on each file its task writes (the path is appended to the arguments), each run recorded like an edit, and gets the check's result back. A fixer that changes a file outside the task fails the call. The suggested `ruff` check comes with `ruff check --fix`. Task sources, the execution configuration and the internal database must not be excluded from a check. `network: deny` forbids network agent tools, but it does not replace network isolation of the executed project script and does not forbid calls to the selected LLM provider.
+Check definitions contain an executable and argv. They run reviewed project code; this is not an OS sandbox. `envNames` allows specific additional variables on top of `buildSafeEnv`; values are not stored in definitions. `writes` marks only generated outputs. An optional `fix` (`{"executable": "ruff", "args": ["check", "--fix"]}`) names the fixer for what the check reports; an implementer runs it with `apply_fix` on each file its task writes (the path is appended to the arguments), each run recorded like an edit, and gets the check's result back. A fixer that changes a file outside the task fails the call. When a required check with a fixer fails at a check stage, the runtime first runs the fixer itself on every existing file the run's tasks write, before any repair task: each run is a journaled `file_patch` effect (`tool: apply_fix`, with the check ID, the task that writes the file last, and the pre-image), so `workflow undo` treats it like that task's own edits. If a file changed, the runtime takes a new snapshot and reruns the stage's checks once; only the failures that remain become repair tasks, so a run whose only failure is fully auto-fixable passes without a repair attempt. A fixer that changes a file no task writes stops the run. A command gate carries the same optional `fix` in `command.fix`; a policy check keeps it when a v2 definition binds it as a gate. The suggested `ruff` check comes with `ruff check --fix`. Task sources, the execution configuration and the internal database must not be excluded from a check. `network: deny` forbids network agent tools, but it does not replace network isolation of the executed project script and does not forbid calls to the selected LLM provider.
 
 A monetary cap is currently rejected: the current BAKED provider metadata has no verified shared source of exact prices. Use token/time/call limits; usage left unknown by a crash keeps its reservation. Arbitrary command hooks and unknown MCP/compound effects are forbidden inside a workflow. Approved commands run as checks. The ECC import does not enable hooks.
 
@@ -398,7 +398,7 @@ Workspace and evidence files are written to a unique temp file and renamed into 
 
 ## TUI
 
-`/workflow` without arguments opens the panel with the project's run list. Runs waiting for a user decision come first, then active runs, then finished ones. ↑/↓ select a run, Enter opens it, N opens the new-run form, I opens the [initiatives](#initiatives-in-the-tui), G the gates window and Esc closes the panel. `/workflow new TEXT` opens the form with the description filled in; `/workflow quick TEXT` does the same with the quick workflow selected. `/workflow edit ID` opens the [workflow editor](#workflow-editor). `/workflow help` prints the full command list; the other CLI commands (`run`, `status`, `approve`, `recover` and so on) are still accepted, and their result is printed in the chat as a short text.
+`/workflow` without arguments opens the panel with the project's run list. Runs waiting for a user decision come first, then active runs, then finished ones. ↑/↓ select a run, Enter opens it, N opens the new-run form, I opens the [initiatives](#initiatives-in-the-tui), G the gates window and Esc closes the panel. `/workflow new TEXT` opens the form with the description filled in; `/workflow quick TEXT` does the same with the quick workflow selected. `/workflow edit ID` opens the [workflow editor](#workflow-editor). `/workflow report RUN_ID` prints the [run report](#run-report) in the chat. `/workflow help` prints the full command list; the other CLI commands (`run`, `status`, `approve`, `recover` and so on) are still accepted, and their result is printed in the chat as a short text.
 
 If workflows are off in the project, the panel shows what will be written, and E enables them: a `workflows` block with the default policy and checks found in the `package.json` scripts (`typecheck`, `lint`, `test`) for the project's runner is added to `.baked/config.json`. An existing block only gets `enabled: true`. While the project is off, the panel starts no worker and creates no database.
 
@@ -423,6 +423,26 @@ I on the run list opens the project's [initiatives](#initiatives). Each row show
 The detail shows the title, the current plan revision and whether it is approved, the feature workflow, the shared budget (tokens, calls and active time used of the limits), the next action in words, a pending split approval with its plan revision and digest prefix, the initiative's blockers, and the features in dependency order with their state, run status, run ID and upstream features. The selected feature also shows its contract and either its pending decision or its blockers. Enter opens the selected feature's run in the run screen, O opens the decompose run, and Esc on that run returns to the initiative.
 
 The keys follow the commands the core accepts in the current state: A approves the pending split (after a Y/N confirmation; it is bound to the revision and digest on screen, so a changed split is refused with the core's message), P pauses an active or decomposing initiative, R resumes a paused one, C continues (`drive`) an active or decomposing initiative that this process is not already driving, and X re-plans the selected feature (after a Y/N confirmation; it supersedes the feature's current run). Approve, resume and continue drive the initiative in the workflow worker in the background, like the CLI commands; the screen refreshes every second, shows "⟳ live" while the worker drives it, and shows the last drive error. Decisions of feature runs are made in the run screen. Editing the split (merge, split, remove, rename), rejecting it with a reason and `extend` stay CLI commands.
+
+## Run report
+
+```sh
+baked workflow report RUN_ID                 # prints Markdown
+baked workflow report RUN_ID --output FILE   # writes FILE (relative to the workspace), prints {runId, path, bytes}
+baked workflow report RUN_ID --json          # {runId, markdown}
+```
+
+One Markdown file for a run, at any status, read from the run's database without changing it:
+
+- the title, run and feature IDs, workflow, status with its reason, and verification state;
+- a summary: the spec's outcome, a report stage's summary and recommendation when the workflow has one, and the request (cut at 2,000 characters);
+- changes: every file the run changed, from the effect journal and the task diffs (published spec files are marked `spec`; a file edited outside the run since is marked `changed since`);
+- tasks with title, status and origin; checks with their latest result, validity, runs and time; acceptance criteria with verdicts and the final review verdict;
+- findings with status, severity, kind, file and claim; decisions (every request with its kind, decision and who made it) and the spec's assumptions;
+- usage: tokens against the budget, agent calls, active time, the estimated cost when known, and tokens per stage (in the order stages first ran) and per model;
+- artifacts: the latest revision of each artifact with its ID, read with `baked workflow artifacts RUN_ID --file ID`. Attempt outputs, internal state and baselines are counted, not listed.
+
+The report is the pull request body of a [delivery](#delivery). In the TUI, `/workflow report RUN_ID` shows it in the chat (`--output FILE` writes it). The desktop app shows it in the run's Report tab with Copy and Save buttons, and `GET /v1/workflow/runs/RUN_ID/report` returns it.
 
 ## Import, export and retention
 
@@ -549,6 +569,8 @@ A run executed in a worktree is delivered from its run branch: the files are rea
 
 Every operation is a `delivery` effect in the run's journal with its plan ID, branch and commit. A failure Git or the host reports for certain (non-fast-forward, hook rejection, authentication, unreachable remote, HTTP 401/403) marks the effect `failed` and stops with that reason; the next `--execute` retries only the failed step. When the outcome is not known (a crash, a dropped connection, a lost API response), the runtime checks before doing anything again: the local branch for the commit, `git ls-remote` for the push, the pull request by head branch for the pull request. A found result is recorded as `reconciled`; a confirmed absence as `failed`, which allows a retry. If the check itself cannot be answered, the effect stays `unknown` and a `recovery` request is created, as for v1 commands; it is answered with `recover` (`record-applied`, `record-not-applied`, `retry`, or `cancel`, which abandons the delivery). A later `--execute` that can check the remote settles the effect itself and supersedes the request. When everything is done, `delivery/PLAN_ID/result.json` links the commit ID, the branch, the remote and the pull request URL to the run, its revision at planning, the accepted snapshot and the approval root. Executing a delivered plan again returns that result and creates nothing.
 
+The pull request body is the [run report](#run-report) followed by a `Delivery` section: the delivered files, the files left out with their reason, and the run, snapshot and base commit. A report longer than 60,000 characters is shortened (long tables keep their first rows, then the text is cut with a note) so GitHub accepts it; the Delivery section is always kept whole. The body is part of the plan, so its digest covers the exact text.
+
 Pull requests use the GitHub REST API. The token is read from the environment variable named in the configuration (default `GITHUB_TOKEN`) and sent only to the configured API URL; github.com remotes map to `https://api.github.com`, other API URLs (GitHub Enterprise) serve remotes on their own host. Other hosts are delivered with `--no-pr` (commit and push only).
 
 ```json
@@ -618,6 +640,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/runs/RUN_ID` | `status` | snapshot with `requests` |
 | `GET /v1/workflow/runs/RUN_ID/usage` | `usage` | |
 | `GET /v1/workflow/runs/RUN_ID/artifacts` | `artifacts` | `?file=ARTIFACT_ID` returns `{content}` |
+| `GET /v1/workflow/runs/RUN_ID/report` | `report` | returns `{runId, markdown}` ([run report](#run-report)) |
 | `POST /v1/workflow/runs/RUN_ID/pause`, `/cancel`, `/resume` | `pause`, `cancel`, `resume` | `commandId`, `expectedRevision` |
 | `POST /v1/workflow/runs/RUN_ID/approve` | `approve` | plus `requestId`, `digest`, optional `excludeUserChanges` |
 | `POST /v1/workflow/runs/RUN_ID/reject` | `reject` | plus `requestId`, `reason` |

@@ -955,7 +955,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
-    if (action === "usage" || action === "artifacts") {
+    if (action === "usage" || action === "artifacts" || action === "report") {
       only("GET");
       const file = action === "artifacts" ? url.searchParams.get("file") : null;
       return json(

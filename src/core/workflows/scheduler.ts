@@ -10,7 +10,7 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
-import { CheckRunner } from "../verification/check-runner.js";
+import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
 import { validateEvidence } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
@@ -2802,9 +2802,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
+    fixed = false,
   ): Promise<Review["findings"]> {
     await this.snapshot(runId, state, policy, signal);
     const failures: Review["findings"] = [];
+    const failedIds: string[] = [];
     // A failure is repaired first; the next pass reruns every check, the inconclusive one too.
     let inconclusive: string | undefined;
     for (const check of policy.checks) {
@@ -2819,6 +2821,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if (result.status === "failed" && check.required) {
+        failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
         if (!task)
@@ -2836,6 +2839,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         );
       }
     }
+    if (
+      failures.length &&
+      !fixed &&
+      (await this.applyFixers(runId, stepId, state, policy, failedIds, signal))
+    )
+      return this.runChecks(runId, stepId, state, policy, signal, true);
     if (!failures.length && inconclusive)
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
@@ -2849,6 +2858,98 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         findings: failures,
       });
     return failures;
+  }
+  /**
+   * Runs the fixer of each failed check that names one (`ruff check --fix`, `biome check --write`)
+   * on the files the run's tasks write, so findings a tool fixes mechanically cost no repair task.
+   * Each file is one journaled edit with its pre-image, attributed to the last task that writes
+   * it, so undo treats it like that task's own edits. Returns whether a file changed; the caller
+   * then takes a new snapshot and reruns its checks once, and only what remains is repaired.
+   */
+  private async applyFixers(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    failedIds: string[],
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const fixable = policy.checks.filter((c) => c.fix && failedIds.includes(c.id));
+    const tasks = state.graph?.tasks ?? [];
+    if (!fixable.length || !tasks.length) return false;
+    const root = runRoot(this.store.workspace, state);
+    const owners = new Map<string, string>();
+    for (const task of tasks)
+      for (const write of task.writes)
+        if (write.action === "delete") owners.delete(write.path);
+        else owners.set(write.path, task.id);
+    const paths = [...owners.keys()].filter((path) => fileHash(workspacePath(root, path)));
+    if (!paths.length) return false;
+    const lease = mutationLeaseFor(this.store.workspace, root);
+    const generated = generatedPaths(policy);
+    const before = await sourceManifest(root, generated, signal);
+    const attempt = this.store.beginHostAttempt(runId, stepId);
+    const scope = new ProcessScope();
+    let changed = false;
+    try {
+      for (const check of fixable) {
+        const fix = check.fix;
+        if (!fix) continue;
+        const executable = fix.executable === "bun" ? process.execPath : fix.executable;
+        for (const path of paths) {
+          signal.throwIfAborted();
+          this.leases.assert(lease);
+          const target = workspacePath(root, path);
+          const preImage = capturePreImage(this.store, runId, target);
+          const effectId = this.store.transaction(() =>
+            this.store.prepareEffect(
+              runId,
+              attempt,
+              "file_patch",
+              {
+                path,
+                tool: "apply_fix",
+                checkId: check.id,
+                taskId: owners.get(path),
+                ...rootField(this.store.workspace, root),
+              },
+              preImage,
+              null,
+            ),
+          );
+          try {
+            // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+            await executeCheckCommand(scope, executable, [...fix.args, path], {
+              cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+              env: buildCheckEnv(check),
+              timeoutMs: check.timeoutMs,
+              signal,
+            });
+            const after = fileHash(target);
+            this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+            if (after !== preImage) changed = true;
+          } catch (error) {
+            this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+            throw error;
+          }
+        }
+      }
+      const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
+        (path) => !owners.has(path),
+      );
+      if (outside.length)
+        throw new WorkflowFault(
+          "CAPABILITY_DENIED",
+          `A check fixer changed files outside the run's tasks: ${outside.join(", ")}`,
+        );
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      return changed;
+    } catch (error) {
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "failed", 0));
+      throw error;
+    } finally {
+      await scope.stop();
+    }
   }
   /** Stores a review and registers the findings that block; the others stay in the artifact. */
   private recordFindings(
@@ -3166,6 +3267,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     policy: RunPolicy,
     v2: { stage: Stage; gates: Gate[] },
     signal: AbortSignal,
+    fixed = false,
   ): Promise<Review["findings"]> {
     if (v2.stage.type !== "check") return [];
     await this.snapshot(runId, state, policy, signal);
@@ -3180,6 +3282,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       ...bound.filter((b) => !b.check.required),
     ];
     const failures: Review["findings"] = [];
+    const failedIds: string[] = [];
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
@@ -3195,6 +3298,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         inconclusive ??= check.id;
         continue;
       }
+      if (!result.reason) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
       const fallback = {
@@ -3216,6 +3320,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         ),
       );
     }
+    if (
+      failures.length &&
+      !fixed &&
+      (await this.applyFixers(runId, stepId, state, policy, failedIds, signal))
+    )
+      return this.runCheckStage(runId, stepId, state, policy, v2, signal, true);
     if (!failures.length && inconclusive)
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",

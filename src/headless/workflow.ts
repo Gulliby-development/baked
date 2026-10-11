@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
@@ -14,6 +14,7 @@ import { uniqueFeatureId } from "../core/workflows/feature-id.js";
 import { issueStart } from "../core/workflows/issue-source.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
+import { runReport } from "../core/workflows/run-report.js";
 import {
   type Decision,
   PolicySchema,
@@ -403,6 +404,14 @@ export async function executeWorkflowCommand(
         typeof args.flags.top === "string" ? Number(args.flags.top) : undefined,
         typeof args.flags.model === "string" ? args.flags.model : undefined,
       );
+    case "report": {
+      const markdown = runReport(service.store, runId);
+      if (typeof args.flags.output !== "string") return { runId, markdown };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, markdown);
+      return { runId, path, bytes: Buffer.byteLength(markdown) };
+    }
     case "gc":
       return artifacts.gc({
         before: stringFlag(args, "before"),
@@ -486,9 +495,15 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
     const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
-    const readonly = ["status", "list", "artifacts", "export", "export-progress", "usage"].includes(
-      args.command,
-    );
+    const readonly = [
+      "status",
+      "list",
+      "artifacts",
+      "export",
+      "export-progress",
+      "usage",
+      "report",
+    ].includes(args.command);
     if (args.command === "profiles") {
       process.stdout.write(
         `${JSON.stringify(routedProfiles(cwd, config, modelFlag(args, config)).list(), null, 2)}\n`,
@@ -544,6 +559,11 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       );
     });
     await Promise.all(streams);
+    // The report prints as Markdown so it can be piped into a file or a pull request.
+    if (args.command === "report" && !args.flags.json && !args.flags.output) {
+      process.stdout.write((result as { markdown: string }).markdown);
+      return 0;
+    }
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
     return ["run", "quick", "resume"].includes(args.command) ||
       (["revise", "extend", "reroute"].includes(args.command) && args.flags.resume === true)

@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { uncommittedEdits } from "../src/core/workflows/rollback.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -404,6 +405,64 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.state(run.runId).position?.loops).toEqual({ "checks-repair": 1 });
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
   }, 30000);
+
+  // A check whose fixer resolves what it reports passes without a repair task (#235).
+  const fixer = (to: string) => ({
+    executable: "bun",
+    args: ["-e", `const f = process.argv.at(-1); await Bun.write(f, (await Bun.file(f).text()).replace('broken', '${to}'))`],
+  });
+
+  test("a failed check fixed by its fixer passes without a repair task, and undo sees the fix", async () => {
+    const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("ready") }] };
+    const { start, complete, service, define, root, executor } = setup({ broken: 1 }, fixable);
+    const preset = builtinPresets.get("quick-fix");
+    if (!preset) throw new Error("quick-fix preset missing");
+    define({ ...instantiatePreset(preset, fixable), id: "custom-fix", preset: "custom" });
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.implementations).toBe(1);
+    expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
+    const taken = ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId);
+    expect(taken).not.toContain("checks-repair");
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:failed", "check:passed"]);
+    const fixes = service.store.effects(run.runId).filter((e) => e.kind === "file_patch" && JSON.parse(e.intent_json).tool === "apply_fix");
+    expect(fixes.map((e) => JSON.parse(e.intent_json))).toEqual([{ path: "value.txt", tool: "apply_fix", checkId: "check", taskId: "T001" }]);
+    expect(fixes[0]?.status).toBe("applied");
+    // The fix belongs to T001: once the task is invalidated, undo restores the fixer's pre-image
+    // (the fixture writes the task's own edit without the journal).
+    service.store.transaction(() => service.store.taskStatus(run.runId, "T001", "invalidated"));
+    expect(uncommittedEdits(service.store, run.runId).map((e) => e.id)).toEqual(fixes.map((e) => e.id));
+    await service.undo(run.runId, { commandId: newId(), expectedRevision: (await service.get(run.runId)).revision });
+    expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("broken");
+  }, 30000);
+
+  test("a failure the fixer cannot resolve still becomes a repair task", async () => {
+    const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("still broken") }] };
+    const { start, complete, service, define } = setup({ broken: 1 }, fixable);
+    const preset = builtinPresets.get("quick-fix");
+    if (!preset) throw new Error("quick-fix preset missing");
+    define({ ...instantiatePreset(preset, fixable), id: "custom-fix", preset: "custom" });
+    const run = await start("custom-fix");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:failed", "check:failed", "check:passed"]);
+  }, 30000);
+
+  test("the v1 check stage runs the fixer before repairing", async () => {
+    const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("ready") }] };
+    const { start, complete, service, executor } = setup({ broken: 1 }, fixable);
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(executor.implementations).toBe(1);
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+  }, 60000);
 
   test("a failed check is repaired even when a later required check is inconclusive", async () => {
     // The slow check times out until the value is fixed, like a suite that cannot finish while

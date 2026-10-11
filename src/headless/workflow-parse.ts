@@ -26,6 +26,7 @@ const commands = [
   "recover",
   "candidate",
   "usage",
+  "report",
   "extend",
   "reroute",
   "continue",
@@ -107,6 +108,7 @@ const flags = new Set([
   "resume",
   "clarification",
   "issue",
+  "output",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -186,6 +188,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
   usage: ["model", "stage", "top"],
+  report: ["output"],
   extend: [
     "tokens",
     "calls",
@@ -413,6 +416,9 @@ estimate [WORKFLOW] (same options as doctor)
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
 usage RUN_ID [--model ID] [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
+report RUN_ID [--output FILE] [--json]
+  One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
+  tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.
 gc --before ISO_DATE [--dry-run]          redact RUN_ID --file ARTIFACT_ID --reason TEXT
 deliver RUN_ID [--remote origin] [--branch NAME] [--draft] [--no-pr]
   Prepare Git delivery of a completed, verified run: one commit of the run's files on a new

@@ -118,7 +118,7 @@ function settledEffects(store: WorkflowStore, runId: string): Set<string> {
 }
 
 /**
- * Task file edits that never became part of the run's baseline. A task's edits join the baseline
+ * Task file edits, a check fixer's included, that never became part of the run's baseline. A task's edits join the baseline
  * when the runtime snapshots them (the task row then has a snapshot). Edits of a task that is
  * running, failed to implement, was invalidated by a revision, recovery or repair, or was
  * dropped by a revision have no snapshot.
@@ -135,7 +135,13 @@ export function uncommittedEdits(
   return store.effects(runId).filter((effect) => {
     if (effect.kind !== "file_patch" || settled.has(effect.id) || isRollback(effect)) return false;
     const stage = stageOf.get(stepOf.get(effect.attempt_id) ?? "") ?? "";
-    const task = stage.startsWith("task-") ? tasks.get(stage.slice("task-".length)) : undefined;
+    // A check fixer's edit at run level belongs to the task that writes the file.
+    const intent = JSON.parse(effect.intent_json) as { tool?: string; taskId?: string };
+    const task = stage.startsWith("task-")
+      ? tasks.get(stage.slice("task-".length))
+      : intent.tool === "apply_fix" && intent.taskId
+        ? tasks.get(intent.taskId)
+        : undefined;
     return (
       task !== undefined &&
       task.snapshot_id === null &&
