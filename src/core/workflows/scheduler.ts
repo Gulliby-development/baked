@@ -336,7 +336,10 @@ export class WorkflowScheduler {
           switch (stage.kind) {
             case "research": {
               const researcher = this.requireProfile(profile);
-              const budget = researchBudget(state.prompt, researcher, policy);
+              const researchRoot = runRoot(this.store.workspace, state);
+              const budget = researchBudget(state.prompt, researcher, policy, (path) =>
+                existsSync(join(researchRoot, path)),
+              );
               const submitted = ResearchSchema.parse(
                 await this.call(
                   runId,
@@ -1283,6 +1286,8 @@ export class WorkflowScheduler {
       fallbackIndex?: number;
       /** The primary model's failure, reported if every fallback model fails too. */
       primaryError?: unknown;
+      /** Set on the one retry that follows an attempt that ended at its step cap unsubmitted. */
+      stepRetry?: boolean;
     } = {},
   ): Promise<unknown> {
     const route = this.route(runId, stepId, stageProfile);
@@ -1399,6 +1404,47 @@ export class WorkflowScheduler {
           `${profile.model} refused the request: ${refusal === "credits" ? "the provider account has no credits or quota left; add credits, then resume the run" : "the provider rejected the API key; fix the key, then resume the run"}, or move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N. ${error instanceof Error ? error.message : String(error)}`,
           { reason: "provider_account" },
         );
+      // An attempt that used its steps without submitting and changed nothing is repeated once
+      // with half again as many steps; the same cap would repeat the same experiment (tasks grow
+      // the same way through `taskSteps`).
+      if (
+        error instanceof WorkflowFault &&
+        error.details.reason === "no_submission" &&
+        !placement.stepRetry &&
+        !signal.aborted &&
+        !wrote
+      ) {
+        const grown = (n: number) => Math.ceil(n * 1.5);
+        const steps =
+          limits?.maxSteps ??
+          (task ? taskSize(state, task, "taskSteps") : undefined) ??
+          Math.min(profile.maxSteps, policy.maxAgentSteps);
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          extra,
+          signal,
+          task,
+          0,
+          validate,
+          {
+            maxSteps: grown(steps),
+            maxTokens: limits?.maxTokens === undefined ? undefined : grown(limits.maxTokens),
+          },
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            ...(fallbackIndex ? { fallbackIndex } : {}),
+            ...(placement.primaryError !== undefined
+              ? { primaryError: placement.primaryError }
+              : {}),
+            stepRetry: true,
+          },
+        );
+      }
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
       // and once the chain has already failed over, the run stops instead of blocking on it.

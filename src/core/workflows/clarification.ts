@@ -1,4 +1,5 @@
 import type { AgentProfile, RunPolicy } from "./schemas.js";
+import { MIN_ATTEMPT_STEPS } from "./step-budget.js";
 
 /**
  * Research, specification and analysis run before any code changes, so they cannot know check
@@ -196,17 +197,24 @@ export function namedPaths(prompt: string): string[] {
 /**
  * A research budget proportional to the request: a request that names its files needs targeted
  * reads of those files and their direct dependencies, not a survey of the repository. A request
- * that names no file keeps the profile limit.
+ * that names no file keeps the profile limit. Only paths that exist count (`exists`): a file the
+ * request asks to create is nothing to read and only made the budget smaller. The budget never
+ * drops below the step floor every attempt gets, because a provider that makes one tool call per
+ * step otherwise had no step left to correct a rejected submission.
  */
 export function researchBudget(
   prompt: string,
   profile: Pick<AgentProfile, "maxSteps">,
   policy: Pick<RunPolicy, "maxAgentSteps" | "maxAttemptTokens">,
+  exists: (path: string) => boolean = () => true,
 ): { maxSteps: number; maxTokens: number | undefined; namedPaths: string[] } {
-  const paths = namedPaths(prompt);
+  const paths = namedPaths(prompt).filter(exists);
   const ceiling = Math.min(profile.maxSteps, policy.maxAgentSteps);
   const maxSteps = paths.length
-    ? Math.min(ceiling, RESEARCH_BASE_STEPS + RESEARCH_STEPS_PER_PATH * paths.length)
+    ? Math.min(
+        ceiling,
+        Math.max(MIN_ATTEMPT_STEPS, RESEARCH_BASE_STEPS + RESEARCH_STEPS_PER_PATH * paths.length),
+      )
     : ceiling;
   const scaled = maxSteps * RESEARCH_STEP_TOKENS;
   return {
