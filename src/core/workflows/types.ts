@@ -70,7 +70,12 @@ export const RuntimeStateSchema = z
      */
     taskContinuations: z.record(z.string(), z.number().int().nonnegative()).default({}),
     /**
-     * Edits a batch task's attempt left in its worktree when it continues at its cap, by task and
+     * Automatic restarts per task: a batch task whose worker was lost runs once more before the
+     * run blocks with `owner_lost`.
+     */
+    taskRestarts: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    /**
+     * Edits a batch task's attempt left in its worktree when it continues at its cap or restarts after a lost worker, by task and
      * path: the hash before and after (null for absent). The worktree is removed, so the next
      * attempt gets them applied to its new worktree.
      */
