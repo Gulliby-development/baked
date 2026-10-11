@@ -47,6 +47,12 @@ On the Claude API every agent loop (chat, subagents and workflow attempts) sends
 
 For Claude models BAKED marks the system prompt and the newest message with Copilot's `copilot_cache_control`, the cache marker the IDE extensions send, so later agent steps can read the conversation from the prompt cache. GPT models on Copilot rely on the upstream automatic prefix cache. Copilot bills premium requests rather than tokens, so the cache shortens responses and lowers the token counts BAKED records, not the Copilot bill.
 
+## OpenAI Codex
+
+The Codex provider drives the installed Codex CLI with your ChatGPT login. BAKED starts one `codex app-server` per process and keeps one ephemeral Codex thread per conversation: while a conversation only grows, each step sends just the new messages, so Codex reuses the same prompt cache key and the cached prefix. A compacted, edited or retried conversation starts a new thread. Codex's own agent prompt, built-in tools, skills, project docs and environment notes are switched off, because BAKED sends its own.
+
+Output still appears when each step finishes. If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec`. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
+
 ## Model fallback
 
 When a model fails with a transient error, BAKED retries it, then moves to the next model of that model's fallback chain, and announces the switch in the chat:

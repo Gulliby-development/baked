@@ -11,6 +11,14 @@ import {
   parseCodexResponse,
   serializeCodexPrompt,
 } from "../src/core/llm/providers/codex.js";
+import type { CodexAppServerConnection } from "../src/core/llm/providers/codex/client.js";
+import {
+  buildCodexPromptParts,
+  type CodexRunnerCall,
+  CODEX_ADAPTER_CONFIG,
+  codexConfigArgs,
+} from "../src/core/llm/providers/codex/runner.js";
+import { CodexSessionRunner } from "../src/core/llm/providers/codex/session.js";
 
 const BASE_OPTIONS: LanguageModelV2CallOptions = {
   prompt: [
@@ -282,4 +290,213 @@ describe("codex provider", () => {
 
     expect(parts).toEqual(["stream-start", "text-start", "text-delta", "text-end", "finish"]);
   });
+
+  test("keeps per-step rules after the transcript so the prefix stays stable", () => {
+    const tools: LanguageModelV2CallOptions["tools"] = [
+      { type: "function", name: "read_file", description: "Read", inputSchema: { type: "object" } },
+    ];
+    const auto = buildCodexPromptParts({ ...BASE_OPTIONS, tools, toolChoice: { type: "auto" } });
+    const forced = buildCodexPromptParts({
+      ...BASE_OPTIONS,
+      tools,
+      toolChoice: { type: "tool", toolName: "read_file" },
+    });
+
+    expect(forced.instructions).toBe(auto.instructions);
+    expect(forced.step).not.toBe(auto.step);
+    expect(auto.messages.map((message) => message.role)).toEqual(["system", "user"]);
+    const prompt = serializeCodexPrompt({ ...BASE_OPTIONS, tools, toolChoice: { type: "auto" } });
+    expect(prompt.indexOf("Read package.json")).toBeLessThan(prompt.indexOf("CURRENT STEP"));
+  });
+
+  test("renders adapter config as codex --config overrides", () => {
+    const args = codexConfigArgs({ web_search: "disabled", "features.shell_tool": false });
+    expect(args).toEqual(["--config", 'web_search="disabled"', "--config", "features.shell_tool=false"]);
+    expect(CODEX_ADAPTER_CONFIG["features.shell_tool"]).toBe(false);
+  });
 });
+
+interface FakeTurnReply {
+  text?: string;
+  status?: "completed" | "failed";
+  error?: string;
+  total?: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+}
+
+function createFakeConnection(replies: FakeTurnReply[]) {
+  const listeners = new Set<(method: string, params: unknown) => void>();
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let threadCount = 0;
+  let turnCount = 0;
+  const emit = (method: string, params: unknown) => {
+    for (const listener of [...listeners]) listener(method, params);
+  };
+  const connection: CodexAppServerConnection = {
+    closed: false,
+    async request(method, params) {
+      requests.push({ method, params });
+      if (method === "thread/start") {
+        threadCount += 1;
+        return { thread: { id: `thread-${threadCount}` } };
+      }
+      if (method === "turn/start") {
+        const reply = replies[turnCount] ?? { text: "{}" };
+        turnCount += 1;
+        const threadId = params.threadId;
+        const turnId = `turn-${turnCount}`;
+        queueMicrotask(() => {
+          if (reply.total) {
+            emit("thread/tokenUsage/updated", {
+              threadId,
+              turnId,
+              tokenUsage: {
+                total: {
+                  ...reply.total,
+                  reasoningOutputTokens: 0,
+                  totalTokens: reply.total.inputTokens + reply.total.outputTokens,
+                },
+              },
+            });
+          }
+          if (reply.text) {
+            emit("item/completed", { threadId, turnId, item: { type: "agentMessage", text: reply.text } });
+          }
+          emit("turn/completed", {
+            threadId,
+            turn: {
+              id: turnId,
+              status: reply.status ?? "completed",
+              error: reply.error ? { message: reply.error } : null,
+            },
+          });
+        });
+        return { turn: { id: turnId } };
+      }
+      return {};
+    },
+    async waitForNotification() {
+      throw new Error("not used");
+    },
+    close() {},
+    onNotification(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    onClose() {
+      return () => {};
+    },
+  };
+  return { connection, requests };
+}
+
+const STOP = JSON.stringify({ finishReason: "stop", reasoning: "", text: "done", toolCalls: [] });
+
+function callFor(options: LanguageModelV2CallOptions): CodexRunnerCall {
+  return {
+    modelId: "gpt-5.5",
+    prompt: serializeCodexPrompt(options),
+    parts: buildCodexPromptParts(options),
+    schema: buildCodexSchema(options),
+  };
+}
+
+const failingFallback = {
+  async run(): Promise<never> {
+    throw new Error("fallback should not run");
+  },
+};
+
+describe("codex app-server session runner", () => {
+  const first: LanguageModelV2CallOptions = BASE_OPTIONS;
+  const second: LanguageModelV2CallOptions = {
+    ...BASE_OPTIONS,
+    prompt: [
+      ...BASE_OPTIONS.prompt,
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+      { role: "user", content: [{ type: "text", text: "Now read tsconfig.json" }] },
+    ],
+  };
+
+  test("continues one thread and sends only the new messages", async () => {
+    const { connection, requests } = createFakeConnection([
+      { text: STOP, total: { inputTokens: 1000, cachedInputTokens: 0, outputTokens: 50 } },
+      { text: STOP, total: { inputTokens: 2200, cachedInputTokens: 900, outputTokens: 80 } },
+    ]);
+    const runner = new CodexSessionRunner(async () => connection, failingFallback);
+
+    await runner.run(callFor(first));
+    const result = await runner.run(callFor(second));
+
+    expect(requests.filter((request) => request.method === "thread/start")).toHaveLength(1);
+    const threadStart = requests.find((request) => request.method === "thread/start");
+    expect(threadStart?.params.ephemeral).toBe(true);
+    expect(String(threadStart?.params.baseInstructions)).toContain("AVAILABLE TOOLS");
+
+    const turns = requests.filter((request) => request.method === "turn/start");
+    expect(turns).toHaveLength(2);
+    const secondInput = JSON.stringify(turns[1]?.params.input);
+    expect(secondInput).toContain("Now read tsconfig.json");
+    expect(secondInput).not.toContain("Read package.json");
+    expect(secondInput).toContain("(continued)");
+    expect(result.usage).toMatchObject({ inputTokens: 1200, cachedInputTokens: 900, outputTokens: 30 });
+  });
+
+  test("starts a new thread when the transcript does not extend a known one", async () => {
+    const { connection, requests } = createFakeConnection([{ text: STOP }, { text: STOP }]);
+    const runner = new CodexSessionRunner(async () => connection, failingFallback);
+
+    await runner.run(callFor(first));
+    await runner.run(
+      callFor({
+        ...BASE_OPTIONS,
+        prompt: [
+          { role: "system", content: "You are baked." },
+          { role: "user", content: [{ type: "text", text: "Something else" }] },
+        ],
+      }),
+    );
+
+    expect(requests.filter((request) => request.method === "thread/start")).toHaveLength(2);
+  });
+
+  test("retries of the same step run on a fresh thread", async () => {
+    const { connection, requests } = createFakeConnection([{ text: STOP }, { text: STOP }]);
+    const runner = new CodexSessionRunner(async () => connection, failingFallback);
+
+    await runner.run(callFor(first));
+    await runner.run(callFor(first));
+
+    expect(requests.filter((request) => request.method === "thread/start")).toHaveLength(2);
+  });
+
+  test("surfaces a failed turn and drops its thread", async () => {
+    const { connection, requests } = createFakeConnection([
+      { status: "failed", error: "You've hit your usage limit" },
+      { text: STOP },
+    ]);
+    const runner = new CodexSessionRunner(async () => connection, failingFallback);
+
+    await expect(runner.run(callFor(first))).rejects.toThrow("usage limit");
+    expect(requests.some((request) => request.method === "thread/unsubscribe")).toBe(true);
+  });
+
+  test("falls back to codex exec when app-server cannot start", async () => {
+    let fallbackCalls = 0;
+    const runner = new CodexSessionRunner(
+      async () => {
+        throw new Error("app-server unavailable");
+      },
+      {
+        async run() {
+          fallbackCalls += 1;
+          return { text: STOP, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } };
+        },
+      },
+    );
+
+    await runner.run(callFor(first));
+    await runner.run(callFor(second));
+    expect(fallbackCalls).toBe(2);
+  });
+});
+
