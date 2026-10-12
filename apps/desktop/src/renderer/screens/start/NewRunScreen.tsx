@@ -10,6 +10,7 @@ import type { SectionProps } from "../sections.js";
 import { takeDraft } from "./drafts.js";
 import {
   BudgetPicker,
+  budgetField,
   CHIP,
   CHIPS,
   FIELD,
@@ -20,7 +21,6 @@ import {
   HINT_ERR,
   INLINE,
   LEGEND,
-  policyFor,
   presetLimits,
   RunStarting,
   SUBMIT,
@@ -243,13 +243,12 @@ export function NewRunScreen({ project }: SectionProps) {
   const submit = (event: React.FormEvent): void => {
     event.preventDefault();
     if (!canStart) return;
-    const scaled = policyFor(budget, policy.policy);
     void launcher.run({
       ...(feature ? { feature } : {}),
       ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
       ...(fromIssue ? { issue: issue.trim() } : {}),
       workflow,
-      ...(scaled ? { policy: scaled } : {}),
+      ...budgetField(budget),
       ...(model ? { model } : {}),
       ...(worktree ? { worktree: true } : {}),
       ...(writers > 1 ? { writers } : {}),

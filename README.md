@@ -5,44 +5,65 @@
 
 # BAKED
 
-BAKED is a coding agent for the terminal. It builds a graph of your repository with language servers and tree-sitter, so the agent navigates code by symbols and imports rather than by raw text search. It edits, runs checks and commits through tools that ask before they write, and it keeps sessions, memory and workflow state locally in SQLite.
+**A coding agent that knows your code's structure, asks before it writes, and keeps its work on your machine.**
 
-It has three front ends over one core:
+BAKED reads your repository through language servers and tree-sitter, so it moves through code by symbols and imports instead of grepping raw text. It edits files, runs your checks and commits, asking first whenever it is about to write. Sessions, memory and workflow state stay local in SQLite.
 
-- **Terminal UI**: chat, model picker, task router, plan mode, Git menu and workflow screens.
-- **Headless CLI**: `baked --headless "<prompt>"` for scripts and CI, with JSON or JSONL event output.
-- **Spec-driven workflows**: `baked workflow` runs research, specification, planning, implementation, checks and review as durable, resumable runs with budgets and approvals.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/chat-dark.png">
+  <img alt="A BAKED chat in the desktop app: the agent explains a bug, shows its diff and the test it ran" src="docs/assets/screenshots/chat-light.png">
+</picture>
 
-A desktop application lives in `apps/desktop`: an Electron app over the same core, through `baked serve` ([desktop app](docs/desktop/app.md)).
+> **Status: pre-release.** Releases are published on [GitHub](https://github.com/Gulliby-development/baked/releases) only, not on npm.
 
-Status: pre-release. The repository is private, and releases are published on GitHub only, not to npm.
+## What you can do with it
+
+- **Chat with an agent about your code.** Ask a question or a change; BAKED finds the right files, shows each edit as a diff, and you can undo any turn.
+- **Hand off a whole feature.** A workflow run goes through research, spec, plan, implementation, checks and review on its own, and stops only where it needs your decision.
+- **Keep several projects going at once.** Each open folder is a project with its own chats, runs and settings; *Needs you* collects everything waiting for an answer.
+- **See your codebase and your spend.** A live code graph shows how folders and files depend on each other; the usage screen shows tokens and cost per stage and model.
+- **Use the model you already pay for.** Claude, OpenAI, Codex, GitHub Copilot and GitHub Models are supported ([providers](docs/providers.md)).
+
+BAKED comes as a **desktop app**, a **terminal app**, and a **headless CLI** for scripts and CI. All three run the same agent.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img alt="A workflow run waiting for approval of its spec, plan and tasks" src="docs/assets/screenshots/run.png"><br><b>Workflow runs.</b> Every stage on one line; the run waits for you only where it has to.</td>
+    <td width="50%"><img alt="The code graph of the BAKED repository" src="docs/assets/screenshots/code-graph.png"><br><b>Code graph.</b> Folders, key files and the links between them.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img alt="Needs you: approvals and questions from every open project" src="docs/assets/screenshots/needs-you.png"><br><b>Needs you.</b> Approvals and questions from every open project in one list.</td>
+    <td width="50%"><img alt="Usage: tokens and cost by stage and by model" src="docs/assets/screenshots/usage.png"><br><b>Usage.</b> Tokens, cache hits and cost by stage and by model.</td>
+  </tr>
+</table>
+
+Screenshots show the desktop app with sample data.
 
 ## Install
 
-### From a release
+Download your platform's file from [Releases](https://github.com/Gulliby-development/baked/releases). While the repository is private, sign in to GitHub first, or use the GitHub CLI (`gh release download --repo Gulliby-development/baked --pattern '<file>'`).
 
-Download the archive for your platform from [Releases](https://github.com/Gulliby-development/baked/releases). While the repository is private, you need to be signed in to GitHub, or use the GitHub CLI:
+| | Desktop app | Terminal app and CLI |
+| --- | --- | --- |
+| **Windows** | `baked-desktop-<version>-win-<arch>.exe` | `baked-setup-<version>-x64.exe`, or the `.zip` |
+| **macOS** | `baked-desktop-<version>-mac-<arch>.dmg` | `baked-<version>-darwin-<arch>.tar.gz`, then `./install.sh` |
+| **Linux** | `.AppImage` or `.deb` | `baked-<version>-linux-<arch>.tar.gz`, then `./install.sh` |
 
-```sh
-gh release download --repo Gulliby-development/baked --pattern '*linux-x64.tar.gz'
-```
+The desktop app bundles its own `baked`, so you don't need both.
 
-- **Linux and macOS**: `tar xzf baked-<version>-<platform>-<arch>.tar.gz && cd baked-<version>-<platform>-<arch> && ./install.sh`. This installs to `~/.baked/bin`.
-- **Windows**: run `baked-setup-<version>-x64.exe`, or extract `baked-<version>-windows-x64.zip` and run `baked.exe`.
+<details>
+<summary>Unsigned installers, checksums and install details</summary>
 
-Each release lists `SHA256SUMS.txt` for the archives.
+- The installers are not signed yet. Windows SmartScreen warns on first launch (More info, then Run anyway); macOS blocks the app until you allow it in System Settings, Privacy & Security. See [Desktop app](docs/desktop/app.md).
+- On Linux and macOS, `install.sh` from the extracted archive installs to `~/.baked/bin`. On Windows you can also extract `baked-<version>-windows-x64.zip` and run `baked.exe`.
+- Each release lists `SHA256SUMS.txt` for the archives.
 
-### Desktop app
+</details>
 
-Releases also carry the desktop app, which bundles its own `baked`:
-
-- **Windows**: `baked-desktop-<version>-win-<arch>.exe` (installer).
-- **macOS**: `baked-desktop-<version>-mac-<arch>.dmg`, or the `.zip`.
-- **Linux**: `baked-desktop-<version>-linux-<arch>.AppImage` or the `.deb` package.
-
-The installers are not signed yet. Windows SmartScreen warns on first launch (More info, then Run anyway); macOS blocks the app until you allow it in System Settings, Privacy & Security. See [Desktop app](docs/desktop/app.md).
-
-### From source
+<details>
+<summary>Run from source</summary>
 
 Use Bun 1.3.13 or newer on Windows, macOS or Linux:
 
@@ -51,36 +72,45 @@ bun install
 bun run dev
 ```
 
-## First run
+From source, replace `baked` in the commands below with `bun run src/boot.tsx`. The desktop app has its own setup in [apps/desktop](apps/desktop/README.md).
 
-Configure a provider with `/keys` and pick a model with `Ctrl+L`. Supported providers are Claude, OpenAI, Codex, GitHub Copilot and GitHub Models ([providers](docs/providers.md)).
+</details>
+
+## Get started
+
+1. Open the desktop app and choose **Open folder...**, or run `baked` in your project folder.
+2. Connect a model provider: in the desktop app under **Settings, Providers and keys**; in the terminal with `/keys`, then `Ctrl+L` to pick a model.
+3. Ask for something, for example *"Explain how requests are routed"* or *"Add a --json flag to the export command"*.
 
 ```sh
-baked                                     # terminal UI
+baked                                     # terminal app
 baked --headless "Explain this project"   # one prompt, no UI
-baked --list-providers                    # provider status
 baked workflow --help                     # spec-driven workflows
 baked doctor                              # check keys, models and tools
 ```
 
-From source, replace `baked` with `bun run src/boot.tsx`.
-
-Global configuration lives in `~/.baked/config.json` (`%LOCALAPPDATA%\baked\config.json` on Windows) and project configuration in `.baked/config.json`. See the [configuration reference](docs/configuration.md).
+The [getting started guide](docs/getting-started.md) covers the essentials and shortcuts; settings are in the [configuration reference](docs/configuration.md).
 
 ## Privacy
 
-Prompts and code go only to the model provider you configure. Anonymous usage events (version, OS, surface) are recorded in a local file, `~/.baked/telemetry/events.jsonl`, and are not sent anywhere unless you set a receiver. Run `baked telemetry` to see them, or turn recording off with `"telemetry": false` or `DO_NOT_TRACK=1`. Details: [privacy and telemetry](docs/privacy.md).
+Your prompts and code go only to the model provider you choose. Anonymous usage events (version, OS, surface) are written to a local file and are not sent anywhere unless you set up a receiver; turn them off with `"telemetry": false` or `DO_NOT_TRACK=1`. Details: [privacy and telemetry](docs/privacy.md).
 
 ## Documentation
 
-- [Documentation](docs/README.md): getting started, user guide, commands, configuration, providers, tools, extensions and architecture.
-- [SDD workflows](docs/workflows/README.md): runtime guide and design of spec-driven workflows.
-- [Desktop API](docs/desktop/api.md): the contract between the desktop app and `baked serve`.
-- [Development guide](CONTRIBUTING.md): architecture and extension points.
-- [Agent instructions](AGENTS.md): conventions and checks for any coding agent working on this repository.
-- [Telemetry receiver](telemetry-worker/README.md): optional Cloudflare Worker that collects events.
+- [User guide](docs/guide.md) and [commands and keys](docs/commands.md)
+- [Desktop app](docs/desktop/app.md)
+- [Headless CLI](docs/headless.md)
+- [Spec-driven workflows](docs/workflows/README.md)
+- [Providers](docs/providers.md), [tools and code intelligence](docs/tools.md), [extensions](docs/extensions.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [All documentation](docs/README.md)
 
-## Development
+## Contributing
+
+<details>
+<summary>Checks, repository layout and developer docs</summary>
+
+Run these before opening a pull request; CI runs the same:
 
 ```sh
 bun run lint
@@ -100,9 +130,17 @@ bun run build
 | `src/core/memory/`, `src/core/sessions/` | Persistent context and conversations |
 | `src/headless/` | CLI automation |
 | `src/core/api/` | Local workflow API (`baked serve`) |
+| `apps/desktop/` | Desktop app (Electron) |
 | `docs/` | Documentation |
 | `tests/` | Bun tests |
 | `scripts/`, `packaging/` | Build, bundle and installer tooling |
+
+- [Development guide](CONTRIBUTING.md): architecture and extension points.
+- [Architecture](docs/architecture.md) and [desktop API](docs/desktop/api.md).
+- [Agent instructions](AGENTS.md): conventions and checks for any coding agent working on this repository.
+- [Telemetry receiver](telemetry-worker/README.md): optional Cloudflare Worker that collects events.
+
+</details>
 
 ## License
 

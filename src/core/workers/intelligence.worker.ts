@@ -513,6 +513,7 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
   // Router management
   routerGetStatus: () => requireRouter().getStatus(),
   routerGetDetailedLspServers: () => requireRouter().getDetailedLspServers(),
+  routerGetLspErrors: () => requireRouter().getLspErrors(),
   routerRestartLspServers: (filter: unknown) =>
     requireRouter().restartLspServers(filter as string | undefined),
   routerGetChildPids: () => requireRouter().getChildPids(),
