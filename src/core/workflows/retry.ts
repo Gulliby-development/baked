@@ -90,11 +90,11 @@ export async function abortableDelay(ms: number, signal: AbortSignal): Promise<v
 }
 
 const TOOLS =
-  "(?:edit_file|write_file|apply_patch|create_file|edit tool|write tool|editing tools?)";
+  "(?:edit_file|write_file|apply_patch|create_file|read_file|`?(?:read|glob|grep)`? tool|edit tool|write tool|editing tools?)";
 const UNAVAILABLE =
   "(?:unavailable|not available|missing|not exposed|not provided|no access|not accessible)";
 const LOST_TOOL = new RegExp(
-  `${TOOLS}[^.\n]{0,80}${UNAVAILABLE}|${UNAVAILABLE}[^.\n]{0,40}${TOOLS}`,
+  `${TOOLS}[^.\n]{0,80}${UNAVAILABLE}|${UNAVAILABLE}[^.\n]{0,40}${TOOLS}|no such tool`,
   "i",
 );
 
