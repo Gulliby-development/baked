@@ -30,6 +30,7 @@ import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
 import { BakeChatHost } from "../chat/host.js";
+import { scriptedHostFromEnv } from "../chat/scripted-host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
 import { storageDirs } from "../diagnostics/storage.js";
@@ -410,7 +411,10 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     new ChatService({
       workspace: service.workspace,
       config: service.config,
-      host: new BakeChatHost(service.workspace, service.config, service.rootContext),
+      // BAKED_TEST_SCRIPT (tests only) plays a scripted model instead of calling one.
+      host:
+        scriptedHostFromEnv() ??
+        new BakeChatHost(service.workspace, service.config, service.rootContext),
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);

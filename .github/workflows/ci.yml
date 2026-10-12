@@ -93,12 +93,15 @@ jobs:
       - name: UI tests
         run: bun run e2e
 
-      # The built app against a fake baked (tests/fixtures/fake-serve.ts), under xvfb.
+      # The built app against a fake baked (tests/fixtures/fake-serve.ts) and, for chat, the real
+      # baked serve with a scripted model (BAKED_TEST_SCRIPT), under xvfb.
       - name: Electron UI tests
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: ""
         run: |
           node node_modules/electron/install.js
+          # The chat scenario runs the repository's own baked serve from source.
+          (cd ../.. && bun install --frozen-lockfile)
           command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)
           xvfb-run -a bunx playwright test -c playwright.electron.config.ts
 
