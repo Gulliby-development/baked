@@ -679,7 +679,7 @@ export const FEATURES: readonly Feature[] = [
     id: "usage",
     group: "Workflow runs",
     title: "Usage across runs: days, by stage and model",
-    tui: partial(["/workflow: per run"], 413, "no totals over days"),
+    tui: ["/workflow: usage screen (U on the run list, /workflow usage)"],
     cli: ["baked usage", "baked workflow usage"],
     api: ["/v1/usage"],
     desktop: ["project/usage"],
