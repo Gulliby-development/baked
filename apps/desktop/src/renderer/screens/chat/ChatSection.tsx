@@ -47,6 +47,7 @@ import { forkReportLines, rememberForkReport, rewindReportLines, takeForkReport 
 import { ChatHeader, type CompactControl, type RewindControl } from "./Header.js";
 import { pendingText } from "./images.js";
 import { emptyTranscript, isBusy, reduceTranscript, turnCount } from "./transcript.js";
+import { useVoiceInput } from "./useVoiceInput.js";
 
 const NEW = "new";
 
@@ -250,6 +251,7 @@ export function SessionView({
   const canRewindTo = canRewind && capabilities?.includes(CHECKPOINTS_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
+  const voice = useVoiceInput();
   // Older servers list commands under `library` but send them to the model unexpanded.
   const expandsCommands = capabilities?.includes(CUSTOM_COMMANDS_CAPABILITY) === true;
   const modes: readonly ChatMode[] = coordinator
@@ -572,6 +574,7 @@ export function SessionView({
           loadMentions={loadMentions}
           {...(expandsCommands ? { loadCommands } : {})}
           acceptsImages={acceptsImages}
+          voice={voice}
         />
       </div>
     </div>
