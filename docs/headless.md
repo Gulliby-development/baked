@@ -111,6 +111,17 @@ baked mcp disable github     # keep it in the config without connecting it
 
 `baked mcp` lists and changes the [MCP servers](extensions.md#mcp-servers) headless runs connect. `list --json` prints `{servers}` in the shape of the local API's [`GET /v1/mcp`](desktop/api.md#mcp-servers); without `--check` every server is `idle`. `enable`, `disable` and `remove` take `--scope global|project`; without it they change the file that defines the server, the project one when both do. They exit 2 for an unknown server.
 
+## Language servers
+
+```sh
+baked lsp status --json            # servers for the project's languages, install and run state
+baked lsp install go               # install a server for a language (or name a server or Mason package)
+baked lsp check                    # start the project's servers, wait, exit 1 when one does not work
+baked lsp disable biome            # keep baked from starting a server
+```
+
+`baked lsp` shows and changes the [language servers](configuration.md#language-servers) code intelligence uses, through the same code as `/lsp` in the terminal UI and the desktop app's Language servers page. `status` lists the servers for the languages found in the project (`--all` for every server baked knows) with whether each is installed (and where: PATH, baked's own directory or Mason's), turned off, and how to install it; `--json` prints the shape of the local API's [`GET /v1/lsp`](desktop/api.md#language-servers), where `uncovered` names the detected languages no enabled, installed server covers. `install ID` installs from the Mason registry into baked's own directory (the registry is downloaded on first use); `ID` is a server command (`gopls`), a Mason package (`pyright`) or a language (`go`, which picks the first server for it whose toolchain is on PATH, or reports one that is already installed). It needs no prompt and exits 1 when the install fails or the toolchain (`go`, `cargo`, `pip3`) is missing. `check [ID]` starts the project's servers in this process, waits up to a minute for them and prints the status; it exits 1 when an enabled, installed server of a detected language did not start (its error is printed) or a detected language has no server. `restart` is the same as `check`: a headless process keeps no servers between commands. `enable` and `disable` take `--scope global|project`; without it, `disable` writes the project file when it has its own `disabledLspServers` (which replaces the global list) and the global file otherwise, and `enable` removes the server from every list that names it. A running terminal UI or `baked serve` applies them when the server restarts. Unknown servers and bad arguments exit 2.
+
 ## Approvals
 
 There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.

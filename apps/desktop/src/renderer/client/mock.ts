@@ -85,6 +85,7 @@ const FULL_CAPABILITIES = [
   "code-graph",
   "skills-install",
   "mcp",
+  "lsp",
   "custom-commands",
   "settings",
   "git",

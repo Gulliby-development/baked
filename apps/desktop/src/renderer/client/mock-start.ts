@@ -260,6 +260,14 @@ function mockDoctor(workflowId: string, model: string | null, worktree: boolean)
         : "README.md, locales/ru.json. Tasks that edit these files work on top of your changes.",
       fix: "Commit or stash them before the run",
     },
+    {
+      id: "lsp.missing",
+      status: "warn",
+      title: "No language server for python",
+      detail: "Code navigation and diagnostics fall back to tree-sitter for these files.",
+      fix: "baked lsp install pyright-langserver, or Install on the desktop app's Language servers page",
+      subject: "python",
+    },
     { id: "workspace.busy", status: "ok", title: "No run is executing" },
   ];
   if (estimate.budget.fits !== "yes")
