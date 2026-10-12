@@ -10,6 +10,32 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "every read hint exists or is created by the task or an earlier task",
 ];
 
+/**
+ * The requirement ids of a task follow from the criteria it owns: every requirement its criteria
+ * verify, plus the ones the planner listed that exist in the spec. The planner is no longer
+ * rejected (and asked for a complete 30-60k token plan again) over a mapping the spec already
+ * holds (bench round 7: keeplint, pkgdrift and mouse-mover plans). An id the spec lacks is dropped.
+ */
+export function withDerivedRequirements(spec: Spec, graph: TaskGraph): TaskGraph {
+  const known = new Set(spec.requirements.map((r) => r.id));
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => {
+      const derived = task.criterionIds.flatMap(
+        (id) => spec.criteria.find((c) => c.id === id)?.requirementIds ?? [],
+      );
+      if (!derived.length) return task;
+      const requirementIds = [
+        ...new Set([...task.requirementIds.filter((id) => known.has(id)), ...derived]),
+      ].filter((id) => known.has(id));
+      return requirementIds.length === task.requirementIds.length &&
+        requirementIds.every((id, index) => id === task.requirementIds[index])
+        ? task
+        : { ...task, requirementIds };
+    }),
+  };
+}
+
 function ancestorsOf(graph: TaskGraph, id: string): Set<string> {
   const ancestors = new Set<string>();
   const pending = [...(graph.tasks.find((t) => t.id === id)?.dependsOn ?? [])];
