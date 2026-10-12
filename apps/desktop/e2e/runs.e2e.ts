@@ -51,3 +51,37 @@ test("a plan approval is answered from Needs you", async ({ app }) => {
       .getByRole("link", { name: /^Approve usage-totals/ }),
   ).toBeHidden();
 });
+
+test("a run is exported and an artifact redacted from the run screen", async ({ app }) => {
+  const page = await app("#/p/baked/runs/run-settings-dark-mode");
+  await page.getByRole("button", { name: "Export" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Exported to" })).toContainText(
+    ".baked\\exports\\run-settings-dark-mode-",
+  );
+
+  await page.getByRole("button", { name: "Redact…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Redact an artifact?" });
+  await dialog.getByRole("button", { name: "Redact" }).click();
+  await expect(dialog.getByText("Say why the content is removed.")).toBeVisible();
+  await dialog.getByRole("textbox", { name: "Reason" }).fill("Remove a pasted key");
+  await dialog.getByRole("button", { name: "Redact" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("status").filter({ hasText: "Redacted" })).toBeVisible();
+});
+
+test("the run list previews a cleanup and imports a spec folder", async ({ app }) => {
+  const page = await app("#/p/baked/runs");
+  await page.getByRole("button", { name: "Clean up old runs…" }).click();
+  const cleanup = page.getByRole("dialog", { name: "Clean up old runs" });
+  await cleanup.getByRole("button", { name: "Preview" }).click();
+  await expect(cleanup.getByRole("status")).toContainText("Nothing to clean up");
+  await cleanup.getByRole("button", { name: "Done" }).click();
+
+  await page.getByRole("button", { name: "Import…" }).click();
+  const importing = page.getByRole("dialog", { name: "Import a spec or agents" });
+  await importing.getByRole("textbox", { name: "Folder" }).fill("specs/feature");
+  await importing.getByRole("textbox", { name: "Feature ID" }).fill("imported");
+  await importing.getByRole("button", { name: "Import" }).click();
+  await expect(importing.getByRole("status")).toContainText("Imported as candidate");
+  await expect(importing.getByRole("status")).toContainText("Markdown imported as a draft");
+});

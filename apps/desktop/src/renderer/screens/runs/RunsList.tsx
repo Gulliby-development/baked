@@ -13,6 +13,7 @@ import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
 import { stageIconOf } from "./line-model.js";
 import { useBriefs } from "./load.js";
+import { RunsMaintenance } from "./Maintenance.js";
 import { STATUS_TEXT, stageLabel } from "./model.js";
 import { StatusPill } from "./parts.js";
 
@@ -32,8 +33,10 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
   const [list, setList] = useState<RunRow[] | null>(null);
   const [cursor, setCursor] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
+  const [reloads, setReloads] = useState(0);
   const briefs = useBriefs(project.key, list);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `reloads` only triggers a reload after a cleanup
   useEffect(() => {
     let live = true;
     setList(null);
@@ -49,7 +52,7 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
     return () => {
       live = false;
     };
-  }, [project.key, status]);
+  }, [project.key, status, reloads]);
 
   const more = async (): Promise<void> => {
     if (!cursor) return;
@@ -68,17 +71,20 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
 
   return (
     <section aria-label="Workflow runs" className="flex flex-col gap-3">
-      <SegmentGroup aria-label="Filter by status">
-        {FILTERS.map((f) => (
-          <Segment
-            key={f.label}
-            aria-pressed={status === f.status}
-            onClick={() => setStatus(f.status)}
-          >
-            {f.label}
-          </Segment>
-        ))}
-      </SegmentGroup>
+      <div className="flex flex-wrap items-center gap-2">
+        <SegmentGroup aria-label="Filter by status">
+          {FILTERS.map((f) => (
+            <Segment
+              key={f.label}
+              aria-pressed={status === f.status}
+              onClick={() => setStatus(f.status)}
+            >
+              {f.label}
+            </Segment>
+          ))}
+        </SegmentGroup>
+        <RunsMaintenance projectKey={project.key} onChanged={() => setReloads((n) => n + 1)} />
+      </div>
       {error && <Alert tone="error">{error}</Alert>}
       {!error && !list && <Skeleton label="Loading runs" />}
       {list?.length === 0 && (
