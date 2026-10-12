@@ -498,7 +498,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             {...(canRewindTo && !draft && !rewinding
               ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
               : {})}
-            onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
+            onApprove={(id, approve, digest) =>
+              decide(id, () => chat.approve(key, sessionId, id, approve, digest))
+            }
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
             onReviewPlan={(id, review) =>
               decide(id, () => chat.reviewPlan(key, sessionId, id, review))

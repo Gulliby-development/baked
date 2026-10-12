@@ -112,6 +112,7 @@ const KIND_LABEL: Record<string, string> = {
   "fetch-page": "page fetch",
   question: "question",
   "plan-review": "plan review",
+  split: "split proposal",
   split_approval: "plan approval",
 };
 

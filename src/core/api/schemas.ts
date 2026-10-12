@@ -158,7 +158,13 @@ export const MessageBody = z
   });
 export const CompactBody = z.strictObject({});
 export const PromptAnswerBody = z.union([
-  z.strictObject({ approve: z.boolean() }),
+  z.strictObject({
+    approve: z.boolean(),
+    digest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  }),
   z.strictObject({ answer: z.string().max(20_000) }),
   z.strictObject({ action: z.enum(PLAN_ACTIONS), feedback: z.string().max(20_000).optional() }),
 ]);

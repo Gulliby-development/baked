@@ -58,6 +58,7 @@ import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/s
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
 import { usageMarkdown } from "../workflows/usage-markdown.js";
+import type { DraftModel } from "../workflows/v2/gate-draft.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -70,6 +71,7 @@ import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { diagnosticsRoute } from "./diagnostics-routes.js";
+import { gateRoute } from "./gate-routes.js";
 import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
@@ -147,6 +149,7 @@ export const CAPABILITIES = [
   "chat-export",
   "chat-effort",
   "diagnostics",
+  "gate-drafts",
   "progress",
   "coordinator",
 ] as const;
@@ -180,6 +183,8 @@ export interface ApiServerOptions {
   lspDiagnose?: LspRouteContext["diagnose"];
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
+  /** Drafts gates from a sentence; tests pass a scripted model. */
+  gateDraftModel?: DraftModel;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
 }
@@ -441,7 +446,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     {
       // The coordinator starts work through the same paths as POST /v1/workflow/runs and
       // /v1/initiatives; approvals stay with the person.
-      startRun: async ({ prompt, workflow, feature }) =>
+      startRun: async ({ prompt, workflow, feature, worktree }) =>
         launch(
           startArgs({
             commandId: crypto.randomUUID(),
@@ -451,15 +456,27 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
               uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
             owner: "Coordinator",
             ...(workflow ? { workflow } : {}),
+            ...(worktree ? { worktree: true } : {}),
           }),
         ),
-      startInitiative: async ({ initiativeId, prompt }) => {
-        const view = await initiatives.start(
-          initiativeStartRequest({ initiativeId, prompt }, service.config, {
-            commandId: crypto.randomUUID(),
-            ownerLabel: "Coordinator",
-          }),
+      startInitiative: async ({ initiativeId, prompt, plan, approveSplit }) => {
+        let view = await initiatives.start(
+          initiativeStartRequest(
+            { initiativeId, prompt, ...(plan ? { plan } : {}) },
+            service.config,
+            {
+              commandId: crypto.randomUUID(),
+              ownerLabel: "Coordinator",
+            },
+          ),
         );
+        const split = view.pendingDecisions.find((d) => d.kind === "split_approval");
+        if (approveSplit && split)
+          view = await initiatives.approve(
+            view.initiativeId,
+            { commandId: crypto.randomUUID(), expectedRevision: view.revision },
+            { requestId: split.requestId, digest: split.digest },
+          );
         driveInitiative(view.initiativeId);
         return view;
       },
@@ -829,6 +846,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
       (await hooksRoute({ ...ctx, workspace: service.workspace })) ??
+      (await gateRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.gateDraftModel ? { draftModel: options.gateDraftModel } : {}),
+      })) ??
       (await graphRoute({
         ...ctx,
         workspace: service.workspace,

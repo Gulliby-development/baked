@@ -676,6 +676,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/gates"],
   },
   {
+    id: "gate-drafts",
+    group: "Workflow runs",
+    title: "Gates from a plain-language sentence",
+    tui: gap(372, "create a gate from text in the workflow editor"),
+    cli: ["baked workflow gate"],
+    api: ["/v1/workflow/gates/draft", "/v1/workflow/gates/:id"],
+    desktop: gap(372, "step-by-step gate setup dialog"),
+  },
+  {
     id: "run-gates",
     group: "Workflow runs",
     title: "Gates on the run's line: what each does, blocks or advises, last result",

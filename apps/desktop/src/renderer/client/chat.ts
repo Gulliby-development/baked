@@ -128,6 +128,13 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       /** The plan as Markdown. */
       content: string;
     }
+  | {
+      kind: "split";
+      title: string;
+      mode: "runs" | "initiative";
+      flows: { id: string; title: string; paths: string[]; dependsOn: string[] }[];
+      digest: string;
+    }
 );
 
 export interface Usage {
@@ -311,12 +318,13 @@ export const chat = {
   diff: (key: string, id: string) => call<SessionDiffStats>(key, "GET", sessionPath(id, "diff")),
   interrupt: (key: string, id: string) =>
     call<{ interrupted: boolean }>(key, "POST", sessionPath(id, "interrupt"), {}),
-  approve: (key: string, id: string, promptId: string, approve: boolean) =>
+  /** Answers an approval; a split card is approved with the digest it shows. */
+  approve: (key: string, id: string, promptId: string, approve: boolean, digest?: string) =>
     call<{ resolved: true }>(
       key,
       "POST",
       `${sessionPath(id, "prompts")}/${encodeURIComponent(promptId)}`,
-      { approve },
+      approve && digest ? { approve, digest } : { approve },
     ),
   /** Answers a question prompt; an empty answer skips a question that allows it. */
   answer: (key: string, id: string, promptId: string, answer: string) =>
