@@ -32,6 +32,8 @@ The agent picks tools itself; this page lists what they do. `/tools` turns tools
 | `refactor` | Extract function or variable, organize imports, format |
 | `undo_edit` | Reverts the last edits of a file |
 
+Line endings are kept per file. `read` adds a `line endings: CRLF` header (or a mixed-file note with the line counts) for files that are not plain LF, and shows lines without the carriage return. `edit_file` and `multi_edit` match `oldString` against the file with either ending, write the result back with the file's dominant ending (CRLF or LF) and normalize the minority lines of a mixed file to it, so a CRLF checkout never ends up half LF. A new file takes the `end_of_line` of the nearest `.editorconfig`, else the dominant ending of a few sibling files, else the text as given.
+
 Before an edit the file is snapshotted; an edit is refused if the file changed on disk in the meantime. Diagnostics are compared before and after, and the agent is told which errors it introduced or fixed, also in other files. Writes outside the project directory and edits of sensitive files ask for approval in the terminal UI.
 
 ## Running things

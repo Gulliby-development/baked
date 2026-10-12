@@ -10,6 +10,7 @@ import { isForbidden } from "../security/forbidden.js";
 import { getIOClient, type ReadFileResult } from "../workers/io-client.js";
 import { binaryHint } from "./binary-detect.js";
 import { emitFileRead } from "./file-events.js";
+import { describeLineEndings } from "./line-endings.js";
 import { contentHash } from "./tool-utils.js";
 
 function toRelPath(abs: string): string {
@@ -137,6 +138,7 @@ async function readViaWorker(filePath: string, args: ReadFileArgs): Promise<Tool
 
   emitFileRead(filePath);
 
+  const eolHeader = result.lineEnding ? `line endings: ${result.lineEnding}\n` : "";
   const lineCount = result.numbered.split("\n").length;
   const isRangeRead = args.startLine != null || args.endLine != null;
 
@@ -153,7 +155,7 @@ async function readViaWorker(filePath: string, args: ReadFileArgs): Promise<Tool
       const truncatedLines = result.numbered.split("\n").slice(0, SMART_TRUNCATE_LINES);
       return {
         success: true,
-        output: `${truncatedLines.join("\n")}${outline}${tail}`,
+        output: `${eolHeader}${truncatedLines.join("\n")}${outline}${tail}`,
       };
     }
   }
@@ -171,7 +173,7 @@ async function readViaWorker(filePath: string, args: ReadFileArgs): Promise<Tool
       outline ||
       `\n... ${String(remaining)} more lines. Use ranges:[{start:${String(nextOffset)}, end:N}] to continue.`;
   }
-  return { success: true, output: `${output}${tail}` };
+  return { success: true, output: `${result.numbered === "" ? "" : eolHeader}${output}${tail}` };
 }
 
 /** Main-thread fallback — used for symbol reads and when worker is unavailable. */
@@ -234,6 +236,7 @@ async function readOnMainThread(filePath: string, args: ReadFileArgs): Promise<T
   }
 
   const lines = content.split("\n");
+  const eolLabel = describeLineEndings(content);
 
   const start = (args.startLine ?? 1) - 1;
   const end = args.endLine ?? lines.length;
@@ -245,14 +248,15 @@ async function readOnMainThread(filePath: string, args: ReadFileArgs): Promise<T
 
   const numbered = slice
     .map((line: string, i: number) => {
-      const l = line.length > MAX_LINE_LENGTH ? `${line.slice(0, MAX_LINE_LENGTH)}...` : line;
+      const text = line.endsWith("\r") ? line.slice(0, -1) : line;
+      const l = text.length > MAX_LINE_LENGTH ? `${text.slice(0, MAX_LINE_LENGTH)}...` : text;
       return `${String(start + i + 1).padStart(4)}  ${l}`;
     })
     .join("\n");
 
   emitFileRead(filePath);
 
-  let output = numbered;
+  let output = numbered === "" || !eolLabel ? numbered : `line endings: ${eolLabel}\n${numbered}`;
   if (truncated) {
     output += `\n\n(File has ${String(totalLines)} lines. Showing first ${String(MAX_READ_LINES)}. Use ranges:[{start:${String(start + MAX_READ_LINES)}, end:N}] to continue.)`;
   }
