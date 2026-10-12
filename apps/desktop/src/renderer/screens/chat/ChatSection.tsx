@@ -12,6 +12,7 @@ import { ApiError } from "../../client/api.js";
 import {
   CHAT_EXPORT_CAPABILITY,
   CHAT_UNDO_CAPABILITY,
+  CHECKPOINTS_CAPABILITY,
   COMPACTION_CAPABILITY,
   CUSTOM_COMMANDS_CAPABILITY,
   DIFF_STATS_CAPABILITY,
@@ -224,6 +225,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   }, [key]);
   const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
   const canRewind = capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
+  const canRewindTo = canRewind && capabilities?.includes(CHECKPOINTS_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
   // Older servers list commands under `library` but send them to the model unexpanded.
@@ -353,9 +355,11 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
         }
       : undefined;
 
-  const rewind = (action: "undo" | "redo"): void => {
+  /** Undo (to `toCheckpoint` when given, already confirmed in the turn) or redo. */
+  const rewind = (action: "undo" | "redo", toCheckpoint?: number): void => {
     if (
       action === "undo" &&
+      toCheckpoint === undefined &&
       !window.confirm(
         "Undo the last turn? It is dropped from the chat and the files it edited are restored; files changed since then stay as they are. Redo puts it back until you send a new message.",
       )
@@ -363,7 +367,10 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       return;
     setRewinding(true);
     setActionError(null);
-    (action === "undo" ? chat.undo(key, sessionId) : chat.redo(key, sessionId))
+    (action === "undo"
+      ? chat.undo(key, sessionId, toCheckpoint === undefined ? {} : { toCheckpoint })
+      : chat.redo(key, sessionId)
+    )
       .then((detail) => {
         dispatch({ type: "snapshot", detail });
         setRewindReport(rewindReportLines(action, detail.rollback));
@@ -481,6 +488,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             deciding={deciding}
             forking={forking}
             {...(draft ? {} : { onFork: fork })}
+            {...(canRewindTo && !draft && !rewinding
+              ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
+              : {})}
             onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
             onReviewPlan={(id, review) =>

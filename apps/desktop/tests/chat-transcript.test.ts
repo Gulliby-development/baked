@@ -9,6 +9,7 @@ import {
   reduceTranscript,
   type Transcript,
   turnCount,
+  turnEnds,
 } from "../src/renderer/screens/chat/transcript.ts";
 
 const USAGE = { input: 10, output: 5, cacheRead: 0 };
@@ -321,6 +322,24 @@ describe("chat transcript", () => {
 });
 
 describe("undo and redo", () => {
+  test("each earlier turn ends at its last answer, counted as the server counts turns", () => {
+    const messages = [
+      { id: "sys", role: "system" as const, content: "note", timestamp: 0 },
+      { id: "u1", role: "user" as const, content: "One", timestamp: 1 },
+      { id: "a1", role: "assistant" as const, content: "ok", timestamp: 2 },
+      { id: "s1", role: "user" as const, content: "also", timestamp: 3, isSteering: true },
+      { id: "u2", role: "user" as const, content: "Two", timestamp: 4 },
+      { id: "a2", role: "assistant" as const, content: "ok", timestamp: 5 },
+      { id: "u3", role: "user" as const, content: "Three", timestamp: 6 },
+      { id: "a3", role: "assistant" as const, content: "ok", timestamp: 7 },
+    ];
+    expect([...turnEnds(messages)]).toEqual([
+      ["a1", 1],
+      ["a2", 2],
+    ]);
+    expect(turnEnds(messages.slice(0, 3)).size).toBe(0);
+  });
+
   test("the redo stack and the turn count come from the session", () => {
     const messages = [
       { id: "u1", role: "user" as const, content: "One", timestamp: 1 },
