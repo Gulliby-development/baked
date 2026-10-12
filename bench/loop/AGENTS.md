@@ -354,7 +354,7 @@ No other messages. Progress goes into `state.json` and the round folder.
 
 ## Rules for every role
 
-- Follow BAKED's root `AGENTS.md` for anything that touches the BAKED repository (branches, checks, docs, issues, the board, English everywhere).
+- Follow BAKED's root `AGENTS.md` for anything that touches the BAKED repository (branches, checks, docs, issues, the board, English everywhere). That includes changes to this spec: a BAKED branch is always `feature/<name>` or `bugfix/<name>`, never `docs/` or another prefix.
 - Write all files, issues, PRs, READMEs and commit messages in English. Only messages to the owner are in Russian.
 - Evidence over opinion: every claim about a run cites the run id and the artifact, event or command output it comes from.
 - Think beyond tuning (owner's rule): for each problem, give the point fix and the broader capability that would make the whole class of problem rarer.
