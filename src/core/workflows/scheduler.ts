@@ -97,7 +97,14 @@ import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consist
 import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun } from "./recovery.js";
-import { abortableDelay, accountRefusal, isTransient, retryAfterMs, retryDelay } from "./retry.js";
+import {
+  abortableDelay,
+  accountRefusal,
+  isTransient,
+  reportsLostTool,
+  retryAfterMs,
+  retryDelay,
+} from "./retry.js";
 import { buildReviewBundle, REVIEW_BUNDLE_PATH } from "./review-bundle.js";
 import {
   capturePreImage,
@@ -2310,6 +2317,19 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           task.writes.length > 0 &&
           !(await this.correctionSatisfied(runId, child, policy, task, result, signal, root)))
       ) {
+        if (
+          changed.length === 0 &&
+          reportsLostTool(result) &&
+          this.restartOnce(runId, state, child, task.id, "a tool was unavailable to its worker", [])
+        ) {
+          // A fresh session gets the task again; a session without its edit tool stays without it.
+          this.store.transaction(() => {
+            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+          });
+          return;
+        }
         if (changed.length > 0 && this.continueAtCap(runId, state, child, task)) {
           // The task is ready again and the next pass of the task loop continues it.
           this.store.transaction(() => {
@@ -2540,18 +2560,32 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           ["prepared", "unknown"].includes(e.status) && intentRoot(e.intent_json) === entry.path,
       );
     if (unsettled || commandMayBeRunning(this.store, runId)) return false;
+    return this.restartOnce(
+      runId,
+      state,
+      entry.child,
+      entry.task.id,
+      outcome.reason,
+      outcome.edits?.changed ?? [],
+    );
+  }
+  /** Records the one restart a task gets per run; false when it already had it. */
+  private restartOnce(
+    runId: string,
+    state: RuntimeState,
+    stepId: string,
+    taskId: string,
+    reason: string,
+    carriedPaths: string[],
+  ): boolean {
+    if ((state.taskRestarts[taskId] ?? 0) > 0) return false;
     this.store.transaction(() => {
-      state.taskRestarts[entry.task.id] = 1;
+      state.taskRestarts[taskId] = 1;
       this.store.artifact(
         runId,
         "recovery",
-        `tasks/restarts/${entry.task.id}.json`,
-        canonical({
-          taskId: entry.task.id,
-          stepId: entry.child,
-          reason: outcome.reason,
-          carriedPaths: outcome.edits?.changed ?? [],
-        }),
+        `tasks/restarts/${taskId}.json`,
+        canonical({ taskId, stepId, reason, carriedPaths }),
       );
       this.store.saveState(runId, state);
     });
@@ -2686,6 +2720,17 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             "INPUT_CHANGED",
             `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
           ),
+        };
+      if (
+        changed.length === 0 &&
+        reportsLostTool(result) &&
+        (state.taskRestarts[task.id] ?? 0) === 0
+      )
+        return {
+          kind: "interrupted",
+          entry,
+          leaseLost: false,
+          reason: "a tool was unavailable to its worker, which submitted no change",
         };
       const refused = takeHashRefusals(root);
       if (

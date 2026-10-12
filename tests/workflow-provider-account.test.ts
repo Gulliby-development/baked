@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { accountRefusal, isTransient } from "../src/core/workflows/retry.js";
+import { accountRefusal, isTransient, reportsLostTool, retryDelay } from "../src/core/workflows/retry.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -26,6 +26,25 @@ describe("provider account refusals", () => {
     const rateLimit = { statusCode: 429, message: "Rate limit reached for requests" };
     expect(accountRefusal(rateLimit)).toBeNull();
     expect(isTransient(rateLimit)).toBe(true);
+  });
+
+  test("an OAuth refresh collision is transient and waits 30 to 60 seconds, three times", () => {
+    const collision = new Error("Another Claude Code process is refreshing the OAuth token, retry in a minute");
+    expect(isTransient(collision)).toBe(true);
+    expect(accountRefusal(Object.assign(collision, { statusCode: 401 }))).toBeNull();
+    for (const retry of [0, 1, 2]) {
+      const delay = retryDelay(collision, retry);
+      expect(delay).toBeGreaterThanOrEqual(30_000);
+      expect(delay).toBeLessThan(60_000);
+    }
+    expect(retryDelay(collision, 3)).toBeNull();
+  });
+
+  test("a blocked implementation that names a missing edit tool is a lost tool", () => {
+    const blocked = { outcome: "blocked", summary: "The edit_file tool is not available in this session", unresolved: [] };
+    expect(reportsLostTool(blocked)).toBe(true);
+    expect(reportsLostTool({ ...blocked, outcome: "implemented" })).toBe(false);
+    expect(reportsLostTool({ outcome: "blocked", summary: "Cannot satisfy FR-002 as written", unresolved: ["FR-002 is ambiguous"] })).toBe(false);
   });
 
   test("block the run with provider_account after one call", async () => {

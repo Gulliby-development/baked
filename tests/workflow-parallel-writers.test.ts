@@ -80,6 +80,8 @@ class ParallelExecutor implements AgentExecutor {
   resolution: Record<string, string> = {};
   /** Tasks whose first attempt writes a partial file and stops at its token cap. */
   capped = new Set<string>();
+  /** Tasks whose first attempt reports its edit tool unavailable and submits no change. */
+  lostTool = new Set<string>();
   /** Attempts per task whose worker writes a partial file and then dies without a result. */
   crashes: Record<string, number> = {};
   /** The earlier edits each implementation was handed. */
@@ -127,6 +129,12 @@ class ParallelExecutor implements AgentExecutor {
         await write(first, "partial");
         throw new Error("worker process exited");
       }
+      if (this.lostTool.delete(task.id))
+        return {
+          output: { schemaVersion: 1, taskId: task.id, outcome: "blocked", summary: "The edit_file tool is not available in this session", evidenceIds: [], unresolved: ["edit_file unavailable"] },
+          inputTokens: 25,
+          outputTokens: 25,
+        };
       if (this.capped.delete(task.id)) {
         await write(first, "partial");
         service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
@@ -367,6 +375,54 @@ describe("workflow parallel writers", () => {
     await fx.service.resume(run.runId, { commandId: newId(), expectedRevision: fx.store.run(run.runId).revision });
     expect((await fx.drive(run.runId)).status).toBe("completed");
     expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
+  });
+
+  test("a task whose session lost its edit tool is restarted once in a fresh session", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.lostTool.add("T002");
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(fx.lastError(run.runId)).toBe("");
+    expect(done.status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
+    expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
+  });
+
+  test("a task that reports its tool unavailable again after the restart blocks the run", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }], { "a.txt": "A" });
+    const execute = fx.executor.execute.bind(fx.executor);
+    fx.executor.execute = async (request) => {
+      if (request.task?.id === "T001" && request.profile.output === "implementation") fx.executor.lostTool.add("T001");
+      return execute(request);
+    };
+    const run = await fx.start(1);
+    const stopped = await fx.complete(run.runId);
+    expect(stopped.status).toBe("blocked");
+    expect(stopped.reason).toBe("invalid_output");
+    expect(fx.store.state(run.runId).taskRestarts).toEqual({ T001: 1 });
+  });
+
+  test("a run blocked with owner_lost resumes itself under assume, a bounded number of times", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" }, { policy: { clarification: "assume" } });
+    fx.service.ownerLostBackoffMs = [0, 0, 0];
+    fx.executor.crashes = { T002: 2 };
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(fx.store.state(run.runId).ownerLostResumes).toBe(1);
+    expect(fx.store.artifacts(run.runId).some((a) => a.logical_path === "owner-lost/resume-1.json")).toBe(true);
+  });
+
+  test("an owner_lost run stays blocked once its automatic resumes are spent", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" }, { policy: { clarification: "assume" } });
+    fx.service.ownerLostBackoffMs = [0];
+    fx.executor.crashes = { T002: 5 };
+    const run = await fx.start(2);
+    const stopped = await fx.complete(run.runId);
+    expect(stopped.status).toBe("blocked");
+    expect(stopped.reason).toBe("owner_lost");
+    expect(fx.store.state(run.runId).ownerLostResumes).toBe(1);
   });
 
   test("a batch shrinks to the tasks the remaining budget covers", async () => {
