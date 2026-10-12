@@ -17,6 +17,7 @@ import {
   type SymbolInfo,
   type SymbolKind,
 } from "../types.js";
+import { upgradeLegacyDylink } from "./legacy-dylink.js";
 
 // Tree-sitter query patterns per language
 const QUERIES: Record<string, string> = {
@@ -227,12 +228,12 @@ const GRAMMAR_FILES: Record<string, string> = {
 };
 
 // Dynamically import web-tree-sitter types
-type TSParser = import("web-tree-sitter").Parser;
-type TSLanguage = import("web-tree-sitter").Language;
-type TSTree = import("web-tree-sitter").Tree;
-type TSQuery = import("web-tree-sitter").Query;
-type TSQueryCapture = import("web-tree-sitter").QueryCapture;
-type TSNode = import("web-tree-sitter").Node;
+type TSParser = import("web-tree-sitter-engine").Parser;
+type TSLanguage = import("web-tree-sitter-engine").Language;
+type TSTree = import("web-tree-sitter-engine").Tree;
+type TSQuery = import("web-tree-sitter-engine").Query;
+type TSQueryCapture = import("web-tree-sitter-engine").QueryCapture;
+type TSNode = import("web-tree-sitter-engine").Node;
 
 function extractImportSpecifiers(node: TSNode, language: Language): string[] {
   const specifiers: string[] = [];
@@ -1398,7 +1399,10 @@ export class TreeSitterBackend implements IntelligenceBackend {
     // six levels below the node_modules that holds the hoisted grammars.
     let dir = import.meta.dir;
     for (;;) {
-      for (const sub of ["node_modules/web-tree-sitter", "node_modules/tree-sitter-wasms/out"]) {
+      for (const sub of [
+        "node_modules/web-tree-sitter-engine",
+        "node_modules/tree-sitter-wasms/out",
+      ]) {
         const p = join(dir, sub, basename);
         if (existsSync(p)) return p;
       }
@@ -1410,16 +1414,14 @@ export class TreeSitterBackend implements IntelligenceBackend {
   }
 
   private async doInit(): Promise<void> {
-    // web-tree-sitter ≤0.25.x ships tree-sitter.wasm; ≥0.26.x renamed to web-tree-sitter.wasm.
-    // Try both so bundled installs work regardless of which version built the wasm dir.
-    let wasmPath = this.resolveWasm("tree-sitter.wasm");
+    // The engine runs on web-tree-sitter 0.27 (the `web-tree-sitter-engine` alias) and its
+    // web-tree-sitter.wasm. tree-sitter.wasm next to it is 0.25.10, which OpenTUI pins for syntax
+    // highlighting, and does not fit the 0.27 glue code.
+    const wasmPath = this.resolveWasm("web-tree-sitter.wasm");
     if (!existsSync(wasmPath)) {
-      wasmPath = this.resolveWasm("web-tree-sitter.wasm");
+      throw new Error(`web-tree-sitter.wasm not found in ${BUNDLED_WASM_DIR} or node_modules`);
     }
-    if (!existsSync(wasmPath)) {
-      throw new Error(`tree-sitter.wasm not found in ${BUNDLED_WASM_DIR} or node_modules`);
-    }
-    const mod = await import("web-tree-sitter");
+    const mod = await import("web-tree-sitter-engine");
     TSQueryClass = mod.Query;
     await mod.Parser.init({
       locateFile: () => wasmPath,
@@ -1436,9 +1438,11 @@ export class TreeSitterBackend implements IntelligenceBackend {
     if (!wasmFile) return null;
 
     try {
-      const mod = await import("web-tree-sitter");
+      const mod = await import("web-tree-sitter-engine");
       const wasmPath = this.resolveWasm(`tree-sitter-wasms/out/${wasmFile}`);
-      const lang = await mod.Language.load(wasmPath);
+      const lang = await mod.Language.load(
+        upgradeLegacyDylink(new Uint8Array(await readFile(wasmPath))),
+      );
       // Validate the grammar actually works — WASM dynamic linker errors
       // (e.g. "resolved is not a function") are deferred until first use,
       // so Language.load() can succeed with a broken grammar. Parse real

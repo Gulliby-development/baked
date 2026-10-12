@@ -207,9 +207,10 @@ fi
 # Tree-sitter WASM runtime + grammars + OpenTUI syntax assets
 echo "    Bundling tree-sitter assets..."
 mkdir -p "${DEPS_DIR}/wasm"
-# web-tree-sitter ≤0.25.x ships tree-sitter.wasm; ≥0.26.x renamed to web-tree-sitter.wasm
-cp node_modules/web-tree-sitter/tree-sitter.wasm "${DEPS_DIR}/wasm/" 2>/dev/null \
-  || cp node_modules/web-tree-sitter/web-tree-sitter.wasm "${DEPS_DIR}/wasm/tree-sitter.wasm"
+# tree-sitter.wasm is web-tree-sitter 0.25.10, which OpenTUI's syntax highlighting pins;
+# web-tree-sitter.wasm is 0.27 (the web-tree-sitter-engine alias) for the code intelligence backend.
+cp node_modules/web-tree-sitter/tree-sitter.wasm "${DEPS_DIR}/wasm/"
+cp node_modules/web-tree-sitter-engine/web-tree-sitter.wasm "${DEPS_DIR}/wasm/"
 cp node_modules/tree-sitter-wasms/out/*.wasm "${DEPS_DIR}/wasm/"
 cp -r node_modules/@opentui/core/assets "${DEPS_DIR}/opentui-assets"
 # Pre-bundle the worker with all deps (web-tree-sitter) into a single file
@@ -413,6 +414,7 @@ NATIVE_LIB="${BAKED_DIR}/native/${NATIVE_TRIPLET}/libopentui.${LIB_EXT}"
 REQUIRED_FILES=(
   "${BIN_DIR}/baked"
   "${BAKED_DIR}/wasm/tree-sitter.wasm"
+  "${BAKED_DIR}/wasm/web-tree-sitter.wasm"
 
   "${NATIVE_LIB}"
 )
