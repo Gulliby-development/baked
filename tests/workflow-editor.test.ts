@@ -17,6 +17,7 @@ import {
   effectiveGates,
   estimateDefinition,
   type GateTarget,
+  insertWaitStage,
   markSaved,
   moveCursor,
   moveGate,
@@ -26,6 +27,7 @@ import {
   readEditorSource,
   removeGate,
   removeTransition,
+  removeWaitStage,
   stageFields,
   switchPane,
   targetsOf,
@@ -277,6 +279,31 @@ describe("workflow editor", () => {
     expect(stageFields(state, "checks").map((f) => f.key)).toEqual(["loop:checks-repair"]);
     state = ok(changeStageField(state, "approve", "covers:implement", 1));
     expect(validateEditor(state).flatMap((g) => g.messages)).toContain("implement has no approval stage");
+  });
+
+  test("W inserts a wait stage on a passed edge; E changes its interval and timeout; D removes it", () => {
+    const { open } = setup();
+    const source = duplicateAsCustom(open("standard"));
+    let state = ok(insertWaitStage(source, "review"));
+    const wait = state.definition.stages.find((s) => s.type === "wait");
+    expect(wait).toMatchObject({ id: "wait", gates: [], intervalSeconds: 30, timeoutMinutes: 30 });
+    expect(state.definition.stages.map((s) => s.id).indexOf("wait")).toBe(state.definition.stages.map((s) => s.id).indexOf("review") + 1);
+    expect(state.definition.transitions.find((t) => t.id === "review-done")?.to).toBe("wait");
+    expect(state.definition.transitions.find((t) => t.id === "wait-passed")).toMatchObject({ from: "wait", to: "done", on: "passed", carries: "gates" });
+    expect(state.definition.limits.maxStageVisits).toBeGreaterThanOrEqual(state.definition.stages.length);
+    expect(validateEditor(state).flatMap((g) => g.messages)).toContain("needs at least one gate");
+    expect(targetsOf(state.definition, "wait")[0]).toEqual(stageTarget("wait"));
+    expect(addGate(state, stageTarget("wait"), "correctness-review").error).toContain("a wait stage polls command gates only");
+    state = ok(addGate(state, stageTarget("wait"), "tests"));
+    expect(validateEditor(state)).toEqual([]);
+    expect(stageFields(state, "wait").map((f) => `${f.key}=${f.value}`)).toEqual(["interval=30s", "timeout=30 min"]);
+    state = ok(changeStageField(state, "wait", "interval", 1));
+    state = ok(changeStageField(state, "wait", "timeout", -1));
+    expect(state.definition.stages.find((s) => s.id === "wait")).toMatchObject({ intervalSeconds: 60, timeoutMinutes: 15 });
+    expect(removeWaitStage(state, "review").error).toBe("Only a wait stage can be removed here");
+    state = ok(removeWaitStage(state, "wait"));
+    expect(state.definition.stages.some((s) => s.type === "wait")).toBe(false);
+    expect(state.definition.transitions).toEqual(source.definition.transitions);
   });
 
   test("the cursor moves per pane and a new stage resets the panes to its right", () => {
