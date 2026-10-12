@@ -1159,13 +1159,40 @@ export function validateSpecCoverage(spec: Spec): string[] {
   return errors;
 }
 
+const REPOSITORY_FILE =
+  /\b(?:readme|changelog|license|contributing|dockerfile|makefile)(?:\.\w+)?\b|(?:^|[\s\x60'"(])[\w./-]*\.(?:md|mdx|txt|rst|json|jsonc|ya?ml|toml|ini|cfg|env|lock|[cm]?[jt]sx?|py|go|rs|rb|java|kt|cs|php|sh|css|html)\b/im;
+
+/**
+ * Criteria about a file of the repository (README text, docs, configuration, source) whose method
+ * is manual. A reviewer reads the file and the checks can grep it; only a person can answer a
+ * manual request, so the run would wait for someone who just reads the same file (run 2fbac09c,
+ * AC-003: 12 hours).
+ */
+export function manualRepositoryCriteria(spec: Spec): string[] {
+  return spec.criteria
+    .filter(
+      (c) =>
+        c.method === "manual" &&
+        REPOSITORY_FILE.test(`${c.given}
+${c.when}
+${c.then}`),
+    )
+    .map((c) => c.id);
+}
+
 /** The spec defects as corrections for the spec author, who can add or relink criteria. */
 export function specCoverageProblems(spec: Spec): string[] {
-  return validateSpecCoverage(spec).map((error) =>
-    /^(requirement without criterion|engineering requirement deferred) /.test(error)
-      ? `${error}: add an acceptance criterion with a non-post-release method that lists this requirement in requirementIds, or mark the requirement post-release.`
-      : error,
-  );
+  return [
+    ...validateSpecCoverage(spec).map((error) =>
+      /^(requirement without criterion|engineering requirement deferred) /.test(error)
+        ? `${error}: add an acceptance criterion with a non-post-release method that lists this requirement in requirementIds, or mark the requirement post-release.`
+        : error,
+    ),
+    ...manualRepositoryCriteria(spec).map(
+      (id) =>
+        `criterion ${id} is about a file in the repository but has method manual: use method automated (a command check or the reviewer reading the file), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+    ),
+  ];
 }
 
 /** Semantic validation supplements schema validation. Runtime must also validate paths against realpath. */
