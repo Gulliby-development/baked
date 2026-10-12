@@ -69,6 +69,8 @@ interface Behavior {
   gapRepeatOf?: (round: number) => string | null | undefined;
   /** The gaps carry a reproduction the host can run. */
   gapRepro?: boolean;
+  /** Convergence reports AC-001 inconclusive with no finding, as for a criterion only another operating system can prove. */
+  unverifiable?: boolean;
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
@@ -170,7 +172,13 @@ class V2Executor implements AgentExecutor {
       case "convergence": {
         if (this.behavior.unknownEffect === "converge") this.leaveUnknownEffect(request);
         const round = ++this.convergences;
-        output = round <= (this.behavior.gaps ?? 0)
+        output = this.behavior.unverifiable
+          ? {
+              schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "inconclusive",
+              coverage: [{ criterionId: "AC-001", verdict: "inconclusive", evidenceIds: [], explanation: "Only the Windows run is evidenced; macOS and Linux execution remain unconfirmed." }, ...this.passing(evidence, "Command checked the value").slice(1)],
+              findings: [],
+            }
+          : round <= (this.behavior.gaps ?? 0)
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
               coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }, ...this.passing(evidence, "Command checked the value").slice(1)],
@@ -426,6 +434,22 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+  }, 60000);
+
+  // Bench round 08, propdrift eea2e0e9: AC-008 "confirmed on Windows, macOS, and Linux" came back
+  // inconclusive with no finding twice and the run blocked with "Coverage is incomplete".
+  test("an inconclusive automated criterion with no finding becomes a known limitation", async () => {
+    const { start, complete, service } = setup({ unverifiable: true, criteria: 2 });
+    const run = await start("sdd");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+    expect(service.store.run(run.runId).convergence_rounds).toBe(0);
+    const limitations = service.store.state(run.runId).limitations;
+    expect(limitations.map((l) => [l.findingId, l.criterionIds, l.decidedBy])).toEqual([["unverified-AC-001", ["AC-001"], "notes"]]);
+    expect(limitations[0]?.claim).toContain("macOS and Linux execution remain unconfirmed");
+    expect(final.limitations).toEqual({ count: 1, ids: ["unverified-AC-001"] });
   }, 60000);
 
   test("a spec that renames the feature keeps the run's feature ID", async () => {

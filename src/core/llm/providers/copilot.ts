@@ -6,7 +6,7 @@ import { CURRENT_VERSION } from "../../version.js";
 import { getCompatReasoningBody } from "../compat-reasoning.js";
 import { copilotIdeLogin } from "../detected-logins.js";
 import { withSessionHeaders } from "./reasoning-fetch.js";
-import type { ProviderDefinition, ProviderModelInfo } from "./types.js";
+import type { CreateModelOptions, ProviderDefinition, ProviderModelInfo } from "./types.js";
 
 const ENV_VAR = "COPILOT_API_KEY";
 const COPILOT_API = "https://api.githubcopilot.com";
@@ -176,10 +176,13 @@ function assertChatCompletionsSupported(modelId: string): void {
   );
 }
 
-function createCopilotModel(modelId: string): LanguageModel {
+function createCopilotModel(modelId: string, options?: CreateModelOptions): LanguageModel {
   assertChatCompletionsSupported(modelId);
   const githubToken = getGitHubToken();
-  const reasoningBody = getCompatReasoningBody(`copilot/${modelId}`, loadConfig());
+  const reasoningBody = getCompatReasoningBody(
+    `copilot/${modelId}`,
+    options?.config ?? loadConfig(),
+  );
   const copilotFetch = createCopilotFetch(githubToken, reasoningBody);
 
   // Copilot exposes /chat/completions for both OpenAI and Claude models

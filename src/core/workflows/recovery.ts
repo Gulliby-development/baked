@@ -1,5 +1,5 @@
 import { canonical } from "../specs/hash.js";
-import type { EffectJournal } from "./effects.js";
+import { type EffectJournal, effectFile, fileHash } from "./effects.js";
 import type { WorkflowStore } from "./store.js";
 
 export function recoverRun(store: WorkflowStore, journal: EffectJournal, runId: string): boolean {
@@ -112,4 +112,44 @@ export function requestRecovery(store: WorkflowStore, runId: string, effectIds: 
     });
   }
   store.transition(runId, "waiting", "interrupted_effect");
+}
+
+/**
+ * Decides the file edits an interrupted attempt left `prepared` or `unknown` from the files, the
+ * choice an operator makes with `record-applied` or `record-not-applied`: a file that still has
+ * its pre-image was not written (`failed`), a file that differs from it was (`applied`, with the
+ * hash it has now). Commands and deliveries are left alone. Call inside a store transaction.
+ * Returns the settled effect IDs.
+ */
+export function settleInterruptedEdits(
+  store: WorkflowStore,
+  runId: string,
+  attemptId: string,
+): string[] {
+  const settled: string[] = [];
+  for (const effect of store.effects(runId)) {
+    if (effect.attempt_id !== attemptId || effect.kind !== "file_patch") continue;
+    if (!["prepared", "unknown"].includes(effect.status) || effect.after_hash !== null) continue;
+    let current: string | null;
+    try {
+      current = fileHash(effectFile(store.workspace, effect.intent_json));
+    } catch {
+      continue;
+    }
+    if (current === effect.before_hash) store.effectStatus(runId, effect.id, "failed");
+    else store.finishFileEffect(runId, effect.id, current);
+    settled.push(effect.id);
+  }
+  if (settled.length)
+    store.artifact(
+      runId,
+      "recovery",
+      `stalled-edits/${settled[0]}.json`,
+      canonical({
+        attemptId,
+        effects: settled,
+        outcome: "edits of a stalled attempt settled from the file hashes",
+      }),
+    );
+  return settled;
 }

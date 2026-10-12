@@ -15,6 +15,8 @@ const IDLE_MS = 10 * 60_000;
 
 export interface ClaudeCodeCall {
   modelId: string;
+  /** Reasoning effort (`--effort`); Claude Code's default when absent. */
+  effort?: string;
   parts: ClaudeCodePromptParts;
   abortSignal?: AbortSignal;
 }
@@ -93,6 +95,7 @@ export interface ClaudeCodeProcess {
 
 export type ClaudeCodeProcessFactory = (options: {
   modelId: string;
+  effort?: string;
   instructions: string;
   schema: JSONSchema7;
 }) => ClaudeCodeProcess;
@@ -100,6 +103,7 @@ export type ClaudeCodeProcessFactory = (options: {
 interface SessionState {
   process: ClaudeCodeProcess;
   modelId: string;
+  effort: string | undefined;
   instructions: string;
   schemaKey: string;
   /** Transcript entries the session already holds, as `role\ntext` keys. */
@@ -210,6 +214,7 @@ let workDirCounter = 0;
  */
 export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
   modelId,
+  effort,
   instructions,
   schema,
 }) => {
@@ -235,6 +240,8 @@ export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
     "--json-schema",
     JSON.stringify(schema),
     ...OPTIONAL_FLAGS.filter((flag) => flags.has(flag)),
+    // An older CLI without the flag answers at its own default effort.
+    ...(effort && flags.has("--effort") ? ["--effort", effort] : []),
   ];
 
   const child = spawn(claudeCodeCommand(), args, {
@@ -373,6 +380,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     let best: { session: SessionState; fromIndex: number } | null = null;
     for (const session of this.sessions) {
       if (session.busy || session.closed || session.modelId !== call.modelId) continue;
+      if (session.effort !== call.effort) continue;
       if (session.instructions !== call.parts.instructions || session.schemaKey !== schemaKey)
         continue;
       if (session.messages.length > keys.length) continue;
@@ -394,12 +402,14 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
   private startSession(call: ClaudeCodeCall, schemaKey: string): SessionState {
     const proc = this.spawnProcess({
       modelId: call.modelId,
+      ...(call.effort ? { effort: call.effort } : {}),
       instructions: call.parts.instructions,
       schema: call.parts.schema,
     });
     const session: SessionState = {
       process: proc,
       modelId: call.modelId,
+      effort: call.effort,
       instructions: call.parts.instructions,
       schemaKey,
       messages: [],
