@@ -41,6 +41,7 @@ const PROVIDERS: ProviderEntry[] = getAllProviders()
     url: p.keyUrl ? `https://${p.keyUrl}` : "",
     desc: p.description ?? "",
     icon: p.icon,
+    autoDetect: Boolean(p.detectLogin),
   }));
 
 // ── Helpers ──
@@ -103,7 +104,7 @@ function ProviderRow({
   // Keep each row to a single line so VirtualList's per-row height stays exact;
   // a wrapped description would desync the scroll viewport. The provider name
   // always wins, the description is truncated to whatever width is left.
-  const tagText = configured ? `  ✓ ${tag}` : autoAvailable ? "  ✓ auto" : "";
+  const tagText = configured ? `  ✓ ${tag}` : autoAvailable ? "  ✓ detected" : "";
   const fixed = 6 + p.label.length + 3 + tagText.length;
   const descBudget = width - 4 - fixed;
   const showDesc = descBudget > 1;

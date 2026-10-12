@@ -421,6 +421,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/graph"],
   },
   {
+    id: "work-progress",
+    group: "Tools and code intelligence",
+    title: "Progress of long waits: opening the project, indexing, starting a run",
+    tui: ["/repo-map: files indexed while scanning"],
+    cli: ["--headless: indexing progress on stderr", "baked workflow run: progress on a terminal"],
+    api: ["/v1/progress"],
+    desktop: ["project/graph: indexing count and bar"],
+  },
+  {
     id: "tools-toggle",
     group: "Tools and code intelligence",
     title: "Enable or disable tools",
@@ -457,6 +466,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/skills"],
   },
   {
+    id: "baked-help",
+    group: "Tools and code intelligence",
+    title: "Ask the agent about BAKED itself (bundled docs, baked_help tool)",
+    tui: ["key Enter: ask in the composer"],
+    cli: ["--headless: the agent reads the bundled docs", "--chat"],
+    api: ["/v1/sessions/:id/messages: the agent reads the bundled docs"],
+    desktop: ["project/chat: ask in chat"],
+  },
+  {
     id: "instructions-edit",
     group: "Tools and code intelligence",
     title: "Instruction files: view and edit content",
@@ -477,7 +495,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "chat-memory",
     group: "Tools and code intelligence",
-    title: "Long-term chat memory: browse, pin, hide, cleanup, scopes",
+    title: "Long-term chat memory: browse, pin, reword, hide, cleanup, scopes",
     tui: ["/memory"],
     cli: notNeeded("one-shot runs read memory, people curate it"),
     api: ["/v1/memory", "/v1/memory/cleanup", "/v1/memory/settings"],

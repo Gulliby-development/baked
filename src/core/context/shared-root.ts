@@ -1,4 +1,5 @@
 import type { AppConfig } from "../../types/index.js";
+import { progress } from "../progress.js";
 import { ContextManager } from "./manager.js";
 
 /**
@@ -13,11 +14,17 @@ export class SharedRootContext {
 
   /** A root for `workspace` that starts its own intelligence worker on first use. */
   static forWorkspace(workspace: string, config: AppConfig): SharedRootContext {
-    return new SharedRootContext(() =>
-      ContextManager.createAsync(workspace, undefined, {
-        repoMapEnabled: config.repoMap !== false,
-      }),
-    );
+    return new SharedRootContext(async () => {
+      try {
+        return await ContextManager.createAsync(
+          workspace,
+          (step) => progress.set("open", `Opening the project: ${step.toLowerCase()}`),
+          { repoMapEnabled: config.repoMap !== false },
+        );
+      } finally {
+        progress.end("open");
+      }
+    });
   }
 
   /** Creates the root on the first call; later calls share it. A failed creation is retried. */

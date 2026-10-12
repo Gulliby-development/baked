@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { errorText, runs } from "../../client/runs.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
 import { LEDE, PANEL } from "../../lib/styles.js";
 
@@ -58,7 +59,7 @@ export function ReportView({
   };
 
   if (error) return <Alert tone="error">{error}</Alert>;
-  if (markdown === null) return <div className="text-dim-foreground">Loading report…</div>;
+  if (markdown === null) return <Skeleton lines={6} label="Loading the report" />;
   return (
     <section aria-label="Run report">
       <div className="mb-3 flex flex-wrap items-center gap-3">

@@ -8,8 +8,8 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`) or `baked login claude-code`, see below |
 | OpenAI API | `openai` | `OPENAI_API_KEY` or `/keys` |
 | OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), `baked login codex`, or Sign in and Switch account in the desktop app's settings |
-| GitHub Copilot | `copilot` | `COPILOT_API_KEY`, `/keys` or `--set-key copilot`, see below |
-| GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys` |
+| GitHub Copilot | `copilot` | An existing Copilot sign-in in VS Code, JetBrains or Neovim is found automatically; or `COPILOT_API_KEY`, `/keys`, `--set-key copilot`, see below |
+| GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys`; otherwise `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI's login (`gh auth login`), see below |
 
 Keys are stored outside project configuration ([configuration](configuration.md#provider-keys)). `/provider-settings` sets thinking, effort, speed and context options. From a shell:
 
@@ -40,11 +40,13 @@ Replies arrive when each step finishes (no token streaming). The CLI ignores sam
 
 The Copilot connection uses your Copilot subscription through the same API as the IDE extensions. It is not an official GitHub integration.
 
-1. Sign in to Copilot in VS Code or a JetBrains IDE.
-2. Copy the OAuth token: `jq -r '."github.com".oauth_token' ~/.config/github-copilot/apps.json` (on Windows `~\AppData\Local\github-copilot\apps.json`).
-3. Save it with `baked --set-key copilot <token>` or `/keys`.
+Sign in to Copilot in VS Code, a JetBrains IDE or Neovim. BAKED reads that login's GitHub token from `apps.json` (then `hosts.json`) in `~/.config/github-copilot/` on Linux and macOS (`$XDG_CONFIG_HOME/github-copilot/` when set) or `%LOCALAPPDATA%\github-copilot\` on Windows. It only reads these files and checks them again on every provider check, so signing out of the IDE makes `copilot` unavailable again. `baked --list-providers`, `/keys`, the first-start wizard and the desktop settings show `Copilot IDE login` as the source.
 
-A 401 means the token was rotated; copy it again.
+To use another token, save it with `baked --set-key copilot <token>` or `/keys`, or set `COPILOT_API_KEY`; a saved or environment key always wins over the IDE login. A 401 means the token was rotated: sign in to Copilot in the IDE again, or save the new token.
+
+## GitHub Models
+
+GitHub Models takes a GitHub token that can call `models.github.ai` (a fine-grained token needs the `models:read` permission; a classic token or the GitHub CLI's OAuth token works). BAKED uses the first of: `GITHUB_MODELS_API_KEY` or a key saved with `/keys`, then `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token` from a signed-in GitHub CLI (`gh auth login`). The CLI answer is cached for 30 seconds. The source is shown as `GITHUB_TOKEN`, `GH_TOKEN` or `gh CLI` wherever providers are listed. A token found this way is not checked against GitHub until the first request, so a token without access to GitHub Models shows as ready and fails with GitHub's error on use; save a key with `/keys` to use another one.
 
 ## Prompt cache
 

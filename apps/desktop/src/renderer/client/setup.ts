@@ -259,7 +259,10 @@ export interface ProviderStatus {
   name: string;
   configured: boolean;
   acceptsKey: boolean;
-  source: "env" | "app" | null;
+  /** `detected`: no key is set, but a login another tool holds is used (see `detectedFrom`). */
+  source: "env" | "app" | "detected" | null;
+  /** Where a detected login came from, e.g. "Copilot IDE login" or "gh CLI". */
+  detectedFrom?: string;
   keyUrl?: string;
   /** Present for providers that sign in through their own CLI (Claude Code, Codex). */
   signIn?: CliSignIn;

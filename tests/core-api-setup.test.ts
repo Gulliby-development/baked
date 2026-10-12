@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
+import { copilotConfigDir } from "../src/core/llm/detected-logins.js";
 import { recordProjectOpen } from "../src/core/projects/known.js";
 import type { RunSnapshot } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -331,6 +332,24 @@ describe("local API setup and workflow additions", () => {
     expect(providers.some((p) => p.acceptsKey)).toBe(true);
     expect((await send("PUT", "/v1/providers/nope/key", { key: "x" })).status).toBe(404);
     expect((await call("/v1/providers/openai/key")).status).toBe(405);
+  });
+
+  test("a Copilot IDE login is reported as a detected source", async () => {
+    const { get } = await setup();
+    const dir = copilotConfigDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "apps.json"), JSON.stringify({ "github.com:app": { oauth_token: "gho_ide" } }));
+    try {
+      type Row = { id: string; configured: boolean; source: string | null; detectedFrom?: string };
+      const { providers } = await get<{ providers: Row[] }>("/v1/providers");
+      expect(providers.find((p) => p.id === "copilot")).toMatchObject({
+        configured: true,
+        source: "detected",
+        detectedFrom: "Copilot IDE login",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("checks are listed, saved to the project, suggested and run on demand", async () => {

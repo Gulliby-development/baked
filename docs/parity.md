@@ -89,13 +89,15 @@ bun test tests/feature-parity.test.ts
 | Diagnose LSP, tree-sitter and index health | `/diagnose` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check |
 | Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
+| Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
 | Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
+| Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
 | Instruction files: view and edit content | `/instructions show`, `/instructions edit` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/instructions` |
 | Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/instructions` |
-| Long-term chat memory: browse, pin, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/chat-memory` |
+| Long-term chat memory: browse, pin, reword, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/chat-memory` |
 | Run memory: view and edit what runs learned | `/workflow` | `baked workflow memory` | `/v1/workflow/memory` | `project/run-memory` |
 
 ### Workflow runs

@@ -7,7 +7,8 @@ export async function listProviders(): Promise<void> {
   const statuses = await checkProviders();
   // those rows entirely — listing "no key" for a provider that takes no key
   for (const s of statuses) {
-    const mark = s.available ? `${GREEN()}ready${RST}` : `${DIM}no key${RST}`;
+    const from = s.detected ? ` ${DIM}(${s.detected})${RST}` : "";
+    const mark = s.available ? `${GREEN()}ready${RST}${from}` : `${DIM}no key${RST}`;
     const env = s.envVar ? `  ${DIM}(${s.envVar})${RST}` : "";
     process.stdout.write(`${s.available ? GREEN() : DIM}${s.id.padEnd(18)}${RST} ${mark}${env}\n`);
   }
@@ -28,7 +29,10 @@ export async function listModels(providerId?: string): Promise<void> {
       const available = await provider.checkAvailability();
       if (!available) continue;
     }
-    const hasKey = provider.envVar === "" || Boolean(getProviderApiKey(provider.envVar));
+    const hasKey =
+      provider.envVar === "" ||
+      Boolean(getProviderApiKey(provider.envVar)) ||
+      Boolean(provider.detectLogin?.());
     if (!hasKey && !providerId) continue;
     process.stdout.write(`${BOLD}${PURPLE()}${provider.name}${RST} ${DIM}(${provider.id})${RST}\n`);
 

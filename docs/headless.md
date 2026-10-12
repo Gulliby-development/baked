@@ -1,6 +1,6 @@
 # Headless CLI
 
-`baked --headless` runs the same agent and tools without the terminal UI, for scripts and CI. Agent text goes to stdout; progress goes to stderr, so pipes stay clean.
+`baked --headless` runs the same agent and tools without the terminal UI, for scripts and CI. Agent text goes to stdout; progress goes to stderr, so pipes stay clean. While the repository map is still being built, stderr shows how far it got (`Indexing files 412/1,380`, then each later phase such as `Building edges`), at most one count every two seconds; `--json`, `--events` and `--quiet` leave it out.
 
 ```sh
 baked --headless "explain the auth middleware"

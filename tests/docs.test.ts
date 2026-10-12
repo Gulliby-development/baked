@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { getCommandDefs, isDefHidden } from "../src/core/commands/registry.js";
+import { BUNDLED_DOCS } from "../src/core/help/bundled-docs.js";
 import { GateSchema, validateGate } from "../src/core/workflows/v2/definition.js";
 
 const root = resolve(import.meta.dir, "..");
@@ -102,5 +103,15 @@ describe("documentation", () => {
     const raw = JSON.parse(readFileSync(join(root, "docs/workflows/examples/ai-acceptance-gate.json"), "utf8"));
     const gate = GateSchema.parse(raw);
     expect(validateGate(gate)).toEqual([]);
+  });
+
+  test("every docs page is bundled for baked_help, with its current text", () => {
+    const pages = walk(join(root, "docs"), (path) => path.endsWith(".md"))
+      .map((path) => relative(join(root, "docs"), path).replace(/\\/g, "/"))
+      .sort();
+    expect(BUNDLED_DOCS.map(([path]) => path).sort()).toEqual(pages);
+    for (const [path, text] of BUNDLED_DOCS) {
+      expect(text).toBe(readFileSync(join(root, "docs", path), "utf8"));
+    }
   });
 });
