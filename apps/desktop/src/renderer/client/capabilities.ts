@@ -62,3 +62,6 @@ export function offers(capabilities: readonly string[] | null, name: string): bo
 
 /** `/v1/mcp*` (the MCP servers section). */
 export const MCP_CAPABILITY = "mcp";
+
+/** `/v1/lsp*` (the Language servers section). */
+export const LSP_CAPABILITY = "lsp";

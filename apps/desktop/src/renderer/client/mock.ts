@@ -37,12 +37,70 @@ function project(
 }
 
 /**
- * A bridge with fixtures in place of the main process, so the renderer runs in a plain browser
- * (`bun run dev:web`) and screens can be built before the API they need exists.
+ * Sample situations the preview and the UI tests (`e2e/`) pick with `?mock=NAME`:
+ * - `default`: four projects, three of them open;
+ * - `empty`: no projects yet (first start);
+ * - `start-failure`: every project is closed and opening one fails; Restart then succeeds;
+ * - `older`: the backends are an older BAKED that offers none of the optional capabilities;
+ * - `uninitialized`: only `client-api`, open, in a folder without `baked/project.json`.
  */
-export function createMockBridge(): DesktopBridge {
+export const MOCK_SCENARIOS = [
+  "default",
+  "empty",
+  "start-failure",
+  "older",
+  "uninitialized",
+] as const;
+export type MockScenario = (typeof MOCK_SCENARIOS)[number];
+
+export function mockScenario(search: string): MockScenario {
+  const name = new URLSearchParams(search).get("mock") ?? "default";
+  return (MOCK_SCENARIOS as readonly string[]).includes(name) ? (name as MockScenario) : "default";
+}
+
+const RUNNING: DesktopProject["backend"] = { kind: "running", version: "0.1.1" };
+const OLDER_VERSION = "0.0.9";
+const START_FAILURE: DesktopProject["backend"] = {
+  kind: "failed",
+  lastError: "baked serve exited with code 1 before it answered /v1/health",
+  stderr: ["error: database is locked (.baked/workflows.sqlite)"],
+};
+const FULL_CAPABILITIES = [
+  "workflow",
+  "attention",
+  "projects",
+  "sessions",
+  "setup",
+  "initiatives",
+  "checks",
+  "library",
+  "routing",
+  "compaction",
+  "diff-stats",
+  "plan-mode",
+  "chat-undo",
+  "run-memory",
+  "chat-memory",
+  "images",
+  "code-graph",
+  "skills-install",
+  "mcp",
+  "lsp",
+  "custom-commands",
+  "settings",
+  "git",
+  "hooks",
+  "provider-switch",
+  "chat-export",
+  "diagnostics",
+  "gate-drafts",
+];
+/** What a backend from before the optional capability groups answers. */
+const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];
+
+function sampleProjects(scenario: MockScenario): DesktopProject[] {
   const now = Date.now();
-  let projects: DesktopProject[] = [
+  const projects: DesktopProject[] = [
     project(
       "baked",
       "BAKED",
@@ -52,7 +110,7 @@ export function createMockBridge(): DesktopBridge {
         pinned: true,
         projectId: "baked",
         open: true,
-        backend: { kind: "running", version: "0.1.1" },
+        backend: RUNNING,
       },
     ),
     project(
@@ -60,14 +118,14 @@ export function createMockBridge(): DesktopBridge {
       "baked-docs",
       "C:\\Project\\baked-docs",
       { sessions: 1, lastSessionAt: now - 5 * HOUR, activeRuns: 1, attention: 0 },
-      { open: true, backend: { kind: "running", version: "0.1.1" } },
+      { open: true, backend: RUNNING },
     ),
     project(
       "site",
       "site",
       "C:\\Work\\site",
       { sessions: 2, lastSessionAt: now - 2 * HOUR, activeRuns: 1, attention: 2 },
-      { branch: "feature/pricing", open: true, backend: { kind: "running", version: "0.1.1" } },
+      { branch: "feature/pricing", open: true, backend: RUNNING },
     ),
     project("client", "client-api", "C:\\Work\\client-api", {
       sessions: 4,
@@ -76,29 +134,48 @@ export function createMockBridge(): DesktopBridge {
       attention: 0,
     }),
   ];
+  if (scenario === "empty") return [];
+  if (scenario === "uninitialized")
+    return projects
+      .filter((p) => p.key === "client")
+      .map((p) => ({ ...p, open: true, backend: RUNNING }));
+  if (scenario === "older")
+    return projects.map((p) =>
+      p.backend.kind === "running"
+        ? { ...p, backend: { ...p.backend, version: OLDER_VERSION } }
+        : p,
+    );
+  if (scenario === "start-failure")
+    return projects.map((p) => ({ ...p, open: false, backend: { kind: "stopped" } }));
+  return projects;
+}
+
+/**
+ * A bridge with fixtures in place of the main process, so the renderer runs in a plain browser
+ * (`bun run dev:web`) and screens can be built before the API they need exists.
+ */
+export function createMockBridge(scenario: MockScenario = "default"): DesktopBridge {
+  let projects = sampleProjects(scenario);
   let settings: AppSettings = { ...DEFAULT_SETTINGS, theme: "dark" };
   const projectListeners = new Set<(p: DesktopProject[]) => void>();
   const emitProjects = (): void => {
     for (const listener of projectListeners) listener(projects);
   };
-  const setOpen = (key: string, open: boolean): void => {
-    projects = projects.map((p) =>
-      p.key === key
-        ? {
-            ...p,
-            open,
-            backend: open ? { kind: "running", version: "0.1.1" } : { kind: "stopped" },
-          }
-        : p,
-    );
+  const setBackend = (key: string, open: boolean, backend: DesktopProject["backend"]): void => {
+    projects = projects.map((p) => (p.key === key ? { ...p, open, backend } : p));
     emitProjects();
   };
+  const running: DesktopProject["backend"] =
+    scenario === "older" ? { kind: "running", version: OLDER_VERSION } : RUNNING;
+  const setOpen = (key: string, open: boolean): void =>
+    setBackend(key, open, open ? running : { kind: "stopped" });
 
   return {
     platform: "mock",
     projects: async () => projects,
     refreshProjects: async () => projects,
-    openProject: async (key) => setOpen(key, true),
+    openProject: async (key) =>
+      scenario === "start-failure" ? setBackend(key, false, START_FAILURE) : setOpen(key, true),
     closeProject: async (key) => setOpen(key, false),
     restartProject: async (key) => setOpen(key, true),
     addFolder: async () => null,
@@ -135,37 +212,9 @@ export function createMockBridge(): DesktopBridge {
       if (method === "GET" && path === "/v1/health")
         return response(200, {
           apiVersion: 1,
-          version: "0.1.1",
+          version: scenario === "older" ? OLDER_VERSION : "0.1.1",
           workspace: found.path,
-          capabilities: [
-            "workflow",
-            "attention",
-            "projects",
-            "sessions",
-            "setup",
-            "initiatives",
-            "checks",
-            "library",
-            "routing",
-            "compaction",
-            "diff-stats",
-            "plan-mode",
-            "chat-undo",
-            "run-memory",
-            "chat-memory",
-            "images",
-            "code-graph",
-            "skills-install",
-            "mcp",
-            "custom-commands",
-            "settings",
-            "git",
-            "hooks",
-            "provider-switch",
-            "chat-export",
-            "diagnostics",
-            "gate-drafts",
-          ],
+          capabilities: scenario === "older" ? OLDER_CAPABILITIES : FULL_CAPABILITIES,
         });
       const url = new URL(path, "http://mock");
       for (const route of MOCK_ROUTES) {

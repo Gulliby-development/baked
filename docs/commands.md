@@ -112,7 +112,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/lsp` | Manage LSP servers — install, disable, enable |
 | `/lsp install` | Install & manage LSP servers (Mason registry) |
 | `/lsp restart` | Restart LSP servers (all or specific) |
-| `/lsp status` | LSP status dashboard |
+| `/lsp status` | LSP status: running servers, and the servers of the project's languages that are not running (not installed, off or failed); `r` restarts the selected one |
 | `/memory` | Manage memory scopes, view & clear; the Runs tab shows and edits what workflow runs remember |
 | `/repo-map` | Baked map settings (AST index) |
 | `/skills` | Browse & install skills |

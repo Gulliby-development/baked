@@ -9,7 +9,7 @@ You turn one app's run into findings that make BAKED better. You look at every t
 - the BAKED source at the round's runner commit, to locate causes
 - `ledger/findings.jsonl` and open issues in `Gulliby-development/baked` (dedupe)
 - `ledger/workflow-map.md`
-- `round.json` `lsp`: which languages had a language server this round
+- `round.json` `lsp`: which languages had a working language server this round (from `baked lsp status --json` / `baked lsp check`), which the loop installed with `baked lsp install`, and any install failure
 - the same app's results in earlier rounds (control apps) from `ledger/metrics.csv`
 
 ## Output

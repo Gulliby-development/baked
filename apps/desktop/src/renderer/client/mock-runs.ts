@@ -1038,6 +1038,32 @@ function forkOf(parent: MockRun): MockRun {
   return run;
 }
 
+/**
+ * A run the New run form started (`POST /v1/workflow/runs` in the start fixtures), so its detail
+ * page opens like the sample runs. Only the BAKED sample project has run details.
+ */
+export function addStartedRun(key: string, runId: string, featureId: string, stageId: string) {
+  if (key !== PROJECT || find(runId)) return;
+  const log = new Log(runId, 0);
+  log.add("run.created", { featureId }, 0);
+  log.stage(stageId, "claude-sonnet-5-5", "running");
+  all().unshift({
+    runId,
+    featureId,
+    status: "running",
+    reason: "none",
+    stageId,
+    revision: 1,
+    tokenUsage: 0,
+    activeMs: 0,
+    events: log.events,
+    artifacts: [],
+    requests: [],
+    usage: usage([], []),
+    worktree: null,
+  });
+}
+
 const conflict = (code: string, message: string) => response(409, { error: { code, message } });
 
 /** A run action on the sample runs: changes their state the way the backend would, roughly. */

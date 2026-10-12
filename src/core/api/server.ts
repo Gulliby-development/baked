@@ -35,6 +35,7 @@ import type { ContextManager } from "../context/manager.js";
 import { storageDirs } from "../diagnostics/storage.js";
 import { runsFreezingFile } from "../instruction-files.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
+import type { LspServiceDeps } from "../intelligence/lsp-service.js";
 import { MemoryManager } from "../memory/manager.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
 import { listKnownProjects } from "../projects/known.js";
@@ -69,6 +70,7 @@ import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
+import { lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
 import type { RouteContext } from "./route-context.js";
@@ -124,6 +126,7 @@ export const CAPABILITIES = [
   "code-graph",
   "skills-install",
   "mcp",
+  "lsp",
   "custom-commands",
   "settings",
   "git",
@@ -157,6 +160,8 @@ export interface ApiServerOptions {
   skillCatalog?: SkillCatalog;
   /** Where secret settings such as web search keys live; tests pass an in-memory one. */
   settingsSecrets?: SettingsSecretStore;
+  /** Language-server lookups and installs; tests pass fakes. */
+  lspDeps?: Partial<LspServiceDeps>;
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Drafts gates from a sentence; tests pass a scripted model. */
@@ -363,6 +368,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.clarification) flags.clarification = body.clarification;
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
+  if (body.budget) flags.budget = body.budget;
   return validateWorkflowArgs({
     command: "run",
     positional: [],
@@ -755,6 +761,13 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         ...ctx,
         workspace: service.workspace,
         config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
+      })) ??
+      (await lspRoute({
+        ...ctx,
+        workspace: service.workspace,
+        start: () => service.rootContext.get(),
+        ...(options.lspDeps ? { deps: options.lspDeps } : {}),
         ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??

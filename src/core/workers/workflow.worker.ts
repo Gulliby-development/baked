@@ -8,7 +8,7 @@ import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { setCwd } from "../cwd.js";
 import { installGlobalFetch } from "../llm/http-agent.js";
-import { scaledPolicy } from "../workflows/budget.js";
+import { presetPolicy, scaledPolicy } from "../workflows/budget.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { estimateStart, readHistory } from "../workflows/estimate.js";
 import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
@@ -204,10 +204,7 @@ const ctx = createWorkerHandler(
         featureId: fromIssue?.featureId ?? SafeId.parse(request.featureId),
         prompt: fromIssue?.prompt ?? request.prompt ?? "",
         ...(fromIssue ? { issue: fromIssue.issue } : {}),
-        policy: scaledPolicy(
-          runtime.config.workflows?.policy ?? defaultWorkflowPolicy,
-          request.budget,
-        ),
+        policy: presetPolicy(runtime.config.workflows?.policy, request.budget),
         ownerLabel: "TUI",
         model: request.model,
         ...(request.executionMode ? { executionMode: request.executionMode } : {}),

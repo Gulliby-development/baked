@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `diagnostics` (`/v1/diagnostics/*`) and `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `diagnostics` (`/v1/diagnostics/*`) and `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -199,7 +199,7 @@ The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/I
 
 ## Workflow runs (exists, gaps filled by B)
 
-Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `stages[]` with `id`, `type`, `consumes`, `produces` and `human` for a person's approval, and `loops[]` with `from`, `to`, `on` and `carries` for transitions back to the same or an earlier stage; schema 1 definitions are described through their v2 upgrade), `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `limitations`: `{count, ids}` of the findings the run is accepted with, so a `completed` run with `count` above 0 is not clean, and `requests`, including tasks and writers, and `worktree`: `{path, branch, present}` for a worktree run, where `present` turns false once delivery or `discard-worktree` removed it, or null for a run in the working copy), `.../usage`, `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. `POST /v1/workflow/runs` also takes `modelStrict: true` (the run model overrides configured model routes) and the run view has `routing` with the effective model of each role and stage and the routing warnings. Quick tasks are runs started with `workflow: "quick"`. `POST /v1/workflow/runs` takes `issue` (a GitHub issue URL, `OWNER/NAME#N` or `#N`, as `--issue`); with it `feature` and `prompt` are optional, the request comes from the issue and the run's delivery pull request closes it ([starting from a GitHub issue](../workflows/runtime.md#starting-from-a-github-issue)).
+Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `stages[]` with `id`, `type`, `consumes`, `produces` and `human` for a person's approval, and `loops[]` with `from`, `to`, `on` and `carries` for transitions back to the same or an earlier stage; schema 1 definitions are described through their v2 upgrade), `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `limitations`: `{count, ids}` of the findings the run is accepted with, so a `completed` run with `count` above 0 is not clean, and `requests`, including tasks and writers, and `worktree`: `{path, branch, present}` for a worktree run, where `present` turns false once delivery or `discard-worktree` removed it, or null for a run in the working copy), `.../usage`, `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. `POST /v1/workflow/runs` also takes `budget` (`quick`, `standard`, `extended` or `checkpoints`, as `--budget`), which the server applies to `policy`, the configured policy or the built-in default, and `modelStrict: true` (the run model overrides configured model routes) and the run view has `routing` with the effective model of each role and stage and the routing warnings. Quick tasks are runs started with `workflow: "quick"`. `POST /v1/workflow/runs` takes `issue` (a GitHub issue URL, `OWNER/NAME#N` or `#N`, as `--issue`); with it `feature` and `prompt` are optional, the request comes from the issue and the run's delivery pull request closes it ([starting from a GitHub issue](../workflows/runtime.md#starting-from-a-github-issue)).
 
 B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations. The CLI's `approve`, `answer` and `evidence` continue the run after the decision unless `--no-resume` is given; the API endpoints for the same decisions (`approve`, `answer`, `evidence`) only record it, and the client calls `resume`.
 
@@ -317,6 +317,37 @@ interface McpView {
 ```
 
 Project servers come first, then the global servers no project server replaces. `config` holds `env` and `headers` as written, secrets included, as `GET /v1/config` does. A server name is 1 to 64 letters, digits, dots, dashes or underscores.
+
+## Language servers
+
+The language servers code intelligence uses for the project ([language servers](../configuration.md#language-servers)), and the changes `/lsp` makes in the terminal UI. The logic is in `src/core/intelligence/lsp-service.ts`; `/lsp` and `baked lsp` use the same. Changes apply to the running backend at once: turning a server off stops it, and installing or turning one on restarts the servers of its languages. Servers start with the first chat message or run step; until then `started` is false and nothing is running.
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `GET /v1/lsp` | | `LspView` |
+| `POST /v1/lsp/ID/install` | | `{...LspView, restarted, installed: {server, package}, log: string[]}` after the install, which can take minutes. `ID` is a server, a Mason package or a language. 404 `NOT_FOUND`, 409 `NOT_INSTALLABLE` (no package, or its toolchain is not on PATH), 409 `BUSY` while the same install runs, 502 `INSTALL_FAILED` |
+| `POST /v1/lsp/ID/disable` | `{scope?: "global" \| "project"}` or none | `{...LspView, restarted}`. Without `scope`, the project file when it has its own list, otherwise the global one |
+| `POST /v1/lsp/ID/enable` | `{scope?}` or none | `{...LspView, restarted}`; removes the server from every list that names it, or only from `scope` |
+| `POST /v1/lsp/ID/restart` | | `{...LspView, restarted, startedNow}`: restarts the server (or a language's servers) and retries ones that failed. Before anything started the servers, it starts the project's servers instead (`startedNow: true`) |
+| `POST /v1/lsp/restart` | | The same for every server |
+
+```ts
+interface LspView {
+  servers: { id /* the server command */; languages: string[]; detected: boolean /* the project has its languages */;
+    installed: boolean; source: "PATH" | "baked" | "mason" | null; path: string | null;
+    disabled: boolean; disabledIn: ("global" | "project")[];
+    running: boolean; ready: boolean; pids: number[]; openFiles: number; diagnosticCount: number;
+    lastError: { message; at: number } | null /* the last start failure, while it is not running */;
+    package: string | null /* Mason package */; requiresToolchain: string | null; installable: boolean }[];
+  languages: string[]; // detected, primary first
+  uncovered: string[]; // detected languages no enabled, installed server covers
+  started: boolean;
+  registry: boolean; // whether the Mason registry is cached; the first install downloads it
+  paths: { global; project };
+}
+```
+
+Servers of detected languages come first. `GET /v1/workflow/doctor` adds an `lsp.missing` warning per uncovered language, or one `lsp.servers` line when all are covered.
 
 ## Chat settings
 
@@ -468,6 +499,7 @@ Events and errors live in the server's memory: they cover the chats and runs thi
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
 | Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
+| Project setup: language servers | `GET /v1/lsp`, `POST /v1/lsp/ID/install\|enable\|disable\|restart`, `POST /v1/lsp/restart` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
 | Project setup: diagnostics | `GET /v1/diagnostics/storage`, `POST /v1/diagnostics/storage/cleanup`, `GET\|POST /v1/diagnostics/model-events`, `GET /v1/diagnostics/errors` |

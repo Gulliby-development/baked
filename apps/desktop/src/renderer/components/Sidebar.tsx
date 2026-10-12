@@ -46,6 +46,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["skills", "Skills", "skills"],
   ["hooks", "Hooks", "hooks"],
   ["mcp", "MCP servers", "mcp"],
+  ["lsp", "Language servers", "lsp"],
   ["diagnostics", "Diagnostics", "diagnostics"],
 ];
 
