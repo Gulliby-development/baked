@@ -729,8 +729,7 @@ function RunBody({
   // A v1 check stage records its command gates as checks; a gate's own result wins.
   const results = new Map([
     ...[...trace.checks].map(
-      ([id, c]) =>
-        [id, { status: c.status, mode: "required", attempts: 1, flaky: false }] as const,
+      ([id, c]) => [id, { status: c.status, mode: "required", attempts: 1, flaky: false }] as const,
     ),
     ...trace.gates,
   ]);
