@@ -126,7 +126,7 @@ Defaults below. The owner may change any value; roles read it at the start of ea
     "updateApps": 3,
     "controlApps": ["url-shortener", "md-site", "expenses-py"],
     "controlRunsB": true,
-    "maxConcurrentRuns": 2,
+    "maxConcurrentRuns": 3,
     "maxWallClockHours": 30,
     "difficulty": 1
   },
@@ -166,7 +166,8 @@ Defaults below. The owner may change any value; roles read it at the start of ea
 - `round.newApps` new apps are kept out of `round.ideaCandidates` candidates; `round.updateApps` existing published repositories get a small feature each (see [Updates to existing projects](#updates-to-existing-projects)). A round therefore builds `newApps + updateApps` = 5 apps plus the control apps.
 - `runs.referenceModel` is the model every control-app run uses, every round (`provider/model`). `null` means "the default model configured on the PC at loop start"; phase 0 resolves it once and writes it here, and it changes only by the owner's edit.
 - `runs.rotateNewAppProviders`: new apps cycle through the other configured providers (one provider per app, recorded per run), so BAKED keeps being tested on more than one provider. Estimates must stay provider-agnostic; a provider that costs much more is a finding, not a reason to tune constants to it.
-- `round.difficulty` is the ideator's starting difficulty level (1-4). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
+- `round.maxConcurrentRuns` is the number of build lanes: runs of apps (new, update, control) that execute at the same time. It is 3 from round 7 (2 before). If builds or tests start timing out because the PC is saturated, drop back to 2 for the next round and say so in the report; the owner changes the default in `config.json`, the orchestrator never edits it.
+- `round.difficulty` is the ideator's starting difficulty level (1-4). The current level lives in `state.json` (`difficulty`); the orchestrator raises it there under the [difficulty rule](#difficulty-rule) and [Stop conditions](#stop-conditions) and says so in the round report. The orchestrator never edits `config.json`.
 - `publish.mode`: `auto` (default) publishes every app whose `verify.json` passes as a public MIT repository right after its verification, not at round end: create it private, push, wait for green CI on all three operating systems, then make it public; no approval is requested. `approve-per-round` is an optional mode the owner may switch on: it waits for the owner's typed approval ("yes", in any language) on the round's publish batch before any repository is created. Only the owner switches this; the orchestrator never changes it.
 
 ## state.json
@@ -196,7 +197,7 @@ On start, the orchestrator reads `state.json` and continues the step it names. E
 
 First start on a PC:
 1. Copy `bench/loop/` from the BAKED runner checkout to the loop root: `AGENTS.md`, `roles/`, `templates/`, `controls/README.md`, and `config.json` (only if the loop root has none). Copy `templates/ledger/*` to `ledger/` for each file that does not exist yet.
-2. Check prerequisites and report what is missing instead of working around it: Bun, Git, Python 3.11+, Playwright's Chromium, `gh` signed in with the `repo` and `project` scopes (and permission to create repositories in the org), the BAKED runner and dev checkouts, at least one working provider in BAKED.
+2. Check prerequisites and report what is missing instead of working around it: Bun, Git, Python 3.11+, the language toolchains (Go, .NET SDK, Rust with `rustfmt` and `clippy`, a JDK 21+ with Maven; see [Stacks and toolchains](#stacks-and-toolchains)), Playwright's Chromium, `gh` signed in with the `repo` and `project` scopes (and permission to create repositories in the org), the BAKED runner and dev checkouts, at least one working provider in BAKED.
 3. Bootstrap the control prompts (`controls/README.md`).
 4. Copy `templates/claude-settings.local.json` to `<loop root>/.claude/settings.local.json` if that file does not exist (create the folder). Never overwrite or widen an existing file. The `.claude` folder inside the loop root is not part of the repository.
 5. Write `state.json` with `round: 1`, `phase: "prepare"`.
@@ -209,13 +210,29 @@ Every later start (after a crash, a reboot or a new session): read `config.json`
 2. Close the previous round: make sure its `report.md` exists and its fix PRs are merged or recorded as left open.
 3. Update the runner: `git fetch origin && git checkout --detach origin/main` in `paths.runner`, `bun install`, `bun run build`. Record the commit in `round.json`. If the build fails, the fixer gets the failure as a P0 issue and the round waits for it (main must build).
 4. Refresh the spec: copy `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` to the loop root, so spec changes merged to `main` take effect from the next round. Never overwrite `config.json`, `controls/*.md`, `ledger/`, `state.json` or round folders. Also check `.claude/settings.local.json` in the loop root: create it from `templates/claude-settings.local.json` if missing, never overwrite it. Then re-read this file.
-5. Run `baked doctor` in an empty scratch repo with the round's policy; any refusal is a P0 finding and stops the round until fixed.
-6. List configured providers and check each with one tiny headless call (`baked --headless --model PROVIDER/MODEL "Reply OK"`). A provider that refuses for credits or auth is skipped this round and reported once. Resolve `referenceModel` if unset. If the reference model is unavailable, control apps wait for it; they never switch models (that would break comparability).
-7. Write `round.json` and set `state.phase = "ideate"`.
+5. Check the toolchains (see [Stacks and toolchains](#stacks-and-toolchains)): `go version`, `dotnet --version`, `cargo --version`, `cargo fmt --version`, `cargo clippy --version`, `java -version` and `mvn -v`, with the PATH directories the loop's launch script adds. A missing toolchain is reported once and its language is left out of the round's mix; the loop does not install it or work around it.
+6. Run `baked doctor` in an empty scratch repo with the round's policy; any refusal is a P0 finding and stops the round until fixed.
+7. List configured providers and check each with one tiny headless call (`baked --headless --model PROVIDER/MODEL "Reply OK"`). A provider that refuses for credits or auth is skipped this round and reported once. Resolve `referenceModel` if unset. If the reference model is unavailable, control apps wait for it; they never switch models (that would break comparability).
+8. Write `round.json` and set `state.phase = "ideate"`.
 
 Phase 0 also picks the round's update repositories (from round 3; rounds 1 and 2 had no update apps): see [Updates to existing projects](#updates-to-existing-projects). Record the picks and the seed in `round.json`.
 
 Round 1 of the loop is special: the owner already approved five apps on 2026-10-10 (envguard, mdtoc, cronsay, jsondelta, logslice; briefs in `templates/round1-briefs.md`). Round 1 skips phases 1–2 and uses those prompts verbatim as briefs, then continues normally.
+
+## Stacks and toolchains
+
+Until round 6 the loop built only Python and TypeScript (Bun) projects. From round 7 it also builds Go, .NET, Rust and Java (Maven + JUnit) projects.
+
+- **Stack mix per round.** From round 7 every round has at least two of the new languages (`go`, `dotnet`, `rust`, `java`), counted across new apps, updates and controls (an update of a public repository in one of these languages counts). The ideator and the reviewer enforce it, preferring languages that earlier rounds used least.
+- **Scaffold kinds.** `tools/scaffold.py` builds `bun`, `webunit` and `python` workspaces; `tools/scaffold_lang.py` builds `go`, `dotnet`, `rust` and `java` ones with the same CLI (`scaffold_lang.py <round-dir> <name> <kind>`): git repo, LF attributes, a minimal project with a heading-only README, `.gitignore`, and `.baked/config.json` derived from `tools/base-config.json` with the language's checks and `allowedPaths`. `tools/scaffold_update_lang.py` does the same for a brownfield clone (it detects `go.mod`, `*.sln` or `*.csproj`, `Cargo.toml`, `pom.xml`) and records the baseline.
+- **Checks per language.** Go: `go vet ./...` (fixer `go fmt ./...`; `gofmt` has no failing check mode without a wrapper), `go test ./...`. .NET: `dotnet build`, `dotnet format --verify-no-changes` (fixer `dotnet format`), `dotnet test`. Rust: `cargo fmt --check` (fixer `cargo fmt`), `cargo clippy -- -D warnings`, `cargo test`. Java: `mvn -B -q verify` (no formatter). All are required with scope `feature`; changing them is an experiment (see [Comparability](#comparability)).
+- **Toolchain check.** Phase 0 checks each toolchain (see [Phase 0](#phase-0-prepare)); a missing one removes its language from the round.
+- **PATH.** A shell started by the harness may not have the toolchains on `PATH` (Git Bash on Windows in particular). `tools/launch.sh` and the scaffold scripts add the directories of Go, the .NET SDK, Cargo and the JDK and Maven explicitly, in front of the inherited `PATH`; on another machine adjust that list and nothing else.
+- **Publishing.** The publisher takes `templates/ci/<stack>.yml`: `bun`, `vite`, `python`, `go`, `dotnet`, `rust` or `java`.
+
+## Difficulty rule
+
+The orchestrator keeps the current difficulty in `state.json`. After each round it applies this standing rule (owner's decision, round 6): a round without BAKED-side problems raises `state.difficulty` by one for the next round (at most 4); a round with problems keeps it. A round has BAKED-side problems when any of these holds: a run ended `blocked`, an operator action beyond infrastructure resumes was needed (an extension, an answer, a recovery, a reroute, a manual approval outside auto-approval, a cancel), or the analysts filed a new P1 (or P0) finding. Infrastructure resumes (a provider outage, a reboot, a rate limit) do not count. The report states the verdict and the new level. This rule is in addition to `stop.maxRoundsWithoutProgress` below.
 
 ## Updates to existing projects
 
@@ -289,7 +306,7 @@ In `approve-per-round` mode the publish gate never blocks the loop: a batch wait
 - A finding is a security issue in BAKED itself (report it privately to the owner; don't file a public detail if the repo becomes public).
 
 **Change course instead of stopping:**
-- `maxRoundsWithoutProgress` rounds in a row without improvement (no new P0/P1 findings, control metrics flat within ±10%, every new app passing): raise difficulty for the next round (see the ideator's difficulty ladder) and say so in the report. Easy rounds teach nothing.
+- The [difficulty rule](#difficulty-rule) after every round, and `maxRoundsWithoutProgress` rounds in a row without improvement (no new P0/P1 findings, control metrics flat within ±10%, every new app passing): raise difficulty for the next round (see the ideator's difficulty ladder) and say so in the report. Easy rounds teach nothing.
 
 ## Reporting to the owner
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assumable, isCountNit, knownRisks, supersedeResearch } from "../src/core/workflows/analysis-notes.js";
+import { assumable, isCountNit, restrictsRequest, knownRisks, supersedeResearch } from "../src/core/workflows/analysis-notes.js";
 
 describe("count nits", () => {
   test("a finding that only compares task or file counts is recognised (jsondelta, cronsay)", () => {
@@ -42,6 +42,20 @@ describe("answers to analysis findings", () => {
     expect(assumable({ kind: "scope", blocking: true })).toBe(false);
     expect(assumable({ kind: "ambiguity", blocking: true })).toBe(true);
     expect(assumable({ kind: "inconsistency", blocking: true })).toBe(false);
+  });
+});
+
+describe("a scope finding that adds a restriction the request lacks", () => {
+  const base = { id: "F-001", kind: "scope", blocking: true };
+  test("is recognised by its wording", () => {
+    expect(restrictsRequest({ ...base, description: "The spec restricts ISO 8601 input to three forms; the request names no such limit" })).toBe(true);
+    expect(restrictsRequest({ ...base, description: "FR-002 excludes root-relative links, which the request does not exclude" })).toBe(true);
+  });
+  test("is not recognised for a dropped clause, the host coverage finding or another kind", () => {
+    expect(restrictsRequest({ ...base, description: "The spec omits the --json flag the request asks for" })).toBe(false);
+    expect(restrictsRequest({ id: "COVERAGE-1", kind: "scope", blocking: true, description: "No task limits itself to source files" })).toBe(false);
+    expect(restrictsRequest({ ...base, kind: "ambiguity", description: "restricts the forms" })).toBe(false);
+    expect(restrictsRequest({ ...base, blocking: false, description: "restricts the forms" })).toBe(false);
   });
 });
 

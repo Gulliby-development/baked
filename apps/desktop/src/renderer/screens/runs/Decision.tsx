@@ -246,8 +246,11 @@ function Convergence({
       {(body.contradictions ?? []).map((c) => (
         <p
           key={c.findingId}
-        >{`${c.findingId} reverses the fix of ${c.earlierId}: ${c.earlierClaim}`}</p>
+        >{`${c.findingId} repeats ${c.earlierId}, which a correction already addressed: ${c.earlierClaim}`}</p>
       ))}
+      {body.hostRule && (
+        <p>{`Under assume the host would ${body.hostRule.decision}: ${body.hostRule.why} Rules: ${body.hostRule.rules.join(" ")}`}</p>
+      )}
       <p>
         Accepting lists these findings as known limitations in the run report and goes on to
         acceptance. One more round repairs them again.

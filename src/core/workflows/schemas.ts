@@ -453,6 +453,12 @@ export const ReviewSchema = z
              * starts a correction; a finding whose repro does not print `actual` is a note.
              */
             repro: ReproSchema.optional(),
+            /**
+             * The id of an earlier finding of the run that this one repeats (the same defect, even
+             * when the file, symbol or wording changed), or null for a new defect. Absent means the
+             * reviewer did not say, and the host compares locations instead.
+             */
+            repeatOf: SafeId.nullable().optional(),
             requirementIds: z.array(RequirementId),
             criterionIds: z.array(CriterionId),
             file: RelativePath.nullable(),

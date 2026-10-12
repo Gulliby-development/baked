@@ -63,6 +63,12 @@ interface Behavior {
   gapSameLocation?: boolean;
   /** An edit effect of the first attempt of `task` (or of the convergence review, which nothing supersedes) stays unknown, as after a failed edit_file whose worktree was removed. */
   unknownEffect?: "task" | "converge";
+  /** The symbol of the gap of each round, in order; overrides `gapSymbol`. */
+  gapSymbols?: string[];
+  /** The `repeatOf` of the gap of a round: an earlier finding id, null for a new defect, absent when the reviewer did not say. */
+  gapRepeatOf?: (round: number) => string | null | undefined;
+  /** The gaps carry a reproduction the host can run. */
+  gapRepro?: boolean;
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
@@ -168,7 +174,7 @@ class V2Executor implements AgentExecutor {
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
               coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }, ...this.passing(evidence, "Command checked the value").slice(1)],
-              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbol ?? (this.behavior.gapSameLocation ? null : `symbol${round}`), evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbols?.[round - 1] ?? this.behavior.gapSymbol ?? (this.behavior.gapSameLocation ? null : `symbol${round}`), ...(this.behavior.gapRepeatOf?.(round) !== undefined ? { repeatOf: this.behavior.gapRepeatOf(round) } : {}), ...(this.behavior.gapRepro ? { repro: oldValueRepro } : {}), evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Command checked the value"), findings: [] };
         break;
@@ -861,11 +867,79 @@ describe("a stopped convergence asks for a decision", () => {
     expect(request?.actor).toBe("auto-approval");
   }, 60000);
 
-  test("clarification assume still asks when a remaining finding is high severity", async () => {
+  test("clarification assume accepts a high finding that carries no reproduction", async () => {
     const assume = { ...policy, clarification: "assume" as const };
     const { waiting, service, run } = await stopped("sdd", { gaps: 3, criteria: 5 }, assume);
+    expect(waiting.status).toBe("completed");
+    expect(service.store.state(run.runId).limitations.map((l) => l.decidedBy)).toEqual(["assume"]);
+  }, 60000);
+
+  test("clarification assume still asks for a high finding with a reproduction and says why", async () => {
+    const assume = { ...policy, clarification: "assume" as const };
+    const { waiting, service, run } = await stopped("sdd", { gaps: 3, criteria: 5, gapRepro: true }, assume);
     expect(waiting.status).toBe("waiting");
-    expect(pendingConvergence(service, run.runId)).toBeDefined();
+    const body = JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}");
+    expect(body.hostRule.decision).toBe("ask");
+    expect(body.hostRule.why).toContain("high with a reproduction");
+    expect(body.hostRule.rules.length).toBe(3);
+  }, 60000);
+
+  test("a repeat the reviewer names stops the run although file and symbol changed (md-site)", async () => {
+    // md-site F-001 `buildSite / rewriteMarkdownLink` vs F-001-2 `buildSite`, and a file that moved: same defect.
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSymbols: ["buildSite", "markdownToHtml"], gapRepeatOf: (round) => (round === 2 ? "G1" : undefined) });
+    expect(waiting.status).toBe("waiting");
+    const body = JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}");
+    expect(body.reason).toBe("contradiction");
+    expect(body.contradictions[0]).toMatchObject({ findingId: "G2", earlierId: "G1", via: "repeatOf" });
+  }, 60000);
+
+  test("a finding the reviewer marks new does not stop the run on a shared location (jsonshape, expenses-py A)", async () => {
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSymbol: "parseValue", gapRepeatOf: () => null });
+    expect(waiting.status).toBe("completed");
+    expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(0);
+    expect(service.store.run(run.runId).convergence_rounds).toBe(2);
+  }, 60000);
+
+  test("without repeatOf a symbol that shares a word still matches", async () => {
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSymbols: ["buildSite / rewriteMarkdownLink", "buildSite"] });
+    expect(waiting.status).toBe("waiting");
+    expect(JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}").contradictions[0].via).toBe("location");
+  }, 60000);
+
+  test("clarification assume repairs one more round on a contradiction before it judges, and shows the rule", async () => {
+    const assume = { ...policy, clarification: "assume" as const };
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSymbol: "parseValue" }, assume);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(waiting.status).toBe("completed");
+    expect(service.store.state(run.runId).autoExtensions).toBe(1);
+    expect(service.store.state(run.runId).limitations).toEqual([]);
+    const request = service.store.requests(run.runId).find((r) => r.kind === "convergence");
+    expect(request?.status).toBe("accepted");
+    expect(request?.actor).toBe("auto-approval");
+    const body = JSON.parse(request?.body_json ?? "{}");
+    expect(body.reason).toBe("contradiction");
+    expect(body.hostRule.decision).toBe("extend");
+  }, 60000);
+
+  test("the automatic extra round is granted once per run", async () => {
+    const assume = { ...policy, clarification: "assume" as const };
+    // Round 2 repeats round 1 (extended), then the rounds limit stops the third: a high finding with a reproduction asks.
+    const { service, run, waiting } = await stopped("sdd", { gaps: 3, gapRepro: true, gapSymbol: "parseValue" }, assume);
+    expect(waiting.status).toBe("waiting");
+    expect(service.store.state(run.runId).autoExtensions).toBe(1);
+    expect(JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}").hostRule.decision).toBe("ask");
+  }, 60000);
+
+  test("the terminal continues the run after one more round without --resume", async () => {
+    const { service, run } = await stopped("sdd");
+    const request = pendingConvergence(service, run.runId);
+    const revision = (await service.get(run.runId)).revision;
+    const result = (await executeWorkflowCommand(
+      service,
+      parseWorkflowArgs(["continue", run.runId, "--request", request?.id ?? "", "--expected-revision", String(revision)]),
+      new AbortController().signal,
+    )) as { status: string };
+    expect(result.status).toBe("completed");
   }, 60000);
 
   test("a finding that reverses the fix of an earlier one on the same symbol is sent to a person", async () => {
