@@ -146,6 +146,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat: Export as Markdown or JSON in the chat menu"],
   },
   {
+    id: "coordinator",
+    group: "Chat and sessions",
+    title: "Project coordinator chat with a durable project brief",
+    tui: gap(152),
+    cli: ["baked session coordinator: prints the brief"],
+    api: ["/v1/coordinator", "/v1/coordinator/brief"],
+    desktop: gap(151),
+  },
+  {
     id: "session-diagnostics",
     group: "Chat and sessions",
     title: "Diagnostic export and API request dumps",
@@ -667,6 +676,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/gates"],
   },
   {
+    id: "run-gates",
+    group: "Workflow runs",
+    title: "Gates on the run's line: what each does, blocks or advises, last result",
+    tui: gap(533, "gate results only in the activity lines"),
+    cli: ["baked workflow definitions", "baked workflow status"],
+    api: ["/v1/workflow/definitions", "/v1/workflow/runs/:id/events"],
+    desktop: ["project/runs: conveyor gate marks and station gates"],
+  },
+  {
     id: "workflow-editor",
     group: "Workflow runs",
     title: "Workflow definition editor",
@@ -769,6 +787,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["projects", "project/overview"],
   },
   {
+    id: "project-create",
+    group: "Projects and setup",
+    title: "Create a project in a new folder with a name",
+    tui: ["/projects: Create project…"],
+    cli: ["baked projects create"],
+    api: notNeeded(
+      "a new project has no backend yet; the desktop app creates it through baked projects create",
+    ),
+    desktop: ["projects: Create project", "projects: Create project… in the sidebar"],
+  },
+  {
     id: "project-rename",
     group: "Projects and setup",
     title: "Rename a project",
@@ -790,7 +819,7 @@ export const FEATURES: readonly Feature[] = [
     id: "attention",
     group: "Projects and setup",
     title: "What waits for me across projects",
-    tui: partial(["/project: what waits for you"], 413, "this project only"),
+    tui: ["/project waiting", "/project: what waits for you"],
     cli: ["baked attention"],
     api: ["/v1/attention"],
     desktop: ["attention"],

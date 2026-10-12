@@ -52,6 +52,7 @@ bun test tests/feature-parity.test.ts
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
+| Project coordinator chat with a durable project brief | **Gap** [#152](https://github.com/Gulliby-development/baked/issues/152) | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief` | **Gap** [#151](https://github.com/Gulliby-development/baked/issues/151) |
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
@@ -116,6 +117,7 @@ bun test tests/feature-parity.test.ts
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
+| Gates on the run's line: what each does, blocks or advises, last result | **Gap** [#533](https://github.com/Gulliby-development/baked/issues/533): gate results only in the activity lines | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): read-only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
@@ -134,9 +136,10 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Projects: list, add, pin, forget, this project | `/projects`, `/project` | `baked projects`, `baked project` | `/v1/projects`, `/v1/projects/pin`, `/v1/projects/unpin` +2 | `projects`, `project/overview` |
+| Create a project in a new folder with a name | `/projects` | `baked projects create` | Not needed: a new project has no backend yet; the desktop app creates it through baked projects create | `projects` |
 | Rename a project | `/project rename` | `baked projects rename` | `/v1/projects/rename` | `projects` |
 | Working set | `/project` | `baked project` | `/v1/projects/current/working-set` | `project/working-set` |
-| What waits for me across projects | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): this project only | `baked attention` | `/v1/attention` | `attention` |
+| What waits for me across projects | `/project waiting`, `/project` | `baked attention` | `/v1/attention` | `attention` |
 | Local API server, health and capabilities | Not needed: the TUI runs the core in process | `baked serve` | `/v1/health` | `projects` |
 | Prerequisite check and first-run wizard | `/setup`, `/wizard` | `baked self-check`, `--wizard` | `/v1/workflow/doctor` | `project/overview` |
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
@@ -156,9 +159,12 @@ bun test tests/feature-parity.test.ts
 
 ### Open gaps by issue
 
+- [#151](https://github.com/Gulliby-development/baked/issues/151): Project coordinator chat with a durable project brief
+- [#152](https://github.com/Gulliby-development/baked/issues/152): Project coordinator chat with a durable project brief
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Import, export, gc and redact runs; What waits for me across projects
+- [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Import, export, gc and redact runs
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
+- [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
 
 <!-- parity:end -->

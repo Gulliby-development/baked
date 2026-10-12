@@ -4,7 +4,12 @@ import {
   describe as describeStation,
   FINISH,
   focusStation,
+  gateMarks,
+  gatePlace,
+  gateResultText,
+  gateTone,
   handoff,
+  loopGates,
   lineOf,
   loopText,
   type Station,
@@ -12,6 +17,7 @@ import {
   stageIcon,
   stageIconOf,
   stations,
+  worstTone,
 } from "../src/renderer/screens/runs/line-model.ts";
 import type { PipelineStage, PipelineState } from "../src/renderer/screens/runs/model.ts";
 
@@ -124,5 +130,66 @@ describe("stage icons", () => {
     expect(stageIconOf("spec")).toBe("spec");
     expect(stageIconOf("implement")).toBe("implement");
     expect(stageIconOf("verify")).toBe("checks");
+  });
+});
+
+describe("gates on the line", () => {
+  const gate = (id: string, mode: "required" | "advisory", transition: { to: string; on: string } | null) => ({
+    id,
+    type: "command" as const,
+    mode,
+    does: `Runs bun ${id}`,
+    transition: transition ? { id: `t-${id}`, ...transition } : null,
+  });
+  const GATED: WorkflowLine = {
+    stages: LINE.stages.map((s) =>
+      s.id === "checks"
+        ? { ...s, gates: [gate("lint", "required", null), gate("tests", "required", null), gate("loop-note", "advisory", { to: "implement", on: "failed" })] }
+        : s.id === "review"
+          ? { ...s, gates: [gate("walk", "advisory", { to: FINISH, on: "passed" })] }
+          : s,
+    ),
+    loops: LINE.loops,
+  };
+  const results = new Map([
+    ["lint", { status: "passed", mode: "required", attempts: 1, flaky: false }],
+    ["tests", { status: "failed", mode: "required", attempts: 2, flaky: false }],
+    ["walk", { status: "failed", mode: "advisory", attempts: 1, flaky: false }],
+  ]);
+  const list = stations(pipe(["done", "done", "done", "failed"]), GATED, new Map(), "failed", results);
+  const ids = new Map(list.map((s, i) => [s.id, i]));
+
+  test("each station carries its gates with their last result; older backends have none", () => {
+    expect(list.find((s) => s.id === "checks")?.gates.map((g) => [g.id, g.last?.status ?? null])).toEqual([
+      ["lint", "passed"],
+      ["tests", "failed"],
+      ["loop-note", null],
+    ]);
+    expect(stations(pipe([]), LINE, new Map(), "running").every((s) => s.gates.length === 0)).toBe(true);
+  });
+
+  test("marks sit on the station for its own gates and on the belt for a forward transition", () => {
+    expect(gateMarks(list).map((m) => `${list[m.station]?.id}:${m.where}:${m.gates.map((g) => g.id).join(",")}`)).toEqual([
+      "checks:station:lint,tests",
+      "review:exit:walk",
+    ]);
+    const loop = LINE.loops[0];
+    if (!loop) throw new Error("no loop");
+    expect(loopGates(list, loop).map((g) => g.id)).toEqual(["loop-note"]);
+  });
+
+  test("tones and words: a failed required gate blocks, a failed advisory gate only warns", () => {
+    const checks = list.find((s) => s.id === "checks");
+    const review = list.find((s) => s.id === "review");
+    expect(checks?.gates.map(gateTone)).toEqual(["ok", "err", "idle"]);
+    expect(worstTone(checks?.gates ?? [])).toBe("err");
+    expect(review?.gates.map(gateTone)).toEqual(["warn"]);
+    expect(checks?.gates.map(gateResultText)).toEqual(["Passed", "Failed after 2 attempts", "Not run yet"]);
+    expect(checks?.gates.map((g) => gatePlace(g, ids, "checks"))).toEqual([
+      "At this station",
+      "At this station",
+      "When it fails, before going back to Implement",
+    ]);
+    expect(review?.gates.map((g) => gatePlace(g, ids, "review"))).toEqual(["Before the run finishes"]);
   });
 });

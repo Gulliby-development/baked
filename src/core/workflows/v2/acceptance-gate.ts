@@ -46,6 +46,7 @@ import {
   testCommand,
   walkProblems,
   walkVerdict,
+  withCriteria,
 } from "./acceptance.js";
 import {
   type BrowserLauncher,
@@ -752,9 +753,10 @@ type AcceptanceRequestBody = z.infer<typeof AcceptanceRequestBody>;
  */
 export async function runAcceptanceGate(
   host: AcceptanceHost,
-  gate: AcceptanceGateDefinition,
+  declared: AcceptanceGateDefinition,
 ): Promise<AcceptanceGateResult> {
   const { store, runId, state } = host;
+  const gate = withCriteria(declared, state.spec);
   // A worktree run walks and tests the application in its own worktree.
   const workspace = runRoot(store.workspace, state);
   const previous = state.acceptance[gate.id];
@@ -802,6 +804,11 @@ export async function runAcceptanceGate(
     return { status: statusOf(entry), evidenceId: entry.evidenceId };
   };
 
+  if (!gate.acceptance.scenario.expectations.length)
+    return finish({
+      phase: "skipped",
+      reason: "The run's spec has no manual acceptance criteria to walk through.",
+    });
   const browser: BrowserDriverOptions = host.browser ?? { launcher: playwrightLauncher };
   const { capabilities } = gate.acceptance;
   if (gate.acceptance.driver === "browser") {

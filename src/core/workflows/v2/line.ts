@@ -1,4 +1,4 @@
-import type { WorkflowV2 } from "./definition.js";
+import { effectiveMode, type Gate, type GateBinding, type WorkflowV2 } from "./definition.js";
 
 /**
  * A workflow as a production line: its stages in order with the contracts each one takes and
@@ -12,6 +12,21 @@ export interface LineStage {
   produces: string;
   /** An approval a person gives; an `auto` approval is decided by the runtime. */
   human: boolean;
+  /** The stage's own gates, then the gates on the transitions that leave it, in order. */
+  gates: LineGate[];
+}
+
+/** A gate where it stands on the line, described in words. */
+export interface LineGate {
+  id: string;
+  /** null when the library has no gate with this ID; the definition then does not validate. */
+  type: Gate["type"] | null;
+  /** `required` blocks the line when it fails; `advisory` only reports. */
+  mode: "required" | "advisory";
+  /** What the gate does, in a short sentence. */
+  does: string;
+  /** The transition the gate guards; null for a gate of the stage itself. */
+  transition: { id: string; to: string; on: string } | null;
 }
 
 /** A transition back to the same or an earlier stage: a repair loop. */
@@ -27,13 +42,59 @@ export interface WorkflowLine {
   loops: LineLoop[];
 }
 
-export function workflowLine(definition: WorkflowV2): WorkflowLine {
+const argv = (executable: string, args: readonly string[]): string =>
+  [executable, ...args].join(" ");
+
+/** What a gate does, in words, for a person reading the workflow. */
+export function gateDoes(gate: Gate): string {
+  switch (gate.type) {
+    case "command":
+      return `Runs ${argv(gate.command.executable, gate.command.args)}`;
+    case "human":
+      return `Asks a person: ${gate.human.prompt}`;
+    case "ai-review":
+      return gate.review.dimension === "custom" && gate.review.instructions
+        ? `AI review: ${gate.review.instructions}`
+        : `AI ${gate.review.dimension} review`;
+    case "ai-acceptance":
+      return `AI walk-through of ${argv(gate.acceptance.start.executable, gate.acceptance.start.args)}: ${gate.acceptance.scenario.title}`;
+  }
+}
+
+function lineGate(
+  binding: GateBinding,
+  library: ReadonlyMap<string, Gate>,
+  transition: LineGate["transition"],
+): LineGate {
+  const gate = library.get(binding.gateId);
+  return {
+    id: binding.gateId,
+    type: gate?.type ?? null,
+    mode: gate ? effectiveMode(binding, gate) : (binding.mode ?? "required"),
+    does: gate ? gateDoes(gate) : "Unknown gate: no gate with this ID in the library",
+    transition,
+  };
+}
+
+/** The line of a definition; `library` resolves its gate IDs (an empty map lists them unknown). */
+export function workflowLine(
+  definition: WorkflowV2,
+  library: ReadonlyMap<string, Gate> = new Map(),
+): WorkflowLine {
   const stages = definition.stages.map((stage) => ({
     id: stage.id,
     type: stage.type,
     consumes: [...stage.consumes],
     produces: stage.produces,
     human: stage.type === "approval" && stage.decision === "human",
+    gates: [
+      ...(stage.type === "check" || stage.type === "review"
+        ? stage.gates.map((b) => lineGate(b, library, null))
+        : []),
+      ...definition.transitions
+        .filter((t) => t.from === stage.id)
+        .flatMap((t) => t.gates.map((b) => lineGate(b, library, { id: t.id, to: t.to, on: t.on }))),
+    ],
   }));
   const index = new Map(stages.map((stage, i) => [stage.id, i]));
   const loops = definition.transitions
