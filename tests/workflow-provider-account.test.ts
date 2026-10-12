@@ -47,6 +47,13 @@ describe("provider account refusals", () => {
     expect(reportsLostTool({ outcome: "blocked", summary: "Cannot satisfy FR-002 as written", unresolved: ["FR-002 is ambiguous"] })).toBe(false);
   });
 
+  test("a missing read tool or a no such tool message is a lost tool", () => {
+    const blocked = (summary: string) => ({ outcome: "blocked", summary, unresolved: [] as string[] });
+    expect(reportsLostTool(blocked("Every attempt to call the `read` tool failed with 'No such tool available'"))).toBe(true);
+    expect(reportsLostTool(blocked("The grep tool is not available"))).toBe(true);
+    expect(reportsLostTool(blocked("Tests fail on the read path"))).toBe(false);
+  });
+
   test("block the run with provider_account after one call", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-account-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));

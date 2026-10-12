@@ -82,6 +82,10 @@ class ParallelExecutor implements AgentExecutor {
   capped = new Set<string>();
   /** Tasks whose first attempt reports its edit tool unavailable and submits no change. */
   lostTool = new Set<string>();
+  /** Tasks whose first attempt ends blocked with this summary and no change. */
+  blockedOnce: Record<string, { summary: string; noTools?: boolean }> = {};
+  /** What each implementation was told about the session it replaces. */
+  previous: { taskId: string; previousAttempt?: { summary: string; unresolved: string[] } }[] = [];
   /** Attempts per task whose worker writes a partial file and then dies without a result. */
   crashes: Record<string, number> = {};
   /** The earlier edits each implementation was handed. */
@@ -99,7 +103,7 @@ class ParallelExecutor implements AgentExecutor {
     const task = request.task;
     if (!task) throw new Error("Implementation without a task");
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
-      extra: { integration?: Record<string, unknown>; earlierEdits?: { paths: string[]; patch: string } };
+      extra: { integration?: Record<string, unknown>; earlierEdits?: { paths: string[]; patch: string }; previousAttempt?: { summary: string; unresolved: string[] } };
     };
     const guard = new WorkflowToolPolicy(
       service.store, service.leases, request.runId, request.attemptId, request.profile,
@@ -128,6 +132,18 @@ class ParallelExecutor implements AgentExecutor {
         this.crashes[task.id] = (this.crashes[task.id] ?? 0) - 1;
         await write(first, "partial");
         throw new Error("worker process exited");
+      }
+      this.previous.push({ taskId: task.id, ...(data.extra.previousAttempt ? { previousAttempt: data.extra.previousAttempt } : {}) });
+      const blocked = this.blockedOnce[task.id];
+      if (blocked) {
+        delete this.blockedOnce[task.id];
+        if (blocked.noTools)
+          service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "no_submission", finalizedBy: null, totalTokens: 50, steps: [{ inputTokens: 25, outputTokens: 25, cacheReadTokens: null, toolCalls: 0, compactedBytes: 0 }] }));
+        return {
+          output: { schemaVersion: 1, taskId: task.id, outcome: "blocked", summary: blocked.summary, evidenceIds: [], unresolved: [blocked.summary] },
+          inputTokens: 25,
+          outputTokens: 25,
+        };
       }
       if (this.lostTool.delete(task.id))
         return {
@@ -411,6 +427,38 @@ describe("workflow parallel writers", () => {
       expect(marker && JSON.parse(fx.store.readArtifact(run.runId, marker.id))).toEqual({ taskId: "T001", passed: true });
     });
   }
+
+  for (const writers of [1, 2]) {
+    test(`a blocked implementer restarts once under assume with the worker's account, ${String(writers)} writer(s)`, async () => {
+      const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" }, { policy: { clarification: "assume" } });
+      fx.executor.blockedOnce.T002 = { summary: "One test remains failing: the fixture lacks an over-budget category" };
+      const run = await fx.start(writers);
+      const done = await fx.complete(run.runId);
+      expect(fx.lastError(run.runId)).toBe("");
+      expect(done.status).toBe("completed");
+      expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
+      expect(fx.executor.previous.filter((p) => p.taskId === "T002").map((p) => p.previousAttempt?.summary)).toEqual([undefined, "One test remains failing: the fixture lacks an over-budget category"]);
+      expect(fx.store.artifacts(run.runId).some((a) => a.logical_path === "tasks/restarts/T002.json")).toBe(true);
+    });
+  }
+
+  test("a session that made no tool call and submitted nothing restarts without assume, whatever its wording", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" }, { policy: { clarification: "ask" } });
+    fx.executor.blockedOnce.T002 = { summary: "Could not proceed", noTools: true };
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(fx.store.state(run.runId).taskRestarts).toEqual({ T002: 1 });
+  });
+
+  test("a blocked implementer without a host fact and without assume still blocks the run", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }], { "a.txt": "A" }, { policy: { clarification: "ask" } });
+    fx.executor.blockedOnce.T001 = { summary: "Cannot satisfy FR-002 as written" };
+    const run = await fx.start(1);
+    const stopped = await fx.complete(run.runId);
+    expect(stopped.status).toBe("blocked");
+    expect(fx.store.state(run.runId).taskRestarts).toEqual({});
+  });
 
   test("a task that reports its tool unavailable again after the restart blocks the run", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }], { "a.txt": "A" });
