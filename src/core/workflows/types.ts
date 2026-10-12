@@ -119,6 +119,11 @@ export const RuntimeStateSchema = z
     coverageRaised: z.boolean().default(false),
     /** Tasks the host added by splitting oversized test tasks; they do not count against the auto-approval task limit. */
     hostSplitTasks: z.number().int().nonnegative().default(0),
+    /**
+     * Planned tasks whose task check failed only on files that tasks still to run own, by the
+     * owners they wait for. The check runs again once the owners are done; no repair starts.
+     */
+    deferredChecks: z.record(z.string(), z.array(z.string())).default({}),
     /** Times plan-time sizing sent the plan back to be split; it does so once. */
     sizingReplans: z.number().int().nonnegative().default(0),
     /**

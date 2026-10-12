@@ -1,4 +1,5 @@
 import { hashJson } from "../specs/hash.js";
+import { pathsInOutput } from "../verification/convergence.js";
 import type { TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
 import type { RuntimeState, Task } from "./types.js";
@@ -99,4 +100,40 @@ function sameApartFromAddedCriteria(before: Task, after: Task): boolean {
   const { criterionIds: was, ...rest } = before;
   const { criterionIds: now, ...next } = after;
   return hashJson(rest) === hashJson(next) && was.every((id) => now.includes(id));
+}
+
+/**
+ * The tasks still to run that own every planned file a failed task check names, or none when the
+ * failure is the task's own: the output names a file the task may write, names no planned file, or
+ * an owner cannot run before the task (it depends on it, so waiting would never end).
+ */
+export function pendingOwners(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  gates: RuntimeState["taskGates"],
+  task: Task,
+  output: string,
+): string[] {
+  if (!graph) return [];
+  const named = pathsInOutput(output, graph.tasks);
+  if (!named.length || named.some((path) => task.writes.some((w) => w.path === path))) return [];
+  const done = (id: string): boolean =>
+    rows.some(
+      (r) =>
+        r.id === id &&
+        (r.status === "verified" || (r.status === "implemented" && hasTaskGate(r, gates))),
+    );
+  const dependsOn = (id: string, target: string, seen = new Set<string>()): boolean =>
+    (graph.tasks.find((t) => t.id === id)?.dependsOn ?? []).some(
+      (dep) => dep === target || (!seen.has(dep) && (seen.add(dep), dependsOn(dep, target, seen))),
+    );
+  const owners = new Set<string>();
+  for (const path of named) {
+    const pending = graph.tasks.filter(
+      (t) => t.id !== task.id && t.writes.some((w) => w.path === path) && !done(t.id),
+    );
+    if (!pending.length || pending.some((t) => dependsOn(t.id, task.id))) return [];
+    for (const t of pending) owners.add(t.id);
+  }
+  return [...owners];
 }
