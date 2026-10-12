@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline";
+import { describeSearch, resolveCli } from "../../../platform/cli-path.js";
 import { trackProcess } from "../../../process-tracker.js";
 import type { ProviderModelInfo } from "../types.js";
 
@@ -77,10 +78,26 @@ export function parseCodexModelListResult(result: unknown): ProviderModelInfo[] 
   });
 }
 
+/**
+ * The Codex executable. `BAKED_CODEX_PATH` overrides it; otherwise `codex` from PATH, the login
+ * shell PATH or a known install folder, so an app started outside a terminal finds it too.
+ */
+export function codexCommand(): string {
+  return process.env.BAKED_CODEX_PATH?.trim() || resolveCli("codex").command;
+}
+
+/** Why Codex was not found, naming where BAKED looked. */
+export function codexNotFoundMessage(): string {
+  const override = process.env.BAKED_CODEX_PATH?.trim();
+  if (override) return `Codex CLI not found at BAKED_CODEX_PATH (${override}).`;
+  const searched = describeSearch(resolveCli("codex"));
+  return `Codex CLI not found${searched ? ` (looked in ${searched})` : ""}. Install Codex or set BAKED_CODEX_PATH, then run \`codex login\`.`;
+}
+
 export function isCodexInstalled(): boolean {
   try {
     return (
-      spawnSync("codex", ["--version"], {
+      spawnSync(codexCommand(), ["--version"], {
         stdio: "ignore",
         timeout: 5_000,
         windowsHide: true,
@@ -93,18 +110,19 @@ export function isCodexInstalled(): boolean {
 
 export function getCodexLoginStatus(): CodexLoginStatus {
   try {
-    const result = spawnSync("codex", ["login", "status"], {
+    const result = spawnSync(codexCommand(), ["login", "status"], {
       timeout: 5_000,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     });
 
     if (result.error) {
+      const missing = (result.error as NodeJS.ErrnoException).code === "ENOENT";
       return {
         installed: false,
         loggedIn: false,
         authMode: null,
-        message: result.error.message,
+        message: missing ? codexNotFoundMessage() : result.error.message,
       };
     }
 
@@ -127,7 +145,7 @@ export interface CodexLogoutResult {
 
 export function logoutCodex(): CodexLogoutResult {
   try {
-    const result = spawnSync("codex", ["logout"], {
+    const result = spawnSync(codexCommand(), ["logout"], {
       timeout: 15_000,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -151,7 +169,7 @@ export function logoutCodex(): CodexLogoutResult {
 export function assertCodexReady(): void {
   const status = getCodexLoginStatus();
   if (!status.installed) {
-    throw new Error("Codex CLI is not installed. Install Codex, then run `codex login`.");
+    throw new Error(status.message);
   }
   if (!status.loggedIn) {
     throw new Error("Codex is not logged in. Run `codex login` and try again.");
@@ -161,7 +179,7 @@ export function assertCodexReady(): void {
 export async function startCodexAppServerSession(
   options: { experimentalApi?: boolean } = {},
 ): Promise<CodexAppServerConnection> {
-  const child = spawn("codex", ["app-server", "--listen", "stdio://"], {
+  const child = spawn(codexCommand(), ["app-server", "--listen", "stdio://"], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
