@@ -37,7 +37,15 @@ cd apps/desktop
 bun install                                   # without ELECTRON_SKIP_BINARY_DOWNLOAD
 bun run package -- --baked <path-to-baked>    # or BAKED_BINARY=<path>; add --arch x64|arm64 to cross-package
 xvfb-run -a bun run smoke                     # Linux: launches dist/linux-unpacked and checks the window
+bun run smoke                                 # Windows and macOS: no display server needed
 ```
+
+The smoke test starts the unpacked build (`dist/linux-unpacked/baked-desktop`,
+`dist/win-unpacked/BAKED.exe`, `dist/mac-arm64/BAKED.app` or `dist/mac/BAKED.app`) under a
+throwaway home, registers a folder with the bundled `baked` from `resources/bin`, and checks that
+All projects shows it. CI runs it after packaging on linux-x64, windows-x64 and darwin-arm64 (the
+builds made for the runner's own architecture), with the same gating as packaging: nightly,
+workflow_dispatch and pull requests that touch packaging files.
 
 `scripts/package.ts` builds the app, copies the `baked` binary to `resources/bin` (with the
 `deps/` folder next to it, as in the release bundles from `scripts/bundle.sh` and
