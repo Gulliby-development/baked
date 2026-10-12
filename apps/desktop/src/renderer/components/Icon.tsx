@@ -32,6 +32,7 @@ const PATHS = {
   send: "M12 20V4M5 11l7-7 7 7",
   stop: "M6 6h12v12H6z",
   mic: "M9 3h6v10H9zM5 11a7 7 0 0 0 14 0M12 18v3M8 21h8",
+  eye: "M2 12c2.5-4.5 6-7 10-7s7.5 2.5 10 7c-2.5 4.5-6 7-10 7s-7.5-2.5-10-7zM9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0z",
   export: "M12 4v11M7 10l5 5 5-5M4 20h16",
   delete: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
   "chevron-right": "M9 5l7 7-7 7",
