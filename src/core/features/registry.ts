@@ -444,6 +444,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/skills"],
   },
   {
+    id: "baked-help",
+    group: "Tools and code intelligence",
+    title: "Ask the agent about BAKED itself (bundled docs, baked_help tool)",
+    tui: ["key Enter: ask in the composer"],
+    cli: ["--headless: the agent reads the bundled docs", "--chat"],
+    api: ["/v1/sessions/:id/messages: the agent reads the bundled docs"],
+    desktop: ["project/chat: ask in chat"],
+  },
+  {
     id: "instructions-edit",
     group: "Tools and code intelligence",
     title: "Instruction files: view and edit content",

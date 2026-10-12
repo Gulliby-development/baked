@@ -54,6 +54,7 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
 
   // Skills
   skills: "agent",
+  baked_help: "agent",
 
   // Agent / subagent
   dispatch: "agent",
@@ -160,6 +161,7 @@ const TOOL_ICON_MAP: Record<string, string> = {
   bake_analyze: "repomap",
   bake_impact: "repomap",
   skills: "skills",
+  baked_help: "question",
   ast_edit: "morph",
   _nudge: "lightning",
 };
@@ -189,6 +191,7 @@ export const TOOL_LABELS: Record<string, string> = {
   fetch_page: "Fetching page",
   memory: "Memory",
   skills: "Skills",
+  baked_help: "Reading BAKED docs",
   git: "Git",
   navigate: "Navigating",
   analyze: "Analyzing",
@@ -227,6 +230,7 @@ export const TOOL_LABELS_DONE: Record<string, string> = {
   fetch_page: "Fetched page",
   memory: "Memory",
   skills: "Skills",
+  baked_help: "Read BAKED docs",
   git: "Git",
   navigate: "Navigated",
   analyze: "Analyzed",
@@ -290,6 +294,7 @@ function getToolIconColors(): Record<string, string> {
     ask_user: t.amber,
     task_list: t.info,
     skills: t.brand,
+    baked_help: t.brand,
     code_execution: t.amber,
     bake_grep: t.success,
     bake_find: t.success,

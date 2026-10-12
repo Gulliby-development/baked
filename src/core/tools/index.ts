@@ -26,6 +26,7 @@ import { bakeFindTool } from "./bake-find.js";
 import { bakeGrepTool } from "./bake-grep.js";
 import { bakeImpactTool } from "./bake-impact.js";
 import { bakeQueryTool } from "./bake-query.js";
+import { createBakedHelpTool } from "./baked-help.js";
 import { CORE_TOOL_NAMES, getToolCatalog } from "./constants.js";
 import { discoverPatternTool } from "./discover-pattern.js";
 import { editFileTool } from "./edit-file";
@@ -1198,6 +1199,7 @@ export function buildTools(
 
     memory: memoryTool,
     ...(skillsTool ? { skills: skillsTool } : {}),
+    baked_help: { ...createBakedHelpTool(), ...TEXT_OUTPUT },
     final_response: createFinalResponseTool(),
 
     navigate: tool({
@@ -1988,6 +1990,7 @@ export function buildReadOnlyTools(
     analyze: all.analyze,
     discover_pattern: all.discover_pattern,
     memory: all.memory,
+    baked_help: all.baked_help,
     ...(all.bake_grep ? { bake_grep: all.bake_grep } : {}),
     ...(all.bake_find ? { bake_find: all.bake_find } : {}),
     ...(all.bake_analyze ? { bake_analyze: all.bake_analyze } : {}),

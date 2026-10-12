@@ -113,6 +113,13 @@ export function toolTitle(name: string, args: Args): ToolTitle {
       return { verb: "Searched the web for", subject: shorten(str(args.query) ?? "") };
     case "fetch_page":
       return { verb: "Fetched", subject: str(args.url), code: true };
+    case "baked_help":
+      return {
+        verb: "Read BAKED docs",
+        ...(str(args.query) || str(args.page)
+          ? { subject: shorten(str(args.query) ?? str(args.page) ?? "") }
+          : {}),
+      };
     case "git":
       return { verb: "Git", subject: str(args.action) ?? str(args.command), code: true };
     case "project":

@@ -17,6 +17,7 @@ const readOnly = new Set([
   "bake_query",
   "fetch_page",
   "web_search",
+  "baked_help",
 ]);
 export function guardWorkspaceTools<T extends Record<string, unknown>>(
   tools: T,
