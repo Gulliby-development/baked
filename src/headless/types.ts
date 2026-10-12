@@ -65,6 +65,8 @@ export type HeadlessEvent =
       error?: string;
     }
   | { type: "chat-done"; turns: number; tokens: TokenUsage; sessionId?: string }
+  | { type: "watch"; event: import("../core/watch/controller.js").WatchEvent }
+  | { type: "watch-turn"; label: string; kind: "act" | "ask" }
   | {
       type: "done";
       output: string;
@@ -115,6 +117,10 @@ export interface HeadlessChatOptions {
   sessionId?: string;
   system?: string;
   noRepomap?: boolean;
+  /** Watch mode: turns come from `baked!` and `baked?` comments saved in the project. */
+  watch?: boolean;
+  /** Watch by polling file times instead of file events. */
+  watchPoll?: boolean;
 
   /** Prompt source. Default: line-buffered stdin reader. */
   readPrompt?: () => Promise<string | null>;
