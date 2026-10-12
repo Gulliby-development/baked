@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-globalThis.AI_SDK_LOG_WARNINGS = false;
+import "./core/sdk-warnings.js";
 
 // Map legacy `baked_*` environment variables before any module reads them.
 import "./core/legacy-env.js";
