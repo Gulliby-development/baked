@@ -375,6 +375,7 @@ export const ReasonCode = z.enum([
   "manual_evidence",
   "user_pause",
   "owner_lost",
+  "step_stalled",
   "input_changed",
   "workspace_busy",
   "budget_exhausted",
@@ -601,6 +602,20 @@ export const WorkflowConfigSchema = z
      * side by side; inline runs share the working copy and still take turns.
      */
     maxParallelRuns: z.number().int().min(1).max(MAX_PARALLEL_RUNS).optional(),
+    /**
+     * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
+     * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
+     */
+    stall: z
+      .object({
+        toolTimeoutMs: z.number().int().min(1000).max(3_600_000).optional(),
+        commandToolMs: z.number().int().min(1000).max(14_400_000).optional(),
+        stepStallMs: z.number().int().min(10_000).max(14_400_000).optional(),
+        maxToolTimeouts: z.number().int().min(1).max(50).optional(),
+        autoResumes: z.number().int().min(0).max(20).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 /** Workflows are on unless a configuration layer turns them off with `workflows.enabled: false`. */
@@ -650,6 +665,8 @@ export const EventType = z.enum([
   "transition.taken",
   "gate.finished",
   "acceptance.phase",
+  "tool.started",
+  "tool.finished",
 ]);
 const EventBase = {
   schemaVersion: z.literal(1),
@@ -923,6 +940,28 @@ export const EventSchema = z.discriminatedUnion("type", [
         .strict(),
     })
     .strict(),
+  // A tool call of an agent attempt, journaled so a stall can be attributed to the call it is in.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("tool.started"),
+      payload: z.object({ attemptId: SafeId, tool: z.string().max(128) }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("tool.finished"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          tool: z.string().max(128),
+          status: z.enum(["ok", "error", "deadline"]),
+          durationMs: z.number().int().nonnegative(),
+        })
+        .strict(),
+    })
+    .strict(),
 ]);
 
 export type Spec = z.infer<typeof SpecSchema>;
@@ -956,6 +995,11 @@ export interface RunSnapshot {
    * clean. The exit code stays 0.
    */
   limitations: { count: number; ids: string[] };
+  /**
+   * Present while a run is `running` but has journaled nothing for longer than the stall limit:
+   * the owner is alive and its work is not advancing.
+   */
+  stalled?: { silentMs: number; lastEventAt: string | null };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;
