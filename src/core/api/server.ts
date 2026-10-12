@@ -29,6 +29,7 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import { githubTasks, type TaskTracker } from "../chat/coordinator-launch.js";
 import { BakeChatHost } from "../chat/host.js";
 import { serviceStateSource } from "../chat/project-state.js";
 import { scriptedHostFromEnv } from "../chat/scripted-host.js";
@@ -49,15 +50,31 @@ import type { SkillCatalog } from "../skills/manager.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
 import { type AttentionItem, attentionItems } from "../workflows/attention.js";
+import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { WorkflowFault } from "../workflows/errors.js";
+import { readHistory } from "../workflows/estimate.js";
 import { uniqueFeatureId } from "../workflows/feature-id.js";
 import { initiativeStartRequest } from "../workflows/initiatives/forms.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import { redactSecrets } from "../workflows/redaction.js";
-import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/schemas.js";
+import {
+  PolicySchema,
+  type RunSnapshot,
+  SafeId,
+  type WorkflowErrorCode,
+} from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
 import { usageMarkdown } from "../workflows/usage-markdown.js";
+import type { WorkflowV2 } from "../workflows/v2/definition.js";
+import {
+  applyEditorOp,
+  type EditorRequest,
+  editorState,
+  editorView,
+  reviewEditor,
+  saveEditor,
+} from "../workflows/v2/editor-service.js";
 import type { DraftModel } from "../workflows/v2/gate-draft.js";
 import {
   bearerMatches,
@@ -89,6 +106,8 @@ import {
   ContinueBody,
   DeliverBody,
   DeliverExecuteBody,
+  EditorBody,
+  EditorSaveBody,
   EventsQuery,
   EvidenceBody,
   ExportBody,
@@ -141,6 +160,7 @@ export const CAPABILITIES = [
   "lsp",
   "run-maintenance",
   "lsp-diagnose",
+  "workflow-editor",
   "custom-commands",
   "settings",
   "git",
@@ -183,6 +203,8 @@ export interface ApiServerOptions {
   lspDiagnose?: LspRouteContext["diagnose"];
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
+  /** The GitHub issues the coordinator's flows belong to; tests pass a fake one. */
+  tasks?: TaskTracker;
   /** Drafts gates from a sentence; tests pass a scripted model. */
   gateDraftModel?: DraftModel;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -446,14 +468,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     {
       // The coordinator starts work through the same paths as POST /v1/workflow/runs and
       // /v1/initiatives; approvals stay with the person.
-      startRun: async ({ prompt, workflow, feature, worktree }) =>
+      startRun: async ({ prompt, workflow, feature, worktree, issue }) =>
         launch(
           startArgs({
             commandId: crypto.randomUUID(),
             prompt,
-            feature:
-              feature ??
-              uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
+            // From an issue without a feature, the core names the feature after the issue.
+            ...(issue
+              ? { issue, ...(feature ? { feature } : {}) }
+              : {
+                  feature:
+                    feature ??
+                    uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
+                }),
             owner: "Coordinator",
             ...(workflow ? { workflow } : {}),
             ...(worktree ? { worktree: true } : {}),
@@ -480,6 +507,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         driveInitiative(view.initiativeId);
         return view;
       },
+      tasks: options.tasks ?? githubTasks(service.workspace, service.config),
     },
   );
   const graphCache = new CodeGraphCache(service.workspace);
@@ -947,6 +975,81 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       only("GET");
       const command = path.endsWith("definitions") ? "definitions" : "profiles";
       return json(200, await execute({ command, positional: [], flags: {} }), origin);
+    }
+    if (
+      path === "/v1/workflow/editor" ||
+      path === "/v1/workflow/editor/review" ||
+      path === "/v1/workflow/editor/save"
+    ) {
+      only("POST");
+      const saving = path.endsWith("/save");
+      const raw = (await readJson(req, 4_000_000)) as { definition?: WorkflowV2 };
+      const body = saving ? EditorSaveBody.parse(raw) : EditorBody.parse(raw);
+      // The working copy is checked in outline only and used as sent: parsing would reorder its
+      // keys, and the file text is compared with the saved one.
+      const request: EditorRequest = {
+        from: body.from,
+        ...(body.copy ? { copy: true } : {}),
+        ...(raw.definition ? { definition: raw.definition } : {}),
+      };
+      const policy = PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy);
+      // Tests point the user's gates and agents at their own config directory.
+      const sources = options.configDir
+        ? {
+            gateDirectories: {
+              user: join(options.configDir, "gates"),
+              project: join(service.workspace, "baked", "gates"),
+            },
+            profileDirectory: join(options.configDir, "agents"),
+          }
+        : {};
+      const open = (r: EditorRequest) => {
+        try {
+          return editorState(service.workspace, policy, r, sources);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.startsWith("Unknown workflow")) throw new ApiError(404, "NOT_FOUND", message);
+          throw error;
+        }
+      };
+      let state = open(request);
+      if (!request.copy && request.definition && request.definition.id !== state.id)
+        throw new ApiError(400, "INVALID_REQUEST", "The working copy names another workflow");
+      let history: ReturnType<typeof readHistory> | null = null;
+      try {
+        history = readHistory(service.store);
+      } catch {
+        history = null;
+      }
+      if (path.endsWith("/review"))
+        return json(200, { review: reviewEditor(state, service.workspace) }, origin);
+      if (saving) {
+        const outcome = saveEditor(
+          state,
+          service.workspace,
+          (body as { confirm?: string }).confirm,
+        );
+        if (outcome.saved) {
+          // Reopen from the file so the view is the saved definition, no longer a copy.
+          const saved: EditorRequest = { from: state.id };
+          const fresh = open(saved);
+          return json(200, { ...outcome, view: editorView(fresh, saved, history) }, origin);
+        }
+        return json(200, { ...outcome, view: editorView(state, request, history) }, origin);
+      }
+      let error: string | undefined;
+      const op = (body as { op?: Parameters<typeof applyEditorOp>[1] }).op;
+      if (op) {
+        const result = applyEditorOp(state, op);
+        state = result.state;
+        error = result.error;
+        if (op.op === "duplicate") request.copy = true;
+      }
+      return json(
+        200,
+        { view: editorView(state, request, history), ...(error ? { error } : {}) },
+        origin,
+      );
     }
     if (path === "/v1/workflow/doctor" || path === "/v1/workflow/estimate") {
       only("GET");

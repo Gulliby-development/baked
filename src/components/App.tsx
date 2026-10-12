@@ -50,6 +50,7 @@ import { CURRENT_VERSION } from "../core/version.js";
 import { getModeColor, getModeLabel } from "../hooks/useBakeMode.js";
 import type { ChatInstance, WorkspaceSnapshot } from "../hooks/useChat.js";
 import { useConfigSync } from "../hooks/useConfigSync.js";
+import { coordinatorFor, stopCoordinators } from "../hooks/useCoordinator.js";
 import { useGitStatus } from "../hooks/useGitStatus.js";
 import { useGlobalKeyboard } from "../hooks/useGlobalKeyboard.js";
 import { buildTabMeta } from "../hooks/useSessionBuilder.js";
@@ -66,6 +67,7 @@ import { type ModalName, selectIsAnyModalOpen, useUIStore } from "../stores/ui.j
 import type { AppConfig, ChatEffort, ChatMessage, TaskRouter } from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
 import { artText } from "./brand/artText.js";
+import { CoordinatorView } from "./coordinator/CoordinatorView.js";
 import { ContextBar } from "./layout/ContextBar.js";
 import { isCompactTerminal } from "./layout/compact.js";
 import { Footer } from "./layout/Footer.js";
@@ -431,6 +433,7 @@ export function App({
   const modalMCPSettings = useUIStore((s) => s.modals.mcpSettings);
   const modalFirstRunWizard = useUIStore((s) => s.modals.firstRunWizard);
   const modalTabNamePopup = useUIStore((s) => s.modals.tabNamePopup);
+  const modalCoordinator = useUIStore((s) => s.modals.coordinator);
   const modalMemoryBrowser = useUIStore((s) => s.modals.memoryBrowser);
   const toolsState = useToolsStore();
 
@@ -596,6 +599,7 @@ export function App({
 
       schedule(async () => {
         try {
+          await stopCoordinators();
           await stopWorkflowSessions();
           const sid = getAppSessionId();
           const liveTabs = tabMgrRef.current.tabs;
@@ -738,6 +742,13 @@ export function App({
   const [activeModelForHeader, setActiveModelForHeader] = useState(effectiveConfig.defaultModel);
   const [effortHeader, setEffortHeader] = useState<ChatEffort>("default");
   const activeChatRef = useRef<ChatInstance | null>(null);
+  // The coordinator's new runs use the model the current tab uses.
+  const coordinatorModelRef = useRef(activeModelForHeader);
+  coordinatorModelRef.current = activeModelForHeader;
+  const openCoordinator = useCallback(
+    () => coordinatorFor(cwd, () => coordinatorModelRef.current),
+    [cwd],
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: derived from activeTabId — stable trigger
   useEffect(() => {
     const chat = tabMgr.getActiveChat();
@@ -1616,6 +1627,12 @@ export function App({
           tabMgr.createTab(name || undefined);
         }}
         onClose={getCloser("tabNamePopup")}
+      />
+
+      <CoordinatorView
+        visible={modalCoordinator}
+        open={openCoordinator}
+        onClose={getCloser("coordinator")}
       />
 
       <SimpleModalLayer

@@ -1,0 +1,169 @@
+/**
+ * Lines of the terminal coordinator view, kept free of React so tests can check them directly.
+ * Every line is already wrapped to the view's width, so the view shows the tail that fits.
+ */
+import type { LaunchedView } from "../../core/chat/coordinator-launch.js";
+import type { ChatPrompt } from "../../core/chat/sessions.js";
+import type { ChatMessage } from "../../types/index.js";
+
+export type LineTone = "user" | "assistant" | "muted" | "tool" | "accent" | "warning" | "error";
+
+export interface ViewLine {
+  text: string;
+  tone: LineTone;
+}
+
+/** The message Edit starts after rejecting a split card, as the desktop app does. */
+export const SPLIT_EDIT_PREFIX = "Change the split: ";
+
+/** Splits `text` into lines of at most `width` columns, breaking at spaces where it can. */
+export function wrap(text: string, width: number): string[] {
+  const max = Math.max(1, width);
+  const out: string[] = [];
+  for (const raw of text.replace(/\r/g, "").split("\n")) {
+    let line = raw.trimEnd();
+    if (!line) {
+      out.push("");
+      continue;
+    }
+    while (line.length > max) {
+      const space = line.lastIndexOf(" ", max);
+      const cut = space > 0 ? space : max;
+      out.push(line.slice(0, cut));
+      line = line.slice(cut).trimStart();
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+/** Wraps `text` under a label: the first line starts with it, the rest are indented as far. */
+function labelled(label: string, text: string, width: number, tone: LineTone): ViewLine[] {
+  const pad = " ".repeat(label.length);
+  return wrap(text, width - label.length).map((line, i) => ({
+    text: `${i === 0 ? label : pad}${line}`,
+    tone,
+  }));
+}
+
+function tokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tokens`;
+  if (n >= 1000) return `${Math.round(n / 1000)}k tokens`;
+  return `${n} tokens`;
+}
+
+/** One line per launched item: kind, id, status, tokens, task and why. */
+export function launchedLines(launched: LaunchedView[], width: number): ViewLine[] {
+  return launched.flatMap((entry) => {
+    const task = entry.task
+      ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
+      : "";
+    const head = `${entry.active ? "●" : "○"} ${entry.kind} ${entry.id}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
+    return labelled("", `${head} · ${entry.why}`, width, entry.active ? "accent" : "muted");
+  });
+}
+
+/** The conversation, then the text the running turn has streamed so far. */
+export function messageLines(messages: ChatMessage[], live: string, width: number): ViewLine[] {
+  const lines: ViewLine[] = [];
+  for (const message of messages) {
+    if (message.role === "user") {
+      lines.push(...labelled("you  ", message.content, width, "user"));
+    } else if (message.role === "assistant") {
+      for (const call of message.toolCalls ?? [])
+        lines.push(...labelled("  ↳ ", call.name, width, "tool"));
+      if (message.content.trim())
+        lines.push(...labelled("     ", message.content, width, "assistant"));
+    } else if (message.showInChat !== false) {
+      lines.push(...labelled("  · ", message.content, width, "muted"));
+    }
+    lines.push({ text: "", tone: "muted" });
+  }
+  if (live.trim()) lines.push(...labelled("     ", live, width, "assistant"));
+  return lines;
+}
+
+/** The pending prompt as a card the keys below it answer. */
+export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
+  switch (prompt.kind) {
+    case "split": {
+      const lines = labelled(
+        "Split: ",
+        `${prompt.title} (${prompt.mode === "runs" ? "parallel runs" : "one initiative"})`,
+        width,
+        "warning",
+      );
+      prompt.flows.forEach((flow, i) => {
+        lines.push(
+          ...labelled(`${i + 1}. `, `${flow.title} [${flow.id}] · ${flow.task}`, width, "accent"),
+        );
+        if (flow.paths.length)
+          lines.push(...labelled("   ", flow.paths.join(", "), width, "muted"));
+        if (flow.dependsOn.length)
+          lines.push(...labelled("   ", `After ${flow.dependsOn.join(", ")}`, width, "muted"));
+      });
+      return lines;
+    }
+    case "question":
+      return [
+        ...labelled("? ", prompt.question, width, "warning"),
+        ...prompt.options.flatMap((option, i) =>
+          labelled(
+            `${i + 1}. `,
+            option.description ? `${option.label}: ${option.description}` : option.label,
+            width,
+            "accent",
+          ),
+        ),
+      ];
+    case "plan-review":
+      return labelled("Plan: ", prompt.title, width, "warning");
+    case "outside-cwd":
+      return labelled(
+        "Allow? ",
+        `${prompt.tool} outside the project: ${prompt.path}`,
+        width,
+        "warning",
+      );
+    case "destructive":
+      return labelled("Allow? ", prompt.description, width, "warning");
+    case "web-search":
+      return labelled("Allow? ", `web search: ${prompt.query}`, width, "warning");
+    case "fetch-page":
+      return labelled("Allow? ", `fetch ${prompt.url}`, width, "warning");
+  }
+}
+
+/** What each key does in the current state; the view's footer. */
+export function keyHints(
+  prompt: ChatPrompt | undefined,
+  working: boolean,
+): { key: string; label: string }[] {
+  const hints: { key: string; label: string }[] = [];
+  if (prompt?.kind === "split")
+    hints.push(
+      { key: "^Y", label: "approve split" },
+      { key: "^N", label: "reject" },
+      { key: "^E", label: "edit" },
+    );
+  else if (prompt?.kind === "question")
+    hints.push({ key: "Enter", label: "answer (number or text)" });
+  else if (prompt)
+    hints.push(
+      { key: "^Y", label: prompt.kind === "plan-review" ? "approve" : "allow" },
+      { key: "^N", label: prompt.kind === "plan-review" ? "cancel" : "deny" },
+    );
+  if (!prompt) hints.push({ key: "Enter", label: "send" });
+  hints.push({ key: "Esc", label: working ? "stop" : "back" });
+  return hints;
+}
+
+/** A question's answer: an option's number picks that option, other text is the answer itself. */
+export function questionAnswer(
+  prompt: Extract<ChatPrompt, { kind: "question" }>,
+  typed: string,
+): string {
+  const text = typed.trim();
+  const index = /^\d+$/.test(text) ? Number(text) - 1 : -1;
+  return prompt.options[index]?.value ?? text;
+}

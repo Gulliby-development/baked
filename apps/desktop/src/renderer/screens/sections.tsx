@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { ProjectSection } from "../router.js";
 import { ChatSection } from "./chat/ChatSection.js";
+import { CoordinatorSection } from "./coordinator/CoordinatorSection.js";
 import { GitSection } from "./git/GitSection.js";
 import { GraphSection } from "./graph/GraphSection.js";
 import { InitiativesSection } from "./insights/InitiativesSection.js";
@@ -16,6 +17,7 @@ import { LspSection } from "./setup/LspSection.js";
 import { McpSection } from "./setup/McpSection.js";
 import { RunMemorySection } from "./setup/RunMemorySection.js";
 import { SkillsSection } from "./setup/SkillsSection.js";
+import { WorkflowsSection } from "./setup/WorkflowsSection.js";
 import { WorkingSetSection } from "./setup/WorkingSetSection.js";
 import { ProjectHome } from "./start/index.js";
 
@@ -29,8 +31,10 @@ export interface SectionProps {
 export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<SectionProps>>> = {
   overview: ProjectHome,
   chat: ChatSection,
+  coordinator: CoordinatorSection,
   runs: RunsView,
   gates: GatesSection,
+  workflows: WorkflowsSection,
   instructions: InstructionsSection,
   "working-set": WorkingSetSection,
   "run-memory": RunMemorySection,

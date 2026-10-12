@@ -21,6 +21,8 @@ export const PLAN_MODE_CAPABILITY = "plan-mode";
 export const CHAT_UNDO_CAPABILITY = "chat-undo";
 /** `GET /v1/sessions/ID/checkpoints` (Rewind to here at the end of each earlier turn). */
 export const CHECKPOINTS_CAPABILITY = "checkpoints";
+/** `/v1/coordinator*` (the Coordinator section). */
+export const COORDINATOR_CAPABILITY = "coordinator";
 /** `GET|POST /v1/workflow/memory` (the Run memory section). */
 export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `/v1/memory*` (the Chat memory section). */
@@ -67,6 +69,9 @@ export function offers(capabilities: readonly string[] | null, name: string): bo
 
 /** `/v1/mcp*` (the MCP servers section). */
 export const MCP_CAPABILITY = "mcp";
+
+/** `POST /v1/workflow/editor*` (the Workflows section's editor). */
+export const WORKFLOW_EDITOR_CAPABILITY = "workflow-editor";
 
 /** `/v1/lsp*` (the Language servers section). */
 export const LSP_CAPABILITY = "lsp";

@@ -50,6 +50,7 @@ export function useGlobalKeyboard({
         uiModals.mcpSettings ||
         uiModals.modelEvents ||
         uiModals.tabNamePopup ||
+        uiModals.coordinator ||
         uiModals.workflow;
       if (evt.ctrl && evt.name === "c") {
         if (copySelection()) {

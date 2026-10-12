@@ -32,6 +32,7 @@ const WORK: [ProjectSection, string, IconName][] = [
   ["overview", "Overview", "overview"],
   ["initiatives", "Initiatives", "initiatives"],
   ["chat", "Chat", "chat"],
+  ["coordinator", "Coordinator", "coordinator"],
   ["runs", "Runs", "runs"],
   ["usage", "Usage", "usage"],
   ["graph", "Code graph", "graph"],
@@ -40,6 +41,7 @@ const WORK: [ProjectSection, string, IconName][] = [
 
 const SETUP: [ProjectSection, string, IconName][] = [
   ["gates", "Gates and checks", "gates"],
+  ["workflows", "Workflows", "workflows"],
   ["instructions", "Instructions", "instructions"],
   ["working-set", "Working set", "working-set"],
   ["run-memory", "Run memory", "run-memory"],

@@ -15,6 +15,7 @@ import {
   CHAT_UNDO_CAPABILITY,
   CHECKPOINTS_CAPABILITY,
   COMPACTION_CAPABILITY,
+  COORDINATOR_CAPABILITY,
   CUSTOM_COMMANDS_CAPABILITY,
   DIFF_STATS_CAPABILITY,
   IMAGES_CAPABILITY,
@@ -30,6 +31,7 @@ import {
   type SessionDiffStats,
 } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
+import { coordinator as coordinatorApi } from "../../client/coordinator.js";
 import { setup } from "../../client/setup.js";
 import { BlockIcon, Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
@@ -38,6 +40,7 @@ import { emptyClass } from "../../components/ui/empty.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
+import { handOffText, SPLIT_EDIT_PREFIX } from "../coordinator/model.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
 import { BASE_MODES, Composer } from "./Composer.js";
@@ -49,7 +52,7 @@ import { emptyTranscript, isBusy, reduceTranscript, turnCount } from "./transcri
 
 const NEW = "new";
 
-const CHAT = "flex-1 min-h-0 flex flex-col";
+const CHAT = "flex-1 min-w-0 min-h-0 flex flex-col";
 const SCROLL = "flex-1 min-h-0 overflow-y-auto flex justify-center px-6 pt-[18px] pb-2";
 const COLUMN = "w-full max-w-[820px] flex flex-col gap-[18px] pb-3";
 const EMPTY = cn(emptyClass, "mt-12 flex flex-col items-center gap-[10px]");
@@ -142,7 +145,22 @@ function useStickToBottom(dependency: unknown) {
   return { scroller, onScroll, stick };
 }
 
-function SessionView({ project, sessionId }: { project: DesktopProject; sessionId: string }) {
+/** The coordinator always runs in architect mode. */
+const COORDINATOR_MODES: readonly ChatMode[] = ["architect"];
+
+/**
+ * One chat session. As the project `coordinator` it has no chat switcher, fork, undo or mode
+ * choice, and its split cards offer Edit.
+ */
+export function SessionView({
+  project,
+  sessionId,
+  coordinator = false,
+}: {
+  project: DesktopProject;
+  sessionId: string;
+  coordinator?: boolean;
+}) {
   const key = project.key;
   const draft = sessionId === NEW;
   const [transcript, dispatch] = useReducer(reduceTranscript, undefined, emptyTranscript);
@@ -161,6 +179,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   const [rewindReport, setRewindReport] = useState<string[] | null>(null);
   // A task typed on the project home ("Ask in chat") starts the new session's composer.
   const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
+  // Text put into the composer later, such as Edit on a split card; `n` remounts the composer.
+  const [seed, setSeed] = useState({ text: "", n: 0 });
   useEffect(() => {
     if (draft) takeDraft("chat", key);
   }, [draft, key]);
@@ -228,15 +248,19 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     };
   }, [key]);
   const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
-  const canRewind = capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
+  const canRewind = !coordinator && capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
+  const canHandOff = !coordinator && capabilities?.includes(COORDINATOR_CAPABILITY) === true;
   const canRewindTo = canRewind && capabilities?.includes(CHECKPOINTS_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
   const hasEffort = capabilities?.includes(CHAT_EFFORT_CAPABILITY) === true;
   // Older servers list commands under `library` but send them to the model unexpanded.
   const expandsCommands = capabilities?.includes(CUSTOM_COMMANDS_CAPABILITY) === true;
-  const modes: readonly ChatMode[] =
-    capabilities?.includes(PLAN_MODE_CAPABILITY) === true ? CHAT_MODES : BASE_MODES;
+  const modes: readonly ChatMode[] = coordinator
+    ? COORDINATOR_MODES
+    : capabilities?.includes(PLAN_MODE_CAPABILITY) === true
+      ? CHAT_MODES
+      : BASE_MODES;
 
   // Line counts follow the edited files; a turn that ends may also have changed them on disk.
   const [diff, setDiff] = useState<SessionDiffStats | null>(null);
@@ -335,6 +359,22 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       );
   };
 
+  /** Rejects a split card and starts a message saying what to change. */
+  const editSplit = (promptId: string): void => {
+    decide(promptId, () => chat.approve(key, sessionId, promptId, false));
+    setSeed((s) => ({ text: SPLIT_EDIT_PREFIX, n: s.n + 1 }));
+  };
+
+  const handOff = async (): Promise<void> => {
+    const target = await coordinatorApi.open(key);
+    await chat.send(
+      key,
+      target.id,
+      handOffText(transcript.session?.title ?? "Chat", transcript.messages),
+    );
+    window.location.assign(projectHref(key, "coordinator"));
+  };
+
   const update = (changes: { model?: string; mode?: ChatMode; effort?: ChatEffort }): void => {
     if (draft) {
       if (changes.model) setDraftModel(changes.model);
@@ -429,8 +469,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
     <div data-chat className={CHAT}>
       <ChatHeader
         project={project}
-        title={draft ? "New chat" : (session?.title ?? "Chat")}
+        title={coordinator ? "Coordinator" : draft ? "New chat" : (session?.title ?? "Chat")}
         sessionId={draft ? null : sessionId}
+        coordinator={coordinator}
         {...(draft
           ? {}
           : {
@@ -441,12 +482,17 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
               diff,
               ...(compactControl ? { compact: compactControl } : {}),
               ...(rewindControl ? { rewind: rewindControl } : {}),
-              manage: {
-                canExport: capabilities?.includes(CHAT_EXPORT_CAPABILITY) === true,
-                deleteDisabled: turnRunning
-                  ? "Stop the running turn before deleting the chat"
-                  : null,
-              },
+              ...(coordinator
+                ? {}
+                : {
+                    manage: {
+                      canExport: capabilities?.includes(CHAT_EXPORT_CAPABILITY) === true,
+                      deleteDisabled: turnRunning
+                        ? "Stop the running turn before deleting the chat"
+                        : null,
+                      ...(canHandOff ? { handOff } : {}),
+                    },
+                  }),
             })}
       />
       <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
@@ -494,7 +540,8 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             transcript={transcript}
             deciding={deciding}
             forking={forking}
-            {...(draft ? {} : { onFork: fork })}
+            {...(draft || coordinator ? {} : { onFork: fork })}
+            {...(coordinator ? { onEditSplit: editSplit } : {})}
             {...(canRewindTo && !draft && !rewinding
               ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
               : {})}
@@ -515,13 +562,14 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       </section>
       <div className="flex justify-center px-6 pt-2 pb-5">
         <Composer
+          key={seed.n}
           busy={busy}
           canStop={canStop}
           model={draft ? draftModel : (session?.model ?? null)}
           mode={draft ? draftMode : (session?.mode ?? "default")}
           effort={draft ? draftEffort : (session?.effort ?? "default")}
           autoFocusKey={sessionId}
-          initialText={initialText}
+          initialText={seed.n > 0 ? seed.text : initialText}
           onSend={send}
           onStop={interrupt}
           onModel={(model) => update({ model })}

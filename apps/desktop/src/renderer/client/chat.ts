@@ -132,7 +132,14 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       kind: "split";
       title: string;
       mode: "runs" | "initiative";
-      flows: { id: string; title: string; paths: string[]; dependsOn: string[] }[];
+      flows: {
+        id: string;
+        title: string;
+        paths: string[];
+        dependsOn: string[];
+        /** The issue (`owner/name#N`), `new issue` or `local task`; missing from older servers. */
+        task?: string;
+      }[];
       digest: string;
     }
 );

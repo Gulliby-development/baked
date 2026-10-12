@@ -14,12 +14,14 @@ import { START_ROUTES } from "./start/index.js";
 const TITLES: Record<ProjectSection, string> = {
   overview: "Overview",
   chat: "Chat",
+  coordinator: "Coordinator",
   runs: "Runs",
   initiatives: "Initiatives",
   usage: "Usage",
   graph: "Code graph",
   git: "Git",
   gates: "Gates and checks",
+  workflows: "Workflows",
   instructions: "Instructions",
   "working-set": "Working set",
   "run-memory": "Run memory",
@@ -75,8 +77,12 @@ export function ProjectScreen({
     );
   const backend = backendLabel(project.backend);
   const starting = project.backend.kind === "starting" || project.backend.kind === "restarting";
-  // Chat draws its own header and fills the window.
-  if (section === "chat" && View && project.backend.kind === "running")
+  // Chat and the coordinator draw their own header and fill the window.
+  if (
+    (section === "chat" || section === "coordinator") &&
+    View &&
+    project.backend.kind === "running"
+  )
     return <View project={project} id={id} />;
   return (
     <div className={PAGE}>

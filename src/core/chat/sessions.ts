@@ -72,6 +72,8 @@ import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
 import {
   coordinatorLimits,
+  type LaunchedView,
+  launchedView,
   launchTools,
   type ProjectLauncher,
   syncLaunched,
@@ -132,7 +134,8 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       title: string;
       /** Independent runs in their own worktrees, or one initiative that orders dependent flows. */
       mode: "runs" | "initiative";
-      flows: { id: string; title: string; paths: string[]; dependsOn: string[] }[];
+      /** `task`: the flow's issue (`owner/name#N`), `new issue` or `local task`. */
+      flows: { id: string; title: string; paths: string[]; dependsOn: string[]; task: string }[];
       /** Binds the approval to exactly this split. */
       digest: string;
     }
@@ -1548,13 +1551,18 @@ export class ChatService {
     if (!coordinator) return [];
     this.syncing = true;
     try {
-      return await syncLaunched(this, coordinator, this.projectState);
+      return await syncLaunched(this, coordinator, this.projectState, this.launcher?.tasks ?? null);
     } catch (err) {
       logBackgroundError("chat:coordinator-sync", errorText(err));
       return [];
     } finally {
       this.syncing = false;
     }
+  }
+
+  /** What the coordinator `coordinatorId` launched, with live status and tokens. */
+  launched(coordinatorId: string): LaunchedView[] {
+    return launchedView(this, coordinatorId, this.projectState);
   }
 
   /** The coordinator's tools over this service: project state and launching. */

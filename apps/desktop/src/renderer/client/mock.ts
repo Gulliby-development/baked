@@ -90,6 +90,7 @@ const FULL_CAPABILITIES = [
   "lsp",
   "run-maintenance",
   "lsp-diagnose",
+  "workflow-editor",
   "custom-commands",
   "settings",
   "git",
@@ -99,6 +100,7 @@ const FULL_CAPABILITIES = [
   "chat-effort",
   "diagnostics",
   "gate-drafts",
+  "coordinator",
 ];
 /** What a backend from before the optional capability groups answers. */
 const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];
