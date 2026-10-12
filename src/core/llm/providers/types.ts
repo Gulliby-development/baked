@@ -1,5 +1,15 @@
 import type { LanguageModel } from "ai";
+import type { AppConfig } from "../../../types/index.js";
 import type { DetectedLogin } from "../detected-logins.js";
+
+/** What a model is created with besides its id. */
+export interface CreateModelOptions {
+  /**
+   * The configuration the model's calls run with, such as a chat's own reasoning effort; the
+   * saved configuration when absent. Only providers that fix options at creation read it.
+   */
+  config?: AppConfig;
+}
 
 export interface ProviderModelInfo {
   id: string;
@@ -26,7 +36,7 @@ export interface ProviderDefinition {
   noAuthLabel?: string;
   /** Custom label shown when model loading fails after the provider is available. */
   authErrorLabel?: string;
-  createModel(modelId: string): LanguageModel;
+  createModel(modelId: string, options?: CreateModelOptions): LanguageModel;
   fetchModels(): Promise<ProviderModelInfo[] | null>;
   fallbackModels: ProviderModelInfo[];
   contextWindows: [pattern: string, tokens: number][];
