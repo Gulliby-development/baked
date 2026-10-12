@@ -45,8 +45,8 @@ baked
 
 The first launch scans the repository to build its graph, which takes a few seconds. Then:
 
-1. Configure a provider with `/keys` (or `baked --set-key <provider> <key>`). See [providers](providers.md).
-2. Pick a model with `Ctrl+L`.
+1. Configure a provider. The first-start tour's Provider step lists Codex and Claude Code first: one you are already signed in to shows `✓ signed in` and the cursor starts on it; one that is not signed in shows the command to run after the tour (`/codex login`, `/claude-code login`). Key-based providers follow; set their keys there, with `/keys`, or with `baked --set-key <provider> <key>`. See [providers](providers.md).
+2. Pick a model with `Ctrl+L`. When you finish the tour without picking one and exactly one provider is ready, BAKED selects that provider's default model and says so in the chat.
 3. Ask a question or describe a change. The agent reads code through the repository graph and asks before it writes outside the project or runs a destructive command.
 4. Commit with `Ctrl+G`, then `c`, or ask the agent to commit. BAKED runs the project's lint and typecheck before a commit made through its tools.
 
