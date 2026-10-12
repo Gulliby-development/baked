@@ -168,9 +168,17 @@ describe("a stalled attempt", () => {
   test("settleInterruptedEdits decides prepared edits from the file hashes", async () => {
     const fixture = stallFixture(async (request) => {
       // An edit that wrote its file and never returned.
+      let release: () => void = () => {};
+      // The call is settled before the fixture goes, so no deadline timer outlives the test.
+      cleanups.push(async () => {
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
       void guardOf(fixture, request, 60_000).execute("edit_file", { path: "value.txt" }, async () => {
         writeFileSync(join(fixture.root, "value.txt"), "ready");
-        await new Promise(() => {});
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
       });
       await new Promise((resolve) => setTimeout(resolve, 100));
       const store = fixture.service.store;
