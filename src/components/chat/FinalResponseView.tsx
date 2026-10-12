@@ -38,10 +38,6 @@ const ROTATE_INTERVAL = 8000;
 const GLITCH_FRAMES = 3;
 const GLITCH_TICK = 70;
 
-// Phase-specific spinners for tool-rail status header
-const SPIN_EXPLORE = ["◴", "◷", "◶", "◵"];
-const SPIN_EDIT = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█", "▉", "▊", "▋", "▌", "▍", "▎", "▏"];
-const SPIN_DISPATCH = ["◇", "◈", "◆", "◈"];
 const DOTS_CYCLE = [".", "..", "...", "..", ".", ".."];
 const DOTS_PADDED = DOTS_CYCLE.map((d) => d.padEnd(3));
 
@@ -185,7 +181,6 @@ export const FinalResponseWrapper = memo(function FinalResponseWrapper({
   const pairs = hasDispatch ? DISPATCH_PAIRS : hasEdits ? EDIT_PAIRS : EXPLORE_PAIRS;
   const statusMsg = useRotatingMessage(pairs, effectiveDone);
   const statusColor = hasDispatch ? t.info : hasEdits ? t.warning : t.brand;
-  const spinFrames = hasDispatch ? SPIN_DISPATCH : hasEdits ? SPIN_EDIT : SPIN_EXPLORE;
 
   const [showAllHidden, setShowAllHidden] = useState(false);
   const interactive = !!onToolClick;
@@ -203,7 +198,7 @@ export const FinalResponseWrapper = memo(function FinalResponseWrapper({
             {effectiveDone ? (
               <span fg={t.success}>{"✓ "}</span>
             ) : (
-              <Spinner inline frames={spinFrames} color={statusColor} bold suffix={" "} />
+              <Spinner inline color={statusColor} bold suffix={" "} />
             )}
             <span
               fg={effectiveDone ? t.textSecondary : t.textPrimary}

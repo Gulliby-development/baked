@@ -1,5 +1,7 @@
+import { TextAttributes } from "@opentui/core";
 import { memo } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import { artPalette, inkOn } from "../../core/utils/bake-art.js";
 
 const BOLD = 1;
 
@@ -56,3 +58,32 @@ export const KeyCaps = memo(function KeyCaps({ hints, bg, sep = "·" }: KeyCapsP
     </text>
   );
 });
+
+/**
+ * A neobrutalist chip for use inside a `<text>`: bold text on a colour fill and a one-cell
+ * hard shadow. `fill` defaults to the brand fill of the art palette.
+ */
+export function Chip({ label, fill }: { label: string; fill?: string }) {
+  const t = useTheme();
+  const palette = artPalette(t);
+  const bg = fill ?? palette.fill;
+  return (
+    <>
+      <span fg={inkOn(bg)} bg={bg} attributes={TextAttributes.BOLD}>
+        {` ${label} `}
+      </span>
+      <span fg={palette.shadow}>▌</span>
+    </>
+  );
+}
+
+/** A shortcut key as a chip, then its label: ` ^K `▌ Palette. */
+export function KeyChip({ keyName, label }: { keyName: string; label?: string }) {
+  const t = useTheme();
+  return (
+    <>
+      <Chip label={keyName} />
+      {label ? <span fg={t.textSecondary}>{` ${label}`}</span> : null}
+    </>
+  );
+}

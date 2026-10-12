@@ -1,9 +1,9 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useRef, useState } from "react";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
+import { spinnerGlyph } from "../../core/utils/spinner.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { type RepoMapStatus, useRepoMapStore } from "../../stores/repomap.js";
-import { SPINNER_FRAMES } from "../layout/shared.js";
 import {
   Divider,
   Field,
@@ -343,7 +343,7 @@ export function RepoMapStatusPopup({
     lspStatus,
     lspProgress,
   } = stateRef.current;
-  const frame = SPINNER_FRAMES[spinnerRef.current % SPINNER_FRAMES.length] ?? "\u280B";
+  const frame = spinnerGlyph(spinnerRef.current);
 
   const statusLabel =
     status === "scanning"
