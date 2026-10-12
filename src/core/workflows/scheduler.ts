@@ -3532,7 +3532,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         (e) =>
           ["prepared", "unknown"].includes(e.status) && intentRoot(e.intent_json) === entry.path,
       );
-    if (owned && !unsettled) await removeTaskWorktree(this.store.workspace, entry.path);
+    if (owned && !unsettled) {
+      // A locked directory is a leftover, not a failure: the run goes on and the directory is
+      // removed with the run's worktrees or when the task worktree is created again.
+      const removal = await removeTaskWorktree(this.store.workspace, entry.path);
+      if (!removal.removed)
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "worktree",
+            `worktree/leftover-${entry.task.id}.json`,
+            canonical({ path: entry.path, warning: removal.warning }),
+          ),
+        );
+    }
     this.leases.releaseOne(entry.lease());
   }
   /**
