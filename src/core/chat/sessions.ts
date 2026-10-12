@@ -50,6 +50,7 @@ import {
   type RollbackReport,
   rollbackToCheckpoint,
 } from "../checkpoints/fork.js";
+import { type CheckpointList, listCheckpoints, promptLine } from "../checkpoints/list.js";
 import { snapshotWorkspace } from "../checkpoints/snapshot.js";
 import { buildTurns, type CheckpointTag, extractFilesFromToolCalls } from "../checkpoints/turns.js";
 import {
@@ -567,7 +568,7 @@ export class ChatSession {
       plan: this.plan,
       redo: this.redoTurns.map((t) => ({
         index: t.index,
-        prompt: t.messages[0]?.content.split("\n")[0]?.slice(0, 120) ?? "",
+        prompt: promptLine(t.messages[0]?.content ?? ""),
       })),
       lastSeq: this.seq,
     };
@@ -653,6 +654,11 @@ export class ChatSession {
     this.turn.abort.abort();
     this.denyPrompts();
     return true;
+  }
+
+  /** One entry per turn, for undoing to it, and the undone turns a redo puts back. */
+  checkpoints(): CheckpointList {
+    return listCheckpoints(this.messages, this.checkpointTags, this.redoTurns);
   }
 
   /**
