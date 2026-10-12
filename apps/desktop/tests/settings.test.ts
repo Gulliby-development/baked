@@ -19,6 +19,14 @@ describe("app settings", () => {
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
   });
 
+  test("voice input keeps a supported language and drops an unknown one", () => {
+    expect(sanitizeSettings({ voiceInput: false, voiceLanguage: "de" })).toMatchObject({
+      voiceInput: false,
+      voiceLanguage: "de",
+    });
+    expect(sanitizeSettings({ voiceLanguage: "ru" }).voiceLanguage).toBe("auto");
+  });
+
   test("a damaged file means defaults and updates are written back", () => {
     const dir = mkdtempSync(join(tmpdir(), "baked-desktop-"));
     dirs.push(dir);

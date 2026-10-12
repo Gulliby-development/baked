@@ -7,10 +7,18 @@ import {
   type IpcMainInvokeEvent,
   ipcMain,
   Notification,
+  session,
   shell,
+  systemPreferences,
   type WebContents,
 } from "electron";
-import type { AppSettings, AttentionItem, DesktopProject, NewProjectDraft } from "../shared/api.js";
+import type {
+  AppSettings,
+  AttentionItem,
+  DesktopProject,
+  NewProjectDraft,
+  VoiceLanguage,
+} from "../shared/api.js";
 import { attentionHash, attentionTitle, kindLabel } from "../shared/attention.js";
 import {
   type ChatExportFormat,
@@ -30,12 +38,14 @@ import {
   listKnownProjects,
 } from "./baked-cli.js";
 import { readGitBranch } from "./git-branch.js";
+import { allowPermission, microphoneAccess, microphoneSettingsUrl } from "./microphone.js";
 import { checkDraft, newProjectFolder } from "./new-project.js";
 import { manageKnownProject, renameKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
 import { closeAction } from "./tray-model.js";
+import { resolveVoiceDir, VoiceEngine } from "./voice.js";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const settings = new SettingsStore(join(app.getPath("userData"), "settings.json"));
@@ -57,6 +67,15 @@ function backendCommand() {
     platform: process.platform,
   });
 }
+
+const voice = new VoiceEngine(
+  resolveVoiceDir({
+    override: process.env.BAKED_VOICE_DIR,
+    packaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  }),
+);
 
 let window: BrowserWindow | null = null;
 let quitting = false;
@@ -319,6 +338,15 @@ function registerIpc(): void {
       else target.maximize();
     } else if (action === "close") target.close();
   });
+  handle(IPC.voiceStatus, () => voice.status());
+  handle(IPC.microphoneAccess, () => microphoneAccess(process.platform, systemPreferences));
+  handle(IPC.openMicrophoneSettings, async () => {
+    const url = microphoneSettingsUrl(process.platform);
+    if (url) await shell.openExternal(url);
+  });
+  handle(IPC.transcribe, (_e, samples: Float32Array, language?: VoiceLanguage) =>
+    voice.transcribe(samples, language),
+  );
   handle(
     IPC.windowState,
     (event) => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false,
@@ -390,6 +418,9 @@ function createWindow(): void {
 }
 
 async function boot(): Promise<void> {
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) =>
+    callback(allowPermission(permission, details, isAppUrl)),
+  );
   registerIpc();
   createWindow();
   try {
@@ -426,6 +457,6 @@ else {
     event.preventDefault();
     quitting = true;
     for (const stream of attentionStreams.values()) stream.close();
-    void supervisor.stopAll().finally(() => app.quit());
+    void Promise.all([supervisor.stopAll(), voice.close()]).finally(() => app.quit());
   });
 }

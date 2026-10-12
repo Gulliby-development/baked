@@ -136,6 +136,44 @@ export interface StreamEvent {
   data: string;
 }
 
+/** Languages the Whistle speech model transcribes; omitting one lets the model detect it. */
+export const VOICE_LANGUAGES = ["en", "de", "fr", "es", "it", "nl", "pl"] as const;
+export type VoiceLanguage = (typeof VOICE_LANGUAGES)[number];
+
+export const VOICE_LANGUAGE_NAMES: Record<VoiceLanguage, string> = {
+  en: "English",
+  de: "German",
+  fr: "French",
+  es: "Spanish",
+  it: "Italian",
+  nl: "Dutch",
+  pl: "Polish",
+};
+
+/** Whether the local speech engine can transcribe here, and why not. */
+export interface VoiceStatus {
+  available: boolean;
+  /** Why transcription is unavailable; set only when `available` is false. */
+  reason?: string;
+  /** The model that transcribes; set only when `available` is true. */
+  model?: string;
+}
+
+/** Whether the system lets the app use the microphone. */
+export interface MicrophoneAccess {
+  granted: boolean;
+  /** The system has a microphone privacy page the app can open (macOS, Windows). */
+  canOpenSettings: boolean;
+}
+
+/** One transcribed recording. */
+export interface VoiceTranscript {
+  text: string;
+  /** The detected or requested language code; empty for silence. */
+  language: string;
+  durationSeconds: number;
+}
+
 export type Theme = "system" | "dark" | "light";
 
 /** Settings of this app on this computer; agents and runs never read them. */
@@ -149,6 +187,10 @@ export interface AppSettings {
   /** Absolute path of a `baked` executable to run instead of the bundled one. */
   bakedPath: string | null;
   openProjects: string[];
+  /** The microphone button in the chat composer. */
+  voiceInput: boolean;
+  /** The language voice input transcribes; "auto" lets the model detect it. */
+  voiceLanguage: VoiceLanguage | "auto";
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -160,4 +202,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyAdvisory: false,
   bakedPath: null,
   openProjects: [],
+  voiceInput: true,
+  voiceLanguage: "auto",
 };

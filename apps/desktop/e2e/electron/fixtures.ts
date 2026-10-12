@@ -27,6 +27,10 @@ export interface LaunchOptions {
    * repository's own `baked` from source, with BAKED_TEST_SCRIPT, instead of the fake.
    */
   script?: unknown;
+  /** Extra environment for the app, e.g. BAKED_VOICE_DIR. */
+  env?: Record<string, string>;
+  /** Extra Chromium switches, e.g. a fake microphone. */
+  args?: string[];
 }
 
 interface Fixtures {
@@ -65,6 +69,7 @@ export const test = base.extend<Fixtures>({
         XDG_DATA_HOME: join(home, ".local", "share"),
         XDG_CACHE_HOME: join(home, ".cache"),
         BAKED_DESKTOP_RESTART_DELAYS_MS: "100,100",
+        ...options.env,
       };
       // The display, and the X authority file xvfb-run creates outside the throwaway home.
       for (const name of ["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"]) {
@@ -103,7 +108,10 @@ export const test = base.extend<Fixtures>({
         JSON.stringify({ bakedPath: baked, openLastProjects: false, keepRunningInTray: false }),
       );
       // CI runners may run as root, where Chromium refuses its sandbox.
-      const app = await _electron.launch({ args: [root, "--no-sandbox"], env });
+      const app = await _electron.launch({
+        args: [root, "--no-sandbox", ...(options.args ?? [])],
+        env,
+      });
       apps.push(app);
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
       const page = await app.firstWindow();

@@ -86,6 +86,13 @@ jobs:
       - name: Test
         run: bun run test
 
+      # Stages the voice input engine with the pinned Whistle model (checked against its SHA-256)
+      # and transcribes silence with it, as packaging does.
+      - name: Voice engine
+        run: |
+          bun run stage:voice
+          bun scripts/voice-check.ts
+
       - name: Build
         run: bun run build
 

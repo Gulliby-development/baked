@@ -216,6 +216,64 @@ export const GatesConfirmBody = z
   .refine((body) => Boolean(body.ids) !== Boolean(body.all), {
     message: "Name the gates to confirm in ids, or send all: true",
   });
+const EditorTarget = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("stage"), stageId: SafeId }),
+  z.strictObject({ kind: z.literal("transition"), id: z.string().min(1).max(200) }),
+]);
+const Index = z.number().int().min(0).max(1000);
+const Delta = z.union([z.literal(-1), z.literal(1)]);
+export const EditorOpBody = z.discriminatedUnion("op", [
+  z.strictObject({ op: z.literal("addGate"), target: EditorTarget, gateId: SafeId }),
+  z.strictObject({ op: z.literal("removeGate"), target: EditorTarget, index: Index }),
+  z.strictObject({ op: z.literal("moveGate"), target: EditorTarget, index: Index, delta: Delta }),
+  z.strictObject({ op: z.literal("toggleMode"), target: EditorTarget, index: Index }),
+  z.strictObject({
+    op: z.literal("addTransition"),
+    from: SafeId,
+    to: z.string().min(1).max(100),
+    on: z.enum(["passed", "failed", "changes_requested"]),
+    loop: z.number().int().min(1).max(5).nullable(),
+  }),
+  z.strictObject({ op: z.literal("removeTransition"), id: z.string().min(1).max(200) }),
+  z.strictObject({
+    op: z.literal("changeField"),
+    stageId: SafeId,
+    key: z.string().min(1).max(200),
+    delta: Delta,
+  }),
+  z.strictObject({ op: z.literal("duplicate") }),
+]);
+/**
+ * The working copy the editor sends back. Only its outline is checked here: an edit may leave it
+ * schema-invalid for a while (a check stage with no gate), and the editor reports that as problems.
+ */
+const WorkingCopy = z.looseObject({
+  id: SafeId,
+  stages: z.array(z.looseObject({ id: z.string(), type: z.string() })).max(100),
+  transitions: z
+    .array(
+      z.looseObject({
+        id: z.string(),
+        from: z.string(),
+        to: z.string(),
+        gates: z.array(z.looseObject({ gateId: z.string() })),
+      }),
+    )
+    .max(500),
+});
+export const EditorBody = z.strictObject({
+  from: SafeId,
+  copy: z.boolean().optional(),
+  definition: WorkingCopy.optional(),
+  op: EditorOpBody.optional(),
+});
+export const EditorSaveBody = z.strictObject({
+  from: SafeId,
+  copy: z.boolean().optional(),
+  definition: WorkingCopy,
+  /** The first characters of the auto approval limits hash, when the review asked for them. */
+  confirm: z.string().max(200).optional(),
+});
 /** `POST /v1/workflow/runs/:id/export`: a new directory, relative to the workspace. */
 export const ExportBody = z.strictObject({ destination: z.string().min(1).max(500).optional() });
 export const RedactBody = z.strictObject({

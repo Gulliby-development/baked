@@ -9,6 +9,7 @@ import type {
   LanguageModelV2Usage,
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
+import { imageUrl, promptImages } from "../prompt-images.js";
 import { type CodexAppServerConnection, startCodexAppServerSession } from "./client.js";
 import {
   CODEX_ADAPTER_CONFIG,
@@ -428,10 +429,15 @@ export class CodexAppServerSessions {
         : [{ role: "user", content: [{ type: "text", text: "Begin." }] }],
       request.stepNote,
     );
+    // Images of the messages this turn sends; earlier ones are already in the thread.
+    const images = promptImages(messages).map((image) => ({
+      type: "image" as const,
+      url: imageUrl(image),
+    }));
     connection
       .request("turn/start", {
         threadId: thread.threadId,
-        input: [{ type: "text", text, text_elements: [] }],
+        input: [{ type: "text", text, text_elements: [] }, ...images],
         ...(request.outputSchema ? { outputSchema: request.outputSchema } : {}),
       })
       .then((result) => {

@@ -56,7 +56,7 @@ bun test tests/feature-parity.test.ts
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
-| Voice input in chat (Cactus Whistle speech to text) | Desktop only: desktop only by decision (#419) | Desktop only: desktop only by decision (#419) | Desktop only: speech is transcribed in the app and sent as text | **Gap** [#419](https://github.com/Gulliby-development/baked/issues/419): planned |
+| Voice input in chat (Cactus Whistle speech to text) | Desktop only: desktop only by decision (#419) | Desktop only: desktop only by decision (#419) | Desktop only: speech is transcribed in the app and sent as text | `project/chat`, `settings/app` |
 | @ mentions and ! shell in the input | `key @`, `key !` | `--include` | `/v1/mentions` | `project/chat` |
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
 | Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
@@ -119,7 +119,7 @@ bun test tests/feature-parity.test.ts
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Gates from a plain-language sentence | **Gap** [#372](https://github.com/Gulliby-development/baked/issues/372): create a gate from text in the workflow editor | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |
 | Gates on the run's line: what each does, blocks or advises, last result | **Gap** [#533](https://github.com/Gulliby-development/baked/issues/533): gate results only in the activity lines | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
-| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): read-only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
+| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
@@ -164,8 +164,6 @@ bun test tests/feature-parity.test.ts
 - [#372](https://github.com/Gulliby-development/baked/issues/372): Gates from a plain-language sentence
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor
-- [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
 
 <!-- parity:end -->

@@ -51,6 +51,10 @@ const bridge: DesktopBridge = {
     void ipcRenderer.invoke(IPC.windowState).then(listener);
     return listen(IPC.windowMaximized, listener);
   },
+  voiceStatus: () => ipcRenderer.invoke(IPC.voiceStatus),
+  transcribe: (samples, language) => ipcRenderer.invoke(IPC.transcribe, samples, language),
+  microphoneAccess: () => ipcRenderer.invoke(IPC.microphoneAccess),
+  openMicrophoneSettings: () => ipcRenderer.invoke(IPC.openMicrophoneSettings),
 };
 
 contextBridge.exposeInMainWorld("baked", bridge);

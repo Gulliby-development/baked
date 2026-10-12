@@ -3,9 +3,12 @@ import type {
   AppSettings,
   AttentionItem,
   DesktopProject,
+  MicrophoneAccess,
   NewProjectCheck,
   NewProjectDraft,
   StreamEvent,
+  VoiceStatus,
+  VoiceTranscript,
 } from "./api.js";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -76,6 +79,17 @@ export interface DesktopBridge {
   windowAction(action: WindowAction): Promise<void>;
   /** Calls back with whether the window is maximized now and whenever that changes. */
   onMaximized(listener: (maximized: boolean) => void): () => void;
+  /** Whether local speech-to-text can run on this computer, and why not. */
+  voiceStatus(): Promise<VoiceStatus>;
+  /**
+   * Transcribes up to 30 seconds of 16 kHz mono samples on this computer; `language` is one of
+   * en, de, fr, es, it, nl, pl, or omitted to detect it.
+   */
+  transcribe(samples: Float32Array, language?: string): Promise<VoiceTranscript>;
+  /** Asks the system for the microphone (macOS prompts the first time) and says whether it may be used. */
+  microphoneAccess(): Promise<MicrophoneAccess>;
+  /** Opens the system's microphone privacy page (macOS, Windows). */
+  openMicrophoneSettings(): Promise<void>;
 }
 
 export const IPC = {
@@ -105,4 +119,8 @@ export const IPC = {
   windowAction: "baked:window:action",
   windowMaximized: "baked:window:maximized",
   windowState: "baked:window:state",
+  voiceStatus: "baked:voice:status",
+  transcribe: "baked:voice:transcribe",
+  microphoneAccess: "baked:voice:microphone",
+  openMicrophoneSettings: "baked:voice:microphone-settings",
 } as const;

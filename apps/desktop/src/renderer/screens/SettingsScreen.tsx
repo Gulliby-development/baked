@@ -1,10 +1,18 @@
+import { useEffect, useState } from "react";
 import { SETTING_PAGES } from "../../../../../src/core/settings/schema.js";
-import type { AppSettings } from "../../shared/api.js";
+import {
+  type AppSettings,
+  VOICE_LANGUAGE_NAMES,
+  VOICE_LANGUAGES,
+  type VoiceStatus,
+} from "../../shared/api.js";
+import { bridge } from "../client/bridge.js";
 import { Segment, SegmentGroup } from "../components/ui/segmented.js";
 import { cn } from "../lib/cn.js";
 import { CHECK, FIELD, LABEL, LEDE, PAGE, PANEL, STACK } from "../lib/styles.js";
 import { href, type SettingsSection } from "../router.js";
 import { useDesktop } from "../store.js";
+import { VOICE_SHORTCUT } from "./chat/Composer.js";
 import { ChatSettings } from "./setup/ChatSettings.js";
 import { GlobalSettings } from "./setup/GlobalSettings.js";
 
@@ -33,6 +41,57 @@ function Toggle({ label, field }: { label: string; field: keyof AppSettings }) {
       />
       {label}
     </label>
+  );
+}
+
+function VoiceSection() {
+  const { settings, updateSettings } = useDesktop();
+  const [status, setStatus] = useState<VoiceStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    bridge.voiceStatus().then(
+      (s) => live && setStatus(s),
+      (e: unknown) =>
+        live && setStatus({ available: false, reason: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!settings) return null;
+  return (
+    <section className={cn(PANEL, "flex flex-col gap-2")} aria-label="Voice input">
+      <Toggle field="voiceInput" label="Microphone button in the chat composer" />
+      <div className={FIELD}>
+        <label htmlFor="voice-language">Language</label>
+        <select
+          id="voice-language"
+          value={settings.voiceLanguage}
+          disabled={!settings.voiceInput}
+          onChange={(e) =>
+            void updateSettings({ voiceLanguage: e.target.value as AppSettings["voiceLanguage"] })
+          }
+        >
+          <option value="auto">Detect automatically</option>
+          {VOICE_LANGUAGES.map((code) => (
+            <option key={code} value={code}>
+              {VOICE_LANGUAGE_NAMES[code]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <span className="text-[12px] text-dim-foreground">
+        Speech is transcribed on this computer by the bundled Whistle model and never leaves it. It
+        understands {VOICE_LANGUAGES.map((c) => VOICE_LANGUAGE_NAMES[c]).join(", ")}; other
+        languages are not supported. A recording lasts up to 30 seconds;{" "}
+        <span className="font-mono">{VOICE_SHORTCUT}</span> starts and stops it.
+      </span>
+      {status && (
+        <span className="text-[12px] text-dim-foreground" role="status">
+          {status.available ? "Speech engine ready." : status.reason}
+        </span>
+      )}
+    </section>
   );
 }
 
@@ -104,6 +163,7 @@ function AppSection() {
           opened afterwards.
         </span>
       </section>
+      <VoiceSection />
     </>
   );
 }

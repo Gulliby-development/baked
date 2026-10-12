@@ -33,8 +33,8 @@ export const CLAUDE_CODE_CONTEXT_WINDOWS: [pattern: string, tokens: number][] = 
   ["claude", 200_000],
 ];
 
+// maxOutputTokens is left out: BAKED sets it on every agent, so the CLI ignoring it is expected.
 const UNSUPPORTED_SETTINGS = [
-  "maxOutputTokens",
   "temperature",
   "stopSequences",
   "topP",
