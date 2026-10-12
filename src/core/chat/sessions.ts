@@ -71,9 +71,9 @@ import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
 import {
   coordinatorLimits,
-  launchTools,
   type LaunchedView,
   launchedView,
+  launchTools,
   type ProjectLauncher,
   syncLaunched,
 } from "./coordinator-launch.js";
