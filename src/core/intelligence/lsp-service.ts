@@ -21,7 +21,6 @@ import {
   clearProbeCache,
   type LspServerCandidate,
   type LspServerSource,
-  listDisablesServer,
   lspServerCandidates,
   type ResolvedServerCommand,
   resolveServerCommand,
@@ -253,7 +252,7 @@ async function statusOf(ctx: Context): Promise<LspStatusView> {
       .sort((a, b) => b.at - a.at)[0];
     const disabledIn = (["global", "project"] as const).filter((scope) => {
       const list = layers[scope];
-      return list !== null && listDisablesServer(list, id);
+      return list !== null && disables(ctx, list, id);
     });
     return {
       id,
@@ -262,7 +261,7 @@ async function statusOf(ctx: Context): Promise<LspStatusView> {
       installed: resolved !== null,
       source: resolved?.source ?? null,
       path: resolved?.path ?? null,
-      disabled: listDisablesServer(disabledList, id),
+      disabled: disables(ctx, disabledList, id),
       disabledIn,
       running: instances.length > 0,
       ready: instances.some((s) => s.ready),
@@ -337,7 +336,7 @@ export async function setLspServerDisabled(
   if (disabled) {
     const target: LspScope = scope ?? (layers.project !== null ? "project" : "global");
     const list = layers[target] ?? [];
-    if (!listDisablesServer(list, server.command))
+    if (!disables(ctx, list, server.command))
       writeDisabled(ctx.files[target], [...list, server.command]);
   } else {
     for (const target of ["global", "project"] as const) {
@@ -350,6 +349,12 @@ export async function setLspServerDisabled(
   }
   const restarted = await reload(ctx, server);
   return { status: await statusOf(ctx), restarted };
+}
+
+/** Whether a disabled list names the server, by command or by the Mason package that installs it. */
+function disables(ctx: Context, list: readonly string[], command: string): boolean {
+  if (list.length === 0) return false;
+  return list.includes(command) || packageNames(ctx, command).some((name) => list.includes(name));
 }
 
 function packageNames(ctx: Context, command: string): string[] {

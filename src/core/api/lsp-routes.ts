@@ -57,6 +57,8 @@ export async function lspRoute(ctx: LspRouteContext): Promise<Response | null> {
   /** Restarting before anything started the servers starts them instead. */
   const restart = async (id?: string) => {
     if (!started() && ctx.start) {
+      // Validates `id` before anything starts.
+      await guard(() => restartLspServer(options, id));
       await ctx.start();
       return { ...(await lspStatus(options)), restarted: [] as string[], startedNow: true };
     }
