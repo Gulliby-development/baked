@@ -35,6 +35,7 @@ import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
 import { readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
+import { followProgress } from "./progress.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
 import { formatWorkflowModels, workflowModels } from "./workflow-models.js";
@@ -571,6 +572,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
   const controller = new AbortController();
   const eventController = new AbortController();
   const streams: Promise<void>[] = [];
+  let stopProgress = (): void => {};
   let interrupts = 0;
   const abort = (): void => {
     if (++interrupts > 1) process.exit(130);
@@ -659,6 +661,15 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     if (existingRun && args.flags.events) lastSeq = service.store.snapshot(existingRun).eventSeq;
     if (typeof args.flags.after === "string") lastSeq = Number(args.flags.after);
     const eventService = service;
+    // Opening the project and indexing print to stderr on a terminal; scripts read stdout and
+    // the error JSON on stderr, so they get nothing extra.
+    if (
+      process.stderr.isTTY === true &&
+      !args.flags.json &&
+      !args.flags.events &&
+      ["run", "quick", "resume"].includes(args.command)
+    )
+      stopProgress = followProgress((line) => process.stderr.write(`${line}\n`));
     const result = await executeWorkflowCommand(service, args, controller.signal, (runId) => {
       if (!args.flags.events) return;
       streams.push(
@@ -706,6 +717,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       ? 5
       : 1;
   } finally {
+    stopProgress();
     eventController.abort();
     await Promise.allSettled(streams);
     await service?.attention?.flush();
