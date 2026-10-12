@@ -20,6 +20,12 @@ export interface WatchTurn {
   requests: FileMarker[];
 }
 
+/** The user message a watch turn shows: where it came from and the first line of the request. */
+export function watchTurnDisplay(turn: WatchTurn): string {
+  const first = turn.requests[0]?.text.split("\n")[0]?.trim() ?? "";
+  return first ? `From ${turn.label}: ${first}` : `From ${turn.label}`;
+}
+
 export type WatchEvent =
   | { type: "started"; root: string; method: "native" | "poll" }
   | { type: "stopped"; reason: string }

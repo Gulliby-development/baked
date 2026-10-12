@@ -65,6 +65,7 @@ import { logBackgroundError } from "../stores/errors.js";
 import { startMemoryPoll } from "../stores/statusbar.js";
 import { useToolsStore } from "../stores/tools.js";
 import { type ModalName, selectIsAnyModalOpen, useUIStore } from "../stores/ui.js";
+import { useWatchStore } from "../stores/watch.js";
 import type { AppConfig, ChatMessage, TaskRouter } from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
 import { artText } from "./brand/artText.js";
@@ -533,6 +534,7 @@ export function App({
   const [bakeMode, setBakeModeHeader] = useState<import("../types/index.js").BakeMode>("default");
   const modeLabel = getModeLabel(bakeMode);
   const modeColor = getModeColor(bakeMode);
+  const watching = useWatchStore((s) => s.tabId !== null);
 
   useConfigSync({
     effectiveConfig,
@@ -1237,6 +1239,11 @@ export function App({
           <text wrapMode="none" flexShrink={0}>
             <Chip label={modeLabel.toUpperCase()} fill={modeColor} />
           </text>
+          {watching && (
+            <text wrapMode="none" flexShrink={0}>
+              <Chip label="WATCHING" fill={t.info} />
+            </text>
+          )}
           <ContextBar
             contextManager={contextManager}
             modelId={activeModelForHeader}
