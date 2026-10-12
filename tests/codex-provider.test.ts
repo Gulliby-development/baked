@@ -537,6 +537,10 @@ describe("codex app-server native model", () => {
     expect(answered).toEqual({ contentItems: [{ type: "inputText", text: "hello" }], success: true });
     expect(second.content).toEqual([{ type: "text", text: "It says hello." }]);
     expect(second.usage).toMatchObject({ inputTokens: 2200, cachedInputTokens: 900 });
+    // Codex reports the first response's usage only after the tool result: the second step
+    // carries it, and counts it as one model request.
+    expect(first.providerMetadata).toEqual({ codex: { responses: 0 } });
+    expect(second.providerMetadata).toEqual({ codex: { responses: 1 } });
     expect(fake.count("thread/start")).toBe(1);
     expect(fake.count("turn/start")).toBe(1);
   });

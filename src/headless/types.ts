@@ -50,6 +50,8 @@ export type HeadlessEvent =
         lastStepOutput?: number;
         lastStepCacheRead?: number;
       };
+      /** Model requests whose usage the provider reported during the step (Codex app-server). */
+      modelRequests?: number;
     }
   | {
       type: "turn-done";
