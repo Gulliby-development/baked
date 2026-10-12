@@ -87,6 +87,8 @@ interface Script {
   writer?: "correct" | "always-passes";
   /** Walk the web fixture on this port with the browser tools instead of the terminal. */
   browserPort?: number;
+  /** Also run declared command 0 with command_run and record a step for it. */
+  runCommand?: boolean;
 }
 
 /** The fixture web application: a counter page that loads a third-party script. Broken: +2. */
@@ -193,6 +195,7 @@ const fakeLauncher = (missing: string | null = null): BrowserLauncher => ({
 
 class AcceptanceExecutor implements AgentExecutor {
   calls: string[] = [];
+  commandResults: unknown[] = [];
   constructor(private root: string, private script: Script = {}) {}
   private async tool(request: ExecutionRequest, name: string, input: unknown): Promise<unknown> {
     const tool = request.hostTools?.[name];
@@ -252,6 +255,13 @@ class AcceptanceExecutor implements AgentExecutor {
         const second = (await this.tool(request, "record_step", {
           action: "Typed add 2 3", observation: read.output.trim(), expectationIds: ["E2"],
         })) as { stepId: string };
+        if (this.script.runCommand) {
+          const result = (await this.tool(request, "command_run", { index: 0 })) as { output: string };
+          this.commandResults.push(result);
+          await this.tool(request, "record_step", {
+            action: "Ran the sum command", observation: result.output.trim(), expectationIds: ["E2"],
+          });
+        }
         await this.tool(request, "app_stop", {});
         const sumOk = read.output.includes("sum: 5");
         output = {
@@ -462,6 +472,31 @@ describe("AI acceptance gate", () => {
     const evidence = service.store.artifacts(run.runId).find((a) => a.logical_path.startsWith("checks/calc-sum/refused-"));
     expect(JSON.parse(service.store.readArtifact(run.runId, evidence?.id ?? ""))).toMatchObject({ reason: "test_modified", exitCode: null });
   }, 60000);
+
+  test("a terminal walk-through runs its declared commands without a shell and records their output", async () => {
+    const gate = walkGate((g) => ({
+      ...g,
+      acceptance: { ...g.acceptance, commands: [{ executable: "bun", args: ["sum.ts", "2", "3"] }] },
+    }));
+    expect(validateGate(gate)).toEqual([]);
+    expect(validateGate({ ...gate, acceptance: { ...gate.acceptance, driver: "browser" } })).toContain(
+      "calc-walk: commands run only with the terminal driver",
+    );
+    const fixture = setup({ runCommand: true }, gate);
+    const { service, root, executor } = fixture;
+    writeFileSync(join(root, "sum.ts"), `console.log("total: " + (Number(process.argv[2]) + Number(process.argv[3])) + " $HOME");\n`);
+    const run = await fixture.start();
+    await fixture.complete(run.runId);
+    expect(executor.commandResults).toEqual([
+      expect.objectContaining({ index: 0, command: ["bun", "sum.ts", "2", "3"], exit: { exitCode: 0, signal: null }, timedOut: false }),
+    ]);
+    // No shell: $HOME is printed as typed.
+    expect((executor.commandResults[0] as { output: string }).output).toContain("total: 5 $HOME");
+    const entry = service.store.state(run.runId).acceptance["calc-walk"];
+    const steps = recordedSteps(service.store, run.runId, "calc-walk", entry?.attemptId ?? "");
+    expect(steps[2]?.frame).toContain("total: 5");
+    expect(steps[2]?.exit).toEqual({ exitCode: 0, signal: null });
+  });
 
   test("without spawnApp the walk-through does not run and the tools refuse to start the application", async () => {
     const denied = walkGate((g) => ({ ...g, acceptance: { ...g.acceptance, capabilities: { ...g.acceptance.capabilities, spawnApp: false, writePaths: [] } } }));
