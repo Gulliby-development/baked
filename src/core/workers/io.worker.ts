@@ -3,6 +3,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { isBinaryFile } from "isbinaryfile";
 import { parseSessionMeta } from "../sessions/meta.js";
+import { describeLineEndings } from "../tools/line-endings.js";
 import { createWorkerHandler } from "./rpc.js";
 
 const MAX_READ_LINES = 2000;
@@ -58,7 +59,8 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
 
     const numbered = slice
       .map((line: string, i: number) => {
-        const l = line.length > MAX_LINE_LENGTH ? `${line.slice(0, MAX_LINE_LENGTH)}...` : line;
+        const text = line.endsWith("\r") ? line.slice(0, -1) : line;
+        const l = text.length > MAX_LINE_LENGTH ? `${text.slice(0, MAX_LINE_LENGTH)}...` : text;
         return `${String(start + i + 1).padStart(4)}  ${l}`;
       })
       .join("\n");
@@ -66,6 +68,7 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
     return {
       ok: true,
       numbered,
+      lineEnding: describeLineEndings(content),
       totalLines,
       truncated,
       start,

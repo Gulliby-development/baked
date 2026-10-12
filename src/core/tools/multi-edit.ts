@@ -11,6 +11,7 @@ import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { buildRichEditError, fuzzyWhitespaceMatch } from "./edit-file.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
+import { dominantLineEnding, minorityLineCount, toLf, withLineEnding } from "./line-endings.js";
 import {
   appendAutoFormatResult,
   appendCloneHints,
@@ -74,7 +75,11 @@ export const multiEditTool = {
         return { success: false, output: msg, error: msg };
       }
 
-      const originalContent = await readFile(filePath, "utf-8");
+      const rawContent = await readFile(filePath, "utf-8");
+      const eol = dominantLineEnding(rawContent);
+      const normalizedLines = minorityLineCount(rawContent);
+      // Match and edit on LF text; the file is written back with its own dominant ending.
+      const originalContent = toLf(rawContent);
       let content = originalContent;
 
       // Phase 1: Validate and apply edits sequentially against evolving content.
@@ -83,12 +88,14 @@ export const multiEditTool = {
       // lineStart values (which reference the ORIGINAL file) stay accurate.
       // Sort edits top-to-bottom by lineStart so the cumulative offset is correct —
       // each edit only shifts lines below it. Edits without lineStart go last (string-match fallback).
-      const sortedEdits = [...args.edits].sort((a, b) => {
-        if (a.lineStart == null && b.lineStart == null) return 0;
-        if (a.lineStart == null) return 1;
-        if (b.lineStart == null) return -1;
-        return a.lineStart - b.lineStart;
-      });
+      const sortedEdits = args.edits
+        .map((e) => ({ ...e, oldString: toLf(e.oldString), newString: toLf(e.newString) }))
+        .sort((a, b) => {
+          if (a.lineStart == null && b.lineStart == null) return 0;
+          if (a.lineStart == null) return 1;
+          if (b.lineStart == null) return -1;
+          return a.lineStart - b.lineStart;
+        });
       let lineOffset = 0;
 
       for (let i = 0; i < sortedEdits.length; i++) {
@@ -195,7 +202,7 @@ export const multiEditTool = {
       // ifHash trusts the caller's last-read hash against originalContent (read this call) —
       // skips the extra disk read.
       if (args.ifHash) {
-        if (contentHash(originalContent) !== args.ifHash) {
+        if (contentHash(rawContent) !== args.ifHash) {
           const msg =
             "ifHash mismatch — file changed since your last read. NO edits were applied (atomic rollback). Re-read and retry ALL edits with the new hash.";
           return {
@@ -206,7 +213,7 @@ export const multiEditTool = {
         }
       } else {
         const currentOnDisk = await readFile(filePath, "utf-8");
-        if (currentOnDisk !== originalContent) {
+        if (currentOnDisk !== rawContent) {
           const msg =
             "File was modified concurrently since last read. NO edits were applied (atomic rollback). Re-read and retry ALL edits.";
           return {
@@ -218,10 +225,11 @@ export const multiEditTool = {
       }
 
       // Push single undo entry for the entire batch — write immediately
-      pushEdit(filePath, originalContent, content, args.tabId);
+      const finalContent = withLineEnding(content, eol);
+      pushEdit(filePath, rawContent, finalContent, args.tabId);
 
-      await atomicWriteFile(filePath, content);
-      emitFileEdited(filePath, content);
+      await atomicWriteFile(filePath, finalContent);
+      emitFileEdited(filePath, finalContent);
 
       // Build output
       const lineDelta = afterMetrics.lineCount - beforeMetrics.lineCount;
@@ -242,8 +250,12 @@ export const multiEditTool = {
 
       let output = `Applied ${String(args.edits.length)} edits to ${displayPath(filePath)}`;
       if (deltas.length > 0) output += ` (${deltas.join(", ")})`;
+      if (eol === "crlf") output += " [line endings: CRLF kept]";
+      if (normalizedLines > 0) {
+        output += ` [normalized ${String(normalizedLines)} mixed line endings to ${eol.toUpperCase()}]`;
+      }
 
-      output = await appendAutoFormatResult(filePath, content, output, args.tabId);
+      output = await appendAutoFormatResult(filePath, finalContent, output, args.tabId);
       output = await appendPostEditDiagnostics(diagsPromise, filePath, output);
       output = await appendCloneHints(filePath, output);
 

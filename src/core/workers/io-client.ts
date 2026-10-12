@@ -37,6 +37,8 @@ export type ReadFileResult =
   | {
       ok: true;
       numbered: string;
+      /** CRLF or mixed endings label; null for plain LF files. */
+      lineEnding?: string | null;
       totalLines: number;
       truncated: boolean;
       start: number;

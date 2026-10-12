@@ -11,6 +11,14 @@ import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
 import {
+  detectNewFileLineEnding,
+  dominantLineEnding,
+  type LineEnding,
+  minorityLineCount,
+  toLf,
+  withLineEnding,
+} from "./line-endings.js";
+import {
   appendAutoFormatResult,
   appendCloneHints,
   appendPostEditDiagnostics,
@@ -157,17 +165,26 @@ function correctIndentation(
     .join("\n");
 }
 
+/** The file as read from disk (`raw`) and the ending its edited text is written back with. */
+interface DiskState {
+  raw: string;
+  eol: LineEnding;
+}
+
 async function applyEdit(
   filePath: string,
   content: string,
-  updated: string,
+  updatedLf: string,
   _editLine: number,
   label: string,
+  disk: DiskState,
   tabId?: string,
   ifHash?: string,
 ): Promise<ToolResult> {
   const beforeMetrics = analyzeFile(content);
-  const afterMetrics = analyzeFile(updated);
+  const afterMetrics = analyzeFile(updatedLf);
+  const updated = withLineEnding(updatedLf, disk.eol);
+  const normalized = minorityLineCount(disk.raw);
 
   const diagsPromise = startPreEditDiagnostics(filePath);
 
@@ -175,14 +192,14 @@ async function applyEdit(
   // When ifHash is supplied we trust the caller's last-read hash against `content` and
   // skip the extra disk read — `content` was already read this call for the match.
   if (ifHash) {
-    if (contentHash(content) !== ifHash) {
+    if (contentHash(disk.raw) !== ifHash) {
       const msg =
         "ifHash mismatch — file changed since your last read. Re-read and retry with the new hash.";
       return { success: false, output: msg, error: "concurrent modification" };
     }
   } else {
     const currentOnDisk = await readFile(filePath, "utf-8");
-    if (currentOnDisk !== content) {
+    if (currentOnDisk !== disk.raw) {
       const msg = "File was modified concurrently since last read. Re-read and retry.";
       return { success: false, output: msg, error: "concurrent modification" };
     }
@@ -190,7 +207,7 @@ async function applyEdit(
 
   // Write file immediately — don't wait for diagnostics.
   // atomicWriteFile = tmp+rename so a crash mid-write never corrupts the target.
-  pushEdit(filePath, content, updated, tabId);
+  pushEdit(filePath, disk.raw, updated, tabId);
   await atomicWriteFile(filePath, updated);
   emitFileEdited(filePath, updated);
 
@@ -201,6 +218,10 @@ async function applyEdit(
 
   let output = `Edited ${displayPath(filePath)}${label}`;
   if (deltas.length > 0) output += ` (${deltas.join(", ")})`;
+  if (disk.eol === "crlf") output += " [line endings: CRLF kept]";
+  if (normalized > 0) {
+    output += ` [normalized ${String(normalized)} mixed line endings to ${disk.eol.toUpperCase()}]`;
+  }
 
   output = await appendAutoFormatResult(filePath, updated, output, tabId);
   output = await appendPostEditDiagnostics(diagsPromise, filePath, output);
@@ -251,8 +272,8 @@ export const editFileTool = {
         return { success: false, output: msg, error: msg };
       }
 
-      const oldStr = args.oldString;
-      const newStr = args.newString;
+      const oldStr = toLf(args.oldString);
+      const newStr = toLf(args.newString);
 
       // Create new file
       if (oldStr === "") {
@@ -264,8 +285,10 @@ export const editFileTool = {
           dirCreated = true;
         }
         await mkdir(dir, { recursive: true });
-        await atomicWriteFile(filePath, newStr);
-        emitFileEdited(filePath, newStr);
+        const newEol = detectNewFileLineEnding(dir);
+        const fileText = newEol ? withLineEnding(newStr, newEol) : args.newString;
+        await atomicWriteFile(filePath, fileText);
+        emitFileEdited(filePath, fileText);
         const metrics = analyzeFile(newStr);
         let out = `Created ${displayPath(filePath)} (lines: ${String(metrics.lineCount)}, imports: ${String(metrics.importCount)})`;
         if (dirCreated) out += ` [directory created: ${dir}]`;
@@ -289,7 +312,9 @@ export const editFileTool = {
         return { success: false, output: msg, error: msg };
       }
 
-      const content = await readFile(filePath, "utf-8");
+      const raw = await readFile(filePath, "utf-8");
+      const disk: DiskState = { raw, eol: dominantLineEnding(raw) };
+      const content = toLf(raw);
       const lines = content.split("\n");
 
       // ═══════════════════════════════════════════════════════════════
@@ -328,6 +353,7 @@ export const editFileTool = {
               updated,
               args.lineStart,
               label,
+              disk,
               args.tabId,
               args.ifHash,
             );
@@ -345,6 +371,7 @@ export const editFileTool = {
               updated,
               args.lineStart,
               label,
+              disk,
               args.tabId,
               args.ifHash,
             );
@@ -377,6 +404,7 @@ export const editFileTool = {
               updated,
               matchLine,
               " [line range invalid, used string match]",
+              disk,
               args.tabId,
               args.ifHash,
             );
@@ -424,6 +452,7 @@ export const editFileTool = {
         updated,
         editLine,
         "",
+        disk,
         args.tabId,
         args.ifHash,
       );
