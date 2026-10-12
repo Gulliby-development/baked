@@ -570,6 +570,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "progress-watcher",
+    group: "Workflow runs",
+    title: "Progress watcher: steer, then stop, a stuck agent attempt",
+    tui: ["/workflow: activity feed of the run view"],
+    cli: ["baked workflow run: --events stream", "baked workflow resume: --events stream"],
+    api: ["/v1/workflow/runs/:id/events"],
+    desktop: ["project/runs: activity feed"],
+  },
+  {
     id: "run-decisions",
     group: "Workflow runs",
     title: "Approve, reject, answer, give evidence, continue, accept a stopped convergence",

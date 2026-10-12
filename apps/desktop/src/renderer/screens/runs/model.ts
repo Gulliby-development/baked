@@ -248,6 +248,15 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
             "err",
           );
         break;
+      case "attempt.advisory": {
+        const stageId = attempts.get(event.payload.attemptId);
+        const attempt = stageId ? `the ${stageLabel(stageId)} attempt` : "an attempt";
+        line(
+          `Progress watcher ${event.payload.action === "stopped" ? "stopped" : "warned"} ${attempt}: ${event.payload.detail}`,
+          event.payload.action === "stopped" ? "warn" : "info",
+        );
+        break;
+      }
       case "task.state_changed":
         applyTask(
           trace,

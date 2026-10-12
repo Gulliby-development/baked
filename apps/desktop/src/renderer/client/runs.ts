@@ -77,6 +77,12 @@ export interface EventPayloads {
     usageComplete: boolean;
     usedTokens: number | null;
   };
+  "attempt.advisory": {
+    attemptId: string;
+    signal: "repeated-reads" | "no-edits" | "same-failure";
+    action: "steered" | "stopped";
+    detail: string;
+  };
   "task.state_changed": { taskId: string; from: string; to: string; generation: number };
   "artifact.committed": { artifactId: string; kind: string; hash: string };
   "check.finished": { checkId: string; evidenceId: string; status: string };

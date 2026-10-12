@@ -631,6 +631,7 @@ export const EventType = z.enum([
   "stage.finished",
   "attempt.started",
   "attempt.finished",
+  "attempt.advisory",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -729,6 +730,21 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // The progress watcher noticed a stuck loop: it steered the attempt once, then stopped it.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.advisory"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          signal: z.enum(["repeated-reads", "no-edits", "same-failure"]),
+          action: z.enum(["steered", "stopped"]),
+          detail: z.string().max(500),
         })
         .strict(),
     })
