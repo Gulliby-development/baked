@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`) and `diagnostics` (`/v1/diagnostics/*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`) and `diagnostics` (`/v1/diagnostics/*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -313,6 +313,37 @@ interface McpView {
 
 Project servers come first, then the global servers no project server replaces. `config` holds `env` and `headers` as written, secrets included, as `GET /v1/config` does. A server name is 1 to 64 letters, digits, dots, dashes or underscores.
 
+## Language servers
+
+The language servers code intelligence uses for the project ([language servers](../configuration.md#language-servers)), and the changes `/lsp` makes in the terminal UI. The logic is in `src/core/intelligence/lsp-service.ts`; `/lsp` and `baked lsp` use the same. Changes apply to the running backend at once: turning a server off stops it, and installing or turning one on restarts the servers of its languages. Servers start with the first chat message or run step; until then `started` is false and nothing is running.
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `GET /v1/lsp` | | `LspView` |
+| `POST /v1/lsp/ID/install` | | `{...LspView, restarted, installed: {server, package}, log: string[]}` after the install, which can take minutes. `ID` is a server, a Mason package or a language. 404 `NOT_FOUND`, 409 `NOT_INSTALLABLE` (no package, or its toolchain is not on PATH), 409 `BUSY` while the same install runs, 502 `INSTALL_FAILED` |
+| `POST /v1/lsp/ID/disable` | `{scope?: "global" \| "project"}` or none | `{...LspView, restarted}`. Without `scope`, the project file when it has its own list, otherwise the global one |
+| `POST /v1/lsp/ID/enable` | `{scope?}` or none | `{...LspView, restarted}`; removes the server from every list that names it, or only from `scope` |
+| `POST /v1/lsp/ID/restart` | | `{...LspView, restarted, startedNow}`: restarts the server (or a language's servers) and retries ones that failed. Before anything started the servers, it starts the project's servers instead (`startedNow: true`) |
+| `POST /v1/lsp/restart` | | The same for every server |
+
+```ts
+interface LspView {
+  servers: { id /* the server command */; languages: string[]; detected: boolean /* the project has its languages */;
+    installed: boolean; source: "PATH" | "baked" | "mason" | null; path: string | null;
+    disabled: boolean; disabledIn: ("global" | "project")[];
+    running: boolean; ready: boolean; pids: number[]; openFiles: number; diagnosticCount: number;
+    lastError: { message; at: number } | null /* the last start failure, while it is not running */;
+    package: string | null /* Mason package */; requiresToolchain: string | null; installable: boolean }[];
+  languages: string[]; // detected, primary first
+  uncovered: string[]; // detected languages no enabled, installed server covers
+  started: boolean;
+  registry: boolean; // whether the Mason registry is cached; the first install downloads it
+  paths: { global; project };
+}
+```
+
+Servers of detected languages come first. `GET /v1/workflow/doctor` adds an `lsp.missing` warning per uncovered language, or one `lsp.servers` line when all are covered.
+
 ## Chat settings
 
 The chat settings the terminal UI edits in its pickers (`/provider-settings`, `/router`, `/model-scope`, `/tools`, `/web-search`, `/agent-features`, `/repo-map`, `/compaction`, `/timeouts`, `/context-window`) are described once in `src/core/settings/schema.ts`. The server validates changes against that schema and the desktop draws its settings pages from it, so a setting added there shows up on every surface. Unlike `PATCH /v1/config`, these routes check every value and write nested keys without replacing their neighbours.
@@ -463,6 +494,7 @@ Events and errors live in the server's memory: they cover the chats and runs thi
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
 | Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
+| Project setup: language servers | `GET /v1/lsp`, `POST /v1/lsp/ID/install\|enable\|disable\|restart`, `POST /v1/lsp/restart` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
 | Project setup: diagnostics | `GET /v1/diagnostics/storage`, `POST /v1/diagnostics/storage/cleanup`, `GET\|POST /v1/diagnostics/model-events`, `GET /v1/diagnostics/errors` |

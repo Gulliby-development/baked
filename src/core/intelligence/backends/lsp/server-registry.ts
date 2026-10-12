@@ -4,6 +4,7 @@ import { loadConfig, loadProjectConfig } from "../../../../config/index.js";
 import { getCwd } from "../../../cwd.js";
 import { commandExists, configDir, IS_WIN, userDataDir } from "../../../platform/index.js";
 import type { Language } from "../../types.js";
+import { loadRegistry } from "./installer.js";
 
 export interface LspServerConfig {
   command: string;
@@ -113,40 +114,77 @@ function findInbaked(cmd: string): string | null {
   return null;
 }
 
-/** Cache of resolved commands: name → absolute path (or name if on PATH) */
-const probeCache = new Map<string, string | null>();
+export type LspServerSource = "PATH" | "baked" | "mason";
+export interface ResolvedServerCommand {
+  /** The command name when it is on PATH, otherwise the absolute path. */
+  path: string;
+  source: LspServerSource;
+}
+
+/** Cache of resolved commands: name → where it was found (or null) */
+const probeCache = new Map<string, ResolvedServerCommand | null>();
+
+function probe(cmd: string): ResolvedServerCommand | null {
+  if (commandExists(cmd)) return { path: cmd, source: "PATH" };
+  const sfPath = findInbaked(cmd);
+  if (sfPath) return { path: sfPath, source: "baked" };
+  const masonPath = commandExistsInMason(cmd);
+  if (masonPath) return { path: masonPath, source: "mason" };
+  return null;
+}
 
 /**
- * Resolve a command name to an executable path.
- * Checks $PATH first, then Mason's bin directory.
- * Returns the resolved command string or null if not found.
+ * Resolve a server command to an executable: $PATH first, then baked's install directory, then
+ * Mason's. Returns null when it is not installed.
  */
-function resolveCommand(cmd: string): string | null {
+export function resolveServerCommand(cmd: string): ResolvedServerCommand | null {
   const cached = probeCache.get(cmd);
   if (cached !== undefined) return cached;
+  const found = probe(cmd);
+  probeCache.set(cmd, found);
+  return found;
+}
 
-  // 1. Check $PATH
-  if (commandExists(cmd)) {
-    probeCache.set(cmd, cmd);
-    return cmd;
+/** One language server baked can start: its command and the languages it serves. */
+export interface LspServerCandidate {
+  command: string;
+  args: string[];
+  languages: Language[];
+}
+
+/** Every server baked knows, once each, in the order they are first listed. */
+export function lspServerCandidates(): LspServerCandidate[] {
+  const byCommand = new Map<string, LspServerCandidate>();
+  for (const [language, candidates] of Object.entries(SERVER_CANDIDATES)) {
+    for (const candidate of candidates) {
+      const entry = byCommand.get(candidate.command);
+      if (entry) entry.languages.push(language as Language);
+      else
+        byCommand.set(candidate.command, {
+          command: candidate.command,
+          args: candidate.args,
+          languages: [language as Language],
+        });
+    }
   }
+  return [...byCommand.values()];
+}
 
-  // 2. Check baked's install directory
-  const sfPath = findInbaked(cmd);
-  if (sfPath) {
-    probeCache.set(cmd, sfPath);
-    return sfPath;
-  }
+/** The Mason packages whose binaries include `cmd`; `/lsp` used to disable servers by these. */
+export function packagesProvidingCommand(cmd: string): string[] {
+  return loadRegistry()
+    .filter((p) => p.bin && Object.hasOwn(p.bin, cmd))
+    .map((p) => p.name);
+}
 
-  // 3. Check Mason's install directory
-  const masonPath = commandExistsInMason(cmd);
-  if (masonPath) {
-    probeCache.set(cmd, masonPath);
-    return masonPath;
-  }
-
-  probeCache.set(cmd, null);
-  return null;
+/**
+ * Whether a disabled list names the server: by its command, or by the Mason package that
+ * installs it (older `/lsp` versions wrote package names such as `pyright`).
+ */
+export function listDisablesServer(disabled: readonly string[], cmd: string): boolean {
+  if (disabled.length === 0) return false;
+  if (disabled.includes(cmd)) return true;
+  return packagesProvidingCommand(cmd).some((name) => disabled.includes(name));
 }
 
 /** Check if a server command is disabled by user config */
@@ -155,7 +193,7 @@ function isServerDisabled(cmd: string): boolean {
   const global = loadConfig();
   const project = loadProjectConfig(cwd);
   const disabled = project?.disabledLspServers ?? global.disabledLspServers ?? [];
-  return disabled.includes(cmd);
+  return listDisablesServer(disabled, cmd);
 }
 
 /**
@@ -170,10 +208,10 @@ export function findServersForLanguage(language: Language): LspServerConfig[] {
   const results: LspServerConfig[] = [];
   for (const candidate of candidates) {
     if (isServerDisabled(candidate.command)) continue;
-    const resolved = resolveCommand(candidate.command);
+    const resolved = resolveServerCommand(candidate.command);
     if (resolved) {
       results.push({
-        command: resolved,
+        command: resolved.path,
         args: candidate.args,
         language,
       });
@@ -182,7 +220,7 @@ export function findServersForLanguage(language: Language): LspServerConfig[] {
   return results;
 }
 
-/** Clear the probe cache (useful for testing) */
+/** Clear the probe cache, so newly installed or removed servers are found again */
 export function clearProbeCache(): void {
   probeCache.clear();
 }

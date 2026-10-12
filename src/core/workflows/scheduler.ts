@@ -98,7 +98,11 @@ import {
   withinWorkflow,
 } from "./leases.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
-import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
+import {
+  PLAN_CONSISTENCY_CHECKS,
+  planConsistencyProblems,
+  withDerivedRequirements,
+} from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
@@ -221,11 +225,13 @@ function planGraph(
   policy: RunPolicy,
 ): TaskGraph {
   return withCoveringChecks(
-    withTestDependencies({
-      ...plan.taskGraph,
-      specHash: hashJson(spec),
-      planHash: hashBytes(plan.markdown),
-    }),
+    withTestDependencies(
+      withDerivedRequirements(spec, {
+        ...plan.taskGraph,
+        specHash: hashJson(spec),
+        planHash: hashBytes(plan.markdown),
+      }),
+    ),
     policy,
   );
 }
