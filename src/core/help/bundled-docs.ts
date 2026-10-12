@@ -24,6 +24,7 @@ import providersMd from "../../../docs/providers.md" with { type: "text" };
 import readmeMd from "../../../docs/README.md" with { type: "text" };
 import toolsMd from "../../../docs/tools.md" with { type: "text" };
 import troubleshootingMd from "../../../docs/troubleshooting.md" with { type: "text" };
+import watchMd from "../../../docs/watch.md" with { type: "text" };
 import workflowsArchitectureMd from "../../../docs/workflows/architecture.md" with { type: "text" };
 import workflowsDoctorAndEstimateMd from "../../../docs/workflows/doctor-and-estimate.md" with {
   type: "text",
@@ -58,6 +59,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["providers.md", providersMd],
   ["tools.md", toolsMd],
   ["troubleshooting.md", troubleshootingMd],
+  ["watch.md", watchMd],
   ["workflows/README.md", workflowsReadmeMd],
   ["workflows/architecture.md", workflowsArchitectureMd],
   ["workflows/doctor-and-estimate.md", workflowsDoctorAndEstimateMd],
