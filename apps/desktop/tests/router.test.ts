@@ -14,4 +14,9 @@ describe("routes", () => {
     expect(parseRoute("#/settings/global")).toEqual({ name: "settings", section: "providers" });
     expect(parseRoute("#/settings/chat")).toEqual({ name: "settings", section: "chat" });
   });
+
+  test("old acceptance links open the run", () => {
+    expect(parseRoute("#/p/abc/acceptance/r1")).toEqual({ name: "project", key: "abc", section: "runs", id: "r1" });
+    expect(parseRoute("#/p/abc/acceptance")).toEqual({ name: "project", key: "abc", section: "runs", id: null });
+  });
 });

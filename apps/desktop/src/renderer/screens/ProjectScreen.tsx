@@ -15,7 +15,6 @@ const TITLES: Record<ProjectSection, string> = {
   chat: "Chat",
   runs: "Runs",
   initiatives: "Initiatives",
-  acceptance: "Acceptance",
   usage: "Usage",
   graph: "Code graph",
   git: "Git",
