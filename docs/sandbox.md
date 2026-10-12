@@ -64,7 +64,7 @@ BAKED uses `/usr/bin/sandbox-exec` with a generated profile: everything is allow
 
 ### Windows
 
-No backend yet: Windows reports the sandbox as unavailable, so `auto` runs commands unsandboxed and `required` refuses them. A follow-up issue (#ISSUE_WINDOWS) tracks a restricted-token and job-object backend.
+No backend yet: Windows reports the sandbox as unavailable, so `auto` runs commands unsandboxed and `required` refuses them. A follow-up issue (#624) tracks a restricted-token and job-object backend.
 
 ## What is hidden and protected
 
@@ -86,7 +86,7 @@ Package caches stay writable when they exist: `~/.bun/install/cache`, `~/.cache/
 - An AI acceptance gate that grants ports or hosts shares the host network: the host browser and the filter proxy must reach the application, so only its file system is isolated.
 - In a worktree run, the Git common directory (`<project>/.git/worktrees/<id>`) is not writable, so commands that write Git state in worktree checks fail; read-only Git works.
 - Submodule configs (`.git/modules/*/config`) are not protected yet, and macOS keychain access is blocked only at file level (the `security` tool's Mach service is not denied).
-- Follow-up issue #ISSUE_FOLLOWUP tracks making `auto` the default after a soak, protecting submodule configs, a writable worktree Git common directory and the keychain Mach lookup.
+- Follow-up issue #625 tracks making `auto` the default after a soak, protecting submodule configs, a writable worktree Git common directory and the keychain Mach lookup.
 
 ## Troubleshooting
 

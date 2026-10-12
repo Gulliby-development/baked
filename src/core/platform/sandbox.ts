@@ -2,7 +2,7 @@
  * OS sandbox backends: detection and the pure builders of a sandboxed launch.
  *
  * Linux wraps a command in bubblewrap (`bwrap`), macOS in a `sandbox-exec` seatbelt profile.
- * Windows has no backend yet (#ISSUE_WINDOWS). The builders take the host (platform, home,
+ * Windows has no backend yet (#624). The builders take the host (platform, home,
  * filesystem probes) as a parameter, so tests check Linux and macOS output on any machine.
  * Mode handling (off, auto, required) lives in `src/core/security/sandbox.ts`.
  */
@@ -411,7 +411,7 @@ export function probeSandbox(deps: SandboxProbeDeps = defaultProbeDeps()): Sandb
       backend: "none",
       available: false,
       path: null,
-      reason: unsupportedOnWindows("no OS sandbox without native code yet (#ISSUE_WINDOWS)"),
+      reason: unsupportedOnWindows("no OS sandbox without native code yet (#624)"),
     };
   return {
     backend: "none",
