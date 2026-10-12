@@ -541,6 +541,5 @@ Events and errors live in the server's memory: they cover the chats and runs thi
 
 ## Not in this contract yet
 
-- Browsing the checkpoints of a chat. The desktop hides this control until a later version of this contract adds it.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.
