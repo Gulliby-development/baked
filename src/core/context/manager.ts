@@ -461,7 +461,8 @@ export class ContextManager {
   }
 
   private syncRepoMapStore(status: "off" | "scanning" | "ready" | "error"): void {
-    if (this.ownsIntelligence) {
+    // Only the root that scans reports it; children and borrowers share its map.
+    if (this.ownsIntelligence && !this.isChild) {
       if (status === "scanning") progress.set("index", "Scanning the project");
       else progress.end("index");
     }
