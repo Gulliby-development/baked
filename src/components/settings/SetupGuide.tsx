@@ -5,6 +5,7 @@ import {
   getInstallCommands,
   type PrerequisiteStatus,
 } from "../../core/setup/prerequisites.js";
+import { spinnerGlyph } from "../../core/utils/spinner.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
   buildGroupedRows,
@@ -213,7 +214,11 @@ export function SetupGuide({ visible, onClose, onSystemMessage }: Props) {
         </Section>
       }
 
-      {installing && <Hint>⠹ Installing {installing}...</Hint>}
+      {installing && (
+        <Hint>
+          {spinnerGlyph(0)} Installing {installing}...
+        </Hint>
+      )}
     </PremiumPopup>
   );
 }

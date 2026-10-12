@@ -56,7 +56,7 @@ async function snapshot(view: Awaited<ReturnType<typeof testRender>>, name: stri
   assert(popup, name);
   assert(popup.x >= 0 && popup.y >= 0 && popup.x + popup.width <= width && popup.y + popup.height <= height, `${name}: bounds`);
   assert(/esc/i.test(frame), `${name}: missing exit hint`);
-  assert(frame.includes("╯"), `${name}: missing bottom border`);
+  assert(frame.includes("┛"), `${name}: missing bottom border`);
   if (captureDir) writeFileSync(join(captureDir, `${width}-${height}-${name}.txt`), frame);
   frames++;
   return frame;
