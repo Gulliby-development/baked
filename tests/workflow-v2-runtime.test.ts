@@ -59,6 +59,8 @@ interface Behavior {
   criteria?: number;
   /** The symbol every convergence gap names, so a later gap can contradict an earlier fix. */
   gapSymbol?: string;
+  /** Every gap names the same file and no symbol, as a reviewer rewording one defect does. */
+  gapSameLocation?: boolean;
   /** A spec that names another feature than the run's. */
   renamedFeature?: boolean;
   reviewVerdict?: "pass" | "changes_requested";
@@ -155,7 +157,7 @@ class V2Executor implements AgentExecutor {
           ? {
               schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested",
               coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds: evidence, explanation: `Gap ${round}` }, ...this.passing(evidence, "Command checked the value").slice(1)],
-              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbol ?? null, evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
+              findings: [{ id: `G${round}`, kind: this.behavior.gapKind ?? "missing", severity: this.behavior.gapSeverity ?? "high", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "value.txt", symbol: this.behavior.gapSymbol ?? (this.behavior.gapSameLocation ? null : `symbol${round}`), evidenceIds: evidence, claim: `Gap number ${round} remains`, impact: "The criterion is not met", suggestedFix: `Close gap ${round}` }],
             }
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Command checked the value"), findings: [] };
         break;
@@ -863,6 +865,15 @@ describe("a stopped convergence asks for a decision", () => {
     expect(service.store.run(run.runId).convergence_rounds).toBe(1);
   }, 60000);
 
+  test("a reworded finding on the same file and criterion is the second occurrence of a residual", async () => {
+    // No symbol and a new claim and id each round: the location (criterion, file) is the key.
+    const { service, run, waiting } = await stopped("sdd", { gaps: 2, gapSameLocation: true });
+    expect(waiting.status).toBe("waiting");
+    const body = JSON.parse(pendingConvergence(service, run.runId)?.body_json ?? "{}");
+    expect(body.reason).toBe("contradiction");
+    expect(body.contradictions[0].earlierId).not.toBe(body.contradictions[0].findingId);
+  }, 60000);
+
   test("one more round repairs a contradicting finding without asking again", async () => {
     const { service, run, complete } = await stopped("sdd", { gaps: 2, gapSymbol: "parseValue" });
     await decide(service, run.runId, "continue");
@@ -922,6 +933,14 @@ describe("passesWithNotes", () => {
     expect(passesWithNotes({ ...finding, kind: "correctness" }, coverage, true)).toBe(false);
     expect(passesWithNotes({ ...finding, criterionIds: [] }, coverage, true)).toBe(false);
     expect(passesWithNotes(finding, [{ ...coverage[0]!, evidenceIds: [] }], true)).toBe(false);
+  });
+  test("a medium partial finding passes only on a test or documentation file", () => {
+    const medium = { ...finding, severity: "medium" as const };
+    for (const file of ["tests/store.test.ts", "src/a.spec.ts", "test_cli.py", "README.md", "docs/usage.md"])
+      expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(true);
+    for (const file of [null, "src/store.ts", "src/latest.ts"])
+      expect(passesWithNotes({ ...medium, file }, coverage, true)).toBe(false);
+    expect(passesWithNotes({ ...medium, severity: "high", file: "README.md" }, coverage, true)).toBe(false);
   });
 });
 
