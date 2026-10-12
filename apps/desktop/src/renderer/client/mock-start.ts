@@ -5,6 +5,7 @@ import type {
   DefinitionSummary,
   DoctorCheck,
   DoctorReport,
+  LineGate,
   LineLoop,
   LineStage,
   PreRunEstimate,
@@ -40,9 +41,48 @@ const LINE_STAGES: Record<string, [LineStage["type"], string[], string]> = {
   report: ["agent", ["research"], "report"],
 };
 
+const command = (id: string, args: string): LineGate => ({
+  id,
+  type: "command",
+  mode: "required",
+  does: `Runs bun ${args}`,
+  transition: null,
+});
+/** Sample gates per stage, as the core's `workflowLine` resolves them from the library. */
+function mockGates(id: string, next: string | undefined): LineGate[] {
+  if (id === "checks" || id === "verify")
+    return [
+      command("typecheck", "run typecheck"),
+      command("lint", "run lint"),
+      command("tests", "test"),
+    ];
+  if (id === "review")
+    return [
+      {
+        id: "correctness-review",
+        type: "ai-review",
+        mode: "required",
+        does: "AI correctness review",
+        transition: null,
+      },
+      ...(next
+        ? [
+            {
+              id: "settings-ui",
+              type: "ai-acceptance" as const,
+              mode: "advisory" as const,
+              does: "AI walk-through of bun run dev: the settings screen switches to dark mode",
+              transition: { id: `review-${next}`, to: next, on: "passed" },
+            },
+          ]
+        : []),
+    ];
+  return [];
+}
+
 export function mockLine(stages: string[]): WorkflowLine {
   const made = new Set(["request"]);
-  const line = stages.map((id) => {
+  const line = stages.map((id, i) => {
     const [type, consumes, produces] = LINE_STAGES[id] ?? ["agent", ["request"], id];
     const stage = {
       id,
@@ -50,6 +90,7 @@ export function mockLine(stages: string[]): WorkflowLine {
       consumes: consumes.filter((c) => made.has(c)),
       produces,
       human: type === "approval",
+      gates: mockGates(id, stages[i + 1]),
     };
     made.add(produces);
     return stage;
