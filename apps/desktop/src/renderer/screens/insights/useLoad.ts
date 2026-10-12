@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { isMissingEndpoint } from "../../client/insights.js";
+import { type QueryKey, useQuery } from "../../lib/query.js";
 
 export type Load<T> =
   | { kind: "loading" }
@@ -8,35 +8,32 @@ export type Load<T> =
   | { kind: "missing" }
   | { kind: "error"; message: string };
 
-/** Loads `fetch()` whenever `deps` change; `reload` loads again with the same inputs. */
+/**
+ * Reads `key` through the shared query cache: the last answer at once, refreshed in the
+ * background; `reload` fetches again and keeps showing the current data. A null `fetch` reads
+ * nothing.
+ */
 export function useLoad<T>(
   fetch: (() => Promise<T>) | null,
-  deps: readonly unknown[],
+  key: QueryKey,
 ): { state: Load<T>; reload: () => void } {
-  const [state, setState] = useState<Load<T>>({ kind: "loading" });
-  const [tick, setTick] = useState(0);
-  const loadedTick = useRef(tick);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: callers list the inputs of fetch in deps.
-  useEffect(() => {
-    if (!fetch) return;
-    let live = true;
-    // A reload keeps showing the current data; new inputs show loading.
-    if (loadedTick.current === tick) setState({ kind: "loading" });
-    loadedTick.current = tick;
-    fetch().then(
-      (data) => live && setState({ kind: "ready", data }),
-      (error: unknown) =>
-        live &&
-        setState(
-          isMissingEndpoint(error)
-            ? { kind: "missing" }
-            : { kind: "error", message: error instanceof Error ? error.message : String(error) },
-        ),
-    );
-    return () => {
-      live = false;
-    };
-  }, [...deps, tick]);
-  const reload = useCallback(() => setTick((t) => t + 1), []);
-  return { state, reload };
+  const query = useQuery(fetch ? key : null, fetch ?? never);
+  return { state: toLoad(query), reload: query.refresh };
+}
+
+const never = (): Promise<never> => new Promise(() => {});
+
+function toLoad<T>(query: {
+  hasData: boolean;
+  data: T | undefined;
+  error: unknown;
+  loading: boolean;
+}): Load<T> {
+  if (query.hasData) return { kind: "ready", data: query.data as T };
+  if (query.loading || query.error === null) return { kind: "loading" };
+  if (isMissingEndpoint(query.error)) return { kind: "missing" };
+  return {
+    kind: "error",
+    message: query.error instanceof Error ? query.error.message : String(query.error),
+  };
 }

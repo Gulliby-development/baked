@@ -55,7 +55,7 @@ export async function loadPolicy(key: string): Promise<RunPolicy | "none"> {
 }
 
 export function usePolicy(key: string): PolicyState {
-  const { value, error } = useLoad(key, loadPolicy);
+  const { value, error } = useLoad(key, "policy", loadPolicy);
   if (error)
     return {
       policy: null,

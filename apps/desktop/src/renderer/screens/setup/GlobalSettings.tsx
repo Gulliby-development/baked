@@ -330,7 +330,7 @@ function ProviderRow({
 }
 
 function Providers({ projectKey }: { projectKey: string }) {
-  const [providers, reload] = useLoad(() => setup.providers(projectKey), [projectKey]);
+  const [providers, reload] = useLoad(() => setup.providers(projectKey), [projectKey, "providers"]);
   const [canSwitch, setCanSwitch] = useState(false);
   useEffect(() => {
     let live = true;
@@ -364,7 +364,7 @@ function Providers({ projectKey }: { projectKey: string }) {
 }
 
 function GlobalCommands({ projectKey }: { projectKey: string }) {
-  const [commands] = useLoad(() => setup.commands(projectKey), [projectKey]);
+  const [commands] = useLoad(() => setup.commands(projectKey), [projectKey, "commands"]);
   const global =
     commands.state === "ready" ? commands.data.commands.filter((c) => c.scope === "global") : [];
   return (
@@ -595,7 +595,7 @@ function GlobalSettingsFor({
   /** Running projects; model routing resolves through the one picked there. */
   projects: RoutingProject[];
 }) {
-  const [config, , setConfig] = useLoad(() => setup.config(projectKey), [projectKey]);
+  const [config, , setConfig] = useLoad(() => setup.config(projectKey), [projectKey, "config"]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const patch: Patch = async (set) => {
