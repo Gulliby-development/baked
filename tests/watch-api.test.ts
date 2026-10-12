@@ -132,6 +132,8 @@ test("a saved baked! comment starts a turn in the watching session; one queued m
   write("src/load.ts", "export function load() {\n  // baked! retry twice on a network error\n  return 1;\n}\n");
   const first = await until(() => detail(session.id), (d) => d.state === "working" && d.messages.length > 0);
   expect(first.messages[0]?.content).toBe("From src/load.ts:2 (baked!): retry twice on a network error");
+  // The session reports the turn before the agent stream starts, so wait for the model call.
+  await until(async () => host.seen.length, (n) => n > 0);
   const prompt = JSON.stringify(host.seen[0]?.messages.at(-1));
   expect(prompt).toContain("src/load.ts");
   expect(prompt).toContain("return 1;");
