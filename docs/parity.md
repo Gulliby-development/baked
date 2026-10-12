@@ -134,6 +134,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Projects: list, add, pin, forget, this project | `/projects`, `/project` | `baked projects`, `baked project` | `/v1/projects`, `/v1/projects/pin`, `/v1/projects/unpin` +2 | `projects`, `project/overview` |
+| Create a project in a new folder with a name | `/projects` | `baked projects create` | Not needed: a new project has no backend yet; the desktop app creates it through baked projects create | `projects` |
 | Rename a project | `/project rename` | `baked projects rename` | `/v1/projects/rename` | `projects` |
 | Working set | `/project` | `baked project` | `/v1/projects/current/working-set` | `project/working-set` |
 | What waits for me across projects | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): this project only | `baked attention` | `/v1/attention` | `attention` |

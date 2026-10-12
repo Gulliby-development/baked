@@ -769,6 +769,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["projects", "project/overview"],
   },
   {
+    id: "project-create",
+    group: "Projects and setup",
+    title: "Create a project in a new folder with a name",
+    tui: ["/projects: Create project…"],
+    cli: ["baked projects create"],
+    api: notNeeded(
+      "a new project has no backend yet; the desktop app creates it through baked projects create",
+    ),
+    desktop: ["projects: Create project", "projects: Create project… in the sidebar"],
+  },
+  {
     id: "project-rename",
     group: "Projects and setup",
     title: "Rename a project",
