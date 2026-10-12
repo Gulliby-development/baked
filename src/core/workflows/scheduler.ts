@@ -1367,7 +1367,7 @@ export class WorkflowScheduler {
   /**
    * Before the agent runs a planned task again (a repair or correction invalidated it), its task
    * checks run in the host: when they pass on the current files and the task's earlier
-   * implementation is in place, the task is implemented by supersession, with an empty diff and
+   * implementation, which passed them under the same definition, is in place, the task is implemented by supersession, with an empty diff and
    * no tokens, and the gate check below it runs as for any implemented task. A rerun that ended
    * with an empty diff in round 6 cost 3.08M tokens of 17.5M. Returns whether any task changed.
    */
@@ -1392,6 +1392,9 @@ export class WorkflowScheduler {
         row.status === "interrupted" ||
         !checks.length ||
         !task.writes.length ||
+        // Its earlier implementation passed its checks under this very definition; a revision
+        // that changed it (or reset the gates) always implements it again.
+        state.taskGates[task.id]?.definitionHash !== hashJson(task) ||
         !this.store.latestArtifact(runId, `tasks/${task.id}/diff.json`) ||
         this.store.latestArtifact(runId, path) ||
         task.writes.some((w) => w.action !== "delete" && !existsSync(workspacePath(root, w.path)))
