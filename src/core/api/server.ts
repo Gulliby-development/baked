@@ -30,6 +30,7 @@ import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
 import { BakeChatHost } from "../chat/host.js";
+import { serviceStateSource } from "../chat/project-state.js";
 import { scriptedHostFromEnv } from "../chat/scripted-host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
@@ -432,6 +433,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);
+  chat.setProjectState(serviceStateSource(service, initiatives, () => attention()));
   const graphCache = new CodeGraphCache(service.workspace);
   let graphRoot: ContextManager | null = null;
   let graphRootStarted = false;

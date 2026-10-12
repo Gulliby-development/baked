@@ -74,6 +74,12 @@ import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
 import type { MentionSuggestion } from "./mention-suggest.js";
+import {
+  type ProjectStateSource,
+  type SessionSource,
+  STATE_TOOL,
+  stateTool,
+} from "./project-state.js";
 
 export const CHAT_MODES = ["default", "architect", "plan", "auto"] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
@@ -237,6 +243,8 @@ export interface TurnAgentRequest {
   planExecution: boolean;
   /** The session is the project's coordinator: its prompt and brief tool apply. */
   coordinator?: boolean;
+  /** Tools the service adds for this session's kind (the coordinator's project state tool). */
+  tools?: Record<string, unknown>;
   callbacks: InteractiveCallbacks;
   onApproveOutsideCwd: (toolName: string, path: string) => Promise<boolean>;
   onApproveDestructive: (description: string) => Promise<boolean>;
@@ -1098,7 +1106,7 @@ export class ChatSession {
         modelId: model,
         mode: this.mode,
         planExecution,
-        ...(this.isCoordinator ? { coordinator: true } : {}),
+        ...(this.isCoordinator ? { coordinator: true, tools: this.owner.coordinatorTools() } : {}),
         ...this.approvalCallbacks(),
       });
       stepStartedAt = Date.now();
@@ -1443,6 +1451,25 @@ export class ChatService {
   assertIdleWorkspace(action = "rolling back"): void {
     if ([...this.live.values()].some((s) => s.busy))
       throw new ChatError("SESSION_BUSY", `Wait for running turns to finish before ${action}`);
+  }
+
+  private projectState: ProjectStateSource | null = null;
+
+  /** Where the coordinator reads runs, initiatives and attention from; the API server sets it. */
+  setProjectState(source: ProjectStateSource | null): void {
+    this.projectState = source;
+  }
+
+  /** The coordinator's tools over this service: project state, sessions included. */
+  coordinatorTools(): Record<string, unknown> {
+    const sessions: SessionSource = {
+      list: (limit) => this.list(limit),
+      messages: (id) => {
+        const session = this.get(id);
+        return { title: session.title, messages: session.messages };
+      },
+    };
+    return { [STATE_TOOL]: stateTool(this.projectState, sessions) };
   }
 
   /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */
