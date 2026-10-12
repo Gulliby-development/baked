@@ -49,3 +49,12 @@ test("Settings turns the microphone button off and picks the language", async ({
   await expect(page.getByRole("textbox", { name: "Message BAKED" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Voice input" })).toHaveCount(0);
 });
+
+test("a refused microphone explains itself and offers the system settings", async ({ app }) => {
+  const page = await app("#/p/baked/chat", "mic-denied");
+  await page.getByRole("button", { name: "Voice input" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Microphone access is blocked");
+  await expect(alert.getByRole("button", { name: "Open microphone settings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Voice input" })).toBeEnabled();
+});

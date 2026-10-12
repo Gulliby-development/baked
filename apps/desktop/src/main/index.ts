@@ -7,7 +7,9 @@ import {
   type IpcMainInvokeEvent,
   ipcMain,
   Notification,
+  session,
   shell,
+  systemPreferences,
   type WebContents,
 } from "electron";
 import type {
@@ -36,6 +38,7 @@ import {
   listKnownProjects,
 } from "./baked-cli.js";
 import { readGitBranch } from "./git-branch.js";
+import { allowPermission, microphoneAccess, microphoneSettingsUrl } from "./microphone.js";
 import { checkDraft, newProjectFolder } from "./new-project.js";
 import { manageKnownProject, renameKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
@@ -336,6 +339,11 @@ function registerIpc(): void {
     } else if (action === "close") target.close();
   });
   handle(IPC.voiceStatus, () => voice.status());
+  handle(IPC.microphoneAccess, () => microphoneAccess(process.platform, systemPreferences));
+  handle(IPC.openMicrophoneSettings, async () => {
+    const url = microphoneSettingsUrl(process.platform);
+    if (url) await shell.openExternal(url);
+  });
   handle(IPC.transcribe, (_e, samples: Float32Array, language?: VoiceLanguage) =>
     voice.transcribe(samples, language),
   );
@@ -410,6 +418,9 @@ function createWindow(): void {
 }
 
 async function boot(): Promise<void> {
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) =>
+    callback(allowPermission(permission, details, isAppUrl)),
+  );
   registerIpc();
   createWindow();
   try {

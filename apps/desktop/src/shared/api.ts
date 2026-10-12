@@ -159,6 +159,13 @@ export interface VoiceStatus {
   model?: string;
 }
 
+/** Whether the system lets the app use the microphone. */
+export interface MicrophoneAccess {
+  granted: boolean;
+  /** The system has a microphone privacy page the app can open (macOS, Windows). */
+  canOpenSettings: boolean;
+}
+
 /** One transcribed recording. */
 export interface VoiceTranscript {
   text: string;

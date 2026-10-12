@@ -59,6 +59,10 @@ mac:
   # signature was invalidated by packaging, which an unsigned (identity: null) build is.
   identity: "-"
   hardenedRuntime: false
+  # Voice input: macOS shows this text when it asks for the microphone. The hardened runtime is
+  # off, so no audio-input entitlement is needed until builds are signed with a Developer ID.
+  extendInfo:
+    NSMicrophoneUsageDescription: BAKED transcribes your voice on this computer when you use voice input in chat.
 
 dmg:
   writeUpdateInfo: false
