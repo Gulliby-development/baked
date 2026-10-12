@@ -155,6 +155,7 @@ export const MessageBody = z
     message: "Send text or images",
   });
 export const CompactBody = z.strictObject({});
+export const WatchBody = z.strictObject({ on: z.boolean() });
 export const PromptAnswerBody = z.union([
   z.strictObject({
     approve: z.boolean(),
