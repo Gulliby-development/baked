@@ -47,6 +47,7 @@ import { readHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
 import {
   commandProcessMayRun,
+  executionLeaseFor,
   leaseOwnerAlive,
   mutationLeaseFor,
   releaseDeadOwnerLeases,
@@ -71,6 +72,7 @@ import {
 import { GATES_ARTIFACT, WorkflowScheduler } from "./scheduler.js";
 import {
   type CommandIdentity,
+  DEFAULT_MAX_PARALLEL_RUNS,
   type Decision,
   executionModeOf,
   Hash,
@@ -134,7 +136,11 @@ function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRe
 export class NativeWorkflowService implements WorkflowService {
   readonly store: WorkflowStore;
   readonly leases: WorkspaceLeases;
+  /** The primary drive lane; a run driven while it is busy gets a lane of its own (see `lane`). */
   readonly scheduler: WorkflowScheduler;
+  private primaryBusy = false;
+  /** The executor the caller injected, shared by every lane; null for the native executor. */
+  private readonly injectedExecutor: AgentExecutor | null;
   private active = new Map<
     string,
     { controller: AbortController; promise: Promise<RunSnapshot> }
@@ -162,6 +168,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
+    this.injectedExecutor = executor ?? null;
     this.attention = readonly ? null : new AttentionNotifier(this.store, workspace, config);
     this.scheduler = new WorkflowScheduler(
       this.store,
@@ -452,16 +459,38 @@ export class NativeWorkflowService implements WorkflowService {
     const abort = (): void => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
-    const promise = this.scheduler
+    const primary = !this.primaryBusy;
+    if (primary) this.primaryBusy = true;
+    const scheduler = primary ? this.scheduler : this.lane();
+    scheduler.maxParallelRuns = this.config.workflows?.maxParallelRuns ?? DEFAULT_MAX_PARALLEL_RUNS;
+    const promise = scheduler
       .drive(runId, controller.signal)
       .then(() => this.store.snapshot(runId));
     this.active.set(runId, { controller, promise });
     try {
       return await promise;
     } finally {
+      if (primary) this.primaryBusy = false;
       this.active.delete(runId);
       signal.removeEventListener("abort", abort);
     }
+  }
+  /**
+   * A drive lane for a run that starts while the primary lane drives another: its own leases and
+   * scheduler, since both hold the state of one drive. Worktree runs then execute side by side;
+   * a second inline run is refused by the workspace execution lease as before. A lane's executor
+   * shares the root context, so it owns nothing that needs disposing.
+   */
+  private lane(): WorkflowScheduler {
+    const leases = new WorkspaceLeases(this.store);
+    const lane = new WorkflowScheduler(
+      this.store,
+      leases,
+      this.injectedExecutor ??
+        new NativeAgentExecutor(this.store, leases, this.config, this.rootContext),
+    );
+    lane.browserDriver = this.scheduler.browserDriver;
+    return lane;
   }
   async pause(runId: string, command: CommandIdentity): Promise<RunSnapshot> {
     return this.stop(runId, command, "paused");
@@ -492,7 +521,7 @@ export class NativeWorkflowService implements WorkflowService {
       if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Resolve pending requests before resuming");
       assertFrozenInputs(this.store.state(runId));
-      const lease = this.store.lease("execution");
+      const lease = this.store.lease(executionLeaseFor(this.store, runId));
       if (lease?.run_id === runId && leaseOwnerAlive(lease) === false) {
         const uncertain = this.store
           .effects(runId)
@@ -710,7 +739,7 @@ export class NativeWorkflowService implements WorkflowService {
             "STALE_DECISION",
             "Recovery evidence required for the requested effect",
           );
-        const lease = this.store.lease("execution");
+        const lease = this.store.lease(executionLeaseFor(this.store, runId));
         if (lease && leaseOwnerAlive(lease) !== false)
           throw new WorkflowFault(
             "WORKSPACE_BUSY",
@@ -1449,7 +1478,7 @@ export class NativeWorkflowService implements WorkflowService {
       return undefined;
     });
     if (previous) return previous;
-    this.leases.acquire("execution", runId);
+    this.leases.acquire(executionLeaseFor(this.store, runId), runId);
     try {
       this.leases.acquire(
         mutationLeaseFor(this.workspace, runRoot(this.workspace, this.store.state(runId))),
