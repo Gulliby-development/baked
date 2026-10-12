@@ -1,5 +1,6 @@
 import type { RunSnapshot } from "../../shared/api.js";
 import { type MockRoute, response } from "./mock-routes.js";
+import { addStartedRun } from "./mock-runs.js";
 import type {
   DefinitionSummary,
   DoctorCheck,
@@ -357,7 +358,7 @@ const PROFILES: RoutedProfile[] = [
 
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/;
 
-function startRun(body: unknown): ReturnType<typeof response> {
+function startRun(key: string, body: unknown): ReturnType<typeof response> {
   const input = (body ?? {}) as Record<string, unknown>;
   const { commandId, prompt, workflow, issue } = input;
   const fromIssue = typeof issue === "string" && issue.trim() !== "";
@@ -392,6 +393,7 @@ function startRun(body: unknown): ReturnType<typeof response> {
   };
   created.unshift(run);
   byCommand.set(commandId, run);
+  addStartedRun(key, run.runId, feature, run.stageId ?? "research");
   return response(202, run);
 }
 
@@ -428,6 +430,6 @@ export const startRoutes: MockRoute = async ({ key, method, path, query, body })
           },
         });
   }
-  if (method === "POST" && path === "/v1/workflow/runs") return startRun(body);
+  if (method === "POST" && path === "/v1/workflow/runs") return startRun(key, body);
   return undefined;
 };

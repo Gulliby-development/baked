@@ -10,6 +10,10 @@ dist
 bin
 *.tgz
 
+# Playwright output (apps/desktop UI tests)
+playwright-report
+test-results
+
 # code coverage
 coverage
 *.lcov
