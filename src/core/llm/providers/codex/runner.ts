@@ -320,8 +320,8 @@ export function parseCodexResponse(text: string): ParsedCodexResponse {
 
 export function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
   const warnings: LanguageModelV2CallWarning[] = [];
+  // BAKED sets maxOutputTokens on every agent; the CLI ignoring it is expected, not a warning.
   for (const setting of [
-    "maxOutputTokens",
     "temperature",
     "stopSequences",
     "topP",
