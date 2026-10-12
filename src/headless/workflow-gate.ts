@@ -8,6 +8,7 @@ import {
   type DraftKind,
   type DraftModel,
   draftGate,
+  draftReport,
   type GateDraft,
   gateCapabilities,
   saveGateDraft,
@@ -45,28 +46,8 @@ function gateRows(workspace: string, policy: RunPolicy) {
 }
 
 export function formatDraft(draft: GateDraft): string {
-  const lines = [
-    `Draft gate ${draft.gate.id} (${draft.gate.type}, ${draft.gate.required ? "required" : "advisory"})`,
-    `  ${draft.gate.description}`,
-  ];
-  if (draft.gate.type === "ai-acceptance") {
-    const { scenario } = draft.gate.acceptance;
-    lines.push("  Steps:", ...scenario.steps.map((s, i) => `    ${i + 1}. ${s}`));
-    lines.push("  Expectations:", ...scenario.expectations.map((e, i) => `    E${i + 1}. ${e}`));
-  }
-  lines.push("  It may:", ...draft.capabilities.map((c) => `    - ${c}`));
-  if (draft.script) lines.push(`  Test script ${draft.script.path}:`, indent(draft.script.content));
-  if (draft.problems.length)
-    lines.push("  Cannot be saved:", ...draft.problems.map((p) => `    - ${p}`));
-  return `${lines.join("\n")}\n`;
+  return `${draftReport(draft).join("\n")}\n`;
 }
-
-const indent = (text: string): string =>
-  text
-    .trimEnd()
-    .split("\n")
-    .map((l) => `      ${l}`)
-    .join("\n");
 
 /**
  * `baked workflow gate new|save|list|show`: gates from a sentence (#372). `new` calls the model
