@@ -78,8 +78,11 @@ const capabilityKeys = [
   "reviewProfiles",
   "skepticProfileId",
   "forceSecurityReview",
+  "sandbox",
 ] as const;
 const networkRank = { deny: 0, ask: 1, allow: 2 } as const;
+/** A weaker OS sandbox widens what run processes may touch. */
+const sandboxRank = { off: 0, auto: 1, required: 2 } as const;
 
 /**
  * Decides on the host whether a package may be approved without a person. Any doubt returns
@@ -266,6 +269,10 @@ function capabilityProblems(policy: RunPolicy, approved: RunPolicy): string[] {
     problems.push("review profiles changed");
   if (approved.forceSecurityReview && !policy.forceSecurityReview)
     problems.push("forced security review was turned off");
+  const sandbox = policy.sandbox ?? "off";
+  const approvedSandbox = approved.sandbox ?? "off";
+  if (sandboxRank[sandbox] < sandboxRank[approvedSandbox])
+    problems.push(`sandbox weakened from ${approvedSandbox} to ${sandbox}`);
   return problems;
 }
 

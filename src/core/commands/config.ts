@@ -11,6 +11,12 @@ import {
   parseNotificationsArgs,
   parseOnOff,
 } from "../notification-settings.js";
+import {
+  formatSandboxStatus,
+  isSandboxMode,
+  type SandboxMode,
+  sandboxStatus,
+} from "../security/sandbox.js";
 import { SETTINGS } from "../settings/schema.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
@@ -998,6 +1004,52 @@ function handleTelemetry(input: string, ctx: CommandContext): void {
   });
 }
 
+/** `/sandbox [off|auto|required|status]`: the OS sandbox of shell, project and check commands. */
+function handleSandbox(input: string, ctx: CommandContext): void {
+  const arg = input.trim().split(/\s+/).slice(1).join(" ").toLowerCase();
+  const status = () => sysMsg(ctx, formatSandboxStatus(sandboxStatus(ctx.cwd)).join("\n"));
+  const apply = (mode: SandboxMode) => {
+    ctx.saveToScope({ sandbox: mode }, "global");
+    status();
+  };
+  if (arg === "status") {
+    status();
+    return;
+  }
+  if (arg) {
+    if (isSandboxMode(arg)) apply(arg);
+    else sysMsg(ctx, "Usage: /sandbox [off|auto|required|status]");
+    return;
+  }
+  const current = sandboxStatus(ctx.cwd);
+  ctx.openCommandPicker({
+    title: "OS sandbox",
+    icon: icon("lock"),
+    currentValue: current.mode,
+    scopeEnabled: false,
+    options: [
+      { value: "off", label: "Off", description: "commands run without OS sandbox" },
+      {
+        value: "auto",
+        label: "Auto",
+        description: current.available
+          ? `sandbox with ${current.backend}`
+          : "no backend here: run without it and warn once",
+      },
+      {
+        value: "required",
+        label: "Required",
+        description: current.available
+          ? `sandbox with ${current.backend}; refuse without it`
+          : "no backend here: commands are refused",
+      },
+    ],
+    onSelect: (value) => {
+      if (isSandboxMode(value)) apply(value);
+    },
+  });
+}
+
 /** Saves a `notifications` change to the global config and restarts an idle workflow worker. */
 function saveNotifications(ctx: CommandContext, change: NotificationsChange): void {
   const result = applyNotificationsChange(loadConfig().notifications, change);
@@ -1096,6 +1148,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/context-window", handleContextWindow);
   map.set("/ctxwin", handleContextWindow); // alias
   map.set("/telemetry", handleTelemetry);
+  map.set("/sandbox", handleSandbox);
   map.set("/notifications", handleNotifications);
 }
 
@@ -1104,6 +1157,7 @@ export function matchConfigPrefix(cmd: string): CommandHandler | null {
   if (cmd === "/mode" || cmd.startsWith("/mode ")) return handleMode;
   if (cmd === "/theme" || cmd.startsWith("/theme ")) return handleTheme;
   if (cmd.startsWith("/telemetry ")) return handleTelemetry;
+  if (cmd.startsWith("/sandbox ")) return handleSandbox;
   if (cmd.startsWith("/notifications ")) return handleNotifications;
   if (
     cmd === "/context-window" ||

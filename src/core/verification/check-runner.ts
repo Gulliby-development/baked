@@ -1,3 +1,4 @@
+import { runSandbox, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
@@ -106,7 +107,8 @@ export class CheckRunner {
     snapshotId: string;
     output: string;
   }> {
-    const generated = generatedPaths(JSON.parse(this.store.run(runId).policy_json) as RunPolicy);
+    const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
+    const generated = generatedPaths(policy);
     for (const path of check.writes) workspacePath(root, path);
     const before = await sourceManifest(root, generated, signal);
     const snapshot = this.store.transaction(() => this.store.putSnapshot(runId, before));
@@ -137,9 +139,10 @@ export class CheckRunner {
         signal,
         onSpawn: (pid, scope) =>
           this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
+        sandbox: runSandbox(policy, root),
       });
     } catch (error) {
-      reason = "spawn_error";
+      reason = error instanceof SandboxUnavailableError ? "sandbox_unavailable" : "spawn_error";
       result = {
         exitCode: null,
         signal: null,
@@ -148,6 +151,16 @@ export class CheckRunner {
         cancelled: signal.aborted,
         truncated: false,
         durationMs: 0,
+        ...(error instanceof SandboxUnavailableError && policy.sandbox
+          ? {
+              sandbox: {
+                backend: "none" as const,
+                mode: policy.sandbox,
+                network: false,
+                reason: error.reason,
+              },
+            }
+          : {}),
       };
     }
     const note = passedOutputNote(result.output, result.exitCode);

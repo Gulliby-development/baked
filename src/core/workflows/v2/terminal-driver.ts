@@ -7,6 +7,7 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { killTree, PROCESS_SCOPE_ENV, scopedProcesses } from "../../platform/index.js";
+import { type SandboxRequest, sandboxEnv, sandboxLaunch } from "../../security/sandbox.js";
 
 /** Output kept per application; older output is dropped first. */
 const MAX_OUTPUT = 1024 * 1024;
@@ -31,6 +32,8 @@ export class TerminalApp {
       cwd: string;
       env: NodeJS.ProcessEnv;
       onSpawn?: (pid: number, scope: string) => void;
+      /** OS sandbox of the application; null runs it unsandboxed. */
+      sandbox: SandboxRequest | null;
     },
   ) {}
   get pid(): number | null {
@@ -42,9 +45,14 @@ export class TerminalApp {
   /** Spawns the command; resolves once the process exists, rejects when it cannot start. */
   start(): Promise<void> {
     if (this.child) throw new Error("The application is already started");
-    const child = spawn(this.executable, this.args, {
+    // Throws SandboxUnavailableError for "required" with no backend, before anything starts.
+    const launch = this.options.sandbox
+      ? sandboxLaunch(this.executable, this.args, this.options.sandbox, this.options.cwd)
+      : null;
+    const env = launch ? sandboxEnv(this.options.env, launch) : this.options.env;
+    const child = spawn(launch?.executable ?? this.executable, launch?.args ?? this.args, {
       cwd: this.options.cwd,
-      env: { ...this.options.env, [PROCESS_SCOPE_ENV]: this.scope },
+      env: { ...env, [PROCESS_SCOPE_ENV]: this.scope },
       shell: false,
       windowsHide: true,
       detached: process.platform !== "win32",

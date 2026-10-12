@@ -166,6 +166,7 @@ export function preRunQuery(input: PreRunInput): string {
   if (input.worktree) params.set("worktree", "true");
   if (input.writers !== undefined && input.writers > 1)
     params.set("writers", String(input.writers));
+  if (input.sandbox) params.set("sandbox", input.sandbox);
   const text = params.toString();
   return text ? `?${text}` : "";
 }

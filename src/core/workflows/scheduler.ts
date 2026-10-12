@@ -6,6 +6,7 @@ import {
   type RoutingRecord,
   RoutingRecordSchema,
 } from "../llm/model-routing.js";
+import { runSandbox } from "../security/sandbox.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -883,6 +884,7 @@ export class WorkflowScheduler {
                   manifest: state.manifest,
                   writes,
                   executionMode: executionModeOf(policy),
+                  ...(policy.sandbox ? { sandbox: policy.sandbox } : {}),
                   ...(state.worktree
                     ? {
                         worktree: {
@@ -4147,6 +4149,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
               env: buildCheckEnv(check),
               timeoutMs: check.timeoutMs,
               signal,
+              sandbox: runSandbox(policy, root),
             });
             const after = fileHash(target);
             this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
@@ -4266,6 +4269,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         executables,
         generated: generatedPaths(policy),
         signal,
+        sandbox: runSandbox(policy, runRoot(this.store.workspace, state)),
       });
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.

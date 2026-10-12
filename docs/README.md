@@ -11,6 +11,7 @@ This folder describes BAKED as it works now. It is the only place for long-lived
 - [Configuration](configuration.md): config files, settings, key storage, instruction files and environment variables.
 - [Providers](providers.md): Claude, OpenAI, Codex, GitHub Copilot and GitHub Models, and model fallback.
 - [Tools and code intelligence](tools.md): what the agent can do and how it reads code.
+- [OS sandbox](sandbox.md): shell, check and acceptance commands in bubblewrap or seatbelt, credentials hidden.
 - [Extensions](extensions.md): MCP servers, hooks and skills.
 - [Custom commands](custom-commands.md): Markdown files that become slash commands.
 - [Watch mode](watch.md): `baked!` and `baked?` comments written in any editor start the agent.

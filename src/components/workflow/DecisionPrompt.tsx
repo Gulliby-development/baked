@@ -16,6 +16,7 @@ interface ApprovalBody {
   deferredCriteria?: string[];
   assumptions?: string[];
   executionMode?: "inline" | "worktree";
+  sandbox?: "auto" | "required";
   worktree?: { path: string; branch: string; baseHead: string; userChangesInScope: string[] };
 }
 interface ClarificationBody {
@@ -480,6 +481,11 @@ export function DecisionPrompt({
               fg={t.warning}
             >{`  Deferred to post-release: ${body.deferredCriteria.join(", ")}`}</text>
           ) : null}
+          <text fg={t.textMuted}>
+            {body.sandbox
+              ? `  Checks, fixes and acceptance apps run in the OS sandbox (${body.sandbox}).`
+              : "  Checks, fixes and acceptance apps run without OS sandbox."}
+          </text>
           {body.worktree ? (
             <text fg={t.textMuted}>
               {`  Runs in worktree ${body.worktree.path} on branch ${body.worktree.branch}; your working copy is not changed.`}

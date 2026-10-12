@@ -58,6 +58,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `retry` | `maxTransientRetries: 3`, `maxStallRetries: 3`, `baseDelayMs` 1000 (chat) / 2000 (agents) | Retries on 429, 5xx, overload and stalled streams; the delay doubles each attempt |
 | `watchdog`, `watchdogTimeouts` | `false` | Retry stalled streams; `/watchdog` and `/timeouts` |
 | `toolTimeout` | `2` | Minutes before a shell, project or agent tool call times out; `0` disables |
+| `sandbox` | `"off"` | OS sandbox of shell, project, check and acceptance commands: `off`, `auto` (sandbox when a backend works, else run without it) or `required` (refuse without a backend). Global; a project config can only raise it. `/sandbox`, Tools page ([OS sandbox](sandbox.md)) |
+| `sandboxNetwork` | `"allow"` | Network inside the chat sandbox: `allow` or `deny` (loopback only); workflow runs follow their policy's `network` |
 | `cache.ttl` | `"5m"` | Anthropic prompt cache lifetime: `5m` or `1h` |
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
 | `mcpServers` | `[]` | MCP servers ([extensions](extensions.md#mcp-servers)) |

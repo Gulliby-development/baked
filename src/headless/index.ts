@@ -2,6 +2,7 @@ import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/
 import { getCwd } from "../core/cwd.js";
 import { getProviderSecretEntries } from "../core/llm/providers/index.js";
 import { registerProviderSecrets } from "../core/secrets.js";
+import { setSandboxOverride } from "../core/security/sandbox.js";
 import { applyCwd } from "../core/utils/resolve-cwd.js";
 import type { AppConfig } from "../types/index.js";
 import { VERSION } from "./constants.js";
@@ -34,6 +35,8 @@ export async function runHeadless(action: HeadlessAction): Promise<void> {
   // launched via boot.tsx this is already done; idempotent re-apply covers
   // direct entry (tests, daemon-embedded chat).
   applyCwd(action.type === "run" || action.type === "chat" ? action.opts.cwd : undefined);
+  if ((action.type === "run" || action.type === "chat") && action.opts.sandbox)
+    setSandboxOverride(action.opts.sandbox);
   const config = await initConfig();
 
   switch (action.type) {

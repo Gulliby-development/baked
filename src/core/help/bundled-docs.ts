@@ -22,6 +22,7 @@ import privacyMd from "../../../docs/privacy.md" with { type: "text" };
 import projectsMd from "../../../docs/projects.md" with { type: "text" };
 import providersMd from "../../../docs/providers.md" with { type: "text" };
 import readmeMd from "../../../docs/README.md" with { type: "text" };
+import sandboxMd from "../../../docs/sandbox.md" with { type: "text" };
 import toolsMd from "../../../docs/tools.md" with { type: "text" };
 import troubleshootingMd from "../../../docs/troubleshooting.md" with { type: "text" };
 import watchMd from "../../../docs/watch.md" with { type: "text" };
@@ -56,6 +57,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["parity.md", parityMd],
   ["privacy.md", privacyMd],
   ["projects.md", projectsMd],
+  ["sandbox.md", sandboxMd],
   ["providers.md", providersMd],
   ["tools.md", toolsMd],
   ["troubleshooting.md", troubleshootingMd],

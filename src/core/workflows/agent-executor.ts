@@ -23,6 +23,7 @@ import {
   withAutomaticCache,
   withRouteEffort,
 } from "../llm/provider-options.js";
+import { runSandbox } from "../security/sandbox.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildTools } from "../tools/index.js";
@@ -323,6 +324,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
+              sandbox: runSandbox(policy, root),
             });
           } finally {
             await scope.stop();
@@ -368,6 +370,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                     env: buildCheckEnv(check),
                     timeoutMs: check.timeoutMs,
                     signal: request.signal,
+                    sandbox: runSandbox(policy, root),
                   });
                   outputs.push(`${path}: exit ${String(result.exitCode)}`);
                 });

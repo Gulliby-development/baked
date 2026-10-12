@@ -122,6 +122,7 @@ const flags = new Set([
   "resume",
   "no-resume",
   "clarification",
+  "sandbox",
   "issue",
   "output",
   "text",
@@ -160,6 +161,7 @@ const preRunFlags = [
   "policy",
   "worktree",
   "writers",
+  "sandbox",
   "confirm-auto-approval",
   "json",
 ];
@@ -182,6 +184,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "route",
     "model-strict",
     "clarification",
+    "sandbox",
     "issue",
     "budget",
   ],
@@ -428,6 +431,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["ask", "assume"].includes(String(result.flags.clarification))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--clarification accepts ask or assume");
+  if (
+    !result.flags.help &&
+    "sandbox" in result.flags &&
+    !["off", "auto", "required"].includes(String(result.flags.sandbox))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--sandbox accepts off, auto or required");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -453,7 +462,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--sandbox off|auto|required] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -467,6 +476,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
+  --sandbox runs the run's checks, fixes, probes and acceptance apps in the OS sandbox (see
+  docs/sandbox.md); required refuses to start without a backend. Default: the stricter of the
+  policy's sandbox and the sandbox setting
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard
@@ -534,7 +546,7 @@ models [--model ID] [--provider ID] [--json]
   list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
   ...) with the model each resolves to, then the models of each provider; providers without a key
   or login are listed with that reason
-doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--confirm-auto-approval HASH] [--json]
+doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--sandbox MODE] [--confirm-auto-approval HASH] [--json]
   check before a run: start refusals, provider keys of every routed model, check commands, Git,
   a busy workspace and the budget; exit 1 when something must be fixed (also: baked doctor)
 estimate [WORKFLOW] (same options as doctor)

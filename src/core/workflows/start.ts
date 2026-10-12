@@ -3,6 +3,12 @@ import { join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import type { ProfileRegistry } from "../agents/profiles/registry.js";
 import type { RoutingRecord } from "../llm/model-routing.js";
+import { detectSandbox } from "../platform/sandbox.js";
+import {
+  SandboxUnavailableError,
+  sandboxSettings,
+  stricterSandboxMode,
+} from "../security/sandbox.js";
 import { hashBytes, hashJson } from "../specs/hash.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
@@ -81,6 +87,7 @@ export async function prepareStart(
     | "routes"
     | "autoApprovalConfirmation"
     | "executionMode"
+    | "sandbox"
     | "maxConcurrentWriters"
     | "clarification"
     | "modelStrict"
@@ -170,6 +177,7 @@ export async function prepareStart(
     executionModeOf(policy);
   const {
     executionMode: _previous,
+    sandbox: policySandbox,
     clarification: _clarification,
     allowOverlappingWrites,
     ...rest
@@ -178,9 +186,19 @@ export async function prepareStart(
   const clarification = request.clarification ?? clarificationOf(policy);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
+  // The requested mode wins; otherwise the policy and the configuration can each only raise it.
+  // Off leaves the field out, so the policy hash of an unsandboxed run is what it was before.
+  const sandbox =
+    request.sandbox ?? stricterSandboxMode(policySandbox, sandboxSettings(workspace).effective);
+  if (sandbox === "required") {
+    const detection = detectSandbox();
+    if (!detection.available)
+      throw new WorkflowFault("INVALID_DEFINITION", new SandboxUnavailableError(detection).message);
+  }
   policy = PolicySchema.parse({
     ...rest,
     ...(mode === "worktree" ? { executionMode: mode } : {}),
+    ...(sandbox !== "off" ? { sandbox } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
     ...(request.maxConcurrentWriters !== undefined

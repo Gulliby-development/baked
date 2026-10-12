@@ -73,4 +73,7 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Test
         if: needs.scope.outputs.run == 'true'
+        env:
+          # macOS ships sandbox-exec, so the OS sandbox integration tests must run there.
+          BAKED_REQUIRE_SANDBOX: ${{ matrix.os == 'macos-latest' && 'seatbelt' || '' }}
         run: bun run test

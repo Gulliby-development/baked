@@ -523,6 +523,23 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat-memory"],
   },
   {
+    id: "os-sandbox",
+    group: "Tools and code intelligence",
+    title: "OS sandbox for shell commands, checks and acceptance apps",
+    tui: ["/sandbox"],
+    cli: ["baked sandbox status", "--sandbox", "baked workflow run --sandbox"],
+    api: [
+      "/v1/diagnostics/sandbox",
+      "/v1/settings: Tools page",
+      "/v1/workflow/runs: sandbox in the start body",
+    ],
+    desktop: [
+      "settings/chat: Tools page",
+      "project/diagnostics: Sandbox panel",
+      "project/overview: New run sandbox",
+    ],
+  },
+  {
     id: "run-memory",
     group: "Tools and code intelligence",
     title: "Run memory: view and edit what runs learned",

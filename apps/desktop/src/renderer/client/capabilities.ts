@@ -53,6 +53,9 @@ export const GIT_CAPABILITY = "git";
 /** `/v1/diagnostics/*` (the Diagnostics section: storage, model events, error log). */
 export const DIAGNOSTICS_CAPABILITY = "diagnostics";
 
+/** `GET /v1/diagnostics/sandbox` (the Sandbox panel of the Diagnostics section). */
+export const SANDBOX_CAPABILITY = "sandbox";
+
 /** `GET /v1/hooks` and `POST /v1/hooks/session` (the Hooks section). */
 export const HOOKS_CAPABILITY = "hooks";
 

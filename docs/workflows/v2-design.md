@@ -15,7 +15,7 @@ Goals:
 5. Gates are a library: command, human, AI review and AI acceptance gates are defined once in `baked/gates/*.json` and attached to transitions in an editor window.
 6. An AI acceptance gate can walk a finished feature like a user would, but a model's claim never closes a required gate: the walk-through becomes a deterministic test first.
 
-Not in this document: initiatives and decomposition (section 3 of the plan), Git delivery (section 4) and parallel worktrees ([separate design](parallel-worktrees.md)). Section 12 states what they need from v2. Also out of scope: several writers in one workspace, a daemon, remote workers, executable plugins, arbitrary scripting in conditions, an OS sandbox.
+Not in this document: initiatives and decomposition (section 3 of the plan), Git delivery (section 4) and parallel worktrees ([separate design](parallel-worktrees.md)). Section 12 states what they need from v2. Also out of scope: several writers in one workspace, a daemon, remote workers, executable plugins, arbitrary scripting in conditions, a per-gate OS sandbox (the run-wide OS sandbox is in [OS sandbox](../sandbox.md)).
 
 ## 2. What v1 gives, and what v2 must not change
 
@@ -303,7 +303,7 @@ All default to denied and each appears in the approval digest when granted.
 
 The model gets no shell, no generic file tool and no web tools during the walk-through. Its tools are `app_start` and `app_stop` (for the declared command only), the driver actions (for a browser: snapshot, click, type, key; for a terminal: send and read), and `record_step`, which stores the action, the observation and the expectation it concerns.
 
-Honest limit: BAKED has no operating system sandbox. The grants above are enforced where the host controls the path (which processes start, which sockets the process tree listens on, which hosts the driver browser reaches, what changed on disk). The application process itself can still open outbound connections the host does not see. Users who need that closed run the gate in a container or a network namespace; the design leaves a place for a `sandbox` field and does not claim isolation it cannot provide.
+Honest limit: the grants above are enforced where the host controls the path (which processes start, which sockets the process tree listens on, which hosts the driver browser reaches, what changed on disk). A run with the OS sandbox on ([OS sandbox](../sandbox.md)) also enforces `writePaths` at the file system level: the application gets only those directories writable. Its network is isolated only when the gate grants neither ports nor hosts, since the host browser and proxy must reach it; otherwise the application process can still open outbound connections the host does not see. Users who need that closed run the gate in a container or a network namespace. A per-gate `sandbox` field stays reserved.
 
 ### 9.3 Lifecycle
 

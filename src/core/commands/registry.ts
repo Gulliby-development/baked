@@ -723,6 +723,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["config", "preferences", "hub"],
   },
   {
+    cmd: "/sandbox",
+    ic: "lock",
+    desc: "OS sandbox for shell, project and check commands",
+    category: "Settings",
+    tags: ["security", "isolation", "bubblewrap", "seatbelt", "credentials"],
+  },
+  {
     cmd: "/telemetry",
     ic: "info",
     desc: "Turn anonymous usage telemetry on or off",

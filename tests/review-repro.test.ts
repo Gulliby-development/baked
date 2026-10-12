@@ -52,7 +52,7 @@ async function run(args: string[], actual = "true", root = workspace()) {
   return runRepro(
     new ProcessScope(),
     { ...regexRepro, args, actual },
-    { root, executables: ["bun"], generated: [], signal: new AbortController().signal },
+    { root, executables: ["bun"], generated: [], signal: new AbortController().signal, sandbox: null },
   );
 }
 
@@ -83,6 +83,7 @@ describe("review finding repro", () => {
       executables: ["bun"],
       generated: [],
       signal: new AbortController().signal,
+      sandbox: null,
     });
     expect(outcome.status).toBe("inconclusive");
     expect(outcome.reason).toContain("not a program the run's checks start");

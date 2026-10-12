@@ -1,4 +1,5 @@
 import type { SessionDiffStats } from "../core/chat/diff-stats.js";
+import type { SandboxMode } from "../core/security/sandbox.js";
 import type { BakeMode, InputContextItem, InteractiveCallbacks } from "../types/index.js";
 
 export interface HeadlessRunOptions {
@@ -15,6 +16,8 @@ export interface HeadlessRunOptions {
   saveSession?: boolean;
   system?: string;
   noRepomap?: boolean;
+  /** OS sandbox mode for this process, as `--sandbox`; replaces the global setting. */
+  sandbox?: SandboxMode;
   include?: string[];
   /** Image files attached to the prompt. */
   images?: string[];
@@ -119,6 +122,8 @@ export interface HeadlessChatOptions {
   sessionId?: string;
   system?: string;
   noRepomap?: boolean;
+  /** OS sandbox mode for this process, as `--sandbox`; replaces the global setting. */
+  sandbox?: SandboxMode;
   /** Watch mode: turns come from `baked!` and `baked?` comments saved in the project. */
   watch?: boolean;
   /** Watch by polling file times instead of file events. */

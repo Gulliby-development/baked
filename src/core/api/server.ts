@@ -172,6 +172,7 @@ export const CAPABILITIES = [
   "progress",
   "coordinator",
   "watch",
+  "sandbox",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -408,6 +409,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.writers !== undefined) flags.writers = String(body.writers);
   if (body.clarification) flags.clarification = body.clarification;
   if (body.modelStrict) flags["model-strict"] = true;
+  if (body.sandbox) flags.sandbox = body.sandbox;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
   return validateWorkflowArgs({
@@ -921,6 +923,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await diagnosticsRoute({
         ...ctx,
         dirs: storageDirs(service.workspace, options.configDir ?? defaultConfigDir()),
+        workspace: service.workspace,
         clearSessions: () => chat.clearAll(),
         clearRepoMap: async () => {
           if (drives.size > 0)
@@ -1061,6 +1064,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       if (query.modelStrict === "true") flags["model-strict"] = true;
       if (query.worktree === "true") flags.worktree = true;
       if (query.writers) flags.writers = query.writers;
+      if (query.sandbox) flags.sandbox = query.sandbox;
       if (query.confirmAutoApproval) flags["confirm-auto-approval"] = query.confirmAutoApproval;
       const command = path.endsWith("doctor") ? "doctor" : "estimate";
       return json(

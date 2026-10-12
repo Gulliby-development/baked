@@ -101,6 +101,7 @@ const FULL_CAPABILITIES = [
   "chat-export",
   "watch",
   "diagnostics",
+  "sandbox",
   "gate-drafts",
   "coordinator",
 ];

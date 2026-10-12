@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
+import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { buildCheckEnv } from "../verification/check-runner.js";
 import { validateChecks } from "./check-policy.js";
@@ -470,6 +471,7 @@ export async function executeGate(
         env: buildCheckEnv(parsed),
         timeoutMs: parsed.timeoutMs,
         signal,
+        sandbox: gateSandbox(workspace),
       },
     );
     return {

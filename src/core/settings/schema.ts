@@ -100,7 +100,7 @@ export const SETTING_PAGES: readonly SettingPage[] = [
   {
     id: "tools",
     title: "Tools",
-    description: "Tools the chat agent may call, and keys for better web search.",
+    description: "Tools the chat agent may call, keys for better web search, and the OS sandbox.",
     command: "/tools",
   },
   {
@@ -476,6 +476,44 @@ export const SETTINGS: readonly SettingDefinition[] = [
     type: "secret",
     default: null,
     envVar: "JINA_API_KEY",
+  },
+  {
+    id: "sandbox",
+    page: "tools",
+    section: "Sandbox",
+    label: "OS sandbox",
+    help: "Run shell, project and check commands in an OS sandbox (bubblewrap on Linux, seatbelt on macOS): writes stay in the project, credential files are hidden. A project config can only raise it.",
+    scopes: GLOBAL,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "Off", help: "Commands run without OS sandbox." },
+      {
+        value: "auto",
+        label: "Auto",
+        help: "Sandbox when a backend is available; otherwise run without it and warn once.",
+      },
+      {
+        value: "required",
+        label: "Required",
+        help: "Refuse to run commands when no sandbox backend is available.",
+      },
+    ],
+  },
+  {
+    id: "sandboxNetwork",
+    page: "tools",
+    section: "Sandbox",
+    label: "Network in the sandbox",
+    help: "Network access of sandboxed chat commands. Workflow runs follow their policy's network setting.",
+    scopes: GLOBAL,
+    type: "enum",
+    default: "allow",
+    options: [
+      { value: "allow", label: "Allow" },
+      { value: "deny", label: "Deny", help: "Only loopback works." },
+    ],
+    enabledWhen: { id: "sandbox", values: ["auto", "required"] },
   },
 
   // Agent features
