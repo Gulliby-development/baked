@@ -6,6 +6,7 @@ import { type ApiServer, faultStatus, startApiServer } from "../src/core/api/ser
 import { recordProjectOpen } from "../src/core/projects/known.js";
 import { ProjectService } from "../src/core/projects/service.js";
 import { parseServeArgs } from "../src/headless/serve.js";
+import { presetPolicy } from "../src/core/workflows/budget.js";
 import type { RunSnapshot, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
@@ -319,6 +320,16 @@ describe("local core API", () => {
     } finally {
       await frames.close();
     }
+  }, 60000);
+
+  test("a budget preset in the start body scales the policy on the server", async () => {
+    const { post, fixture } = await setup();
+    const started = await post("/v1/workflow/runs", { ...startBody(), budget: "quick" });
+    expect(started.status).toBe(202);
+    const run = (await started.json()) as RunSnapshot;
+    const policy = JSON.parse(fixture.service.store.run(run.runId).policy_json) as { maxTotalTokens: number };
+    expect(policy.maxTotalTokens).toBe(presetPolicy(fixture.service.config.workflows?.policy, "quick").maxTotalTokens);
+    expect((await post("/v1/workflow/runs", { ...startBody(), budget: "huge" })).status).toBe(400);
   }, 60000);
 
   test("attention lists blocked runs and advisory acceptance requests as not blocking", async () => {
