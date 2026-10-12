@@ -1,6 +1,12 @@
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from "react";
 import type { MicrophoneAccess } from "../../../shared/api.js";
-import type { ChatMode, ImageUpload, MentionSuggestion, ModelProvider } from "../../client/chat.js";
+import type {
+  ChatEffort,
+  ChatMode,
+  ImageUpload,
+  MentionSuggestion,
+  ModelProvider,
+} from "../../client/chat.js";
 import type { CommandEntry } from "../../client/setup.js";
 import { Icon } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
@@ -89,6 +95,83 @@ export function mentionAtCaret(
 
 const MENTION_ICONS = { file: "·", directory: "▸", symbol: "ƒ" } as const;
 
+export const EFFORT_LABELS: Record<ChatEffort, string> = {
+  default: "Default",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+/**
+ * Reasoning effort of the chat: `Default` and the levels the current model takes, which the
+ * model list reports. A model without effort leaves only `Default`, with a note why.
+ */
+function EffortMenu({
+  model,
+  effort,
+  loadModels,
+  onEffort,
+  close,
+}: {
+  model: string | null;
+  effort: ChatEffort;
+  loadModels: () => Promise<ModelProvider[]>;
+  onEffort: (effort: ChatEffort) => void;
+  close: () => void;
+}) {
+  const [levels, setLevels] = useState<ChatEffort[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    loadModels().then(
+      (providers) => {
+        const found = providers.flatMap((p) => p.models).find((m) => m.id === model);
+        if (live) setLevels(found?.efforts ?? []);
+      },
+      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, [loadModels, model]);
+  if (error) return <p className={MENU_NOTE}>{error}</p>;
+  if (!levels) return <p className={MENU_NOTE}>Loading efforts…</p>;
+  const choices: ChatEffort[] = ["default", ...levels];
+  if (!choices.includes(effort)) choices.push(effort);
+  return (
+    <div className={MENU_LIST}>
+      {choices.map((level) => (
+        <button
+          key={level}
+          type="button"
+          className={MENU_ITEM_STACKED}
+          aria-pressed={level === effort}
+          onClick={() => {
+            onEffort(level);
+            close();
+          }}
+        >
+          <span>{EFFORT_LABELS[level]}</span>
+          {level === "default" ? (
+            <span className="text-dim-foreground">The effort set in Settings, if any.</span>
+          ) : !levels.includes(level) ? (
+            <span className="text-dim-foreground">
+              This model sends the next lower level it supports.
+            </span>
+          ) : null}
+        </button>
+      ))}
+      <p className={MENU_NOTE}>
+        {levels.length === 0
+          ? "This model takes no reasoning effort; it runs at its provider's default."
+          : "Applies from the next turn."}
+      </p>
+    </div>
+  );
+}
+
 export function shortModel(model: string | null): string {
   if (!model) return "Default model";
   return model.slice(model.indexOf("/") + 1);
@@ -157,12 +240,14 @@ export function Composer({
   canStop,
   model,
   mode,
+  effort = "default",
   autoFocusKey,
   initialText = "",
   onSend,
   onStop,
   onModel,
   onMode,
+  onEffort,
   modes = BASE_MODES,
   loadModels,
   loadMentions,
@@ -174,6 +259,7 @@ export function Composer({
   canStop: boolean;
   model: string | null;
   mode: ChatMode;
+  effort?: ChatEffort;
   /** The modes the menu offers; defaults to the modes every backend has. */
   modes?: readonly ChatMode[];
   /** Changing it moves the focus to the textarea, e.g. when another session opens. */
@@ -184,6 +270,8 @@ export function Composer({
   onStop: () => void;
   onModel: (model: string) => void;
   onMode: (mode: ChatMode) => void;
+  /** Reasoning effort of the chat; without it the composer shows no effort control. */
+  onEffort?: (effort: ChatEffort) => void;
   loadModels: () => Promise<ModelProvider[]>;
   /** `@` completions; without it the composer offers none. */
   loadMentions?: (query: string) => Promise<MentionSuggestion[]>;
@@ -634,6 +722,24 @@ export function Composer({
             <ModelMenu model={model} loadModels={loadModels} onModel={onModel} close={close} />
           )}
         </Popover>
+        {onEffort && (
+          <Popover
+            label="Reasoning effort"
+            up
+            buttonLabel={`Reasoning effort: ${EFFORT_LABELS[effort]}`}
+            button={`${EFFORT_LABELS[effort]} effort`}
+          >
+            {(close) => (
+              <EffortMenu
+                model={model}
+                effort={effort}
+                loadModels={loadModels}
+                onEffort={onEffort}
+                close={close}
+              />
+            )}
+          </Popover>
+        )}
         {modes.length > 1 && (
           <Popover
             label="Approval mode"

@@ -145,6 +145,8 @@ export const RuntimeStateSchema = z
     taskRestarts: z.record(z.string(), z.number().int().nonnegative()).default({}),
     /** Times a run blocked with `owner_lost` was resumed without a person (`clarification: assume`). */
     ownerLostResumes: z.number().int().nonnegative().default(0),
+    /** Times a run blocked with `step_stalled` resumed by itself (`workflows.stall.autoResumes`). */
+    stallResumes: z.number().int().nonnegative().default(0),
     /**
      * Edits a batch task's attempt left in its worktree when it continues at its cap or restarts after a lost worker, by task and
      * path: the hash before and after (null for absent). The worktree is removed, so the next

@@ -369,7 +369,13 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return `AI walk-through ${event.payload.gateId}: ${event.payload.phase.replace("_", " ")}${event.payload.detail ? ` (${event.payload.detail.slice(0, 120)})` : ""}`;
     case "artifact.committed":
     case "budget.updated":
+    case "tool.started":
       return null;
+    case "tool.finished":
+      // Only a call that hit its deadline is worth a line; the rest is evidence for attribution.
+      return event.payload.status === "deadline"
+        ? `Tool ${event.payload.tool} did not return in time and was abandoned`
+        : null;
   }
 }
 

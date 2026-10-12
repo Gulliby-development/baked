@@ -31,6 +31,7 @@ import type { ModelMessage } from "ai";
 import type {
   AppConfig,
   BakeMode,
+  ChatEffort,
   ChatMessage,
   ImageAttachment,
   InputContextItem,
@@ -163,6 +164,8 @@ export interface SessionSummary {
   state: SessionState;
   model: string | null;
   mode: ChatMode;
+  /** Reasoning effort for this chat's turns; `default` follows the global setting. */
+  effort: ChatEffort;
   /** True while a manual compaction runs; the state is then `working`. */
   compacting: boolean;
   /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
@@ -274,6 +277,8 @@ export interface TurnAgentRequest {
   sessionId: string;
   modelId: string;
   mode: ChatMode;
+  /** The chat's reasoning effort; `default` keeps the configuration's. */
+  effort: ChatEffort;
   /** The turn carries out an accepted plan: the agent keeps to the plan's tools. */
   planExecution: boolean;
   /** The session is the project's coordinator: its prompt and brief tool apply. */
@@ -466,6 +471,7 @@ export class ChatSession {
   private readonly tabId: string;
   private model: string | null;
   private mode: ChatMode;
+  private effort: ChatEffort;
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
@@ -499,6 +505,7 @@ export class ChatSession {
     this.model =
       tab.activeModel && tab.activeModel !== "none" ? tab.activeModel : owner.defaultModel;
     this.mode = toChatMode(tab.bakeMode ?? meta.bakeMode);
+    this.effort = tab.effort ?? "default";
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -587,6 +594,7 @@ export class ChatSession {
       state: this.state,
       model: this.model,
       mode: this.mode,
+      effort: this.effort,
       compacting: this.compaction !== null,
       ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
     };
@@ -644,12 +652,18 @@ export class ChatSession {
     this.emit({ type: "session", session: this.summary() });
   }
 
-  update(changes: { title?: string; model?: string; mode?: ChatMode }): SessionSummary {
+  update(changes: {
+    title?: string;
+    model?: string;
+    mode?: ChatMode;
+    effort?: ChatEffort;
+  }): SessionSummary {
     if (changes.title !== undefined) this.meta = { ...this.meta, customTitle: changes.title };
     if (changes.model !== undefined) this.model = changes.model;
     if (changes.mode !== undefined && this.isCoordinator && changes.mode !== COORDINATOR_MODE)
       throw new ChatError("INVALID_REQUEST", "The coordinator always runs in architect mode");
     if (changes.mode !== undefined) this.mode = changes.mode;
+    if (changes.effort !== undefined) this.effort = changes.effort;
     this.emitSession();
     void this.owner.persist(this);
     return this.summary();
@@ -1036,7 +1050,7 @@ export class ChatSession {
 
   private approvalCallbacks(): Omit<
     TurnAgentRequest,
-    "sessionId" | "modelId" | "mode" | "planExecution"
+    "sessionId" | "modelId" | "mode" | "effort" | "planExecution"
   > {
     const approve = async (body: PromptBody): Promise<boolean> => (await this.ask(body)) === true;
     const callbacks: InteractiveCallbacks = {
@@ -1185,6 +1199,7 @@ export class ChatSession {
         sessionId: this.meta.id,
         modelId: model,
         mode: this.mode,
+        effort: this.effort,
         planExecution,
         ...(this.isCoordinator
           ? { coordinator: true, tools: this.owner.coordinatorTools(this) }
@@ -1470,6 +1485,7 @@ export class ChatSession {
       ...this.tab,
       activeModel: this.model ?? "none",
       bakeMode: this.mode,
+      effort: this.effort,
       planMode: this.mode === "plan",
       tokenUsage: {
         ...this.tab.tokenUsage,
@@ -1644,6 +1660,7 @@ export class ChatService {
         state: "idle",
         model: null,
         mode: "default",
+        effort: "default",
         compacting: false,
       });
     }
@@ -1676,6 +1693,7 @@ export class ChatService {
     title?: string;
     model?: string;
     mode?: ChatMode;
+    effort?: ChatEffort;
     messages?: ChatMessage[];
     core?: ModelMessage[];
     kind?: "coordinator";
@@ -1704,6 +1722,7 @@ export class ChatService {
           planRequest: null,
           coAuthorCommits: false,
           bakeMode: input.mode ?? "default",
+          ...(input.effort ? { effort: input.effort } : {}),
           tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
           messageRange: { startLine: 0, endLine: messages.length },
         },
@@ -1758,6 +1777,7 @@ export class ChatService {
       title: `${summary.title} (fork)`,
       ...(summary.model ? { model: summary.model } : {}),
       mode: summary.mode,
+      effort: summary.effort,
       messages: point.messages.map((m) => ({ ...m })),
     });
     if (!options.rollbackFiles) return { session, rollback: null };

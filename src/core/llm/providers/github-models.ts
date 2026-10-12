@@ -4,7 +4,7 @@ import { getProviderApiKey } from "../../secrets.js";
 import { getCompatReasoningBody } from "../compat-reasoning.js";
 import { githubCliLogin } from "../detected-logins.js";
 import { createSessionFetchWrapper } from "./reasoning-fetch.js";
-import type { ProviderDefinition, ProviderModelInfo } from "./types.js";
+import type { CreateModelOptions, ProviderDefinition, ProviderModelInfo } from "./types.js";
 
 const ENV_VAR = "GITHUB_MODELS_API_KEY";
 const BASE_URL = "https://models.github.ai/inference";
@@ -37,14 +37,17 @@ export const githubModels: ProviderDefinition = {
   asciiIcon: "GH",
   description: "Free with GitHub PAT",
 
-  createModel(modelId: string) {
+  createModel(modelId: string, options?: CreateModelOptions) {
     const apiKey = githubModelsKey();
     if (!apiKey) {
       throw new Error(
         `${ENV_VAR} is not set and the GitHub CLI is not signed in. Run \`gh auth login\`, or create a fine-grained PAT with models:read at github.com/settings/tokens`,
       );
     }
-    const reasoningBody = getCompatReasoningBody(`github-models/${modelId}`, loadConfig());
+    const reasoningBody = getCompatReasoningBody(
+      `github-models/${modelId}`,
+      options?.config ?? loadConfig(),
+    );
     const reasoningFetch = createSessionFetchWrapper(reasoningBody);
     return createOpenAI({
       baseURL: BASE_URL,

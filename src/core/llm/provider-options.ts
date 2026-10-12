@@ -1,5 +1,10 @@
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import type { AppConfig, ContextManagementConfig, EffortLevel } from "../../types/index.js";
+import type {
+  AppConfig,
+  ChatEffort,
+  ContextManagementConfig,
+  EffortLevel,
+} from "../../types/index.js";
 import {
   extractBaseModel as _leafExtractBaseModel,
   getModelId as _leafGetModelId,
@@ -711,14 +716,18 @@ function buildOpenAIOptions(
   return { opts };
 }
 
+/** The efforts a chat can pick, in picker order; `default` keeps the global setting. */
+export const CHAT_EFFORTS = ["default", "low", "medium", "high", "xhigh", "max"] as const;
+
 /** Effort levels from most to least reasoning, for clamping a requested level. */
 const EFFORT_ORDER = ["max", "xhigh", "high", "medium", "low"] as const;
 
 /**
- * The configuration one call runs with when its workflow route sets a reasoning effort: the
- * Anthropic and OpenAI knobs are replaced for that call. `default` sends neither. An OpenAI level
- * the model does not support walks down to the next supported one. OpenAI-compatible providers
- * read their effort when the model is created, so the global setting still applies to them.
+ * The configuration one call runs with when its workflow route or its chat sets a reasoning
+ * effort: every effort knob (Anthropic, OpenAI, OpenAI-compatible, Codex, Claude Code) is
+ * replaced for that call. `default` sends none. A level the model does not support walks down to
+ * the next supported one. OpenAI-compatible providers read their effort when the model is
+ * created, so the caller passes this configuration to `resolveModel` too.
  */
 export function withRouteEffort(
   modelId: string,
@@ -729,7 +738,12 @@ export function withRouteEffort(
   if (effort === "default")
     return {
       ...config,
-      performance: { ...config.performance, effort: "off", openaiReasoningEffort: "off" },
+      performance: {
+        ...config.performance,
+        effort: "off",
+        openaiReasoningEffort: "off",
+        compatReasoningEffort: "off",
+      },
     };
   const supported = getSupportedEfforts(modelId) ?? [];
   const start = EFFORT_ORDER.indexOf(effort);
@@ -740,8 +754,72 @@ export function withRouteEffort(
       ...config.performance,
       effort,
       openaiReasoningEffort: (openai as "low" | "medium" | "high" | undefined) ?? "off",
+      compatReasoningEffort: effort === "max" ? "xhigh" : effort,
     },
   };
+}
+
+/** The configuration a chat's turns run with: its own reasoning effort replaces the global one. */
+export function withChatEffort(
+  modelId: string,
+  config: AppConfig,
+  effort: ChatEffort | undefined,
+): AppConfig {
+  return !effort || effort === "default" ? config : withRouteEffort(modelId, config, effort);
+}
+
+/** Levels Codex accepts for its reasoning models; it has no `max`. */
+const CODEX_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh"];
+
+function isOpenAIReasoningBase(base: string): boolean {
+  return /^o[134]/.test(base) || GPT_REASONING.test(base);
+}
+
+/** Claude Code takes model aliases (`opus`, `sonnet`, `fable`) as well as full Claude ids. */
+function claudeCodeEfforts(modelId: string, base: string): readonly EffortLevel[] {
+  if (base.includes("haiku")) return [];
+  if (base.startsWith("claude")) return getSupportedClaudeEfforts(modelId) ?? [];
+  if (base.startsWith("sonnet")) return ["low", "medium", "high", "max"];
+  return ["low", "medium", "high", "xhigh", "max"];
+}
+
+/**
+ * The reasoning efforts a chat or route can choose for a model, lowest first: the levels BAKED
+ * actually sends to that model's provider. Empty when the model takes no effort, so a picker
+ * shows only the provider default.
+ */
+export function getModelEffortLevels(modelId: string): EffortLevel[] {
+  const { provider } = parseModelId(modelId);
+  const base = extractBaseModel(modelId);
+  const caps = getEffectiveCaps(modelId);
+  let levels: readonly string[] = [];
+  if (provider === "codex") levels = isOpenAIReasoningBase(base) ? CODEX_EFFORTS : [];
+  else if (provider === "claude-code") levels = claudeCodeEfforts(modelId, base);
+  else if (caps.anthropicOptions && caps.effort) levels = getSupportedClaudeEfforts(modelId) ?? [];
+  else if (caps.openaiOptions && caps.openaiReasoning) levels = getSupportedEfforts(modelId) ?? [];
+  else if (caps.compatReasoningBody) levels = CODEX_EFFORTS;
+  return [...EFFORT_ORDER].reverse().filter((level) => levels.includes(level));
+}
+
+/** The level to send: the requested one, or the next lower level the model supports. */
+function clampToLevels(
+  effort: EffortLevel,
+  levels: readonly EffortLevel[],
+): EffortLevel | undefined {
+  return EFFORT_ORDER.slice(EFFORT_ORDER.indexOf(effort)).find((level) => levels.includes(level));
+}
+
+/**
+ * Codex and Claude Code run through their own CLIs, so their effort travels as provider options
+ * under their own name and each adapter turns it into the CLI's setting.
+ */
+function buildCliEffortOptions(modelId: string, config: AppConfig): Record<string, unknown> {
+  const effort = config.performance?.effort;
+  if (!effort || effort === "off") return {};
+  const { provider } = parseModelId(modelId);
+  if (provider !== "codex" && provider !== "claude-code") return {};
+  const level = clampToLevels(effort, getModelEffortLevels(modelId));
+  return level ? { [provider]: { reasoningEffort: level } } : {};
 }
 
 export async function buildProviderOptions(
@@ -769,6 +847,8 @@ export async function buildProviderOptions(
       providerOptions.openai = result.opts;
     }
   }
+
+  Object.assign(providerOptions, buildCliEffortOptions(modelId, config));
 
   // that declares a reasoning config. The actual body injection is handled
 

@@ -5,6 +5,7 @@ const REASONS: Record<string, string> = {
   manual_evidence: "a criterion needs a manual observation from you",
   user_pause: "paused by you",
   owner_lost: "the process that ran it stopped",
+  step_stalled: "an agent call made no progress and was stopped",
   input_changed: "instructions or configuration changed since approval",
   workspace_busy: "another run or edit holds the workspace",
   budget_exhausted: "the token, call or time budget is used up",

@@ -33,6 +33,7 @@ import {
   type WorkflowDefinition,
   type WorkflowEvent,
 } from "./schemas.js";
+import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
 import { type RuntimeState, RuntimeStateSchema, type Snapshot } from "./types.js";
 import type { WorkflowV2 } from "./v2/definition.js";
 
@@ -440,11 +441,26 @@ export class WorkflowStore {
         row.estimated_cost_microusd === null ? null : row.estimated_cost_microusd / 1e6,
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
+      ...this.stallOf(id, row.status),
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
         .map((r) => r.id),
       ...(row.project_id ? { projectId: row.project_id } : {}),
     };
+  }
+  /** The stalled flag of a running run: no event for longer than the default stall limit. */
+  private stallOf(id: string, status: RunState): { stalled?: RunSnapshot["stalled"] } {
+    if (status !== "running") return {};
+    const last = this.db
+      .query<{ at: number }, [string]>(
+        "SELECT at FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(id);
+    if (!last) return {};
+    const silent = Date.now() - last.at;
+    return silent >= DEFAULT_STALL_SETTINGS.stepStallMs
+      ? { stalled: { silentMs: silent, lastEventAt: new Date(last.at).toISOString() } }
+      : {};
   }
   /** The latest runs of a project, newest first; none in a database older than migration 007. */
   /** How many runs are in each state, for overviews that do not need the runs themselves. */
@@ -662,6 +678,7 @@ export class WorkflowStore {
       canonical(value.payload),
     ]);
     this.db.run("UPDATE runs SET event_seq=? WHERE id=?", [seq, runId]);
+    touchProgress(runId);
     this.onEvent?.(value);
     for (const observer of this.observers) observer(value);
     return value;

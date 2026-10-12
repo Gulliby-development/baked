@@ -745,6 +745,7 @@ function RunBody({
     run.limitations?.count
       ? `${run.limitations.count} accepted limitation${run.limitations.count === 1 ? "" : "s"}`
       : null,
+    run.stalled ? `stalled: no event for ${Math.round(run.stalled.silentMs / 60_000)} min` : null,
   ].filter(Boolean);
 
   const stages = pipeline(data.stages, trace, run);
