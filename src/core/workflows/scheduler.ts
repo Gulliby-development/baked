@@ -1352,6 +1352,83 @@ export class WorkflowScheduler {
     state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
     return true;
   }
+  /**
+   * Files the finished corrective tasks (repair, convergence) of the run changed; null when one of
+   * their diffs is missing.
+   */
+  private correctedFiles(runId: string, tasks: Task[], rows: TaskRow[]): Set<string> | null {
+    const done = tasks.filter(
+      (task) =>
+        task.origin !== "planned" &&
+        rows.some((row) => row.id === task.id && ["implemented", "verified"].includes(row.status)),
+    );
+    return repairChangedFiles(this.store, runId, done);
+  }
+  /**
+   * Before the agent runs a planned task again (a repair or correction invalidated it), its task
+   * checks run in the host: when they pass on the current files and the task's earlier
+   * implementation is in place, the task is implemented by supersession, with an empty diff and
+   * no tokens, and the gate check below it runs as for any implemented task. A rerun that ended
+   * with an empty diff in round 6 cost 3.08M tokens of 17.5M. Returns whether any task changed.
+   */
+  private async hostFirstReruns(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+    ready: Task[],
+  ): Promise<boolean> {
+    let progressed = false;
+    for (const task of ready) {
+      const row = this.store.tasks(runId).find((entry) => entry.id === task.id);
+      const path = `tasks/${task.id}/host-first-${String(row?.generation ?? 0)}.json`;
+      const checks = taskChecks(policy, task);
+      const root = runRoot(this.store.workspace, state);
+      if (
+        !row ||
+        task.origin !== "planned" ||
+        row.generation === 0 ||
+        row.status === "interrupted" ||
+        !checks.length ||
+        !task.writes.length ||
+        !this.store.latestArtifact(runId, `tasks/${task.id}/diff.json`) ||
+        this.store.latestArtifact(runId, path) ||
+        task.writes.some((w) => w.action !== "delete" && !existsSync(workspacePath(root, w.path)))
+      )
+        continue;
+      signal.throwIfAborted();
+      const child = this.store.transaction(() =>
+        this.store.beginStep(runId, `task-${task.id}`, stepId),
+      );
+      let passed = true;
+      for (const check of checks) {
+        const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+        if (checked.status !== "passed") {
+          passed = false;
+          break;
+        }
+      }
+      if (passed) await this.snapshot(runId, state, policy, signal);
+      this.store.transaction(() => {
+        this.store.artifact(runId, "recovery", path, canonical({ taskId: task.id, passed }));
+        if (passed) {
+          const diff = this.store.artifact(
+            runId,
+            "diff",
+            `tasks/${task.id}/diff.json`,
+            canonical({ changed: [], before: {}, after: {}, patch: "" }),
+          );
+          this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.id);
+          this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
+        }
+        this.store.finishStep(runId, child, "completed");
+        this.store.saveState(runId, state);
+      });
+      progressed ||= passed;
+    }
+    return progressed;
+  }
   /** The planned graph with its oversized test tasks split by file, recorded when it splits. */
   private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
     const report = sizePlan({
@@ -2165,6 +2242,18 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     for (;;) {
       const rows = this.store.tasks(runId);
       const checking = this.checkableTask(state.graph, rows, state);
+      if (
+        !checking &&
+        (await this.hostFirstReruns(
+          runId,
+          stepId,
+          state,
+          policy,
+          signal,
+          readyTasks(state.graph, rows, state.taskGates),
+        ))
+      )
+        continue;
       const task = checking ?? readyTasks(state.graph, rows, state.taskGates)[0];
       if (!task) {
         // Owners that cannot run leave their waiting tasks checked as they are, and repaired if they fail.
@@ -2453,6 +2542,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       const current = state.graph ?? graph;
       const checking = this.checkableTask(current, rows, state);
       const ready = readyTasks(current, rows, state.taskGates).filter((t) => !lost.has(t.id));
+      if (!checking && (await this.hostFirstReruns(runId, stepId, state, policy, signal, ready)))
+        continue;
       const single = checking ?? ready.find((t) => t.writes.length === 0);
       signal.throwIfAborted();
       if (single) {
@@ -3397,6 +3488,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         );
         const root = runRoot(this.store.workspace, state);
         const rows = this.store.tasks(runId);
+        const rewritten = changedFiles ? this.correctedFiles(runId, graph.tasks, rows) : null;
         const invalid = new Set(restored);
         const recheck = new Set<string>();
         for (let changed = true; changed; ) {
@@ -3410,8 +3502,17 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             // checks: the host runs them first, and a failure becomes a repair of that task.
             const reach =
               finished && changedFiles ? changeReach(root, candidate, changedFiles) : null;
+            // A task whose every written file a corrective task rewrote is superseded there: its
+            // agent would start from its original description and overwrite the correction
+            // (md-site a586cde0 T003 ran three times, T006 four). Its checks decide instead.
+            const superseded =
+              reach === "named" &&
+              rewritten !== null &&
+              taskChecks(policy, candidate).length > 0 &&
+              ownsOnly(candidate, rewritten);
             if (
               reach === "none" ||
+              superseded ||
               (reach === "imports" && taskChecks(policy, candidate).length > 0)
             )
               recheck.add(candidate.id);
@@ -4670,6 +4771,12 @@ interface WorkerCheck {
   checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string };
 }
 /** How a task worker ended; only `done` is integrated. */
+/** Whether every file a task writes (a deletion aside) is among the given files; false for none. */
+function ownsOnly(task: Task, files: ReadonlySet<string>): boolean {
+  const written = task.writes.filter((w) => w.action !== "delete");
+  return written.length > 0 && written.every((w) => files.has(w.path));
+}
+
 type WorkerOutcome =
   | {
       kind: "done";

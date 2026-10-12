@@ -389,6 +389,29 @@ describe("workflow parallel writers", () => {
     expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
   });
 
+  // R6: planned tasks reran in full after a correction (3.08M tokens, 17.5% of the round); the host
+  // runs their task checks first and skips the agent when they pass.
+  for (const mode of ["worktree", "inline"] as const) {
+    test(`an invalidated planned task whose task checks pass is implemented without an agent, ${mode} run`, async () => {
+      const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" }, dependsOn: ["T001"] }], { "a.txt": "A", "b.txt": "B" });
+      let invalidated = false;
+      fx.executor.hooks.T002 = (request) => {
+        if (invalidated) return;
+        invalidated = true;
+        fx.store.transaction(() => fx.store.taskStatus(request.runId, "T001", "invalidated"));
+      };
+      const run = await fx.start(mode === "inline" ? 1 : 2, mode);
+      const done = await fx.complete(run.runId);
+      expect(fx.lastError(run.runId)).toBe("");
+      expect(done.status).toBe("completed");
+      expect(fx.executor.started.filter((s) => s.taskId === "T001")).toHaveLength(1);
+      expect(fx.executor.started.filter((s) => s.taskId === "T002")).toHaveLength(1);
+      expect(["implemented", "verified"]).toContain(fx.status("T001", run.runId));
+      const marker = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/T001/host-first-1.json");
+      expect(marker && JSON.parse(fx.store.readArtifact(run.runId, marker.id))).toEqual({ taskId: "T001", passed: true });
+    });
+  }
+
   test("a task that reports its tool unavailable again after the restart blocks the run", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }], { "a.txt": "A" });
     const execute = fx.executor.execute.bind(fx.executor);
