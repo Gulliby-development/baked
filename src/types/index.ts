@@ -307,6 +307,8 @@ export interface AppConfig {
   performance?: PerformanceConfig;
   contextManagement?: ContextManagementConfig;
   compaction?: CompactionConfig;
+  /** Watch mode: `baked!` and `baked?` comments start the agent. See `src/core/watch/`. */
+  watch?: import("../core/watch/config.js").WatchConfig;
   /** Limits on what the project coordinator may launch (see docs/coordinator.md). */
   coordinator?: {
     /** Launched sessions, runs and initiatives active at once. Default: 3 */
