@@ -96,7 +96,7 @@ Never run apps inside a BAKED checkout (round 1 lesson: the app picked up BAKED'
 
 ```
 rounds/R07/
-  round.json                 # runner commit, providers/models, config snapshot, phase timestamps, update picks and the random seed
+  round.json                 # runner commit, providers/models, language server check (`lsp`), config snapshot, phase timestamps, update picks and the random seed
   ideas.md  review.md  scout.md  backlog.md  publish.md  report.md
   apps/<app>/
     brief.md                 # the exact prompt BAKED got (apps/<repo>-update/ for updates)
@@ -211,13 +211,32 @@ Every later start (after a crash, a reboot or a new session): read `config.json`
 3. Update the runner: `git fetch origin && git checkout --detach origin/main` in `paths.runner`, `bun install`, `bun run build`. Record the commit in `round.json`. If the build fails, the fixer gets the failure as a P0 issue and the round waits for it (main must build).
 4. Refresh the spec: copy `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` to the loop root, so spec changes merged to `main` take effect from the next round. Never overwrite `config.json`, `controls/*.md`, `ledger/`, `state.json` or round folders. Also check `.claude/settings.local.json` in the loop root: create it from `templates/claude-settings.local.json` if missing, never overwrite it. Then re-read this file.
 5. Check the toolchains (see [Stacks and toolchains](#stacks-and-toolchains)): `go version`, `dotnet --version`, `cargo --version`, `cargo fmt --version`, `cargo clippy --version`, `java -version` and `mvn -v`, with the PATH directories the loop's launch script adds. A missing toolchain is reported once and its language is left out of the round's mix; the loop does not install it or work around it.
-6. Run `baked doctor` in an empty scratch repo with the round's policy; any refusal is a P0 finding and stops the round until fixed.
-7. List configured providers and check each with one tiny headless call (`baked --headless --model PROVIDER/MODEL "Reply OK"`). A provider that refuses for credits or auth is skipped this round and reported once. Resolve `referenceModel` if unset. If the reference model is unavailable, control apps wait for it; they never switch models (that would break comparability).
-8. Write `round.json` and set `state.phase = "ideate"`.
+6. Check the language servers (see [Language servers](#language-servers)) for every language the round uses; record the result in `round.json` `lsp`. A missing server is reported once with its install command; the round still runs.
+7. Run `baked doctor` in an empty scratch repo with the round's policy; any refusal is a P0 finding and stops the round until fixed.
+8. List configured providers and check each with one tiny headless call (`baked --headless --model PROVIDER/MODEL "Reply OK"`). A provider that refuses for credits or auth is skipped this round and reported once. Resolve `referenceModel` if unset. If the reference model is unavailable, control apps wait for it; they never switch models (that would break comparability).
+9. Write `round.json` and set `state.phase = "ideate"`.
 
 Phase 0 also picks the round's update repositories (from round 3; rounds 1 and 2 had no update apps): see [Updates to existing projects](#updates-to-existing-projects). Record the picks and the seed in `round.json`.
 
 Round 1 of the loop is special: the owner already approved five apps on 2026-10-10 (envguard, mdtoc, cronsay, jsondelta, logslice; briefs in `templates/round1-briefs.md`). Round 1 skips phases 1–2 and uses those prompts verbatim as briefs, then continues normally.
+
+## Language servers
+
+BAKED's code intelligence (`src/core/intelligence/backends/lsp/server-registry.ts`, `router.ts`) uses a standalone language server for a file's language when it finds one and otherwise falls back to ts-morph, tree-sitter and regex. A round that builds in a language without its server therefore measures the weaker fallback. The rule: when a round develops in a language, the loop makes sure the matching server is available, or says it is not.
+
+- **Where BAKED looks.** For each server command, in order: `PATH`; BAKED's own install folder (`<config dir>/lsp-servers/node_modules/.bin` and `<config dir>/lsp-servers/bin`); Mason's `bin` folder (`<data dir>/mason/bin`). On Windows both folders are under `%LOCALAPPDATA%aked`; on Linux and macOS the config dir is `~/.baked` and the Mason folder is `~/.local/share/baked/mason/bin`. A server in `disabledLspServers` of the user or project config is skipped. Because a headless run inherits the harness `PATH`, the directories of the installers (Go, dotnet tools, Cargo, npm global, the JDK) must be on `PATH` for the run, as `tools/launch.sh` arranges for the toolchains.
+- **Installing.** `/lsp install` (Mason) and `/lsp status` exist only in the terminal UI; there is no `baked lsp ...` command, no headless install or list, and `baked doctor` does not check language servers (open gap: issue #374). The loop therefore checks `PATH` itself with `command -v` per server (the loop root's `tools/check_lsp.sh LANG...` does this when present) and never installs anything system-wide.
+- **Check (phase 0, step 6).** For each language the round uses (new apps, updates, controls), the first matching server below must resolve. Record `round.json` `lsp`: `{ "<language>": { "server": "<command>", "found": true|false, "path": "<resolved path or null>" } }`.
+- **Missing.** Report once, in the round's first owner message, the language and the exact install command from the table; keep going. A round may run without a server but the round report says which languages had none, and the analyst compares code-intelligence behavior with and without (see the analyst brief). Never install a language server, runtime or toolchain on the owner's machine; the owner installs it, and the next round's check picks it up.
+
+| Language | Server command BAKED looks for | Windows (this PC) | Linux / macOS |
+| --- | --- | --- | --- |
+| Python | `pyright-langserver`, then `pylsp` | `npm install -g pyright` or `pip install pyright` | same |
+| TypeScript / JavaScript | `typescript-language-server` (then `biome`, `deno`) | `npm install -g typescript-language-server typescript` | same |
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` (binary in `%USERPROFILE%\goin`) | same (`~/go/bin`) |
+| .NET (C#) | `csharp-ls`, then `OmniSharp` | `dotnet tool install --global csharp-ls` (binary in `%USERPROFILE%\.dotnet	ools`) | same (`~/.dotnet/tools`) |
+| Rust | `rust-analyzer` | `rustup component add rust-analyzer` (shim in `%USERPROFILE%\.cargoin`) | same (`~/.cargo/bin`) |
+| Java | `jdtls` | manual (Eclipse JDT LS archive, put its launcher on `PATH`) or Mason (`/lsp install` in the terminal UI) | same, or `brew install jdtls` on macOS |
 
 ## Stacks and toolchains
 
