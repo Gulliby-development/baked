@@ -1197,6 +1197,74 @@ function mutate(run: MockRun, action: string, body: { requestId?: string; tokens
   return response(200, snapshot(run));
 }
 
+interface GcBody {
+  before: string;
+  dryRun?: boolean;
+}
+interface ImportBody {
+  source: string;
+  path: string;
+  featureId: string;
+}
+interface RedactBody {
+  artifactId: string;
+  reason: string;
+}
+
+const invalid = (message: string) =>
+  response(400, { error: { code: "INVALID_DEFINITION", message } });
+
+/** Ended runs older than 30 days and the cutoff; the sample runs are all recent. */
+function gc(body: GcBody) {
+  const cutoff = Date.parse(body.before);
+  if (!Number.isFinite(cutoff)) return invalid("Expected an ISO date for retention");
+  const threshold = Math.min(cutoff, Date.now() - 30 * 86_400_000);
+  const old = all().filter(
+    (r) => ENDED.includes(r.status) && Date.parse(r.events.at(-1)?.at ?? "") < threshold,
+  );
+  if (!body.dryRun) state = all().filter((r) => !old.includes(r));
+  return response(200, {
+    runIds: old.map((r) => r.runId),
+    bytes: old.reduce((sum, r) => sum + r.artifacts.reduce((n, a) => n + a.entry.bytes, 0), 0),
+  });
+}
+
+function importCandidate(body: ImportBody) {
+  if (!body.path.trim()) return invalid("Import source must be a local directory without symlinks");
+  return response(200, {
+    candidateHash: DIGEST,
+    warnings:
+      body.source === "spec-kit"
+        ? [
+            "Markdown imported as a draft. A spec-author must map requirements and Given/When/Then criteria to SpecSchema before acceptance.",
+          ]
+        : [],
+    unsupported: [],
+  });
+}
+
+function redact(run: MockRun, body: RedactBody) {
+  if (!body.reason?.trim()) return invalid("Redaction reason is required");
+  const target = run.artifacts.find((a) => a.entry.id === body.artifactId);
+  if (!target || target.entry.kind === "state")
+    return invalid("Select a content artifact for redaction");
+  target.content = "[redacted]";
+  run.artifacts.push(
+    artifact(
+      run.runId,
+      run.artifacts.length + 1,
+      `redactions/${body.artifactId}.json`,
+      "redaction",
+      {
+        artifactId: body.artifactId,
+        hash: target.entry.hash,
+        reason: body.reason,
+      },
+    ),
+  );
+  return response(200, { redacted: true });
+}
+
 /** A short stand-in for `runReport` (src/core/workflows/run-report.ts). */
 function mockReport(run: MockRun): string {
   return [
@@ -1231,10 +1299,19 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
   }
   // Workflow definitions come from the start screen's fixtures, which carry the full summary
   // (problems, execution) the New run form reads; their `sdd` stages match `SDD`.
+  if (method === "POST" && path === "/v1/workflow/gc") return gc(body as GcBody);
+  if (method === "POST" && path === "/v1/workflow/import")
+    return importCandidate(body as ImportBody);
   const match = /^\/v1\/workflow\/runs\/([^/]+)(?:\/([a-z-]+))?$/.exec(path);
   const run = match?.[1] ? find(decodeURIComponent(match[1])) : undefined;
   if (!match || !run) return undefined;
   const action = match[2];
+  if (method === "POST" && action === "export")
+    return response(200, {
+      path: `C:\\Project\\BAKED\\.baked\\exports\\${run.runId}-${Date.now()}`,
+      manifestHash: DIGEST,
+    });
+  if (method === "POST" && action === "redact") return redact(run, body as RedactBody);
   if (method === "POST" && action)
     return mutate(run, action, (body ?? {}) as { requestId?: string; tokens?: number });
   if (method !== "GET") return undefined;

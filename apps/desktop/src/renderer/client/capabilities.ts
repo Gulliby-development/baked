@@ -65,3 +65,6 @@ export const MCP_CAPABILITY = "mcp";
 
 /** `/v1/lsp*` (the Language servers section). */
 export const LSP_CAPABILITY = "lsp";
+
+/** `POST /v1/lsp/diagnose` (Check code intelligence on the Language servers section). */
+export const LSP_DIAGNOSE_CAPABILITY = "lsp-diagnose";

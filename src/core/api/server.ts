@@ -57,6 +57,7 @@ import { redactSecrets } from "../workflows/redaction.js";
 import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
+import { usageMarkdown } from "../workflows/usage-markdown.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -73,7 +74,7 @@ import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
-import { lspRoute } from "./lsp-routes.js";
+import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
 import { progressRoute } from "./progress-routes.js";
@@ -88,11 +89,15 @@ import {
   DeliverExecuteBody,
   EventsQuery,
   EvidenceBody,
+  ExportBody,
   ExtendBody,
   GatesConfirmBody,
+  GcBody,
+  ImportBody,
   ListQuery,
   PreRunQuery,
   RecoverBody,
+  RedactBody,
   RejectBody,
   RerouteBody,
   ReviseBody,
@@ -132,6 +137,8 @@ export const CAPABILITIES = [
   "skills-install",
   "mcp",
   "lsp",
+  "run-maintenance",
+  "lsp-diagnose",
   "custom-commands",
   "settings",
   "git",
@@ -168,6 +175,8 @@ export interface ApiServerOptions {
   settingsSecrets?: SettingsSecretStore;
   /** Language-server lookups and installs; tests pass fakes. */
   lspDeps?: Partial<LspServiceDeps>;
+  /** Replaces the code intelligence health check of `POST /v1/lsp/diagnose` in tests. */
+  lspDiagnose?: LspRouteContext["diagnose"];
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -814,6 +823,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         workspace: service.workspace,
         start: () => service.rootContext.get(),
         ...(options.lspDeps ? { deps: options.lspDeps } : {}),
+        ...(options.lspDiagnose ? { diagnose: options.lspDiagnose } : {}),
         ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
@@ -947,6 +957,37 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    if (path === "/v1/workflow/gc") {
+      only("POST");
+      const body = GcBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "gc",
+          positional: [],
+          flags: { before: body.before, ...(body.dryRun ? { "dry-run": true } : {}) },
+        }),
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/import") {
+      only("POST");
+      const body = ImportBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "import",
+          positional: [],
+          flags: {
+            source: body.source,
+            path: body.path,
+            feature: body.featureId,
+            "command-id": body.commandId ?? crypto.randomUUID(),
+          },
+        }),
+        origin,
+      );
+    }
     if (path === "/v1/workflow/gates") {
       only("GET");
       return json(200, await execute({ command: "gates", positional: [], flags: {} }), origin);
@@ -982,14 +1023,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (path === "/v1/usage") {
       only("GET");
       const query = queryOf(url, UsageQuery);
+      const summary = usageSummary(service.store, {
+        days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
+        groupBy: query.groupBy ?? ["model"],
+        ...(query.model !== undefined ? { model: query.model } : {}),
+        ...(query.stage !== undefined ? { stage: query.stage } : {}),
+      });
       return json(
         200,
-        usageSummary(service.store, {
-          days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
-          groupBy: query.groupBy ?? ["model"],
-          ...(query.model !== undefined ? { model: query.model } : {}),
-          ...(query.stage !== undefined ? { stage: query.stage } : {}),
-        }),
+        query.format === "md" ? { markdown: usageMarkdown(summary) } : summary,
         origin,
       );
     }
@@ -1051,6 +1093,33 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    if (action === "export") {
+      only("POST");
+      const body = ExportBody.parse(await readJson(req));
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+      return json(
+        200,
+        await execute({
+          command: "export",
+          positional: [runId],
+          flags: { destination: body.destination ?? `.baked/exports/${runId}-${stamp}` },
+        }),
+        origin,
+      );
+    }
+    if (action === "redact") {
+      only("POST");
+      const body = RedactBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "redact",
+          positional: [runId],
+          flags: { file: body.artifactId, reason: body.reason },
+        }),
+        origin,
+      );
+    }
     if (action === "progress") {
       only("GET");
       return json(
@@ -1062,12 +1131,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (action === "usage" || action === "artifacts" || action === "report") {
       only("GET");
       const file = action === "artifacts" ? url.searchParams.get("file") : null;
+      const format = action === "usage" ? url.searchParams.get("format") : null;
+      if (format !== null && format !== "md")
+        throw new ApiError(400, "INVALID_REQUEST", "format must be md");
       return json(
         200,
         await execute({
           command: action,
           positional: [runId],
-          flags: file ? { file: SafeId.parse(file) } : {},
+          flags: file ? { file: SafeId.parse(file) } : format ? { format } : {},
         }),
         origin,
       );

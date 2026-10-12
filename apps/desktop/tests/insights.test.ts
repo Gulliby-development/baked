@@ -705,3 +705,29 @@ describe("mock initiative backend", () => {
     expect(edited.pendingDecisions.some((d) => d.scope === "initiative")).toBe(true);
   });
 });
+
+describe("mock usage export", () => {
+  test("answers format=md with Markdown for the summary and for one run", async () => {
+    const ask = async (path: string, query: string) => {
+      const request: MockRequest = {
+        key: "mock-usage",
+        method: "GET",
+        path,
+        query: new URLSearchParams(query),
+        body: undefined,
+      };
+      for (const route of MOCK_ROUTES) {
+        const answer = await route(request);
+        if (answer) return answer.body as { markdown?: string };
+      }
+      throw new Error(`no mock route answered ${path}`);
+    };
+    expect((await ask("/v1/usage", "days=7&groupBy=stage,model&format=md")).markdown).toContain(
+      "# BAKED usage",
+    );
+    expect((await ask("/v1/usage", "days=7&groupBy=model")).markdown).toBeUndefined();
+    expect(
+      (await ask("/v1/workflow/runs/run-usage-totals/usage", "format=md")).markdown,
+    ).toContain("run-usage-totals");
+  });
+});

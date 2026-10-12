@@ -439,7 +439,7 @@ A run can execute in its own Git worktree instead of the working copy. Request i
 - Git is required. A workspace that is not the top level of a Git repository with at least one commit is refused when the run starts (`details.reason` `git_required`); it does not fall back to inline execution, because inline execution would write the working copy the user asked to keep untouched. A definition that reviews the working copy's diff (Review only) runs inline only.
 - When the run first executes, the runtime records the current HEAD as the baseline and creates the branch `baked/wf/RUN_ID` from it with the worktree `.baked/worktrees/RUN_ID/main` (artifact `worktree/created.json`, `state.worktree`). Hooks do not run during creation. The project's top-level `node_modules` is linked into the worktree (a junction on Windows) so checks can run there. From then on research, spec publication, task edits, snapshots, checks, review and final acceptance all use the worktree; the working copy, its index and HEAD are never changed by the scheduler.
 - Uncommitted user changes do not enter the worktree. When approved tasks write a file that has uncommitted changes in the working copy, the approval request lists it under `worktree.userChangesInScope`, auto approval declines, and approving needs the explicit choice to leave those changes out: `baked workflow approve RUN_ID --request ID --digest SHA256 --expected-revision N --exclude-user-changes` (the TUI prompt names the files and `A` makes that choice). To keep the changes instead, reject, commit them and start a new run. The excluded paths are recorded in `state.worktree.excludedUserChanges`.
-- The run holds the `execution` lease and the mutation lease of its worktree (`worktree:.baked/worktrees/RUN_ID/main`, migration 005), not the project's `mutation` lease: the user can keep editing the working copy, and ordinary BAKED edits there are allowed during the run. Another run still cannot execute at the same time. A dead owner's worktree lease is taken over or released by the same rules as the v1 leases.
+- The run holds its own execution lease `execution:RUN_ID` (migration 011) and the mutation lease of its worktree (`worktree:.baked/worktrees/RUN_ID/main`, migration 005), not the project's `execution` and `mutation` leases: the user can keep editing the working copy, and ordinary BAKED edits, git menu actions and gate runs there are allowed during the run. Other worktree runs can execute at the same time (see [parallel runs](#parallel-runs)). A dead owner's leases are taken over or released by the same rules as the v1 leases.
 - File effects record their root: an intent with `root` names the worktree path relative to the project; a record without `root` means the project root. Reconcile, recovery, undo and the plan consistency check resolve every effect in its own root and never against another one; an effect whose root no longer exists stays `unknown` and goes to recovery.
 - On acceptance, after the acceptance checks pass, the accepted content (the files the run journaled in its worktree and the declared task writes that differ from the approval baseline, without `.baked/`, `.git/`, symbolic links and secret-looking files) is committed on the run branch with the baseline HEAD as parent. The commit is built in a temporary index, so commit hooks do not run; its author is the repository's `user.name`/`user.email` (or `BAKED workflow <workflow@baked.invalid>` when none is set) and its dates are the run's creation time, so the same accepted content always gives the same commit and a crash before the completion is saved rebuilds it. The branch is never moved when someone else moved it (`branch_moved`). `completion.json` and `state.worktree.commit` name the commit.
 - The intelligence index is the project's own, used read-only by the worktree's agents; it can be stale for files the run changed. A per-worktree index is an open decision ([design](parallel-worktrees.md#open-decisions)).
@@ -463,9 +463,18 @@ A worktree run can implement independent tasks at the same time: `baked workflow
 - **Overlapping writes.** Independent tasks that write the same path are refused at plan validation unless the policy sets `allowOverlappingWrites: true`. Then such tasks may share a batch, and the later one in graph order is integrated through the integrator.
 - The scheduler never writes the user's working copy; the accepted result is committed on the run branch as with one writer.
 
+### Parallel runs
+
+Several runs of one workspace execute at the same time when each runs in its own worktree. An inline run takes the workspace-wide `execution` lease, so two inline runs still take turns; a worktree run takes `execution:RUN_ID`. `workflows.maxParallelRuns` (1..8, default 2) caps the runs executing at once, inline and worktree together: a drive over the cap is refused with `WORKSPACE_BUSY` and a message naming the runs that execute. Set it to `1` for one executing run per workspace.
+
+- One process drives each run in its own lane (its own leases and scheduler), so `baked serve`, the TUI and separate `baked workflow run` processes can all drive runs side by side.
+- Each run has its own worktree, branch `baked/wf/RUN_ID` and delivery. Runs started from the same HEAD do not see each other's edits; deliver one and start the next from the new HEAD when they build on each other.
+- Initiatives still run one feature at a time.
+- `baked workflow doctor` reports worktree runs that execute as `ok` (the working copy is free) and only the inline run's lease as busy.
+
 ## Pause, crash and recovery
 
-A workspace has one scheduler and one writing run (which may run several task writers in its own worktrees, see [several writers](#several-writers)). Ordinary BAKED mutations use the same mutex; read-only tools stay available. An external editor is not governed by the lease, so content hashes are compared before and after checks and before acceptance. The Git baseline records HEAD, tracked files and the initial user changes; filesystem-only workspaces are supported too.
+A workspace has one writing run in its working copy (which may run several task writers in its own worktrees, see [several writers](#several-writers)), and worktree runs beside it up to `workflows.maxParallelRuns` (see [parallel runs](#parallel-runs)). Ordinary BAKED mutations use the same mutex; read-only tools stay available. An external editor is not governed by the lease, so content hashes are compared before and after checks and before acceptance. The Git baseline records HEAD, tracked files and the initial user changes; filesystem-only workspaces are supported too.
 
 The TUI runs the workflow and SQLite transactions in a separate worker. The panel receives a consistent snapshot through asynchronous RPC; the SQLite busy timeout does not block the main interface thread. The execution time limit comes from the run's stored policy, including its revisions. A local RPC timeout does not stop observing an ongoing write.
 
@@ -564,6 +573,18 @@ One Markdown file for a run, at any status, read from the run's database without
 
 The report is the pull request body of a [delivery](#delivery). In the TUI, `/workflow report RUN_ID` shows it in the chat (`--output FILE` writes it). The desktop app shows it in the run's Report tab with Copy and Save buttons, and `GET /v1/workflow/runs/RUN_ID/report` returns it.
 
+## Usage reports
+
+```sh
+baked usage --days 30 --group-by stage,model --format md          # prints Markdown
+baked usage --days 30 --group-by stage,model --output usage.md    # writes usage.md in the project
+baked workflow usage RUN_ID --format md [--output FILE]           # one run
+```
+
+Token use and estimated cost can be shared as one Markdown document. The project document has the window (days and UTC dates), the grouping, the model and stage filters, a totals table (runs, attempts, tokens, input with cache reads, output, cache reads, cache writes, estimated cost and unpriced tokens) and one row per group with the same figures, followed by a note on how cost is estimated. A run's document has its totals and the same figures by stage and by model; `--top` does not shorten it. Only model IDs, stage IDs, the run ID and figures go in: no paths, prompts or account names. `--output` paths are relative to the project, and `--output` implies `--format md`.
+
+In the TUI, E on the [usage screen](#usage-screen) writes the shown period as `baked-usage-30d-YYYY-MM-DD.md` in the project, grouped as on the screen; `/workflow usage RUN_ID --format md` shows a run's document in the chat (`--output FILE` writes it). The desktop Usage screen has Copy as Markdown and Export as .md for the chosen range, run and filters; the local API answers `GET /v1/usage?format=md` and `GET /v1/workflow/runs/RUN_ID/usage?format=md` with `{markdown}` ([API](../desktop/api.md)).
+
 ## Import, export and retention
 
 ```sh
@@ -582,6 +603,8 @@ To accept a schema-compatible imported package, pass its spec/plan/tasks to `can
 For a review by another model, route it with `modelRouting` (see [Model routing](#model-routing)) rather than copying a profile. A copied profile in `baked/agents/ID.json` can still name a specific `provider/model`, but a project file then carries one person's model choice. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
 
 Export creates a new directory inside the workspace. The host API allows a separate outside-path approval callback; the CLI does not provide one automatically. Raw provider messages and command output are not part of the portable report; known credentials are masked. Redaction removes the selected artifact content, keeps the original hash and a tombstone and invalidates evidence. It does not promise to remove every possible copy of a string from other artifacts.
+
+In the desktop app, a run's screen has Export (into `.baked/exports/RUN_ID-STAMP`) and Redact…, and the run list has Import… and Clean up old runs…, which previews the runs it would remove before removing them. The local API has the same as `POST /v1/workflow/runs/RUN_ID/export` and `/redact`, `POST /v1/workflow/import` and `POST /v1/workflow/gc` ([desktop API](../desktop/api.md)).
 
 GC removes only terminal runs older than 30 days and the given cutoff when no child run needs them and they hold no lease. Active/waiting/blocked data and the shared `specs/` are kept. For a backup, stop the writers and save `.baked/workflows.sqlite` together with `.baked/workflow-runs/`. Copying a live SQLite database also needs the WAL/SHM files or an SQLite backup; an arbitrary copy of one file during writes is not a consistent backup.
 
@@ -616,7 +639,7 @@ A run freezes its routing at start in the `routing.json` artifact (each profile'
 
 ### Usage screen
 
-`/workflow usage`, or U on the run list of `/workflow`, opens the usage screen of the TUI: the tokens and estimated cost of every workflow attempt that started in the last 7, 30 or 90 days, across the project's runs. The first line sums runs, attempts, tokens, cost and the tokens no model price covers (`unpriced`, left out of the cost); the table below groups them by model (`(host)` for host attempts), stage or UTC day. ←→ changes the period, Tab the grouping, Esc returns to the run list. The numbers come from the same code as [`baked usage`](../headless.md) and `GET /v1/usage`, so they match the CLI and the desktop Usage screen. With a run ID, `/workflow usage RUN_ID` still prints that run's per-stage usage in the chat.
+`/workflow usage`, or U on the run list of `/workflow`, opens the usage screen of the TUI: the tokens and estimated cost of every workflow attempt that started in the last 7, 30 or 90 days, across the project's runs. The first line sums runs, attempts, tokens, cost and the tokens no model price covers (`unpriced`, left out of the cost); the table below groups them by model (`(host)` for host attempts), stage or UTC day. ←→ changes the period, Tab the grouping, E writes the period and grouping shown as a Markdown file in the project ([usage reports](#usage-reports)), Esc returns to the run list. The numbers come from the same code as [`baked usage`](../headless.md) and `GET /v1/usage`, so they match the CLI and the desktop Usage screen. With a run ID, `/workflow usage RUN_ID` still prints that run's per-stage usage in the chat.
 
 ### Routing screen
 
@@ -792,7 +815,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/runs` | `list` | `?feature=&status=&limit=&cursor=` |
 | `POST /v1/workflow/runs` | `run` | `commandId`, `feature` and `prompt` (both optional with `issue`), optional `issue` (as `--issue`), `workflow`, `policy` (object), `model`, `owner` (default `API`), `confirmAutoApproval`, `worktree`, `writers`, `clarification` (`ask` or `assume`, as `--clarification`) |
 | `GET /v1/workflow/runs/RUN_ID` | `status` | snapshot with `requests` |
-| `GET /v1/workflow/runs/RUN_ID/usage` | `usage` | |
+| `GET /v1/workflow/runs/RUN_ID/usage` | `usage` | `?format=md`: `{runId, markdown}`, the [usage report](#usage-reports) |
 | `GET /v1/workflow/runs/RUN_ID/artifacts` | `artifacts` | `?file=ARTIFACT_ID` returns `{content}` |
 | `GET /v1/workflow/runs/RUN_ID/report` | `report` | returns `{runId, markdown}` ([run report](#run-report)) |
 | `POST /v1/workflow/runs/RUN_ID/pause`, `/cancel`, `/resume` | `pause`, `cancel`, `resume` | `commandId`, `expectedRevision` |
@@ -814,7 +837,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
 | `POST /v1/workflow/runs/RUN_ID/candidate`, `/revise` | `candidate`, `revise` | candidate takes `commandId` and inline `spec`, `plan`, `tasks`, `policy`; revise takes `candidate` plus `commandId`, `expectedRevision` |
 | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; `GET /v1/commands`, `GET /v1/skills` | | the terminal UI's gate editor, custom commands and skills; see `docs/desktop/api.md` |
-| `GET /v1/usage` | `baked usage --json` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads, cache writes) and estimated cost of every attempt started in the window, grouped |
+| `GET /v1/usage` | `baked usage --json` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads, cache writes) and estimated cost of every attempt started in the window, grouped; `format=md` answers `{markdown}` ([usage reports](#usage-reports)) |
 | `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `docs/desktop/api.md`; start, approve, resume and reroute with `resume: true` drive the initiative in the background |
 | `GET /v1/progress` | stderr of `workflow run`, `quick` and `resume` in a terminal | long-running work: opening the project, indexing (files counted), starting a run; SSE, or `{items}` with `Accept: application/json`; see `docs/desktop/api.md` |
 | `GET /v1/attention` | `baked attention --json` (runs and initiatives) | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |

@@ -87,7 +87,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Language servers: status, install, enable, restart | `/lsp`, `/lsp install`, `/lsp restart` +1 | `baked lsp status`, `baked lsp install`, `baked lsp enable` +2 | `/v1/lsp`, `/v1/lsp/restart`, `/v1/lsp/:id/install` +3 | `project/lsp`, `project/overview` |
-| Diagnose LSP, tree-sitter and index health | `/diagnose` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check |
+| Diagnose LSP, tree-sitter and index health | `/diagnose` | `baked diagnose`, `baked lsp check` | `/v1/lsp/diagnose`, `/v1/lsp` | `project/lsp` |
 | Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
 | Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
@@ -121,7 +121,8 @@ bun test tests/feature-parity.test.ts
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): read-only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
-| Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): export-progress only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
+| Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
+| Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | `/v1/workflow/import`, `/v1/workflow/runs/:id/export`, `/v1/workflow/gc` +2 | `project/runs` |
 
 ### Initiatives
 
@@ -139,7 +140,7 @@ bun test tests/feature-parity.test.ts
 | Create a project in a new folder with a name | `/projects` | `baked projects create` | Not needed: a new project has no backend yet; the desktop app creates it through baked projects create | `projects` |
 | Rename a project | `/project rename` | `baked projects rename` | `/v1/projects/rename` | `projects` |
 | Working set | `/project` | `baked project` | `/v1/projects/current/working-set` | `project/working-set` |
-| What waits for me across projects | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): this project only | `baked attention` | `/v1/attention` | `attention` |
+| What waits for me across projects | `/project waiting`, `/project` | `baked attention` | `/v1/attention` | `attention` |
 | Local API server, health and capabilities | Not needed: the TUI runs the core in process | `baked serve` | `/v1/health` | `projects` |
 | Prerequisite check and first-run wizard | `/setup`, `/wizard` | `baked self-check`, `--wizard` | `/v1/workflow/doctor` | `project/overview` |
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
@@ -163,7 +164,7 @@ bun test tests/feature-parity.test.ts
 - [#152](https://github.com/Gulliby-development/baked/issues/152): Project coordinator chat with a durable project brief
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#413](https://github.com/Gulliby-development/baked/issues/413): Diagnose LSP, tree-sitter and index health; Workflow definition editor; Import, export, gc and redact runs; What waits for me across projects
+- [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
 
