@@ -25,11 +25,11 @@ The project coordinator is one long-lived chat per project. You come back to it 
 
 | Surface | How |
 | --- | --- |
-| Local API | `GET/POST /v1/coordinator`, `GET/PUT /v1/coordinator/brief`, then the usual `/v1/sessions/ID/...` endpoints ([contract](desktop/api.md#project-coordinator)) |
+| Local API | `GET/POST /v1/coordinator`, `GET/PUT /v1/coordinator/brief`, `GET /v1/coordinator/launched`, then the usual `/v1/sessions/ID/...` endpoints ([contract](desktop/api.md#project-coordinator)) |
 | Headless CLI | `baked session coordinator [--json]` prints the session id and the brief |
-| Desktop app | not yet ([#151](https://github.com/Gulliby-development/baked/issues/151)) |
+| Desktop app | the Coordinator section of each project, and Hand to coordinator in the chat menu ([desktop app](desktop/app.md#screens)) |
 | Terminal UI | not yet ([#152](https://github.com/Gulliby-development/baked/issues/152)) |
 
 ## Not yet
 
-The desktop screen, the terminal UI and issues for an initiative's features ([#567](https://github.com/Gulliby-development/baked/issues/567)) are the next parts of the coordinator ([#144](https://github.com/Gulliby-development/baked/issues/144)).
+The terminal UI and issues for an initiative's features ([#567](https://github.com/Gulliby-development/baked/issues/567)) are the next parts of the coordinator ([#144](https://github.com/Gulliby-development/baked/issues/144)).

@@ -90,7 +90,7 @@ async function noticeFor(chat: ChatService, pattern: RegExp): Promise<string> {
 
 describe("coordinator launches", () => {
   test("a background session and a run show in their lists and report back", async () => {
-    const { fixture, chat, coordinator, tool } = await setup();
+    const { fixture, chat, coordinator, tool, server } = await setup();
 
     const session = await tool("launch_session").execute({
       title: "Survey the auth code",
@@ -119,6 +119,15 @@ describe("coordinator launches", () => {
     expect(notices).toContain(`Launched run ${runId}: waiting: approval (Ship the value)`);
     // Nothing new: no second notice.
     expect(await chat.syncLaunched()).toEqual([]);
+
+    const live = (await (
+      await fetch(`${server.url}/v1/coordinator/launched`, { headers: { Authorization: `Bearer ${server.token}` } })
+    ).json()) as { launched: { kind: string; id: string; status: string; active: boolean; tokens: number }[] };
+    expect(live.launched.map((l) => [l.kind, l.status, l.active])).toEqual([
+      ["session", "done", false],
+      ["run", "waiting: approval", true],
+    ]);
+    expect(live.launched[0]?.tokens).toBeGreaterThan(0);
   }, 60000);
 
   test("a writing session needs the user's yes, and the active limit holds", async () => {

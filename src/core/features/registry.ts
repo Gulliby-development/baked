@@ -151,8 +151,11 @@ export const FEATURES: readonly Feature[] = [
     title: "Project coordinator chat with a durable project brief",
     tui: gap(152),
     cli: ["baked session coordinator: prints the brief"],
-    api: ["/v1/coordinator", "/v1/coordinator/brief"],
-    desktop: gap(151),
+    api: ["/v1/coordinator", "/v1/coordinator/brief", "/v1/coordinator/launched"],
+    desktop: [
+      "project/coordinator: conversation, launched work and the editable brief",
+      "project/chat: Hand to coordinator in the chat menu",
+    ],
   },
   {
     id: "session-diagnostics",

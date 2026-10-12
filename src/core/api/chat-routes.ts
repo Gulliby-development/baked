@@ -83,6 +83,12 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     if (!created) ctx.fail(500, "INTERNAL", "The coordinator could not be created");
     return ctx.json(201, created.detail());
   }
+  if (path === "/v1/coordinator/launched") {
+    only("GET");
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    return ctx.json(200, { launched: chat.launched(session.id) });
+  }
   if (path === "/v1/coordinator/brief") {
     only("GET", "PUT");
     const session = await chat.coordinator(false);

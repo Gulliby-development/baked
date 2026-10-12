@@ -71,6 +71,8 @@ import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
 import {
   coordinatorLimits,
+  type LaunchedView,
+  launchedView,
   launchTools,
   type ProjectLauncher,
   syncLaunched,
@@ -1540,6 +1542,11 @@ export class ChatService {
     } finally {
       this.syncing = false;
     }
+  }
+
+  /** What the coordinator `coordinatorId` launched, with live status and tokens. */
+  launched(coordinatorId: string): LaunchedView[] {
+    return launchedView(this, coordinatorId, this.projectState);
   }
 
   /** The coordinator's tools over this service: project state and launching. */
