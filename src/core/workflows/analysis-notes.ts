@@ -60,6 +60,38 @@ export function supersedeResearch(
   return { ...research, facts: [...facts, ...research.facts] };
 }
 
+const RESTRICTS =
+  /\b(restrict\w*|narrow\w*|exclud\w*|limit(?:s|ed|ing|ation)?|reject\w*|out[- ]of[- ]scope|outOfScope|unrequested|not requested|stricter|only (?:supports?|accepts?|allows?))\b/i;
+const DROPS =
+  /\b(omits?|omitted|drops?|dropped|missing|uncovered|not covered|no (?:task|criterion|requirement|test) (?:covers?|implements?|exercises?)|does not (?:cover|implement|mention))\b/i;
+
+/**
+ * A scope finding that says the spec adds a restriction (a domain, a rejected form, an exclusion)
+ * the request does not state. The request is authoritative for it: the spec author removes the
+ * restriction, and one that survives is recorded as an assumption rather than asked about
+ * (bench round 06: input domains from the spec author's profile raised such findings in 5 of 10
+ * runs and 3 waited for a person whose answer was always the request's own wording). The host's
+ * own coverage finding and findings that name a dropped request clause still ask.
+ */
+export function restrictsRequest(finding: {
+  id?: string;
+  kind: string;
+  blocking: boolean;
+  description: string;
+}): boolean {
+  return (
+    finding.blocking &&
+    finding.kind === "scope" &&
+    !(finding.id ?? "").startsWith("COVERAGE") &&
+    RESTRICTS.test(finding.description) &&
+    !DROPS.test(finding.description)
+  );
+}
+
+/** What the host tells the spec author when a scope finding names a restriction the request lacks. */
+export const REQUEST_NOTE =
+  'The request is authoritative. These findings name restrictions the request does not state (input limits, rejected forms, excluded cases). Delete every such restriction from the spec; a domain you want to keep may be recorded only as a non-narrowing assumption ("<domain> Assumed: <value>, because <reason>."), never as out of scope, a rejected form or an exclusion. Do not trade one restriction for another.';
+
 /** Whether a blocking finding may be settled by a recorded assumption instead of a person. */
 export function assumable(finding: { kind: string; blocking: boolean }): boolean {
   // A scope finding says the spec drops what the request asked for; only the person decides that.

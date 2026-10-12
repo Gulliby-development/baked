@@ -347,6 +347,24 @@ describe("answering a clarification", () => {
       expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
       expect(service.store.artifacts(run.runId).some((a) => a.logical_path === "assumptions/analysis.json")).toBe(false);
     });
+    // md-site, url B and zoneslot (round 06): the spec's domain became a restriction the request lacks.
+    const restriction = "FR-003 restricts the accepted ISO 8601 forms to extended date-times; the request names no such limit";
+    test("a scope finding that adds a restriction gets one more return with the request as authority, then is assumed", async () => {
+      const executor = new ScriptedExecutor({ planFinding: 3, findingKind: "scope", findingRefs: ["spec.json"], findingText: restriction });
+      const service = setup(executor);
+      const run = await startAssume(service);
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+      expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "spec", "plan", "analysis", "spec", "plan", "analysis"]);
+      expect(executor.requests[7]?.prompt).toContain("The request is authoritative");
+      expect(executor.requests[7]?.prompt).toContain(restriction);
+      expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+      expect(service.store.artifacts(run.runId).some((a) => a.logical_path === "assumptions/analysis.json")).toBe(true);
+    });
+    test("a scope finding that adds a restriction still asks when clarification is ask", async () => {
+      const service = setup(new ScriptedExecutor({ planFinding: 3, findingKind: "scope", findingRefs: ["spec.json"], findingText: restriction }));
+      const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
+    });
     test("a scope finding that survives still goes to a person", async () => {
       const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "scope", findingRefs: ["spec.json"] });
       const service = setup(executor);
