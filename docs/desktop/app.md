@@ -135,10 +135,12 @@ apps/desktop/
   src/renderer/    React app, screens, styles, MockClient
   src/shared/      types shared by main and renderer (BakedClient, IPC channels)
   tests/           bun:test for main-process logic and the client
+  e2e/             Playwright UI tests of the renderer against the mock bridge
 ```
 
 - `apps/desktop` is its own package with its own lockfile, so `bun install` at the root does not download Electron. The root's lint, typecheck and tests keep their scope (`src/`, `tests/`); the desktop has the same checks under `apps/desktop`.
-- CI: a `desktop` job in `ci.yml` runs `bun install --frozen-lockfile`, lint, typecheck, tests and the renderer and main builds in `apps/desktop` on Linux.
+- CI: a `desktop` job in `ci.yml` runs `bun install --frozen-lockfile`, lint, typecheck, tests and the renderer and main builds in `apps/desktop` on Linux, then the UI tests (`bun run e2e`): the built renderer served statically and driven in Google Chrome by Playwright against the mock bridge, with a fixed clock. A failed run uploads the Playwright report and traces as the `desktop-ui-report` artifact.
+- Mock scenarios: the mock bridge reads `?mock=NAME` from the page URL: `default`, `empty` (no projects), `start-failure` (opening a project fails, Restart recovers), `older` (a backend without the optional capabilities) and `uninitialized` (one open project without `baked/project.json`). `bun run dev:web` takes the same parameter, for example `http://localhost:5199/?mock=empty#/projects`.
 - Packaging: `builds.yml` gets a desktop job per platform that takes the `baked` binary its bundle job built and runs electron-builder: NSIS installer for Windows x64 and arm64, DMG and ZIP for macOS arm64 and x64, AppImage and DEB for Linux x64. Like the CLI bundles, Windows and macOS run when packaging files change, nightly and for releases. The release workflow uploads the installers as release assets.
 - Code signing and notarization need certificates only gulliby can provide (an Apple Developer ID and a Windows code signing certificate). Until then builds are unsigned: macOS asks to allow the app in Privacy & Security, Windows SmartScreen warns.
 - Updates: the repository is private, so the app checks GitHub releases only when a token is configured and otherwise shows its version with a link. Automatic updates come with signing.

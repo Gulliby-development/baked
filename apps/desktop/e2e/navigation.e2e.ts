@@ -1,0 +1,64 @@
+import { expect, test } from "./fixtures.ts";
+
+test("the sidebar moves between All projects, a project, Needs you and Settings", async ({
+  app,
+}) => {
+  const page = await app("#/projects");
+  const nav = page.getByRole("navigation", { name: "Main" });
+  await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
+  await expect(page.getByRole("article")).toHaveCount(4);
+
+  await nav.getByRole("link", { name: /^B BAKED/ }).click();
+  await expect(page).toHaveURL(/#\/p\/baked\/overview$/);
+  await expect(page.getByRole("heading", { name: "BAKED", level: 1 })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Runs in this project" })).toBeVisible();
+
+  await nav.getByRole("link", { name: /^Needs you/ }).click();
+  await expect(page.getByRole("heading", { name: "Needs you", level: 1 })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Waiting items" }).getByRole("link", {
+      name: /^Approve usage-totals/,
+    }),
+  ).toBeVisible();
+
+  await nav.getByRole("link", { name: "Settings" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Appearance and behavior", level: 1 }),
+  ).toBeVisible();
+
+  await nav.getByRole("link", { name: "All projects" }).click();
+  await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
+});
+
+test("opening a closed project from its card starts it and shows its home", async ({ app }) => {
+  const page = await app("#/projects");
+  const card = page.getByRole("article", { name: "client-api" });
+  await expect(card).toContainText("closed");
+  await card.getByRole("button", { name: "Open" }).click();
+  await expect(page).toHaveURL(/#\/p\/client\/overview$/);
+  await expect(page.getByRole("heading", { name: "client-api", level: 1 })).toBeVisible();
+  await expect(page.getByText("running · 0.1.1")).toBeVisible();
+});
+
+test("the first start shows an empty project list", async ({ app }) => {
+  const page = await app("#/projects", "empty");
+  await expect(page.getByText("No projects yet. Open a folder to start.")).toBeVisible();
+  await expect(page.getByRole("article")).toHaveCount(0);
+});
+
+test("a backend that fails to start shows its error, and Restart recovers", async ({ app }) => {
+  const page = await app("#/p/baked/overview", "start-failure");
+  await page.getByRole("button", { name: "Open project" }).click();
+  await expect(page.getByText(/The backend of BAKED stopped: baked serve exited/)).toBeVisible();
+  await page.getByRole("button", { name: "Restart" }).click();
+  await expect(page.getByRole("region", { name: "Runs in this project" })).toBeVisible();
+});
+
+test("an older BAKED gets a 'needs a newer BAKED' notice instead of an error", async ({ app }) => {
+  const page = await app("#/p/baked/git", "older");
+  await expect(page.getByRole("heading", { name: "Git", level: 1 })).toBeVisible();
+  await expect(
+    page.getByText(/Needs a newer BAKED: this project's backend cannot show Git/),
+  ).toBeVisible();
+  await expect(page.getByText("running · 0.0.9")).toBeVisible();
+});

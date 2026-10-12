@@ -1,5 +1,5 @@
 import type { DesktopBridge } from "../../shared/bridge.js";
-import { createMockBridge } from "./mock.js";
+import { createMockBridge, mockScenario } from "./mock.js";
 
 declare global {
   interface Window {
@@ -8,5 +8,6 @@ declare global {
 }
 
 /** The preload bridge inside Electron; fixtures in a plain browser. */
-export const bridge: DesktopBridge = window.baked ?? createMockBridge();
+export const bridge: DesktopBridge =
+  window.baked ?? createMockBridge(mockScenario(window.location?.search ?? ""));
 export const isMock = window.baked === undefined;

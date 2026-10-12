@@ -23,5 +23,5 @@
     "noUnusedParameters": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*", "tests/**/*", "scripts/**/*", "vite.config.ts"]
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*", "e2e/**/*", "playwright.config.ts", "vite.config.ts"]
 }
