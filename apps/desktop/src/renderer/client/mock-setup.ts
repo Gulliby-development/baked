@@ -20,6 +20,8 @@ import type {
   ConfigFile,
   ConfigView,
   Effort,
+  GateDraft,
+  GateDraftKind,
   GateEntry,
   HookCommand,
   HookEvent,
@@ -1328,8 +1330,123 @@ function setHookEvent(key: string, root: string, change: { event?: string; enabl
   return response(200, hooksView(key, root));
 }
 
+/** A believable draft for the preview, made without a model. */
+function mockDraft(text: string, kind: GateDraftKind): GateDraft {
+  const id =
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .split("-")
+      .filter(Boolean)
+      .slice(0, 4)
+      .join("-") || "gate";
+  const base = { id, description: text, required: kind !== "ai-acceptance" };
+  const drafts: Record<GateDraftKind, Pick<GateDraft, "gate" | "script" | "capabilities">> = {
+    command: {
+      gate: {
+        ...base,
+        type: "command",
+        command: { executable: "bun", args: [`tests/gates/${id}.ts`], cwd: "." },
+      },
+      script: {
+        path: `tests/gates/${id}.ts`,
+        content: `const out = await new Response(Bun.spawn(["bun", "src/cli.ts", "sum", "50", "6"]).stdout).text();\nif (out.trim() !== "56") {\n  console.log(\`expected 56, got \${out}\`);\n  process.exit(1);\n}\n`,
+      },
+      capabilities: [
+        `Runs bun tests/gates/${id}.ts in . without a shell; a non-zero exit blocks the workflow`,
+        `Writes the test script tests/gates/${id}.ts when saved`,
+      ],
+    },
+    "ai-acceptance": {
+      gate: {
+        ...base,
+        type: "ai-acceptance",
+        acceptance: {
+          scenario: {
+            title: text,
+            steps: ["Start the CLI.", "Run sum 50 6.", "Run sum with a missing number."],
+            expectations: [
+              "sum 50 6 prints 56.",
+              "A missing number gets a clear error, not a stack trace.",
+            ],
+          },
+          start: { executable: "bun", args: ["src/cli.ts", "repl"], cwd: "." },
+          commands: [{ executable: "bun", args: ["src/cli.ts", "sum", "50", "6"] }],
+        },
+      },
+      script: null,
+      capabilities: [
+        "Starts bun src/cli.ts repl in . and drives its terminal",
+        "Runs command 1: bun src/cli.ts sum 50 6",
+        "The program may not listen on any port",
+        "No network access and no file writes; advisory until a person accepts the test it writes",
+      ],
+    },
+    human: {
+      gate: { ...base, type: "human", human: { prompt: text } },
+      script: null,
+      capabilities: [
+        `Stops the workflow until a person approves: ${text}`,
+        "Runs nothing and reads nothing",
+      ],
+    },
+    "ai-review": {
+      gate: { ...base, type: "ai-review", review: { instructions: text } },
+      script: null,
+      capabilities: [
+        "An AI reviewer (reviewer) reads the change with these instructions; critical and high findings block",
+        "Read-only: the reviewer cannot change files or run commands",
+      ],
+    },
+  };
+  return { ...drafts[kind], summary: text, problems: [], path: `baked/gates/${id}.json` };
+}
+
 export const setupRoutes: MockRoute = (request) => {
   const { key, method, path } = request;
+  const placement = /^\/v1\/workflow\/gates\/([^/]+)\/(places|bind)$/.exec(path);
+  if (placement) {
+    const workflow = request.query.get("workflow") ?? "sdd";
+    if (placement[2] === "bind") {
+      const { workflow: target = "sdd" } = body<{ workflow?: string }>(request);
+      const custom = target === "sdd" || target === "quick-fix";
+      return response(200, {
+        workflowId: custom ? `${target}-custom` : target,
+        path: `baked/workflows/${custom ? `${target}-custom` : target}.json`,
+        copiedFrom: custom ? target : null,
+      });
+    }
+    return response(200, {
+      workflowId: workflow,
+      copyTo: workflow === "sdd" || workflow === "quick-fix" ? `${workflow}-custom` : null,
+      places: [
+        {
+          key: "stage:checks",
+          label: "In the checks stage",
+          bound: false,
+          disabled: "a check stage runs command gates only",
+        },
+        {
+          key: "transition:implemented",
+          label: "After implement (pass), before checks starts",
+          bound: false,
+          disabled: null,
+        },
+        {
+          key: "transition:reviewed",
+          label: "After review (pass), before acceptance starts",
+          bound: false,
+          disabled: null,
+        },
+        {
+          key: "transition:accepted",
+          label: "After acceptance (pass), before the run finishes",
+          bound: false,
+          disabled: null,
+        },
+      ],
+    });
+  }
   const skill = skillRoutes(request);
   if (skill) return skill;
   const s = state(key);
@@ -1395,6 +1512,36 @@ export const setupRoutes: MockRoute = (request) => {
           .filter((g) => ids.includes(g.entry.id))
           .map((g) => ({ id: g.entry.id, hash: g.entry.hash })),
       });
+    }
+    case "POST /v1/workflow/gates/draft": {
+      const { text, kind } = body<{ text: string; kind: GateDraftKind }>(request);
+      if (!text?.trim()) return error(400, "INVALID_REQUEST", "Describe the check");
+      return response(200, mockDraft(text, kind ?? "command"));
+    }
+    case "POST /v1/workflow/gates": {
+      const gate = body<{ gate?: GateDraft["gate"] }>(request).gate;
+      if (!gate) return error(400, "INVALID_REQUEST", "Send the drafted gate");
+      const id = gate.id;
+      if (s.projectGates.some((g) => g.entry.id === id))
+        return error(
+          422,
+          "INVALID_GATE",
+          `baked/gates/${id}.json already exists; choose another ID`,
+        );
+      s.projectGates.push({
+        entry: {
+          id,
+          type: gate.type,
+          required: gate.required,
+          scope: "feature",
+          source: "project",
+          path: `${s.summary.root}\\baked\\gates\\${id}.json`,
+          hash: fakeHash(id),
+          shadows: [],
+          confirmed: true,
+        },
+      });
+      return response(201, { id, path: `baked/gates/${id}.json`, script: null });
     }
     case "GET /v1/workflow/checks":
       return response(200, checkList(s));

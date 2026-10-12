@@ -14,6 +14,7 @@ import {
   gateCapabilities,
   saveGateDraft,
 } from "../workflows/v2/gate-draft.js";
+import { bindGate, gatePlaces } from "../workflows/v2/gate-placement.js";
 import { describeGate, loadGateLibrary, readConfirmations } from "../workflows/v2/library.js";
 import type { RouteContext } from "./route-context.js";
 
@@ -26,7 +27,7 @@ export interface GateRouteContext extends RouteContext {
 
 const DraftBody = z.strictObject({
   text: z.string().min(1).max(4000),
-  kind: z.enum(["command", "ai-acceptance"]).optional(),
+  kind: z.enum(["command", "ai-acceptance", "human", "ai-review"]).optional(),
   id: SafeId.optional(),
   model: z.string().min(1).max(200).optional(),
 });
@@ -36,6 +37,12 @@ const SaveBody = z.strictObject({
     .strictObject({ path: z.string().min(1).max(256), content: z.string().min(1).max(20000) })
     .nullable()
     .optional(),
+});
+
+const PlacesQuery = z.strictObject({ workflow: SafeId.optional() });
+const BindBody = z.strictObject({
+  workflow: SafeId.optional(),
+  at: z.string().regex(/^(stage|transition):[A-Za-z0-9_-]{1,96}$/),
 });
 
 /** Answers a gate draft request, or returns null when the path is not one. */
@@ -70,6 +77,25 @@ export async function gateRoute(ctx: GateRouteContext): Promise<Response | null>
       );
     } catch (error) {
       ctx.fail(422, "INVALID_GATE", error instanceof Error ? error.message : String(error));
+    }
+  }
+  const placement = /^\/v1\/workflow\/gates\/([^/]+)\/(places|bind)$/.exec(ctx.path);
+  if (placement) {
+    const id = decodeURIComponent(placement[1] ?? "");
+    const fallback = ctx.config.workflows?.defaultWorkflow ?? "sdd";
+    const places = placement[2] === "places";
+    ctx.only(places ? "GET" : "POST");
+    const query = places ? ctx.query(PlacesQuery) : null;
+    const body = places ? null : BindBody.parse(await ctx.readJson());
+    try {
+      return ctx.json(
+        200,
+        body
+          ? bindGate(ctx.workspace, body.workflow ?? fallback, id, body.at, policy())
+          : gatePlaces(ctx.workspace, query?.workflow ?? fallback, id, policy()),
+      );
+    } catch (error) {
+      ctx.fail(422, "INVALID_PLACE", error instanceof Error ? error.message : String(error));
     }
   }
   const match = /^\/v1\/workflow\/gates\/([^/]+)$/.exec(ctx.path);

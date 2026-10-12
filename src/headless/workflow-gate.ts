@@ -4,6 +4,7 @@ import { WorkflowFault } from "../core/workflows/errors.js";
 import type { RunPolicy } from "../core/workflows/schemas.js";
 import {
   configuredDraftModel,
+  DRAFT_KINDS,
   type DraftKind,
   type DraftModel,
   draftGate,
@@ -11,6 +12,7 @@ import {
   gateCapabilities,
   saveGateDraft,
 } from "../core/workflows/v2/gate-draft.js";
+import { bindGate, gatePlaces } from "../core/workflows/v2/gate-placement.js";
 import { describeGate, loadGateLibrary, readConfirmations } from "../core/workflows/v2/library.js";
 import type { AppConfig } from "../types/index.js";
 import type { WorkflowArgs } from "./workflow-parse.js";
@@ -110,8 +112,8 @@ export async function executeGateCommand(
     case "new": {
       const text = flag(args, "text") ?? rest.join(" ");
       const kind = flag(args, "kind");
-      if (kind !== undefined && kind !== "command" && kind !== "ai-acceptance")
-        throw new WorkflowFault("INVALID_DEFINITION", "--kind is command or ai-acceptance");
+      if (kind !== undefined && !(DRAFT_KINDS as readonly string[]).includes(kind))
+        throw new WorkflowFault("INVALID_DEFINITION", `--kind is one of ${DRAFT_KINDS.join(", ")}`);
       const id = flag(args, "id");
       const library = loadGateLibrary(workspace, policy);
       const draft = await draftGate(
@@ -131,6 +133,35 @@ export async function executeGateCommand(
       return {
         result: { ...draft, saved },
         text: `${formatDraft(draft)}Saved ${saved.path}${saved.script ? ` and ${saved.script}` : ""}; bind it to a workflow with /workflow edit or the desktop Gates screen.\n`,
+        exitCode: 0,
+      };
+    }
+    case "places":
+    case "bind": {
+      const id = rest[0];
+      if (!id) throw new WorkflowFault("INVALID_DEFINITION", `gate ${sub} needs a gate ID`);
+      const workflow = flag(args, "workflow") ?? config.workflows?.defaultWorkflow ?? "sdd";
+      if (sub === "places") {
+        const places = gatePlaces(workspace, workflow, id, policy);
+        const text = [
+          `Where ${id} can go in ${places.workflowId}${places.copyTo ? ` (binding copies it as ${places.copyTo})` : ""}:`,
+          ...places.places.map(
+            (p) =>
+              `  ${p.key}  ${p.label}${p.bound ? "  [bound]" : p.disabled ? `  (not here: ${p.disabled})` : ""}`,
+          ),
+        ].join("\n");
+        return { result: places, text: `${text}\n`, exitCode: 0 };
+      }
+      const at = flag(args, "at");
+      if (!at)
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          "gate bind needs --at PLACE; gate places ID lists them",
+        );
+      const bound = bindGate(workspace, workflow, id, at, policy);
+      return {
+        result: bound,
+        text: `Bound ${id} at ${at} in ${bound.path}${bound.copiedFrom ? ` (a custom copy of ${bound.copiedFrom}; run it with --workflow ${bound.workflowId})` : ""}.\n`,
         exitCode: 0,
       };
     }
@@ -155,7 +186,7 @@ export async function executeGateCommand(
     default:
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "gate takes new TEXT, save --file FILE, list or show ID",
+        "gate takes new TEXT, save --file FILE, list, show ID, places ID or bind ID --at PLACE",
       );
   }
 }

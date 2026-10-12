@@ -5,6 +5,8 @@
 
 /** `/v1/workflow/checks*`. */
 export const CHECKS_CAPABILITY = "checks";
+/** `POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `/v1/workflow/gates/ID/places|bind`. */
+export const GATE_DRAFTS_CAPABILITY = "gate-drafts";
 /** `/v1/commands` and `/v1/skills`. */
 export const LIBRARY_CAPABILITY = "library";
 /** `/v1/workflow/routing`. */
