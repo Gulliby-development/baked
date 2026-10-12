@@ -10,7 +10,13 @@ import {
   shell,
   type WebContents,
 } from "electron";
-import type { AppSettings, AttentionItem, DesktopProject, NewProjectDraft } from "../shared/api.js";
+import type {
+  AppSettings,
+  AttentionItem,
+  DesktopProject,
+  NewProjectDraft,
+  VoiceLanguage,
+} from "../shared/api.js";
 import { attentionHash, attentionTitle, kindLabel } from "../shared/attention.js";
 import {
   type ChatExportFormat,
@@ -36,7 +42,7 @@ import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
 import { closeAction } from "./tray-model.js";
-import { resolveVoiceDir, VoiceEngine, type VoiceLanguage } from "./voice.js";
+import { resolveVoiceDir, VoiceEngine } from "./voice.js";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const settings = new SettingsStore(join(app.getPath("userData"), "settings.json"));

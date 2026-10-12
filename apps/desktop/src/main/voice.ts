@@ -1,15 +1,16 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { VoiceStatus, VoiceTranscript } from "../shared/api.js";
+import {
+  VOICE_LANGUAGES,
+  type VoiceLanguage,
+  type VoiceStatus,
+  type VoiceTranscript,
+} from "../shared/api.js";
 
 /** The engine works on 16 kHz mono samples and takes at most 30 seconds per call. */
 export const VOICE_SAMPLE_RATE = 16_000;
 export const VOICE_MAX_SECONDS = 30;
-
-/** Languages the Whistle model transcribes; omitting one lets the model detect it. */
-export const VOICE_LANGUAGES = ["en", "de", "fr", "es", "it", "nl", "pl"] as const;
-export type VoiceLanguage = (typeof VOICE_LANGUAGES)[number];
 
 /** Where the speech engine lives: `<dir>/cactus-needle` (the package) and `<dir>/whistle.cact`. */
 export interface VoiceLocation {
