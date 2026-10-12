@@ -1,4 +1,5 @@
 import { relative, resolve } from "node:path";
+import { BriefStore, renderBrief } from "../core/chat/coordinator.js";
 import type { RollbackReport } from "../core/checkpoints/fork.js";
 import { RollbackError } from "../core/checkpoints/fork.js";
 import { SavedCheckpointsError, savedSessionCheckpoints } from "../core/checkpoints/list.js";
@@ -16,8 +17,11 @@ const help = `Usage: baked session list [--limit N] [--json]
        baked session fork SESSION [options]
        baked session undo SESSION [--to N] [--force] [--json]
        baked session redo SESSION [--force] [--json]
+       baked session coordinator [--json]
 
-list prints the saved sessions of this project, most recently updated first (default limit 50).
+list prints the saved sessions of this project, most recently updated first (default limit 50);
+the project coordinator is not listed.
+coordinator prints the project coordinator's session id and its project brief.
 delete removes a saved session and the checkpoint tags it made; the files stay as they are.
 export writes the conversation of the session's active tab as Markdown (default) or JSON, to FILE
 or to .baked/exports/, as /session export does in the terminal UI.
@@ -57,6 +61,7 @@ export async function runSessionCli(argv: string[]): Promise<number> {
   if (command === "list") return list(rest);
   if (command === "delete") return remove(rest);
   if (command === "export") return exportSession(rest);
+  if (command === "coordinator") return coordinator(rest);
   if (command === "checkpoints") return checkpoints(rest);
   if (command !== "fork") {
     process.stderr.write(`Unknown session command: ${command}\n\n${help}`);
@@ -227,7 +232,10 @@ function list(rest: string[]): number {
     process.stderr.write("--limit needs a number (1 or more)\n");
     return 1;
   }
-  const sessions = new SessionManager(getCwd()).listSessions().slice(0, limit);
+  const sessions = new SessionManager(getCwd())
+    .listSessions()
+    .filter((s) => s.kind !== "coordinator")
+    .slice(0, limit);
   if (rest.includes("--json")) {
     process.stdout.write(`${JSON.stringify({ sessions }, null, 2)}\n`);
     return 0;
@@ -241,6 +249,31 @@ function list(rest: string[]): number {
     return `${s.id}  ${updated}  ${String(s.messageCount).padStart(4)} msg  ${s.title}`;
   });
   process.stdout.write(`${out.join("\n")}\n`);
+  return 0;
+}
+
+function coordinator(rest: string[]): number {
+  const unknown = rest.find((a) => a !== "--json");
+  if (unknown) {
+    process.stderr.write(`Unknown argument: ${unknown}\n\n${help}`);
+    return 1;
+  }
+  const cwd = getCwd();
+  const session = new SessionManager(cwd).listSessions().find((s) => s.kind === "coordinator");
+  if (!session) {
+    process.stderr.write(
+      "This project has no coordinator yet; the desktop app or POST /v1/coordinator creates it.\n",
+    );
+    return 1;
+  }
+  const brief = new BriefStore(cwd, session.id).read();
+  if (rest.includes("--json")) {
+    process.stdout.write(`${JSON.stringify({ sessionId: session.id, brief }, null, 2)}\n`);
+    return 0;
+  }
+  process.stdout.write(
+    `Coordinator ${session.id} (brief revision ${String(brief.revision)})\n\n${renderBrief(brief)}\n`,
+  );
   return 0;
 }
 

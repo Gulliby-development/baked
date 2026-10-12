@@ -133,4 +133,16 @@ describe("buildModeMessage — cache-stable mode injection", () => {
     cm.setBakeMode("architect");
     expect(cm.buildModeMessage("default")).toBeNull();
   });
+
+  test("extra tools of a session kind run in architect mode", async () => {
+    const extra = { execute: async () => ({ success: true, output: "saved" }) };
+    const agent = createBakeAgent({
+      model: mockModel("anthropic/claude-sonnet-4-6"),
+      contextManager: context(),
+      bakeMode: "architect",
+      extraTools: { coordinator_brief: extra },
+    }) as unknown as Agent;
+    const result = (await agent.tools.coordinator_brief?.execute?.({}, {})) as { output: string };
+    expect(result.output).toBe("saved");
+  });
 });

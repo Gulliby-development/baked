@@ -146,6 +146,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat: Export as Markdown or JSON in the chat menu"],
   },
   {
+    id: "coordinator",
+    group: "Chat and sessions",
+    title: "Project coordinator chat with a durable project brief",
+    tui: gap(152),
+    cli: ["baked session coordinator: prints the brief"],
+    api: ["/v1/coordinator", "/v1/coordinator/brief"],
+    desktop: gap(151),
+  },
+  {
     id: "session-diagnostics",
     group: "Chat and sessions",
     title: "Diagnostic export and API request dumps",
