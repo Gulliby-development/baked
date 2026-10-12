@@ -15,6 +15,7 @@ import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
@@ -833,7 +834,7 @@ export function RunScreen({ projectKey, runId }: { projectKey: string; runId: st
         <span className="font-mono">{runId}</span>
       </nav>
       {error && <Alert tone="error">{error}</Alert>}
-      {!data && !error && <div className="text-dim-foreground">Loading run…</div>}
+      {!data && !error && <Skeleton lines={5} label="Loading the run" />}
       {data && (
         <RunBody key={runId} projectKey={projectKey} data={data} trace={trace} refresh={refresh} />
       )}

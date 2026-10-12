@@ -231,6 +231,47 @@ function explain(model: GraphModel, from: string, to: string): GraphLinkAnswer |
   };
 }
 
+/** The "site" sample indexes for a while after its graph is first asked for, file by file. */
+const INDEXING_KEY = "site";
+const INDEX_FILES = 1380;
+const INDEX_MS = 15_000;
+let indexStartedAt: number | null = null;
+
+/** The first seconds open the project (no count), then files are counted. */
+const OPEN_MS = 3000;
+
+function indexedFiles(key: string): number | null {
+  if (key !== INDEXING_KEY || indexStartedAt === null) return null;
+  const done = Math.floor(((Date.now() - indexStartedAt - OPEN_MS) / INDEX_MS) * INDEX_FILES);
+  return done < INDEX_FILES ? Math.max(done, -1) : null;
+}
+
+/** `GET /v1/progress`: the sample project's indexing while it runs. */
+export function progressRoutes({ key, method, path }: MockRequest): ApiResponse | undefined {
+  if (method !== "GET" || path !== "/v1/progress") return undefined;
+  const done = indexedFiles(key);
+  const startedAt = new Date(indexStartedAt ?? Date.now()).toISOString();
+  if (done === null) return response(200, { items: [] });
+  if (done < 0)
+    return response(200, {
+      items: [
+        {
+          id: "open",
+          task: "open",
+          label: "Opening the project: mapping the codebase",
+          done: null,
+          total: null,
+          startedAt,
+        },
+      ],
+    });
+  return response(200, {
+    items: [
+      { id: "index", task: "index", label: "Indexing files", done, total: INDEX_FILES, startedAt },
+    ],
+  });
+}
+
 /** A function declaration, so mock-routes.ts can list it while this module is still loading. */
 export async function graphRoutes({
   key,
@@ -240,6 +281,11 @@ export async function graphRoutes({
   body,
 }: MockRequest): Promise<ApiResponse | undefined> {
   if (!path.startsWith("/v1/graph")) return undefined;
+  // Only the browser preview plays the wait; unit tests read the ready sample.
+  if (key === INDEXING_KEY && indexStartedAt === null && typeof window !== "undefined")
+    indexStartedAt = Date.now();
+  if (method === "POST" && path === "/v1/graph" && indexedFiles(key) !== null)
+    return response(200, { state: "indexing", indexing: true });
   const c = await loadCore();
   const model = await modelFor(key);
   if (method === "POST" && path === "/v1/graph")

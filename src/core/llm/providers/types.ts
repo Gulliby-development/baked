@@ -1,4 +1,5 @@
 import type { LanguageModel } from "ai";
+import type { DetectedLogin } from "../detected-logins.js";
 
 export interface ProviderModelInfo {
   id: string;
@@ -33,6 +34,8 @@ export interface ProviderDefinition {
   contextWindowOverrides?: [pattern: string, tokens: number][];
   grouped?: boolean;
   checkAvailability?(): Promise<boolean>;
+  /** A login another tool already holds, used when no key is set in the environment or saved. */
+  detectLogin?(): DetectedLogin | null;
   onRequestAuth?(): Promise<void>;
   onActivate?(): Promise<void>;
   onDeactivate?(): void;

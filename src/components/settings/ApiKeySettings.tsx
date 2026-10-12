@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import { saveGlobalConfig } from "../../config/index.js";
 import { providerIcon } from "../../core/icons.js";
-import { getAllProviders } from "../../core/llm/providers/index.js";
+import { getAllProviders, getProvider } from "../../core/llm/providers/index.js";
 import {
   deleteSecret,
   getDefaultKeyPriority,
@@ -55,6 +55,8 @@ function buildKeyItems(): KeyItem[] {
 
 interface ApiKeyState {
   keys: Record<string, SecretSources>;
+  /** Logins found in other tools (Copilot IDE, gh CLI), by key id; used when no key is set. */
+  detected: Record<string, string>;
   priority: KeyPriority;
   refresh: (items: KeyItem[]) => void;
   refreshOne: (id: SecretKey) => void;
@@ -64,10 +66,21 @@ function buildKeys(items: KeyItem[], priority: KeyPriority): Record<string, Secr
   return Object.fromEntries(items.map((k) => [k.id, getSecretSources(k.id, priority)]));
 }
 
+function buildDetected(items: KeyItem[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of items) {
+    const source = getProvider(k.providerId)?.detectLogin?.()?.source;
+    if (source) out[k.id] = source;
+  }
+  return out;
+}
+
 const useApiKeyStore = create<ApiKeyState>()((set, get) => ({
   keys: {},
+  detected: {},
   priority: getDefaultKeyPriority(),
-  refresh: (items: KeyItem[]) => set({ keys: buildKeys(items, get().priority) }),
+  refresh: (items: KeyItem[]) =>
+    set({ keys: buildKeys(items, get().priority), detected: buildDetected(items) }),
   refreshOne: (id: SecretKey) =>
     set((state) => ({ keys: { ...state.keys, [id]: getSecretSources(id, state.priority) } })),
 }));
@@ -82,12 +95,13 @@ interface Props {
   onClose: () => void;
 }
 
-function formatBadges(sources: SecretSources): string {
+function formatBadges(sources: SecretSources, detected?: string): string {
   const parts: string[] = [];
   const tag = (label: string, isActive: boolean) => (isActive ? `[${label}]` : `(${label})`);
   if (sources.env) parts.push(tag("env", sources.active === "env"));
   if (sources.keychain) parts.push(tag("keychain", sources.active === "keychain"));
   if (sources.file) parts.push(tag("file", sources.active === "file"));
+  if (detected) parts.push(tag(`detected: ${detected}`, sources.active === "none"));
   return parts.length > 0 ? parts.join(" ") : "not set";
 }
 
@@ -96,6 +110,7 @@ export function ApiKeySettings({ visible, onClose }: Props) {
   const { width: tw, height: th } = useTerminalDimensions();
   const keyItems = useMemo(() => buildKeyItems(), []);
   const keys = useApiKeyStore((s) => s.keys);
+  const detected = useApiKeyStore((s) => s.detected);
   const priority = useApiKeyStore((s) => s.priority);
   const refresh = useApiKeyStore((s) => s.refresh);
   const refreshOne = useApiKeyStore((s) => s.refreshOne);
@@ -140,15 +155,17 @@ export function ApiKeySettings({ visible, onClose }: Props) {
     const mapKey = (k: KeyItem): MenuRow[] => {
       const sources = keys[k.id];
       if (!sources) return [];
+      const found = detected[k.id];
+      const usable = sources.active !== "none" || Boolean(found);
       const out: MenuRow[] = [
         {
           id: k.id,
           kind: "set",
           targetKey: k.id,
           label: `${providerIcon(k.providerId)}  ${k.label}`,
-          meta: formatBadges(sources),
-          active: sources.active !== "none",
-          status: sources.active !== "none" ? "online" : "offline",
+          meta: formatBadges(sources, found),
+          active: usable,
+          status: usable ? "online" : "offline",
         },
       ];
       if (sources.keychain || sources.file) {
@@ -184,7 +201,7 @@ export function ApiKeySettings({ visible, onClose }: Props) {
       ],
     });
     return gs;
-  }, [keyItems, keys, priority]);
+  }, [keyItems, keys, detected, priority]);
 
   const expanded = useMemo(() => new Set(groups.map((g) => g.id)), [groups]);
   const rows = useMemo(() => buildGroupedRows(groups, expanded), [groups, expanded]);

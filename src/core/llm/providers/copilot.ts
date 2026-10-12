@@ -4,6 +4,7 @@ import { loadConfig } from "../../../config/index.js";
 import { getProviderApiKey } from "../../secrets.js";
 import { CURRENT_VERSION } from "../../version.js";
 import { getCompatReasoningBody } from "../compat-reasoning.js";
+import { copilotIdeLogin } from "../detected-logins.js";
 import { withSessionHeaders } from "./reasoning-fetch.js";
 import type { ProviderDefinition, ProviderModelInfo } from "./types.js";
 
@@ -49,7 +50,7 @@ async function exchangeToken(githubToken: string): Promise<string> {
         const body = await res.text().catch(() => "");
         const hint =
           res.status === 401 || res.status === 403
-            ? " — your GitHub OAuth token is invalid or expired. Re-run the login flow in VS Code/JetBrains and copy the fresh oauth_token from ~/.config/github-copilot/apps.json."
+            ? " — your GitHub OAuth token is invalid or expired. Sign in to Copilot again in VS Code or JetBrains; if you saved a token with /keys, remove or replace it."
             : res.status >= 500
               ? " — GitHub is having issues, try again in a moment."
               : "";
@@ -74,10 +75,10 @@ function invalidateBearer(): void {
 }
 
 function getGitHubToken(): string {
-  const stored = getProviderApiKey(ENV_VAR);
-  if (stored) return stored;
+  const token = getProviderApiKey(ENV_VAR) ?? copilotIdeLogin()?.token;
+  if (token) return token;
   throw new Error(
-    "GitHub Copilot requires an OAuth token. Sign in via VS Code or JetBrains, then copy oauth_token from ~/.config/github-copilot/apps.json and save it with /keys or --set-key copilot.",
+    "GitHub Copilot needs a GitHub login. Sign in to Copilot in VS Code or JetBrains (BAKED reads that login), or save an OAuth token with /keys or --set-key copilot.",
   );
 }
 
@@ -284,8 +285,10 @@ export const copilot: ProviderDefinition = {
   ],
 
   async checkAvailability() {
-    return !!getProviderApiKey(ENV_VAR);
+    return Boolean(getProviderApiKey(ENV_VAR) ?? copilotIdeLogin());
   },
+
+  detectLogin: copilotIdeLogin,
 
   grouped: true,
 };

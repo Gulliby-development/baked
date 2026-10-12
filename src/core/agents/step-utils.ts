@@ -117,6 +117,7 @@ const SUMMARIZABLE_TOOLS = new Set([
   "bake_impact",
   "memory",
   "skills",
+  "baked_help",
   "plan",
   "update_plan_step",
   "ask_user",
@@ -233,7 +234,7 @@ function buildSummary(toolName: string, text: string, ctx?: SummaryContext): str
     const firstLine = text.split("\n")[0] ?? "";
     return `${tag} ${firstLine.slice(0, 100)}`;
   }
-  if (toolName === "skills") {
+  if (toolName === "skills" || toolName === "baked_help") {
     const firstLine = text.split("\n")[0] ?? "";
     return `${tag} ${firstLine.slice(0, 100)}`;
   }

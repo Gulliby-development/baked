@@ -1,7 +1,16 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import type { LineLoop } from "../../client/start.js";
+import { Icon } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
-import { type Handoff, handoff, loopText, type Station, TYPE_LABEL } from "./line-model.js";
+import {
+  type Handoff,
+  handoff,
+  loopText,
+  STATE_ICON,
+  type Station,
+  stageIcon,
+  TYPE_LABEL,
+} from "./line-model.js";
 
 /**
  * The run as a conveyor: stations in a row over a belt, the contract each one makes under its
@@ -52,6 +61,11 @@ function ContractBar({ station }: { station: Station }) {
       />
     </span>
   );
+}
+
+function StateIcon({ station }: { station: Station }) {
+  const name = STATE_ICON[station.state];
+  return name ? <Icon name={name} size={12} className="ml-auto flex-none" /> : null;
 }
 
 function stateText(station: Station): string {
@@ -194,10 +208,16 @@ export function Conveyor({
                 }
                 onClick={() => onSelect(station.id)}
               >
-                <span className="truncate text-[13px] font-bold">{station.label}</span>
-                <span className="font-mono text-[11px] opacity-80">
-                  {TYPE_LABEL[station.type]}
-                  {station.round > 1 ? ` · round ${station.round}` : ""}
+                <span className="flex min-w-0 items-center gap-1">
+                  <Icon name={stageIcon(station)} size={13} className="flex-none" />
+                  <span className="truncate text-[13px] font-bold">{station.label}</span>
+                </span>
+                <span className="flex items-center font-mono text-[11px]">
+                  <span className="truncate opacity-80">
+                    {TYPE_LABEL[station.type]}
+                    {station.round > 1 ? ` · round ${station.round}` : ""}
+                  </span>
+                  <StateIcon station={station} />
                 </span>
                 <span className="mt-auto flex items-center gap-1 font-mono text-[10.5px] font-semibold">
                   <span className="truncate">{station.produces ?? "result"}</span>
