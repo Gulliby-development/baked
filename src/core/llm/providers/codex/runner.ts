@@ -16,6 +16,7 @@ import type {
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
 import { trackProcess } from "../../../process-tracker.js";
+import { cliReasoningEffort } from "../cli-effort.js";
 import {
   imageExtension,
   imagePlaceholder,
@@ -32,6 +33,8 @@ export interface CodexRunnerCall {
   parts: CodexPromptParts;
   schema: JSONSchema7;
   abortSignal?: AbortSignal;
+  /** Reasoning effort (`model_reasoning_effort`); Codex's default when absent. */
+  effort?: string;
 }
 
 export interface CodexRunnerResult {
@@ -400,7 +403,11 @@ export class CodexCliRunner implements CodexRunner {
       "read-only",
       "--color",
       "never",
-      ...codexConfigArgs({ ...CODEX_ADAPTER_CONFIG, model_instructions_file: instructionsPath }),
+      ...codexConfigArgs({
+        ...CODEX_ADAPTER_CONFIG,
+        model_instructions_file: instructionsPath,
+        ...(call.effort ? { model_reasoning_effort: call.effort } : {}),
+      }),
       "--cd",
       getCwd(),
       "--output-schema",
@@ -542,6 +549,7 @@ export function createCodexLanguageModel(
         parts,
         schema: buildCodexSchema(options),
         abortSignal: options.abortSignal,
+        effort: cliReasoningEffort(options.providerOptions, "codex"),
       });
 
       const parsed = parseCodexResponse(result.text);

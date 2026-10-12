@@ -9,6 +9,8 @@ export interface CatalogModel {
   id: string;
   name: string;
   contextWindow?: number;
+  /** Reasoning efforts a chat can pick for this model, lowest first; absent when it takes none. */
+  efforts?: string[];
 }
 
 /** One provider as `GET /v1/models` returns it. */
