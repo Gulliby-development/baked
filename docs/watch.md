@@ -73,7 +73,9 @@ baked --headless --watch --mode auto --events
 - With `--events`, BAKED writes a `watch` event (`started`, `triggered`, `stopped`, `error`) and a `watch-turn` event before each turn.
 - Ctrl+C stops the watch and ends the session.
 
-The desktop app gets watch mode next ([#126](https://github.com/Gulliby-development/baked/issues/126)).
+### In the desktop app
+
+**Watch files** in a chat's header turns watch mode on for that chat, and **Watching files** turns it off. Watch turns show as `From load.ts:2 (baked!): …` in the chat and run like typed messages, with the same approvals. One chat of a project watches at a time; turning it on in another chat moves it. The local API offers the same through `GET|POST /v1/sessions/ID/watch` and a `watch` event ([API](desktop/api.md#watch-mode-watch-files)).
 
 ## Configuration
 
