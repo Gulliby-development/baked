@@ -15,6 +15,7 @@ import { register as registerProjects } from "./projects.js";
 import { matchSessionPrefix, register as registerSession } from "./session.js";
 import { register as registerStorage } from "./storage.js";
 import type { CommandContext, CommandHandler } from "./types.js";
+import { register as registerUsage } from "./usage.js";
 import { sysMsg } from "./utils.js";
 import { register as registerWorkflow } from "./workflow.js";
 
@@ -35,6 +36,7 @@ registerHooks(commandMap);
 registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
 registerProjects(commandMap);
+registerUsage(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -193,6 +195,13 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Spec-driven workflows, approvals and verification",
     category: "Session",
     tags: ["spec", "agents", "review", "tasks"],
+  },
+  {
+    cmd: "/usage",
+    ic: "info",
+    desc: "Token use and estimated cost of workflow runs; /usage export writes Markdown",
+    category: "Session",
+    tags: ["tokens", "cost", "spend", "export", "markdown", "report"],
   },
   // ── Drafts ──
   {

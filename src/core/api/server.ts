@@ -54,6 +54,7 @@ import { redactSecrets } from "../workflows/redaction.js";
 import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
+import { usageMarkdown } from "../workflows/usage-markdown.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -948,14 +949,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (path === "/v1/usage") {
       only("GET");
       const query = queryOf(url, UsageQuery);
+      const summary = usageSummary(service.store, {
+        days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
+        groupBy: query.groupBy ?? ["model"],
+        ...(query.model !== undefined ? { model: query.model } : {}),
+        ...(query.stage !== undefined ? { stage: query.stage } : {}),
+      });
       return json(
         200,
-        usageSummary(service.store, {
-          days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
-          groupBy: query.groupBy ?? ["model"],
-          ...(query.model !== undefined ? { model: query.model } : {}),
-          ...(query.stage !== undefined ? { stage: query.stage } : {}),
-        }),
+        query.format === "md" ? { markdown: usageMarkdown(summary) } : summary,
         origin,
       );
     }
@@ -1028,12 +1030,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (action === "usage" || action === "artifacts" || action === "report") {
       only("GET");
       const file = action === "artifacts" ? url.searchParams.get("file") : null;
+      const format = action === "usage" ? url.searchParams.get("format") : null;
+      if (format !== null && format !== "md")
+        throw new ApiError(400, "INVALID_REQUEST", "format must be md");
       return json(
         200,
         await execute({
           command: action,
           positional: [runId],
-          flags: file ? { file: SafeId.parse(file) } : {},
+          flags: file ? { file: SafeId.parse(file) } : format ? { format } : {},
         }),
         origin,
       );

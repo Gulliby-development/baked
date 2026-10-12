@@ -60,7 +60,7 @@ baked usage --days 30 --group-by stage,model --json
 baked attention --json
 ```
 
-`baked usage` adds up the tokens and estimated cost of every workflow attempt that started in the last `--days N` days (default 7, at most 366), across runs. `--group-by` takes one or two of `model`, `stage` and `day` (default `model`); `--model ID` (`(host)` for host attempts) and `--stage ID` filter. `--json` prints the answer of the local API's [`GET /v1/usage`](desktop/api.md); without it a table prints. For one run use `baked workflow usage RUN_ID`.
+`baked usage` adds up the tokens and estimated cost of every workflow attempt that started in the last `--days N` days (default 7, at most 366), across runs. `--group-by` takes one or two of `model`, `stage` and `day` (default `model`); `--model ID` (`(host)` for host attempts) and `--stage ID` filter. `--json` prints the answer of the local API's [`GET /v1/usage`](desktop/api.md); without it a table prints. `--format md` prints a Markdown document to share and `--output FILE` writes it to FILE in the project ([usage reports](workflows/runtime.md#usage-reports)). For one run use `baked workflow usage RUN_ID` (also with `--format md` and `--output`).
 
 `baked attention` lists what waits for a person in the project, oldest first: pending decisions of workflow runs, blocked runs and pending initiative decisions. `--json` prints `{items}` in the shape of [`GET /v1/attention`](workflows/runtime.md); advisory acceptance requests have `blocking: false`. Chat prompts appear only in the local API, where the chat sessions run. Both commands only read the workflow database and exit 0, with nothing listed in a project where no run was started.
 
