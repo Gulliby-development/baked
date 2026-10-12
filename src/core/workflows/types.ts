@@ -101,6 +101,8 @@ export const RuntimeStateSchema = z
     extraConvergenceRounds: z.number().int().nonnegative().default(0),
     /** Corrective tasks a person allowed beyond `maxCorrectiveTasks` with that decision. */
     extraCorrectiveTasks: z.number().int().nonnegative().default(0),
+    /** Rounds the `assume` rule granted by itself after a contradiction stop (at most one). */
+    autoExtensions: z.number().int().nonnegative().default(0),
     /** Findings a person already decided to repair; the convergence stop does not ask again. */
     decidedFindings: z.array(z.string()).default([]),
     /** Findings the run is accepted with (known limitations). */

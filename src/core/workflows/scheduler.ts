@@ -14,10 +14,13 @@ import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification
 import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
 import {
   acceptResidual,
-  assumeAccepts,
+  assumeDecision,
   convergenceBody,
   convergenceStop,
+  earlierFindings,
+  grantRound,
   passesWithNotes,
+  REPEAT_NOTE,
   requiredChecksPass,
 } from "../verification/convergence-stop.js";
 import {
@@ -1022,6 +1025,7 @@ export class WorkflowScheduler {
             case "converge": {
               if (!state.spec || !state.snapshotId || !state.workspaceHash)
                 throw new WorkflowFault("ARTIFACT_MISSING", "Missing convergence context");
+              const earlier = earlierFindings(this.store, runId);
               const review = ReviewSchema.parse(
                 await this.call(
                   runId,
@@ -1031,6 +1035,7 @@ export class WorkflowScheduler {
                   this.requireProfile(profile),
                   {
                     evidence: this.evidenceContext(runId, state),
+                    ...(earlier.length ? { earlierFindings: earlier, repeatOf: REPEAT_NOTE } : {}),
                     ...(Object.keys(state.reviewGaps).length
                       ? {
                           evidenceGaps: {
@@ -1956,7 +1961,25 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const stop = convergenceStop(this.store, runId, state, policy, findings);
     if (!stop) return "go";
     const body = convergenceBody(this.store, runId, state, policy, stop, findings);
-    if (assumeAccepts(policy, body)) {
+    const rule = assumeDecision(policy, state, stop, body);
+    if (rule) body.hostRule = rule;
+    if (rule?.decision === "extend") {
+      // The request is recorded as decided so the run keeps what the host chose and why.
+      this.store.transaction(() => {
+        const id = this.store.request(runId, "convergence", hashJson(state.manifest), body);
+        this.store.decideRequest(
+          runId,
+          id,
+          "accepted",
+          { kind: "continue", automatic: true },
+          true,
+        );
+        grantRound(this.store, runId, state, policy, findings);
+        state.autoExtensions += 1;
+      });
+      return "go";
+    }
+    if (rule?.decision === "accept") {
       this.store.transaction(() => {
         const id = this.store.request(runId, "convergence", hashJson(state.manifest), body);
         this.store.decideRequest(runId, id, "accepted", { kind: "accept", automatic: true }, true);

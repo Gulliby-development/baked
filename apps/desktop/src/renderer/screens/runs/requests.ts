@@ -36,6 +36,7 @@ export interface ConvergenceBody {
     impact: string;
   }[];
   contradictions?: { findingId: string; earlierId: string; earlierClaim: string }[];
+  hostRule?: { decision: string; rules: string[]; why: string };
 }
 export interface ClarificationBody {
   questions?: { id?: string; question: string; blocking?: boolean }[];

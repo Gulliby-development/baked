@@ -61,6 +61,7 @@ interface ConvergenceBody {
     claim: string;
   }[];
   contradictions?: { findingId: string; earlierId: string; earlierClaim: string }[];
+  hostRule?: { decision: string; rules: string[]; why: string };
 }
 interface DeliveryBody {
   operations?: string[];
@@ -706,9 +707,14 @@ export function DecisionPrompt({
           ))}
           {(body.contradictions ?? []).map((c) => (
             <text key={c.findingId} fg={t.warning}>
-              {`  ${c.findingId} reverses the fix of ${c.earlierId}: ${flatten(c.earlierClaim)}`}
+              {`  ${c.findingId} repeats ${c.earlierId}, which a correction already addressed: ${flatten(c.earlierClaim)}`}
             </text>
           ))}
+          {body.hostRule ? (
+            <text fg={t.textSecondary}>
+              {`Under assume the host would ${body.hostRule.decision === "ask" ? "ask" : body.hostRule.decision}: ${flatten(body.hostRule.why)} Rules: ${body.hostRule.rules.map(flatten).join(" ")}`}
+            </text>
+          ) : null}
         </Section>
         <Hint>
           A accepts these findings as known limitations (listed in the run report) and goes on to

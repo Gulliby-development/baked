@@ -283,8 +283,15 @@ export async function executeWorkflowCommand(
       return service.cancel(runId, identity());
     case "fork":
       return service.fork(runId, identity());
-    case "continue":
-      return decideThenResume({ kind: "continue", requestId: stringFlag(args, "request") });
+    case "continue": {
+      // One more convergence round is a decision like accept: the run goes on unless `--no-resume`.
+      // A token checkpoint keeps the old behavior and resumes only with `--resume`.
+      const requestId = stringFlag(args, "request");
+      const named = service.store.requests(runId).find((r) => r.id === requestId);
+      if (named?.kind === "convergence" && args.flags["no-resume"] !== true)
+        args.flags.resume = true;
+      return decideThenResume({ kind: "continue", requestId });
+    }
     case "accept":
       return decideThenResume({ kind: "accept", requestId: stringFlag(args, "request") });
     case "extend": {

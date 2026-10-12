@@ -194,13 +194,13 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-auditor",
-    version: "1.3.1",
+    version: "1.4.0",
     description: "Specification coverage review",
     role: "spec-auditor",
     model: "$review",
     context: "convergence",
     instructions:
-      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. A criterion passes when the behavior and inputs it names work: an edge case of a standard it only names (an ISO 8601 form it does not list) does not fail it, and is reported, if at all, as a finding with basis inferred. Give every other finding basis spec. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call. Cite evidence by its handle (E1, E2, ...) from the context instead of copying an id; the host sets snapshotHash and resolves handles. Criteria a review does not list are recorded as inconclusive.",
+      "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. A criterion passes when the behavior and inputs it names work: an edge case of a standard it only names (an ISO 8601 form it does not list) does not fail it, and is reported, if at all, as a finding with basis inferred. Give every other finding basis spec. When earlierFindings is present, set repeatOf on every finding to the id of the earlier finding it repeats (the same root cause, also when the file, symbol or wording changed or the earlier fix was only partial) or to null for a different defect, even in the same file. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call. Cite evidence by its handle (E1, E2, ...) from the context instead of copying an id; the host sets snapshotHash and resolves handles. Criteria a review does not list are recorded as inconclusive.",
     skills: [],
     allowedTools: ["read", "navigate", "bake_impact", "submit_review", "submit_result"],
     output: "convergence",
