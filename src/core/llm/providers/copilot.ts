@@ -178,7 +178,10 @@ function assertChatCompletionsSupported(modelId: string): void {
 function createCopilotModel(modelId: string, options?: CreateModelOptions): LanguageModel {
   assertChatCompletionsSupported(modelId);
   const githubToken = getGitHubToken();
-  const reasoningBody = getCompatReasoningBody(`copilot/${modelId}`, options?.config ?? loadConfig());
+  const reasoningBody = getCompatReasoningBody(
+    `copilot/${modelId}`,
+    options?.config ?? loadConfig(),
+  );
   const copilotFetch = createCopilotFetch(githubToken, reasoningBody);
 
   // Copilot exposes /chat/completions for both OpenAI and Claude models

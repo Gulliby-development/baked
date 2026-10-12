@@ -128,6 +128,7 @@ export const CAPABILITIES = [
   "hooks",
   "provider-switch",
   "chat-export",
+  "chat-effort",
   "diagnostics",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;

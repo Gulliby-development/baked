@@ -62,7 +62,7 @@ import { logBackgroundError } from "../stores/errors.js";
 import { startMemoryPoll } from "../stores/statusbar.js";
 import { useToolsStore } from "../stores/tools.js";
 import { type ModalName, selectIsAnyModalOpen, useUIStore } from "../stores/ui.js";
-import type { AppConfig, ChatMessage, TaskRouter } from "../types/index.js";
+import type { AppConfig, ChatEffort, ChatMessage, TaskRouter } from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
 import { artText } from "./brand/artText.js";
 import { ContextBar } from "./layout/ContextBar.js";
@@ -627,6 +627,7 @@ export function App({
                 planRequest: chat.planRequest,
                 coAuthorCommits: chat.coAuthorCommits,
                 bakeMode: chat.bakeMode,
+                effort: chat.effort,
                 tokenUsage: chat.tokenUsage,
                 messages: filtered,
                 coreMessages: chat.coreMessages,
@@ -732,6 +733,7 @@ export function App({
   }, []);
 
   const [activeModelForHeader, setActiveModelForHeader] = useState(effectiveConfig.defaultModel);
+  const [effortHeader, setEffortHeader] = useState<ChatEffort>("default");
   const activeChatRef = useRef<ChatInstance | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: derived from activeTabId — stable trigger
   useEffect(() => {
@@ -740,6 +742,7 @@ export function App({
     if (chat) {
       setActiveModelForHeader(chat.activeModel);
       setBakeModeHeader(chat.bakeMode);
+      setEffortHeader(chat.effort);
       const hasContent = chat.messages.some(
         (m: ChatMessage) => m.role === "user" || m.role === "assistant",
       );
@@ -836,6 +839,7 @@ export function App({
               planRequest: chat.planRequest,
               coAuthorCommits: chat.coAuthorCommits,
               bakeMode: chat.bakeMode,
+              effort: chat.effort,
               tokenUsage: chat.tokenUsage,
               messages: filtered,
               coreMessages: chat.coreMessages,
@@ -951,6 +955,7 @@ export function App({
             planRequest: chat.planRequest,
             coAuthorCommits: chat.coAuthorCommits,
             bakeMode: chat.bakeMode,
+            effort: chat.effort,
             tokenUsage: chat.tokenUsage,
             messages: filtered,
             coreMessages: chat.coreMessages,
@@ -1059,6 +1064,10 @@ export function App({
         setBakeMode: (mode: import("../types/index.js").BakeMode) => {
           chat.setBakeMode(mode);
           setBakeModeHeader(mode);
+        },
+        setEffort: (effort: ChatEffort) => {
+          chat.setEffort(effort);
+          setEffortHeader(effort);
         },
         currentMode: chat.bakeMode,
         currentModeLabel: getModeLabel(chat.bakeMode),
@@ -1207,6 +1216,7 @@ export function App({
               </>
             )}
             <span fg={t.textSecondary}>{truncate(displayModel, 28)}</span>
+            {effortHeader !== "default" && <span fg={t.textMuted}> · {effortHeader}</span>}
           </text>
           <ProjectIndicator cwd={cwd} compact={termWidth < 120} />
           {git.isRepo && (

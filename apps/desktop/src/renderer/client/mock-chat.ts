@@ -1,5 +1,6 @@
 import { applyChatEvent, emptyTranscript, type Transcript } from "../screens/chat/transcript.js";
 import type {
+  ChatEffort,
   ChatEvent,
   ChatEventBody,
   ChatMessage,
@@ -734,7 +735,14 @@ function interrupt(session: MockSession): boolean {
 
 function create(
   key: string,
-  body: { title?: string; model?: string; mode?: ChatMode; text?: string; images?: ImageUpload[] },
+  body: {
+    title?: string;
+    model?: string;
+    mode?: ChatMode;
+    effort?: ChatEffort;
+    text?: string;
+    images?: ImageUpload[];
+  },
 ) {
   const now = Date.now();
   const text = body.text?.trim();
@@ -747,6 +755,7 @@ function create(
     state: "idle",
     model: body.model ?? DEFAULT_MODEL,
     mode: body.mode ?? "default",
+    effort: body.effort ?? "default",
   };
   const session: MockSession = {
     key,
@@ -834,8 +843,14 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
               id: "anthropic/claude-sonnet-5-5",
               name: "Claude Sonnet 5.5",
               contextWindow: 200_000,
+              efforts: ["low", "medium", "high", "max"],
             },
-            { id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", contextWindow: 1_000_000 },
+            {
+              id: "anthropic/claude-opus-5-5",
+              name: "Claude Opus 5.5",
+              contextWindow: 1_000_000,
+              efforts: ["low", "medium", "high", "xhigh", "max"],
+            },
             { id: "anthropic/claude-haiku-5", name: "Claude Haiku 5", contextWindow: 200_000 },
           ],
         },
@@ -894,12 +909,18 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       sessions.delete(session.summary.id);
       return response(204, null);
     }
-    const changes = (body ?? {}) as { title?: string; model?: string; mode?: ChatMode };
+    const changes = (body ?? {}) as {
+      title?: string;
+      model?: string;
+      mode?: ChatMode;
+      effort?: ChatEffort;
+    };
     session.summary = {
       ...session.summary,
       ...(changes.title ? { title: changes.title } : {}),
       ...(changes.model ? { model: changes.model } : {}),
       ...(changes.mode ? { mode: changes.mode } : {}),
+      ...(changes.effort ? { effort: changes.effort } : {}),
     };
     emitSession(session);
     return response(200, session.summary);
@@ -929,6 +950,7 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     const forked = create(key, {
       title: `${session.summary.title} (fork)`,
       mode: session.summary.mode,
+      ...(session.summary.effort ? { effort: session.summary.effort } : {}),
     });
     forked.transcript = { ...forked.transcript, messages: all.slice(0, at + 1) };
     forked.summary = { ...forked.summary, messageCount: at + 1 };

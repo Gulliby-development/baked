@@ -36,6 +36,9 @@ export const SETTINGS_CAPABILITY = "settings";
 /** `GET /v1/sessions/ID/export` (Export in the chat menu). */
 export const CHAT_EXPORT_CAPABILITY = "chat-export";
 
+/** `effort` on chat sessions and `efforts` on `/v1/models` (the effort chip in the composer). */
+export const CHAT_EFFORT_CAPABILITY = "chat-effort";
+
 /** `/v1/graph*` (the Code graph section). */
 export const CODE_GRAPH_CAPABILITY = "code-graph";
 

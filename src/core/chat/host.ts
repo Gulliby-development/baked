@@ -1,11 +1,11 @@
-import type { AppConfig, ChatEffort } from "../../types/index.js";
+import type { AppConfig } from "../../types/index.js";
 import type { SharedCacheRef } from "../agents/subagent-tools.js";
 import { compactConversation } from "../compaction/manual.js";
 import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { resolveModel } from "../llm/provider.js";
-import { buildProviderOptions, withRouteEffort } from "../llm/provider-options.js";
+import { buildProviderOptions, withChatEffort } from "../llm/provider-options.js";
 import { resolveTaskModel } from "../llm/task-router.js";
 import { emitCacheReset } from "../tools/file-events.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
@@ -19,11 +19,6 @@ import type {
   TurnAgent,
   TurnAgentRequest,
 } from "./sessions.js";
-
-/** The configuration a chat's turns run with: its own reasoning effort replaces the global one. */
-export function chatConfig(modelId: string, config: AppConfig, effort: ChatEffort): AppConfig {
-  return effort === "default" ? config : withRouteEffort(modelId, config, effort);
-}
 
 interface SessionResources {
   context: ContextManager;
@@ -72,7 +67,7 @@ export class BakeChatHost implements ChatAgentHost {
   }
 
   async agent(request: TurnAgentRequest): Promise<{ agent: TurnAgent; contextWindow: number }> {
-    const config = chatConfig(request.modelId, this.config, request.effort);
+    const config = withChatEffort(request.modelId, this.config, request.effort);
     const model = resolveModel(request.modelId, config);
     const provider = await buildProviderOptions(request.modelId, config);
     if (!this.mcpConnected && this.config.mcpServers?.length) {

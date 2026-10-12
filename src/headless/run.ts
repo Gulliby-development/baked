@@ -18,13 +18,14 @@ import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getCwd } from "../core/cwd.js";
 import { resolveModel } from "../core/llm/provider.js";
-import { buildProviderOptions } from "../core/llm/provider-options.js";
+import { buildProviderOptions, withChatEffort } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { setActiveSessionId } from "../stores/session.js";
 import type {
   AppConfig,
   BakeMode,
+  ChatEffort,
   ChatMessage,
   ImageAttachment,
   InputContextItem,
@@ -48,6 +49,7 @@ interface AgentEnv {
   cwd: string;
   modelId: string;
   mode: BakeMode;
+  effort: ChatEffort;
   model: LanguageModel;
   agent: ReturnType<typeof createBakeAgent>;
   contextManager: ContextManager;
@@ -76,6 +78,7 @@ async function setupAgent(
     cwd?: string;
     modelId?: string;
     mode?: BakeMode;
+    effort?: ChatEffort;
     noRepomap?: boolean;
     system?: string;
     quiet?: boolean;
@@ -98,14 +101,17 @@ async function setupAgent(
     process.exit(EXIT_ERROR);
   }
 
+  // `--effort` replaces the configured reasoning effort for this run.
+  const effort = opts.effort ?? "default";
+  const config = withChatEffort(modelId, merged, effort);
   let model: LanguageModel;
   try {
-    model = resolveModel(modelId);
+    model = resolveModel(modelId, config);
   } catch (err) {
     stderrError(err instanceof Error ? err.message : String(err));
     process.exit(EXIT_ERROR);
   }
-  const providerOpts = await buildProviderOptions(modelId, merged);
+  const providerOpts = await buildProviderOptions(modelId, config);
 
   try {
     const { sendBeacon, maybeShowTelemetryNotice, detectRuntime } = await import(
@@ -183,7 +189,7 @@ async function setupAgent(
   // earlier in the session (parity with useChat's sharedCacheRef).
   const { ref: sharedCacheRef } = createSharedCacheRef(cwd);
   const agent = createChatAgent({
-    config: merged,
+    config,
     cwd,
     modelId,
     model,
@@ -201,6 +207,7 @@ async function setupAgent(
     cwd,
     modelId,
     mode,
+    effort,
     model,
     agent,
     contextManager,
@@ -380,6 +387,7 @@ async function saveSession(
           planMode: false,
           planRequest: null,
           coAuthorCommits: false,
+          ...(env.effort !== "default" ? { effort: env.effort } : {}),
           tokenUsage: {
             prompt: tokens.input,
             completion: tokens.output,

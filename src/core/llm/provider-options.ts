@@ -1,5 +1,10 @@
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import type { AppConfig, ContextManagementConfig, EffortLevel } from "../../types/index.js";
+import type {
+  AppConfig,
+  ChatEffort,
+  ContextManagementConfig,
+  EffortLevel,
+} from "../../types/index.js";
 import {
   extractBaseModel as _leafExtractBaseModel,
   getModelId as _leafGetModelId,
@@ -752,6 +757,15 @@ export function withRouteEffort(
       compatReasoningEffort: effort === "max" ? "xhigh" : effort,
     },
   };
+}
+
+/** The configuration a chat's turns run with: its own reasoning effort replaces the global one. */
+export function withChatEffort(
+  modelId: string,
+  config: AppConfig,
+  effort: ChatEffort | undefined,
+): AppConfig {
+  return !effort || effort === "default" ? config : withRouteEffort(modelId, config, effort);
 }
 
 /** Levels Codex accepts for its reasoning models; it has no `max`. */
