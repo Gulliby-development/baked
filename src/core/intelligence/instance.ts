@@ -1,5 +1,5 @@
 import type { IntelligenceClient } from "../workers/intelligence-client.js";
-import { LspBackend } from "./backends/lsp/index.js";
+import { LspBackend, type LspServerError } from "./backends/lsp/index.js";
 import { RegexBackend } from "./backends/regex.js";
 import { TreeSitterBackend } from "./backends/tree-sitter.js";
 import { TsMorphBackend } from "./backends/ts-morph.js";
@@ -114,6 +114,19 @@ export async function getDetailedLspServers(): Promise<
   }
   if (!router) return [];
   return router.getDetailedLspServers();
+}
+
+/** The last start failure of each language server that has not started since. */
+export async function getLspServerErrors(): Promise<LspServerError[]> {
+  if (_client) {
+    try {
+      return await _client.routerGetLspErrors();
+    } catch {
+      /* fall through */
+    }
+  }
+  if (!router) return [];
+  return router.getLspErrors();
 }
 
 /** Restart LSP servers. Pass filter to restart specific server/language, or omit for all. */

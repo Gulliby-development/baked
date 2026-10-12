@@ -16,6 +16,8 @@ import {
   updatePackage,
 } from "../../core/intelligence/backends/lsp/installer.js";
 import { clearProbeCache } from "../../core/intelligence/backends/lsp/server-registry.js";
+import { restartLspServers } from "../../core/intelligence/instance.js";
+import { lspDisableNames } from "../../core/intelligence/lsp-service.js";
 import { useTheme } from "../../core/theme/index.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import type { AppConfig } from "../../types/index.js";
@@ -184,6 +186,9 @@ export function LspInstallSearch({
   const [scopeCursor, setScopeCursor] = useState(defaultScopeCursor);
   const refreshController = useRef<AbortController | null>(null);
 
+  const isPackageDisabled = (pkg: MasonPackage): boolean =>
+    [pkg.name, ...lspDisableNames(pkg)].some((name) => disabledServers.includes(name));
+
   const isInProject = existsSync(join(cwd, ".git"));
   const { width: termCols, height: termRows } = useTerminalDimensions();
 
@@ -265,7 +270,7 @@ export function LspInstallSearch({
   })();
 
   const disabledList = (() => {
-    let list = allStatus.filter((s) => disabledServers.includes(s.pkg.name));
+    let list = allStatus.filter((s) => isPackageDisabled(s.pkg));
     if (filterQuery) {
       list = list.filter(
         (s) =>
@@ -401,14 +406,19 @@ export function LspInstallSearch({
     }
   };
 
-  const toggleDisabled = (pkgName: string, scope: ConfigScope) => {
-    const isDisabledPkg = disabledServers.includes(pkgName);
+  const toggleDisabled = (pkg: MasonPackage, scope: ConfigScope) => {
+    const isDisabledPkg = isPackageDisabled(pkg);
+    // Servers are disabled by command (what the language servers check); older versions wrote
+    // the package name, so enabling removes both.
+    const names = new Set([pkg.name, ...lspDisableNames(pkg)]);
     const updated = isDisabledPkg
-      ? disabledServers.filter((n) => n !== pkgName)
-      : [...disabledServers, pkgName];
+      ? disabledServers.filter((n) => !names.has(n))
+      : [...disabledServers, ...lspDisableNames(pkg)];
     saveToScope({ disabledLspServers: updated }, scope);
     clearProbeCache();
-    onSystemMessage(isDisabledPkg ? `${pkgName} enabled` : `${pkgName} disabled (${scope})`);
+    // Apply now: a disabled server stops, an enabled one starts on the next lookup.
+    for (const name of lspDisableNames(pkg)) void restartLspServers(name).catch(() => {});
+    onSystemMessage(isDisabledPkg ? `${pkg.name} enabled` : `${pkg.name} disabled (${scope})`);
   };
 
   const handleKeyboard = (evt: { name?: string; ctrl?: boolean; meta?: boolean }) => {
@@ -429,7 +439,7 @@ export function LspInstallSearch({
             ? "project"
             : "global"
           : "global";
-        toggleDisabled(pendingToggle.pkg.name, scope);
+        toggleDisabled(pendingToggle.pkg, scope);
         setPendingToggle(null);
         return;
       }
@@ -479,7 +489,7 @@ export function LspInstallSearch({
           setPendingToggle(item);
           setScopeCursor(0);
         } else {
-          toggleDisabled(item.pkg.name, "global");
+          toggleDisabled(item.pkg, "global");
         }
       } else {
         doInstall(item);
@@ -494,7 +504,7 @@ export function LspInstallSearch({
         setPendingToggle(item);
         setScopeCursor(0);
       } else {
-        toggleDisabled(item.pkg.name, "global");
+        toggleDisabled(item.pkg, "global");
       }
       return;
     }
@@ -637,7 +647,7 @@ export function LspInstallSearch({
             <PackageRow
               status={status}
               isActive={selected}
-              isDisabled={disabledServers.includes(status.pkg.name)}
+              isDisabled={isPackageDisabled(status.pkg)}
               isRecommended={recommendedNames.has(status.pkg.name)}
               innerW={innerW}
             />
@@ -650,7 +660,7 @@ export function LspInstallSearch({
           <box height={1} backgroundColor={t.bgPopup} />
           <box flexDirection="row" backgroundColor={t.bgPopup}>
             <text fg={t.textPrimary} attributes={TextAttributes.BOLD} bg={t.bgPopup}>
-              {disabledServers.includes(pendingToggle.pkg.name) ? "Enable" : "Disable"} "
+              {isPackageDisabled(pendingToggle.pkg) ? "Enable" : "Disable"} "
               {pendingToggle.pkg.name}" scope:
             </text>
           </box>
