@@ -18,6 +18,7 @@ import { ago } from "../../format.js";
 import { cn } from "../../lib/cn.js";
 import { CHECK, LEDE, PANEL } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
+import { GateSetupDialog } from "./GateSetupDialog.js";
 import {
   type CheckDraft,
   checkDraft,
@@ -442,6 +443,7 @@ export function GatesSection({ project }: SectionProps) {
   );
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [settingUp, setSettingUp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<Record<string, CheckRun>>({});
@@ -525,10 +527,19 @@ export function GatesSection({ project }: SectionProps) {
           here go to <span className="font-mono">.baked/config.json</span>. New runs use them at
           once; started runs keep the list they froze.
         </p>
-        <Button variant="primary" size="md" disabled={!canEdit} onClick={() => setCreating(true)}>
+        <Button variant="primary" size="md" onClick={() => setSettingUp(true)}>
+          Set up a gate…
+        </Button>
+        <Button variant="secondary" size="md" disabled={!canEdit} onClick={() => setCreating(true)}>
           New check
         </Button>
       </div>
+      <GateSetupDialog
+        projectKey={key}
+        open={settingUp}
+        onOpenChange={setSettingUp}
+        onSaved={reloadGates}
+      />
 
       {canEdit && suggestions.state === "ready" && (
         <Suggestions

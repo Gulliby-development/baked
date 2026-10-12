@@ -228,6 +228,17 @@ describe("local API setup and workflow additions", () => {
     expect(shown).toMatchObject({ id: "api-check", confirmed: true, mode: "required" });
     expect((await call("/v1/workflow/gates/nope")).status).toBe(404);
     expect((await call("/v1/workflow/gates/confirm")).status).toBe(405);
+    const places = await get<{ workflowId: string; places: { key: string; disabled: string | null }[] }>(
+      "/v1/workflow/gates/api-check/places?workflow=quick-fix",
+    );
+    expect(places.workflowId).toBe("quick-fix");
+    const at = places.places.find((p) => p.disabled === null)?.key;
+    expect(at).toBeDefined();
+    const bound = await post("/v1/workflow/gates/api-check/bind", { workflow: "quick-fix", at });
+    expect(bound.status).toBe(200);
+    expect(await bound.json()).toEqual({ workflowId: "quick-fix-custom", path: "baked/workflows/quick-fix-custom.json", copiedFrom: "quick-fix" });
+    expect((await post("/v1/workflow/gates/api-check/bind", { at: "nowhere" })).status).toBe(400);
+    expect((await call("/v1/workflow/gates/api-check/bind")).status).toBe(405);
   });
 
   test("initiatives are listed, validated and not found by unknown id", async () => {
