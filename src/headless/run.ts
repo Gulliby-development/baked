@@ -390,8 +390,16 @@ export async function streamTurn(
         tokens.input += tokens.lastStepInput;
         tokens.output += tokens.lastStepOutput;
         tokens.cacheRead += tokens.lastStepCacheRead;
+        // Model requests behind the step, when the provider reports them (Codex app-server).
+        const requests = (part.providerMetadata as { codex?: { responses?: unknown } } | undefined)
+          ?.codex?.responses;
         if (reporting.events) {
-          emit({ type: "step", step: steps, tokens: { ...tokens } });
+          emit({
+            type: "step",
+            step: steps,
+            tokens: { ...tokens },
+            ...(typeof requests === "number" ? { modelRequests: requests } : {}),
+          });
         }
       }
     }

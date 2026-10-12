@@ -8,7 +8,65 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "no task creates a file that already exists unless an earlier task deletes it",
   "tasks that write the same path are ordered by dependencies",
   "every read hint exists or is created by the task or an earlier task",
+  "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
 ];
+
+/** A file that declares or re-exports the modules next to it. */
+const MODULE_INDEX = /(?:^|\/)(?:(?:lib|main|mod)\.rs|__init__\.py|index\.[cm]?[jt]sx?)$/;
+/** The module files an index declares, by the index's language: a sibling file or a child directory's index. */
+const SIBLINGS: Array<{ index: RegExp; file: RegExp; child: RegExp }> = [
+  { index: /\.rs$/, file: /\.rs$/, child: /(?:^|\/)mod\.rs$/ },
+  { index: /\.py$/, file: /\.py$/, child: /(?:^|\/)__init__\.py$/ },
+  { index: /\.[cm]?[jt]sx?$/, file: /\.[cm]?[jt]sx?$/, child: /(?:^|\/)index\.[cm]?[jt]sx?$/ },
+];
+const dirOf = (path: string): string =>
+  path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+
+/** Whether `file` is a module that the module index at `index` declares. */
+function declaredBy(index: string, file: string): boolean {
+  const rule = SIBLINGS.find((r) => r.index.test(index));
+  if (!rule || file === index || !rule.file.test(file)) return false;
+  const dir = dirOf(index);
+  const fileDir = dirOf(file);
+  if (fileDir === dir) return !MODULE_INDEX.test(file);
+  return rule.child.test(file) && dirOf(fileDir) === dir;
+}
+
+/**
+ * A task that writes a module index (`lib.rs`, `mod.rs`, `__init__.py`, `index.ts`) waits for the
+ * tasks that create the module files it declares. Planners gave a crate's `lib.rs` and its
+ * `parse.rs` to parallel tasks; the index then named modules that did not exist in its own
+ * worktree, and every check of it failed until a sibling merged (bench round 08, commitbump). A
+ * dependency that would close a cycle is not added.
+ */
+export function withModuleDependencies(graph: TaskGraph): TaskGraph {
+  const deps = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
+  };
+  for (const task of graph.tasks) {
+    const indexes = task.writes.filter((w) => w.action !== "delete" && MODULE_INDEX.test(w.path));
+    if (!indexes.length) continue;
+    for (const other of graph.tasks) {
+      if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
+        continue;
+      const declares = other.writes.some(
+        (w) => w.action === "create" && indexes.some((index) => declaredBy(index.path, w.path)),
+      );
+      if (declares) deps.get(task.id)?.push(other.id);
+    }
+  }
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => {
+      const next = deps.get(task.id) ?? task.dependsOn;
+      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+    }),
+  };
+}
 
 /**
  * The requirement ids of a task follow from the criteria it owns: every requirement its criteria
