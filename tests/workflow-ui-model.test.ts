@@ -49,6 +49,7 @@ const snapshot = (patch: Partial<RunSnapshot> = {}): RunSnapshot => ({
   activeMs: 0,
   estimatedCostUsd: null,
   verificationState: "not_verified",
+  limitations: { count: 0, ids: [] },
   pendingRequestIds: [],
   ...patch,
 });
