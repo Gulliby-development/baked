@@ -36,8 +36,16 @@ import {
   lspSymbolKindToSymbolKind,
   uriToFilePath,
 } from "./protocol.js";
-import { findServersForLanguage } from "./server-registry.js";
+import { clearProbeCache, findServersForLanguage } from "./server-registry.js";
 import { StandaloneLspClient } from "./standalone-client.js";
+
+/** A language server that failed to start; `command` is the resolved executable. */
+export interface LspServerError {
+  command: string;
+  language: string;
+  message: string;
+  at: number;
+}
 
 const SUPPORTED_LANGUAGES: Set<Language> = new Set([
   "typescript",
@@ -81,6 +89,8 @@ export class LspBackend implements IntelligenceBackend {
   /** Servers that failed to start — retry after cooldown (keyed by command:projectRoot → timestamp) */
   private static readonly FAILED_SERVER_COOLDOWN_MS = 60_000;
   private failedServers = new Map<string, number>();
+  /** The last start failure of each server command (resolved path), cleared when it starts. */
+  private serverErrors = new Map<string, LspServerError>();
   /** Pending init promises for deduplication (keyed by langKey) */
   private pendingInits = new Map<string, Promise<StandaloneLspClient[]>>();
 
@@ -923,6 +933,11 @@ export class LspBackend implements IntelligenceBackend {
     return pids;
   }
 
+  /** The last start failure of each server that has not started since. */
+  getServerErrors(): LspServerError[] {
+    return [...this.serverErrors.values()];
+  }
+
   /** Restart standalone LSP servers. Pass a command name to restart specific, or omit for all. */
   async restartServers(filter?: string): Promise<string[]> {
     const restarted: string[] = [];
@@ -951,6 +966,8 @@ export class LspBackend implements IntelligenceBackend {
       restarted.push(`${lang}:${cmd}`);
     }
 
+    // Re-probe executables: a server may have been installed, removed or disabled since.
+    clearProbeCache();
     // Clear failed servers so they can be retried
     if (filter) {
       for (const key of this.failedServers.keys()) {
@@ -1093,9 +1110,16 @@ export class LspBackend implements IntelligenceBackend {
         await client.start();
         this.standaloneClients.set(serverKey, client);
         this.failedServers.delete(serverKey);
+        this.serverErrors.delete(config.command);
         clients.push(client);
-      } catch {
+      } catch (error) {
         this.failedServers.set(serverKey, Date.now());
+        this.serverErrors.set(config.command, {
+          command: config.command,
+          language,
+          message: error instanceof Error ? error.message : String(error),
+          at: Date.now(),
+        });
       }
     }
 

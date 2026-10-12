@@ -1,6 +1,7 @@
 import { useWorkerStore } from "../../stores/workers.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
 import type { RepoMapOptions, SymbolForSummary } from "../intelligence/repo-map.js";
+import type { LspServerError } from "../intelligence/backends/lsp/index.js";
 import type { HealthCheckResult } from "../intelligence/router.js";
 import type {
   CallHierarchyResult,
@@ -917,6 +918,10 @@ export class IntelligenceClient extends WorkerClient {
     }>
   > {
     return this.call("routerGetDetailedLspServers");
+  }
+
+  async routerGetLspErrors(): Promise<LspServerError[]> {
+    return this.call("routerGetLspErrors");
   }
 
   async routerRestartLspServers(filter?: string): Promise<string[]> {
