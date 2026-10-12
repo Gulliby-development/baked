@@ -238,6 +238,44 @@ function streamErrorText(error: unknown): string {
   return String(error);
 }
 
+/** A provider warning as the AI SDK passes it on a step. */
+interface ProviderWarning {
+  type: string;
+  message?: string;
+  feature?: string;
+  setting?: string;
+  details?: string;
+}
+
+/** `[type] what: details`, naming the setting or feature a warning is about. */
+export function warningText(w: ProviderWarning): string {
+  const subject = w.feature ?? w.setting;
+  const text = [subject, w.details ?? w.message].filter(Boolean).join(": ");
+  return `[${w.type}]${text ? ` ${text}` : ""}`;
+}
+
+/** A tool result in at most 200 characters: BAKED's `output`, or the text parts of an MCP result. */
+export function resultSummary(raw: unknown): string {
+  let text: string;
+  if (raw && typeof raw === "object" && "output" in raw) {
+    text = String((raw as Record<string, unknown>).output);
+  } else if (
+    raw &&
+    typeof raw === "object" &&
+    Array.isArray((raw as { content?: unknown }).content)
+  ) {
+    text = ((raw as { content: unknown[] }).content as { type?: unknown; text?: unknown }[])
+      .map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  } else if (raw && typeof raw === "object") {
+    text = JSON.stringify(raw);
+  } else {
+    text = String(raw);
+  }
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
 /** Streams one turn and reports it; exported for tests. */
 export async function streamTurn(
   agent: Pick<ReturnType<typeof createBakeAgent>, "stream">,
@@ -252,10 +290,13 @@ export async function streamTurn(
     showProgress: boolean;
     render?: boolean;
     emit?: (event: HeadlessEvent) => void;
+    /** Warnings already reported in this run; shared across the turns of a chat. */
+    seenWarnings?: Set<string>;
   },
 ): Promise<TurnResult> {
   const emit =
     reporting.emit ?? ((e: HeadlessEvent) => writeEvent(e as unknown as Record<string, unknown>));
+  const seenWarnings = reporting.seenWarnings ?? new Set<string>();
   let output = "";
   let steps = 0;
   const tokens = {
@@ -288,11 +329,13 @@ export async function streamTurn(
       }
 
       if (part.type === "start-step") {
-        const warnings = (part as { warnings?: Array<{ type: string; message?: string }> })
-          .warnings;
+        const warnings = (part as { warnings?: ProviderWarning[] }).warnings;
         if (warnings && warnings.length > 0) {
           for (const w of warnings) {
-            const msg = `[${w.type}]${w.message ? ` ${w.message}` : ""}`;
+            const msg = warningText(w);
+            // Providers repeat a warning on every step; it is reported once.
+            if (seenWarnings.has(msg)) continue;
+            seenWarnings.add(msg);
             if (reporting.events) {
               emit({ type: "warning", message: msg });
             } else if (reporting.showProgress) {
@@ -323,14 +366,7 @@ export async function streamTurn(
         for (const path of toolCallEditPaths(part.toolName, partInput.input)) filesEdited.add(path);
       } else if (part.type === "tool-result") {
         if (reporting.events) {
-          const raw = part.output;
-          let summary: string;
-          if (raw && typeof raw === "object" && "output" in raw) {
-            const out = String((raw as Record<string, unknown>).output);
-            summary = out.length > 200 ? `${out.slice(0, 200)}…` : out;
-          } else {
-            summary = String(raw).slice(0, 200);
-          }
+          const summary = resultSummary(part.output);
           emit({
             type: "tool-result",
             tool: part.toolName,
@@ -925,6 +961,8 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
     opts.signal?.addEventListener("abort", source.close, { once: true });
   }
 
+  // Warnings reported once for the whole chat, not on every turn.
+  const seenWarnings = new Set<string>();
   while (!aborted) {
     const rawPrompt = await readPrompt();
     if (rawPrompt === null) break;
@@ -975,6 +1013,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       maxSteps: opts.maxSteps,
       showProgress,
       emit,
+      seenWarnings,
     });
 
     // Even partial output is valuable — save it
