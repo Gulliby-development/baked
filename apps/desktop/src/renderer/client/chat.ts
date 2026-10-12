@@ -10,6 +10,8 @@ import { bridge } from "./bridge.js";
 
 export type ChatMode = "default" | "architect" | "plan" | "auto";
 export const CHAT_MODES: readonly ChatMode[] = ["default", "architect", "plan", "auto"];
+/** A chat's reasoning effort; `default` follows the global setting. */
+export type ChatEffort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 /** How a plan review is answered; `revise` sends feedback with it. */
 export type PlanAction = "execute" | "clear-execute" | "revise" | "cancel";
 
@@ -34,6 +36,8 @@ export interface SessionSummary {
   /** `provider/model` of the next turn; null when nothing is configured. */
   model: string | null;
   mode: ChatMode;
+  /** Reasoning effort of the next turn; servers without the `chat-effort` capability leave it out. */
+  effort?: ChatEffort;
   /** True while a manual compaction runs; older servers leave it out. */
   compacting?: boolean;
 }
@@ -259,7 +263,8 @@ export interface ModelProvider {
   id: string;
   name: string;
   configured: boolean;
-  models: { id: string; name: string; contextWindow?: number }[];
+  /** `efforts`: the levels a chat can pick for the model, lowest first; absent when it takes none. */
+  models: { id: string; name: string; contextWindow?: number; efforts?: ChatEffort[] }[];
   error?: string;
 }
 
@@ -294,13 +299,17 @@ export const chat = {
       title?: string;
       model?: string;
       mode?: ChatMode;
+      effort?: ChatEffort;
       text?: string;
       images?: ImageUpload[];
     } = {},
   ) => call<SessionDetail>(key, "POST", "/v1/sessions", body),
   get: (key: string, id: string) => call<SessionDetail>(key, "GET", sessionPath(id)),
-  update: (key: string, id: string, body: { title?: string; model?: string; mode?: ChatMode }) =>
-    call<SessionSummary>(key, "PATCH", sessionPath(id), body),
+  update: (
+    key: string,
+    id: string,
+    body: { title?: string; model?: string; mode?: ChatMode; effort?: ChatEffort },
+  ) => call<SessionSummary>(key, "PATCH", sessionPath(id), body),
   /** Deletes a saved session; the server refuses one with a running turn. */
   remove: (key: string, id: string) => call<null>(key, "DELETE", sessionPath(id)),
   /** Saves `GET /v1/sessions/ID/export` through a save dialog; the path, or null when cancelled. */

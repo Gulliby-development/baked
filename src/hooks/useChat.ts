@@ -53,6 +53,7 @@ import {
   degradeProviderOptions,
   isProviderOptionsError,
   supportsTemperature,
+  withChatEffort,
 } from "../core/llm/provider-options.js";
 import { resolveTaskModel } from "../core/llm/task-router.js";
 import { onCompaction, writeDiary } from "../core/mcp/mempalace.js";
@@ -82,6 +83,7 @@ import { accumulateModelUsage, useStatusBarStore, ZERO_USAGE } from "../stores/s
 import { useToolsStore } from "../stores/tools.js";
 import type {
   AppConfig,
+  ChatEffort,
   ChatMessage,
   ImageAttachment,
   InteractiveCallbacks,
@@ -115,6 +117,8 @@ export interface TabState {
   planMode: boolean;
   planRequest: string | null;
   bakeMode: import("../types/index.js").BakeMode;
+  /** The tab's reasoning effort; absent means `default` (the global setting). */
+  effort?: ChatEffort;
 }
 
 interface TokenUsage {
@@ -265,6 +269,9 @@ export interface ChatInstance {
   contextManager: ContextManager;
   bakeMode: import("../types/index.js").BakeMode;
   setBakeMode: (mode: import("../types/index.js").BakeMode) => void;
+  /** Reasoning effort of this tab's turns; `default` follows the global setting. */
+  effort: ChatEffort;
+  setEffort: (effort: ChatEffort) => void;
   cycleMode: () => import("../types/index.js").BakeMode;
   rotateRoutingSession: () => void;
   /** Saves this tab now, for changes made outside a turn such as an undo. */
@@ -489,6 +496,9 @@ export function useChat({
   );
   const bakeModeRef = useRef(bakeMode);
   bakeModeRef.current = bakeMode;
+  const [effort, setEffortState] = useState<ChatEffort>(initialState?.effort ?? "default");
+  const effortRef = useRef(effort);
+  effortRef.current = effort;
 
   const setBakeMode = useCallback(
     (mode: import("../types/index.js").BakeMode) => {
@@ -498,6 +508,11 @@ export function useChat({
     },
     [contextManager],
   );
+
+  const setEffort = useCallback((next: ChatEffort) => {
+    setEffortState(next);
+    effortRef.current = next;
+  }, []);
 
   const cycleModeFn = useCallback((): import("../types/index.js").BakeMode => {
     const next = cycleBakeMode(bakeModeRef.current);
@@ -609,6 +624,7 @@ export function useChat({
           planRequest: planRequestRef.current,
           coAuthorCommits,
           bakeMode: bakeModeRef.current,
+          effort: effortRef.current,
           tokenUsage: tokenUsageRef.current,
           messages: filtered,
           coreMessages: cores,
@@ -1902,7 +1918,9 @@ export function useChat({
           // Pin upstream gateway routing to this tab's conversation id
           // (x-session-id / x-session-affinity) for prompt-cache locality.
           setActiveSessionId(routingSessionIdRef.current);
-          const model = resolveModel(modelId);
+          // The tab's own reasoning effort replaces the global one for this turn.
+          const turnConfig = withChatEffort(modelId, effectiveConfig, effortRef.current);
+          const model = resolveModel(modelId, turnConfig);
 
           // Resolve subagent models from task router
           // spark/ember are primary; coding/exploration/trivial are legacy config fallbacks
@@ -1963,7 +1981,7 @@ export function useChat({
             providerOptions,
             headers,
             contextWindow: fetchedCtxWindow,
-          } = await buildProviderOptions(modelId, effectiveConfig);
+          } = await buildProviderOptions(modelId, turnConfig);
           // Propagate accurate context window from provider metadata (authoritative)
           if (fetchedCtxWindow > 0) {
             const prev = pinnedContextWindow.current.get(modelId) ?? 0;
@@ -3908,6 +3926,7 @@ export function useChat({
       planMode: planModeRef.current,
       planRequest: planRequestRef.current,
       bakeMode,
+      effort,
     }),
     [
       messages,
@@ -3918,6 +3937,7 @@ export function useChat({
       tokenUsage,
       coAuthorCommits,
       bakeMode,
+      effort,
     ],
   );
 
@@ -3977,6 +3997,8 @@ export function useChat({
     bakeMode,
     setBakeMode,
     cycleMode: cycleModeFn,
+    effort,
+    setEffort,
     persist,
   };
 }
