@@ -93,7 +93,7 @@ export type ChatMode = (typeof CHAT_MODES)[number];
 export const PLAN_ACTIONS = ["execute", "clear-execute", "revise", "cancel"] as const;
 export type PlanAction = (typeof PLAN_ACTIONS)[number];
 export type PromptAnswer =
-  | { approve: boolean }
+  | { approve: boolean; digest?: string }
   | { answer: string }
   | { action: PlanAction; feedback?: string };
 export type SessionState = "idle" | "working" | "waiting";
@@ -124,6 +124,16 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       planFile: string;
       /** The plan as Markdown. */
       content: string;
+    }
+  | {
+      /** A coordinator's proposed split into flows; approving it launches them all. */
+      kind: "split";
+      title: string;
+      /** Independent runs in their own worktrees, or one initiative that orders dependent flows. */
+      mode: "runs" | "initiative";
+      flows: { id: string; title: string; paths: string[]; dependsOn: string[] }[];
+      /** Binds the approval to exactly this split. */
+      digest: string;
     }
 );
 type PromptBody = ChatPrompt extends infer P
@@ -887,6 +897,11 @@ export class ChatSession {
     }
     if (!("approve" in body))
       throw new ChatError("INVALID_REQUEST", "Answer an approval with {approve}");
+    if (prompt.kind === "split" && body.approve && body.digest !== prompt.digest)
+      throw new ChatError(
+        "STALE_PROMPT",
+        "Approve a split with the digest of the split it shows; this one has changed",
+      );
     this.settlePrompt(promptId, body.approve, body.approve ? "approved" : "denied");
   }
 
@@ -897,6 +912,11 @@ export class ChatSession {
   /** Asks a person to approve an action of this session's running turn, as a destructive prompt. */
   async confirm(description: string): Promise<boolean> {
     return (await this.ask({ kind: "destructive", description })) === true;
+  }
+
+  /** Asks a person to approve a coordinator's split as one card; true when they approve it. */
+  async proposeSplit(card: Omit<Extract<ChatPrompt, { kind: "split" }>, "id" | "createdAt">) {
+    return (await this.ask(card)) === true;
   }
 
   /** Adds a note to the transcript that the model does not see, such as a launched run's news. */

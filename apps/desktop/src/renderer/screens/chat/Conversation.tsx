@@ -8,6 +8,7 @@ import type {
   ToolCall,
 } from "../../client/chat.js";
 import { Icon } from "../../components/Icon.js";
+import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { storedImageUrl } from "./images.js";
@@ -586,7 +587,7 @@ function PromptCard({
 }: {
   entry: TranscriptPrompt;
   busy: boolean;
-  onApprove: (id: string, approve: boolean) => void;
+  onApprove: (id: string, approve: boolean, digest?: string) => void;
   onAnswer: (id: string, answer: string) => void;
   onReviewPlan?: (id: string, review: PlanReview) => void;
 }) {
@@ -606,13 +607,15 @@ function PromptCard({
     const subject =
       prompt.kind === "question"
         ? prompt.question
-        : prompt.kind === "outside-cwd"
-          ? prompt.path
-          : prompt.kind === "destructive"
-            ? prompt.description
-            : prompt.kind === "web-search"
-              ? prompt.query
-              : prompt.url;
+        : prompt.kind === "split"
+          ? prompt.title
+          : prompt.kind === "outside-cwd"
+            ? prompt.path
+            : prompt.kind === "destructive"
+              ? prompt.description
+              : prompt.kind === "web-search"
+                ? prompt.query
+                : prompt.url;
     return (
       <p className={RESOLVED}>
         <span className={`flex-none font-medium ${OUTCOME_TONE[outcome] ?? ""}`}>
@@ -625,6 +628,38 @@ function PromptCard({
   if (prompt.kind === "plan-review") {
     if (!onReviewPlan) return null;
     return <PlanReviewCard prompt={prompt} busy={busy} onReview={onReviewPlan} />;
+  }
+  if (prompt.kind === "split") {
+    return (
+      <section
+        className={`${PROMPT_CARD} gap-[10px] bg-fill-info text-soft-foreground`}
+        aria-label="Split proposal"
+      >
+        <p className={PROMPT_TITLE}>
+          Split "{prompt.title}" into {prompt.flows.length}{" "}
+          {prompt.mode === "runs" ? "parallel runs" : "features of one initiative"}?
+        </p>
+        <SplitFlows prompt={prompt} />
+        <div className={ROW}>
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy}
+            onClick={() => onApprove(prompt.id, true, prompt.digest)}
+          >
+            Approve split
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy}
+            onClick={() => onApprove(prompt.id, false)}
+          >
+            Reject
+          </Button>
+        </div>
+      </section>
+    );
   }
   if (prompt.kind === "question") {
     return (
@@ -735,7 +770,7 @@ export function Conversation({
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
-  onApprove: (id: string, approve: boolean) => void;
+  onApprove: (id: string, approve: boolean, digest?: string) => void;
   onAnswer: (id: string, answer: string) => void;
   /** Answers a plan review; without it plan reviews are not shown. */
   onReviewPlan?: (id: string, review: PlanReview) => void;
