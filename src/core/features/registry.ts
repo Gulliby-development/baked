@@ -408,6 +408,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/graph"],
   },
   {
+    id: "work-progress",
+    group: "Tools and code intelligence",
+    title: "Progress of long waits: opening the project, indexing, starting a run",
+    tui: ["/repo-map: files indexed while scanning"],
+    cli: ["baked run: progress lines on stderr", "baked workflow run: progress on a terminal"],
+    api: ["/v1/progress"],
+    desktop: ["project/graph: indexing count and bar"],
+  },
+  {
     id: "tools-toggle",
     group: "Tools and code intelligence",
     title: "Enable or disable tools",
