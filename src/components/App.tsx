@@ -26,6 +26,7 @@ import {
   PROVIDER_CONFIGS,
 } from "../core/llm/models.js";
 import { notifyProviderSwitch } from "../core/llm/provider.js";
+import { soleReadyModel } from "../core/llm/ready-model.js";
 import { disposeMCPManager, getMCPManager } from "../core/mcp/index.js";
 import { projectSwitchArgs } from "../core/restart.js";
 import { initForbidden } from "../core/security/forbidden.js";
@@ -1606,6 +1607,15 @@ export function App({
         onClose={() => {
           useUIStore.getState().closeModal("firstRunWizard");
           saveToScope({ onboardingComplete: true }, "global");
+          // No model picked: use the only provider that is ready, such as a signed-in Codex.
+          if (activeModelForHeader === "none")
+            void soleReadyModel().then((modelId) => {
+              if (!modelId) return;
+              notifyProviderSwitch(modelId);
+              setActiveModelForHeader(modelId);
+              saveToScope({ defaultModel: modelId }, modelScope);
+              addSystemMessage(`Model set to ${modelId}, the only provider ready to use.`);
+            });
         }}
       />
 

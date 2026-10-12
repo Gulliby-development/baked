@@ -21,7 +21,8 @@ import { BOLD } from "../theme.js";
 // ── Data ──
 
 interface ProviderEntry {
-  id: SecretKey;
+  /** The stored key; null for a CLI provider, which signs in outside BAKED. */
+  id: SecretKey | null;
   providerId: string;
   label: string;
   envVar: string;
@@ -29,29 +30,52 @@ interface ProviderEntry {
   desc: string;
   icon: string;
   autoDetect?: boolean;
+  /** Signs in through its own CLI (Codex, Claude Code): no key, ready when signed in. */
+  cli?: boolean;
 }
 
-/** Derive wizard provider list from the provider registry — single source of truth. */
-const PROVIDERS: ProviderEntry[] = getAllProviders()
-  .filter((p) => p.envVar && p.secretKey)
-  .map((p) => ({
-    id: p.secretKey as SecretKey,
-    providerId: p.id,
-    label: p.name,
-    envVar: p.envVar,
-    url: p.keyUrl ? `https://${p.keyUrl}` : "",
-    desc: p.description ?? "",
-    icon: p.icon,
-    autoDetect: Boolean(p.detectLogin),
-  }));
+/** CLI providers first (they need no key), then the key-based ones, from the provider registry. */
+const PROVIDERS: ProviderEntry[] = [
+  ...getAllProviders()
+    .filter((p) => !p.envVar && p.checkAvailability && p.onRequestAuth)
+    .map((p) => ({
+      id: null,
+      providerId: p.id,
+      label: p.name,
+      envVar: "",
+      url: "",
+      desc: p.description ?? "",
+      icon: p.icon,
+      cli: true,
+    })),
+  ...getAllProviders()
+    .filter((p) => p.envVar && p.secretKey)
+    .map((p) => ({
+      id: p.secretKey as SecretKey,
+      providerId: p.id,
+      label: p.name,
+      envVar: p.envVar,
+      url: p.keyUrl ? `https://${p.keyUrl}` : "",
+      desc: p.description ?? "",
+      icon: p.icon,
+      autoDetect: Boolean(p.detectLogin),
+    })),
+];
+
+/** The command that signs a CLI provider in, shown when it is not signed in yet. */
+const SIGN_IN_COMMAND: Record<string, string> = {
+  codex: "/codex login",
+  "claude-code": "/claude-code login",
+};
 
 // ── Helpers ──
 
-function hasKey(id: SecretKey): boolean {
-  return getSecretSources(id, getDefaultKeyPriority()).active !== "none";
+function hasKey(id: SecretKey | null): boolean {
+  return id !== null && getSecretSources(id, getDefaultKeyPriority()).active !== "none";
 }
 
-function getStatusTag(id: SecretKey): string {
+function getStatusTag(id: SecretKey | null): string {
+  if (id === null) return "";
   const s = getSecretSources(id, getDefaultKeyPriority());
   if (s.active === "none") return "";
   return s.active;
@@ -103,7 +127,10 @@ function ProviderRow({
   // Keep each row to a single line so VirtualList's per-row height stays exact;
   // a wrapped description would desync the scroll viewport. The provider name
   // always wins, the description is truncated to whatever width is left.
-  const tagText = configured ? `  ✓ ${tag}` : autoAvailable ? "  ✓ detected" : "";
+  const signIn =
+    p.cli && autoAvailable === false ? `  ${SIGN_IN_COMMAND[p.providerId] ?? "sign in"}` : "";
+  const ready = p.cli ? "  ✓ signed in" : "  ✓ auto";
+  const tagText = configured ? `  ✓ ${tag}` : autoAvailable ? ready : signIn;
   const fixed = 6 + p.label.length + 3 + tagText.length;
   const descBudget = width - 4 - fixed;
   const showDesc = descBudget > 1;
@@ -135,7 +162,8 @@ function ProviderRow({
             {tag}
           </span>
         ) : null}
-        {!configured && autoAvailable ? <span fg={t.success}>{"  ✓ auto"}</span> : null}
+        {!configured && autoAvailable ? <span fg={t.success}>{ready}</span> : null}
+        {signIn ? <span fg={t.textMuted}>{signIn}</span> : null}
       </text>
     </box>
   );
@@ -188,6 +216,8 @@ export function SetupStep({
 
     const [phase, setPhase] = useState<Phase>("provider");
     const [cursor, setCursor] = useState(0);
+    // Until the person moves, the cursor follows the first signed-in CLI provider.
+    const cursorMoved = useRef(false);
     const [selectedProvider, setSelectedProvider] = useState<ProviderEntry | null>(null);
 
     // Key input
@@ -200,6 +230,7 @@ export function SetupStep({
 
     // Feedback
     const [flash, setFlash] = useState<string | null>(null);
+    const [flashIsHint, setFlashIsHint] = useState(false);
     const [errorMsg, setErrorMsg] = useState("");
     const [spinnerFrame, setSpinnerFrame] = useState(0);
 
@@ -216,15 +247,22 @@ export function SetupStep({
 
     useEffect(() => {
       for (const p of PROVIDERS) {
-        if (!p.autoDetect) continue;
+        if (!p.autoDetect && !p.cli) continue;
         const prov = getProvider(p.providerId);
         if (prov?.checkAvailability) {
-          prov.checkAvailability().then((ok) => {
-            setAutoAvailMap((m) => ({ ...m, [p.id]: ok }));
-          });
+          prov.checkAvailability().then(
+            (ok) => setAutoAvailMap((m) => ({ ...m, [p.providerId]: ok })),
+            () => setAutoAvailMap((m) => ({ ...m, [p.providerId]: false })),
+          );
         }
       }
     }, []);
+
+    useEffect(() => {
+      if (cursorMoved.current) return;
+      const ready = PROVIDERS.findIndex((p) => p.cli && autoAvailMap[p.providerId]);
+      if (ready >= 0) setCursor(ready);
+    }, [autoAvailMap]);
 
     const isInputPhase = phase !== "provider";
     useEffect(() => {
@@ -352,6 +390,7 @@ export function SetupStep({
           const selected = filteredModels[modelCursor];
           if (selected) {
             onSelectModel(selected.id);
+            setFlashIsHint(false);
             setFlash(`✓ ${selected.name}`);
             setPhase("provider");
             setTimeout(() => {
@@ -377,7 +416,7 @@ export function SetupStep({
       }
 
       if (phase === "error") {
-        if (evt.name === "return") {
+        if (evt.name === "return" && !selectedProvider?.cli) {
           setPhase("key");
           setKeyInput("");
           evt.preventDefault();
@@ -405,7 +444,7 @@ export function SetupStep({
           return;
         }
         if (evt.name === "return") {
-          if (selectedProvider && keyInput.trim()) {
+          if (selectedProvider?.id && keyInput.trim()) {
             const result = setSecret(selectedProvider.id, keyInput.trim());
             if (result.success) {
               refresh();
@@ -428,11 +467,13 @@ export function SetupStep({
       }
 
       if (evt.name === "up") {
+        cursorMoved.current = true;
         setCursor((c) => (c > 0 ? c - 1 : PROVIDERS.length - 1));
         evt.preventDefault();
         return;
       }
       if (evt.name === "down") {
+        cursorMoved.current = true;
         setCursor((c) => (c < PROVIDERS.length - 1 ? c + 1 : 0));
         evt.preventDefault();
         return;
@@ -443,8 +484,21 @@ export function SetupStep({
           evt.preventDefault();
           return;
         }
+        if (provider.cli && !autoAvailMap[provider.providerId]) {
+          // Signing in opens its own dialog and browser, which would cover the tour.
+          setFlashIsHint(true);
+          setFlash(
+            `${provider.label} is not signed in: run ${SIGN_IN_COMMAND[provider.providerId] ?? "its login"} after the tour`,
+          );
+          setTimeout(() => setFlash(null), 4000);
+          evt.preventDefault();
+          return;
+        }
         setSelectedProvider(provider);
-        if (hasKey(provider.id) || (provider.autoDetect && autoAvailMap[provider.id])) {
+        if (
+          hasKey(provider.id) ||
+          ((provider.autoDetect || provider.cli) && autoAvailMap[provider.providerId])
+        ) {
           fetchModels(provider);
         } else {
           setPhase("key");
@@ -547,7 +601,7 @@ export function SetupStep({
           <VSpacer />
           <KeyCaps
             hints={[
-              { key: "⏎", label: "re-enter key" },
+              ...(selectedProvider.cli ? [] : [{ key: "⏎", label: "re-enter key" }]),
               { key: "Esc", label: "back" },
             ]}
           />
@@ -609,12 +663,12 @@ export function SetupStep({
           selectedIndex={cursor}
           width={iw}
           maxRows={maxVisibleProviders}
-          keyExtractor={(p) => p.id}
+          keyExtractor={(p) => p.providerId}
           renderItem={(p, { selected }) => (
             <ProviderRow
               p={p}
               isSelected={selected}
-              autoAvailable={p.autoDetect ? autoAvailMap[p.id] : undefined}
+              autoAvailable={p.autoDetect || p.cli ? autoAvailMap[p.providerId] : undefined}
               width={iw}
             />
           )}
@@ -642,7 +696,7 @@ export function SetupStep({
         {flash ? (
           <>
             <VSpacer />
-            <text bg={t.bgPopup} fg={t.success} attributes={BOLD}>
+            <text bg={t.bgPopup} fg={flashIsHint ? t.warning : t.success} attributes={BOLD}>
               {"  "}
               {flash}
             </text>
