@@ -106,3 +106,43 @@ export function workflowLine(
     .map((t) => ({ from: t.from, to: t.to, on: t.on, carries: t.carries }));
   return { stages, loops };
 }
+
+/** The latest result of a gate in a run. */
+export interface GateResult {
+  status: "passed" | "failed" | "inconclusive" | "skipped";
+  mode: "required" | "advisory";
+  attempts: number;
+  flaky: boolean;
+}
+
+/** A gate of a run's stage with its last result; `last` is null until it ran in this run. */
+export interface RunGate extends LineGate {
+  last: GateResult | null;
+}
+
+/**
+ * The gates of each stage of a run's line with their last results, by stage ID. A v1 check stage
+ * records its command gates as checks, so `checks` fills in where no gate result exists.
+ */
+export function runGates(
+  line: WorkflowLine,
+  gateResults: Readonly<Record<string, GateResult>>,
+  checks: readonly { check_id: string; status: string }[] = [],
+): Record<string, RunGate[]> {
+  const results = new Map<string, GateResult>();
+  for (const check of checks)
+    if (check.status === "passed" || check.status === "failed" || check.status === "inconclusive")
+      results.set(check.check_id, {
+        status: check.status,
+        mode: "required",
+        attempts: 1,
+        flaky: false,
+      });
+  for (const [id, result] of Object.entries(gateResults)) results.set(id, result);
+  return Object.fromEntries(
+    line.stages.map((stage) => [
+      stage.id,
+      stage.gates.map((gate) => ({ ...gate, last: results.get(gate.id) ?? null })),
+    ]),
+  );
+}

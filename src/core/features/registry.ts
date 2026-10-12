@@ -705,7 +705,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-gates",
     group: "Workflow runs",
     title: "Gates on the run's line: what each does, blocks or advises, last result",
-    tui: gap(533, "gate results only in the activity lines"),
+    tui: ["/workflow: run overview, gates of the current stage under the stage line"],
     cli: ["baked workflow definitions", "baked workflow status"],
     api: ["/v1/workflow/definitions", "/v1/workflow/runs/:id/events"],
     desktop: ["project/runs: conveyor gate marks and station gates"],

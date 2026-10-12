@@ -27,7 +27,10 @@ import {
 } from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
+import { loadGateLibrary } from "./v2/library.js";
+import { type RunGate, runGates, type WorkflowLine, workflowLine } from "./v2/line.js";
 import { parseRunDefinition, stageKind } from "./v2/runtime.js";
+import { upgradeWorkflowV1 } from "./v2/upgrade.js";
 import { runRoot, worktreeView } from "./worktree.js";
 
 const RECENT_EVENTS = 40;
@@ -417,6 +420,39 @@ export function readRoutingSummary(store: WorkflowStore, runId: string): Routing
   }
 }
 
+// Lines change only with a run's revision; reading the gate library touches the disk.
+const lines = new Map<string, WorkflowLine | null>();
+/** The run's own definition as a line, its gates resolved from the workspace's gate library. */
+function lineOf(workspace: string, row: RunRow): WorkflowLine | null {
+  const key = `${workspace}\0${row.id}\0${row.revision}`;
+  if (lines.has(key)) return lines.get(key) ?? null;
+  let line: WorkflowLine | null = null;
+  try {
+    const parsed = parseRunDefinition(row.definition_json);
+    const policy = JSON.parse(row.policy_json) as RunPolicy;
+    const v2 =
+      parsed.schemaVersion === 2 ? parsed.definition : upgradeWorkflowV1(parsed.definition, policy);
+    line = workflowLine(v2, loadGateLibrary(workspace, policy).gates);
+  } catch {
+    // A definition or policy an older version wrote that no longer parses has no line to show.
+  }
+  if (lines.size > 64) lines.clear();
+  lines.set(key, line);
+  return line;
+}
+/** The gates of each stage of a run with their last results; empty when the run has no line. */
+function gatesOf(workspace: string, store: WorkflowStore, row: RunRow): Record<string, RunGate[]> {
+  const line = lineOf(workspace, row);
+  if (!line) return {};
+  let results = {};
+  try {
+    results = store.state(row.id).gateResults;
+  } catch {
+    // Same as above: an unreadable state has no gate results.
+  }
+  return runGates(line, results, store.checks(row.id));
+}
+
 export function readWorkflowView(service: NativeWorkflowService, runId: string) {
   const store = service.store;
   return store.readTransaction(() => {
@@ -440,6 +476,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       runModel: runModelOf(store, runId),
       worktree: worktreeView(service.workspace, store.state(runId)),
       routing: readRoutingSummary(store, runId),
+      gates: gatesOf(service.workspace, store, row),
     };
   });
 }
