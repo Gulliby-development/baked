@@ -127,7 +127,7 @@ function restartedText(view: LspActionView, what: string): string {
  * `baked lsp`, through `/v1/lsp*` of the project's backend.
  */
 export function LspSection({ project }: SectionProps) {
-  const [list, reload, setList] = useLoad(() => lsp.status(project.key), [project.key]);
+  const [list, reload, setList] = useLoad(() => lsp.status(project.key), [project.key, "lsp"]);
   const [all, setAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
