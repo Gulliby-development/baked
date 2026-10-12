@@ -62,10 +62,26 @@ export const writtenCodePaths = (task: Pick<Task, "writes">): string[] =>
 export const isStaticCheck = (check: Check): boolean =>
   Boolean(check.fix) || STATIC_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
 
-/** The checks that run for a task: the task-scope ones it names and the static feature ones covering its code. */
+/**
+ * Static checks that analyze a whole compilation unit: they resolve every module, import and
+ * type of the project, so in a task's own worktree they fail until the sibling tasks' files exist
+ * (bench round 08, commitbump: `cargo clippy` E0583 for a `mod parse;` whose file another task
+ * writes, and 2.2M tokens of repairs that could not pass). They run in the checks stage after
+ * integration, not per task. Formatters and file-local linters (fmt, ruff, biome, eslint) read
+ * one file at a time and stay per task.
+ */
+const WHOLE_UNIT_COMMAND = /\b(?:clippy|vet|tsc|typecheck|mypy|pyright)\b|\bcargo\s+check\b/i;
+
+export const isWholeUnitCheck = (check: Check): boolean =>
+  WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
+
+/**
+ * The checks that run for a task: the task-scope ones it names and the file-local static feature
+ * ones covering its code. Whole-unit checks are left to the checks stage.
+ */
 export const coveringChecks = (policy: RunPolicy, task: Pick<Task, "writes">): Check[] =>
   writtenCodePaths(task).length
-    ? policy.checks.filter((c) => c.scope === "feature" && isStaticCheck(c))
+    ? policy.checks.filter((c) => c.scope === "feature" && isStaticCheck(c) && !isWholeUnitCheck(c))
     : [];
 
 /**

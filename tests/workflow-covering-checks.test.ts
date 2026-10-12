@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   coveringChecks,
   isStaticCheck,
+  isWholeUnitCheck,
   taskCheckList,
   withCoveringChecks,
 } from "../src/core/workflows/check-policy.js";
@@ -80,5 +81,57 @@ describe("checks that cover a task's files", () => {
     expect(taskCheckList(policy, code).map((c) => c.id)).toEqual(["typecheck", "lint"]);
     const docs = task("T002", ["README.md"], ["typecheck", "lint"]);
     expect(taskCheckList(policy, docs).map((c) => c.id)).toEqual(["typecheck"]);
+  });
+});
+
+// Bench round 08, commitbump cd842f0f: `cargo clippy` ran in the worktree of T001, whose lib.rs
+// declared modules that T002 writes, and failed with E0583 until 2.2M tokens of repairs ran out.
+describe("whole-unit checks are not covering checks", () => {
+  const cargo = (id: string, args: string[]): Check => ({
+    ...check(id, args, "feature"),
+    executable: "cargo",
+  });
+  const rust: RunPolicy = {
+    ...fixturePolicy,
+    checks: [
+      { ...cargo("cargo-fmt", ["fmt", "--check"]), fix: { executable: "cargo", args: ["fmt"] } },
+      cargo("cargo-clippy", ["clippy", "--all-targets", "--", "-D", "warnings"]),
+      cargo("cargo-check", ["check"]),
+      cargo("cargo-test", ["test"]),
+    ],
+  };
+
+  test("clippy, cargo check, go vet, tsc, mypy and pyright are whole-unit", () => {
+    for (const [executable, args] of [
+      ["cargo", ["clippy"]],
+      ["cargo", ["check", "--all-targets"]],
+      ["go", ["vet", "./..."]],
+      ["bun", ["x", "tsc", "--noEmit"]],
+      ["bun", ["run", "typecheck"]],
+      ["python", ["-m", "mypy", "."]],
+      ["pyright", []],
+    ] as const)
+      expect(isWholeUnitCheck({ ...check("c", [...args], "feature"), executable })).toBe(true);
+  });
+
+  test("formatters and file-local linters stay per task", () => {
+    expect(isWholeUnitCheck(rust.checks[0] as Check)).toBe(false);
+    expect(isWholeUnitCheck(check("lint", ["x", "biome", "check", "."], "feature", true))).toBe(false);
+    expect(isWholeUnitCheck(check("ruff", ["-m", "ruff", "check", "."], "feature"))).toBe(false);
+    expect(isWholeUnitCheck(cargo("cargo-test", ["test"]))).toBe(false);
+  });
+
+  test("a Rust code task gets cargo fmt only; clippy and cargo check wait for the checks stage", () => {
+    const lib = task("T001", ["src/lib.rs"], []);
+    expect(coveringChecks(rust, lib).map((c) => c.id)).toEqual(["cargo-fmt"]);
+    const graph = { tasks: [lib, task("T002", ["src/parse.rs"], ["cargo-clippy"])] } as unknown as TaskGraph;
+    expect(withCoveringChecks(graph, rust).tasks.map((t) => t.checkIds)).toEqual([
+      ["cargo-fmt"],
+      ["cargo-clippy", "cargo-fmt"],
+    ]);
+    // A feature check the planner named is still not run per task: only covering ones are.
+    expect(
+      taskCheckList(rust, task("T002", ["src/parse.rs"], ["cargo-clippy", "cargo-fmt"])).map((c) => c.id),
+    ).toEqual(["cargo-fmt"]);
   });
 });
