@@ -54,6 +54,7 @@ import {
   PROJECT_MEMORY_ARTIFACT,
   renderProjectMemory,
 } from "./project-memory.js";
+import { abortableDelay } from "./retry.js";
 import { undoRunEdits } from "./rollback.js";
 import {
   independenceWarnings,
@@ -285,6 +286,7 @@ export class NativeWorkflowService implements WorkflowService {
       analysisReplans: 0,
       taskContinuations: {},
       taskRestarts: {},
+      ownerLostResumes: 0,
       taskCarry: {},
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
@@ -385,7 +387,56 @@ export class NativeWorkflowService implements WorkflowService {
   async list(opts: { featureId?: string; status?: RunState; limit: number; cursor?: string }) {
     return this.store.list(opts.limit, opts.featureId, opts.status, opts.cursor);
   }
+  /** Waits before the automatic resumes of a run blocked with `owner_lost`; one entry per resume. */
+  ownerLostBackoffMs: number[] = [30_000, 60_000, 120_000];
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
+    for (;;) {
+      const snapshot = await this.driveOnce(runId, signal);
+      if (!(await this.resumeOwnerLost(runId, signal))) return snapshot;
+    }
+  }
+  /**
+   * A run that blocked with `owner_lost` under `clarification: assume` resumes itself after a
+   * growing wait, at most `ownerLostBackoffMs.length` times; the worker is usually lost to a
+   * transient provider or process failure that a person would only have resumed. Each resume is
+   * journaled as a recovery artifact.
+   */
+  private async resumeOwnerLost(runId: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const run = this.store.run(runId);
+    if (run.status !== "blocked" || run.reason !== "owner_lost") return false;
+    if (PolicySchema.parse(JSON.parse(run.policy_json)).clarification !== "assume") return false;
+    const state = this.store.state(runId);
+    const wait = this.ownerLostBackoffMs[state.ownerLostResumes];
+    if (wait === undefined || this.store.requests(runId).some(blocksRun)) return false;
+    try {
+      await abortableDelay(wait, signal);
+    } catch {
+      return false;
+    }
+    const attempt = state.ownerLostResumes + 1;
+    this.store.transaction(() => {
+      state.ownerLostResumes = attempt;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `owner-lost/resume-${attempt}.json`,
+        canonical({ attempt, of: this.ownerLostBackoffMs.length, waitedMs: wait }),
+      );
+      this.store.saveState(runId, state);
+    });
+    try {
+      await this.resume(runId, {
+        commandId: newId(),
+        expectedRevision: this.store.run(runId).revision,
+      });
+    } catch {
+      // The run needs a person after all (a pending request, changed inputs): it stays blocked.
+      return false;
+    }
+    return true;
+  }
+  private async driveOnce(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     this.enabled();
     assertMutable(this.store.run(runId).status);
     if (this.store.requests(runId).some(blocksRun)) return this.store.snapshot(runId);
