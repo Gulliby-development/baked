@@ -444,4 +444,5 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/project", (_input, ctx) => showCurrentProject(ctx));
   map.set("/project rename", (input, ctx) => renameCurrentProject(input, ctx));
   map.set("/project waiting", (_input, ctx) => showWaitingAcrossProjects(ctx));
+  map.set("/coordinator", () => useUIStore.getState().openModal("coordinator"));
 }

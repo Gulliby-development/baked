@@ -28,8 +28,19 @@ The project coordinator is one long-lived chat per project. You come back to it 
 | Local API | `GET/POST /v1/coordinator`, `GET/PUT /v1/coordinator/brief`, `GET /v1/coordinator/launched`, then the usual `/v1/sessions/ID/...` endpoints ([contract](desktop/api.md#project-coordinator)) |
 | Headless CLI | `baked session coordinator [--json]` prints the session id and the brief |
 | Desktop app | the Coordinator section of each project, and Hand to coordinator in the chat menu ([desktop app](desktop/app.md#screens)) |
-| Terminal UI | not yet ([#152](https://github.com/Gulliby-development/baked/issues/152)) |
+| Terminal UI | `/coordinator` ([below](#terminal-ui)) |
+
+## Terminal UI
+
+`/coordinator` (in the command palette) opens the coordinator over the current tab. The terminal UI hosts it in its own process, so it needs no `baked serve`; it is the same session, brief and launch tools as the server's coordinator.
+
+- **Conversation.** The view shows what the coordinator launched (kind, id, status, tokens, task and why), then the tail of the conversation and the text the running turn streams. Type a message and press `Enter` to send it; a message sent while a turn runs is queued.
+- **Prompts.** A split card lists its flows with their tasks, paths and dependencies. `Ctrl+Y` approves it, `Ctrl+N` rejects it, and `Ctrl+E` rejects it and starts a "Change the split: " message. Approval prompts (`launch_session` in an editing mode) take `Ctrl+Y` to allow and `Ctrl+N` to deny. A question takes an option's number or text and `Enter`.
+- **Launching.** Runs start through the terminal UI's workflow worker, as `/workflow run` does, with the model of the current tab and owner `Coordinator`; the run shows in `/workflow` like any other. Project state is read from `.baked/workflows.sqlite` without writing to it.
+- **Leaving.** `Esc` stops a running turn; when nothing runs it closes the view. The coordinator keeps following launched work while the terminal UI runs and stops when it exits.
+
+The terminal UI and a running `baked serve` can host the coordinator of the same project at once. Both follow the same brief, which refuses an edit made against an older revision, but each answers only the prompts of its own turns.
 
 ## Not yet
 
-The terminal UI and issues for an initiative's features ([#567](https://github.com/Gulliby-development/baked/issues/567)) are the next parts of the coordinator ([#144](https://github.com/Gulliby-development/baked/issues/144)).
+Issues for an initiative's features ([#567](https://github.com/Gulliby-development/baked/issues/567)) are the next part of the coordinator ([#144](https://github.com/Gulliby-development/baked/issues/144)).

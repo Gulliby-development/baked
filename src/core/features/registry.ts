@@ -149,7 +149,7 @@ export const FEATURES: readonly Feature[] = [
     id: "coordinator",
     group: "Chat and sessions",
     title: "Project coordinator chat with a durable project brief",
-    tui: gap(152),
+    tui: ["/coordinator"],
     cli: ["baked session coordinator: prints the brief"],
     api: ["/v1/coordinator", "/v1/coordinator/brief", "/v1/coordinator/launched"],
     desktop: [
@@ -707,8 +707,13 @@ export const FEATURES: readonly Feature[] = [
     title: "Workflow definition editor",
     tui: ["/workflow: definition editor"],
     cli: ["baked workflow define", "baked workflow validate"],
-    api: partial(["/v1/workflow/definitions"], 413, "read-only"),
-    desktop: gap(413),
+    api: [
+      "/v1/workflow/definitions",
+      "/v1/workflow/editor",
+      "/v1/workflow/editor/review",
+      "/v1/workflow/editor/save",
+    ],
+    desktop: ["project/workflows"],
   },
   {
     id: "doctor-estimate",
