@@ -42,6 +42,7 @@ select {
   color: var(--text);
   padding: 0 10px;
   font: inherit;
+  font-family: var(--font-sans);
 }
 
 /* Native selects and checkboxes drop the platform look for the ink outline and accent fill. */
@@ -53,6 +54,14 @@ select {
   background-position: right 9px center;
   background-size: 12px;
   cursor: pointer;
+}
+
+/* The app font is set on every part of a select: the platform list and the base-select picker
+   otherwise fall back to the system font. */
+option,
+optgroup,
+selectedcontent {
+  font-family: var(--font-sans);
 }
 
 select:focus-visible,
@@ -92,6 +101,12 @@ select:disabled {
     appearance: base-select;
   }
 
+  /* A base-select lays its content out as a flex row that stretches to the top; centre it so the
+     text sits on the same line as the background chevron. */
+  select {
+    align-items: center;
+  }
+
   select::picker-icon {
     display: none;
   }
@@ -104,6 +119,8 @@ select:disabled {
     border-radius: var(--radius);
     box-shadow: var(--shadow-sm);
     color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
   }
 
   option {
