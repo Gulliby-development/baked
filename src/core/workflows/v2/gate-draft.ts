@@ -27,6 +27,8 @@ export interface GateDraftRequest {
   kind?: DraftKind;
   /** The gate ID; the model proposes one otherwise. */
   id?: string;
+  /** An AI check that also walks the run's manual acceptance criteria (`fromCriteria`). */
+  fromCriteria?: boolean;
 }
 
 /** A small script a command gate runs with `bun`; written next to the gate when it is saved. */
@@ -66,7 +68,8 @@ const ModelDraft = z.object({
     .object({
       title: z.string().min(1).max(200),
       steps: z.array(z.string().min(1).max(2000)).min(1).max(30),
-      expectations: z.array(z.string().min(1).max(2000)).min(1).max(30),
+      expectations: z.array(z.string().min(1).max(2000)).max(30),
+      fromCriteria: z.boolean().optional(),
       start: Argv.extend({
         cwd: z.string().max(256).optional(),
         readyLog: z.string().max(200).optional(),
@@ -82,7 +85,7 @@ const SYSTEM = `You turn a check a person describes in plain words into a BAKED 
 
 Pick the kind:
 - "command": the check has an exact answer (an exit code, an exact output, a value). Give "command" {executable, args, cwd?} run without a shell; when a small test is needed, also give "script" {path, content}: a Bun TypeScript script under tests/gates/ that runs the program with Bun.spawn, compares its output and exits 1 with a clear message on a mismatch. The command is then bun with the script path.
-- "ai-acceptance": the check needs judgement ("looks right", "is helpful", "handles bad input well"). Give "acceptance" {title, steps[], expectations[], start {executable, args, cwd?, readyLog?}, commands?[], listenPorts?[]}: start is the program a reviewer walks through its terminal (its stdin and stdout), commands are one-shot commands run in order, each an argv without a shell; readyLog is text the program prints when it is ready.
+- "ai-acceptance": the check needs judgement ("looks right", "is helpful", "handles bad input well"). Give "acceptance" {title, steps[], expectations[], start {executable, args, cwd?, readyLog?}, commands?[], listenPorts?[]}: start is the program a reviewer walks through its terminal (its stdin and stdout), commands are one-shot commands run in order, each an argv without a shell; readyLog is text the program prints when it is ready. Set "fromCriteria": true when the check is to walk the acceptance criteria of the feature's spec (the run's manual criteria are then added as expectations); the expectations may then be empty.
 
 Always give "kind", "id" (lowercase letters, digits and dashes) and "description" (one sentence). Use only programs the project shows; never use a shell (sh, bash, cmd, powershell) or pipes, never a browser, never network access.`;
 
@@ -160,6 +163,9 @@ export function gateFromDraft(
   }
   const a = draft.acceptance;
   if (!a) throw new Error("The draft has no scenario.");
+  const fromCriteria = request.fromCriteria === true || a.fromCriteria === true;
+  if (!a.expectations.length && !fromCriteria)
+    throw new Error("The draft's scenario has no expectation to check.");
   const ports = a.listenPorts ?? [];
   return {
     gate: {
@@ -169,7 +175,12 @@ export function gateFromDraft(
       scope: "feature",
       evidence: { kind: "recording", keepOutputLines: 80, artifactPaths: [] },
       acceptance: {
-        scenario: { title: a.title, steps: a.steps, expectations: a.expectations },
+        scenario: {
+          title: a.title,
+          steps: a.steps,
+          expectations: a.expectations,
+          ...(fromCriteria ? { fromCriteria: "manual" } : {}),
+        },
         start: {
           executable: a.start.executable,
           args: a.start.args,
@@ -324,6 +335,8 @@ export async function draftGate(
   if (!text) throw new Error("Describe the check in a sentence.");
   if (request.id !== undefined && !SafeId.safeParse(request.id).success)
     throw new Error(`${request.id} is not a valid gate ID`);
+  if (request.fromCriteria && request.kind !== undefined && request.kind !== "ai-acceptance")
+    throw new Error("Only an AI check walks the spec's acceptance criteria.");
   if (request.kind === "human" || request.kind === "ai-review") {
     const gate = plainGate(request.kind, request.id ?? idFromText(text), text);
     return {
@@ -335,9 +348,13 @@ export async function draftGate(
       path: `baked/gates/${gate.id}.json`,
     };
   }
+  const kind = request.kind ?? (request.fromCriteria ? "ai-acceptance" : undefined);
   const user = [
     `The check: ${text}`,
-    request.kind ? `Use the kind "${request.kind}".` : "",
+    kind ? `Use the kind "${kind}".` : "",
+    request.fromCriteria
+      ? `Set "fromCriteria": true; the run's manual acceptance criteria are added as expectations.`
+      : "",
     request.id ? `Use the ID "${request.id}".` : "",
     `The project: ${projectBrief(workspace)}`,
   ]
@@ -349,8 +366,8 @@ export async function draftGate(
     throw new Error(
       `The model's draft is not a gate: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
     );
-  if (request.kind && parsed.data.kind !== request.kind)
-    throw new Error(`The model drafted a ${parsed.data.kind} gate instead of ${request.kind}.`);
+  if (kind && parsed.data.kind !== kind)
+    throw new Error(`The model drafted a ${parsed.data.kind} gate instead of ${kind}.`);
   const { gate, script } = gateFromDraft(parsed.data, request);
   const problems = draftProblems(workspace, gate, script, library);
   return {
