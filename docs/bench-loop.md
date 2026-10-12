@@ -6,7 +6,7 @@ The bench loop tunes BAKED by building small, useful apps with it, round after r
 
 ## One round
 
-1. **Prepare.** Pin the BAKED runner checkout to `main`, refresh the spec from it, check that a language server exists for every language the round uses (recorded in `round.json` `lsp`), run `baked doctor`, check every configured provider.
+1. **Prepare.** Pin the BAKED runner checkout to `main`, refresh the spec from it, check with `baked lsp status --json` / `baked lsp check` that a language server works for every language the round uses and install missing ones with `baked lsp install <language>` (recorded in `round.json` `lsp`), run `baked doctor`, check every configured provider.
 2. **Ideate and review.** An ideator proposes 5 new apps and, for 3 public repositories of `Gulliby-development` picked at random (seeded with the round number; private repositories are never touched), one small feature each after reading the repository (a CI pipeline counts when the repository has none; small hygiene extras such as a missing license, logo, topics or description may ride along). A reviewer keeps 2 new apps, checks each update (useful, small, testable, precise, no duplicate, no breaking change) and writes the exact brief BAKED gets.
 3. **Build.** An implementer (up to `round.maxConcurrentRuns` runs at once, 3 from round 7) runs each of the 2 new apps, the 3 updates (a fresh clone of the repository, its baseline tests recorded first, tracked as the separate group `update`) and 3 fixed control apps (url-shortener, md-site, expenses-py) through `baked workflow run` with fixed settings (`--worktree --writers 3`, sizing, `clarification: assume`) and records tokens, steps, time, interventions and corrections.
 4. **Verify.** A verifier clones each app, follows only its README, runs its tests and a smoke test, and screenshots UI apps. For an update it runs the repository's whole test suite, the new README example and one error case, and checks that the diff holds only what the brief names.
@@ -20,18 +20,18 @@ The bench loop tunes BAKED by building small, useful apps with it, round after r
 - **Languages.** The loop built Python and TypeScript (Bun) projects until round 6. From round 7 every round has at least two of Go, .NET, Rust and Java (Maven + JUnit) across its new apps, updates and controls. Workspaces come from `tools/scaffold.py` (`bun`, `webunit`, `python`) and `tools/scaffold_lang.py` (`go`, `dotnet`, `rust`, `java`); brownfield clones from `tools/scaffold_update.py` and `tools/scaffold_update_lang.py`.
 - **Checks.** Go: `go vet ./...` (fixer `go fmt ./...`), `go test ./...`. .NET: `dotnet build`, `dotnet format --verify-no-changes`, `dotnet test`. Rust: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`. Java: `mvn -B -q verify`.
 - **Toolchains.** Prepare checks `go`, `dotnet`, `cargo` (with `rustfmt` and `clippy`) and `java` with `mvn`; a missing one removes its language from the round and is reported. Shells that the harness starts may lack them on `PATH`, so the launch script and the scaffold scripts add their directories explicitly.
-- **Language servers.** BAKED's code intelligence uses a standalone language server per language when one is found (`PATH`, BAKED's `lsp-servers` folder, Mason's `bin`) and falls back to ts-morph, tree-sitter and regex otherwise. Prepare checks the server for each language of the round and records it in `round.json` `lsp`; a missing one is reported once with its install command and never installed by the loop, and the analyst compares behavior with and without it. There is no headless install or list command (`/lsp` is terminal-UI only), so the check looks at `PATH`.
+- **Language servers.** BAKED's code intelligence uses a standalone language server per language when one is found (`PATH`, BAKED's `lsp-servers` folder, Mason's `bin`) and falls back to ts-morph, tree-sitter and regex otherwise. Prepare runs `baked lsp status --json` for the languages of the round (`uncovered` lists those without a working server), installs a missing one with `baked lsp install <language>` (non-interactive, exit 1 on failure or a missing toolchain) and confirms with `baked lsp check`; the result goes to `round.json` `lsp`. The loop never installs a server by hand or with a system-wide package manager. When an install fails, it is reported once and the round runs without that server, and the analyst compares behavior with and without it. The commands are described in [headless mode](headless.md#language-servers).
 
   | Language | Server | Install |
   | --- | --- | --- |
-  | Python | `pyright-langserver` | `npm install -g pyright` or `pip install pyright` |
-  | TypeScript | `typescript-language-server` | `npm install -g typescript-language-server typescript` |
-  | Go | `gopls` | `go install golang.org/x/tools/gopls@latest` |
-  | .NET | `csharp-ls` | `dotnet tool install --global csharp-ls` |
-  | Rust | `rust-analyzer` | `rustup component add rust-analyzer` |
-  | Java | `jdtls` | manual download or Mason (`/lsp install`) |
+  | Python | `pyright-langserver` | `baked lsp install python` |
+  | TypeScript | `typescript-language-server` | `baked lsp install typescript` |
+  | Go | `gopls` | `baked lsp install go` |
+  | .NET | `csharp-ls` | `baked lsp install csharp` |
+  | Rust | `rust-analyzer` | `baked lsp install rust` |
+  | Java | `jdtls` | `baked lsp install java` |
 
-  The install commands are the same on Windows, Linux and macOS; the binaries land in `~/go/bin`, `~/.dotnet/tools` and `~/.cargo/bin`, which must be on `PATH`.
+  Installing a server needs its toolchain (`go`, `cargo`, `npm`, `pip3`) on `PATH`; the launch script adds the toolchain directories.
 - **Lanes.** `round.maxConcurrentRuns` in `config.json` is 3 from round 7 (it was 2). If builds or tests time out because the PC is saturated, the next round goes back to 2.
 - **Difficulty.** A round without BAKED-side problems (no blocked runs, no operator actions beyond infrastructure resumes, no new P1 findings) raises the difficulty by one for the next round; a round with problems keeps it.
 - **Publishing.** CI templates in `bench/loop/templates/ci/`: `bun`, `vite`, `python`, `go`, `dotnet`, `rust`, `java`, all on `ubuntu-latest`, `windows-latest` and `macos-latest`.
