@@ -116,6 +116,8 @@ async function handleCheckpointUndo(input: string, ctx: CommandContext): Promise
   }
   ctx.chat.setMessages(result.messages);
   ctx.chat.setCoreMessages(rebuildCoreMessages(result.messages));
+  // Saved now, so the undone turns survive a quit before the next turn.
+  ctx.chat.persist();
   ctx.refreshGit();
   sysMsg(
     ctx,
@@ -146,6 +148,8 @@ async function handleCheckpointRedo(input: string, ctx: CommandContext): Promise
   }
   ctx.chat.setMessages(result.messages);
   ctx.chat.setCoreMessages(rebuildCoreMessages(result.messages));
+  // Saved now, so the undone turns survive a quit before the next turn.
+  ctx.chat.persist();
   ctx.refreshGit();
   sysMsg(ctx, `Redo applied. ${rollbackSummary(result.rollback, ctx.cwd)}`);
 }
@@ -174,6 +178,8 @@ async function handleCheckpointSave(_input: string, ctx: CommandContext): Promis
 
 function rollbackSummary(report: RollbackReport, cwd: string): string {
   const rel = (p: string) => relative(cwd, p) || p;
+  if (report.restored.length + report.removed.length + report.skipped.length === 0)
+    return "No file edits to roll back.";
   const parts = [`Restored ${String(report.restored.length)} file(s)`];
   if (report.removed.length > 0) parts.push(`removed ${String(report.removed.length)}`);
   let text = `${parts.join(", ")}.`;
