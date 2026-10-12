@@ -37,6 +37,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/project` | This project: sessions, workflow runs, what waits for you |
 | `/project rename` | `/project rename NAME` renames this project in the picker, `baked projects` and the desktop app; without a name it restores the default |
 | `/project waiting` | Run requests and blocked runs that wait for you, in this project and in your pinned and recent projects; Enter opens the run here or switches to its project |
+| `/coordinator` | The [project coordinator](coordinator.md#terminal-ui): its conversation, launched work and split cards over the current tab; `Ctrl+Y` approves, `Ctrl+N` rejects, `Ctrl+E` rejects a split and starts a message to change it, `Esc` stops a running turn or goes back |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
 | `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |

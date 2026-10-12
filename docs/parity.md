@@ -52,7 +52,7 @@ bun test tests/feature-parity.test.ts
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
-| Project coordinator chat with a durable project brief | **Gap** [#152](https://github.com/Gulliby-development/baked/issues/152) | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` | `project/coordinator`, `project/chat` |
+| Project coordinator chat with a durable project brief | `/coordinator` | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` | `project/coordinator`, `project/chat` |
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
@@ -161,7 +161,6 @@ bun test tests/feature-parity.test.ts
 
 ### Open gaps by issue
 
-- [#152](https://github.com/Gulliby-development/baked/issues/152): Project coordinator chat with a durable project brief
 - [#372](https://github.com/Gulliby-development/baked/issues/372): Gates from a plain-language sentence
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content

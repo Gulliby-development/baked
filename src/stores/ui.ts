@@ -32,11 +32,13 @@ export type ModalName =
   | "mcpSettings"
   | "tabNamePopup"
   | "memoryBrowser"
-  | "modelEvents";
+  | "modelEvents"
+  | "coordinator";
 
 type Modals = Record<ModalName, boolean>;
 
 const INITIAL_MODALS: Modals = {
+  coordinator: false,
   workflow: false,
   llmSelector: false,
   skillSearch: false,
