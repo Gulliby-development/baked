@@ -92,6 +92,7 @@ import type {
   PlanReviewAction,
   PlanStepStatus,
   QueuedMessage,
+  SubmitOptions,
 } from "../types/index.js";
 import { clampWatchdogTimeouts } from "../types/index.js";
 import { compressImageForApi } from "../utils/image-compress.js";
@@ -247,7 +248,11 @@ export interface ChatInstance {
   planMode: boolean;
   planRequest: string | null;
   // Actions
-  handleSubmit: (input: string, images?: ImageAttachment[]) => Promise<void>;
+  handleSubmit: (
+    input: string,
+    images?: ImageAttachment[],
+    options?: SubmitOptions,
+  ) => Promise<void>;
   summarizeConversation: (opts?: { skipQueueDrain?: boolean }) => Promise<void>;
   abort: () => void;
   interactiveCallbacks: InteractiveCallbacks;
@@ -807,7 +812,9 @@ export function useChat({
   });
   const syncV2Slots = syncV2SlotsRef.current;
 
-  const handleSubmitRef = useRef<(input: string) => void>(() => {});
+  const handleSubmitRef = useRef<
+    (input: string, images?: ImageAttachment[], options?: SubmitOptions) => void
+  >(() => {});
   // Stream stall watchdog state — persists across handleSubmit calls so
   // auto-retry "Continue." inherits the count from the previous attempt.
   const stallRetryCountRef = useRef<number>(0);
@@ -1185,7 +1192,10 @@ export function useChat({
             if (queue.length > 0) {
               const [next, ...rest] = queue;
               if (next) {
-                setTimeout(() => handleSubmitRef.current(next.content), 0);
+                setTimeout(
+                  () => handleSubmitRef.current(next.content, next.images, next.options),
+                  0,
+                );
               }
               return rest;
             }
@@ -1420,7 +1430,7 @@ export function useChat({
   );
 
   const handleSubmit = useCallback(
-    async (rawInput: string, images?: ImageAttachment[]) => {
+    async (rawInput: string, images?: ImageAttachment[], options?: SubmitOptions) => {
       // Read current config via ref — effectiveConfig object is NOT in deps
       // (new object every render would force constant callback recreation)
       const effectiveConfig = effectiveConfigRef.current;
@@ -1428,7 +1438,9 @@ export function useChat({
       if (abortRef.current) return;
 
       // Custom slash commands (.baked/commands/*.md) expand here, so direct and queued runs match.
-      const input = expandCustomSlashInput(rawInput, cwd) ?? rawInput;
+      const input = options?.verbatim
+        ? rawInput
+        : (expandCustomSlashInput(rawInput, cwd) ?? rawInput);
 
       if (activeModelRef.current === "none") {
         const hint: ChatMessage = {
@@ -1468,7 +1480,7 @@ export function useChat({
       // the message as typed with what was attached under it.
       let modelInput = input;
       let inputContext: ChatMessage["inputContext"];
-      if (hasInputReferences(input)) {
+      if (!options?.verbatim && hasInputReferences(input)) {
         const expandAbort = new AbortController();
         abortRef.current = expandAbort;
         setIsLoading(true);
@@ -1507,7 +1519,7 @@ export function useChat({
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
-        content: input,
+        content: options?.display ?? input,
         timestamp: Date.now(),
         images: images && images.length > 0 ? images : undefined,
         ...(inputContext ? { inputContext } : {}),
@@ -2030,9 +2042,12 @@ export function useChat({
           const drainSteering = (): { text: string; images?: ImageAttachment[] } | null => {
             if (steeringAbortedRef.current) return null;
             // A queued message with `@` mentions or a `!command` waits for the turn to end, so it is
-            // expanded like a typed message; the ones before it steer now.
+            // expanded like a typed message; the ones before it steer now. A watch turn (queued with
+            // options) also waits, as a turn of its own.
             const pending = messageQueueRef.current;
-            const firstRef = pending.findIndex((m) => hasInputReferences(m.content));
+            const firstRef = pending.findIndex(
+              (m) => m.options !== undefined || hasInputReferences(m.content),
+            );
             const queue = firstRef === -1 ? pending : pending.slice(0, firstRef);
             const rest = firstRef === -1 ? [] : pending.slice(firstRef);
             if (queue.length === 0) return null;
@@ -3781,7 +3796,10 @@ export function useChat({
               if (queue.length > 0) {
                 const [next, ...rest] = queue;
                 if (next) {
-                  setTimeout(() => handleSubmitRef.current(next.content), 0);
+                  setTimeout(
+                    () => handleSubmitRef.current(next.content, next.images, next.options),
+                    0,
+                  );
                 }
                 return rest;
               }

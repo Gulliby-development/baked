@@ -1898,6 +1898,48 @@ export class WorkflowScheduler {
       // An attempt that used its steps without submitting and changed nothing is repeated once
       // with half again as many steps; the same cap would repeat the same experiment (tasks grow
       // the same way through `taskSteps`).
+      // A stage agent (not a task: tasks have their own restart) that ended in prose the format
+      // correction could not turn into a result, and changed nothing, is repeated once in a
+      // fresh session that is shown its prose ending.
+      if (
+        error instanceof WorkflowFault &&
+        error.details.reason === "prose_end" &&
+        !task &&
+        !placement.stepRetry &&
+        !signal.aborted &&
+        !wrote
+      ) {
+        const prose = typeof error.details.prose === "string" ? error.details.prose : "";
+        const retryExtra =
+          extra && typeof extra === "object" && !Array.isArray(extra)
+            ? {
+                ...extra,
+                previousAttempt: `Your previous attempt ended with this text instead of calling submit_result, and was discarded: ${JSON.stringify(prose.slice(0, 800))}. This time end by calling submit_result with the complete result.`,
+              }
+            : extra;
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          retryExtra,
+          signal,
+          task,
+          0,
+          validate,
+          limits,
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            ...(fallbackIndex ? { fallbackIndex } : {}),
+            ...(placement.primaryError !== undefined
+              ? { primaryError: placement.primaryError }
+              : {}),
+            stepRetry: true,
+          },
+        );
+      }
       if (
         error instanceof WorkflowFault &&
         error.details.reason === "no_submission" &&

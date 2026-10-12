@@ -32,6 +32,7 @@ import { probeTool, reproExecutables, runProbe } from "../verification/repro.js"
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { withHostConstants } from "./host-constants.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
@@ -393,8 +394,9 @@ export class NativeAgentExecutor implements AgentExecutor {
           },
         });
       }
-      const schema = outputSchemas[request.profile.output];
-      if (!schema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
+      const resultSchema = outputSchemas[request.profile.output];
+      if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
+      const schema = withHostConstants(request.profile.output, resultSchema);
       let submitted: unknown;
       let rejected = 0;
       const submitResult = tool({

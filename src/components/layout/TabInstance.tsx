@@ -21,6 +21,7 @@ import { useLandingTransition } from "../../hooks/useLandingTransition.js";
 import { useSessionDiffStats } from "../../hooks/useSessionDiffStats.js";
 import type { TabActivity } from "../../hooks/useTabs.js";
 import { useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
+import { useWatchMode } from "../../hooks/useWatchMode.js";
 import { useCheckpointStore } from "../../stores/checkpoints.js";
 import { useStatusBarStore } from "../../stores/statusbar.js";
 import { useUIStore } from "../../stores/ui.js";
@@ -174,6 +175,8 @@ export const TabInstance = memo(function TabInstance({
     visible,
     onModelChange,
   });
+
+  useWatchMode(tabId, cwd, effectiveConfig.watch, chat);
 
   // Sync coAuthorCommits from config
   useEffect(() => {
@@ -800,7 +803,8 @@ export const TabInstance = memo(function TabInstance({
               {hasChangedFiles && <ChangedFilesBar messages={chat.messages} stats={diffStats} />}
               {chat.messageQueue.length > 0 &&
                 (() => {
-                  const latest = chat.messageQueue[chat.messageQueue.length - 1]?.content ?? "";
+                  const last = chat.messageQueue[chat.messageQueue.length - 1];
+                  const latest = last?.options?.display ?? last?.content ?? "";
                   const firstLine = latest.split("\n")[0] ?? "";
                   const extraLines = latest.split("\n").length - 1;
                   const prevCount = chat.messageQueue.length - 1;

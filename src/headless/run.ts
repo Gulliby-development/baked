@@ -226,8 +226,21 @@ interface TurnResult {
   exitCode: number;
 }
 
-async function streamTurn(
-  agent: ReturnType<typeof createBakeAgent>,
+/** Readable text of a stream `error` part, which may carry any value. */
+function streamErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+    return JSON.stringify(error);
+  }
+  return String(error);
+}
+
+/** Streams one turn and reports it; exported for tests. */
+export async function streamTurn(
+  agent: Pick<ReturnType<typeof createBakeAgent>, "stream">,
   messages: ModelMessage[],
   prompt: string,
   signal: AbortSignal,
@@ -325,6 +338,9 @@ async function streamTurn(
             summary,
           });
         }
+      } else if (part.type === "error") {
+        // A provider failure arrives as a stream part rather than a thrown error.
+        throw new Error(streamErrorText(part.error));
       } else if (part.type === "finish-step") {
         steps++;
         const usage = part.usage as {
