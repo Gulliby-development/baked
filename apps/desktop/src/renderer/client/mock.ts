@@ -155,6 +155,7 @@ export function createMockBridge(): DesktopBridge {
             "chat-memory",
             "images",
             "code-graph",
+            "progress",
             "skills-install",
             "mcp",
             "custom-commands",

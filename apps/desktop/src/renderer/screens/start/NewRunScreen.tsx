@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { type DefinitionSummary, MAX_WRITERS, start } from "../../client/start.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
 import { CHECK } from "../../lib/styles.js";
 import { lineOf } from "../runs/line-model.js";
@@ -21,6 +22,7 @@ import {
   LEGEND,
   policyFor,
   presetLimits,
+  RunStarting,
   SUBMIT,
   TITLE,
   usePolicy,
@@ -318,7 +320,7 @@ export function NewRunScreen({ project }: SectionProps) {
         ) : definitions.value ? (
           <RecipeChoice definitions={definitions.value} value={workflow} onChange={pickWorkflow} />
         ) : (
-          <p className={HINT}>Loading workflows…</p>
+          <Skeleton lines={2} label="Loading workflows" />
         )}
       </section>
 
@@ -482,6 +484,7 @@ export function NewRunScreen({ project }: SectionProps) {
         </details>
       </section>
 
+      <RunStarting projectKey={project.key} starting={launcher.starting} />
       {launcher.error && <Alert tone="error">{launcher.error}</Alert>}
       <div className={INLINE}>
         <Button type="submit" variant="primary" size="md" className={SUBMIT} disabled={!canStart}>

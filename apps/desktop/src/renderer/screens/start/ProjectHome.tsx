@@ -10,6 +10,7 @@ import { Badge, type badgeVariants } from "../../components/ui/badge.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { Card } from "../../components/ui/card.js";
 import { Empty } from "../../components/ui/empty.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import {
   Table,
   TableBody,
@@ -179,7 +180,7 @@ function RunsCard({ projectKey }: { projectKey: string }) {
       {runs.error ? (
         <Alert tone="error">{message(runs.error)}</Alert>
       ) : !runs.value ? (
-        <p className={HINT}>Loading runs…</p>
+        <Skeleton label="Loading runs" />
       ) : runs.value.items.length === 0 ? (
         <Empty>No workflow runs yet. Describe a change above and pick Quick or Full run.</Empty>
       ) : (
@@ -402,7 +403,7 @@ export function ProjectHome({ project }: SectionProps) {
           ) : summary.value ? (
             <WorkingSetCard projectKey={key} summary={summary.value} />
           ) : (
-            <p className={HINT}>Loading project…</p>
+            <Skeleton label="Loading the project" />
           )}
           <DoctorCard projectKey={key} />
         </aside>

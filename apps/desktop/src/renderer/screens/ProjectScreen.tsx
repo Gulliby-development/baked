@@ -1,5 +1,6 @@
 import type { DesktopProject } from "../../shared/api.js";
 import { Alert } from "../components/ui/alert.js";
+import { Busy } from "../components/ui/busy.js";
 import { Button } from "../components/ui/button.js";
 import { Dot } from "../components/ui/dot.js";
 import { Empty } from "../components/ui/empty.js";
@@ -72,9 +73,10 @@ export function ProjectScreen({
       </div>
     );
   const backend = backendLabel(project.backend);
-  const live = ["running", "starting", "restarting"].includes(project.backend.kind);
+  const starting = project.backend.kind === "starting" || project.backend.kind === "restarting";
   // Chat draws its own header and fills the window.
-  if (section === "chat" && View && live) return <View project={project} id={id} />;
+  if (section === "chat" && View && project.backend.kind === "running")
+    return <View project={project} id={id} />;
   return (
     <div className={PAGE}>
       <div className="flex flex-wrap items-baseline gap-3">
@@ -85,9 +87,16 @@ export function ProjectScreen({
           {backend.text}
         </span>
       </div>
-      {project.backend.kind !== "running" &&
-      project.backend.kind !== "starting" &&
-      project.backend.kind !== "restarting" ? (
+      {starting ? (
+        <Busy
+          label={
+            project.backend.kind === "restarting"
+              ? "Restarting BAKED for this project…"
+              : "Starting BAKED for this project…"
+          }
+          detail="Its backend opens the project; language servers and the code index follow in the background."
+        />
+      ) : project.backend.kind !== "running" ? (
         <Closed project={project} />
       ) : View ? (
         <View project={project} id={id} />

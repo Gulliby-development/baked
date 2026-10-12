@@ -7,6 +7,8 @@ import {
   type StartBody,
   start,
 } from "../../client/start.js";
+import { Busy } from "../../components/ui/busy.js";
+import { useProgress } from "../../lib/progress.js";
 import { projectHref } from "../../router.js";
 import {
   BUDGET_PRESETS,
@@ -165,4 +167,20 @@ export function useStartRun(key: string): {
       }
     },
   };
+}
+
+const RUN_START_TASKS = ["run-start", "open"] as const;
+
+/** The bun while a start request runs: the backend reports opening the project and the run. */
+export function RunStarting({ projectKey, starting }: { projectKey: string; starting: boolean }) {
+  const work = useProgress(projectKey, RUN_START_TASKS, starting);
+  if (!starting) return null;
+  const current = work.find((item) => item.task === "open") ?? work[0];
+  return (
+    <Busy
+      className="py-4"
+      label={current ? `${current.label}…` : "Starting the run…"}
+      detail="The run opens on its own page once it has started."
+    />
+  );
 }

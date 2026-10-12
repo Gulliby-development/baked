@@ -31,6 +31,7 @@ import { setup } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { emptyClass } from "../../components/ui/empty.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -111,7 +112,7 @@ function LatestSession({ project }: { project: DesktopProject }) {
   return (
     <Centered project={project}>
       {state === "loading" ? (
-        <p className="text-dim-foreground">Loading sessions…</p>
+        <Skeleton label="Loading sessions" />
       ) : (
         <Alert tone="error">{state}</Alert>
       )}
@@ -436,7 +437,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       />
       <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
         <div className={COLUMN} aria-live="off">
-          {load === "loading" && <p className="text-dim-foreground">Loading the session…</p>}
+          {load === "loading" && <Skeleton lines={5} label="Loading the session" />}
           {load !== "loading" && load !== "ready" && <Alert tone="error">{load}</Alert>}
           {(draft || empty) && transcript.pending.length === 0 && (
             <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">

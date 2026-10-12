@@ -89,7 +89,7 @@ bun test tests/feature-parity.test.ts
 | Diagnose LSP, tree-sitter and index health | `/diagnose` | Partial [#374](https://github.com/Gulliby-development/baked/issues/374): no language server check | **Gap** [#374](https://github.com/Gulliby-development/baked/issues/374) | **Gap** [#374](https://github.com/Gulliby-development/baked/issues/374) |
 | Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
-| Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `baked run`, `baked workflow run` | `/v1/progress` | `project/graph` |
+| Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
 | Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |

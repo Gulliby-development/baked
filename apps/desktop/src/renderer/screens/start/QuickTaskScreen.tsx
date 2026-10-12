@@ -16,6 +16,7 @@ import {
   LEGEND,
   policyFor,
   presetLimits,
+  RunStarting,
   SUBMIT,
   TITLE,
   usePolicy,
@@ -116,6 +117,7 @@ export function QuickTaskScreen({ project }: SectionProps) {
 
         <BudgetPicker value={budget} onChange={setBudget} policy={policy} base={limits.base} />
 
+        <RunStarting projectKey={project.key} starting={launcher.starting} />
         {launcher.error && <Alert tone="error">{launcher.error}</Alert>}
         <div className={INLINE}>
           <Button type="submit" variant="primary" size="md" className={SUBMIT} disabled={!canStart}>
