@@ -123,6 +123,7 @@ export const CAPABILITIES = [
   "diff-stats",
   "plan-mode",
   "chat-undo",
+  "checkpoints",
   "run-memory",
   "chat-memory",
   "images",

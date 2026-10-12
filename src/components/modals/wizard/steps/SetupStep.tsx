@@ -11,6 +11,7 @@ import {
   setSecret,
 } from "../../../../core/secrets.js";
 import { useTheme } from "../../../../core/theme/index.js";
+import { spinnerGlyph } from "../../../../core/utils/spinner.js";
 import { useKeyboard, useTerminalDimensions } from "../../../../hooks/useTerminalEvents.js";
 import { KeyCaps, Search, VirtualList, VSpacer } from "../../../ui/index.js";
 import { fitPopupHeight } from "../../../ui/popup-geometry.js";
@@ -77,8 +78,6 @@ function fuzzyMatch(query: string, target: string): boolean {
 type Phase = "provider" | "key" | "fetching" | "models" | "error";
 
 // ── Sub-components ──
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // Fixed chrome around the provider list (popup shell + header + intro + spacers +
 // optional status lines + keycaps). Subtracted from popup height so the list
@@ -248,10 +247,7 @@ export function SetupStep({
 
     useEffect(() => {
       if (phase === "fetching") {
-        spinnerRef.current = setInterval(
-          () => setSpinnerFrame((f) => (f + 1) % SPINNER_FRAMES.length),
-          80,
-        );
+        spinnerRef.current = setInterval(() => setSpinnerFrame((f) => f + 1), 80);
         return () => {
           if (spinnerRef.current) clearInterval(spinnerRef.current);
         };
@@ -471,7 +467,7 @@ export function SetupStep({
           <VSpacer />
           <text bg={t.bgPopup} fg={t.info}>
             {" "}
-            {SPINNER_FRAMES[spinnerFrame]}
+            {spinnerGlyph(spinnerFrame)}
             {" Fetching models..."}
           </text>
         </box>

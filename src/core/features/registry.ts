@@ -228,9 +228,9 @@ export const FEATURES: readonly Feature[] = [
     group: "Chat and sessions",
     title: "Checkpoint list and rewind to a checkpoint",
     tui: ["/checkpoint"],
-    cli: partial(["baked session undo: --to N"], 273, "no list"),
-    api: partial(["/v1/sessions/:id/undo: toCheckpoint"], 273, "no checkpoint list"),
-    desktop: gap(273),
+    cli: ["baked session checkpoints", "baked session undo: --to N"],
+    api: ["/v1/sessions/:id/checkpoints", "/v1/sessions/:id/undo: toCheckpoint"],
+    desktop: ["project/chat: Rewind to here at the end of a turn"],
   },
   {
     id: "session-fork",

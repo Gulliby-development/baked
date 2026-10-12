@@ -6,15 +6,18 @@ The terminal UI is started with `baked` in a project folder. One process works i
 
 - **Startup**: the oven logo beside the BAKED wordmark (the wordmark alone in narrow terminals) and a loaf that rises and browns as startup progresses, with the current step (`PROOFING`, `BAKING`, `READY`) and a progress bar. Exiting shows the loaf falling asleep while the session is saved.
 - **Empty chat**: the bun, BAKED's mascot, and a START HERE card with the first keys to try. Without a model, the card's first line says to press `Ctrl+L`.
-- **Header**: the oven mark, model, project name, Git branch, context budget, token usage and cost, and a badge such as `2 waiting in other projects`.
+- **Header**: the BAKED chip, model, project name, Git branch, the active tab's mode as a coloured chip (`DEFAULT`, `ARCHITECT`, `PLAN`, `AUTO`), the context budget as a block meter (green, amber from 50%, red from 85%) with the token count, the cost, and a badge such as `2 waiting in other projects`.
 - **Chat**: Markdown, highlighted code, live tool calls and diffs. A checkpoint rail on the right marks each turn.
 - **Input**: plain text or slash commands (type `/`). A multi-line paste collapses to its first line and a line count. Pasting an image from the clipboard attaches it as an `[image-N]` token; deleting the token removes the image. The desktop chat and `baked --headless --image` attach images the same way ([headless](headless.md#images)). Typing while the agent works queues a steering message that is injected at the next step, without aborting.
 - **Busy bar**: while the agent works or compacts, one line above the input shows `BAKING` (or `COMPACTING`), a moving meter, the current step, the elapsed time and `^X STOP`.
-- **Footer**: the main shortcuts.
+- **Footer**: the main shortcuts as key chips (`^K Palette`, `^L LLM`, `^D Mode`, …). Narrower terminals show fewer keys before dropping the labels.
+- **System notices**: a one-line colour block at the top of the tab (brand colour, or red for errors) that disappears after a few seconds; `^O` expands a multi-line notice.
+- **Input, popups and cards**: heavy outlines with a one-cell hard shadow.
+- **Compact layout**: below 80 columns or 24 rows, tabs are numbered chips, the footer shows only `^K Palette`, and the header drops the version, project, branch and cost.
 
 ### Motion
 
-Brand animations run at five frames a second and use only block characters that every terminal font has. `/motion` switches between `full` and `reduced`; reduced shows still frames and updates the busy bar once a second. Setting `BAKED_REDUCED_MOTION=1` forces reduced motion, including the startup screen. Terminals without 24-bit colour get the 256-colour palette.
+Brand animations run at five frames a second and use only block characters that every terminal font has. Tabs, tool rows, compaction and the tool-rail header share one spinner, a half block turning clockwise (`▀▐▄▌`). The context meter and the cost in the header run a timer only while their value changes, and the spinner only while one is shown. `/motion` switches between `full` and `reduced`; reduced shows still frames and updates the busy bar once a second. Setting `BAKED_REDUCED_MOTION=1` forces reduced motion, including the startup screen. Terminals without 24-bit colour get the 256-colour palette.
 
 ## Models and the task router
 
@@ -81,7 +84,7 @@ Every turn is a checkpoint. `Ctrl+B` and `Ctrl+F` step back and forward; browsin
 
 Checkpoints with file edits are tagged in Git; undo restores only the files the undone turns edited, with the safeguards of a fork ([below](#forking-a-checkpoint)): a `baked/undo-backup-*` tag first, and a file changed since the agent last wrote it is left as it is, and reported, unless `--force`. `/undo 0` undoes every turn. Without Git, undo rewinds the conversation only and lists the files it could not restore. Each tab has its own checkpoint history.
 
-`/redo` steps forward one turn at a time, in the order the turns ran, so `/undo 1` followed by `/redo` twice brings back turns 2 and 3. A file the redone turn deleted is deleted again, and folders it created are recreated. Files Git ignores are in no snapshot, so neither undo nor redo deletes them. The undone turns are saved with the session, so `/redo` works after resuming it; sending a new message clears them. The same undo and redo are **Undo** and **Redo** in the desktop chat and `baked session undo|redo` on the [command line](headless.md#undoing-a-turn).
+`/redo` steps forward one turn at a time, in the order the turns ran, so `/undo 1` followed by `/redo` twice brings back turns 2 and 3. A file the redone turn deleted is deleted again, and folders it created are recreated. Files Git ignores are in no snapshot, so neither undo nor redo deletes them. The undone turns are saved with the session, so `/redo` works after resuming it; sending a new message clears them. The same undo and redo are **Undo** and **Redo** in the desktop chat (with **Rewind to here** for an earlier turn) and `baked session undo|redo` on the [command line](headless.md#undoing-a-turn).
 
 ### Forking a checkpoint
 
