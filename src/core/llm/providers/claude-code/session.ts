@@ -6,7 +6,7 @@ import readline from "node:readline";
 import type { JSONSchema7, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { trackProcess } from "../../../process-tracker.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
-import { type ClaudeCodePromptParts, renderClaudeCodeTurn } from "./prompt.js";
+import { type ClaudeCodePromptParts, claudeCodeTurnContent } from "./prompt.js";
 
 /** Sessions kept alive at once; the least recently used idle one closes beyond this. */
 const MAX_SESSIONS = 4;
@@ -507,7 +507,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       session.process.send(
         JSON.stringify({
           type: "user",
-          message: { role: "user", content: renderClaudeCodeTurn(call.parts, fromIndex) },
+          message: { role: "user", content: claudeCodeTurnContent(call.parts, fromIndex) },
         }),
       );
     });
