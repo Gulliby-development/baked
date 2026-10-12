@@ -117,12 +117,49 @@ export function DoctorPanel({
   );
 }
 
+function StageTable({ estimate }: { estimate: PreRunEstimate }) {
+  return (
+    <div className="overflow-x-auto">
+      <table
+        className={cn(
+          TABLE,
+          "text-[13px] text-soft-foreground [&_tbody_tr:last-child_td]:border-b-0",
+        )}
+      >
+        <thead>
+          <tr>
+            <th className={CELL}>Stage</th>
+            <th className={CELL}>Model</th>
+            <th className={`${CELL} text-right`}>Tokens</th>
+            <th className={`${CELL} text-right`}>USD</th>
+          </tr>
+        </thead>
+        <tbody>
+          {estimate.stages.map((stage) => (
+            <tr key={stage.stageId}>
+              <td className={CELL}>{stageLabel(stage.stageId)}</td>
+              <td
+                className={`font-mono ${CELL} whitespace-normal text-muted-foreground wrap-anywhere`}
+              >
+                {stage.models.length ? stage.models.map(shortModel).join(", ") : "host"}
+              </td>
+              <td className={`font-mono ${CELL} text-right`}>{rangeText(stage.tokens)}</td>
+              <td className={`font-mono ${CELL} text-right`}>{usdRange(stage.costUsd)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function EstimatePanel({
   estimate,
   error,
   loading,
   cap,
   checkpoint,
+  stagesFolded = false,
 }: {
   estimate: PreRunEstimate | null;
   error: string | null;
@@ -130,6 +167,8 @@ export function EstimatePanel({
   /** The token cap of the chosen budget preset; null for no cap. */
   cap: number | null;
   checkpoint: number | null;
+  /** Folds the per-stage table, for screens that already show the stages. */
+  stagesFolded?: boolean;
 }) {
   const fit = estimate ? fitOf(estimate.tokens, cap) : null;
   return (
@@ -166,37 +205,16 @@ export function EstimatePanel({
               </span>
             )}
           </div>
-          <div className="overflow-x-auto">
-            <table
-              className={cn(
-                TABLE,
-                "text-[13px] text-soft-foreground [&_tbody_tr:last-child_td]:border-b-0",
-              )}
-            >
-              <thead>
-                <tr>
-                  <th className={CELL}>Stage</th>
-                  <th className={CELL}>Model</th>
-                  <th className={`${CELL} text-right`}>Tokens</th>
-                  <th className={`${CELL} text-right`}>USD</th>
-                </tr>
-              </thead>
-              <tbody>
-                {estimate.stages.map((stage) => (
-                  <tr key={stage.stageId}>
-                    <td className={CELL}>{stageLabel(stage.stageId)}</td>
-                    <td
-                      className={`font-mono ${CELL} whitespace-normal text-muted-foreground wrap-anywhere`}
-                    >
-                      {stage.models.length ? stage.models.map(shortModel).join(", ") : "host"}
-                    </td>
-                    <td className={`font-mono ${CELL} text-right`}>{rangeText(stage.tokens)}</td>
-                    <td className={`font-mono ${CELL} text-right`}>{usdRange(stage.costUsd)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {stagesFolded ? (
+            <details>
+              <summary className="cursor-pointer text-[13px] text-muted-foreground">
+                Per stage
+              </summary>
+              <StageTable estimate={estimate} />
+            </details>
+          ) : (
+            <StageTable estimate={estimate} />
+          )}
           {estimate.notes.length > 0 && (
             <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12px] text-dim-foreground">
               {estimate.notes.map((note) => (

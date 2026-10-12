@@ -27,6 +27,29 @@ bun test
 bun run build      # out/main, out/preload and out/renderer
 ```
 
+## UI tests
+
+```sh
+bun run e2e                                   # vite build, then Playwright against vite preview
+bunx playwright test e2e/chat.e2e.ts --headed # one file, in a visible window
+bunx playwright test --debug -g "theme"       # step through one test in the inspector
+bunx playwright show-report                   # the HTML report of the last run
+bunx playwright show-trace test-results/<test>/trace.zip
+```
+
+The specs in `e2e/` drive the built renderer in Chromium with the mock bridge
+(`src/renderer/client/mock*.ts`) in place of Electron, so they need no backend. Each test opens a
+route with a mock scenario (`?mock=default|empty|start-failure|older|uninitialized`, see
+`client/mock.ts`), starts the page clock at a fixed time, and fails on any uncaught renderer error.
+Find elements by role and accessible name (`getByRole`), as `scripts/smoke.ts` does, not by CSS
+selectors.
+
+No browser is downloaded: the tests use the installed Google Chrome (`channel: "chrome"`). Set
+`BAKED_E2E_CHROMIUM` to a Chromium executable to use that instead, for example
+`BAKED_E2E_CHROMIUM=/opt/pw-browsers/chromium-1194/chrome-linux/chrome` in a container. A failed
+test keeps a screenshot and a trace in `test-results/`; in CI they are uploaded as the
+`desktop-ui-report` artifact.
+
 `apps/desktop` is its own package with its own lockfile: the root `bun install` does not download
 Electron, and the root checks do not cover this folder.
 
@@ -37,7 +60,15 @@ cd apps/desktop
 bun install                                   # without ELECTRON_SKIP_BINARY_DOWNLOAD
 bun run package -- --baked <path-to-baked>    # or BAKED_BINARY=<path>; add --arch x64|arm64 to cross-package
 xvfb-run -a bun run smoke                     # Linux: launches dist/linux-unpacked and checks the window
+bun run smoke                                 # Windows and macOS: no display server needed
 ```
+
+The smoke test starts the unpacked build (`dist/linux-unpacked/baked-desktop`,
+`dist/win-unpacked/BAKED.exe`, `dist/mac-arm64/BAKED.app` or `dist/mac/BAKED.app`) under a
+throwaway home, registers a folder with the bundled `baked` from `resources/bin`, and checks that
+All projects shows it. CI runs it after packaging on linux-x64, windows-x64 and darwin-arm64 (the
+builds made for the runner's own architecture), with the same gating as packaging: nightly,
+workflow_dispatch and pull requests that touch packaging files.
 
 `scripts/package.ts` builds the app, copies the `baked` binary to `resources/bin` (with the
 `deps/` folder next to it, as in the release bundles from `scripts/bundle.sh` and

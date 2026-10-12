@@ -1,5 +1,6 @@
 import type { RunSnapshot } from "../../shared/api.js";
 import { type MockRoute, response } from "./mock-routes.js";
+import { addStartedRun } from "./mock-runs.js";
 import type {
   DefinitionSummary,
   DoctorCheck,
@@ -259,6 +260,14 @@ function mockDoctor(workflowId: string, model: string | null, worktree: boolean)
         : "README.md, locales/ru.json. Tasks that edit these files work on top of your changes.",
       fix: "Commit or stash them before the run",
     },
+    {
+      id: "lsp.missing",
+      status: "warn",
+      title: "No language server for python",
+      detail: "Code navigation and diagnostics fall back to tree-sitter for these files.",
+      fix: "baked lsp install pyright-langserver, or Install on the desktop app's Language servers page",
+      subject: "python",
+    },
     { id: "workspace.busy", status: "ok", title: "No run is executing" },
   ];
   if (estimate.budget.fits !== "yes")
@@ -349,7 +358,7 @@ const PROFILES: RoutedProfile[] = [
 
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/;
 
-function startRun(body: unknown): ReturnType<typeof response> {
+function startRun(key: string, body: unknown): ReturnType<typeof response> {
   const input = (body ?? {}) as Record<string, unknown>;
   const { commandId, prompt, workflow, issue } = input;
   const fromIssue = typeof issue === "string" && issue.trim() !== "";
@@ -384,6 +393,7 @@ function startRun(body: unknown): ReturnType<typeof response> {
   };
   created.unshift(run);
   byCommand.set(commandId, run);
+  addStartedRun(key, run.runId, feature, run.stageId ?? "research");
   return response(202, run);
 }
 
@@ -420,6 +430,6 @@ export const startRoutes: MockRoute = async ({ key, method, path, query, body })
           },
         });
   }
-  if (method === "POST" && path === "/v1/workflow/runs") return startRun(body);
+  if (method === "POST" && path === "/v1/workflow/runs") return startRun(key, body);
   return undefined;
 };

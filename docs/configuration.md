@@ -49,7 +49,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `repoMap` | `true` | Build the repository graph on launch |
 | `semanticSummaries` | `"ast"` | Symbol summaries: `off`, `ast`, `synthetic`, `llm`, `full`; `semanticSummaryLimit` caps LLM summaries (300) |
 | `repoMapTokenBudget` | auto | Token budget of the graph in the prompt |
-| `disabledLspServers` | `[]` | Language servers to skip (Mason package names) |
+| `disabledLspServers` | `[]` | Language servers to skip, by command (`gopls`); Mason package names such as `pyright` work too. A project list replaces the global one. See [language servers](#language-servers) |
 | `compaction` | `strategy: "v2"`, `triggerThreshold: 0.7`, `resetThreshold: 0.4`, `keepRecent: 4`, `maxToolResults: 30`, `llmExtraction: true` | Context compaction; `strategy: "disabled"` turns auto-compaction off |
 | `contextManagement` | unset | Anthropic server-side context management and tool-result pruning |
 | `contextWindowOverrides` | unset | Context window size per model ID |
@@ -119,3 +119,7 @@ The list is `INSTRUCTION_SOURCES` in `src/core/instructions.ts`.
 | `BAKED_BROWSER_EXECUTABLE` | Chromium executable for the AI acceptance gate's browser driver (Playwright) |
 
 Older lower-case `baked_*` names are still read as a fallback (`src/core/legacy-env.ts`).
+
+## Language servers
+
+Code intelligence starts a language server for each language it finds in the project, from the servers on PATH, in baked's own directory (`lsp-servers` in the user config directory, where `/lsp` installs them) and in Mason's `bin` directory. A language with no server falls back to tree-sitter. `disabledLspServers` keeps baked from starting a server. Three front ends show the same status and make the same changes: `/lsp` and `/lsp status` in the terminal UI, `baked lsp` headless ([language servers](headless.md#language-servers)) and the desktop app's Language servers page over [`/v1/lsp`](desktop/api.md#language-servers). Their changes apply to running servers without restarting the project: turning a server off stops it, and installing or turning one on restarts the servers of its languages. The workflow doctor warns about a detected language with no working server.

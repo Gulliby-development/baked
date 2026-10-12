@@ -1,6 +1,12 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getCwd } from "../../core/cwd.js";
 import { getDetailedLspServers } from "../../core/intelligence/instance.js";
+import {
+  type LspServerView,
+  lspStatus,
+  restartLspServer,
+} from "../../core/intelligence/lsp-service.js";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { useErrorStore } from "../../stores/errors.js";
@@ -65,6 +71,17 @@ function shortPath(path: string, maxLen: number): string {
 
 interface ServerRow extends GroupedItem {
   detail: LspServerDetail | null;
+  /** A server of a project language that is not running, from the shared LSP status. */
+  idle?: LspServerView;
+}
+
+/** What `/lsp status`, `baked lsp status` and the desktop app call a server that is not running. */
+function idleState(server: LspServerView): string {
+  if (server.disabled) return "disabled";
+  if (!server.installed)
+    return server.installable ? "not installed · /lsp to install" : "not installed";
+  if (server.lastError) return `failed: ${server.lastError.message}`;
+  return "installed · starts on first use";
 }
 
 interface Props {
@@ -78,6 +95,8 @@ export function LspStatusPopup({ visible, onClose }: Props) {
   const [cursor, setCursor] = useState(0);
   const [detailIdx, setDetailIdx] = useState<number | null>(null);
   const [servers, setServers] = useState<LspServerDetail[]>([]);
+  const [project, setProject] = useState<LspServerView[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const detailScrollRef = useRef<ScrollBoxRenderable>(null);
   const detailOffset = useRef(0);
 
@@ -103,6 +122,10 @@ export function LspStatusPopup({ visible, onClose }: Props) {
     };
     poll();
     const id = setInterval(poll, POLL_MS);
+    // The full status scans the project, so it loads once per open and after a restart.
+    lspStatus({ workspace: getCwd() })
+      .then((status) => setProject(status.servers.filter((s) => s.detected)))
+      .catch(() => {});
     return () => clearInterval(id);
   }, [visible]);
 
@@ -118,10 +141,27 @@ export function LspStatusPopup({ visible, onClose }: Props) {
       });
     }
 
-    return [{ id: "lsp", label: "Servers", hideHeader: true, items }];
-  }, [servers]);
+    const running = new Set(
+      servers.map((s) => shortCommand(s.command).replace(/\.(exe|cmd)$/i, "")),
+    );
+    const idle: ServerRow[] = project
+      .filter((s) => !running.has(s.id))
+      .map((s) => ({
+        id: `p-${s.id}`,
+        detail: null,
+        idle: s,
+        label: s.id,
+        meta: `${s.languages.join(", ")} · ${idleState(s)}`,
+        status: s.disabled ? "offline" : !s.installed ? "idle" : s.lastError ? "error" : "idle",
+      }));
 
-  const rows = useMemo(() => buildGroupedRows(groups, new Set(["lsp"])), [groups]);
+    return [
+      { id: "lsp", label: "Servers", hideHeader: true, items },
+      ...(idle.length ? [{ id: "project", label: "Not running", items: idle }] : []),
+    ];
+  }, [servers, project]);
+
+  const rows = useMemo(() => buildGroupedRows(groups, new Set(["lsp", "project"])), [groups]);
 
   const inDetail = detailIdx !== null;
   const selectedRow = inDetail ? (rows[detailIdx]?.item as ServerRow | undefined) : undefined;
@@ -206,6 +246,26 @@ export function LspStatusPopup({ visible, onClose }: Props) {
       evt.preventDefault();
       return;
     }
+    if (evt.name === "r") {
+      const r = rows[cursor];
+      const item = r?.kind === "item" ? (r.item as ServerRow) : undefined;
+      const id = item?.idle?.id ?? (item?.detail ? shortCommand(item.detail.command) : undefined);
+      setNotice(`Restarting ${id ?? "all servers"}…`);
+      restartLspServer({ workspace: getCwd() }, id?.replace(/\.(exe|cmd)$/i, ""))
+        .then((result) => {
+          setProject(result.status.servers.filter((s) => s.detected));
+          setNotice(
+            result.restarted.length
+              ? `Restarted ${result.restarted.join(", ")}`
+              : "Nothing was running; servers start on the next code lookup",
+          );
+        })
+        .catch((error: unknown) =>
+          setNotice(error instanceof Error ? error.message : String(error)),
+        );
+      evt.preventDefault();
+      return;
+    }
     if (evt.name === "return") {
       const r = rows[cursor];
       if (r?.kind === "item" && (r.item as ServerRow).detail) {
@@ -247,7 +307,9 @@ export function LspStatusPopup({ visible, onClose }: Props) {
     );
   }
 
-  const blurb = `${servers.length} standalone${lspErrors.length > 0 ? ` · ${lspErrors.length} errors` : ""}`;
+  const blurb =
+    notice ??
+    `${servers.length} running${lspErrors.length > 0 ? ` · ${lspErrors.length} errors` : ""}`;
 
   return (
     <PremiumPopup
@@ -260,6 +322,7 @@ export function LspStatusPopup({ visible, onClose }: Props) {
       footerHints={[
         { key: "↑↓", label: "nav" },
         { key: "Enter", label: "detail" },
+        { key: "r", label: "restart" },
         { key: "Esc", label: "close" },
       ]}
     >
@@ -273,7 +336,7 @@ export function LspStatusPopup({ visible, onClose }: Props) {
         ) : (
           <GroupedList
             groups={groups}
-            expanded={new Set(["lsp"])}
+            expanded={new Set(["lsp", "project"])}
             selectedIndex={cursor}
             width={contentW}
             maxRows={Math.max(4, popupH - 9)}

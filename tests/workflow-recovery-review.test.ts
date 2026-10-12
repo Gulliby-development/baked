@@ -181,7 +181,7 @@ test("stopping a run keeps leases of a live owner or a possibly running command"
   expect(service.store.lease("execution")?.owner_id).toBe("dead-owner");
 });
 
-test("the planner receives package validation so it can correct a criterion mapping before submission", async () => {
+test("the planner receives package validation; requirement ids are derived by the host, an unknown criterion is still corrected", async () => {
   const { service, executor } = setup();
   const seen: string[][] = [];
   const original = executor.execute.bind(executor);
@@ -192,14 +192,18 @@ test("the planner receives package validation so it can correct a criterion mapp
       const output = response.output as { taskGraph: { tasks: { requirementIds: string[]; criterionIds: string[] }[] } };
       const broken = structuredClone(output);
       broken.taskGraph.tasks[0]!.requirementIds = ["FR-999"];
-      seen.push(request.validate!(broken), request.validate!(output));
+      const unknown = structuredClone(output);
+      unknown.taskGraph.tasks[0]!.criterionIds = ["AC-404"];
+      seen.push(request.validate!(broken), request.validate!(output), request.validate!(unknown));
     }
     return response;
   };
   const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
   await service.drive(run.runId, new AbortController().signal);
-  expect(seen[0]?.some((e) => e.includes("criterion mapping mismatch T001/AC-001: AC-001 verifies FR-001, but T001 lists FR-999"))).toBe(true);
+  // A wrong requirement id is replaced by the ones the task's criteria verify.
+  expect(seen[0]).toEqual([]);
   expect(seen[1]).toEqual([]);
+  expect(seen[2]?.some((e) => e.includes("unknown criterion AC-404"))).toBe(true);
   expect((await service.get(run.runId)).reason).toBe("approval");
 });
 

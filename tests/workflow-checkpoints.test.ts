@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
-import { scaledPolicy, UNCAPPED_TOKENS } from "../src/core/workflows/budget.js";
+import { presetPolicy, scaledPolicy, UNCAPPED_TOKENS } from "../src/core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { migration001 } from "../src/core/workflows/migrations/001.js";
 import { PolicySchema } from "../src/core/workflows/schemas.js";
@@ -90,6 +90,12 @@ describe("policy and presets", () => {
     // Scaling a checkpointed policy back to a capped preset drops the checkpoints.
     expect(scaledPolicy(preset, "extended")).toMatchObject({ checkpointTokens: null });
     expect(scaledPolicy(defaultWorkflowPolicy, "standard")).toBe(defaultWorkflowPolicy);
+  });
+  test("every preset works without a configured policy: it scales the built-in default", () => {
+    expect(presetPolicy(undefined)).toEqual(defaultWorkflowPolicy);
+    expect(presetPolicy(undefined, "extended").maxTotalTokens).toBe(defaultWorkflowPolicy.maxTotalTokens * 2);
+    const configured = { ...defaultWorkflowPolicy, maxTotalTokens: 200000 };
+    expect(presetPolicy(configured, "quick").maxTotalTokens).toBe(100000);
   });
 });
 

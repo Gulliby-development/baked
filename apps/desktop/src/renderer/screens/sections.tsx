@@ -12,6 +12,7 @@ import { DiagnosticsSection } from "./setup/DiagnosticsSection.js";
 import { GatesSection } from "./setup/GatesSection.js";
 import { HooksSection } from "./setup/HooksSection.js";
 import { InstructionsSection } from "./setup/InstructionsSection.js";
+import { LspSection } from "./setup/LspSection.js";
 import { McpSection } from "./setup/McpSection.js";
 import { RunMemorySection } from "./setup/RunMemorySection.js";
 import { SkillsSection } from "./setup/SkillsSection.js";
@@ -37,6 +38,7 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   skills: SkillsSection,
   hooks: HooksSection,
   mcp: McpSection,
+  lsp: LspSection,
   initiatives: InitiativesSection,
   usage: UsageSection,
   graph: GraphSection,
