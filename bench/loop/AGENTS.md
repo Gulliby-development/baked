@@ -211,7 +211,7 @@ Every later start (after a crash, a reboot or a new session): read `config.json`
 3. Update the runner: `git fetch origin && git checkout --detach origin/main` in `paths.runner`, `bun install`, `bun run build`. Record the commit in `round.json`. If the build fails, the fixer gets the failure as a P0 issue and the round waits for it (main must build).
 4. Refresh the spec: copy `AGENTS.md`, `roles/` and `templates/` from the runner's `bench/loop/` to the loop root, so spec changes merged to `main` take effect from the next round. Never overwrite `config.json`, `controls/*.md`, `ledger/`, `state.json` or round folders. Also check `.claude/settings.local.json` in the loop root: create it from `templates/claude-settings.local.json` if missing, never overwrite it. Then re-read this file.
 5. Check the toolchains (see [Stacks and toolchains](#stacks-and-toolchains)): `go version`, `dotnet --version`, `cargo --version`, `cargo fmt --version`, `cargo clippy --version`, `java -version` and `mvn -v`, with the PATH directories the loop's launch script adds. A missing toolchain is reported once and its language is left out of the round's mix; the loop does not install it or work around it.
-6. Check the language servers (see [Language servers](#language-servers)) for every language the round uses; record the result in `round.json` `lsp`. A missing server is reported once with its install command; the round still runs.
+6. Check the language servers (see [Language servers](#language-servers)) for every language the round uses: `baked lsp status --json` (or `baked lsp check`) in the round's scratch repo, an install with `baked lsp install <language>` for each uncovered language, then the check again. Record the result in `round.json` `lsp`. An install that fails (exit 1, missing toolchain) is reported once; the round runs without that server.
 7. Run `baked doctor` in an empty scratch repo with the round's policy; any refusal is a P0 finding and stops the round until fixed.
 8. List configured providers and check each with one tiny headless call (`baked --headless --model PROVIDER/MODEL "Reply OK"`). A provider that refuses for credits or auth is skipped this round and reported once. Resolve `referenceModel` if unset. If the reference model is unavailable, control apps wait for it; they never switch models (that would break comparability).
 9. Write `round.json` and set `state.phase = "ideate"`.
@@ -222,21 +222,27 @@ Round 1 of the loop is special: the owner already approved five apps on 2026-10-
 
 ## Language servers
 
-BAKED's code intelligence (`src/core/intelligence/backends/lsp/server-registry.ts`, `router.ts`) uses a standalone language server for a file's language when it finds one and otherwise falls back to ts-morph, tree-sitter and regex. A round that builds in a language without its server therefore measures the weaker fallback. The rule: when a round develops in a language, the loop makes sure the matching server is available, or says it is not.
+BAKED's code intelligence (`src/core/intelligence/backends/lsp/server-registry.ts`, `router.ts`) uses a standalone language server for a file's language when it finds one and otherwise falls back to ts-morph, tree-sitter and regex. A round that builds in a language without its server therefore measures the weaker fallback. The rule: when a round develops in a language, the loop makes sure the matching server is working, through BAKED's own headless commands, or says it is not. These commands are documented in `docs/headless.md#language-servers` of the runner checkout.
 
-- **Where BAKED looks.** For each server command, in order: `PATH`; BAKED's own install folder (`<config dir>/lsp-servers/node_modules/.bin` and `<config dir>/lsp-servers/bin`); Mason's `bin` folder (`<data dir>/mason/bin`). On Windows both folders are under `%LOCALAPPDATA%aked`; on Linux and macOS the config dir is `~/.baked` and the Mason folder is `~/.local/share/baked/mason/bin`. A server in `disabledLspServers` of the user or project config is skipped. Because a headless run inherits the harness `PATH`, the directories of the installers (Go, dotnet tools, Cargo, npm global, the JDK) must be on `PATH` for the run, as `tools/launch.sh` arranges for the toolchains.
-- **Installing.** `/lsp install` (Mason) and `/lsp status` exist only in the terminal UI; there is no `baked lsp ...` command, no headless install or list, and `baked doctor` does not check language servers (open gap: issue #374). The loop therefore checks `PATH` itself with `command -v` per server (the loop root's `tools/check_lsp.sh LANG...` does this when present) and never installs anything system-wide.
-- **Check (phase 0, step 6).** For each language the round uses (new apps, updates, controls), the first matching server below must resolve. Record `round.json` `lsp`: `{ "<language>": { "server": "<command>", "found": true|false, "path": "<resolved path or null>" } }`.
-- **Missing.** Report once, in the round's first owner message, the language and the exact install command from the table; keep going. A round may run without a server but the round report says which languages had none, and the analyst compares code-intelligence behavior with and without (see the analyst brief). Never install a language server, runtime or toolchain on the owner's machine; the owner installs it, and the next round's check picks it up.
+- **Commands.** Run them in the project's folder (a scratch repo or the app workspace) with the round's `PATH`, as `tools/launch.sh` sets it for the toolchains.
+  - `baked lsp status --json`: the servers for the languages the project uses (`--all`: every server BAKED knows). Per server: `id`, `languages`, `detected`, `installed`, `source` (`PATH`, `baked` or `mason`), `path`, `disabled`, `package`, `requiresToolchain`, `installable`. `uncovered` lists the detected languages that no enabled, installed server covers.
+  - `baked lsp install <language|server|package>`, for example `baked lsp install go`: installs into BAKED's own folder (`lsp-servers`), needs no prompt, and exits 1 when the install fails or its toolchain (`go`, `cargo`, `pip3`, ...) is missing.
+  - `baked lsp check [ID]`: starts the project's servers, waits up to a minute and exits 1 when a detected language has no working server (the error is printed).
+  - `baked lsp enable|disable ID [--scope global|project]`: keeps BAKED from starting a server or lets it again. The loop uses it only to undo a server it disabled itself; it never disables one to make a run pass.
+- **Check (phase 0, step 6).** In a scratch repo that holds a file of each language the round uses (new apps, updates, controls), run `baked lsp status --json`. A language is covered when it is not in `uncovered`. For each uncovered language, run `baked lsp install <language>` once, then `baked lsp check`. Record `round.json` `lsp`: `{ "<language>": { "server": "<id>", "covered": true|false, "source": "PATH|baked|mason|null", "path": "<resolved path or null>", "installed_by_loop": true|false, "error": "<last line of the failure or null>" } }`.
+- **Installing.** Only through `baked lsp install <language>`. Never install a language server by hand, with `npm install -g`, `pip`, `go install`, `cargo`, `dotnet tool` or any system-wide package manager, and never install a runtime or toolchain on the owner's machine.
+- **Missing or failed.** If an install exits 1 (the install failed or the toolchain is missing), report it once, in the round's first owner message, with the language, the command and its last output line, and keep going. The round runs without that server: the round report says which languages had none, and the analyst compares code-intelligence behavior with and without (see the analyst brief). The next round's check tries again, so a toolchain the owner installs in between is picked up.
 
-| Language | Server command BAKED looks for | Windows (this PC) | Linux / macOS |
-| --- | --- | --- | --- |
-| Python | `pyright-langserver`, then `pylsp` | `npm install -g pyright` or `pip install pyright` | same |
-| TypeScript / JavaScript | `typescript-language-server` (then `biome`, `deno`) | `npm install -g typescript-language-server typescript` | same |
-| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` (binary in `%USERPROFILE%\goin`) | same (`~/go/bin`) |
-| .NET (C#) | `csharp-ls`, then `OmniSharp` | `dotnet tool install --global csharp-ls` (binary in `%USERPROFILE%\.dotnet	ools`) | same (`~/.dotnet/tools`) |
-| Rust | `rust-analyzer` | `rustup component add rust-analyzer` (shim in `%USERPROFILE%\.cargoin`) | same (`~/.cargo/bin`) |
-| Java | `jdtls` | manual (Eclipse JDT LS archive, put its launcher on `PATH`) or Mason (`/lsp install` in the terminal UI) | same, or `brew install jdtls` on macOS |
+| Language | Server BAKED installs or finds | Install |
+| --- | --- | --- |
+| Python | `pyright-langserver`, then `pylsp` | `baked lsp install python` |
+| TypeScript / JavaScript | `typescript-language-server` (then `biome`, `deno`) | `baked lsp install typescript` |
+| Go | `gopls` | `baked lsp install go` |
+| .NET (C#) | `csharp-ls`, then `OmniSharp` | `baked lsp install csharp` |
+| Rust | `rust-analyzer` | `baked lsp install rust` |
+| Java | `jdtls` | `baked lsp install java` |
+
+The language names are the ones `baked lsp status --json` shows in `languages`; if one differs from the table, use the status output, or name the server (`gopls`) or the Mason package instead.
 
 ## Stacks and toolchains
 
@@ -348,7 +354,7 @@ No other messages. Progress goes into `state.json` and the round folder.
 
 ## Rules for every role
 
-- Follow BAKED's root `AGENTS.md` for anything that touches the BAKED repository (branches, checks, docs, issues, the board, English everywhere).
+- Follow BAKED's root `AGENTS.md` for anything that touches the BAKED repository (branches, checks, docs, issues, the board, English everywhere). That includes changes to this spec: a BAKED branch is always `feature/<name>` or `bugfix/<name>`, never `docs/` or another prefix.
 - Write all files, issues, PRs, READMEs and commit messages in English. Only messages to the owner are in Russian.
 - Evidence over opinion: every claim about a run cites the run id and the artifact, event or command output it comes from.
 - Think beyond tuning (owner's rule): for each problem, give the point fix and the broader capability that would make the whole class of problem rarer.

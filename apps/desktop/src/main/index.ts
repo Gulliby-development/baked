@@ -10,7 +10,7 @@ import {
   shell,
   type WebContents,
 } from "electron";
-import type { AppSettings, AttentionItem, DesktopProject } from "../shared/api.js";
+import type { AppSettings, AttentionItem, DesktopProject, NewProjectDraft } from "../shared/api.js";
 import { attentionHash, attentionTitle, kindLabel } from "../shared/attention.js";
 import {
   type ChatExportFormat,
@@ -22,8 +22,15 @@ import {
 import { AttentionHub } from "./attention.js";
 import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
-import { addKnownProject, cliRunner, listKnownProjects } from "./baked-cli.js";
+import {
+  addKnownProject,
+  checkNewProject,
+  cliRunner,
+  createKnownProject,
+  listKnownProjects,
+} from "./baked-cli.js";
 import { readGitBranch } from "./git-branch.js";
+import { checkDraft, newProjectFolder } from "./new-project.js";
 import { manageKnownProject, renameKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
@@ -33,6 +40,13 @@ import { closeAction } from "./tray-model.js";
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const settings = new SettingsStore(join(app.getPath("userData"), "settings.json"));
 const tokenDir = join(app.getPath("userData"), "tokens");
+/**
+ * Delays between backend restarts, comma-separated milliseconds. Only the Electron UI tests set
+ * it, so a crashing backend reaches "failed" in a moment instead of half a minute.
+ */
+const restartDelaysMs = process.env.BAKED_DESKTOP_RESTART_DELAYS_MS?.split(",")
+  .map(Number)
+  .filter((n) => Number.isFinite(n) && n >= 0);
 
 function backendCommand() {
   return resolveBackendCommand({
@@ -82,6 +96,7 @@ const supervisor = new ProjectSupervisor({
       command: backendCommand(),
       tokenFile: join(tokenDir, `${key}.token`),
       onState,
+      ...(restartDelaysMs?.length ? { restartDelaysMs } : {}),
     });
   },
   onChange: (projects) => {
@@ -187,6 +202,28 @@ function registerIpc(): void {
     await addKnownProject(cliRunner(backendCommand()), folder);
     const projects = await supervisor.refresh();
     return projects.find((p) => resolve(p.path) === resolve(folder)) ?? null;
+  });
+  handle(IPC.pickFolder, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+  handle(IPC.checkNewProject, (_e, draft: NewProjectDraft) =>
+    checkDraft(draft, (folder, name) => checkNewProject(cliRunner(backendCommand()), folder, name)),
+  );
+  handle(IPC.createProject, async (_e, draft: NewProjectDraft) => {
+    const path = await createKnownProject(
+      cliRunner(backendCommand()),
+      newProjectFolder(draft),
+      draft.name,
+    );
+    const projects = await supervisor.refresh();
+    const project = projects.find((p) => resolve(p.path) === resolve(path));
+    if (!project) throw new Error(`Created ${path}, but it is not in the project list.`);
+    await supervisor.open(project.key);
+    rememberOpen();
+    return supervisor.projects().find((p) => p.key === project.key) ?? project;
   });
   handle(IPC.manageProject, async (_e, key: string, action: ProjectAction) => {
     const project = supervisor.projects().find((p) => p.key === key);

@@ -11,6 +11,11 @@ const profile = mkdtempSync(join(tmpdir(), "baked-test-home-"));
 for (const key of ["HOME", "USERPROFILE"]) process.env[key] = profile;
 for (const key of ["LOCALAPPDATA", "APPDATA"]) if (process.env[key] !== undefined) process.env[key] = join(profile, key);
 process.env.XDG_CONFIG_HOME = join(profile, ".config");
+// GitHub Models falls back to these tokens and to the GitHub CLI's login, which reads GH_CONFIG_DIR.
+for (const key of ["GITHUB_TOKEN", "GH_TOKEN"]) delete process.env[key];
+process.env.GH_CONFIG_DIR = join(profile, "gh");
+// Looking for the Codex and Claude Code CLIs must not start the developer's login shell.
+process.env.BAKED_LOGIN_SHELL_PATH = "0";
 
 // Workflow tests drive whole runs with real check processes; on a loaded CI runner they take
 // several seconds, so Bun's 5 s default fails them at random. A preload's setDefaultTimeout

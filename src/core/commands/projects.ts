@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { confirm, openSelect, promptText } from "../../components/ui/dialogs/index.js";
 import { reasonText, statusGlyph } from "../../components/workflow/format.js";
 import { drivingWorkflowRuns } from "../../hooks/useWorkflow.js";
@@ -6,6 +7,7 @@ import { useDialogStore } from "../../stores/dialog.js";
 import { getAppSessionId } from "../../stores/session.js";
 import { useUIStore } from "../../stores/ui.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
+import { checkNewProject, createProject } from "../projects/create.js";
 import {
   addKnownProject,
   forgetKnownProject,
@@ -14,6 +16,7 @@ import {
   renameKnownProject,
   setProjectPinned,
 } from "../projects/known.js";
+import { projectFolderName, projectNameError } from "../projects/new-project.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
 import {
@@ -22,6 +25,7 @@ import {
   projectDetails,
   resolveFolderInput,
   runsExecutingInProcess,
+  waitingAcrossProjects,
 } from "../projects/switcher.js";
 import { SessionManager } from "../sessions/manager.js";
 import type { CommandContext, CommandHandler } from "./types.js";
@@ -36,6 +40,7 @@ export interface ProjectHost {
 }
 
 const OPEN_FOLDER = "\u0000open-folder";
+const CREATE_PROJECT = "\u0000create-project";
 /** Characters a picker row leaves for the label beside its meta column (DialogSelect, 80 wide). */
 const PICKER_LABEL_WIDTH = 32;
 
@@ -191,6 +196,49 @@ async function openFolder(host: ProjectHost): Promise<boolean> {
   return true;
 }
 
+/** A typed path for a folder that may not exist yet: `~` is home, relative paths start at `cwd`. */
+function expandPath(input: string, cwd: string): string {
+  const raw = input.trim().replace(/^(["'])(.*)\1$/, "$2");
+  const home = process.env.HOME ?? homedir();
+  const expanded = raw === "~" ? home : raw.startsWith("~/") ? join(home, raw.slice(2)) : raw;
+  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+}
+
+/** Asks for a name and a new or empty folder, creates the project there and switches to it. */
+async function createNewProject(host: ProjectHost): Promise<boolean> {
+  const name = await promptText({
+    title: "Create project",
+    message: "The project's name, shown in every BAKED app.",
+    placeholder: "My new app",
+    icon: "folder",
+    validate: projectNameError,
+  });
+  if (name === null) return false;
+  let folder = "";
+  const input = await promptText({
+    title: "Create project",
+    message: "A new or empty folder for it; ~ and paths relative to this project work.",
+    initial: shortPath(join(dirname(realPath(host.cwd)), projectFolderName(name))),
+    icon: "folder",
+    validate: (value) => {
+      if (!value.trim()) return "Enter a folder path.";
+      const check = checkNewProject(expandPath(value, host.cwd), name);
+      folder = check.path;
+      return check.error;
+    },
+  });
+  if (input === null || !folder) return false;
+  try {
+    const { project } = createProject({ folder, name });
+    host.notify(`Created ${project.name} in ${shortPath(project.path)}.`);
+    await switchToProject(host, project.path);
+    return true;
+  } catch (error) {
+    host.notify(error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
 /** The project picker: every known folder with its sessions, active runs and waiting requests. */
 export async function openProjectPicker(host: ProjectHost): Promise<void> {
   const here = realPath(host.cwd);
@@ -210,6 +258,7 @@ export async function openProjectPicker(host: ProjectHost): Promise<void> {
       placeholder: `${projects.length} projects · fuzzy filter…`,
       current: here,
       options: [
+        { value: CREATE_PROJECT, label: "Create project…", pinned: true },
         { value: OPEN_FOLDER, label: "Open folder…", pinned: true },
         ...projects.map((p) => {
           const overview = p.exists ? projectOverview(p.path) : null;
@@ -230,7 +279,7 @@ export async function openProjectPicker(host: ProjectHost): Promise<void> {
         {
           key: "tab",
           label: "actions",
-          enabledFor: (option) => option.value !== OPEN_FOLDER,
+          enabledFor: (option) => option.value !== OPEN_FOLDER && option.value !== CREATE_PROJECT,
           onTrigger: (option) => {
             const project = option ? byPath.get(String(option.value)) : undefined;
             if (!project) return;
@@ -241,6 +290,7 @@ export async function openProjectPicker(host: ProjectHost): Promise<void> {
       ],
     });
     if (picked?.value === OPEN_FOLDER) pending.next = () => openFolder(host);
+    else if (picked?.value === CREATE_PROJECT) pending.next = () => createNewProject(host);
     else if (picked) {
       const project = byPath.get(picked.value);
       if (project && !project.exists) {
@@ -327,6 +377,44 @@ export async function showCurrentProject(ctx: CommandContext): Promise<void> {
 }
 
 /**
+ * /project waiting: run requests and blocked runs waiting for a person here and in the other
+ * projects the status-bar badge reads. Enter opens a run of this project, or switches to the
+ * project of another one.
+ */
+export async function showWaitingAcrossProjects(ctx: CommandContext): Promise<void> {
+  const host = projectHost(ctx);
+  const projects = await waitingAcrossProjects(ctx.cwd);
+  if (!projects.length) {
+    sysMsg(ctx, "Nothing waits for you in this project or in your other recent projects.");
+    return;
+  }
+  type Pick = { path: string; runId: string };
+  const picked = await openSelect<Pick>({
+    title: "Waiting for you",
+    titleIcon: "folder",
+    placeholder: "Runs across projects · fuzzy filter…",
+    equals: (a, b) => a.path === b.path && a.runId === b.runId,
+    options: projects.flatMap((project) =>
+      project.items.map((item) => ({
+        value: { path: project.path, runId: item.run_id },
+        label: item.feature_id,
+        meta: `${item.request_id ? reasonText(item.kind) : `blocked (${reasonText(item.kind)})`} · ${age(item.created_at)}`,
+        category: project.current ? `${project.name} (this project)` : project.name,
+        icon: statusGlyph(item.status, true),
+        status: "warning" as const,
+      })),
+    ),
+  });
+  if (!picked) return;
+  if (picked.value.path === realPath(ctx.cwd)) {
+    useWorkflowStore.getState().select(picked.value.runId, ctx.tabMgr.activeTabId);
+    useUIStore.getState().openModal("workflow");
+    return;
+  }
+  await switchToProject(host, picked.value.path);
+}
+
+/**
  * /project rename NAME: sets the current folder's display name in the shared project list, which
  * the picker, `baked projects` and the desktop app all read. No name restores the default.
  */
@@ -355,4 +443,5 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/projects", (_input, ctx) => openProjectPicker(projectHost(ctx)));
   map.set("/project", (_input, ctx) => showCurrentProject(ctx));
   map.set("/project rename", (input, ctx) => renameCurrentProject(input, ctx));
+  map.set("/project waiting", (_input, ctx) => showWaitingAcrossProjects(ctx));
 }

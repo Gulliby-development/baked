@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
-import { scaledPolicy, UNCAPPED_TOKENS } from "../src/core/workflows/budget.js";
+import { presetPolicy, scaledPolicy, UNCAPPED_TOKENS } from "../src/core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { migration001 } from "../src/core/workflows/migrations/001.js";
 import { PolicySchema } from "../src/core/workflows/schemas.js";
@@ -44,7 +44,7 @@ describe("storage migration 002", () => {
       expect(store.requests("r1").find((r) => r.id === id)?.kind).toBe("checkpoint");
     } finally { store.close(); }
     const db = new Database(join(root, ".baked", "workflows.sqlite"));
-    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]); } finally { db.close(); }
+    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]); } finally { db.close(); }
     const again = new WorkflowStore(root);
     again.close();
   });
@@ -71,7 +71,7 @@ describe("storage migration 002", () => {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
     const db = new Database(fixture.service.store.path, { readonly: true });
-    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]); } finally { db.close(); }
+    try { expect(db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]); } finally { db.close(); }
   });
 });
 
@@ -90,6 +90,12 @@ describe("policy and presets", () => {
     // Scaling a checkpointed policy back to a capped preset drops the checkpoints.
     expect(scaledPolicy(preset, "extended")).toMatchObject({ checkpointTokens: null });
     expect(scaledPolicy(defaultWorkflowPolicy, "standard")).toBe(defaultWorkflowPolicy);
+  });
+  test("every preset works without a configured policy: it scales the built-in default", () => {
+    expect(presetPolicy(undefined)).toEqual(defaultWorkflowPolicy);
+    expect(presetPolicy(undefined, "extended").maxTotalTokens).toBe(defaultWorkflowPolicy.maxTotalTokens * 2);
+    const configured = { ...defaultWorkflowPolicy, maxTotalTokens: 200000 };
+    expect(presetPolicy(configured, "quick").maxTotalTokens).toBe(100000);
   });
 });
 

@@ -1,7 +1,21 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import type { LineLoop } from "../../client/start.js";
+import { Icon } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
-import { type Handoff, handoff, loopText, type Station, TYPE_LABEL } from "./line-model.js";
+import {
+  type GateTone,
+  gateMarks,
+  type Handoff,
+  handoff,
+  loopGates,
+  loopText,
+  STATE_ICON,
+  type Station,
+  type StationGate,
+  stageIcon,
+  TYPE_LABEL,
+  worstTone,
+} from "./line-model.js";
 
 /**
  * The run as a conveyor: stations in a row over a belt, the contract each one makes under its
@@ -33,6 +47,54 @@ const STATION_STATE: Record<Station["state"], string> = {
   skipped: "border-dashed bg-raised text-dim-foreground line-through",
 };
 
+const MARK_TONE: Record<GateTone, string> = {
+  ok: "bg-fill-ok text-main-foreground",
+  err: "bg-fill-err text-main-foreground",
+  warn: "bg-fill-warn text-main-foreground",
+  idle: "bg-background text-foreground",
+};
+
+const gateCount = (n: number): string => `${n} gate${n === 1 ? "" : "s"}`;
+/** The gate mark's tooltip: one line per gate with whether it blocks and its last result. */
+const markTitle = (gates: readonly StationGate[]): string =>
+  gates
+    .map(
+      (g) =>
+        `${g.id}: ${g.does} (${g.mode === "required" ? "blocks" : "advises"}${g.last ? `, last ${g.last.status}` : ""})`,
+    )
+    .join("\n");
+
+/** A small gate badge: on a station for its own gates, on the belt for a transition's gates. */
+function GateMark({
+  gates,
+  label,
+  className,
+  style,
+}: {
+  gates: StationGate[];
+  label: string;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <span
+      role="img"
+      aria-label={`${label}: ${gateCount(gates.length)}`}
+      title={markTitle(gates)}
+      data-gate-mark=""
+      className={cn(
+        "absolute z-[1] flex h-[20px] min-w-[20px] items-center justify-center gap-[2px] rounded-full border-2 border-border px-1 font-mono text-[10.5px] font-bold shadow-sm-hard",
+        MARK_TONE[worstTone(gates)],
+        className,
+      )}
+      style={style}
+    >
+      <Icon name="gates" size={10} />
+      {gates.length}
+    </span>
+  );
+}
+
 function ContractBar({ station }: { station: Station }) {
   const forming = station.state === "current";
   const made = station.state === "done";
@@ -52,6 +114,11 @@ function ContractBar({ station }: { station: Station }) {
       />
     </span>
   );
+}
+
+function StateIcon({ station }: { station: Station }) {
+  const name = STATE_ICON[station.state];
+  return name ? <Icon name={name} size={12} className="ml-auto flex-none" /> : null;
 }
 
 function stateText(station: Station): string {
@@ -126,7 +193,7 @@ export function Conveyor({
     : undefined;
 
   return (
-    <div ref={strip} className="overflow-x-auto pb-2">
+    <div ref={strip} className="overflow-x-auto pt-2 pb-2">
       <div className="relative m-1" style={{ width, height }}>
         <svg
           className="pointer-events-none absolute inset-0 overflow-visible"
@@ -162,6 +229,9 @@ export function Conveyor({
                   )}
                 >
                   {loopText(loop, stations[from]?.label ?? loop.from)}
+                  {loopGates(stations, loop).length
+                    ? ` · ${gateCount(loopGates(stations, loop).length)}`
+                    : ""}
                 </text>
               </g>
             );
@@ -175,6 +245,21 @@ export function Conveyor({
           style={{ top: BELT_Y, height: BELT_H }}
           aria-hidden="true"
         />
+        {gateMarks(stations)
+          .filter((m) => m.where === "exit")
+          .map((mark) => {
+            const from = stations[mark.station];
+            const to = mark.gates[0]?.transition?.to;
+            const next = stations.find((s) => s.id === to);
+            return (
+              <GateMark
+                key={`exit-${from?.id}`}
+                gates={mark.gates}
+                label={`Gates after ${from?.label ?? ""}${next ? `, before ${next.label}` : ""}`}
+                style={{ left: left(mark.station) + W + GAP / 2 - 12, top: BELT_Y - 2 }}
+              />
+            );
+          })}
         <ol className="m-0 list-none p-0" aria-label="Stages">
           {stations.map((station, i) => (
             <li key={station.id}>
@@ -194,10 +279,16 @@ export function Conveyor({
                 }
                 onClick={() => onSelect(station.id)}
               >
-                <span className="truncate text-[13px] font-bold">{station.label}</span>
-                <span className="font-mono text-[11px] opacity-80">
-                  {TYPE_LABEL[station.type]}
-                  {station.round > 1 ? ` · round ${station.round}` : ""}
+                <span className="flex min-w-0 items-center gap-1">
+                  <Icon name={stageIcon(station)} size={13} className="flex-none" />
+                  <span className="truncate text-[13px] font-bold">{station.label}</span>
+                </span>
+                <span className="flex items-center font-mono text-[11px]">
+                  <span className="truncate opacity-80">
+                    {TYPE_LABEL[station.type]}
+                    {station.round > 1 ? ` · round ${station.round}` : ""}
+                  </span>
+                  <StateIcon station={station} />
                 </span>
                 <span className="mt-auto flex items-center gap-1 font-mono text-[10.5px] font-semibold">
                   <span className="truncate">{station.produces ?? "result"}</span>
@@ -205,6 +296,13 @@ export function Conveyor({
                 </span>
                 <span className="sr-only">, {stateText(station)}</span>
               </button>
+              {station.gates.some((g) => !g.transition) && (
+                <GateMark
+                  gates={station.gates.filter((g) => !g.transition)}
+                  label={`Gates at ${station.label}`}
+                  style={{ left: left(i) + W - 16, top: -8 }}
+                />
+              )}
             </li>
           ))}
         </ol>

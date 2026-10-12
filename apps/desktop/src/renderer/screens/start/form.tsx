@@ -1,20 +1,10 @@
 import { useState } from "react";
 import type { RunSnapshot } from "../../../shared/api.js";
-import {
-  isMissingEndpoint,
-  type PreRunEstimate,
-  type RunPolicy,
-  type StartBody,
-  start,
-} from "../../client/start.js";
+import { type PreRunEstimate, type RunPolicy, type StartBody, start } from "../../client/start.js";
+import { Busy } from "../../components/ui/busy.js";
+import { useProgress } from "../../lib/progress.js";
 import { projectHref } from "../../router.js";
-import {
-  BUDGET_PRESETS,
-  type BudgetPreset,
-  presetText,
-  presetTokens,
-  scaledPolicy,
-} from "./logic.js";
+import { BUDGET_PRESETS, type BudgetPreset, presetText, presetTokens } from "./logic.js";
 import { message, useLoad } from "./panels.js";
 
 export const HINT = "text-[12px] text-dim-foreground";
@@ -38,11 +28,11 @@ export const GOAL =
 /** Extra classes of the primary submit button. */
 export const SUBMIT = "min-h-11 px-[22px]";
 
-/** The configured policy, or why the presets that scale it are unavailable. */
+/** The configured policy, if the config sets one; presets scale the built-in default otherwise. */
 export interface PolicyState {
   policy: RunPolicy | null;
-  /** Shown next to presets other than `standard` when they cannot be used. */
-  unavailable: string | null;
+  /** Where the limits the presets scale come from, for the picker's hint; null while loading. */
+  source: string | null;
   loading: boolean;
 }
 
@@ -56,23 +46,21 @@ export async function loadPolicy(key: string): Promise<RunPolicy | "none"> {
 
 export function usePolicy(key: string): PolicyState {
   const { value, error } = useLoad(key, "policy", loadPolicy);
-  if (error)
-    return {
-      policy: null,
-      unavailable: isMissingEndpoint(error)
-        ? "Other presets need a newer BAKED (GET /v1/config)."
-        : `Other presets are unavailable: ${message(error)}`,
-      loading: false,
-    };
-  if (value === null) return { policy: null, unavailable: null, loading: true };
+  // The server scales the policy itself (`budget` in the start body), so every preset works even
+  // when the config cannot be read here.
+  if (error) return { policy: null, source: null, loading: false };
+  if (value === null) return { policy: null, source: null, loading: true };
   if (value === "none")
     return {
       policy: null,
-      unavailable:
-        "The configuration sets no workflow policy, so only the built-in default (standard) applies.",
+      source: "This project sets no workflow policy, so the presets scale BAKED's default limits.",
       loading: false,
     };
-  return { policy: value, unavailable: null, loading: false };
+  return {
+    policy: value,
+    source: "The presets scale the workflow policy in this project's config.",
+    loading: false,
+  };
 }
 
 /** The token cap and checkpoint of a preset, from the policy or else the estimate's budget. */
@@ -116,7 +104,6 @@ export function BudgetPicker({
             type="button"
             className={CHIP}
             aria-pressed={value === preset}
-            disabled={preset !== "standard" && !policy.policy}
             onClick={() => onChange(preset)}
           >
             {preset}
@@ -124,19 +111,14 @@ export function BudgetPicker({
         ))}
       </div>
       <span className={HINT}>{presetText(value, base)}</span>
-      {policy.unavailable ? (
-        <span className={HINT}>{policy.unavailable}</span>
-      ) : (
-        <span className={HINT}>Built into the app, nothing is downloaded.</span>
-      )}
+      {policy.source && <span className={HINT}>{policy.source}</span>}
     </fieldset>
   );
 }
 
-/** The policy to send for a preset: none for `standard`, which is the configured policy. */
-export function policyFor(preset: BudgetPreset, policy: RunPolicy | null): RunPolicy | undefined {
-  if (preset === "standard" || !policy) return undefined;
-  return scaledPolicy(policy, preset);
+/** The `budget` field of a start body: omitted for `standard`, which the server applies anyway. */
+export function budgetField(preset: BudgetPreset): { budget?: BudgetPreset } {
+  return preset === "standard" ? {} : { budget: preset };
 }
 
 /** Starts a run and opens it; keeps the error for the form. */
@@ -165,4 +147,20 @@ export function useStartRun(key: string): {
       }
     },
   };
+}
+
+const RUN_START_TASKS = ["run-start", "open"] as const;
+
+/** The bun while a start request runs: the backend reports opening the project and the run. */
+export function RunStarting({ projectKey, starting }: { projectKey: string; starting: boolean }) {
+  const work = useProgress(projectKey, RUN_START_TASKS, starting);
+  if (!starting) return null;
+  const current = work.find((item) => item.task === "open") ?? work[0];
+  return (
+    <Busy
+      className="py-4"
+      label={current ? `${current.label}…` : "Starting the run…"}
+      detail="The run opens on its own page once it has started."
+    />
+  );
 }

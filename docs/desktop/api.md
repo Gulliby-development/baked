@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `chat-effort` (`effort` on sessions and `efforts` on `GET /v1/models`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`) and `diagnostics` (`/v1/diagnostics/*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `chat-effort` (`effort` on sessions and `efforts` on `GET /v1/models`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `diagnostics` (`/v1/diagnostics/*`) and `coordinator` (`/v1/coordinator*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -123,6 +123,7 @@ In `plan` mode the agent works as in the terminal UI's [plan mode](../guide.md#m
 | `PATCH /v1/sessions/ID` | `{title?, model?, mode?, effort?}` | `SessionSummary`; `model`, `mode` and `effort` apply from the next turn |
 | `DELETE /v1/sessions/ID` | | 204; 409 `SESSION_BUSY` while a turn runs |
 | `POST /v1/sessions/ID/fork` | `{atMessageId?, rollbackFiles?, force?}` | 201 `SessionDetail` of a new session with the messages up to and including `atMessageId` (all when absent); with `rollbackFiles`, plus `rollback` (below). 409 `SESSION_BUSY` with `rollbackFiles` while any turn runs, 409 `ROLLBACK_UNAVAILABLE` when files need restoring and the workspace is not a Git repository or cannot be backed up |
+| `GET /v1/sessions/ID/checkpoints` | | `{checkpoints: [Checkpoint], redo: [RedoEntry]}` ([below](#checkpoints)): one entry per turn of the conversation, and the undone turns a redo puts back, oldest first |
 | `POST /v1/sessions/ID/undo` | `{toCheckpoint?, force?}` | `SessionDetail` plus `rollback` (below) after dropping the last turn, or every turn after checkpoint `toCheckpoint` (0 drops them all), and restoring the files they edited. 409 `SESSION_BUSY` while any turn of the project runs, 409 `NOTHING_TO_UNDO` without turns, 400 when `toCheckpoint` is not before the last turn, 409 `ROLLBACK_UNAVAILABLE` when the workspace cannot be backed up |
 | `POST /v1/sessions/ID/redo` | `{force?}` | `SessionDetail` plus `rollback` after putting back the oldest undone turn and restoring the files it edited to their state after that turn. 409 `SESSION_BUSY` as for undo, 409 `NOTHING_TO_REDO` when nothing was undone |
 | `POST /v1/sessions/ID/messages` | `{text?, images?}` | 202 `{turnId, queued: false}` when a turn starts; `{turnId, queued: true}` when a turn already runs and the message is steered into it at its next step. A message needs text, images or both; 400 for invalid [images](#images). Text that starts with a [custom slash command](../custom-commands.md) (`/fix-ci lint`) is expanded first, here and on `POST /v1/sessions`; the stored message and `queued` hold the expanded prompt, and an unknown `/name` is sent as typed |
@@ -169,6 +170,23 @@ Each turn of an API session that edits files snapshots the workspace in a Git ta
 
 Undo and redo share their code with `/undo` and `/redo` in the terminal UI and `baked session undo|redo` (`src/core/checkpoints/undo.ts`). Undo rolls the files back exactly as a fork with `rollbackFiles` does, with the same `rollback` report, skipped files and backup tag (`baked/undo-backup-*`), then drops the undone turns from `messages` and rebuilds the model messages from what is left, so a compaction summary of the dropped part is gone. The undone turns are saved with the session (`redoTurns` in its tab) and listed in `redo`. Redo puts back the oldest one with its messages and restores the files that turn edited to the turn's own snapshot; a file whose current content is in no snapshot is skipped unless `force` is set. Starting a turn forgets the undone turns and deletes their snapshot tags. Outside a Git repository the conversation still rewinds and every edited file is reported in `skipped`. Each undo or redo emits a `rewind` event.
 
+#### Checkpoints
+
+```ts
+interface Checkpoint {
+  index: number;            // turn N, from 1: undo with toCheckpoint N keeps turns 1 to N
+  anchorMessageId: string;  // the user message that starts the turn
+  endMessageId: string;     // the turn's last message
+  prompt: string;           // first line of the prompt, at most 120 characters
+  startedAt: number;
+  filesEdited: string[];
+  snapshot: boolean;        // a workspace snapshot was taken at the end of the turn
+}
+interface RedoEntry { index: number; anchorMessageId: string; prompt: string }
+```
+
+A turn starts at each user message not sent while a turn was working, as for undo, fork and `/checkpoint` in the terminal UI (`src/core/checkpoints/list.ts`). A turn without a snapshot edited no files, or ran before snapshots were taken; undoing to it still rewinds the chat. The desktop shows **Rewind to here** at the end of each earlier turn when the server lists `checkpoints`, and sends `undo` with that turn's `toCheckpoint`.
+
 ### Session events
 
 Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences are per session and per server start; the server keeps the latest 5000 events of each session in memory.
@@ -195,13 +213,26 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 
 The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/ID` returns the same assistant message that the event carried.
 
+### Project coordinator
+
+The project coordinator is one long-lived chat session per project ([guide](../coordinator.md)). It is an ordinary session with `kind: "coordinator"` in its `SessionSummary`, so messages, events, prompts, interrupt and compaction use the `/v1/sessions/ID/...` endpoints above; `GET /v1/sessions` does not list it.
+
+| Method and path | Body | Answer |
+| --- | --- | --- |
+| `GET /v1/coordinator` | | `SessionDetail` of the coordinator; 404 `NOT_FOUND` when the project has none |
+| `POST /v1/coordinator` | `{model?}` | 201 with the new coordinator's `SessionDetail`, or 200 with the existing one |
+| `GET /v1/coordinator/brief` | | `Brief` |
+| `PUT /v1/coordinator/brief` | `{expectedRevision, decisions, conventions, openQuestions, launched}` | the saved `Brief`; 409 `STALE_REVISION` when the brief changed since `expectedRevision`, 400 `TOO_LARGE` over 8000 characters |
+
+`Brief` is `{revision, updatedAt, decisions: string[], conventions: string[], openQuestions: string[], launched: [{kind: "session" \| "run" \| "initiative", id, why, status}]}`; a brief never saved has revision 0. The coordinator always runs in `architect` mode (a `PATCH` to another mode is a 400): it reads but does not edit files or run commands, it edits the brief itself with its `coordinator_brief` tool, it reads runs, initiatives, sessions and the attention list with its `project_state` tool, and it starts background sessions, runs and initiatives with `launch_session`, `start_run` and `start_initiative`. A `default`- or `auto`-mode session needs a person's yes first, through a `destructive` prompt on the coordinator. When a launched item finishes, fails or waits for a person, the coordinator session gets a `notice` event with a `system` message, and the item's status in the brief changes. Every turn puts the current brief into its system prompt. After a completed turn whose context fill passes `compaction.triggerThreshold` (0.7 by default), the server compacts the coordinator on its own, with the same `compaction-start` and `compaction-done` events as a manual compaction; a compaction that summarizes nothing is not retried until the fill drops below `compaction.resetThreshold`.
+
 ### Attention (exists, extended by A)
 
 `GET /v1/attention` items gain `source: "run" | "chat" | "initiative"`. Chat items are the pending prompts of sessions: `{source: "chat", sessionId, title, requestId: PROMPT_ID, kind: prompt kind, blocking: true, createdAt, runId: null, featureId: null, status: "waiting"}`. Run items keep their fields and get `source: "run"`, `sessionId: null`, `title: null`.
 
 ## Workflow runs (exists, gaps filled by B)
 
-Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `stages[]` with `id`, `type`, `consumes`, `produces` and `human` for a person's approval, and `loops[]` with `from`, `to`, `on` and `carries` for transitions back to the same or an earlier stage; schema 1 definitions are described through their v2 upgrade), `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `limitations`: `{count, ids}` of the findings the run is accepted with, so a `completed` run with `count` above 0 is not clean, and `requests`, including tasks and writers, and `worktree`: `{path, branch, present}` for a worktree run, where `present` turns false once delivery or `discard-worktree` removed it, or null for a run in the working copy), `.../usage`, `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. `POST /v1/workflow/runs` also takes `modelStrict: true` (the run model overrides configured model routes) and the run view has `routing` with the effective model of each role and stage and the routing warnings. Quick tasks are runs started with `workflow: "quick"`. `POST /v1/workflow/runs` takes `issue` (a GitHub issue URL, `OWNER/NAME#N` or `#N`, as `--issue`); with it `feature` and `prompt` are optional, the request comes from the issue and the run's delivery pull request closes it ([starting from a GitHub issue](../workflows/runtime.md#starting-from-a-github-issue)).
+Exists: `GET /v1/workflow/definitions` (each summary has `stages` and `line`: `stages[]` with `id`, `type`, `consumes`, `produces`, `human` for a person's approval and `gates[]` (the stage's own gates, then those on the transitions leaving it: `id`, `type` or null for an unknown ID, `mode` (`required` or `advisory`), `does` (what it does in words) and `transition` (`{id, to, on}`, null for the stage's own gate)), and `loops[]` with `from`, `to`, `on` and `carries` for transitions back to the same or an earlier stage; schema 1 definitions are described through their v2 upgrade), `GET /v1/workflow/profiles`, `GET /v1/workflow/doctor`, `GET /v1/workflow/estimate`, `GET|POST /v1/workflow/runs`, `GET /v1/workflow/runs/RUN_ID` (snapshot with `limitations`: `{count, ids}` of the findings the run is accepted with, so a `completed` run with `count` above 0 is not clean, and `requests`, including tasks and writers, and `worktree`: `{path, branch, present}` for a worktree run, where `present` turns false once delivery or `discard-worktree` removed it, or null for a run in the working copy), `.../usage` (`?format=md` answers `{runId, markdown}`, the run's [usage report](../workflows/runtime.md#usage-reports)), `.../artifacts`, `.../report` (`{runId, markdown}`, the [run report](../workflows/runtime.md#run-report)), `.../events`, `POST .../pause|resume|cancel|approve|reject|answer|extend|reroute`. `reroute` takes `commandId`, `expectedRevision`, `model` and/or `routes` (stage ID to model) and moves a stopped run to other models ([switching a run to another model](../workflows/runtime.md#switching-a-run-to-another-model)); it records a `run.rerouted` event and a new `routing.json` revision. `POST /v1/workflow/runs` also takes `budget` (`quick`, `standard`, `extended` or `checkpoints`, as `--budget`), which the server applies to `policy`, the configured policy or the built-in default, and `modelStrict: true` (the run model overrides configured model routes) and the run view has `routing` with the effective model of each role and stage and the routing warnings. Quick tasks are runs started with `workflow: "quick"`. `POST /v1/workflow/runs` takes `issue` (a GitHub issue URL, `OWNER/NAME#N` or `#N`, as `--issue`); with it `feature` and `prompt` are optional, the request comes from the issue and the run's delivery pull request closes it ([starting from a GitHub issue](../workflows/runtime.md#starting-from-a-github-issue)).
 
 B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations. The CLI's `approve`, `answer` and `evidence` continue the run after the decision unless `--no-resume` is given; the API endpoints for the same decisions (`approve`, `answer`, `evidence`) only record it, and the client calls `resume`.
 
@@ -217,6 +248,10 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true); no revision | `deliver` (prepares the plan and its approval request) |
 | `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `expectedRevision`, `requestId?`; no `commandId` | `deliver --execute`, after the plan was approved |
 | `GET /v1/workflow/runs/RUN_ID/progress` | | `export-progress` |
+| `POST /v1/workflow/runs/RUN_ID/export` | `destination?` (a new directory, relative to the workspace); no `commandId` | `export`: writes `manifest.json` and returns `{path, manifestHash}`. Without `destination` it is `.baked/exports/RUN_ID-STAMP`; a directory outside the workspace is refused with 403 `CAPABILITY_DENIED`, one that exists with 409 |
+| `POST /v1/workflow/runs/RUN_ID/redact` | `artifactId`, `reason` (required); no `commandId` | `redact`: `{redacted: true}` |
+| `POST /v1/workflow/gc` | `before` (ISO date), `dryRun?` | `gc`: `{runIds, bytes}`, the ended runs older than 30 days and `before` that it removes, or with `dryRun` would remove |
+| `POST /v1/workflow/import` | `source: "spec-kit" \| "ecc" \| "markdown-edit"`, `path` (a local directory), `featureId`, `commandId?` | `import`: `{candidateHash, warnings, unsupported}`; 403 `CAPABILITY_DENIED` while `workflows.importsEnabled` is off |
 | `POST /v1/workflow/runs/RUN_ID/candidate` | `commandId`, `spec?` (object), `plan?` (Markdown), `tasks?` (task graph), `policy?`; no revision | `candidate`: stages a revision and returns `{candidateHash, reportArtifactId}`; with no field it adopts the current instruction files |
 | `POST /v1/workflow/runs/RUN_ID/revise` | `candidate` (the hash) | `revise`: applies the candidate; the plan is approved again, then `resume` |
 | `GET /v1/workflow/gates` | | `gates`: gates with `required`, `scope`, `source`, `confirmed`, plus `problems` |
@@ -224,7 +259,7 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `GET /v1/workflow/route` | `?workflow=&model=&route=` | `route`: who runs each stage and why |
 | `GET /v1/workflow/routing` | `?workflow=&model=` | `{layers: {global, project}, workflows, workflowId, runModel, classes, roles, stages, profiles, independentReview: {global, project, effective}, warnings, error}`. Each of `classes`, `roles`, `stages` (of `workflowId`, `sdd` by default) and `profiles` is a list of rows `{target, path, label, global, project, resolved}`: `target` is `{kind: "class", name}`, `{kind: "role", role}`, `{kind: "profile", id}` or `{kind: "stage", workflowId, stageId}`, `path` the key under `modelRouting`, `global` and `project` the route each layer's own file sets (or null), and `resolved` `{model, source, effort?, fallback?}` what a run would use, or null. Routes resolve with the server's running config; `error` says why stages and profiles could not be explained (no run model, unknown workflow) |
 | `PATCH /v1/workflow/routing` | `{scope: "global" \| "project", target, route: {model, effort?, fallback?} \| null, create?, workflow?, model?}` or `{scope, independentReview: "off" \| "warn" \| "require" \| null, workflow?, model?}` | as `GET`. Sets one route of the layer's `modelRouting` (a model ID, or `$class` outside a class), or removes it with `route: null`; `create: true` adds a class that must not exist yet. The change is checked as a run start would check the merged routing; a refused one answers 422 `ROUTING_REFUSED` with every reason in `problems` (an empty model, a class naming a class, a class reference no layer defines, including removing a class still in use, fallback models that are classes, repeat the primary or exceed three, schema errors) and writes nothing. Only the `modelRouting` section of the file changes, and an emptied one is removed. New runs use it; started runs keep their frozen routing |
-| `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated: `stage,model`), `model?` (`(host)` for host attempts), `stage?` | `{days, since, groupBy: string[], filters, runs, attempts, tokens, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens, groups: [{key, keys: {model?, stage?, day?}, runs, attempts, tokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens}]}` over every attempt started in the window. `key` joins the group's values with ` / `. Stage keys are stage IDs (`plan`, `task-T001`, `checks`), days are UTC dates. `costUsd` is estimated from the price table (uncached input, cache reads, cache writes and output; attempts recorded before cache writes were report 0 writes); `unpricedTokens` are tokens of attempts it could not price (no per-step usage, or a model without a price) |
+| `GET /v1/usage` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated: `stage,model`), `model?` (`(host)` for host attempts), `stage?`, `format?` (`md`) | `{days, since, groupBy: string[], filters, runs, attempts, tokens, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens, groups: [{key, keys: {model?, stage?, day?}, runs, attempts, tokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpricedTokens}]}` over every attempt started in the window. `key` joins the group's values with ` / `. Stage keys are stage IDs (`plan`, `task-T001`, `checks`), days are UTC dates. `costUsd` is estimated from the price table (uncached input, cache reads, cache writes and output; attempts recorded before cache writes were report 0 writes); `unpricedTokens` are tokens of attempts it could not price (no per-step usage, or a model without a price). With `format=md` the answer is `{markdown}`: the same summary as a Markdown document to share ([usage reports](../workflows/runtime.md#usage-reports)); any other `format` is a 400 |
 
 ## Initiatives (B)
 
@@ -280,7 +315,7 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 Changing a file a run froze (an instruction file, a gate or a skill) does not pause the run at once. A run that is driving stops at its next step as `blocked` with reason `input_changed`, which `/v1/attention` shows; resuming a waiting or paused run is refused with 409 `INPUT_CHANGED`. To continue with the new text, stage a candidate (`POST /v1/workflow/runs/RUN_ID/candidate` with only `commandId`) and apply it with `revise`; the plan is approved again before the run resumes. `cancel` or `fork` are the other ways out.
 | `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`: both files as stored and the merged config the server runs with. Provider keys live in the secret store, not here, but values the user put in these files themselves (an MCP server's `env`) are returned as written |
 | `PATCH /v1/config` | `{scope: "global" \| "project", set?: object, remove?: string[]}` | as `GET`; `set` replaces top-level keys, `remove` deletes them; the running server uses the new config at once. Model routing, fallbacks, workflow policy (checks, budget presets), default model and mode live here |
-| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| null, keyUrl?, signIn?}]}`; `acceptsKey` is false for providers signed in another way (Copilot, Codex, Claude Code). `signIn` is present for providers that sign in through their own CLI (`claude-code`, `codex`): `{installed, loggedIn, message, command, login: Login \| null}`, where `command` is the terminal command that does the same and `login` the current or last sign-in this server started |
+| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| "detected" \| null, detectedFrom?, keyUrl?, signIn?}]}`; `acceptsKey` is false for providers signed in another way (Codex, Claude Code). `source` is `detected` when no key is set but a login another tool holds is used, and `detectedFrom` names it: `Copilot IDE login` for `copilot`, `GITHUB_TOKEN`, `GH_TOKEN` or `gh CLI` for `github-models`; a key in the environment or saved by BAKED always wins. `signIn` is present for providers that sign in through their own CLI (`claude-code`, `codex`): `{installed, loggedIn, message, command, login: Login \| null}`, where `command` is the terminal command that does the same and `login` the current or last sign-in this server started |
 | `POST /v1/providers/ID/login` | | 202 `{login: Login}`: starts the CLI's own login (`claude auth login`, or Codex's ChatGPT browser login), which opens the browser on this computer; while one runs, returns it instead of starting another. A CLI that is missing fails at once, one that is already signed in succeeds at once. `Login` is `{provider, state: "running" \| "succeeded" \| "failed" \| "cancelled", lines: string[], url?, error?, startedAt, endedAt?}`: `lines` are the CLI's progress lines (the last 200), `url` the sign-in page it printed or returned. 404 for a provider that does not sign in through a CLI |
 | `GET /v1/providers/ID/login` | | `{login: Login \| null}`; poll it while `state` is `running` |
 | `DELETE /v1/providers/ID/login` | | `{login: Login \| null}`; stops a running sign-in (`state: "cancelled"`) |
@@ -314,6 +349,48 @@ interface McpView {
 ```
 
 Project servers come first, then the global servers no project server replaces. `config` holds `env` and `headers` as written, secrets included, as `GET /v1/config` does. A server name is 1 to 64 letters, digits, dots, dashes or underscores.
+
+## Language servers
+
+The language servers code intelligence uses for the project ([language servers](../configuration.md#language-servers)), and the changes `/lsp` makes in the terminal UI. The logic is in `src/core/intelligence/lsp-service.ts`; `/lsp` and `baked lsp` use the same. Changes apply to the running backend at once: turning a server off stops it, and installing or turning one on restarts the servers of its languages. Servers start with the first chat message or run step; until then `started` is false and nothing is running.
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `GET /v1/lsp` | | `LspView` |
+| `POST /v1/lsp/ID/install` | | `{...LspView, restarted, installed: {server, package}, log: string[]}` after the install, which can take minutes. `ID` is a server, a Mason package or a language. 404 `NOT_FOUND`, 409 `NOT_INSTALLABLE` (no package, or its toolchain is not on PATH), 409 `BUSY` while the same install runs, 502 `INSTALL_FAILED` |
+| `POST /v1/lsp/ID/disable` | `{scope?: "global" \| "project"}` or none | `{...LspView, restarted}`. Without `scope`, the project file when it has its own list, otherwise the global one |
+| `POST /v1/lsp/ID/enable` | `{scope?}` or none | `{...LspView, restarted}`; removes the server from every list that names it, or only from `scope` |
+| `POST /v1/lsp/ID/restart` | | `{...LspView, restarted, startedNow}`: restarts the server (or a language's servers) and retries ones that failed. Before anything started the servers, it starts the project's servers instead (`startedNow: true`) |
+| `POST /v1/lsp/restart` | | The same for every server |
+| `POST /v1/lsp/diagnose` | | `IntelligenceCheck`: the health check of `/diagnose` and `baked diagnose`. Starts the project's servers when nothing started them, then probes every backend against a file of the project's main language; it can take tens of seconds. 503 `NOT_STARTED` when code intelligence did not start |
+
+```ts
+interface LspView {
+  servers: { id /* the server command */; languages: string[]; detected: boolean /* the project has its languages */;
+    installed: boolean; source: "PATH" | "baked" | "mason" | null; path: string | null;
+    disabled: boolean; disabledIn: ("global" | "project")[];
+    running: boolean; ready: boolean; pids: number[]; openFiles: number; diagnosticCount: number;
+    lastError: { message; at: number } | null /* the last start failure, while it is not running */;
+    package: string | null /* Mason package */; requiresToolchain: string | null; installable: boolean }[];
+  languages: string[]; // detected, primary first
+  uncovered: string[]; // detected languages no enabled, installed server covers
+  started: boolean;
+  registry: boolean; // whether the Mason registry is cached; the first install downloads it
+  paths: { global; project };
+}
+
+interface IntelligenceCheck {
+  language: string; // the project's main language
+  probeFile: string; // the file the probes ran against; empty when none was found
+  backends: { backend: string /* lsp:standalone, ts-morph, tree-sitter, regex */; tier: number;
+    supports: boolean /* handles this language */; initialized: boolean; initMs?: number; initError?: string;
+    probes: { operation: string /* findSymbols, getDiagnostics, ... */;
+      status: "pass" | "empty" | "error" | "timeout" | "unsupported"; ms?: number; error?: string }[] }[];
+  failing: string[]; // backends that support the language but failed to start, or whose probes errored or timed out
+}
+```
+
+Servers of detected languages come first. `GET /v1/workflow/doctor` adds an `lsp.missing` warning per uncovered language, or one `lsp.servers` line when all are covered.
 
 ## Chat settings
 
@@ -372,6 +449,28 @@ interface GraphView {
 ```
 
 `tone` 0 to 2 cycle over the top-level folders by size and 3 marks tests. `key` is a file in the top 3% by rank. Each edge sums the file links between two visible units; `top` keeps its strongest file pairs. With `typeEdges: false` links into type-heavy files are left out, with `tests: false` test files.
+
+## Progress
+
+Long-running work of the server that someone waits on, from `src/core/progress.ts` (capability `progress`).
+
+| Method and path | Body or query | Result |
+| --- | --- | --- |
+| `GET /v1/progress` | `Accept: application/json` | `{items: ProgressItem[]}`: the work running now |
+| `GET /v1/progress` | `Accept: text/event-stream` | the same list as `event: progress` whenever it changes, first at once |
+
+```ts
+interface ProgressItem {
+  id: string;            // the task for once-per-process work, else a unique id
+  task: "open" | "index" | "run-start";
+  label: string;         // "Opening the project: mapping the codebase", "Indexing files", "Building edges", "Starting the run"
+  done: number | null;   // counted work only: files parsed while indexing
+  total: number | null;
+  startedAt: string;
+}
+```
+
+`open` covers creating the project's shared context (memory, the intelligence worker, tools), which the first chat message, run step or graph request starts. `index` lasts while the repository map scans: a count of files while they are parsed (`RepoMap.onProgress`), then the later phases without a count. `run-start` lasts from a start or resume request until the run is driven. Language server start-up is not reported here; the LSP status endpoints cover it.
 
 ## Git
 
@@ -465,12 +564,12 @@ Events and errors live in the server's memory: they cover the chats and runs thi
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
 | Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
+| Project setup: language servers | `GET /v1/lsp`, `POST /v1/lsp/ID/install\|enable\|disable\|restart`, `POST /v1/lsp/restart`, `POST /v1/lsp/diagnose` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
 | Project setup: diagnostics | `GET /v1/diagnostics/storage`, `POST /v1/diagnostics/storage/cleanup`, `GET\|POST /v1/diagnostics/model-events`, `GET /v1/diagnostics/errors` |
 
 ## Not in this contract yet
 
-- Browsing the checkpoints of a chat. The desktop hides this control until a later version of this contract adds it.
 - Creating or editing gate definitions in `baked/gates/` and project commands in `.baked/commands`; the desktop opens those files in the editor.
 - Several projects in one server process. Each folder keeps its own `baked serve`.

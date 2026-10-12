@@ -335,8 +335,11 @@ function turnStarts(messages: ChatMessage[]): number[] {
   return messages.flatMap((m, i) => (m.role === "user" && !m.isSteering ? [i] : []));
 }
 
-/** Undo drops the last turn, redo puts the oldest undone one back; files are left alone. */
-function rewind(session: MockSession, action: "undo" | "redo") {
+/**
+ * Undo drops the turns after `toCheckpoint` (the last turn by default), redo puts the oldest
+ * undone one back; files are left alone.
+ */
+function rewind(session: MockSession, action: "undo" | "redo", toCheckpoint?: number) {
   if (session.turn || session.transcript.compacting)
     return response(409, { error: { code: "SESSION_BUSY", message: "Busy" } });
   const messages = session.transcript.messages;
@@ -344,12 +347,16 @@ function rewind(session: MockSession, action: "undo" | "redo") {
   const undone = session.undone ?? [];
   let checkpoint: number;
   if (action === "undo") {
-    const cut = starts.at(-1);
-    if (cut === undefined)
+    if (starts.length === 0)
       return response(409, { error: { code: "NOTHING_TO_UNDO", message: "Nothing to undo" } });
-    session.undone = [messages.slice(cut), ...undone];
-    session.transcript = { ...session.transcript, messages: messages.slice(0, cut) };
-    checkpoint = starts.length - 1;
+    checkpoint = toCheckpoint ?? starts.length - 1;
+    if (checkpoint < 0 || checkpoint >= starts.length)
+      return response(400, { error: { code: "INVALID_REQUEST", message: "No such checkpoint" } });
+    const dropped = starts
+      .slice(checkpoint)
+      .map((start, i) => messages.slice(start, starts[checkpoint + i + 1]));
+    session.undone = [...dropped, ...undone];
+    session.transcript = { ...session.transcript, messages: messages.slice(0, starts[checkpoint]) };
   } else {
     const [next, ...rest] = undone;
     if (!next)
@@ -960,7 +967,8 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     return response(201, { ...detail(forked), ...(rollback ? { rollback } : {}) });
   }
   if (action === "compact") return compact(session);
-  if (action === "undo" || action === "redo") return rewind(session, action);
+  if (action === "undo" || action === "redo")
+    return rewind(session, action, (body as { toCheckpoint?: number } | undefined)?.toCheckpoint);
   if (action === "diff") return response(200, diffStats(session));
   const resolve = sub ? session.turn?.waiters.get(sub) : undefined;
   if (!sub || !resolve)

@@ -39,10 +39,12 @@ ${BOLD}Automation:${RST}
   baked workflow <command>                           Durable workflow runs (see --help)
   baked usage [--days N] [--group-by stage,model]    Token use and cost across runs
   baked attention [--json]                           What waits for a person in this project
+  baked diagnose [--json]                            Check code intelligence backends
   baked session list [--json]                        Saved sessions of this project
   baked session delete <id>                          Delete a saved session
   baked session fork <id> [--rollback-files]         Fork a saved session (see --help)
   baked session undo|redo <id>                       Undo or redo a turn of a saved session
+  baked session checkpoints <id>                     List the turns undo --to can go back to
   baked serve [--port N] [--allow-origin ORIGIN]     Local workflow API on 127.0.0.1
 
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort

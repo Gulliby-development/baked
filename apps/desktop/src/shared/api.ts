@@ -41,6 +41,22 @@ export type BackendState =
   | { kind: "failed"; lastError: string; stderr: string[] };
 
 /** A known project plus what the app knows about it: its route key and its backend. */
+/** What the Create project dialog sends: a location and either a subfolder name or null. */
+export interface NewProjectDraft {
+  name: string;
+  /** The folder picked with Browse…. */
+  parent: string;
+  /** A new subfolder of `parent`, or null to use `parent` itself. */
+  folder: string | null;
+}
+
+/** `baked projects create --check --json`: where the project would go and why it cannot. */
+export interface NewProjectCheck {
+  path: string;
+  creates: boolean;
+  error: string | null;
+}
+
 export interface DesktopProject extends KnownProject {
   /** Stable short key for routes, derived from the folder path. */
   key: string;

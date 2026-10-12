@@ -5,6 +5,7 @@ import type { RequestRow } from "../../core/workflows/store.js";
 import type { Check } from "../../core/workflows/types.js";
 import type { RunDetails } from "../../core/workflows/view.js";
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
+import { HardShadow } from "../ui/BrutalBox.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, Section } from "../ui/index.js";
 import { formatTokens } from "./format.js";
@@ -334,22 +335,24 @@ export function DecisionPrompt({
   // FocusTarget scrolls the popup so the focused input stays visible in small terminals.
   const input = (placeholder: string) => (
     <FocusTarget active={inputFocused}>
-      <box
-        borderStyle="rounded"
-        border
-        borderColor={t.brand}
-        paddingX={1}
-        backgroundColor={t.bgPopup}
-      >
-        <input
-          value={text}
-          onInput={setText}
-          onSubmit={submit}
-          placeholder={placeholder}
-          focused={inputFocused}
+      <HardShadow width="100%">
+        <box
+          borderStyle="heavy"
+          border
+          borderColor={t.brand}
+          paddingX={1}
           backgroundColor={t.bgPopup}
-        />
-      </box>
+        >
+          <input
+            value={text}
+            onInput={setText}
+            onSubmit={submit}
+            placeholder={placeholder}
+            focused={inputFocused}
+            backgroundColor={t.bgPopup}
+          />
+        </box>
+      </HardShadow>
     </FocusTarget>
   );
 

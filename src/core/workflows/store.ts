@@ -18,6 +18,7 @@ import { migration007 } from "./migrations/007.js";
 import { migration008 } from "./migrations/008.js";
 import { migration009 } from "./migrations/009.js";
 import { migration010 } from "./migrations/010.js";
+import { migration011 } from "./migrations/011.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -129,10 +130,11 @@ export interface EffectRow {
   after_hash: string | null;
 }
 /**
- * A lease resource: the run that executes, the project's mutation lease, or the mutation lease of
+ * A lease resource: the inline run that executes (`execution`), a run that executes in its own
+ * worktree (`execution:` and its run id), the project's mutation lease, or the mutation lease of
  * one Git worktree (`worktree:` and its path relative to the project root).
  */
-export type LeaseResource = "execution" | "mutation" | `worktree:${string}`;
+export type LeaseResource = "execution" | "mutation" | `execution:${string}` | `worktree:${string}`;
 export interface LeaseRow {
   resource: LeaseResource;
   owner_id: string;
@@ -208,6 +210,7 @@ const MIGRATIONS = [
   { version: 8, sql: migration008 },
   { version: 9, sql: migration009 },
   { version: 10, sql: migration010 },
+  { version: 11, sql: migration011 },
 ] as const;
 
 export class WorkflowStore {

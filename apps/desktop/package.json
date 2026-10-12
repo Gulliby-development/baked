@@ -1,6 +1,6 @@
 {
   "name": "@baked/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "description": "BAKED desktop app",
@@ -19,13 +19,16 @@
     "lint": "biome check src/ tests/ scripts/",
     "lint:fix": "biome check --write src/ tests/ scripts/",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test"
+    "test": "bun test",
+    "e2e": "vite build --config vite.config.ts && playwright test",
+    "e2e:electron": "bun run build && playwright test -c playwright.electron.config.ts"
   },
   "devDependencies": {
     "@base-ui/react": "1.8.0",
     "@biomejs/biome": "2.5.15",
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@fontsource/ibm-plex-sans": "5.3.0",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "4.3.3",
     "@types/bun": "1.4.2",
     "@types/d3-drag": "3.0.7",

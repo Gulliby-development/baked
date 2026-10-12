@@ -49,8 +49,9 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `repoMap` | `true` | Build the repository graph on launch |
 | `semanticSummaries` | `"ast"` | Symbol summaries: `off`, `ast`, `synthetic`, `llm`, `full`; `semanticSummaryLimit` caps LLM summaries (300) |
 | `repoMapTokenBudget` | auto | Token budget of the graph in the prompt |
-| `disabledLspServers` | `[]` | Language servers to skip (Mason package names) |
+| `disabledLspServers` | `[]` | Language servers to skip, by command (`gopls`); Mason package names such as `pyright` work too. A project list replaces the global one. See [language servers](#language-servers) |
 | `compaction` | `strategy: "v2"`, `triggerThreshold: 0.7`, `resetThreshold: 0.4`, `keepRecent: 4`, `maxToolResults: 30`, `llmExtraction: true` | Context compaction; `strategy: "disabled"` turns auto-compaction off |
+| `coordinator` | `maxActive: 3`, `maxTokens: 20000000` | Limits on what the [project coordinator](coordinator.md) may launch: items active at once, and tokens summed over everything it launched |
 | `contextManagement` | unset | Anthropic server-side context management and tool-result pruning |
 | `contextWindowOverrides` | unset | Context window size per model ID |
 | `retry` | `maxTransientRetries: 3`, `maxStallRetries: 3`, `baseDelayMs` 1000 (chat) / 2000 (agents) | Retries on 429, 5xx, overload and stalled streams; the delay doubles each attempt |
@@ -60,7 +61,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
 | `mcpServers` | `[]` | MCP servers ([extensions](extensions.md#mcp-servers)) |
 | `hooks` | unset | Lifecycle hooks ([extensions](extensions.md#hooks)) |
-| `workflows` | on (`enabled` defaults to `true`; set `false` to turn them off) | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)) |
+| `workflows` | on (`enabled` defaults to `true`; set `false` to turn them off) | Spec-driven workflows ([runtime guide](workflows/runtime.md#enabling)); `workflows.maxParallelRuns` (1..8, default 2) caps the runs executing at once ([parallel runs](workflows/runtime.md#parallel-runs)) |
 | `keyPriority` | `"env"` | Key lookup order, see below |
 | `theme`, `diffStyle`, `chatStyle`, `collapseDiffs`, `showReasoning`, `verbose` | | Display; `/theme`, `/diff-style`, `/chat-style`, `/reasoning`, `/verbose` |
 | `motion` | `"full"` | Brand animations; `"reduced"` shows still frames (`/motion`, or `BAKED_REDUCED_MOTION=1`) ([guide](guide.md#motion)) |
@@ -119,3 +120,7 @@ The list is `INSTRUCTION_SOURCES` in `src/core/instructions.ts`.
 | `BAKED_BROWSER_EXECUTABLE` | Chromium executable for the AI acceptance gate's browser driver (Playwright) |
 
 Older lower-case `baked_*` names are still read as a fallback (`src/core/legacy-env.ts`).
+
+## Language servers
+
+Code intelligence starts a language server for each language it finds in the project, from the servers on PATH, in baked's own directory (`lsp-servers` in the user config directory, where `/lsp` installs them) and in Mason's `bin` directory. A language with no server falls back to tree-sitter. `disabledLspServers` keeps baked from starting a server. Three front ends show the same status and make the same changes: `/lsp` and `/lsp status` in the terminal UI, `baked lsp` headless ([language servers](headless.md#language-servers)) and the desktop app's Language servers page over [`/v1/lsp`](desktop/api.md#language-servers). Their changes apply to running servers without restarting the project: turning a server off stops it, and installing or turning one on restarts the servers of its languages. The workflow doctor warns about a detected language with no working server.

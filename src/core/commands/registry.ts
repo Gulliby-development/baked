@@ -174,6 +174,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["folder", "workspace", "sessions", "runs", "working set"],
   },
   {
+    cmd: "/project waiting",
+    ic: "folder",
+    desc: "What waits for you here and in your other recent projects",
+    category: "Session",
+    tags: ["attention", "needs you", "approvals", "projects"],
+  },
+  {
     cmd: "/project rename",
     ic: "folder",
     desc: "Rename this project in every app; no name restores the default",

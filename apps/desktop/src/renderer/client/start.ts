@@ -43,6 +43,18 @@ export interface LineStage {
   consumes: string[];
   produces: string;
   human: boolean;
+  /** The stage's own gates, then those on the transitions leaving it; absent from older backends. */
+  gates?: LineGate[];
+}
+
+/** A gate where it stands on the line (`LineGate` in src/core/workflows/v2/line.ts). */
+export interface LineGate {
+  id: string;
+  type: "command" | "human" | "ai-review" | "ai-acceptance" | null;
+  mode: "required" | "advisory";
+  does: string;
+  /** The transition the gate guards; null for a gate of the stage itself. */
+  transition: { id: string; to: string; on: string } | null;
 }
 
 /** A transition back to the same or an earlier stage. */
@@ -151,6 +163,8 @@ export interface StartBody {
   issue?: string;
   workflow?: string;
   policy?: RunPolicy;
+  /** A budget preset the server applies to the policy (`--budget`); omitted means standard. */
+  budget?: "quick" | "standard" | "extended" | "checkpoints";
   model?: string;
   worktree?: boolean;
   writers?: number;
@@ -174,9 +188,8 @@ export const start = {
   estimate: (key: string, input: PreRunInput) =>
     call<PreRunEstimate>(key, "GET", `/v1/workflow/estimate${preRunQuery(input)}`),
   /**
-   * The configured run policy, which budget presets other than `standard` scale: the effective
-   * config's `workflows.policy` from `GET /v1/config` (contract group B). Null when the config
-   * sets no policy, so the core's default applies and the app cannot scale it.
+   * The configured run policy: the effective config's `workflows.policy` from `GET /v1/config`
+   * (contract group B). Null when the config sets no policy, so the core's default applies.
    */
   policy: (key: string) =>
     call<{ effective: { workflows?: { policy?: RunPolicy } } }>(key, "GET", "/v1/config").then(

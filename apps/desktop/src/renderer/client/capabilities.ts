@@ -17,6 +17,8 @@ export const DIFF_STATS_CAPABILITY = "diff-stats";
 export const PLAN_MODE_CAPABILITY = "plan-mode";
 /** `POST /v1/sessions/ID/undo` and `/redo` (Undo and Redo in chat). */
 export const CHAT_UNDO_CAPABILITY = "chat-undo";
+/** `GET /v1/sessions/ID/checkpoints` (Rewind to here at the end of each earlier turn). */
+export const CHECKPOINTS_CAPABILITY = "checkpoints";
 /** `GET|POST /v1/workflow/memory` (the Run memory section). */
 export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `/v1/memory*` (the Chat memory section). */
@@ -63,3 +65,9 @@ export function offers(capabilities: readonly string[] | null, name: string): bo
 
 /** `/v1/mcp*` (the MCP servers section). */
 export const MCP_CAPABILITY = "mcp";
+
+/** `/v1/lsp*` (the Language servers section). */
+export const LSP_CAPABILITY = "lsp";
+
+/** `POST /v1/lsp/diagnose` (Check code intelligence on the Language servers section). */
+export const LSP_DIAGNOSE_CAPABILITY = "lsp-diagnose";

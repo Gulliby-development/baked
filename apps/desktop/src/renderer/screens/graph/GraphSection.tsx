@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type GraphAnswer, type GraphUnit, type GraphView, graph } from "../../client/graph.js";
 import { isMissingEndpoint } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
+import { Busy } from "../../components/ui/busy.js";
 import { Empty } from "../../components/ui/empty.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
+import { useProgress } from "../../lib/progress.js";
 import { href } from "../../router.js";
 import { LoadState } from "../insights/LoadState.js";
 import type { SectionProps } from "../sections.js";
@@ -17,6 +20,8 @@ const SQUARE =
   "inline-grid size-8 cursor-pointer place-items-center rounded-base border-2 border-border bg-raised font-mono font-bold shadow-sm-hard transition-[transform,box-shadow] duration-[80ms] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none motion-reduce:transition-none";
 const FLOAT =
   "absolute rounded-base border-2 border-border bg-background shadow-sm-hard font-mono text-[12px] text-soft-foreground";
+
+const INDEX_TASKS = ["open", "index"] as const;
 
 type Loaded =
   | { kind: "loading" }
@@ -55,6 +60,10 @@ export function GraphSection({ project }: SectionProps) {
   );
   const stateRef = useRef(state);
   stateRef.current = state;
+  const indexing = loaded.kind === "answer" && loaded.answer.indexing;
+  const work = useProgress(key, INDEX_TASKS, indexing);
+  // Indexing outranks opening: once files are counted that is the wait worth showing.
+  const current = work.find((item) => item.task === "index") ?? work[0];
 
   // Project change: start over.
   // biome-ignore lint/correctness/useExhaustiveDependencies: resets on the project key only.
@@ -213,20 +222,27 @@ export function GraphSection({ project }: SectionProps) {
 
   if (loaded.kind === "missing" || loaded.kind === "error")
     return <LoadState state={loaded} what="The code graph and its API" />;
+  if (loaded.kind === "answer" && loaded.answer.state === "indexing")
+    return (
+      <Busy
+        className="rounded-base border-2 border-dashed border-border"
+        label={current ? `${current.label}…` : "Indexing the project…"}
+        detail="BAKED is reading the code to build its graph. The graph appears here when the first pass is done."
+        done={current?.done}
+        total={current?.total}
+        unit="files"
+      />
+    );
   if (loaded.kind === "answer" && loaded.answer.state !== "ready")
     return (
       <Empty className="flex flex-col items-center gap-1.5">
         <strong className="text-foreground">
-          {loaded.answer.state === "indexing"
-            ? "Indexing the project…"
-            : loaded.answer.state === "disabled"
-              ? "The code index is turned off"
-              : "Nothing to draw yet"}
+          {loaded.answer.state === "disabled"
+            ? "The code index is turned off"
+            : "Nothing to draw yet"}
         </strong>
         <span>
-          {loaded.answer.state === "indexing" ? (
-            "BAKED is reading the code to build its graph. The graph appears here when the first pass is done."
-          ) : loaded.answer.state === "disabled" ? (
+          {loaded.answer.state === "disabled" ? (
             <>
               Turn the Baked map back on in{" "}
               <a href={href({ name: "settings", section: "chat", page: "baked-map" })}>
@@ -354,7 +370,9 @@ export function GraphSection({ project }: SectionProps) {
                     "left-3 top-3 bg-fill-warn px-2.5 py-1.5 text-main-foreground",
                   )}
                 >
-                  Refreshing the index…
+                  {current?.task === "index" && current.done !== null && current.total
+                    ? `Refreshing the index · ${formatCount(current.done)} / ${formatCount(current.total)} files`
+                    : "Refreshing the index…"}
                 </div>
               )}
               <div
@@ -404,7 +422,7 @@ export function GraphSection({ project }: SectionProps) {
               onSelect={setSelection}
             />
           ) : (
-            loaded.kind === "loading" && <span className="text-dim-foreground">Loading…</span>
+            loaded.kind === "loading" && <Skeleton lines={4} label="Loading the graph" />
           )}
           {loaded.kind === "answer" &&
             loaded.answer.state === "ready" &&

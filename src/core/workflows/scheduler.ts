@@ -98,7 +98,11 @@ import {
   withinWorkflow,
 } from "./leases.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
-import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
+import {
+  PLAN_CONSISTENCY_CHECKS,
+  planConsistencyProblems,
+  withDerivedRequirements,
+} from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
@@ -106,6 +110,7 @@ import {
   abortableDelay,
   accountRefusal,
   endedOnProse,
+  isCapacityError,
   isTransient,
   reportsLostTool,
   retryAfterMs,
@@ -122,6 +127,7 @@ import {
 import {
   type AgentProfile,
   AnalysisSchema,
+  DEFAULT_MAX_PARALLEL_RUNS,
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
@@ -220,11 +226,13 @@ function planGraph(
   policy: RunPolicy,
 ): TaskGraph {
   return withCoveringChecks(
-    withTestDependencies({
-      ...plan.taskGraph,
-      specHash: hashJson(spec),
-      planHash: hashBytes(plan.markdown),
-    }),
+    withTestDependencies(
+      withDerivedRequirements(spec, {
+        ...plan.taskGraph,
+        specHash: hashJson(spec),
+        planHash: hashBytes(plan.markdown),
+      }),
+    ),
     policy,
   );
 }
@@ -295,6 +303,10 @@ export class WorkflowScheduler {
   readonly checks: CheckRunner;
   /** The mutation lease of the root the driven run writes: the project or its worktree. */
   private mutation: LeaseResource = "mutation";
+  /** The driven run's execution lease: the workspace's, or the run's own in worktree mode. */
+  private execution: LeaseResource = "execution";
+  /** How many runs may execute in the workspace at once (`workflows.maxParallelRuns`). */
+  maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
   /**
@@ -318,12 +330,14 @@ export class WorkflowScheduler {
     this.routing.delete(runId);
     const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
     raiseToStartEstimate(this.store, runId, policy);
-    // A worktree run holds the lease of its worktree; the project working copy stays free.
-    this.mutation =
-      executionModeOf(policy) === "worktree"
-        ? mutationLeaseFor(this.store.workspace, join(this.store.workspace, worktreePath(runId)))
-        : "mutation";
-    this.leases.acquire("execution", runId);
+    // A worktree run holds the leases of its own worktree and execution; the project working copy
+    // stays free and other worktree runs can execute beside it.
+    const inWorktree = executionModeOf(policy) === "worktree";
+    this.mutation = inWorktree
+      ? mutationLeaseFor(this.store.workspace, join(this.store.workspace, worktreePath(runId)))
+      : "mutation";
+    this.execution = inWorktree ? `execution:${runId}` : "execution";
+    this.leases.acquire(this.execution, runId, { maxExecuting: this.maxParallelRuns });
     try {
       this.leases.acquire(this.mutation, runId);
     } catch (error) {
@@ -357,7 +371,7 @@ export class WorkflowScheduler {
       await withinWorkflow(this.leases.owner, async () => {
         while (this.store.run(runId).status === "running") {
           signal.throwIfAborted();
-          this.leases.assert("execution");
+          this.leases.assert(this.execution);
           this.leases.assert(this.mutation);
           const run = this.store.run(runId);
           const state = this.store.state(runId);
@@ -1892,8 +1906,11 @@ export class WorkflowScheduler {
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
       // and once the chain has already failed over, the run stops instead of blocking on it.
+      // A model at capacity is left for the next model of the route at once; with none, the
+      // call waits for it with the capacity backoff.
       const delay =
-        (next !== undefined || fallbackIndex > 0) && retryAfterMs(error) > LONG_RETRY_AFTER_MS
+        ((next !== undefined || fallbackIndex > 0) && retryAfterMs(error) > LONG_RETRY_AFTER_MS) ||
+        (next !== undefined && isCapacityError(error))
           ? null
           : retryDelay(error, retry, fallbackIndex === 0 ? 2 : 1);
       const again = (retryNumber: number, index: number, primaryError?: unknown) =>
@@ -3522,7 +3539,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         (e) =>
           ["prepared", "unknown"].includes(e.status) && intentRoot(e.intent_json) === entry.path,
       );
-    if (owned && !unsettled) await removeTaskWorktree(this.store.workspace, entry.path);
+    if (owned && !unsettled) {
+      // A locked directory is a leftover, not a failure: the run goes on and the directory is
+      // removed with the run's worktrees or when the task worktree is created again.
+      const removal = await removeTaskWorktree(this.store.workspace, entry.path);
+      if (!removal.removed)
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "worktree",
+            `worktree/leftover-${entry.task.id}.json`,
+            canonical({ path: entry.path, warning: removal.warning }),
+          ),
+        );
+    }
     this.leases.releaseOne(entry.lease());
   }
   /**

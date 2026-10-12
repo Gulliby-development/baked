@@ -1,7 +1,10 @@
 /**
- * The chat endpoints of the local API: `/v1/sessions`, `/v1/models` and `/v1/mentions`. The contract is
- * `docs/desktop/api.md`; the sessions themselves live in `ChatService`.
+ * The chat endpoints of the local API: `/v1/sessions`, `/v1/coordinator`, `/v1/models` and
+ * `/v1/mentions`. The contract is `docs/desktop/api.md`; the sessions themselves live in
+ * `ChatService`.
  */
+
+import { BriefError, BriefStore } from "../chat/coordinator.js";
 import {
   acceptImages,
   type ImageInput,
@@ -13,7 +16,9 @@ import { loadModelCatalog } from "../llm/model-catalog.js";
 import { chatExportFileName, renderChatExport } from "../sessions/export.js";
 import type { RouteContext } from "./route-context.js";
 import {
+  BriefBody,
   CompactBody,
+  CoordinatorBody,
   CreateSessionBody,
   ForkSessionBody,
   MentionsQuery,
@@ -33,7 +38,7 @@ export interface ChatRouteContext extends RouteContext {
 
 const ID = "[A-Za-z0-9-]+";
 const SESSION = new RegExp(
-  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|export|undo|redo)(?:/(${ID}))?)?$`,
+  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|export|undo|redo|checkpoints)(?:/(${ID}))?)?$`,
 );
 
 export function chatErrorStatus(error: ChatError): number {
@@ -63,6 +68,35 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     const max = Math.min(50, limit ? Number(limit) : 20);
     const mentions = chat.host.suggestMentions ? await chat.host.suggestMentions(q ?? "", max) : [];
     return ctx.json(200, { mentions });
+  }
+  if (path === "/v1/coordinator") {
+    only("GET", "POST");
+    if (method === "GET") {
+      const session = await chat.coordinator(false);
+      if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+      return ctx.json(200, session.detail());
+    }
+    const body = CoordinatorBody.parse(await ctx.readJson());
+    const existing = await chat.coordinator(false);
+    if (existing) return ctx.json(200, existing.detail());
+    const created = await chat.coordinator(true, body.model);
+    if (!created) ctx.fail(500, "INTERNAL", "The coordinator could not be created");
+    return ctx.json(201, created.detail());
+  }
+  if (path === "/v1/coordinator/brief") {
+    only("GET", "PUT");
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    const store = new BriefStore(chat.workspace, session.id);
+    if (method === "GET") return ctx.json(200, store.read());
+    const { expectedRevision, ...content } = BriefBody.parse(await ctx.readJson());
+    try {
+      return ctx.json(200, store.write(content, expectedRevision));
+    } catch (err) {
+      if (err instanceof BriefError)
+        ctx.fail(err.code === "STALE_REVISION" ? 409 : 400, err.code, err.message);
+      throw err;
+    }
   }
   if (path === "/v1/sessions") {
     only("GET", "POST");
@@ -120,6 +154,11 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     only("GET");
     if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
     return ctx.json(200, await chat.get(id).diffStats());
+  }
+  if (action === "checkpoints") {
+    only("GET");
+    if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
+    return ctx.json(200, chat.get(id).checkpoints());
   }
   if (action === "export") {
     only("GET");

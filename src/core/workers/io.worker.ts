@@ -228,6 +228,7 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
         updatedAt: number;
         sizeBytes: number;
         projectId?: string;
+        kind?: "coordinator";
       }> = [];
 
       for (const entry of entries) {
@@ -258,6 +259,7 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
             updatedAt: meta.updatedAt,
             sizeBytes,
             ...(typeof meta.projectId === "string" ? { projectId: meta.projectId } : {}),
+            ...(meta.kind === "coordinator" ? { kind: "coordinator" as const } : {}),
           });
         } catch {
           // Skip corrupted entries

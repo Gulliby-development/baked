@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
+import { copilotConfigDir } from "../src/core/llm/detected-logins.js";
 import { recordProjectOpen } from "../src/core/projects/known.js";
 import type { RunSnapshot } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -50,6 +51,55 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, tim
 const errorCode = async (response: Response) => ((await response.json()) as { error: { code: string } }).error.code;
 
 describe("local API setup and workflow additions", () => {
+  test("run maintenance exports, redacts, previews gc and imports a candidate", async () => {
+    const { fixture, post, get } = await setup();
+    const run = (await (await post("/v1/workflow/runs", { commandId: newId(), feature: "fixture", prompt: "Create ready value" })).json()) as RunSnapshot;
+    const waiting = await until(
+      () => get<RunSnapshot & { requests: { id: string; kind: string; status: string; digest: string }[] }>(`/v1/workflow/runs/${run.runId}`),
+      (s) => s.status === "waiting",
+    );
+    const request = waiting.requests.find((r) => r.kind === "approval" && r.status === "pending");
+    if (!request) throw new Error("No pending approval");
+    const approved = (await (await post(`/v1/workflow/runs/${run.runId}/approve`, {
+      commandId: newId(),
+      expectedRevision: waiting.revision,
+      requestId: request.id,
+      digest: request.digest,
+    })).json()) as RunSnapshot;
+    await post(`/v1/workflow/runs/${run.runId}/resume`, { commandId: newId(), expectedRevision: approved.revision });
+    await until(() => get<RunSnapshot>(`/v1/workflow/runs/${run.runId}`), (s) => ["completed", "failed", "blocked"].includes(s.status));
+
+    const exported = await post(`/v1/workflow/runs/${run.runId}/export`);
+    expect(exported.status).toBe(200);
+    const { path } = (await exported.json()) as { path: string; manifestHash: string };
+    expect(path).toContain(join(".baked", "exports", run.runId));
+    expect(JSON.parse(readFileSync(join(path, "manifest.json"), "utf8")).snapshot.runId).toBe(run.runId);
+    const outside = await post(`/v1/workflow/runs/${run.runId}/export`, { destination: join(tmpdir(), `baked-export-${newId()}`) });
+    expect(outside.status).toBe(403);
+
+    const spec = (await get<{ id: string; kind: string }[]>(`/v1/workflow/runs/${run.runId}/artifacts`)).find((a) => a.kind === "spec");
+    if (!spec) throw new Error("No spec artifact");
+    expect((await post(`/v1/workflow/runs/${run.runId}/redact`, { artifactId: spec.id, reason: " " })).status).toBe(400);
+    const redacted = await post(`/v1/workflow/runs/${run.runId}/redact`, { artifactId: spec.id, reason: "Remove a pasted key" });
+    expect(await redacted.json()).toEqual({ redacted: true });
+    expect(fixture.service.store.latestArtifact(run.runId, `redactions/${spec.id}.json`)).toBeTruthy();
+
+    const preview = await post("/v1/workflow/gc", { before: new Date().toISOString(), dryRun: true });
+    expect(await preview.json()).toEqual({ runIds: [], bytes: 0 });
+    expect((await post("/v1/workflow/gc", { before: "soon" })).status).toBe(400);
+
+    mkdirSync(join(fixture.root, "specs", "feature"), { recursive: true });
+    writeFileSync(join(fixture.root, "specs", "feature", "spec.md"), "# Feature\n\nUsers can export runs.\n");
+    const imported = await post("/v1/workflow/import", { source: "spec-kit", path: "specs/feature", featureId: "imported" });
+    expect(imported.status).toBe(200);
+    const candidate = (await imported.json()) as { candidateHash: string; warnings: string[] };
+    expect(candidate.candidateHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(candidate.warnings.join(" ")).toContain("draft");
+    expect((await post("/v1/workflow/import", { source: "spec-kit", path: "missing", featureId: "imported" })).status).toBe(400);
+    const health = await get<{ capabilities: string[] }>("/v1/health");
+    expect(health.capabilities).toContain("run-maintenance");
+  });
+
   test("health lists the setup and initiative capabilities", async () => {
     const { get } = await setup();
     const health = await get<{ capabilities: string[] }>("/v1/health");
@@ -104,6 +154,13 @@ describe("local API setup and workflow additions", () => {
     expect(planOnly.groups.reduce((sum, g) => sum + g.tokens, 0)).toBe(plan?.tokens ?? -1);
     const host = await get<{ groups: Group[] }>("/v1/usage?model=(host)&groupBy=stage");
     expect(host.groups.every((g) => g.costUsd === 0 && g.unpricedTokens === 0)).toBe(true);
+    const shared = await get<{ markdown: string }>("/v1/usage?groupBy=stage,model&format=md");
+    expect(shared.markdown).toContain("| Stage | Model |");
+    expect(shared.markdown).toContain("| plan |");
+    expect((await call("/v1/usage?format=html")).status).toBe(400);
+    const runShared = await get<{ markdown: string }>(`/v1/workflow/runs/${run.runId}/usage?format=md`);
+    expect(runShared.markdown).toContain(`# BAKED usage of run ${run.runId}`);
+    expect((await call(`/v1/workflow/runs/${run.runId}/usage?format=csv`)).status).toBe(400);
 
     const forked = await post(`/v1/workflow/runs/${run.runId}/fork`, { commandId: newId(), expectedRevision: done.revision });
     expect(forked.status).toBe(200);
@@ -287,6 +344,24 @@ describe("local API setup and workflow additions", () => {
     expect(providers.some((p) => p.acceptsKey)).toBe(true);
     expect((await send("PUT", "/v1/providers/nope/key", { key: "x" })).status).toBe(404);
     expect((await call("/v1/providers/openai/key")).status).toBe(405);
+  });
+
+  test("a Copilot IDE login is reported as a detected source", async () => {
+    const { get } = await setup();
+    const dir = copilotConfigDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "apps.json"), JSON.stringify({ "github.com:app": { oauth_token: "gho_ide" } }));
+    try {
+      type Row = { id: string; configured: boolean; source: string | null; detectedFrom?: string };
+      const { providers } = await get<{ providers: Row[] }>("/v1/providers");
+      expect(providers.find((p) => p.id === "copilot")).toMatchObject({
+        configured: true,
+        source: "detected",
+        detectedFrom: "Copilot IDE login",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("checks are listed, saved to the project, suggested and run on demand", async () => {

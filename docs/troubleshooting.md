@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic indexing), `/errors` (error log, also `Meta+R`) and, before a workflow, `baked doctor`. In the desktop app, a project's **Diagnostics** page shows the same error log, model events and storage for that project's backend ([desktop app](desktop/app.md#screens)).
+Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic indexing; `baked diagnose` headless), `/errors` (error log, also `Meta+R`) and, before a workflow, `baked doctor`. In the desktop app, a project's **Diagnostics** page shows the same error log, model events and storage for that project's backend ([desktop app](desktop/app.md#screens)).
 
 ## No models in the picker
 
@@ -51,6 +51,10 @@ Windows Terminal's bracketed paste sends an empty sequence for image clipboards,
 ## Windows: command not found after install
 
 `PATH` changes do not reach the shell that ran the installer; open a new terminal. With the ZIP, put the folder on `PATH` or run `baked.exe` by its full path, and keep `deps/` next to it. `baked self-check` reports a missing native library or bundle.
+
+## Codex or Claude Code is not detected
+
+`baked --list-providers` does not list `codex` or `claude-code` as ready, or the desktop settings say the CLI is not found, although it works in a terminal. `/codex status`, `/claude-code status` and the desktop settings list the folders BAKED searched (see [Finding the CLIs](providers.md#finding-the-clis)). If the CLI lives somewhere else, set `BAKED_CODEX_PATH` or `BAKED_CLAUDE_CODE_PATH` to the full path of the executable (`command -v codex` in a terminal prints it), or add its folder to `PATH` in your login shell profile (`~/.zprofile` or `~/.zshrc` on macOS).
 
 ## Lint reports every file on a Windows checkout
 

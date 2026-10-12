@@ -485,6 +485,7 @@ describe("local API chat sessions", () => {
     const { host, call, post, detail } = await setup();
     const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
     expect(health.capabilities).toContain("chat-undo");
+    expect(health.capabilities).toContain("checkpoints");
     expect(health.capabilities).toContain("chat-export");
     const session = (await (await post("/v1/sessions", { text: "One" })).json()) as SessionDetail;
     await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
@@ -500,6 +501,15 @@ describe("local API chat sessions", () => {
     expect(body.rollback.checkpoint).toBe(1);
     const seen = await events(await stream, (e) => e.type === "rewind");
     expect(seen.at(-1)).toMatchObject({ type: "rewind", action: "undo", checkpoint: 1, messageCount: 2 });
+
+    const listed = (await (await call(`/v1/sessions/${session.id}/checkpoints`)).json()) as {
+      checkpoints: { index: number; anchorMessageId: string; endMessageId: string; prompt: string }[];
+      redo: { index: number; prompt: string }[];
+    };
+    expect(listed.checkpoints.map((c) => [c.index, c.prompt])).toEqual([[1, "One"]]);
+    expect(listed.checkpoints[0]?.endMessageId).toBe(body.messages[1]?.id);
+    expect(listed.redo).toMatchObject([{ index: 2, prompt: "Two" }]);
+    expect((await call(`/v1/sessions/${session.id}/checkpoints`, { method: "POST" })).status).toBe(405);
 
     expect((await post(`/v1/sessions/${session.id}/undo`, { toCheckpoint: 5 })).status).toBe(400);
     const redone = (await (await post(`/v1/sessions/${session.id}/redo`)).json()) as SessionDetail;

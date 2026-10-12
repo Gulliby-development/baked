@@ -37,6 +37,25 @@ jobs:
       - name: Build
         run: bun run build
 
+  branch-name:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Branch name follows AGENTS.md
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: bun scripts/check-branch-name.ts "$HEAD_REF"
+
   desktop:
     runs-on: ubuntu-latest
     permissions:
@@ -69,3 +88,29 @@ jobs:
 
       - name: Build
         run: bun run build
+
+      # Playwright drives the built renderer in the runner's Google Chrome; no browser download.
+      - name: UI tests
+        run: bun run e2e
+
+      # The built app against a fake baked (tests/fixtures/fake-serve.ts) and, for chat, the real
+      # baked serve with a scripted model (BAKED_TEST_SCRIPT), under xvfb.
+      - name: Electron UI tests
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ""
+        run: |
+          node node_modules/electron/install.js
+          # The chat scenario runs the repository's own baked serve from source.
+          (cd ../.. && bun install --frozen-lockfile)
+          command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)
+          xvfb-run -a bunx playwright test -c playwright.electron.config.ts
+
+      - name: Upload UI test report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-ui-report
+          path: |
+            apps/desktop/playwright-report
+            apps/desktop/test-results
+          retention-days: 7

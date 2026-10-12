@@ -2,6 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { loadConfig } from "../../../config/index.js";
 import { getProviderApiKey } from "../../secrets.js";
 import { getCompatReasoningBody } from "../compat-reasoning.js";
+import { githubCliLogin } from "../detected-logins.js";
 import { createSessionFetchWrapper } from "./reasoning-fetch.js";
 import type { CreateModelOptions, ProviderDefinition, ProviderModelInfo } from "./types.js";
 
@@ -12,6 +13,11 @@ const GH_HEADERS: Record<string, string> = {
   "X-GitHub-Api-Version": "2026-03-10",
   Accept: "application/vnd.github+json",
 };
+
+/** A saved or `GITHUB_MODELS_API_KEY` key wins over a token found in the environment or `gh`. */
+function githubModelsKey(): string | undefined {
+  return getProviderApiKey(ENV_VAR) ?? githubCliLogin()?.token;
+}
 
 interface CatalogModel {
   id: string;
@@ -32,10 +38,10 @@ export const githubModels: ProviderDefinition = {
   description: "Free with GitHub PAT",
 
   createModel(modelId: string, options?: CreateModelOptions) {
-    const apiKey = getProviderApiKey(ENV_VAR);
+    const apiKey = githubModelsKey();
     if (!apiKey) {
       throw new Error(
-        `${ENV_VAR} is not set. Create a fine-grained PAT with models:read at github.com/settings/tokens`,
+        `${ENV_VAR} is not set and the GitHub CLI is not signed in. Run \`gh auth login\`, or create a fine-grained PAT with models:read at github.com/settings/tokens`,
       );
     }
     const reasoningBody = getCompatReasoningBody(
@@ -52,7 +58,7 @@ export const githubModels: ProviderDefinition = {
   },
 
   async fetchModels(): Promise<ProviderModelInfo[] | null> {
-    const apiKey = getProviderApiKey(ENV_VAR);
+    const apiKey = githubModelsKey();
     if (!apiKey) return null;
     const res = await fetch(CATALOG_URL, {
       headers: { Authorization: `Bearer ${apiKey}`, ...GH_HEADERS },
@@ -133,6 +139,12 @@ export const githubModels: ProviderDefinition = {
     ["microsoft/mai-ds-r1", 128_000],
     ["ai21-", 262_144],
   ],
+
+  async checkAvailability() {
+    return Boolean(githubModelsKey());
+  },
+
+  detectLogin: githubCliLogin,
 
   grouped: true,
 };

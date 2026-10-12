@@ -11,6 +11,7 @@ import {
   setSecret,
 } from "../../../../core/secrets.js";
 import { useTheme } from "../../../../core/theme/index.js";
+import { spinnerGlyph } from "../../../../core/utils/spinner.js";
 import { useKeyboard, useTerminalDimensions } from "../../../../hooks/useTerminalEvents.js";
 import { KeyCaps, Search, VirtualList, VSpacer } from "../../../ui/index.js";
 import { fitPopupHeight } from "../../../ui/popup-geometry.js";
@@ -41,6 +42,7 @@ const PROVIDERS: ProviderEntry[] = getAllProviders()
     url: p.keyUrl ? `https://${p.keyUrl}` : "",
     desc: p.description ?? "",
     icon: p.icon,
+    autoDetect: Boolean(p.detectLogin),
   }));
 
 // ── Helpers ──
@@ -77,8 +79,6 @@ type Phase = "provider" | "key" | "fetching" | "models" | "error";
 
 // ── Sub-components ──
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
 // Fixed chrome around the provider list (popup shell + header + intro + spacers +
 // optional status lines + keycaps). Subtracted from popup height so the list
 // scrolls instead of overflowing — see ThemeStep for the same pattern.
@@ -103,7 +103,7 @@ function ProviderRow({
   // Keep each row to a single line so VirtualList's per-row height stays exact;
   // a wrapped description would desync the scroll viewport. The provider name
   // always wins, the description is truncated to whatever width is left.
-  const tagText = configured ? `  ✓ ${tag}` : autoAvailable ? "  ✓ auto" : "";
+  const tagText = configured ? `  ✓ ${tag}` : autoAvailable ? "  ✓ detected" : "";
   const fixed = 6 + p.label.length + 3 + tagText.length;
   const descBudget = width - 4 - fixed;
   const showDesc = descBudget > 1;
@@ -247,10 +247,7 @@ export function SetupStep({
 
     useEffect(() => {
       if (phase === "fetching") {
-        spinnerRef.current = setInterval(
-          () => setSpinnerFrame((f) => (f + 1) % SPINNER_FRAMES.length),
-          80,
-        );
+        spinnerRef.current = setInterval(() => setSpinnerFrame((f) => f + 1), 80);
         return () => {
           if (spinnerRef.current) clearInterval(spinnerRef.current);
         };
@@ -470,7 +467,7 @@ export function SetupStep({
           <VSpacer />
           <text bg={t.bgPopup} fg={t.info}>
             {" "}
-            {SPINNER_FRAMES[spinnerFrame]}
+            {spinnerGlyph(spinnerFrame)}
             {" Fetching models..."}
           </text>
         </box>

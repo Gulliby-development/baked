@@ -310,6 +310,13 @@ export interface AppConfig {
   performance?: PerformanceConfig;
   contextManagement?: ContextManagementConfig;
   compaction?: CompactionConfig;
+  /** Limits on what the project coordinator may launch (see docs/coordinator.md). */
+  coordinator?: {
+    /** Launched sessions, runs and initiatives active at once. Default: 3 */
+    maxActive?: number;
+    /** Tokens summed over everything the coordinator launched. Default: 20,000,000 */
+    maxTokens?: number;
+  };
   codeExecution?: boolean;
   /** Enable Anthropic's computer use tool (keyboard/mouse/screenshot). Claude-only. Default: false */
   computerUse?: boolean;

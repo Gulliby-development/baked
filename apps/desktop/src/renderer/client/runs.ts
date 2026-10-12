@@ -244,6 +244,41 @@ export const approveRequest = (
 ) =>
   workflow.approve(key, { ...run, approvalDigest: request.digest }, request.id, excludeUserChanges);
 
+/** `POST /v1/workflow/gc`: the ended runs a cleanup removes, or removed, and their artifact bytes. */
+export interface GcResult {
+  runIds: string[];
+  bytes: number;
+}
+
+/** `POST /v1/workflow/import`: a candidate under `.baked/workflow-imports/HASH`. */
+export interface ImportResult {
+  candidateHash: string;
+  warnings: string[];
+  unsupported: string[];
+}
+
+export type ImportSource = "spec-kit" | "ecc" | "markdown-edit";
+
+/** Export, redact, cleanup and import of runs (`run-maintenance` capability). */
+export const RUN_MAINTENANCE_CAPABILITY = "run-maintenance";
+
+export const runMaintenance = {
+  /** Writes `manifest.json` into a new directory under `.baked/exports/`; returns where. */
+  exportRun: (key: string, runId: string) =>
+    call<{ path: string; manifestHash: string }>(key, "POST", runPath(runId, "export"), {}),
+  /** Replaces an artifact's content with a tombstone and invalidates evidence built on it. */
+  redact: (key: string, runId: string, artifactId: string, reason: string) =>
+    call<{ redacted: true }>(key, "POST", runPath(runId, "redact"), { artifactId, reason }),
+  /** Ended runs older than 30 days and `before`; `dryRun` only lists them. */
+  gc: (key: string, before: string, dryRun: boolean) =>
+    call<GcResult>(key, "POST", "/v1/workflow/gc", { before, dryRun }),
+  /** Reads a local Spec Kit, ECC or Markdown directory into an inert candidate. */
+  importCandidate: (
+    key: string,
+    request: { source: ImportSource; path: string; featureId: string },
+  ) => call<ImportResult>(key, "POST", "/v1/workflow/import", request),
+};
+
 /** The group of `docs/desktop/api.md` that adds evidence, continue and recover. */
 export const GROUP_B_CAPABILITY = "setup";
 

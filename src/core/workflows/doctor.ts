@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { AppConfig } from "../../types/index.js";
+import type { LspStatusView } from "../intelligence/lsp-service.js";
 import { getProvider } from "../llm/providers/index.js";
 import { getProviderApiKey } from "../secrets.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type PreRunEstimate, readHistory } from "./estimate.js";
-import { commandMayBeRunning, leaseOwnerAlive } from "./leases.js";
+import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
 import { reachableModels } from "./routing.js";
@@ -70,6 +71,8 @@ export interface DoctorDeps {
   /** The resolved path of an executable, or null when it cannot be found. */
   which(command: string, cwd: string): string | null;
   git(args: string[], cwd: string): Promise<{ code: number; stdout: string }>;
+  /** The project's language servers; without it the doctor skips that line. */
+  languageServers?(workspace: string): Promise<LspStatusView>;
 }
 
 const PROBE_TIMEOUT_MS = 5000;
@@ -106,6 +109,10 @@ export const defaultDoctorDeps: DoctorDeps = {
       return existsSync(path) ? path : null;
     }
     return Bun.which(command, { cwd }) ?? null;
+  },
+  async languageServers(workspace) {
+    const { lspStatus } = await import("../intelligence/lsp-service.js");
+    return lspStatus({ workspace });
   },
   async git(args, cwd) {
     try {
@@ -375,8 +382,23 @@ async function gitChecks(
 }
 
 function leaseCheck(store: WorkflowStore): DoctorCheck {
-  const lease = store.lease("execution");
-  if (!lease) return { id: "workspace.busy", status: "ok", title: "No run is executing" };
+  const leases = store.leases().filter((lease) => isExecutionLease(lease.resource));
+  // The workspace-wide lease (an inline run) first: it is the one that blocks the working copy.
+  leases.sort((a, b) => Number(b.resource === "execution") - Number(a.resource === "execution"));
+  const parallel = leases.filter(
+    (lease) => lease.resource !== "execution" && leaseOwnerAlive(lease) !== false,
+  );
+  const lease = leases.find(
+    (candidate) => candidate.resource === "execution" || leaseOwnerAlive(candidate) === false,
+  );
+  if (!lease)
+    return parallel.length
+      ? {
+          id: "workspace.busy",
+          status: "ok",
+          title: `${parallel.length} run${parallel.length === 1 ? " is" : "s are"} executing in ${parallel.length === 1 ? "its own worktree" : "their own worktrees"}; the working copy is free`,
+        }
+      : { id: "workspace.busy", status: "ok", title: "No run is executing" };
   const owner = lease.run_id ?? lease.owner_id;
   const alive = leaseOwnerAlive(lease);
   if (alive !== false)
@@ -405,6 +427,39 @@ function leaseCheck(store: WorkflowStore): DoctorCheck {
     detail: "The next run takes the workspace over.",
     subject: owner,
   };
+}
+
+/**
+ * One line for the project's language servers: a warning per detected language that no enabled,
+ * installed server covers (code navigation falls back to tree-sitter there), otherwise ok.
+ */
+export function languageServerChecks(status: LspStatusView): DoctorCheck[] {
+  if (status.uncovered.length)
+    return status.uncovered.map((language) => {
+      const installable = status.servers.find(
+        (s) => s.languages.includes(language) && !s.installed && s.installable,
+      );
+      return {
+        id: "lsp.missing",
+        status: "warn",
+        title: `No language server for ${language}`,
+        detail: "Code navigation and diagnostics fall back to tree-sitter for these files.",
+        fix: installable
+          ? `baked lsp install ${installable.id}, or Install on the desktop app's Language servers page`
+          : `Install a ${language} server, or enable a disabled one (baked lsp status --all)`,
+        subject: language,
+      };
+    });
+  const servers = status.servers.filter((s) => s.detected && s.installed && !s.disabled);
+  if (servers.length === 0) return [];
+  return [
+    {
+      id: "lsp.servers",
+      status: "ok",
+      title: "Language servers are installed for the project's languages",
+      detail: servers.map((s) => s.id).join(", "),
+    },
+  ];
 }
 
 export async function runDoctor(
@@ -501,6 +556,10 @@ export async function runDoctor(
         status: "skip",
         title: "Models, commands and estimate need a workflow that starts",
       });
+    if (deps.languageServers) {
+      const status = await deps.languageServers(workspace).catch(() => null);
+      if (status) checks.push(...languageServerChecks(status));
+    }
     checks.push(...(await gitChecks(workspace, prepared?.mode ?? null, deps.git)));
     if (store) checks.push(leaseCheck(store));
     else if (problem)

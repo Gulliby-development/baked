@@ -8,8 +8,8 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | Claude Code | `claude-code` | Claude subscription through the `claude` CLI: `/claude-code login` (`/claude-code logout`, `/claude-code status`) or `baked login claude-code`, see below |
 | OpenAI API | `openai` | `OPENAI_API_KEY` or `/keys` |
 | OpenAI Codex | `codex` | ChatGPT account: `/codex login` (`/codex switch`, `/codex logout`, `/codex status`), `baked login codex`, or Sign in and Switch account in the desktop app's settings |
-| GitHub Copilot | `copilot` | `COPILOT_API_KEY`, `/keys` or `--set-key copilot`, see below |
-| GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys` |
+| GitHub Copilot | `copilot` | An existing Copilot sign-in in VS Code, JetBrains or Neovim is found automatically; or `COPILOT_API_KEY`, `/keys`, `--set-key copilot`, see below |
+| GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys`; otherwise `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI's login (`gh auth login`), see below |
 
 Keys are stored outside project configuration ([configuration](configuration.md#provider-keys)). `/provider-settings` sets thinking, effort, speed and context options; a chat can choose its own [reasoning effort](#reasoning-effort-per-chat). From a shell:
 
@@ -42,7 +42,7 @@ A level the model does not support sends the next lower one it does; a model wit
 
 The Claude Code connection runs Claude models through the official `claude` CLI and the account it is signed in to, so a Claude subscription works without an API key.
 
-1. Install Claude Code and make sure `claude` is on `PATH`. On Windows use the native build (`claude.exe`, `claude install`); the npm `claude.cmd` shim cannot be started directly. `BAKED_CLAUDE_CODE_PATH` points BAKED at another executable.
+1. Install Claude Code. BAKED finds `claude` as described in [Finding the CLIs](#finding-the-clis). On Windows use the native build (`claude.exe`, `claude install`); the npm `claude.cmd` shim cannot be started directly. `BAKED_CLAUDE_CODE_PATH` points BAKED at another executable.
 2. Sign in with `/claude-code login` (it runs `claude auth login` and opens the browser), with Sign in under Settings > All projects > Providers and keys in the desktop app, or run `claude auth login` in a terminal.
 3. Pick a model: `claude-code/opus`, `claude-code/sonnet`, `claude-code/haiku` or `claude-code/fable` follow the newest model of each family. Any model name Claude Code accepts also works, for example `claude-code/claude-opus-4-8` or `claude-code/sonnet[1m]` for the 1M context window where the plan allows it.
 
@@ -56,11 +56,13 @@ Replies arrive when each step finishes (no token streaming). The CLI ignores sam
 
 The Copilot connection uses your Copilot subscription through the same API as the IDE extensions. It is not an official GitHub integration.
 
-1. Sign in to Copilot in VS Code or a JetBrains IDE.
-2. Copy the OAuth token: `jq -r '."github.com".oauth_token' ~/.config/github-copilot/apps.json` (on Windows `~\AppData\Local\github-copilot\apps.json`).
-3. Save it with `baked --set-key copilot <token>` or `/keys`.
+Sign in to Copilot in VS Code, a JetBrains IDE or Neovim. BAKED reads that login's GitHub token from `apps.json` (then `hosts.json`) in `~/.config/github-copilot/` on Linux and macOS (`$XDG_CONFIG_HOME/github-copilot/` when set) or `%LOCALAPPDATA%\github-copilot\` on Windows. It only reads these files and checks them again on every provider check, so signing out of the IDE makes `copilot` unavailable again. `baked --list-providers`, `/keys`, the first-start wizard and the desktop settings show `Copilot IDE login` as the source.
 
-A 401 means the token was rotated; copy it again.
+To use another token, save it with `baked --set-key copilot <token>` or `/keys`, or set `COPILOT_API_KEY`; a saved or environment key always wins over the IDE login. A 401 means the token was rotated: sign in to Copilot in the IDE again, or save the new token.
+
+## GitHub Models
+
+GitHub Models takes a GitHub token that can call `models.github.ai` (a fine-grained token needs the `models:read` permission; a classic token or the GitHub CLI's OAuth token works). BAKED uses the first of: `GITHUB_MODELS_API_KEY` or a key saved with `/keys`, then `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token` from a signed-in GitHub CLI (`gh auth login`). The CLI answer is cached for 30 seconds. The source is shown as `GITHUB_TOKEN`, `GH_TOKEN` or `gh CLI` wherever providers are listed. A token found this way is not checked against GitHub until the first request, so a token without access to GitHub Models shows as ready and fails with GitHub's error on use; save a key with `/keys` to use another one.
 
 ## Prompt cache
 
@@ -80,7 +82,18 @@ BAKED's tools are registered with Codex as native function tools, and replies st
 - Codex has no way to force a tool choice; BAKED asks for it in the turn text instead.
 - Token usage comes from Codex's thread totals, including cached input. The usage of a response that called tools is counted in the step after the tool result.
 
-The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
+The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`. BAKED finds `codex` as described in [Finding the CLIs](#finding-the-clis); `BAKED_CODEX_PATH` points it at another executable.
+
+## Finding the CLIs
+
+The Codex and Claude Code providers run the `codex` and `claude` executables. BAKED looks for each one in this order and stops at the first hit:
+
+1. `BAKED_CODEX_PATH` or `BAKED_CLAUDE_CODE_PATH`, when set.
+2. The folders on `PATH`.
+3. On macOS and Linux, the `PATH` that the user's login shell builds (`$SHELL -ilc`, read once per process with a 5-second limit; `BAKED_LOGIN_SHELL_PATH=0` skips it). An app started from the Finder, the Dock or a desktop launcher, and the `baked serve` it starts, only get the system `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin` on macOS), so Homebrew, npm, nvm and installer folders from the shell profile are missing there.
+4. Folders installers use: `~/.local/bin`, `~/.claude/local` (Claude Code's local install, which is often only a shell alias), `~/.bun/bin`, `~/.npm-global/bin`, `~/.volta/bin`, asdf and mise shims, pnpm, every `~/.nvm/versions/node/*/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and Linuxbrew; on Windows `~/.local/bin`, `~/.bun/bin` and `%APPDATA%\npm`.
+
+The folder where the CLI was found is added to the front of the process `PATH`, so a CLI that starts with `#!/usr/bin/env node` finds the Node.js next to it, and tools BAKED runs later see the same `PATH`. A found location is remembered for the process; a miss is checked again on the next provider check, so a CLI installed while BAKED runs shows up without a restart. When nothing is found, the provider status (`/codex status`, `/claude-code status`, Settings > All projects > Providers and keys in the desktop app) names the folders it searched.
 
 ## Model fallback
 

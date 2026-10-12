@@ -150,7 +150,7 @@ jobs:
           name="baked-$(bun -e "console.log(require('./package.json').version)")-${{ matrix.platform }}-${{ matrix.arch }}"
           echo "BUNDLE_NAME=$name" >> "$GITHUB_ENV"
           tar tzf "dist/bundle/$name.tar.gz" > contents.txt
-          for f in baked install.sh deps/rg deps/fd deps/wasm/tree-sitter.wasm \
+          for f in baked install.sh deps/rg deps/fd deps/wasm/tree-sitter.wasm deps/wasm/web-tree-sitter.wasm \
                    deps/workers/io.worker.js deps/workers/intelligence.worker.js \
                    deps/workers/workflow.worker.js deps/opentui-assets/parser.worker.js; do
             grep -qx "$name/$f" contents.txt || { echo "missing $f"; exit 1; }
@@ -348,6 +348,14 @@ jobs:
         run: |
           command -v xvfb-run || { sudo apt-get update && sudo apt-get install -y xvfb; }
           xvfb-run -a bun run smoke
+      # Only builds packaged for the runner's own architecture can start here.
+      - name: Smoke-test the packaged app
+        if: >-
+          env.RUN == 'true' &&
+          ((matrix.platform == 'windows' && matrix.arch == 'x64') ||
+          (matrix.platform == 'darwin' && matrix.arch == 'arm64'))
+        working-directory: apps/desktop
+        run: bun run smoke
       - name: Upload the installers
         if: env.RUN == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

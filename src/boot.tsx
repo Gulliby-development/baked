@@ -51,6 +51,16 @@ if (cliArgs[0] === "mcp") {
   process.exit(await runMcpCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "lsp") {
+  const { runLspCli } = await import("./headless/lsp.js");
+  process.exit(await runLspCli(cliArgs.slice(1)));
+}
+
+if (cliArgs[0] === "diagnose") {
+  const { runDiagnoseCli } = await import("./headless/lsp.js");
+  process.exit(await runDiagnoseCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "session") {
   const { runSessionCli } = await import("./headless/session.js");
   process.exit(await runSessionCli(cliArgs.slice(1)));

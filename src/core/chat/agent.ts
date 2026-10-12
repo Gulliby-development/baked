@@ -69,6 +69,8 @@ export interface ChatAgentOptions {
   onApproveDestructive?: (description: string) => Promise<boolean>;
   drainSteering?: () => { text: string; images?: ImageAttachment[] } | null;
   sessionId?: string;
+  /** Tools of the session kind, such as the coordinator's brief tool. */
+  extraTools?: Record<string, unknown>;
 }
 
 /**
@@ -123,6 +125,7 @@ export function createChatAgent(options: ChatAgentOptions): BakeAgent {
     cwd: options.cwd,
     ...(options.sessionId ? { sessionId: options.sessionId } : {}),
     ...(options.drainSteering ? { drainSteering: options.drainSteering } : {}),
+    ...(options.extraTools ? { extraTools: options.extraTools } : {}),
     disablePruning: !["subagents", "both"].includes(
       config.contextManagement?.pruningTarget ?? "none",
     ),

@@ -1,4 +1,5 @@
-import type { LineLoop, LineStage, WorkflowLine } from "../../client/start.js";
+import type { LineGate, LineLoop, LineStage, WorkflowLine } from "../../client/start.js";
+import type { IconName } from "../../components/Icon.js";
 import { type PipelineStage, type PipelineState, stageLabel } from "./model.js";
 
 /**
@@ -47,6 +48,20 @@ export interface Station {
   state: PipelineState;
   /** 1 for the first pass; higher after a repair loop sent work back. */
   round: number;
+  /** The gates at this station and on the transitions leaving it, with their last result. */
+  gates: StationGate[];
+}
+
+/** The latest `gate.finished` of a gate in this run. */
+export interface GateResult {
+  status: string;
+  mode: string;
+  attempts: number;
+  flaky: boolean;
+}
+export interface StationGate extends LineGate {
+  /** null until the gate ran in this run. */
+  last: GateResult | null;
 }
 
 /** The finish station's ID: transitions name it `done`. */
@@ -54,7 +69,7 @@ export const FINISH = "done";
 
 /** A stage's role guessed from its ID, for backends that do not send the line. */
 function guess(id: string): Omit<LineStage, "id"> {
-  const base = { consumes: [], human: false };
+  const base = { consumes: [], human: false, gates: [] };
   if (/approv/.test(id)) return { ...base, type: "approval", produces: "decision", human: true };
   if (/implement|build|fix/.test(id)) return { ...base, type: "tasks", produces: "implementation" };
   if (/check|verify|reproduce/.test(id)) return { ...base, type: "check", produces: "gates" };
@@ -82,6 +97,7 @@ export function stations(
   line: WorkflowLine,
   rounds: ReadonlyMap<string, number>,
   runStatus: string,
+  results: ReadonlyMap<string, GateResult> = new Map(),
 ): Station[] {
   const byId = new Map(line.stages.map((s) => [s.id, s]));
   const list: Station[] = pipeline.map((stage) => {
@@ -95,6 +111,7 @@ export function stations(
       human: entry.human,
       state: stage.state,
       round: (rounds.get(stage.id) ?? 0) + 1,
+      gates: (entry.gates ?? []).map((g) => ({ ...g, last: results.get(g.id) ?? null })),
     };
   });
   const last = list.at(-1);
@@ -112,9 +129,117 @@ export function stations(
           ? "failed"
           : "pending",
     round: 1,
+    gates: [],
   });
   return list;
 }
+
+/** How a gate's last result reads: blocks, advises, not run yet. */
+export type GateTone = "ok" | "err" | "warn" | "idle";
+export function gateTone(gate: StationGate): GateTone {
+  const status = gate.last?.status;
+  if (!status) return "idle";
+  if (status === "passed") return gate.last?.flaky ? "warn" : "ok";
+  if (status === "failed") return gate.mode === "required" ? "err" : "warn";
+  return "warn";
+}
+/** The tone of a group of gates: the worst result among them. */
+export function worstTone(gates: readonly StationGate[]): GateTone {
+  const tones = gates.map(gateTone);
+  for (const tone of ["err", "warn", "ok"] as const) if (tones.includes(tone)) return tone;
+  return "idle";
+}
+
+/** Gate kinds in plain words. */
+export const GATE_KIND: Record<NonNullable<LineGate["type"]> | "unknown", string> = {
+  command: "Command",
+  human: "Person",
+  "ai-review": "AI review",
+  "ai-acceptance": "AI walk-through",
+  unknown: "Unknown gate",
+};
+
+/** Where a gate stands, in words: at the station, or before the line moves on or goes back. */
+export function gatePlace(
+  gate: LineGate,
+  stationIds: ReadonlyMap<string, number>,
+  from: string,
+): string {
+  const t = gate.transition;
+  if (!t) return "At this station";
+  if (t.to === FINISH) return "Before the run finishes";
+  const back = (stationIds.get(t.to) ?? Number.POSITIVE_INFINITY) <= (stationIds.get(from) ?? -1);
+  const outcome = OUTCOME[t.on] ?? t.on.replaceAll("_", " ");
+  return back
+    ? `When it ${outcome}, before going back to ${stageLabel(t.to)}`
+    : `When it ${outcome}, before ${stageLabel(t.to)}`;
+}
+
+/** The last result of a gate in words, or that it has not run in this run. */
+export function gateResultText(gate: StationGate): string {
+  const last = gate.last;
+  if (!last) return "Not run yet";
+  const tries = last.attempts > 1 ? ` after ${last.attempts} attempts` : "";
+  const flaky = last.flaky ? ", flaky" : "";
+  return `${last.status[0]?.toUpperCase()}${last.status.slice(1)}${tries}${flaky}`;
+}
+
+/**
+ * The gate marks the conveyor draws: a station's own gates on the station, and the gates of a
+ * forward transition on the belt right after its station. Gates of a repair loop are counted in
+ * the loop's lane text.
+ */
+export interface GateMark {
+  station: number;
+  where: "station" | "exit";
+  gates: StationGate[];
+}
+export function gateMarks(list: readonly Station[]): GateMark[] {
+  const index = new Map(list.map((s, i) => [s.id, i]));
+  const marks: GateMark[] = [];
+  list.forEach((station, i) => {
+    const own = station.gates.filter((g) => !g.transition);
+    const exits = station.gates.filter(
+      (g) =>
+        g.transition &&
+        (g.transition.to === FINISH ||
+          (index.get(g.transition.to) ?? Number.POSITIVE_INFINITY) > i),
+    );
+    if (own.length) marks.push({ station: i, where: "station", gates: own });
+    if (exits.length) marks.push({ station: i, where: "exit", gates: exits });
+  });
+  return marks;
+}
+
+/** The gates on a repair loop's transition, for its lane text. */
+export function loopGates(list: readonly Station[], loop: LineLoop): StationGate[] {
+  const from = list.find((s) => s.id === loop.from);
+  return (from?.gates ?? []).filter(
+    (g) => g.transition && g.transition.to === loop.to && g.transition.on === loop.on,
+  );
+}
+
+/** A stage's icon, from what it makes and its role: research, spec, plan, implement and so on. */
+export function stageIcon(station: Pick<Station, "id" | "type" | "produces">): IconName {
+  if (station.type === "finish") return "accept";
+  if (station.type === "tasks") return "implement";
+  if (station.type === "check") return "checks";
+  if (station.type === "review" || station.type === "reflection") return "review";
+  if (station.type === "approval") return "attention";
+  if (station.type === "learn") return "run-memory";
+  if (station.produces === "spec" || /spec/.test(station.id)) return "spec";
+  if (station.produces === "plan" || /plan/.test(station.id)) return "plan";
+  if (/accept/.test(station.id)) return "accept";
+  return "research";
+}
+
+/** The icon for a stage's state; none for a stage that has not started. */
+export const STATE_ICON: Partial<Record<PipelineState, IconName>> = {
+  done: "ok",
+  current: "running",
+  waiting: "waiting",
+  failed: "failed",
+};
 
 /** The station to show when the user has not picked one: where the run is, or where it ended. */
 export function focusStation(list: readonly Station[]): string {
@@ -236,4 +361,9 @@ export function handoff(
       return { kind: "forward", from: i, to: i + 1, contract: a.produces };
   }
   return null;
+}
+
+/** A stage's icon from its ID alone, for lists that do not load the run's line. */
+export function stageIconOf(id: string): IconName {
+  return stageIcon({ id, ...guess(id) });
 }

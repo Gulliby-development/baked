@@ -571,7 +571,12 @@ export function Composer({
           label="Model"
           up
           buttonLabel={`Model: ${shortModel(model)}`}
-          button={<span className="font-mono">{shortModel(model)}</span>}
+          button={
+            <span className="inline-flex items-center gap-[6px] font-mono">
+              <Icon name="model" size={13} />
+              {shortModel(model)}
+            </span>
+          }
         >
           {(close) => (
             <ModelMenu model={model} loadModels={loadModels} onModel={onModel} close={close} />

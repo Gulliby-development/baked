@@ -4,12 +4,13 @@ import type { AttentionItem, RunSnapshot, RunState } from "../../../shared/api.j
 import { attentionHash, attentionId } from "../../../shared/attention.js";
 import { api } from "../../client/api.js";
 import { isNoProject } from "../../client/setup.js";
-import { type ProjectSummary, start } from "../../client/start.js";
+import { type DoctorCheck, type ProjectSummary, start } from "../../client/start.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Badge, type badgeVariants } from "../../components/ui/badge.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { Card } from "../../components/ui/card.js";
 import { Empty } from "../../components/ui/empty.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import {
   Table,
   TableBody,
@@ -179,7 +180,7 @@ function RunsCard({ projectKey }: { projectKey: string }) {
       {runs.error ? (
         <Alert tone="error">{message(runs.error)}</Alert>
       ) : !runs.value ? (
-        <p className={HINT}>Loading runs…</p>
+        <Skeleton label="Loading runs" />
       ) : runs.value.items.length === 0 ? (
         <Empty>No workflow runs yet. Describe a change above and pick Quick or Full run.</Empty>
       ) : (
@@ -302,6 +303,24 @@ function WorkingSetCard({ projectKey, summary }: { projectKey: string; summary: 
   );
 }
 
+const isLspCheck = (check: DoctorCheck): boolean => check.id.startsWith("lsp.");
+
+/** The doctor's language-server line, always shown, linking to the Language servers page. */
+function LanguageServerLine({ projectKey, checks }: { projectKey: string; checks: DoctorCheck[] }) {
+  if (checks.length === 0) return null;
+  const missing = checks.filter((c) => c.status !== "ok");
+  return (
+    <p className={NOTE}>
+      {missing.length
+        ? `No language server for ${missing.map((c) => c.subject ?? c.title).join(", ")}. `
+        : `Language servers: ${checks[0]?.detail ?? "installed"}. `}
+      <a className={LINK} href={projectHref(projectKey, "lsp")}>
+        Language servers
+      </a>
+    </p>
+  );
+}
+
 function DoctorCard({ projectKey }: { projectKey: string }) {
   const doctor = useLoad(projectKey, "doctor", (key) => start.doctor(key));
   const report = doctor.value;
@@ -316,7 +335,10 @@ function DoctorCard({ projectKey }: { projectKey: string }) {
       {doctor.error ? (
         <p className={NOTE_ERR}>{message(doctor.error)}</p>
       ) : report ? (
-        <DoctorChecks checks={report.checks} limit={4} />
+        <>
+          <DoctorChecks checks={report.checks.filter((c) => !isLspCheck(c))} limit={4} />
+          <LanguageServerLine projectKey={projectKey} checks={report.checks.filter(isLspCheck)} />
+        </>
       ) : (
         <p className={NOTE}>Checking…</p>
       )}
@@ -402,7 +424,7 @@ export function ProjectHome({ project }: SectionProps) {
           ) : summary.value ? (
             <WorkingSetCard projectKey={key} summary={summary.value} />
           ) : (
-            <p className={HINT}>Loading project…</p>
+            <Skeleton label="Loading the project" />
           )}
           <DoctorCard projectKey={key} />
         </aside>

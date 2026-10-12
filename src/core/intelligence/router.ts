@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
+import type { LspServerError } from "./backends/lsp/index.js";
 import { FileCache } from "./cache.js";
 import {
   type BackendPreference,
@@ -238,6 +239,15 @@ export class CodeIntelligenceRouter {
     return [];
   }
 
+  /** The last start failure of each language server that has not started since. */
+  getLspErrors(): LspServerError[] {
+    const lspBackend = this.backends.find((b) => b.name === "lsp");
+    if (lspBackend && "getServerErrors" in lspBackend) {
+      return (lspBackend as { getServerErrors: () => LspServerError[] }).getServerErrors();
+    }
+    return [];
+  }
+
   /** Restart LSP servers. Pass filter to restart specific server/language, or omit for all. */
   async restartLspServers(filter?: string): Promise<string[]> {
     const lspBackend = this.backends.find((b) => b.name === "lsp");
@@ -315,82 +325,10 @@ export class CodeIntelligenceRouter {
 
   /** Detect all languages present in the project (config files + file scan). */
   private async detectAllLanguages(): Promise<Language[]> {
-    const found: Language[] = [];
-    const seen = new Set<Language>();
-
-    const add = (lang: Language) => {
-      if (seen.has(lang) || lang === "unknown") return;
-      found.push(lang);
-      seen.add(lang);
-    };
-
-    // 1. Config override
-    if (this.config.language) add(this.config.language as Language);
-
-    // 2. Project config files (fast, no recursion)
-    for (const [configFile, lang] of Object.entries(PROJECT_FILE_TO_LANGUAGE)) {
-      if (existsSync(join(this.cwd, configFile))) add(lang);
-    }
-
-    // 3. Scan source files (BFS — shallower limits than findProbeFile; JVM gets deeper scan)
-    const SKIP = new Set([
-      "node_modules",
-      ".git",
-      "dist",
-      "build",
-      "out",
-      "vendor",
-      "__pycache__",
-      ".venv",
-      "venv",
-      "target",
-      ".next",
-      ".nuxt",
-      ".output",
-      "coverage",
-      ".turbo",
-      ".cache",
-    ]);
-    // Use deeper scan if a JVM language was already detected via config files
-    const hasJvm = found.some((l) => l === "java" || l === "kotlin" || l === "scala");
-    const MAX_DEPTH = hasJvm ? 8 : 3;
-    const MAX_DIRS = hasJvm ? 500 : 100;
-    const queue: Array<{ dir: string; depth: number }> = [{ dir: this.cwd, depth: 0 }];
-    let visited = 0;
-
-    while (queue.length > 0 && visited < MAX_DIRS) {
-      const item = queue.shift();
-      if (!item) break;
-      visited++;
-      if (visited % CodeIntelligenceRouter.YIELD_EVERY_DIRS === 0) {
-        await CodeIntelligenceRouter.yieldToEventLoop();
-      }
-      try {
-        const entries = readdirSync(item.dir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isFile()) {
-            const dot = entry.name.lastIndexOf(".");
-            if (dot > 0) {
-              const ext = entry.name.slice(dot).toLowerCase();
-              const lang = EXT_TO_LANGUAGE[ext];
-              if (lang) add(lang);
-            }
-          }
-        }
-        if (item.depth < MAX_DEPTH) {
-          for (const entry of entries) {
-            if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
-              queue.push({ dir: join(item.dir, entry.name), depth: item.depth + 1 });
-            }
-          }
-        }
-      } catch {}
-    }
-
+    const found = await detectProjectLanguages(this.cwd, this.config.language);
     if (found.length > 0 && !this.detectedLanguage) {
       this.detectedLanguage = found[0] ?? null;
     }
-
     return found;
   }
 
@@ -786,4 +724,89 @@ export class CodeIntelligenceRouter {
     }
     return null;
   }
+}
+
+const YIELD_EVERY_DIRS = 20;
+
+/**
+ * The languages of a project, primary first: `configLanguage`, then the project files that name
+ * a language (package.json, go.mod, ...), then the extensions of a bounded breadth-first scan.
+ */
+export async function detectProjectLanguages(
+  cwd: string,
+  configLanguage?: string,
+): Promise<Language[]> {
+  const found: Language[] = [];
+  const seen = new Set<Language>();
+
+  const add = (lang: Language) => {
+    if (seen.has(lang) || lang === "unknown") return;
+    found.push(lang);
+    seen.add(lang);
+  };
+
+  // 1. Config override
+  if (configLanguage) add(configLanguage as Language);
+
+  // 2. Project config files (fast, no recursion)
+  for (const [configFile, lang] of Object.entries(PROJECT_FILE_TO_LANGUAGE)) {
+    if (existsSync(join(cwd, configFile))) add(lang);
+  }
+
+  // 3. Scan source files (BFS — shallower limits than findProbeFile; JVM gets deeper scan)
+  const SKIP = new Set([
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "out",
+    "vendor",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "target",
+    ".next",
+    ".nuxt",
+    ".output",
+    "coverage",
+    ".turbo",
+    ".cache",
+  ]);
+  // Use deeper scan if a JVM language was already detected via config files
+  const hasJvm = found.some((l) => l === "java" || l === "kotlin" || l === "scala");
+  const MAX_DEPTH = hasJvm ? 8 : 3;
+  const MAX_DIRS = hasJvm ? 500 : 100;
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: cwd, depth: 0 }];
+  let visited = 0;
+
+  while (queue.length > 0 && visited < MAX_DIRS) {
+    const item = queue.shift();
+    if (!item) break;
+    visited++;
+    if (visited % YIELD_EVERY_DIRS === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    try {
+      const entries = readdirSync(item.dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          const dot = entry.name.lastIndexOf(".");
+          if (dot > 0) {
+            const ext = entry.name.slice(dot).toLowerCase();
+            const lang = EXT_TO_LANGUAGE[ext];
+            if (lang) add(lang);
+          }
+        }
+      }
+      if (item.depth < MAX_DEPTH) {
+        for (const entry of entries) {
+          if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+            queue.push({ dir: join(item.dir, entry.name), depth: item.depth + 1 });
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return found;
 }

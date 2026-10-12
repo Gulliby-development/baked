@@ -17,6 +17,7 @@ import type {
 import { getCwd } from "../../../cwd.js";
 import { trackProcess } from "../../../process-tracker.js";
 import { cliReasoningEffort } from "../cli-effort.js";
+import { codexCommand } from "./client.js";
 
 export interface CodexRunnerCall {
   modelId: string;
@@ -409,7 +410,7 @@ async function runCodexProcess(
   prompt: string,
   abortSignal?: AbortSignal,
 ): Promise<CodexRunnerResult> {
-  const child = spawn("codex", args, { signal: abortSignal });
+  const child = spawn(codexCommand(), args, { signal: abortSignal });
   trackProcess(child);
   let spawnError: unknown | null = null;
   child.once("error", (error) => {

@@ -1,9 +1,11 @@
 import type { RunSnapshot } from "../../shared/api.js";
 import { type MockRoute, response } from "./mock-routes.js";
+import { addStartedRun } from "./mock-runs.js";
 import type {
   DefinitionSummary,
   DoctorCheck,
   DoctorReport,
+  LineGate,
   LineLoop,
   LineStage,
   PreRunEstimate,
@@ -39,9 +41,48 @@ const LINE_STAGES: Record<string, [LineStage["type"], string[], string]> = {
   report: ["agent", ["research"], "report"],
 };
 
+const command = (id: string, args: string): LineGate => ({
+  id,
+  type: "command",
+  mode: "required",
+  does: `Runs bun ${args}`,
+  transition: null,
+});
+/** Sample gates per stage, as the core's `workflowLine` resolves them from the library. */
+function mockGates(id: string, next: string | undefined): LineGate[] {
+  if (id === "checks" || id === "verify")
+    return [
+      command("typecheck", "run typecheck"),
+      command("lint", "run lint"),
+      command("tests", "test"),
+    ];
+  if (id === "review")
+    return [
+      {
+        id: "correctness-review",
+        type: "ai-review",
+        mode: "required",
+        does: "AI correctness review",
+        transition: null,
+      },
+      ...(next
+        ? [
+            {
+              id: "settings-ui",
+              type: "ai-acceptance" as const,
+              mode: "advisory" as const,
+              does: "AI walk-through of bun run dev: the settings screen switches to dark mode",
+              transition: { id: `review-${next}`, to: next, on: "passed" },
+            },
+          ]
+        : []),
+    ];
+  return [];
+}
+
 export function mockLine(stages: string[]): WorkflowLine {
   const made = new Set(["request"]);
-  const line = stages.map((id) => {
+  const line = stages.map((id, i) => {
     const [type, consumes, produces] = LINE_STAGES[id] ?? ["agent", ["request"], id];
     const stage = {
       id,
@@ -49,6 +90,7 @@ export function mockLine(stages: string[]): WorkflowLine {
       consumes: consumes.filter((c) => made.has(c)),
       produces,
       human: type === "approval",
+      gates: mockGates(id, stages[i + 1]),
     };
     made.add(produces);
     return stage;
@@ -259,6 +301,14 @@ function mockDoctor(workflowId: string, model: string | null, worktree: boolean)
         : "README.md, locales/ru.json. Tasks that edit these files work on top of your changes.",
       fix: "Commit or stash them before the run",
     },
+    {
+      id: "lsp.missing",
+      status: "warn",
+      title: "No language server for python",
+      detail: "Code navigation and diagnostics fall back to tree-sitter for these files.",
+      fix: "baked lsp install pyright-langserver, or Install on the desktop app's Language servers page",
+      subject: "python",
+    },
     { id: "workspace.busy", status: "ok", title: "No run is executing" },
   ];
   if (estimate.budget.fits !== "yes")
@@ -349,7 +399,7 @@ const PROFILES: RoutedProfile[] = [
 
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/;
 
-function startRun(body: unknown): ReturnType<typeof response> {
+function startRun(key: string, body: unknown): ReturnType<typeof response> {
   const input = (body ?? {}) as Record<string, unknown>;
   const { commandId, prompt, workflow, issue } = input;
   const fromIssue = typeof issue === "string" && issue.trim() !== "";
@@ -384,6 +434,7 @@ function startRun(body: unknown): ReturnType<typeof response> {
   };
   created.unshift(run);
   byCommand.set(commandId, run);
+  addStartedRun(key, run.runId, feature, run.stageId ?? "research");
   return response(202, run);
 }
 
@@ -420,6 +471,6 @@ export const startRoutes: MockRoute = async ({ key, method, path, query, body })
           },
         });
   }
-  if (method === "POST" && path === "/v1/workflow/runs") return startRun(body);
+  if (method === "POST" && path === "/v1/workflow/runs") return startRun(key, body);
   return undefined;
 };

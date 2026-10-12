@@ -23,6 +23,7 @@ import { flushEmergencySession } from "./core/sessions/emergency-save.js";
 import type { PrerequisiteStatus } from "./core/setup/prerequisites.js";
 import { getThemeTokens, useTheme } from "./core/theme/index.js";
 import { artPalette, ovenMarkCells, rowsToAnsi, supportsTruecolor } from "./core/utils/bake-art.js";
+import { spinnerGlyph } from "./core/utils/spinner.js";
 import { garble } from "./core/utils/splash.js";
 import { resetStatusBarStore } from "./stores/statusbar.js";
 import { resetUIStore } from "./stores/ui.js";
@@ -237,8 +238,6 @@ const RESTART_STEPS = [
   "Restarting BAKED…",
 ];
 
-const RESTART_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
 function RestartSplash({ onComplete }: { onComplete: () => void }) {
   const t = useTheme();
   const ghost = icon("ghost");
@@ -293,7 +292,7 @@ function RestartSplash({ onComplete }: { onComplete: () => void }) {
 
   const visibleLabel = label.slice(0, anim.typeIdx);
   const cursor = anim.typeIdx < label.length ? "█" : "";
-  const spin = RESTART_SPINNER[anim.spinIdx % RESTART_SPINNER.length];
+  const spin = spinnerGlyph(anim.spinIdx);
 
   return (
     <box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
