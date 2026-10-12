@@ -18,7 +18,7 @@ The bench loop tunes BAKED by building small, useful apps with it, round after r
 ## Stacks, lanes and difficulty
 
 - **Languages.** The loop built Python and TypeScript (Bun) projects until round 6. From round 7 every round has at least two of Go, .NET, Rust and Java (Maven + JUnit) across its new apps, updates and controls. Workspaces come from `tools/scaffold.py` (`bun`, `webunit`, `python`) and `tools/scaffold_lang.py` (`go`, `dotnet`, `rust`, `java`); brownfield clones from `tools/scaffold_update.py` and `tools/scaffold_update_lang.py`.
-- **Checks.** Go: `go vet ./...`, `go fmt ./...`, `go test ./...`. .NET: `dotnet build`, `dotnet format --verify-no-changes`, `dotnet test`. Rust: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`. Java: `mvn -B -q verify`.
+- **Checks.** Go: `go vet ./...` (fixer `go fmt ./...`), `go test ./...`. .NET: `dotnet build`, `dotnet format --verify-no-changes`, `dotnet test`. Rust: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`. Java: `mvn -B -q verify`.
 - **Toolchains.** Prepare checks `go`, `dotnet`, `cargo` (with `rustfmt` and `clippy`) and `java` with `mvn`; a missing one removes its language from the round and is reported. Shells that the harness starts may lack them on `PATH`, so the launch script and the scaffold scripts add their directories explicitly.
 - **Lanes.** `round.maxConcurrentRuns` in `config.json` is 3 from round 7 (it was 2). If builds or tests time out because the PC is saturated, the next round goes back to 2.
 - **Difficulty.** A round without BAKED-side problems (no blocked runs, no operator actions beyond infrastructure resumes, no new P1 findings) raises the difficulty by one for the next round; a round with problems keeps it.
