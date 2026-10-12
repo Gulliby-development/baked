@@ -34,7 +34,7 @@ BAKED keeps one `claude -p --input-format stream-json` process per conversation,
 
 BAKED's tools are not native Claude Code tools. When the model calls one natively anyway (the CLI answers "No such tool available"), the adapter watches the event stream, interrupts the turn at once and sends a corrective line in the same session, so the step costs a few thousand tokens instead of a whole wasted turn. The tokens of the interrupted attempt are added to the step's usage and the step's provider metadata lists the aborted tool names (`providerMetadata["claude-code"].nativeToolAborts`). If the correction fails too, the step fails with a `ClaudeCodeNativeToolError` and the session is closed, so the next attempt starts in a fresh process.
 
-Replies arrive when each step finishes (no token streaming). The CLI ignores sampling settings such as temperature and maximum output tokens. Usage counts against the Claude Code plan limits; the cost BAKED shows is the API-price equivalent.
+Images attached to a message (pasted in the terminal UI or the desktop chat, or `--image` in headless runs) go to Claude Code as image blocks of that turn; the transcript text marks where each image belongs. Replies arrive when each step finishes (no token streaming). The CLI ignores sampling settings such as temperature and maximum output tokens. Usage counts against the Claude Code plan limits; the cost BAKED shows is the API-price equivalent.
 
 ## GitHub Copilot
 
@@ -65,6 +65,8 @@ BAKED's tools are registered with Codex as native function tools, and replies st
 - A new user message starts a new turn on the same thread with only that message. A compacted, edited or retried conversation, or a changed tool list, starts a new thread with the conversation so far as a transcript.
 - Codex has no way to force a tool choice; BAKED asks for it in the turn text instead.
 - Token usage comes from Codex's thread totals, including cached input. The usage of a response that called tools is counted in the step after the tool result.
+
+Images attached to a message go into the turn's input next to its text, as data URLs. With `codex exec` they are written to temporary files and passed with `--image`.
 
 The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`. BAKED finds `codex` as described in [Finding the CLIs](#finding-the-clis); `BAKED_CODEX_PATH` points it at another executable.
 
