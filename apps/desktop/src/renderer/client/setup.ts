@@ -10,6 +10,7 @@ import { ApiError, call } from "./api.js";
 import {
   CHAT_MEMORY_CAPABILITY,
   CHECKS_CAPABILITY,
+  GATE_DRAFTS_CAPABILITY,
   HOOKS_CAPABILITY,
   LIBRARY_CAPABILITY,
   offers,
@@ -61,6 +62,41 @@ export interface GateEntry {
 export interface GateList {
   gates: GateEntry[];
   problems: string[];
+}
+
+/** What the gate setup asks for; mirrors `DraftKind` in src/core/workflows/v2/gate-draft.ts. */
+export type GateDraftKind = "command" | "ai-acceptance" | "human" | "ai-review";
+
+/** `POST /v1/workflow/gates/draft`: a gate written from a sentence, not saved yet. */
+export interface GateDraft {
+  /** The full gate definition; the screen shows the fields it knows and sends it back on save. */
+  gate: {
+    id: string;
+    type: GateType;
+    description: string;
+    required: boolean;
+    command?: { executable: string; args: string[]; cwd: string };
+    acceptance?: {
+      scenario: { title: string; steps: string[]; expectations: string[] };
+      start: { executable: string; args: string[]; cwd: string };
+      commands?: { executable: string; args: string[] }[];
+    };
+    human?: { prompt: string };
+    review?: { instructions?: string };
+  } & Record<string, unknown>;
+  script: { path: string; content: string } | null;
+  summary: string;
+  capabilities: string[];
+  problems: string[];
+  path: string;
+}
+
+/** `GET /v1/workflow/gates/ID/places`: where a gate can go in a workflow. */
+export interface GatePlaces {
+  workflowId: string;
+  /** A built-in workflow is copied under this ID when a gate is bound to it. */
+  copyTo: string | null;
+  places: { key: string; label: string; bound: boolean; disabled: string | null }[];
 }
 
 /** A policy check (`workflows.policy.checks[]` in config), run as a command gate. */
@@ -531,6 +567,30 @@ export const setup = {
     ),
 
   gates: (key: string) => call<GateList>(key, "GET", "/v1/workflow/gates"),
+  /** Drafts a gate from a sentence with the project's model (`gate-drafts`); writes nothing. */
+  draftGate: (key: string, text: string, kind: GateDraftKind) =>
+    withCapability(key, GATE_DRAFTS_CAPABILITY, () =>
+      call<GateDraft>(key, "POST", "/v1/workflow/gates/draft", { text, kind }),
+    ),
+  /** Saves a draft the person read; the gate is confirmed by the same step. */
+  saveGate: (key: string, draft: GateDraft) =>
+    call<{ id: string; path: string; script: string | null }>(key, "POST", "/v1/workflow/gates", {
+      gate: draft.gate,
+      script: draft.script,
+    }),
+  gatePlaces: (key: string, gateId: string, workflow: string) =>
+    call<GatePlaces>(
+      key,
+      "GET",
+      `/v1/workflow/gates/${encodeURIComponent(gateId)}/places?workflow=${encodeURIComponent(workflow)}`,
+    ),
+  bindGate: (key: string, gateId: string, workflow: string, at: string) =>
+    call<{ workflowId: string; path: string; copiedFrom: string | null }>(
+      key,
+      "POST",
+      `/v1/workflow/gates/${encodeURIComponent(gateId)}/bind`,
+      { workflow, at },
+    ),
   confirmGates: (key: string, ids: string[]) =>
     call<{ confirmed: { id: string; hash: string }[] }>(key, "POST", "/v1/workflow/gates/confirm", {
       ids,

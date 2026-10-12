@@ -59,6 +59,7 @@ import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/s
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
 import { usageMarkdown } from "../workflows/usage-markdown.js";
+import type { DraftModel } from "../workflows/v2/gate-draft.js";
 import {
   bearerMatches,
   generateApiToken,
@@ -71,6 +72,7 @@ import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { diagnosticsRoute } from "./diagnostics-routes.js";
+import { gateRoute } from "./gate-routes.js";
 import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
@@ -147,6 +149,7 @@ export const CAPABILITIES = [
   "provider-switch",
   "chat-export",
   "diagnostics",
+  "gate-drafts",
   "progress",
   "coordinator",
 ] as const;
@@ -182,6 +185,8 @@ export interface ApiServerOptions {
   chat?: ChatService;
   /** The GitHub issues the coordinator's flows belong to; tests pass a fake one. */
   tasks?: TaskTracker;
+  /** Drafts gates from a sentence; tests pass a scripted model. */
+  gateDraftModel?: DraftModel;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
 }
@@ -849,6 +854,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
       (await hooksRoute({ ...ctx, workspace: service.workspace })) ??
+      (await gateRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.gateDraftModel ? { draftModel: options.gateDraftModel } : {}),
+      })) ??
       (await graphRoute({
         ...ctx,
         workspace: service.workspace,

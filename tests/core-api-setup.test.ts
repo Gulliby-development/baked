@@ -15,11 +15,25 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
+const gateReply = {
+  kind: "command",
+  id: "api-check",
+  description: "The CLI prints 56.",
+  command: { executable: "bun", args: ["cli.ts"] },
+};
+
 async function setup() {
   const fixture = workflowFixture();
   const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
   const homeDir = mkdtempSync(join(tmpdir(), "baked-api-home-"));
-  const server = await startApiServer({ service: fixture.service, pollMs: 20, configDir, homeDir, log: () => {} });
+  const server = await startApiServer({
+    service: fixture.service,
+    pollMs: 20,
+    configDir,
+    homeDir,
+    log: () => {},
+    gateDraftModel: async () => JSON.stringify(gateReply),
+  });
   cleanups.push(async () => {
     await server.stop();
     await fixture.dispose();
@@ -195,6 +209,36 @@ describe("local API setup and workflow additions", () => {
     expect((await post("/v1/workflow/gates/confirm", { ids: ["a"], all: true })).status).toBe(400);
     const route = await get<{ workflowId: string; stages: unknown[] }>("/v1/workflow/route?model=openai/gpt-test");
     expect(route.workflowId).toBe("sdd");
+  });
+
+  test("a gate is drafted from a sentence, saved once and shown in words", async () => {
+    const { get, post, call } = await setup();
+    const drafted = await post("/v1/workflow/gates/draft", { text: "the CLI prints 56" });
+    expect(drafted.status).toBe(200);
+    const draft = (await drafted.json()) as { gate: { id: string }; problems: string[]; capabilities: string[] };
+    expect(draft.gate.id).toBe("api-check");
+    expect(draft.problems).toEqual([]);
+    expect(draft.capabilities[0]).toContain("Runs bun cli.ts");
+    expect((await post("/v1/workflow/gates/draft", {})).status).toBe(400);
+    const saved = await post("/v1/workflow/gates", { gate: draft.gate });
+    expect(saved.status).toBe(201);
+    expect(await saved.json()).toEqual({ id: "api-check", path: "baked/gates/api-check.json", script: null });
+    expect((await post("/v1/workflow/gates", { gate: draft.gate })).status).toBe(422);
+    const shown = await get<{ id: string; confirmed: boolean; mode: string }>("/v1/workflow/gates/api-check");
+    expect(shown).toMatchObject({ id: "api-check", confirmed: true, mode: "required" });
+    expect((await call("/v1/workflow/gates/nope")).status).toBe(404);
+    expect((await call("/v1/workflow/gates/confirm")).status).toBe(405);
+    const places = await get<{ workflowId: string; places: { key: string; disabled: string | null }[] }>(
+      "/v1/workflow/gates/api-check/places?workflow=quick-fix",
+    );
+    expect(places.workflowId).toBe("quick-fix");
+    const at = places.places.find((p) => p.disabled === null)?.key;
+    expect(at).toBeDefined();
+    const bound = await post("/v1/workflow/gates/api-check/bind", { workflow: "quick-fix", at });
+    expect(bound.status).toBe(200);
+    expect(await bound.json()).toEqual({ workflowId: "quick-fix-custom", path: "baked/workflows/quick-fix-custom.json", copiedFrom: "quick-fix" });
+    expect((await post("/v1/workflow/gates/api-check/bind", { at: "nowhere" })).status).toBe(400);
+    expect((await call("/v1/workflow/gates/api-check/bind")).status).toBe(405);
   });
 
   test("initiatives are listed, validated and not found by unknown id", async () => {
