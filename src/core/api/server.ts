@@ -30,6 +30,7 @@ import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
 import { BakeChatHost } from "../chat/host.js";
+import { serviceStateSource } from "../chat/project-state.js";
 import { scriptedHostFromEnv } from "../chat/scripted-host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
@@ -88,11 +89,15 @@ import {
   DeliverExecuteBody,
   EventsQuery,
   EvidenceBody,
+  ExportBody,
   ExtendBody,
   GatesConfirmBody,
+  GcBody,
+  ImportBody,
   ListQuery,
   PreRunQuery,
   RecoverBody,
+  RedactBody,
   RejectBody,
   RerouteBody,
   ReviseBody,
@@ -132,6 +137,7 @@ export const CAPABILITIES = [
   "skills-install",
   "mcp",
   "lsp",
+  "run-maintenance",
   "lsp-diagnose",
   "custom-commands",
   "settings",
@@ -432,6 +438,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);
+  chat.setProjectState(serviceStateSource(service, initiatives, () => attention()));
   const graphCache = new CodeGraphCache(service.workspace);
   let graphRoot: ContextManager | null = null;
   let graphRootStarted = false;
@@ -931,6 +938,37 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    if (path === "/v1/workflow/gc") {
+      only("POST");
+      const body = GcBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "gc",
+          positional: [],
+          flags: { before: body.before, ...(body.dryRun ? { "dry-run": true } : {}) },
+        }),
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/import") {
+      only("POST");
+      const body = ImportBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "import",
+          positional: [],
+          flags: {
+            source: body.source,
+            path: body.path,
+            feature: body.featureId,
+            "command-id": body.commandId ?? crypto.randomUUID(),
+          },
+        }),
+        origin,
+      );
+    }
     if (path === "/v1/workflow/gates") {
       only("GET");
       return json(200, await execute({ command: "gates", positional: [], flags: {} }), origin);
@@ -1033,6 +1071,33 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         await execute(
           validateWorkflowArgs({ command: "candidate", positional: [runId], flags, inline }),
         ),
+        origin,
+      );
+    }
+    if (action === "export") {
+      only("POST");
+      const body = ExportBody.parse(await readJson(req));
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+      return json(
+        200,
+        await execute({
+          command: "export",
+          positional: [runId],
+          flags: { destination: body.destination ?? `.baked/exports/${runId}-${stamp}` },
+        }),
+        origin,
+      );
+    }
+    if (action === "redact") {
+      only("POST");
+      const body = RedactBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "redact",
+          positional: [runId],
+          flags: { file: body.artifactId, reason: body.reason },
+        }),
         origin,
       );
     }

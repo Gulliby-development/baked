@@ -1,6 +1,6 @@
 # Parallel implementation in separate worktrees
 
-Technical design. Status: phases 0 to 3 are implemented (task worktrees, several writers and the integrator); operation is described in the [runtime guide](runtime.md#worktree-execution).
+Technical design. Status: phases 0 to 4 are implemented (task worktrees, several writers, the integrator and parallel runs); operation is described in the [runtime guide](runtime.md#worktree-execution).
 
 ## Goal
 
@@ -12,7 +12,7 @@ Several writing agents of one run execute independent tasks at the same time, ea
 | --- | --- | --- |
 | `maxConcurrentWriters` = 1 in the policy schema (lifted in phase 2: 1..4 with worktree execution) | [schemas](../../src/core/workflows/schemas.ts) | Validation forbids parallel writers |
 | File root = database root (`store.workspace`) | executor, tool-policy, check-runner, scheduler, effects | The agent can edit only the project working copy |
-| `execution` and `mutation` leases cover the whole workspace | [leases](../../src/core/workflows/leases.ts) | One writer and one executing run |
+| `execution` and `mutation` leases cover the whole workspace (lifted in phases 1 and 4: worktree runs hold their own) | [leases](../../src/core/workflows/leases.ts) | One writer and one executing run |
 | `getCwd()` is global within a thread | [cwd](../../src/core/cwd.ts), 53 calls in tools | Each writer must run in its own worker thread |
 | The effect journal stores a path without a root | [effects](../../src/core/workflows/effects.ts) | Reconcile after a crash does not know which worktree the effect touched |
 | The intelligence index is bound to the project directory | `.baked/repomap.db` | A worktree needs read-only access to the project index or its own index |
@@ -57,6 +57,16 @@ Implemented on 2026-10-09 together with phase 2. The policy permission is `allow
 - Overlapping `writes` are allowed only when the policy explicitly permits them; such tasks are integrated through the integrator.
 - After integration, feature checks, review and convergence repeat; a failure produces a bounded correction, as in v1.
 
+### Phase 4. Parallel runs (done)
+
+Implemented on 2026-10-12 for the project coordinator (#148). Several runs of one workspace execute at the same time when each runs in its own worktree.
+
+- A worktree run holds its own execution lease `execution:RUN_ID` (migration 011) instead of the workspace-wide `execution` lease, which only inline runs take. Two inline runs still exclude each other, because they share the working copy.
+- `workflows.maxParallelRuns` (1..8, default 2) caps the runs executing in the workspace at once, inline and worktree runs together. The cap is checked in the same transaction that takes the execution lease and counts only leases whose owner may be alive. A drive over the cap is refused with `WORKSPACE_BUSY`, as a busy workspace was before. The default of 2 keeps the request rate near what one run with its read agents and writers already produces; `1` restores one executing run per workspace.
+- One service drives several runs through drive lanes: the first drive uses the service's scheduler, and a drive that starts while it is busy gets its own leases, scheduler and executor (sharing the root context). Each holds the state of one drive: its leases, its lost-lease signal and its queued requests.
+- Each run keeps its worktree, branch and delivery. Runs started from the same HEAD do not see each other's changes until they are delivered.
+- Initiatives still run one feature at a time: a downstream feature needs its upstream feature's code, which in worktree mode lives on the upstream run's branch.
+
 ## Invariants
 
 - The scheduler does not change the user's working copy in phases 1..3; only an approved delivery moves changes.
@@ -72,6 +82,7 @@ Implemented on 2026-10-09 together with phase 2. The policy permission is `allow
 - Phase 1: agent edits do not change the working copy; a crash between an effect and the journal is recovered in the worktree; the lease of a dead worktree owner is released by the same rules as in v1.
 - Phase 2: two independent tasks run at the same time and are integrated; a task that writes outside its `writes` is rejected; losing one worker does not stop other tasks.
 - Phase 3: an artificial conflict is resolved by the integrator, after which checks and review pass again.
+- Phase 4: two worktree runs of one workspace implement at the same time and each completes on its own branch; `maxParallelRuns: 1` refuses the second drive.
 
 ## User decisions (2026-10-08)
 
@@ -81,4 +92,4 @@ Implemented on 2026-10-09 together with phase 2. The policy permission is `allow
 ## Open decisions
 
 - A shared intelligence index for worktrees: a read-only project index (fast, may be stale for changed files) or a per-worktree index (accurate, expensive).
-- The default parallelism limit with respect to provider rate limits.
+- Running initiative features with no dependency path between them in parallel, each based on its upstream features' branches.

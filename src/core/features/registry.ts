@@ -740,8 +740,14 @@ export const FEATURES: readonly Feature[] = [
       "baked workflow gc",
       "baked workflow redact",
     ],
-    api: partial(["/v1/workflow/runs/:id/progress"], 413, "export-progress only"),
-    desktop: gap(413),
+    api: [
+      "/v1/workflow/import",
+      "/v1/workflow/runs/:id/export",
+      "/v1/workflow/gc",
+      "/v1/workflow/runs/:id/redact",
+      "/v1/workflow/runs/:id/progress",
+    ],
+    desktop: ["project/runs: Import, Clean up old runs; Export and Redact on a run"],
   },
 
   // Initiatives

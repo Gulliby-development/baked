@@ -101,8 +101,9 @@ calls it with a placeholder feature and prompt and reports a thrown fault as one
    `worktreeBase`; delivery needs Git too). Uncommitted changes: warn with up to ten paths; in worktree mode
    approved tasks that touch them ask the user to exclude them. Prunable entries in `git worktree list`
    under `.baked/worktrees`: warn, fix `git worktree prune`.
-7. **workspace.busy.** The execution lease (one per workspace, worktree runs included):
-   owner alive or unknown is fail (`drive` would refuse with `WORKSPACE_BUSY`); owner dead while its
+7. **workspace.busy.** The execution leases: the workspace-wide one of an inline run, and
+   `execution:RUN_ID` of each worktree run. Worktree runs that execute are `ok` (the working copy is
+   free). For the inline lease, owner alive or unknown is fail (`drive` would refuse with `WORKSPACE_BUSY`); owner dead while its
    command may still be running is fail with fix `baked workflow recover RUN_ID`; owner dead otherwise is
    warn (released on the next drive).
 8. **budget.** With the estimate available: `fits: "maybe"` or `"no"` is warn, never fail, since estimates

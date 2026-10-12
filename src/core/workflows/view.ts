@@ -468,39 +468,46 @@ export interface RunSummary {
 export function readWorkflowSummaries(service: NativeWorkflowService, limit: number): RunSummary[] {
   const store = service.store;
   return store.readTransaction(() =>
-    store.list(limit).items.map((snapshot) => {
-      const row = store.run(snapshot.runId);
-      const stages = stagesOf(row, store.steps(snapshot.runId));
-      const tasks = store.tasks(snapshot.runId).filter((t) => t.status !== "invalidated");
-      let title: string | null = null;
-      try {
-        title = store.state(snapshot.runId).spec?.title ?? null;
-      } catch {
-        // A run without state still lists; its title is unknown.
-      }
-      return {
-        snapshot,
-        title,
-        stage: {
-          index: Math.max(
-            0,
-            stages.findIndex((s) => s.id === snapshot.stageId),
-          ),
-          total: stages.length,
-          id: snapshot.stageId,
-        },
-        tasks: {
-          done: tasks.filter((t) => t.status === "implemented" || t.status === "verified").length,
-          total: tasks.length,
-        },
-        pendingKind:
-          store.requests(snapshot.runId).find((r) => r.status === "pending")?.kind ?? null,
-        budget: budgetOf(store, row),
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      };
-    }),
+    store.list(limit).items.map((snapshot) => summaryOf(store, snapshot)),
   );
+}
+
+/** One run's summary, as `readWorkflowSummaries` lists it. */
+export function readWorkflowSummary(service: NativeWorkflowService, runId: string): RunSummary {
+  const store = service.store;
+  return store.readTransaction(() => summaryOf(store, store.snapshot(runId)));
+}
+
+function summaryOf(store: WorkflowStore, snapshot: RunSnapshot): RunSummary {
+  const row = store.run(snapshot.runId);
+  const stages = stagesOf(row, store.steps(snapshot.runId));
+  const tasks = store.tasks(snapshot.runId).filter((t) => t.status !== "invalidated");
+  let title: string | null = null;
+  try {
+    title = store.state(snapshot.runId).spec?.title ?? null;
+  } catch {
+    // A run without state still lists; its title is unknown.
+  }
+  return {
+    snapshot,
+    title,
+    stage: {
+      index: Math.max(
+        0,
+        stages.findIndex((s) => s.id === snapshot.stageId),
+      ),
+      total: stages.length,
+      id: snapshot.stageId,
+    },
+    tasks: {
+      done: tasks.filter((t) => t.status === "implemented" || t.status === "verified").length,
+      total: tasks.length,
+    },
+    pendingKind: store.requests(snapshot.runId).find((r) => r.status === "pending")?.kind ?? null,
+    budget: budgetOf(store, row),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function autoApprovalText(policy: RunPolicy): string | null {
