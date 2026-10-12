@@ -445,7 +445,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     {
       // The coordinator starts work through the same paths as POST /v1/workflow/runs and
       // /v1/initiatives; approvals stay with the person.
-      startRun: async ({ prompt, workflow, feature }) =>
+      startRun: async ({ prompt, workflow, feature, worktree }) =>
         launch(
           startArgs({
             commandId: crypto.randomUUID(),
@@ -455,15 +455,27 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
               uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
             owner: "Coordinator",
             ...(workflow ? { workflow } : {}),
+            ...(worktree ? { worktree: true } : {}),
           }),
         ),
-      startInitiative: async ({ initiativeId, prompt }) => {
-        const view = await initiatives.start(
-          initiativeStartRequest({ initiativeId, prompt }, service.config, {
-            commandId: crypto.randomUUID(),
-            ownerLabel: "Coordinator",
-          }),
+      startInitiative: async ({ initiativeId, prompt, plan, approveSplit }) => {
+        let view = await initiatives.start(
+          initiativeStartRequest(
+            { initiativeId, prompt, ...(plan ? { plan } : {}) },
+            service.config,
+            {
+              commandId: crypto.randomUUID(),
+              ownerLabel: "Coordinator",
+            },
+          ),
         );
+        const split = view.pendingDecisions.find((d) => d.kind === "split_approval");
+        if (approveSplit && split)
+          view = await initiatives.approve(
+            view.initiativeId,
+            { commandId: crypto.randomUUID(), expectedRevision: view.revision },
+            { requestId: split.requestId, digest: split.digest },
+          );
         driveInitiative(view.initiativeId);
         return view;
       },
