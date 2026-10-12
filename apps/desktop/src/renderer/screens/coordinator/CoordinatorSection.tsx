@@ -241,7 +241,8 @@ export function CoordinatorSection({ project }: SectionProps) {
       </div>
     );
   return (
-    <div className="flex min-h-0 flex-1">
+    // `data-chat` lets the window's main area give the conversation its full height.
+    <div data-chat className="flex min-h-0 flex-1">
       <SessionView key={state.id} project={project} sessionId={state.id} coordinator />
       <CoordinatorPanel project={project} />
     </div>

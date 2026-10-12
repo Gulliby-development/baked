@@ -641,7 +641,7 @@ function PromptCard({
           Split "{prompt.title}" into {prompt.flows.length}{" "}
           {prompt.mode === "runs" ? "parallel runs" : "features of one initiative"}?
         </p>
-        <SplitFlows prompt={prompt} />
+        <SplitFlows prompt={prompt} onCard />
         <div className={ROW}>
           <Button
             variant="primary"
