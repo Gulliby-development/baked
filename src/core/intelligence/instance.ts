@@ -142,6 +142,20 @@ export async function restartLspServers(filter?: string): Promise<string[]> {
   return router.restartLspServers(filter);
 }
 
+/** Stops the language servers rooted at or below `path`; call it before deleting that directory. */
+export async function stopLanguageServersUnder(path: string): Promise<number> {
+  let stopped = 0;
+  if (_client) {
+    try {
+      stopped += await _client.routerStopLspServersUnder(path);
+    } catch {
+      /* fall through */
+    }
+  }
+  if (router) stopped += await router.stopLspServersUnder(path);
+  return stopped;
+}
+
 /** Get PIDs of all child processes managed by the intelligence system */
 export async function getIntelligenceChildPids(): Promise<number[]> {
   if (_client) {
