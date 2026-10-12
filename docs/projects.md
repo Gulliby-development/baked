@@ -51,7 +51,7 @@ The schema is a strict zod object; unknown top-level keys are refused, so typos 
 
 ## Setting up a folder
 
-Opening a folder sets it up as a project (`scaffoldProject` in `src/core/projects/scaffold.ts`): the terminal UI does it at start-up (also after switching projects, which restarts BAKED in the new folder), `baked serve` does it for its folder, so the desktop app's Open folder does too, and `baked projects add FOLDER` does it for the folder it adds. `baked project init` runs the same setup by hand. It creates only what is missing; the one existing file it may change is `.gitignore`:
+Opening a folder sets it up as a project (`scaffoldProject` in `src/core/projects/scaffold.ts`): the terminal UI does it at start-up (also after switching projects, which restarts BAKED in the new folder), `baked serve` does it for its folder, so the desktop app's Open existing folder does too, and `baked projects add FOLDER` does it for the folder it adds. Creating a project (below) runs it with the chosen name. `baked project init` runs the same setup by hand. It creates only what is missing; the one existing file it may change is `.gitignore`:
 
 - `baked/project.json` with the folder's name as its ID and name, no roots, an empty working set and empty `defaults`, registered for this user. A folder that a registered project already covers (a subfolder of its root) gets no manifest of its own.
 - `.baked/`, added to `.gitignore` when the folder is a Git checkout whose ignore rules do not cover it yet.
@@ -173,6 +173,19 @@ Every folder BAKED was opened in is listed in `<configDir>/known-projects.json` 
 | Shell | `baked projects rename [PATH] NAME` |
 | Local API | `POST /v1/projects/rename` with `{path, name}` (capability `project-rename`, see the [API](desktop/api.md#projects-and-project-setup-exists-extended-by-b)) |
 | Desktop | Rename… on a card in All projects |
+
+## Creating a project
+
+`createProject` (`src/core/projects/create.ts`) starts a project in a new or empty folder: it makes the folder, runs the setup above with the name (so `baked/project.json` carries it) and adds the folder to the known projects. A folder inside an already registered project gets no manifest of its own, so the name is kept as the known-project display name instead. `checkNewProject` runs the same checks without writing: the path must be absolute, the name 1 to 120 characters, and the folder missing or empty, not a file, the home folder, a drive root or the BAKED config folder, with write access to its nearest existing parent. Name and folder-name rules that need no disk (`projectNameError`, `folderNameError`, the `projectFolderName` slug) live in `src/core/projects/new-project.ts`, which the desktop renderer also imports.
+
+| Surface | How |
+| --- | --- |
+| Terminal UI | `/projects`, then **Create project…**: a name, then a folder (prefilled next to the current project), then BAKED switches to it |
+| Shell | `baked projects create PATH [--name NAME] [--check] [--json]`; the name defaults to the folder name, `--check` only reports (with `--json` the verdict is in the output and the exit code is 0) |
+| Desktop | **Create project** on All projects and in the sidebar, see the [desktop app](desktop/app.md) |
+| Local API | none: a new project has no backend yet, so the desktop main process calls `baked projects create` |
+
+Project templates or starter files are not part of it; the folder holds only what the setup writes.
 
 ## Decisions taken by default
 

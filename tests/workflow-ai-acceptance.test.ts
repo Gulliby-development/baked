@@ -12,7 +12,7 @@ import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schem
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId, type WorkflowStore } from "../src/core/workflows/store.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
-import { type AcceptanceGateDefinition, failedAssertions, forbiddenConstructs, walkProblems } from "../src/core/workflows/v2/acceptance.js";
+import { type AcceptanceGateDefinition, failedAssertions, forbiddenConstructs, walkProblems, withCriteria } from "../src/core/workflows/v2/acceptance.js";
 import { isLoopbackAddress, listenerViolations, listeningSockets, parseLsofListeners, parseProcNetTcp, parsePsTable, parseWindowsSockets, processFamily } from "../src/core/workflows/v2/terminal-driver.js";
 import { recordedSteps, runTestOnce, WalkSession, type WalkStep } from "../src/core/workflows/v2/acceptance-gate.js";
 import { type BrowserLauncher, type BrowserPage, MISSING_PLAYWRIGHT } from "../src/core/workflows/v2/browser-driver.js";
@@ -514,6 +514,35 @@ describe("AI acceptance gate", () => {
     const session = new WalkSession(undefined as unknown as WorkflowStore, run.runId, "attempt", denied, fixture.root, new AbortController().signal);
     await expect(session.tools().app_start?.execute({}) ?? Promise.resolve()).rejects.toThrow("spawnApp is not granted");
     expect(session.violations).toEqual(["app_start was refused: spawnApp is not granted"]);
+  }, 60000);
+
+  test("a walk-through from the manual criteria adds each one as an expectation, and skips a run with none", async () => {
+    const fromSpec = walkGate((g) => ({ ...g, acceptance: { ...g.acceptance, scenario: { ...g.acceptance.scenario, expectations: [], fromCriteria: "manual" } } }));
+    expect(validateGate(fromSpec)).toEqual([]);
+    const plain = walkGate((g) => ({ ...g, acceptance: { ...g.acceptance, scenario: { ...g.acceptance.scenario, expectations: [] } } }));
+    expect(validateGate(plain)).toContain('calc-walk: the scenario needs an expectation, or fromCriteria "manual"');
+    const criterion = (id: string, method: string) => ({ id, given: "the calculator runs", when: `the user types ${id}`, then: "it answers", method });
+    const spec = { criteria: [criterion("AC-001", "manual"), criterion("AC-002", "automated"), criterion("AC-003", "manual")] };
+    const walked = withCriteria(walkGate((g) => ({ ...g, acceptance: { ...g.acceptance, scenario: { ...g.acceptance.scenario, fromCriteria: "manual" } } })), spec);
+    expect(walked.acceptance.scenario.expectations).toEqual([
+      "The calculator shows its ready prompt.",
+      "add 2 3 prints sum: 5.",
+      "AC-001: given the calculator runs, when the user types AC-001, then it answers",
+      "AC-003: given the calculator runs, when the user types AC-003, then it answers",
+    ]);
+    // A gate without fromCriteria, or a run without a spec, walks only what it declares.
+    expect(withCriteria(walkGate(), spec)).toEqual(walkGate());
+    expect(withCriteria(fromSpec, null)).toBe(fromSpec);
+    const many = { criteria: Array.from({ length: 40 }, (_, i) => criterion(`AC-${String(i + 1).padStart(3, "0")}`, "manual")) };
+    expect(withCriteria(fromSpec, many).acceptance.scenario.expectations).toHaveLength(30);
+
+    // This workflow has no spec stage, so the run has no criteria: the gate is skipped without a model.
+    const fixture = setup({}, fromSpec);
+    const run = await fixture.start();
+    expect((await fixture.complete(run.runId)).status).toBe("completed");
+    expect(fixture.executor.calls).toEqual(["plan", "implementation"]);
+    expect(fixture.service.store.state(run.runId).acceptance["calc-walk"]).toMatchObject({ phase: "skipped" });
+    expect(gateEvents(fixture.service, run.runId).find((e) => e.gateId === "calc-walk")?.status).toBe("skipped");
   }, 60000);
 
   test("an application that writes outside its write paths ends the walk-through as a violation", async () => {

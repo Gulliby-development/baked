@@ -5,7 +5,8 @@
  */
 import { join } from "node:path";
 import { z } from "zod";
-import { isIntelligenceReady } from "../intelligence/instance.js";
+import { healthCheckView } from "../intelligence/health.js";
+import { isIntelligenceReady, runIntelligenceHealthCheck } from "../intelligence/instance.js";
 import {
   installLspServer,
   type LspServiceDeps,
@@ -25,6 +26,8 @@ export interface LspRouteContext extends RouteContext {
   start?: () => Promise<unknown>;
   /** Tests replace what touches the machine. */
   deps?: Partial<LspServiceDeps>;
+  /** Runs the code intelligence health check; tests replace it. */
+  diagnose?: typeof runIntelligenceHealthCheck;
 }
 
 const Scope = z.enum(["global", "project"]);
@@ -69,6 +72,16 @@ export async function lspRoute(ctx: LspRouteContext): Promise<Response | null> {
   if (path === "/v1/lsp") {
     ctx.only("GET");
     return ctx.json(200, await lspStatus(options));
+  }
+  if (path === "/v1/lsp/diagnose") {
+    ctx.only("POST");
+    // Starting the servers and probing every backend can take a while.
+    ctx.keepOpen();
+    if (!started() && ctx.start) await ctx.start();
+    const result = await (ctx.diagnose ?? runIntelligenceHealthCheck)();
+    if (!result)
+      return ctx.fail(503, "NOT_STARTED", "Code intelligence did not start for this project");
+    return ctx.json(200, healthCheckView(result));
   }
   if (path === "/v1/lsp/restart") {
     ctx.only("POST");

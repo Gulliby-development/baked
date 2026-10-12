@@ -28,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -36,6 +36,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | --- | --- |
 | `/project` | This project: sessions, workflow runs, what waits for you |
 | `/project rename` | `/project rename NAME` renames this project in the picker, `baked projects` and the desktop app; without a name it restores the default |
+| `/project waiting` | Run requests and blocked runs that wait for you, in this project and in your pinned and recent projects; Enter opens the run here or switches to its project |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
 | `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |
@@ -107,7 +108,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | Command | Does |
 | --- | --- |
 | `/context` | Context & system dashboard |
-| `/diagnose` | Health check — LSP, tree-sitter, semantic indexing |
+| `/diagnose` | Health check — LSP, tree-sitter, semantic indexing (also `baked diagnose`, and Check code intelligence in the desktop) |
 | `/graph` | Code graph at a glance: biggest groups and key files |
 | `/lsp` | Manage LSP servers — install, disable, enable |
 | `/lsp install` | Install & manage LSP servers (Mason registry) |

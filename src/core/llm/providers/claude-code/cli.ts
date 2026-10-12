@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import stripAnsi from "strip-ansi";
+import { describeSearch, resolveCli } from "../../../platform/cli-path.js";
 import { trackProcess } from "../../../process-tracker.js";
 
 export interface ClaudeCodeLoginStatus {
@@ -18,11 +19,22 @@ let cachedStatus: { at: number; status: ClaudeCodeLoginStatus } | null = null;
 let cachedFlags: Set<string> | null = null;
 
 /**
- * The Claude Code executable. `BAKED_CLAUDE_CODE_PATH` overrides it; otherwise `claude`
- * from PATH, which on Windows resolves to the native `claude.exe`.
+ * The Claude Code executable. `BAKED_CLAUDE_CODE_PATH` overrides it; otherwise `claude` from
+ * PATH (on Windows the native `claude.exe`), the login shell PATH or a known install folder such
+ * as `~/.local/bin` or `~/.claude/local`, which a shell alias may be the only route to.
  */
 export function claudeCodeCommand(): string {
-  return process.env.BAKED_CLAUDE_CODE_PATH?.trim() || "claude";
+  return process.env.BAKED_CLAUDE_CODE_PATH?.trim() || resolveCli("claude").command;
+}
+
+function claudeCodeNotFoundMessage(error: Error): string {
+  const override = process.env.BAKED_CLAUDE_CODE_PATH?.trim();
+  if (override) return `Claude Code CLI not found at BAKED_CLAUDE_CODE_PATH (${override}).`;
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+    return `Claude Code CLI not found (${error.message}). Install Claude Code, then run \`claude auth login\`.`;
+  }
+  const searched = describeSearch(resolveCli("claude"));
+  return `Claude Code CLI not found${searched ? ` (looked in ${searched})` : ""}. Install Claude Code or set BAKED_CLAUDE_CODE_PATH, then run \`claude auth login\`.`;
 }
 
 /** Parses `claude auth status` (JSON on current versions, text on older ones). */
@@ -85,7 +97,7 @@ export function getClaudeCodeLoginStatus(
         installed: false,
         loggedIn: false,
         authMethod: null,
-        message: `Claude Code CLI not found (${result.error.message}). Install Claude Code, then run \`claude auth login\`.`,
+        message: claudeCodeNotFoundMessage(result.error),
       };
     } else {
       status = parseClaudeCodeAuthStatus(
@@ -135,9 +147,7 @@ export function getClaudeCodeFlags(): Set<string> {
 export function assertClaudeCodeReady(): void {
   const status = getClaudeCodeLoginStatus();
   if (!status.installed) {
-    throw new Error(
-      "Claude Code CLI is not installed. Install Claude Code, then run `claude auth login`.",
-    );
+    throw new Error(status.message);
   }
   if (!status.loggedIn) {
     throw new Error("Claude Code is not logged in. Run `claude auth login` and try again.");

@@ -151,7 +151,12 @@ export const AiAcceptanceGate = z
           .object({
             title: Text,
             steps: z.array(Text).min(1).max(30),
-            expectations: z.array(Text).min(1).max(30),
+            expectations: z.array(Text).max(30),
+            /**
+             * `manual` adds the run's manual acceptance criteria to the expectations when the gate
+             * runs, so a walk-through bound once checks every spec it meets.
+             */
+            fromCriteria: z.literal("manual").optional(),
           })
           .strict(),
         start: z
@@ -222,6 +227,8 @@ export function validateGate(gate: Gate): string[] {
       errors.push(`${gate.id}: an AI walk-through is advisory until its test is promoted`);
     if (gate.scope !== "feature")
       errors.push(`${gate.id}: an acceptance walk-through runs on the whole result`);
+    if (!gate.acceptance.scenario.expectations.length && !gate.acceptance.scenario.fromCriteria)
+      errors.push(`${gate.id}: the scenario needs an expectation, or fromCriteria "manual"`);
     const grants = gate.acceptance.capabilities;
     if (grants.listenPorts.length > 0 && !grants.spawnApp)
       errors.push(`${gate.id}: ports need spawnApp`);

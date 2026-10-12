@@ -171,8 +171,9 @@ The agent can search the web and read pages; each search asks for approval. `/we
 
 A project is any folder BAKED was opened in. Each folder keeps its sessions and workflow runs in its own `.baked/`, so nothing moves when you switch.
 
-- **`/projects`** or **`Alt+O`** lists known folders with their sessions, active workflow runs and requests waiting for you. Pinned folders come first, then the most recently opened. `Enter` opens one; `Tab` opens its actions (resume a session, pin, rename, forget). **Open folder…** adds a path.
+- **`/projects`** or **`Alt+O`** lists known folders with their sessions, active workflow runs and requests waiting for you. Pinned folders come first, then the most recently opened. `Enter` opens one; `Tab` opens its actions (resume a session, pin, rename, forget). **Create project…** asks for a name and a new or empty folder (prefilled next to the current project), creates the project there and switches to it. **Open folder…** adds an existing path.
 - **`/project`** shows the current folder: name, path, working set (when `baked/project.json` exists), its sessions and workflow runs, and what waits for you. **`/project rename NAME`** renames it in the picker, `baked projects` and the desktop app; without a name it restores the default.
+- **`/project waiting`** lists the workflow requests and blocked runs that wait for you, in this project and in the pinned and recently opened projects the header badge counts, grouped by project with the oldest first. `Enter` opens a run of this project in `/workflow`; on another project's run it switches to that project, asking first when runs execute here. Approvals a chat in a running `baked serve` asks for live in that server and show in the desktop's Needs you screen, not here.
 - **Switching** saves the session as an exit does and restarts BAKED in the other folder with `--cwd`. A workflow run executing in this process is paused first, after asking; resume it from `/workflow` later.
 - **Header badge**: requests waiting in the pinned folders and the 10 most recently opened, refreshed every 60 seconds.
 
@@ -181,6 +182,7 @@ From a shell:
 ```sh
 baked projects list [--json]
 baked projects add [PATH]
+baked projects create PATH --name NAME [--check] [--json]  # new or empty folder only
 baked projects pin [PATH]          # unpin reverses it
 baked projects rename [PATH] NAME  # "" restores the default name
 baked projects forget [PATH]       # sessions and runs stay in the folder

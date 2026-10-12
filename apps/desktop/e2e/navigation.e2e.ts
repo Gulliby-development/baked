@@ -42,7 +42,10 @@ test("opening a closed project from its card starts it and shows its home", asyn
 
 test("the first start shows an empty project list", async ({ app }) => {
   const page = await app("#/projects", "empty");
-  await expect(page.getByText("No projects yet. Open a folder to start.")).toBeVisible();
+  const empty = page.getByText("No projects yet.");
+  await expect(empty).toBeVisible();
+  await expect(empty.getByRole("button", { name: "Create project" })).toBeVisible();
+  await expect(empty.getByRole("button", { name: "Open existing folder…" })).toBeVisible();
   await expect(page.getByRole("article")).toHaveCount(0);
 });
 
