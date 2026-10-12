@@ -2610,15 +2610,22 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const taskFailures: Review["findings"] = [];
     const checkEvidence: string[] = [];
     let inconclusive: string | undefined;
+    const taskRoot = runRoot(this.store.workspace, state);
+    const taskResults: WorkerCheck[] = [];
     for (const check of taskChecks(policy, task)) {
-      const checked = await this.runTaskCheck(
-        runId,
-        child,
-        check,
-        policy,
-        signal,
-        runRoot(this.store.workspace, state),
-      );
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, taskRoot);
+      taskResults.push({ check, checked });
+    }
+    for (const { check, checked } of await this.fixFailedTaskChecks(
+      runId,
+      child,
+      state,
+      policy,
+      task,
+      taskResults,
+      signal,
+      taskRoot,
+    ))
       inconclusive ??= this.applyTaskCheck(
         runId,
         state,
@@ -2628,7 +2635,6 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         taskFailures,
         checkEvidence,
       );
-    }
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
   }
@@ -3192,10 +3198,64 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const failures: Review["findings"] = [];
     const evidence: string[] = [];
     let inconclusive: string | undefined;
-    for (const { check, checked } of results)
+    for (const { check, checked } of await this.fixFailedTaskChecks(
+      runId,
+      entry.child,
+      state,
+      policy,
+      task,
+      results,
+      signal,
+      mainRoot,
+    ))
       inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
     this.inconclusiveTaskCheck(inconclusive, failures);
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
+  }
+  /**
+   * A required task check that failed and declares a fixer gets one host repair before it becomes
+   * a finding and an LLM repair task: the fixer runs on every file the task writes (documentation
+   * and data files too, which the fixer pass before the checks skips) and a check that sees a
+   * changed file runs again. Only what the fixer cannot fix is repaired by a model (bench round 07,
+   * pkgdrift T004 54k and md-site T009 71k for whitespace and lint findings).
+   */
+  private async fixFailedTaskChecks(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    results: WorkerCheck[],
+    signal: AbortSignal,
+    root: string,
+  ): Promise<WorkerCheck[]> {
+    const failed = results.filter(
+      ({ check, checked }) => checked.status === "failed" && check.required && check.fix,
+    );
+    const paths = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+    if (!failed.length || !paths.length) return results;
+    const changed = await this.fixFiles(
+      runId,
+      child,
+      root,
+      policy,
+      failed.map(({ check }) => check),
+      new Map(paths.map((path) => [path, task.id])),
+      signal,
+    );
+    if (!changed) return results;
+    await this.snapshot(runId, state, policy, signal);
+    const rerun: WorkerCheck[] = [];
+    for (const result of results)
+      rerun.push(
+        failed.includes(result)
+          ? {
+              check: result.check,
+              checked: await this.runTaskCheck(runId, child, result.check, policy, signal, root),
+            }
+          : result,
+      );
+    return rerun;
   }
   private async recheck(
     runId: string,
