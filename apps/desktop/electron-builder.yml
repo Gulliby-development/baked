@@ -31,6 +31,10 @@ npmRebuild: false
 extraResources:
   - from: dist/.stage/bin
     to: bin
+  # The voice input engine (cactus-needle and the Whistle model), read by src/main/voice.ts. It
+  # stays outside the asar archive because it starts a worker thread and loads WebAssembly.
+  - from: dist/.stage/voice
+    to: voice
 
 # Releases are uploaded by .github/workflows/release.yml, never by electron-builder.
 publish: null
