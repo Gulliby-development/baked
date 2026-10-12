@@ -4,7 +4,7 @@ import type { SessionMeta, TabMeta } from "../core/sessions/types.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";
 import { useUIStore } from "../stores/ui.js";
 import { useWorkflowStore } from "../stores/workflow.js";
-import type { ChatMessage } from "../types/index.js";
+import type { ChatEffort, ChatMessage } from "../types/index.js";
 import type { WorkspaceSnapshot } from "./useChat.js";
 
 interface BuildParams {
@@ -64,6 +64,7 @@ export function buildSessionMeta({
       planRequest: tabState.planRequest,
       coAuthorCommits: tabState.coAuthorCommits,
       bakeMode: tabState.bakeMode,
+      ...(tabState.effort && tabState.effort !== "default" ? { effort: tabState.effort } : {}),
       tokenUsage: tabState.tokenUsage,
       messageRange: { startLine: 0, endLine: msgs.length },
       ...(checkpointTags.length > 0 ? { checkpointTags } : {}),
@@ -106,6 +107,7 @@ export function buildTabMeta(args: {
   planRequest: string | null;
   coAuthorCommits: boolean;
   bakeMode: import("../types/index.js").BakeMode;
+  effort?: ChatEffort;
   tokenUsage: TabMeta["tokenUsage"];
   messages: ChatMessage[];
   coreMessages?: ModelMessage[];
@@ -128,6 +130,7 @@ export function buildTabMeta(args: {
     planRequest: args.planRequest,
     coAuthorCommits: args.coAuthorCommits,
     bakeMode: args.bakeMode,
+    ...(args.effort && args.effort !== "default" ? { effort: args.effort } : {}),
     tokenUsage: args.tokenUsage,
     messageRange: { startLine: 0, endLine: msgs.length },
     ...(checkpointTags.length > 0 ? { checkpointTags } : {}),
