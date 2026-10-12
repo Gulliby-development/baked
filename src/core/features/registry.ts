@@ -790,7 +790,7 @@ export const FEATURES: readonly Feature[] = [
     id: "attention",
     group: "Projects and setup",
     title: "What waits for me across projects",
-    tui: partial(["/project: what waits for you"], 413, "this project only"),
+    tui: ["/project waiting", "/project: what waits for you"],
     cli: ["baked attention"],
     api: ["/v1/attention"],
     desktop: ["attention"],

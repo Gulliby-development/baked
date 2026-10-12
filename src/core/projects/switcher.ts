@@ -73,6 +73,57 @@ export function waitingBadgeText(w: WaitingElsewhere): string | null {
   return `${w.waiting} waiting in ${w.projects === 1 ? "another project" : "other projects"}`;
 }
 
+/** Run requests and blocked runs of a folder, read-only; a folder without runs has none. */
+export function folderAttention(folder: string): AttentionRow[] {
+  if (!existsSync(join(folder, ".baked", "workflows.sqlite"))) return [];
+  let store: WorkflowStore | null = null;
+  try {
+    store = new WorkflowStore(folder, true);
+    return store.attention();
+  } catch {
+    // A store this build cannot read has nothing to show.
+    return [];
+  } finally {
+    store?.close();
+  }
+}
+
+export interface ProjectWaiting {
+  name: string;
+  path: string;
+  current: boolean;
+  items: AttentionRow[];
+}
+
+/**
+ * What waits for a person in this project and in the other projects the badge reads, oldest
+ * request first in each; projects with nothing waiting are left out. Yields between folders.
+ */
+export async function waitingAcrossProjects(
+  currentPath: string,
+  opts: KnownProjectOptions & { read?: (folder: string) => AttentionRow[] } = {},
+): Promise<ProjectWaiting[]> {
+  const read = opts.read ?? folderAttention;
+  const here = realPath(currentPath);
+  let others: KnownProject[] = [];
+  try {
+    others = badgeProjects(listKnownProjects(opts), here);
+  } catch {
+    // Without the project list only this project is read.
+  }
+  const folders = [
+    { name: projectName(here, opts), path: here, current: true },
+    ...others.map((p) => ({ name: p.name, path: p.path, current: false })),
+  ];
+  const result: ProjectWaiting[] = [];
+  for (const folder of folders) {
+    await new Promise<void>((done) => setTimeout(done, 0));
+    const items = [...read(folder.path)].sort((a, b) => a.created_at - b.created_at);
+    if (items.length) result.push({ ...folder, items });
+  }
+  return result;
+}
+
 /** One line such as "3 sessions · 1 active run · 2 waiting". */
 export function overviewLine(o: ProjectOverview): string {
   const parts = [plural(o.sessions, "session"), plural(o.activeRuns, "active run")];
