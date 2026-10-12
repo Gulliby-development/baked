@@ -1,6 +1,7 @@
 import { WorkflowFault } from "./errors.js";
 
 interface ProviderError {
+  name?: string;
   statusCode?: number;
   responseHeaders?: Record<string, string>;
   responseBody?: string;
@@ -42,11 +43,30 @@ export function isOAuthRefreshCollision(error: unknown): boolean {
 /** Retries an OAuth refresh collision gets, at least; each waits 30 to 60 seconds. */
 export const OAUTH_COLLISION_RETRIES = 3;
 
+const CAPACITY =
+  /(?:selected )?model is at capacity|at capacity|try a different model|capacity exceeded|no capacity/i;
+
+/**
+ * The provider has no room for the model right now ("Selected model is at capacity. Please try a
+ * different model.", bench round 7 url-shortener A, a 4m40s call that ended in a blocked run). It
+ * carries no status code a retry rule knows, and it clears in minutes, not seconds.
+ */
+export function isCapacityError(error: unknown): boolean {
+  if (error instanceof WorkflowFault || accountRefusal(error)) return false;
+  const info = error as ProviderError | undefined;
+  return CAPACITY.test(`${info?.message ?? ""} ${info?.responseBody ?? ""}`);
+}
+
+/** Retries a capacity error gets, at least; the waits are 5, 15, 45 and 90 seconds. */
+export const CAPACITY_RETRIES = 4;
+const CAPACITY_WAITS_MS = [5_000, 15_000, 45_000, 90_000];
+
 /** A provider failure worth trying again: a timeout, rate limit, overload or network error. */
 export function isTransient(error: unknown): boolean {
   if (error instanceof WorkflowFault || accountRefusal(error)) return false;
-  if (isOAuthRefreshCollision(error)) return true;
+  if (isOAuthRefreshCollision(error) || isCapacityError(error)) return true;
   const info = error as ProviderError | undefined;
+  if (info?.name === "TimeoutError") return true;
   const status = info?.statusCode;
   if (status !== undefined) return [408, 429, 500, 502, 503, 504, 529].includes(status);
   return /overloaded|rate limit|429|503|529|ETIMEDOUT|ECONNRESET|fetch failed|network|socket hang up/i.test(
@@ -69,6 +89,11 @@ export function retryDelay(error: unknown, retry: number, maxRetries = 2): numbe
   if (isOAuthRefreshCollision(error)) {
     if (retry >= Math.max(maxRetries, OAUTH_COLLISION_RETRIES)) return null;
     return 30_000 + Math.floor(Math.random() * 30_000);
+  }
+  if (isCapacityError(error)) {
+    if (retry >= Math.max(maxRetries, CAPACITY_RETRIES)) return null;
+    const wait = CAPACITY_WAITS_MS[Math.min(retry, CAPACITY_WAITS_MS.length - 1)] ?? 90_000;
+    return Math.max(wait + Math.floor(Math.random() * 1000), retryAfterMs(error));
   }
   if (retry >= maxRetries || !isTransient(error)) return null;
   return Math.max(1000 * 2 ** retry + Math.floor(Math.random() * 200), retryAfterMs(error));

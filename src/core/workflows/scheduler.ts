@@ -106,6 +106,7 @@ import {
   abortableDelay,
   accountRefusal,
   endedOnProse,
+  isCapacityError,
   isTransient,
   reportsLostTool,
   retryAfterMs,
@@ -1892,8 +1893,11 @@ export class WorkflowScheduler {
       const next = route.models[fallbackIndex + 1];
       // Each fallback model gets one retry. A long retry-after is better spent on the next model,
       // and once the chain has already failed over, the run stops instead of blocking on it.
+      // A model at capacity is left for the next model of the route at once; with none, the
+      // call waits for it with the capacity backoff.
       const delay =
-        (next !== undefined || fallbackIndex > 0) && retryAfterMs(error) > LONG_RETRY_AFTER_MS
+        ((next !== undefined || fallbackIndex > 0) && retryAfterMs(error) > LONG_RETRY_AFTER_MS) ||
+        (next !== undefined && isCapacityError(error))
           ? null
           : retryDelay(error, retry, fallbackIndex === 0 ? 2 : 1);
       const again = (retryNumber: number, index: number, primaryError?: unknown) =>
