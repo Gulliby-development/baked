@@ -31,6 +31,7 @@ import {
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
+import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
 import { recordedSteps } from "../core/workflows/v2/acceptance-gate.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
 import { readRoutingSummary } from "../core/workflows/view.js";
@@ -486,15 +487,25 @@ export async function executeWorkflowCommand(
       );
     case "export-progress":
       return artifacts.exportProgress(runId);
-    case "usage":
+    case "usage": {
       service.store.run(runId);
-      return runUsage(
+      const markdown = args.flags.format === "md";
+      const usage = runUsage(
         service.store,
         runId,
         typeof args.flags.stage === "string" ? args.flags.stage : undefined,
-        typeof args.flags.top === "string" ? Number(args.flags.top) : undefined,
+        // The Markdown sums every attempt; --top only shortens the attempt list.
+        typeof args.flags.top === "string" && !markdown ? Number(args.flags.top) : undefined,
         typeof args.flags.model === "string" ? args.flags.model : undefined,
       );
+      if (!markdown) return usage;
+      const text = runUsageMarkdown(usage);
+      if (typeof args.flags.output !== "string") return { runId, markdown: text };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, text);
+      return { runId, path, bytes: Buffer.byteLength(text), usage: true };
+    }
     case "report": {
       const markdown = runReport(service.store, runId);
       if (typeof args.flags.output !== "string") return { runId, markdown };
@@ -722,7 +733,11 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     });
     await Promise.all(streams);
     // The report prints as Markdown so it can be piped into a file or a pull request.
-    if (args.command === "report" && !args.flags.json && !args.flags.output) {
+    if (
+      (args.command === "report" || (args.command === "usage" && args.flags.format === "md")) &&
+      !args.flags.json &&
+      !args.flags.output
+    ) {
       process.stdout.write((result as { markdown: string }).markdown);
       return 0;
     }

@@ -7,7 +7,7 @@ import { getProviderApiKey } from "../secrets.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { type PreRunEstimate, readHistory } from "./estimate.js";
-import { commandMayBeRunning, leaseOwnerAlive } from "./leases.js";
+import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
 import { reachableModels } from "./routing.js";
@@ -391,8 +391,23 @@ async function gitChecks(
 }
 
 function leaseCheck(store: WorkflowStore): DoctorCheck {
-  const lease = store.lease("execution");
-  if (!lease) return { id: "workspace.busy", status: "ok", title: "No run is executing" };
+  const leases = store.leases().filter((lease) => isExecutionLease(lease.resource));
+  // The workspace-wide lease (an inline run) first: it is the one that blocks the working copy.
+  leases.sort((a, b) => Number(b.resource === "execution") - Number(a.resource === "execution"));
+  const parallel = leases.filter(
+    (lease) => lease.resource !== "execution" && leaseOwnerAlive(lease) !== false,
+  );
+  const lease = leases.find(
+    (candidate) => candidate.resource === "execution" || leaseOwnerAlive(candidate) === false,
+  );
+  if (!lease)
+    return parallel.length
+      ? {
+          id: "workspace.busy",
+          status: "ok",
+          title: `${parallel.length} run${parallel.length === 1 ? " is" : "s are"} executing in ${parallel.length === 1 ? "its own worktree" : "their own worktrees"}; the working copy is free`,
+        }
+      : { id: "workspace.busy", status: "ok", title: "No run is executing" };
   const owner = lease.run_id ?? lease.owner_id;
   const alive = leaseOwnerAlive(lease);
   if (alive !== false)

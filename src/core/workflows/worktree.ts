@@ -257,7 +257,11 @@ export async function createTaskWorktree(
 ): Promise<string> {
   const workspace = store.workspace;
   const path = taskWorktreePath(runId, taskId);
-  await removeTaskWorktree(workspace, path);
+  const stale = await removeTaskWorktree(workspace, path);
+  if (!stale.removed)
+    throw new WorkflowFault("INPUT_CHANGED", stale.warning ?? `${path} could not be removed`, {
+      reason: "worktree_failed",
+    });
   const absolute = join(workspace, path);
   mkdirSync(dirname(absolute), { recursive: true });
   const hooks = join(workspace, ".baked", "no-hooks");
@@ -296,13 +300,56 @@ export function alignTaskFiles(from: string, to: string, files: string[]): strin
   return repaired;
 }
 
-/** Removes a task worktree, if present; its edits are integrated or abandoned by then. */
-export async function removeTaskWorktree(workspace: string, path: string): Promise<void> {
+const BUSY_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
+
+/**
+ * Removes a directory tree, retrying a Windows sharing violation (a build server, an indexer or
+ * antivirus still holding a handle) with a short backoff. Returns the last error when it never
+ * succeeded; a failure that is not a lock is thrown.
+ */
+export async function removeDirectory(
+  path: string,
+  options: {
+    rm?: (path: string) => void;
+    attempts?: number;
+    delayMs?: number;
+  } = {},
+): Promise<Error | null> {
+  const rm = options.rm ?? ((target: string) => rmSync(target, { recursive: true, force: true }));
+  const attempts = options.attempts ?? 8;
+  const delay = options.delayMs ?? 150;
+  let last: Error | null = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      rm(path);
+      return null;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!code || !BUSY_CODES.has(code)) throw error;
+      last = error as Error;
+      await new Promise((resolve) => setTimeout(resolve, delay * (attempt + 1)));
+    }
+  }
+  return last;
+}
+
+/**
+ * Removes a task worktree, if present; its edits are integrated or abandoned by then. A directory
+ * that stays locked after the retries is left in place and reported in the return value (the run
+ * goes on; `removeRunWorktree` and the next creation of the same task worktree remove it later).
+ */
+export async function removeTaskWorktree(
+  workspace: string,
+  path: string,
+  options: Parameters<typeof removeDirectory>[1] = {},
+): Promise<{ removed: boolean; warning?: string }> {
   const absolute = join(workspace, path);
   if (existsSync(join(absolute, ".git")))
     await git(workspace, ["worktree", "remove", "--force", absolute]);
-  rmSync(absolute, { recursive: true, force: true });
+  const locked = await removeDirectory(absolute, options);
   await git(workspace, ["worktree", "prune"]);
+  if (locked) return { removed: false, warning: `${path} stays on disk: ${locked.message}` };
+  return { removed: true };
 }
 
 /**
@@ -412,7 +459,13 @@ export async function removeRunWorktree(
         await removeTaskWorktree(workspace, join(dirname(worktree.path), entry));
   if (existsSync(absolute)) await required(workspace, ["worktree", "remove", "--force", absolute]);
   await git(workspace, ["worktree", "prune"]);
-  rmSync(join(workspace, ".baked", "worktrees", runId), { recursive: true, force: true });
+  const left = await removeDirectory(join(workspace, ".baked", "worktrees", runId));
+  if (left)
+    throw new WorkflowFault(
+      "INPUT_CHANGED",
+      `The run worktrees could not be removed: ${left.message}`,
+      { reason: "worktree_failed" },
+    );
   if (options.deleteBranch) {
     const tip = (
       await git(workspace, ["rev-parse", "--verify", "--quiet", `refs/heads/${worktree.branch}`])

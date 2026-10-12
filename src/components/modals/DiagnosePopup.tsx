@@ -2,8 +2,9 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BackendProbeResult, HealthCheckResult } from "../../core/intelligence/router.js";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
+import { spinnerGlyph } from "../../core/utils/spinner.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
-import { SPINNER_FRAMES, useSpinnerFrameRef } from "../layout/shared.js";
+import { useSpinnerFrameRef } from "../layout/shared.js";
 import { InfoLine, type InfoLineData, PremiumPopup, Section } from "../ui/index.js";
 import { fitPopupHeight, fitPopupWidth } from "../ui/popup-geometry.js";
 import { listScrollAccel } from "../ui/scroll.js";
@@ -112,7 +113,7 @@ export function DiagnosePopup({ visible, onClose, runHealthCheck }: Props) {
   const [cursor, setCursor] = useState(0);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const spinnerRef = useSpinnerFrameRef();
-  const spinnerCh = SPINNER_FRAMES[spinnerRef.current % SPINNER_FRAMES.length] ?? "⠋";
+  const spinnerCh = spinnerGlyph(spinnerRef.current);
 
   const popupW = fitPopupWidth(Math.min(80, Math.max(56, Math.floor(tw * 0.65))), tw);
   const popupH = fitPopupHeight(Math.min(30, Math.max(16, th - 4)), th);

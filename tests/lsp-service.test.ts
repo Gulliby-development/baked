@@ -240,4 +240,46 @@ describe("/v1/lsp", () => {
     expect((await call("/v1/lsp/gopls/disable", "POST", { scope: "nowhere" })).status).toBe(400);
     expect((await call("/v1/lsp", "POST", {})).status).toBe(405);
   });
+
+  test("diagnose runs the code intelligence health check and names failing backends", async () => {
+    const fixture = workflowFixture();
+    const configDir = mkdtempSync(join(tmpdir(), "baked-api-config-"));
+    const server = await startApiServer({
+      service: fixture.service,
+      configDir,
+      lspDeps: machine(true).deps,
+      lspDiagnose: async () => ({
+        language: "go",
+        probeFile: "/p/main.go",
+        backends: [
+          { backend: "lsp:standalone", tier: 1, supports: true, initialized: false, initError: "gopls exited", probes: [] },
+          { backend: "ts-morph", tier: 2, supports: false, initialized: false, probes: [] },
+          {
+            backend: "tree-sitter",
+            tier: 3,
+            supports: true,
+            initialized: true,
+            probes: [{ operation: "findSymbols", status: "pass", ms: 4 }],
+          },
+        ],
+      }),
+      log: () => {},
+    });
+    cleanups.push(async () => {
+      await server.stop();
+      await fixture.dispose();
+      await removeTempDir(configDir);
+    });
+    const call = (path: string, method: string) =>
+      fetch(`${server.url}${path}`, { method, headers: { Authorization: `Bearer ${server.token}` } });
+
+    const health = (await (await call("/v1/health", "GET")).json()) as { capabilities: string[] };
+    expect(health.capabilities).toContain("lsp-diagnose");
+    const response = await call("/v1/lsp/diagnose", "POST");
+    expect(response.status).toBe(200);
+    const view = (await response.json()) as { language: string; failing: string[] };
+    expect(view.language).toBe("go");
+    expect(view.failing).toEqual(["lsp:standalone"]);
+    expect((await call("/v1/lsp/diagnose", "GET")).status).toBe(405);
+  });
 });

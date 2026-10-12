@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BriefContentSchema } from "../chat/coordinator.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
@@ -124,6 +125,10 @@ export const CreateSessionBody = z.strictObject({
   text: Text.optional(),
   images: Images.optional(),
 });
+export const CoordinatorBody = z.strictObject({ model: ModelId.optional() });
+export const BriefBody = BriefContentSchema.extend({
+  expectedRevision: z.number().int().min(0),
+});
 export const UpdateSessionBody = z
   .strictObject({
     title: Title.optional(),
@@ -205,6 +210,25 @@ export const GatesConfirmBody = z
   .refine((body) => Boolean(body.ids) !== Boolean(body.all), {
     message: "Name the gates to confirm in ids, or send all: true",
   });
+/** `POST /v1/workflow/runs/:id/export`: a new directory, relative to the workspace. */
+export const ExportBody = z.strictObject({ destination: z.string().min(1).max(500).optional() });
+export const RedactBody = z.strictObject({
+  artifactId: SafeId,
+  reason: z.string().trim().min(1).max(500),
+});
+export const GcBody = z.strictObject({
+  before: z.string().refine((value) => Number.isFinite(Date.parse(value)), {
+    message: "Expected an ISO date",
+  }),
+  dryRun: z.boolean().optional(),
+});
+export const ImportBody = z.strictObject({
+  source: z.enum(["spec-kit", "ecc", "markdown-edit"]),
+  /** A local directory, relative to the workspace or absolute. */
+  path: z.string().min(1).max(1000),
+  featureId: SafeId,
+  commandId: SafeId.optional(),
+});
 export const RouteQuery = z.strictObject({
   workflow: SafeId.optional(),
   model: z.string().min(1).optional(),
@@ -226,4 +250,6 @@ export const UsageQuery = z.strictObject({
     .optional(),
   model: z.string().min(1).optional(),
   stage: z.string().min(1).optional(),
+  /** `md` answers `{ markdown }`, the summary as a Markdown document to share. */
+  format: z.literal("md").optional(),
 });

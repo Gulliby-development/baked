@@ -1,4 +1,4 @@
-import type { LspActionView, LspServer, LspView } from "./lsp.js";
+import type { IntelligenceCheck, LspActionView, LspServer, LspView } from "./lsp.js";
 import { type MockRequest, type MockRoute, response } from "./mock-routes.js";
 
 type Seed = Pick<LspServer, "id" | "languages"> & Partial<LspServer>;
@@ -129,6 +129,64 @@ function view(s: LspState): LspView {
   };
 }
 
+const OPERATIONS = ["findSymbols", "findImports", "getFileOutline", "getDiagnostics"];
+
+/** What `/diagnose` finds in a TypeScript project with its language server running or not. */
+function diagnose(s: LspState): IntelligenceCheck {
+  const ts = s.servers.find((v) => v.id === "typescript-language-server");
+  const lspUp = s.started && ts?.ready === true;
+  const backends: IntelligenceCheck["backends"] = [
+    {
+      backend: "lsp:standalone",
+      tier: 1,
+      supports: true,
+      initialized: lspUp,
+      probes: OPERATIONS.map((operation, i) => ({
+        operation,
+        status: lspUp ? "pass" : "empty",
+        ms: lspUp ? 12 + i * 7 : 0,
+      })),
+    },
+    {
+      backend: "ts-morph",
+      tier: 2,
+      supports: true,
+      initialized: true,
+      initMs: 840,
+      probes: OPERATIONS.map((operation, i) => ({ operation, status: "pass", ms: 3 + i * 40 })),
+    },
+    {
+      backend: "tree-sitter",
+      tier: 3,
+      supports: true,
+      initialized: true,
+      initMs: 60,
+      probes: OPERATIONS.map((operation, i) =>
+        operation === "getDiagnostics"
+          ? { operation, status: "unsupported" }
+          : { operation, status: "pass", ms: 20 + i * 5 },
+      ),
+    },
+    {
+      backend: "regex",
+      tier: 4,
+      supports: true,
+      initialized: true,
+      probes: OPERATIONS.map((operation) =>
+        operation === "getDiagnostics"
+          ? { operation, status: "unsupported" }
+          : { operation, status: "pass", ms: 1 },
+      ),
+    },
+  ];
+  return {
+    language: "typescript",
+    probeFile: "C:\\Project\\BAKED\\src\\boot.tsx",
+    backends,
+    failing: [],
+  };
+}
+
 const fail = (status: number, code: string, message: string) =>
   response(status, { error: { code, message } });
 
@@ -146,6 +204,13 @@ export const lspRoutes: MockRoute = (request: MockRequest) => {
     s.started = true;
     const restarted = start(s);
     return answer(first ? [] : restarted, { startedNow: first });
+  }
+  if (path === "/v1/lsp/diagnose" && method === "POST") {
+    if (!s.started) {
+      s.started = true;
+      start(s);
+    }
+    return response(200, diagnose(s));
   }
   const match = ITEM.exec(path);
   if (!match || method !== "POST") return fail(404, "NOT_FOUND", `No endpoint at ${path}`);

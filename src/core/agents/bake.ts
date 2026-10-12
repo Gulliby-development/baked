@@ -667,6 +667,8 @@ interface BakeAgentOptions {
   disabledTools?: Set<string>;
   tabId?: string;
   tabLabel?: string;
+  /** Tools of the session kind (the coordinator's brief tool); allowed in restricted modes too. */
+  extraTools?: Record<string, unknown>;
 }
 
 /** Creates the main Baked ToolLoopAgent — model can change between turns (Ctrl+L). */
@@ -697,6 +699,7 @@ export function createBakeAgent({
   disabledTools,
   tabId,
   tabLabel,
+  extraTools,
 }: BakeAgentOptions) {
   const isRestricted = RESTRICTED_MODES.has(bakeMode);
   const repoMap = contextManager.isRepoMapReady() ? contextManager.getRepoMap() : undefined;
@@ -906,6 +909,7 @@ export function createBakeAgent({
       ...orderedTools,
       ...subagentTools,
       ...buildInteractiveTools(interactiveCallbacks, { cwd, sessionId, bakeMode }),
+      ...extraTools,
     },
     cwd ?? process.cwd(),
   );
@@ -914,10 +918,12 @@ export function createBakeAgent({
   // Total: 3 breakpoints. The system+tools prefix is the biggest stable cache.
 
   const allToolNames = Object.keys(allTools) as (keyof typeof allTools)[];
-  const restrictedSet = new Set(RESTRICTED_TOOL_NAMES);
+  const restrictedSet = new Set([...RESTRICTED_TOOL_NAMES, ...Object.keys(extraTools ?? {})]);
   const planExecSet = new Set(PLAN_EXECUTION_TOOL_NAMES);
 
-  const coreSet = activeDeferredTools ? new Set(CORE_TOOL_NAMES) : undefined;
+  const coreSet = activeDeferredTools
+    ? new Set([...CORE_TOOL_NAMES, ...Object.keys(extraTools ?? {})])
+    : undefined;
 
   // Mode-deny gate: wrap each tool's execute so a tool disallowed by the active
   // MODE returns an instructive deny result instead of running. The full tool

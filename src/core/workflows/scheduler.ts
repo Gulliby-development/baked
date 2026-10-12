@@ -127,6 +127,7 @@ import {
 import {
   type AgentProfile,
   AnalysisSchema,
+  DEFAULT_MAX_PARALLEL_RUNS,
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
@@ -302,6 +303,10 @@ export class WorkflowScheduler {
   readonly checks: CheckRunner;
   /** The mutation lease of the root the driven run writes: the project or its worktree. */
   private mutation: LeaseResource = "mutation";
+  /** The driven run's execution lease: the workspace's, or the run's own in worktree mode. */
+  private execution: LeaseResource = "execution";
+  /** How many runs may execute in the workspace at once (`workflows.maxParallelRuns`). */
+  maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
   /**
@@ -325,12 +330,14 @@ export class WorkflowScheduler {
     this.routing.delete(runId);
     const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
     raiseToStartEstimate(this.store, runId, policy);
-    // A worktree run holds the lease of its worktree; the project working copy stays free.
-    this.mutation =
-      executionModeOf(policy) === "worktree"
-        ? mutationLeaseFor(this.store.workspace, join(this.store.workspace, worktreePath(runId)))
-        : "mutation";
-    this.leases.acquire("execution", runId);
+    // A worktree run holds the leases of its own worktree and execution; the project working copy
+    // stays free and other worktree runs can execute beside it.
+    const inWorktree = executionModeOf(policy) === "worktree";
+    this.mutation = inWorktree
+      ? mutationLeaseFor(this.store.workspace, join(this.store.workspace, worktreePath(runId)))
+      : "mutation";
+    this.execution = inWorktree ? `execution:${runId}` : "execution";
+    this.leases.acquire(this.execution, runId, { maxExecuting: this.maxParallelRuns });
     try {
       this.leases.acquire(this.mutation, runId);
     } catch (error) {
@@ -364,7 +371,7 @@ export class WorkflowScheduler {
       await withinWorkflow(this.leases.owner, async () => {
         while (this.store.run(runId).status === "running") {
           signal.throwIfAborted();
-          this.leases.assert("execution");
+          this.leases.assert(this.execution);
           this.leases.assert(this.mutation);
           const run = this.store.run(runId);
           const state = this.store.state(runId);
@@ -3532,7 +3539,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         (e) =>
           ["prepared", "unknown"].includes(e.status) && intentRoot(e.intent_json) === entry.path,
       );
-    if (owned && !unsettled) await removeTaskWorktree(this.store.workspace, entry.path);
+    if (owned && !unsettled) {
+      // A locked directory is a leftover, not a failure: the run goes on and the directory is
+      // removed with the run's worktrees or when the task worktree is created again.
+      const removal = await removeTaskWorktree(this.store.workspace, entry.path);
+      if (!removal.removed)
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            "worktree",
+            `worktree/leftover-${entry.task.id}.json`,
+            canonical({ path: entry.path, warning: removal.warning }),
+          ),
+        );
+    }
     this.leases.releaseOne(entry.lease());
   }
   /**

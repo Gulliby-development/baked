@@ -79,6 +79,7 @@ const FULL_CAPABILITIES = [
   "diff-stats",
   "plan-mode",
   "chat-undo",
+  "checkpoints",
   "run-memory",
   "chat-memory",
   "images",
@@ -87,6 +88,8 @@ const FULL_CAPABILITIES = [
   "skills-install",
   "mcp",
   "lsp",
+  "run-maintenance",
+  "lsp-diagnose",
   "custom-commands",
   "settings",
   "git",
@@ -180,6 +183,35 @@ export function createMockBridge(scenario: MockScenario = "default"): DesktopBri
     closeProject: async (key) => setOpen(key, false),
     restartProject: async (key) => setOpen(key, true),
     addFolder: async () => null,
+    pickFolder: async () => "/home/you/code",
+    checkNewProject: async (draft) => {
+      const path = draft.folder === null ? draft.parent : `${draft.parent}/${draft.folder}`;
+      const taken = projects.some((p) => p.path === path);
+      const error = !draft.name.trim()
+        ? "Enter a project name."
+        : taken
+          ? `${path} is not empty. Choose an empty folder, or open it as an existing folder.`
+          : null;
+      return { path, creates: !taken && draft.folder !== null, error };
+    },
+    createProject: async (draft) => {
+      const path = draft.folder === null ? draft.parent : `${draft.parent}/${draft.folder}`;
+      const created = project(
+        `p${projects.length + 1}`,
+        draft.name.trim(),
+        path,
+        {
+          sessions: 0,
+          lastSessionAt: null,
+          activeRuns: 0,
+          attention: 0,
+        },
+        { open: true, backend: { kind: "running", version: "0.1.1" }, lastOpenedAt: Date.now() },
+      );
+      projects = [created, ...projects];
+      emitProjects();
+      return created;
+    },
     manageProject: async (key, action) => {
       projects =
         action === "forget"

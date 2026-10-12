@@ -221,6 +221,16 @@ export function usageQuery(query: UsageQuery): string {
   return params.toString();
 }
 
+/** The Markdown of an export answer; an older backend ignores `format` and answers JSON. */
+function markdownOf(answer: unknown): string | null {
+  return answer !== null &&
+    typeof answer === "object" &&
+    "markdown" in answer &&
+    typeof answer.markdown === "string"
+    ? answer.markdown
+    : null;
+}
+
 /** True when the backend is too old to have the endpoint that was called. */
 export function isMissingEndpoint(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
@@ -312,4 +322,15 @@ export const insights = {
     call<UsageSummary>(key, "GET", `/v1/usage?${usageQuery(query)}`),
   runUsage: (key: string, runId: string) =>
     call<RunUsageReport>(key, "GET", `/v1/workflow/runs/${encodeURIComponent(runId)}/usage`),
+  /** The summary as a Markdown document to share; null from a backend without the export. */
+  usageMarkdown: async (key: string, query: UsageQuery): Promise<string | null> =>
+    markdownOf(await call<unknown>(key, "GET", `/v1/usage?${usageQuery(query)}&format=md`)),
+  runUsageMarkdown: async (key: string, runId: string): Promise<string | null> =>
+    markdownOf(
+      await call<unknown>(
+        key,
+        "GET",
+        `/v1/workflow/runs/${encodeURIComponent(runId)}/usage?format=md`,
+      ),
+    ),
 };

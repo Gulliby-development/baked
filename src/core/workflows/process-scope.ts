@@ -29,6 +29,29 @@ export interface ProcessResult {
   truncated: boolean;
   durationMs: number;
 }
+/** A Windows batch script: Bun and Node refuse to spawn it directly (EINVAL) and it needs cmd.exe. */
+export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
+
+/**
+ * The cmd.exe invocation of a batch script: `cmd.exe /d /s /c "<quoted command line>"`, passed
+ * verbatim. Every word is double-quoted, so `& | < > ^ ( )` stay literal. A character that cmd.exe
+ * expands or ends a line on even inside quotes (`%`, `"`, a line break, is refused instead of
+ * escaped, which keeps an argument from becoming a second command.
+ */
+export function windowsBatchInvocation(
+  executable: string,
+  args: string[],
+  comspec: string = process.env.ComSpec || "cmd.exe",
+): { executable: string; args: string[] } {
+  for (const word of [executable, ...args])
+    if (/["%\r\n]/.test(word) || word.endsWith("\\"))
+      throw new Error(
+        `Refusing to run ${executable} through cmd.exe: the argument ${JSON.stringify(word)} contains a quote, percent sign, line break or trailing backslash.`,
+      );
+  const line = [executable, ...args].map((word) => `"${word}"`).join(" ");
+  return { executable: comspec, args: ["/d", "/s", "/c", `"${line}"`] };
+}
+
 export class ProcessScope {
   private children = new Map<ChildProcess, string>();
   async execute(
@@ -48,13 +71,16 @@ export class ProcessScope {
     options.signal.throwIfAborted();
     const started = performance.now();
     const scope = randomUUID();
+    const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
+    const launch = batch ? windowsBatchInvocation(executable, args) : { executable, args };
     return new Promise((resolve, reject) => {
-      const child = spawn(executable, args, {
+      const child = spawn(launch.executable, launch.args, {
         cwd: options.cwd,
         env: { ...options.env, [PROCESS_SCOPE_ENV]: scope },
         shell: false,
         windowsHide: true,
-        windowsVerbatimArguments: options.verbatim === true && process.platform === "win32",
+        windowsVerbatimArguments:
+          (options.verbatim === true || batch) && process.platform === "win32",
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       });

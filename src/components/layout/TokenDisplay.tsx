@@ -1,6 +1,6 @@
 import { fg as fgStyle, StyledText, type TextRenderable } from "@opentui/core";
 import { useEffect, useRef } from "react";
-import { getThemeTokens } from "../../core/theme/index.js";
+import { getThemeTokens, useTheme } from "../../core/theme/index.js";
 import {
   computeTotalCostFromBreakdown,
   isModelFree,
@@ -31,36 +31,19 @@ function buildContent(costCents: number, cacheHitPct: number, free: boolean): St
   return new StyledText([fgStyle(color)(fmtCost(cost))]);
 }
 
+/** Session cost for the header. The count eases toward a new total, and its timer stops once settled. */
 export function TokenDisplay() {
+  const theme = useTheme();
   const textRef = useRef<TextRenderable>(null);
-
-  const costRef = useRef(0);
-  const cacheHitRef = useRef(0);
   const currentCostRef = useRef(0);
+  const cacheHitRef = useRef(0);
   const freeRef = useRef(false);
 
-  useEffect(
-    () =>
-      useStatusBarStore.subscribe((state) => {
-        const usage = state.tokenUsage;
-        const breakdown = usage.modelBreakdown;
-        // Check if ALL models in the breakdown are local or free
-        const modelIds = Object.keys(breakdown);
-        freeRef.current = modelIds.length > 0 && modelIds.every((mid) => isModelFree(mid));
-        const rawCost =
-          breakdown && modelIds.length > 0 ? computeTotalCostFromBreakdown(breakdown) : 0;
-        costRef.current = Number.isFinite(rawCost) ? Math.round(rawCost * 100) : 0;
-        const totalInput = usage.prompt + usage.subagentInput + usage.cacheRead + usage.cacheWrite;
-        cacheHitRef.current = totalInput > 0 ? Math.round((usage.cacheRead / totalInput) * 100) : 0;
-      }),
-    [],
-  );
-
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the theme only triggers a repaint
   useEffect(() => {
-    const timer = setInterval(() => {
-      const target = costRef.current;
-      if (currentCostRef.current === target) return;
-      currentCostRef.current = approach(currentCostRef.current, target);
+    let target = 0;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const paint = () => {
       try {
         if (textRef.current)
           textRef.current.content = buildContent(
@@ -69,9 +52,40 @@ export function TokenDisplay() {
             freeRef.current,
           );
       } catch {}
-    }, STEP_MS);
-    return () => clearInterval(timer);
-  }, []);
+    };
+    const step = () => {
+      currentCostRef.current = approach(currentCostRef.current, target);
+      paint();
+      if (currentCostRef.current === target && timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const read = (state: ReturnType<typeof useStatusBarStore.getState>) => {
+      const usage = state.tokenUsage;
+      const breakdown = usage.modelBreakdown;
+      // Free only when every model in the breakdown is local or free.
+      const modelIds = Object.keys(breakdown);
+      freeRef.current = modelIds.length > 0 && modelIds.every((mid) => isModelFree(mid));
+      const rawCost =
+        breakdown && modelIds.length > 0 ? computeTotalCostFromBreakdown(breakdown) : 0;
+      target = Number.isFinite(rawCost) ? Math.round(rawCost * 100) : 0;
+      const totalInput = usage.prompt + usage.subagentInput + usage.cacheRead + usage.cacheWrite;
+      cacheHitRef.current = totalInput > 0 ? Math.round((usage.cacheRead / totalInput) * 100) : 0;
+    };
+    read(useStatusBarStore.getState());
+    currentCostRef.current = target;
+    paint();
+    const off = useStatusBarStore.subscribe((state) => {
+      read(state);
+      if (currentCostRef.current === target) paint();
+      else if (!timer) timer = setInterval(step, STEP_MS);
+    });
+    return () => {
+      off();
+      if (timer) clearInterval(timer);
+    };
+  }, [theme]);
 
   return (
     <text

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { type Selection, TextAttributes } from "@opentui/core";
+import type { Selection } from "@opentui/core";
 import { useRenderer } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -36,6 +36,7 @@ import { restoreSessionImages } from "../core/tools/show-image.js";
 import {
   artPalette,
   BUN_HEIGHT,
+  brandChipCells,
   bunRows,
   LOCKUP_WIDTH,
   lockupRows,
@@ -66,6 +67,7 @@ import type { AppConfig, ChatMessage, TaskRouter } from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
 import { artText } from "./brand/artText.js";
 import { ContextBar } from "./layout/ContextBar.js";
+import { isCompactTerminal } from "./layout/compact.js";
 import { Footer } from "./layout/Footer.js";
 import { ProjectIndicator } from "./layout/ProjectIndicator.js";
 import type { ConfigScope } from "./layout/shared.js";
@@ -211,6 +213,7 @@ import { useCopySelection } from "../hooks/useCopySelection.js";
 import { getAppSessionId, setAppSessionId } from "../stores/session.js";
 import { MemoryBrowser } from "./modals/MemoryBrowser.js";
 import { DialogHost } from "./ui/DialogHost.js";
+import { Chip } from "./ui/KeyCap.js";
 
 interface Props {
   config: AppConfig;
@@ -1175,6 +1178,7 @@ export function App({
   }
 
   const anyModalOpen = shutdownPhase >= 0 || isModalOpen;
+  const compactLayout = isCompactTerminal(termWidth, termHeight);
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: opentui box is the interactive primitive in TUI; a11y rule targets DOM
@@ -1194,8 +1198,8 @@ export function App({
         flexDirection="row"
       >
         <box flexShrink={0} flexDirection="row" gap={0}>
-          <text wrapMode="none" content={artText([ovenMarkCells(artPalette(t))])} />
-          <text fg={t.textFaint}> v{CURRENT_VERSION}</text>
+          <text wrapMode="none" content={artText([brandChipCells(artPalette(t))])} />
+          {!compactLayout && <text fg={t.textFaint}> v{CURRENT_VERSION}</text>}
         </box>
         <box gap={1} flexShrink={1} flexDirection="row" justifyContent="center" overflow="hidden">
           <text truncate>
@@ -1206,10 +1210,10 @@ export function App({
                 <span fg={t.textDim}>›</span>
               </>
             )}
-            <span fg={t.textSecondary}>{truncate(displayModel, 28)}</span>
+            <span fg={t.textSecondary}>{truncate(displayModel, compactLayout ? 16 : 28)}</span>
           </text>
-          <ProjectIndicator cwd={cwd} compact={termWidth < 120} />
-          {git.isRepo && (
+          {!compactLayout && <ProjectIndicator cwd={cwd} compact={termWidth < 120} />}
+          {git.isRepo && !compactLayout && (
             <>
               <text fg={t.textFaint}>│</text>
               <text fg={git.isDirty ? t.amber : t.success} truncate>
@@ -1218,27 +1222,31 @@ export function App({
               </text>
             </>
           )}
-          {tabMgr.tabCount <= 1 && bakeMode !== "default" && (
-            <>
-              <text fg={t.textFaint}>│</text>
-              <text fg={modeColor} attributes={TextAttributes.BOLD}>
-                [{modeLabel}]
-              </text>
-            </>
-          )}
-          <text fg={t.textFaint}>│</text>
+          <text wrapMode="none" flexShrink={0}>
+            <Chip label={modeLabel.toUpperCase()} fill={modeColor} />
+          </text>
           <ContextBar
             contextManager={contextManager}
             modelId={activeModelForHeader}
             suppressCompacting={tabMgr.tabCount > 1}
           />
-          <text fg={t.textFaint}>│</text>
-          <TokenDisplay />
+          {!compactLayout && (
+            <>
+              <text fg={t.textFaint}>│</text>
+              <TokenDisplay />
+            </>
+          )}
         </box>
       </box>
 
       {tabMgr.tabCount > 1 ? (
-        <box key="tab-bar" flexShrink={0} marginTop={1} flexDirection="row" flexWrap="wrap">
+        <box
+          key="tab-bar"
+          flexShrink={0}
+          marginTop={compactLayout ? 0 : 1}
+          flexDirection="row"
+          flexWrap="wrap"
+        >
           <TabBar
             tabs={tabMgr.tabs}
             activeTabId={tabMgr.activeTabId}
@@ -1256,9 +1264,9 @@ export function App({
               return getShortModelLabel(model);
             }}
           />
-          <CheckpointLegend tabId={tabMgr.activeTabId} />
+          {!compactLayout && <CheckpointLegend tabId={tabMgr.activeTabId} />}
         </box>
-      ) : (
+      ) : compactLayout ? null : (
         <CheckpointLegend tabId={tabMgr.activeTabId} fallbackSpacer />
       )}
 

@@ -28,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID` and `/workflow routing`, `/workflow report RUN_ID` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -36,6 +36,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | --- | --- |
 | `/project` | This project: sessions, workflow runs, what waits for you |
 | `/project rename` | `/project rename NAME` renames this project in the picker, `baked projects` and the desktop app; without a name it restores the default |
+| `/project waiting` | Run requests and blocked runs that wait for you, in this project and in your pinned and recent projects; Enter opens the run here or switches to its project |
 | `/projects` | Switch project: known folders, pin, forget, open folder (Alt+O) |
 | `/workflow` | Spec-driven workflows, approvals and verification |
 | `/editor` | Compose a message in $EDITOR and send it (Ctrl+X E) |
@@ -107,7 +108,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | Command | Does |
 | --- | --- |
 | `/context` | Context & system dashboard |
-| `/diagnose` | Health check — LSP, tree-sitter, semantic indexing |
+| `/diagnose` | Health check — LSP, tree-sitter, semantic indexing (also `baked diagnose`, and Check code intelligence in the desktop) |
 | `/graph` | Code graph at a glance: biggest groups and key files |
 | `/lsp` | Manage LSP servers — install, disable, enable |
 | `/lsp install` | Install & manage LSP servers (Mason registry) |
@@ -187,6 +188,7 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked doctor` | Checks before a workflow run: keys, routed models, check commands, Git, budget |
 | `baked serve [--port N] [--allow-origin ORIGIN]` | Local HTTP API on 127.0.0.1 for the desktop app ([local API](workflows/runtime.md#local-api-baked-serve)) |
 | `baked session fork ID [--at MESSAGE_ID \| --checkpoint N] [--rollback-files] [--force] [--json]` | Save a fork of a session, optionally rolling files back ([forking a session](headless.md#forking-a-session)) |
+| `baked session checkpoints ID [--json]` | List the turns of a saved session that `undo --to N` can go back to ([undoing a turn](headless.md#undoing-a-turn)) |
 | `baked session undo ID [--to N] [--force] [--json]`, `baked session redo ID [--force] [--json]` | Undo the last turn of a saved session with its file edits, or put the oldest undone turn back ([undoing a turn](headless.md#undoing-a-turn)) |
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
 | `baked telemetry [--json]`, `baked telemetry on\|off` | The locally recorded usage events, or turn recording on or off in the global config ([privacy](privacy.md)) |

@@ -1,4 +1,10 @@
-import type { LspServer, LspView } from "../../client/lsp.js";
+import type {
+  BackendCheck,
+  IntelligenceCheck,
+  LspServer,
+  LspView,
+  ProbeStatus,
+} from "../../client/lsp.js";
 import type { DotTone } from "../../components/ui/dot.js";
 
 export type LspState = "running" | "starting" | "failed" | "installed" | "missing" | "disabled";
@@ -46,3 +52,34 @@ export function lspSourceLine(server: LspServer): string {
 export function visibleServers(view: LspView, all: boolean): LspServer[] {
   return all ? view.servers : view.servers.filter((s) => s.detected);
 }
+
+export type BackendState = "ok" | "failing" | "empty" | "unsupported";
+
+/** One word per backend of a code intelligence check, as `baked diagnose` prints it. */
+export function backendState(check: IntelligenceCheck, backend: BackendCheck): BackendState {
+  if (!backend.supports) return "unsupported";
+  if (check.failing.includes(backend.backend)) return "failing";
+  return backend.probes.some((p) => p.status === "pass") ? "ok" : "empty";
+}
+
+export const BACKEND_STATE_LABEL: Record<BackendState, string> = {
+  ok: "Working",
+  failing: "Failing",
+  empty: "No results",
+  unsupported: "Not for this language",
+};
+
+export const BACKEND_STATE_TONE: Record<BackendState, DotTone> = {
+  ok: "ok",
+  failing: "err",
+  empty: "warn",
+  unsupported: "",
+};
+
+export const PROBE_LABEL: Record<ProbeStatus, string> = {
+  pass: "ok",
+  empty: "empty",
+  error: "error",
+  timeout: "timed out",
+  unsupported: "—",
+};

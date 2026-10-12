@@ -9,6 +9,7 @@ import { buildProviderOptions } from "../llm/provider-options.js";
 import { resolveTaskModel } from "../llm/task-router.js";
 import { emitCacheReset } from "../tools/file-events.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
+import { BRIEF_TOOL, BriefStore, briefTool, coordinatorInstructions } from "./coordinator.js";
 import { type ExpandedChatInput, expandChatInput } from "./input-expansion.js";
 import { type MentionSuggestion, suggestMentions } from "./mention-suggest.js";
 import type {
@@ -77,8 +78,15 @@ export class BakeChatHost implements ChatAgentHost {
     const resources = await this.resources(request.sessionId);
     const { context, cache } = resources;
     context.setContextWindow(provider.contextWindow);
+    const instructions = buildInstructionPrompt(
+      loadInstructions(this.workspace, this.config.instructionFiles),
+    );
+    // A coordinator turn reads its brief fresh, so edits from the API or a past turn show.
+    const brief = request.coordinator ? new BriefStore(this.workspace, request.sessionId) : null;
     context.setProjectInstructions(
-      buildInstructionPrompt(loadInstructions(this.workspace, this.config.instructionFiles)),
+      brief
+        ? [instructions, coordinatorInstructions(brief.read())].filter(Boolean).join("\n\n")
+        : instructions,
     );
     context.setBakeMode(request.mode);
     this.applyContextSettings(resources);
@@ -101,6 +109,7 @@ export class BakeChatHost implements ChatAgentHost {
       onApproveDestructive: request.onApproveDestructive,
       drainSteering: request.drainSteering,
       sessionId: request.sessionId,
+      ...(brief ? { extraTools: { ...request.tools, [BRIEF_TOOL]: briefTool(brief) } } : {}),
     });
     const turnAgent: TurnAgent = agent;
     return { agent: turnAgent, contextWindow: provider.contextWindow };

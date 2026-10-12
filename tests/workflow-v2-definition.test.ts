@@ -24,6 +24,7 @@ import {
   loadDefinition,
 } from "../src/core/workflows/v2/definitions.js";
 import { checkToGate, gateToCheck, loadGateLibrary } from "../src/core/workflows/v2/library.js";
+import { workflowLine } from "../src/core/workflows/v2/line.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
 
 const examples = join(import.meta.dir, "fixtures", "workflow-v2");
@@ -365,6 +366,28 @@ describe("definitions on disk", () => {
     ]);
     // Schema 1 definitions are drawn through their v2 upgrade.
     expect(listDefinitions(root, policy).find((d) => d.id === "sdd")?.line.stages.length).toBeGreaterThan(0);
+  });
+
+  test("the line puts each gate at its station or on the transition it guards, in words", () => {
+    const root = workspace();
+    const standard = listDefinitions(root, policy).find((d) => d.id === "standard");
+    const checks = standard?.line.stages.find((s) => s.id === "checks");
+    expect(checks?.gates.filter((g) => g.transition === null).map((g) => `${g.id}:${g.mode}`)).toEqual(
+      policy.checks.filter((c) => c.scope === "feature").map((c) => `${c.id}:${c.required ? "required" : "advisory"}`),
+    );
+    expect(checks?.gates[0]?.does).toStartWith("Runs ");
+    const review = standard?.line.stages.find((s) => s.id === "review");
+    expect(review?.gates.map((g) => g.type)).toContain("ai-review");
+    expect(review?.gates.find((g) => g.id === "correctness-review")?.does).toBe("AI correctness review");
+    const definition = instantiatePreset(builtinPresets.get("quick-fix") as WorkflowV2, policy);
+    const exit = definition.transitions.find((t) => t.from === "implement");
+    if (!exit) throw new Error("quick-fix has no transition from implement");
+    const bound = { ...definition, transitions: definition.transitions.map((t) => (t === exit ? { ...t, gates: [...t.gates, { gateId: "missing-gate" }] } : t)) };
+    const line = workflowLine(bound, loadGateLibrary(root, policy).gates);
+    expect(line.stages.find((s) => s.id === "implement")?.gates.at(-1)).toEqual({
+      id: "missing-gate", type: null, mode: "required", does: "Unknown gate: no gate with this ID in the library",
+      transition: { id: exit.id, to: exit.to, on: exit.on },
+    });
   });
 });
 

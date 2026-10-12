@@ -30,6 +30,7 @@ import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
 import { BakeChatHost } from "../chat/host.js";
+import { serviceStateSource } from "../chat/project-state.js";
 import { scriptedHostFromEnv } from "../chat/scripted-host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
@@ -49,11 +50,14 @@ import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
 import { type AttentionItem, attentionItems } from "../workflows/attention.js";
 import { WorkflowFault } from "../workflows/errors.js";
+import { uniqueFeatureId } from "../workflows/feature-id.js";
+import { initiativeStartRequest } from "../workflows/initiatives/forms.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import { redactSecrets } from "../workflows/redaction.js";
 import { type RunSnapshot, SafeId, type WorkflowErrorCode } from "../workflows/schemas.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { usageSummary } from "../workflows/usage.js";
+import { usageMarkdown } from "../workflows/usage-markdown.js";
 import type { DraftModel } from "../workflows/v2/gate-draft.js";
 import {
   bearerMatches,
@@ -72,7 +76,7 @@ import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
-import { lspRoute } from "./lsp-routes.js";
+import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
 import { progressRoute } from "./progress-routes.js";
@@ -87,11 +91,15 @@ import {
   DeliverExecuteBody,
   EventsQuery,
   EvidenceBody,
+  ExportBody,
   ExtendBody,
   GatesConfirmBody,
+  GcBody,
+  ImportBody,
   ListQuery,
   PreRunQuery,
   RecoverBody,
+  RedactBody,
   RejectBody,
   RerouteBody,
   ReviseBody,
@@ -123,6 +131,7 @@ export const CAPABILITIES = [
   "diff-stats",
   "plan-mode",
   "chat-undo",
+  "checkpoints",
   "run-memory",
   "chat-memory",
   "images",
@@ -130,6 +139,8 @@ export const CAPABILITIES = [
   "skills-install",
   "mcp",
   "lsp",
+  "run-maintenance",
+  "lsp-diagnose",
   "custom-commands",
   "settings",
   "git",
@@ -139,6 +150,7 @@ export const CAPABILITIES = [
   "diagnostics",
   "gate-drafts",
   "progress",
+  "coordinator",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -166,6 +178,8 @@ export interface ApiServerOptions {
   settingsSecrets?: SettingsSecretStore;
   /** Language-server lookups and installs; tests pass fakes. */
   lspDeps?: Partial<LspServiceDeps>;
+  /** Replaces the code intelligence health check of `POST /v1/lsp/diagnose` in tests. */
+  lspDiagnose?: LspRouteContext["diagnose"];
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Drafts gates from a sentence; tests pass a scripted model. */
@@ -426,6 +440,35 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);
+  chat.setProjectState(
+    serviceStateSource(service, initiatives, () => attention()),
+    {
+      // The coordinator starts work through the same paths as POST /v1/workflow/runs and
+      // /v1/initiatives; approvals stay with the person.
+      startRun: async ({ prompt, workflow, feature }) =>
+        launch(
+          startArgs({
+            commandId: crypto.randomUUID(),
+            prompt,
+            feature:
+              feature ??
+              uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
+            owner: "Coordinator",
+            ...(workflow ? { workflow } : {}),
+          }),
+        ),
+      startInitiative: async ({ initiativeId, prompt }) => {
+        const view = await initiatives.start(
+          initiativeStartRequest({ initiativeId, prompt }, service.config, {
+            commandId: crypto.randomUUID(),
+            ownerLabel: "Coordinator",
+          }),
+        );
+        driveInitiative(view.initiativeId);
+        return view;
+      },
+    },
+  );
   const graphCache = new CodeGraphCache(service.workspace);
   let graphRoot: ContextManager | null = null;
   let graphRootStarted = false;
@@ -785,6 +828,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         workspace: service.workspace,
         start: () => service.rootContext.get(),
         ...(options.lspDeps ? { deps: options.lspDeps } : {}),
+        ...(options.lspDiagnose ? { diagnose: options.lspDiagnose } : {}),
         ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??
@@ -924,6 +968,37 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    if (path === "/v1/workflow/gc") {
+      only("POST");
+      const body = GcBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "gc",
+          positional: [],
+          flags: { before: body.before, ...(body.dryRun ? { "dry-run": true } : {}) },
+        }),
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/import") {
+      only("POST");
+      const body = ImportBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "import",
+          positional: [],
+          flags: {
+            source: body.source,
+            path: body.path,
+            feature: body.featureId,
+            "command-id": body.commandId ?? crypto.randomUUID(),
+          },
+        }),
+        origin,
+      );
+    }
     if (path === "/v1/workflow/gates") {
       only("GET");
       return json(200, await execute({ command: "gates", positional: [], flags: {} }), origin);
@@ -959,14 +1034,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (path === "/v1/usage") {
       only("GET");
       const query = queryOf(url, UsageQuery);
+      const summary = usageSummary(service.store, {
+        days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
+        groupBy: query.groupBy ?? ["model"],
+        ...(query.model !== undefined ? { model: query.model } : {}),
+        ...(query.stage !== undefined ? { stage: query.stage } : {}),
+      });
       return json(
         200,
-        usageSummary(service.store, {
-          days: Math.min(Math.max(Number(query.days ?? 7), 1), 366),
-          groupBy: query.groupBy ?? ["model"],
-          ...(query.model !== undefined ? { model: query.model } : {}),
-          ...(query.stage !== undefined ? { stage: query.stage } : {}),
-        }),
+        query.format === "md" ? { markdown: usageMarkdown(summary) } : summary,
         origin,
       );
     }
@@ -1028,6 +1104,33 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    if (action === "export") {
+      only("POST");
+      const body = ExportBody.parse(await readJson(req));
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+      return json(
+        200,
+        await execute({
+          command: "export",
+          positional: [runId],
+          flags: { destination: body.destination ?? `.baked/exports/${runId}-${stamp}` },
+        }),
+        origin,
+      );
+    }
+    if (action === "redact") {
+      only("POST");
+      const body = RedactBody.parse(await readJson(req));
+      return json(
+        200,
+        await execute({
+          command: "redact",
+          positional: [runId],
+          flags: { file: body.artifactId, reason: body.reason },
+        }),
+        origin,
+      );
+    }
     if (action === "progress") {
       only("GET");
       return json(
@@ -1039,12 +1142,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (action === "usage" || action === "artifacts" || action === "report") {
       only("GET");
       const file = action === "artifacts" ? url.searchParams.get("file") : null;
+      const format = action === "usage" ? url.searchParams.get("format") : null;
+      if (format !== null && format !== "md")
+        throw new ApiError(400, "INVALID_REQUEST", "format must be md");
       return json(
         200,
         await execute({
           command: action,
           positional: [runId],
-          flags: file ? { file: SafeId.parse(file) } : {},
+          flags: file ? { file: SafeId.parse(file) } : format ? { format } : {},
         }),
         origin,
       );

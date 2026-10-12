@@ -28,6 +28,7 @@ export interface SessionListEntry {
   updatedAt: number;
   sizeBytes: number;
   projectId?: string;
+  kind?: "coordinator";
 }
 
 function withProjectId(projectId: string | null | undefined): { projectId?: string } {
@@ -295,6 +296,7 @@ export class SessionManager {
             updatedAt: meta.updatedAt,
             sizeBytes: this.sessionDirSize(fullPath),
             ...(meta.projectId ? { projectId: meta.projectId } : {}),
+            ...(meta.kind === "coordinator" ? { kind: meta.kind } : {}),
           });
         } catch {
           // Skip corrupted entries

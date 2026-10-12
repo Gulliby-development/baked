@@ -182,7 +182,7 @@ describe("workflow worktree execution", () => {
 
     // Every agent call worked in the worktree; the user could edit the project meanwhile.
     expect(new Set(fx.executor.roots)).toEqual(new Set([tree]));
-    expect(fx.executor.leases.sort()).toEqual(["execution", `worktree:${worktree?.path}`]);
+    expect(fx.executor.leases.sort()).toEqual([`execution:${run.runId}`, `worktree:${worktree?.path}`]);
     expect(fx.executor.userCouldEdit).toBe(true);
     expect(existsSync(join(fx.root, "value.txt"))).toBe(false);
     expect(status(fx.root)).toBe("");
@@ -442,5 +442,84 @@ describe("workflow worktree execution", () => {
     ).toBe(true);
     expect(parseWorkflowArgs(["discard-worktree", "r", "--expected-revision", "2"]).command).toBe("discard-worktree");
     expect(() => parseWorkflowArgs(["status", "r", "--worktree"])).toThrow(/not valid/);
+  });
+});
+
+/** Holds each implementation until `width` of them are in flight, so overlap is proven, not timed. */
+class OverlapExecutor implements AgentExecutor {
+  inFlight = 0;
+  maxInFlight = 0;
+  private waiting: (() => void)[] = [];
+  constructor(
+    private workspace: string,
+    private width: number,
+  ) {}
+  async execute(request: ExecutionRequest) {
+    const root = request.root ?? this.workspace;
+    if (request.profile.output === "implementation") {
+      this.inFlight++;
+      this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+      if (this.inFlight >= this.width) for (const release of this.waiting.splice(0)) release();
+      else
+        await new Promise<void>((resolve) => {
+          this.waiting.push(resolve);
+          // Without a partner the run still finishes; the assertion on maxInFlight then fails.
+          setTimeout(resolve, 5000);
+        });
+      this.inFlight--;
+    }
+    return new FixtureExecutor(root).execute(request);
+  }
+}
+
+describe("parallel worktree runs", () => {
+  function parallelSetup(maxParallelRuns?: number) {
+    const root = mkdtempSync(join(tmpdir(), "baked-parallel-runs-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    repository(root);
+    const executor = new OverlapExecutor(root, maxParallelRuns ?? 2);
+    const workflows = { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: fixturePolicy, ...(maxParallelRuns ? { maxParallelRuns } : {}) };
+    const service = new NativeWorkflowService(root, { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows }, executor);
+    cleanups.push(() => service.close());
+    const drive = (runId: string) => service.drive(runId, new AbortController().signal);
+    /** A worktree run approved and ready to implement. */
+    const approved = async () => {
+      const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: fixturePolicy, executionMode: "worktree" });
+      expect((await drive(run.runId)).status).toBe("waiting");
+      const request = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+      if (!request) throw new Error("No pending approval");
+      await service.decide(run.runId, { commandId: newId(), expectedRevision: service.store.run(run.runId).revision }, { kind: "approve", requestId: request.id, digest: request.digest });
+      return run.runId;
+    };
+    return { root, executor, service, drive, approved };
+  }
+
+  test("two worktree runs in one workspace execute at the same time, each on its own branch", async () => {
+    const fx = parallelSetup();
+    const first = await fx.approved();
+    const second = await fx.approved();
+    const [a, b] = await Promise.all([fx.drive(first), fx.drive(second)]);
+    expect([a.status, b.status]).toEqual(["completed", "completed"]);
+    expect(fx.executor.maxInFlight).toBe(2);
+    for (const runId of [first, second]) {
+      const tree = join(fx.root, ".baked", "worktrees", runId, "main");
+      expect(readFileSync(join(tree, "value.txt"), "utf8")).toBe("ready");
+      expect(git(fx.root, "rev-parse", "--verify", `baked/wf/${runId}`)).not.toBe("");
+    }
+    expect(existsSync(join(fx.root, "value.txt"))).toBe(false);
+    expect(fx.service.store.leases()).toEqual([]);
+  });
+
+  test("workflows.maxParallelRuns caps how many runs execute at once", async () => {
+    const fx = parallelSetup(1);
+    const first = await fx.approved();
+    const second = await fx.approved();
+    const running = fx.drive(first);
+    // The first drive holds its execution lease from the start; the second is over the cap.
+    const refused = await refusal(fx.drive(second));
+    expect(refused.code).toBe("WORKSPACE_BUSY");
+    expect(refused.message).toContain("workflows.maxParallelRuns is 1");
+    expect((await running).status).toBe("completed");
+    expect((await fx.drive(second)).status).toBe("completed");
   });
 });
