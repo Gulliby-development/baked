@@ -146,7 +146,10 @@ export function LlmSelector({ visible, activeModel, onSelect, onClose }: Props) 
         ? (cfg.noAuthLabel ?? "no key — press [Enter] to add")
         : hasError
           ? (cfg.authErrorLabel ?? pd?.error ?? "error")
-          : cfg.badge;
+          : // A badge goes after the model count every other provider shows.
+            cfg.badge && !loading
+            ? `${String(rows.length)} · ${cfg.badge}`
+            : cfg.badge;
 
       const status = noKey
         ? "warning"
@@ -187,7 +190,8 @@ export function LlmSelector({ visible, activeModel, onSelect, onClose }: Props) 
   }, [rows.length, cursor]);
 
   const totalModels = groups.reduce((a, g) => a + g.items.length, 0);
-  const loadedProviders = groups.filter((g) => !g.loading).length;
+  // Ready means usable: signed in or keyed, and its models loaded.
+  const readyProviders = groups.filter((g) => g.status === "online").length;
 
   useKeyboard((evt) => {
     if (!visible) return;
@@ -306,7 +310,7 @@ export function LlmSelector({ visible, activeModel, onSelect, onClose }: Props) 
 
   const blurb = query.trim()
     ? `${rows.filter((r) => r.kind === "item").length} of ${totalModels} models`
-    : `${totalModels} models · ${loadedProviders}/${PROVIDER_CONFIGS.length} providers ready`;
+    : `${totalModels} models · ${readyProviders}/${groups.length} providers ready`;
 
   return (
     <PremiumPopup

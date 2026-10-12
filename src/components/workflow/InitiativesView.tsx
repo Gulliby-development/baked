@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import type { InitiativeStartInput } from "../../core/workflows/initiatives/forms.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
@@ -147,6 +147,8 @@ export function InitiativesPopup({
     null,
   );
   const [starting, setStarting] = useState(false);
+  // Keys typed after N but before the start form renders begin its request.
+  const opening = useRef<string | null>(null);
   const [workflowInfo, setWorkflowInfo] = useState<Pick<
     WorkflowInfo,
     "workflows" | "defaultWorkflow"
@@ -214,7 +216,11 @@ export function InitiativesPopup({
     [api],
   );
 
+  useEffect(() => {
+    if (starting) opening.current = null;
+  }, [starting]);
   const openStart = (): void => {
+    opening.current = "";
     setStarting(true);
     if (!workflowInfo && api.info)
       void api.info().then(setWorkflowInfo, () => setWorkflowInfo(null));
@@ -233,6 +239,14 @@ export function InitiativesPopup({
 
   useKeyboard((event) => {
     if (event.defaultPrevented || starting) return;
+    if (opening.current !== null) {
+      const ch = event.sequence;
+      if (typeof ch === "string" && ch.length === 1 && ch >= " " && !event.ctrl && !event.meta) {
+        event.preventDefault();
+        opening.current += ch;
+      }
+      return;
+    }
     const key = event.name.toLowerCase();
     if (typing) {
       if (key === "escape") {
@@ -339,6 +353,7 @@ export function InitiativesPopup({
         {starting && api.start && data ? (
           <InitiativeStartForm
             active
+            initialPrompt={opening.current ?? ""}
             model={model}
             workflows={workflowInfo?.workflows ?? []}
             defaultWorkflow={workflowInfo?.defaultWorkflow ?? "sdd"}
