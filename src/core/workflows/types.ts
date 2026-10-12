@@ -111,6 +111,11 @@ export const RuntimeStateSchema = z
     instructionText: z.string(),
     frozenFiles: z.record(z.string(), z.string()),
     repairPredecessors: z.record(z.string(), z.string()).default({}),
+    /**
+     * Planned files a failed task check named outside the failing task's own writes, by finding ID:
+     * the correction of that finding may also write them, through the tasks that own them.
+     */
+    repairScope: z.record(z.string(), z.array(z.string())).default({}),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */

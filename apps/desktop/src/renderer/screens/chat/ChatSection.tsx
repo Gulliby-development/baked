@@ -20,6 +20,7 @@ import {
   DIFF_STATS_CAPABILITY,
   IMAGES_CAPABILITY,
   PLAN_MODE_CAPABILITY,
+  WATCH_CAPABILITY,
 } from "../../client/capabilities.js";
 import {
   CHAT_MODES,
@@ -29,6 +30,7 @@ import {
   type ImageUpload,
   isMissingChatApi,
   type SessionDiffStats,
+  type WatchStatus,
 } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { coordinator as coordinatorApi } from "../../client/coordinator.js";
@@ -46,7 +48,12 @@ import { peekDraft, takeDraft } from "../start/drafts.js";
 import { BASE_MODES, Composer } from "./Composer.js";
 import { Conversation } from "./Conversation.js";
 import { forkReportLines, rememberForkReport, rewindReportLines, takeForkReport } from "./fork.js";
-import { ChatHeader, type CompactControl, type RewindControl } from "./Header.js";
+import {
+  ChatHeader,
+  type CompactControl,
+  type RewindControl,
+  type WatchControl,
+} from "./Header.js";
 import { pendingText } from "./images.js";
 import { emptyTranscript, isBusy, reduceTranscript, turnCount } from "./transcript.js";
 import { useVoiceInput } from "./useVoiceInput.js";
@@ -63,6 +70,19 @@ const EMPTY_P = "m-0 max-w-[480px]";
 
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+/** The Watch files tooltip: what it does, or what the watch has done so far. */
+export function watchTitle(status: WatchStatus, path: string): string {
+  const error = status.error ? ` Last error: ${status.error}` : "";
+  if (status.watching) {
+    const turns = status.turns === 1 ? "1 turn" : `${status.turns} turns`;
+    const last = status.last ? `, the last from ${status.last}` : "";
+    return `Watching ${path}${status.method === "poll" ? " by polling" : ""}: ${turns} so far${last}. Click to stop.${error}`;
+  }
+  if (status.watchingSession)
+    return "Another chat watches the files. Click to watch them in this chat instead.";
+  return "Watch the project's files: saving a baked! comment changes the code there, and baked? asks about it.";
+}
 
 function NeedsNewer({ project }: { project: DesktopProject }) {
   return (
@@ -177,6 +197,9 @@ export function SessionView({
   const [forking, setForking] = useState(false);
   const [forkReport] = useState(() => (draft ? null : takeForkReport(sessionId)));
   const [rewinding, setRewinding] = useState(false);
+  // Watch mode of the project; null until loaded, or when the server or chat has none.
+  const [watchState, setWatchState] = useState<WatchStatus | null>(null);
+  const [watchSwitching, setWatchSwitching] = useState(false);
   const [rewindReport, setRewindReport] = useState<string[] | null>(null);
   // A task typed on the project home ("Ask in chat") starts the new session's composer.
   const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
@@ -205,6 +228,7 @@ export function SessionView({
         setLoad("ready");
         stop = chat.subscribe(key, sessionId, detail.lastSeq, (event) => {
           if (!live) return;
+          if (event.type === "watch") setWatchState(event.watch);
           dispatch(event);
           // The saved session carries context fill and edited files the events leave out, and
           // the messages an undo or redo from another window left.
@@ -255,6 +279,7 @@ export function SessionView({
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
   const hasEffort = capabilities?.includes(CHAT_EFFORT_CAPABILITY) === true;
+  const canWatch = !coordinator && capabilities?.includes(WATCH_CAPABILITY) === true;
   const voice = useVoiceInput();
   // Older servers list commands under `library` but send them to the model unexpanded.
   const expandsCommands = capabilities?.includes(CUSTOM_COMMANDS_CAPABILITY) === true;
@@ -280,6 +305,21 @@ export function SessionView({
       live = false;
     };
   }, [key, sessionId, draft, hasDiffStats, editedKey, turnRunning]);
+
+  useEffect(() => {
+    if (draft || !canWatch) {
+      setWatchState(null);
+      return;
+    }
+    let live = true;
+    chat.watch(key, sessionId).then(
+      (status) => live && setWatchState(status),
+      () => live && setWatchState(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, sessionId, draft, canWatch]);
 
   const busy = !draft && isBusy(transcript);
   const canStop = busy;
@@ -404,6 +444,26 @@ export function SessionView({
         }
       : undefined;
 
+  const toggleWatch = (): void => {
+    if (!watchState) return;
+    setActionError(null);
+    setWatchSwitching(true);
+    chat
+      .setWatch(key, sessionId, !watchState.watching)
+      .then(setWatchState)
+      .catch((e: unknown) => setActionError(message(e)))
+      .finally(() => setWatchSwitching(false));
+  };
+  const watchControl: WatchControl | undefined =
+    watchState && !draft
+      ? {
+          on: watchState.watching,
+          toggle: toggleWatch,
+          title: watchTitle(watchState, project.path),
+          disabled: watchSwitching,
+        }
+      : undefined;
+
   /** Undo (to `toCheckpoint` when given, already confirmed in the turn) or redo. */
   const rewind = (action: "undo" | "redo", toCheckpoint?: number): void => {
     if (
@@ -484,6 +544,7 @@ export function SessionView({
               diff,
               ...(compactControl ? { compact: compactControl } : {}),
               ...(rewindControl ? { rewind: rewindControl } : {}),
+              ...(watchControl ? { watch: watchControl } : {}),
               ...(coordinator
                 ? {}
                 : {

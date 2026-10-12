@@ -108,6 +108,8 @@ interface CheckpointState {
 
   // Git operations
   createGitTag(tabId: string, index: number, cwd: string): Promise<boolean>;
+  /** Snapshots every finished turn that edited files and has no snapshot yet. */
+  tagFinishedTurns(tabId: string, cwd: string): Promise<void>;
   /** Snapshots the workspace before a turn when the tab has no snapshot yet. */
   ensureBaseTag(tabId: string, cwd: string, messages: ChatMessage[]): Promise<void>;
   /** Every snapshot of the tab (checkpoints, redo entries and the base), for saving and forks. */
@@ -324,6 +326,12 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
       };
     });
     return true;
+  },
+
+  async tagFinishedTurns(tabId: string, cwd: string): Promise<void> {
+    for (const cp of get().getCheckpoints(tabId))
+      if (cp.filesEdited.length > 0 && !cp.gitTag && !cp.undone)
+        await get().createGitTag(tabId, cp.index, cwd);
   },
 
   async ensureBaseTag(tabId: string, cwd: string, messages: ChatMessage[]): Promise<void> {

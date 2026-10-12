@@ -25,6 +25,7 @@ ${BOLD}Usage:${RST}
   baked --headless --session <id> <prompt>           Resume a previous session
   baked --headless --save-session <prompt>           Save session after completion
   baked --headless --chat                            Interactive multi-turn chat
+  baked --headless --watch                           Run baked! / baked? comments saved in the project
   echo "prompt" | baked --headless                   Pipe from stdin
 
 ${BOLD}Management:${RST}
@@ -100,6 +101,8 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
   let events = false;
   let quiet = false;
   let chat = false;
+  let watch = false;
+  let watchPoll = false;
   let maxSteps: number | undefined;
   let timeout: number | undefined;
   let cwd: string | undefined;
@@ -173,6 +176,13 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       render = false;
     } else if (arg === "--chat") {
       chat = true;
+    } else if (arg === "--watch") {
+      chat = true;
+      watch = true;
+    } else if (arg === "--watch-poll") {
+      chat = true;
+      watch = true;
+      watchPoll = true;
     } else if (arg && !arg.startsWith("--")) {
       promptParts.push(arg);
     }
@@ -194,6 +204,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
         sessionId,
         system,
         noRepomap,
+        ...(watch ? { watch, watchPoll } : {}),
       },
     };
   }

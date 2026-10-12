@@ -21,6 +21,7 @@ import { resolveModel } from "../core/llm/provider.js";
 import { buildProviderOptions, withChatEffort } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";
 import { SessionManager } from "../core/sessions/manager.js";
+import { watchOptions } from "../core/watch/config.js";
 import { setActiveSessionId } from "../stores/session.js";
 import type {
   AppConfig,
@@ -45,6 +46,7 @@ import {
 } from "./output.js";
 import { followProgress } from "./progress.js";
 import type { HeadlessChatOptions, HeadlessEvent, HeadlessRunOptions } from "./types.js";
+import { watchPromptSource } from "./watch.js";
 
 interface AgentEnv {
   cwd: string;
@@ -231,8 +233,21 @@ interface TurnResult {
   exitCode: number;
 }
 
-async function streamTurn(
-  agent: ReturnType<typeof createBakeAgent>,
+/** Readable text of a stream `error` part, which may carry any value. */
+function streamErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+    return JSON.stringify(error);
+  }
+  return String(error);
+}
+
+/** Streams one turn and reports it; exported for tests. */
+export async function streamTurn(
+  agent: Pick<ReturnType<typeof createBakeAgent>, "stream">,
   messages: ModelMessage[],
   prompt: string,
   signal: AbortSignal,
@@ -330,6 +345,9 @@ async function streamTurn(
             summary,
           });
         }
+      } else if (part.type === "error") {
+        // A provider failure arrives as a stream part rather than a thrown error.
+        throw new Error(streamErrorText(part.error));
       } else if (part.type === "finish-step") {
         steps++;
         const usage = part.usage as {
@@ -343,8 +361,16 @@ async function streamTurn(
         tokens.input += tokens.lastStepInput;
         tokens.output += tokens.lastStepOutput;
         tokens.cacheRead += tokens.lastStepCacheRead;
+        // Model requests behind the step, when the provider reports them (Codex app-server).
+        const requests = (part.providerMetadata as { codex?: { responses?: unknown } } | undefined)
+          ?.codex?.responses;
         if (reporting.events) {
-          emit({ type: "step", step: steps, tokens: { ...tokens } });
+          emit({
+            type: "step",
+            step: steps,
+            tokens: { ...tokens },
+            ...(typeof requests === "number" ? { modelRequests: requests } : {}),
+          });
         }
       }
     }
@@ -823,9 +849,10 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
     }
     const wk = getWorkerInfo();
     if (wk) stderrDim(`Workers: intelligence=${wk.intelligence}, io=${wk.io}`);
-    stderrDim(
-      "Chat mode — type a prompt and hit Enter (backslash \\ for multiline, Ctrl+C to exit)",
-    );
+    if (!opts.watch)
+      stderrDim(
+        "Chat mode — type a prompt and hit Enter (backslash \\ for multiline, Ctrl+C to exit)",
+      );
     separator();
   }
 
@@ -890,19 +917,44 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   if (isEvents) emit({ type: "ready" });
   if (showProgress) process.stderr.write(`${PURPLE()}▸${RST} `);
 
-  const readPrompt = opts.readPrompt ?? readPromptFromStdin;
+  let readPrompt = opts.readPrompt ?? readPromptFromStdin;
+  if (opts.watch && !opts.readPrompt) {
+    const source = watchPromptSource(env.cwd, merged.watch, {
+      poll: opts.watchPoll,
+      onEvent: (event) => {
+        if (isEvents) emit({ type: "watch", event });
+        else if (showProgress) {
+          if (event.type === "started")
+            stderrDim(
+              `Watching ${event.root} for ${watchOptions(merged.watch).marker}! and ${watchOptions(merged.watch).marker}? comments${event.method === "poll" ? " (polling)" : ""} — Ctrl+C to stop`,
+            );
+          else if (event.type === "error") stderrDim(`watch: ${event.message}`);
+        }
+      },
+      onTurn: (turn) => {
+        if (isEvents) emit({ type: "watch-turn", label: turn.label, kind: turn.kind });
+        else if (showProgress) stderrLabel("From", turn.label);
+      },
+    });
+    readPrompt = source.next;
+    process.on("SIGINT", source.close);
+    opts.signal?.addEventListener("abort", source.close, { once: true });
+  }
 
   while (!aborted) {
     const rawPrompt = await readPrompt();
     if (rawPrompt === null) break;
-    const typed = expandHeadlessPrompt(rawPrompt, env.cwd, showProgress);
-    const references = await expandHeadlessReferences(typed, env, {
-      showProgress,
-      emit: isEvents ? emit : undefined,
-      onApproveDestructive: opts.onApproveDestructive,
-      tabId: opts.tabId,
-      tabLabel: opts.tabLabel,
-    });
+    // Watch turns quote source code, whose `@` and `!` are not chat references.
+    const typed = opts.watch ? rawPrompt : expandHeadlessPrompt(rawPrompt, env.cwd, showProgress);
+    const references = opts.watch
+      ? { text: typed, send: true, items: [] }
+      : await expandHeadlessReferences(typed, env, {
+          showProgress,
+          emit: isEvents ? emit : undefined,
+          onApproveDestructive: opts.onApproveDestructive,
+          tabId: opts.tabId,
+          tabLabel: opts.tabLabel,
+        });
     if (!references.send) {
       if (showProgress) process.stderr.write(`${PURPLE()}▸${RST} `);
       continue;

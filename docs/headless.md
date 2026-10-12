@@ -8,6 +8,7 @@ echo "find unused exports" | baked --headless
 baked --headless --json "list all TODOs"          # one JSON result
 baked --headless --events "refactor the store"    # JSONL event stream
 baked --headless --chat                           # interactive multi-turn chat
+baked --headless --watch                          # turns from baked! / baked? comments (watch mode)
 ```
 
 ## Options
@@ -31,7 +32,7 @@ baked --headless --chat                           # interactive multi-turn chat
 
 Exit codes: `0` success, `1` error, `2` timeout, `130` aborted.
 
-`--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command.
+`--events` emits one JSON object per line with a `type` of `start`, `input-context`, `text`, `tool-call`, `tool-result`, `step`, `error`, `done` or `session-saved`. `input-context` carries `items` (`{kind, ref, ok, summary, output?}`) for the prompt's `@` mentions and `!` command. `step` carries the running `tokens` with the step's own `lastStepInput`, `lastStepOutput` and `lastStepCacheRead`; with the Codex provider over app-server it also has `modelRequests`, the number of model responses whose usage Codex reported during the step (see [providers](providers.md#openai-codex)).
 
 ## Changed files
 

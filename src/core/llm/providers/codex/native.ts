@@ -7,6 +7,7 @@ import type {
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
   LanguageModelV2Usage,
+  SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
 import { cliReasoningEffort } from "../cli-effort.js";
@@ -144,6 +145,8 @@ interface StepSink {
   /** Item ids of agent messages whose text was streamed as deltas. */
   streamed: Set<string>;
   lastError: string | null;
+  /** Model responses whose usage Codex reported during this step. */
+  responses: number;
 }
 
 interface NativeThread {
@@ -274,6 +277,7 @@ export class CodexAppServerSessions {
           openReasoning: new Map(),
           streamed: new Set(),
           lastError: null,
+          responses: 0,
         };
         thread.sink = sink;
         stepSink = sink;
@@ -504,6 +508,7 @@ export class CodexAppServerSessions {
       const usage = params.tokenUsage as { total?: unknown } | undefined;
       const totals = readTotals(usage?.total);
       if (totals) thread.totals = totals;
+      if (thread.sink) thread.sink.responses += 1;
       return;
     }
 
@@ -603,6 +608,11 @@ export class CodexAppServerSessions {
       type: "finish",
       finishReason,
       usage: usageBetween(sink.startTotals, thread.totals),
+      // Codex reports a response's usage only once the tool call it made has been answered, so a
+      // step reports the usage that arrived while it ran: the previous step's response, plus its
+      // own when it ends the turn. `responses` counts those reports, so totals over a run show how
+      // many model requests it cost.
+      providerMetadata: { codex: { responses: sink.responses } },
     });
     sink.controller.close();
   }
@@ -658,6 +668,7 @@ async function collectStep(stream: ReadableStream<LanguageModelV2StreamPart>) {
     outputTokens: undefined,
     totalTokens: undefined,
   };
+  let providerMetadata: SharedV2ProviderMetadata | undefined;
   const reader = stream.getReader();
   while (true) {
     const { done, value } = await reader.read();
@@ -675,9 +686,10 @@ async function collectStep(stream: ReadableStream<LanguageModelV2StreamPart>) {
     } else if (value.type === "finish") {
       finishReason = value.finishReason;
       usage = value.usage;
+      providerMetadata = value.providerMetadata;
     }
   }
-  return { content, finishReason, usage };
+  return { content, finishReason, usage, ...(providerMetadata ? { providerMetadata } : {}) };
 }
 
 /**

@@ -82,6 +82,7 @@ const EVENT_TYPES = new Set([
   "compaction-start",
   "compaction-done",
   "session",
+  "watch",
 ]);
 
 /** Reads one SSE frame of `/v1/sessions/ID/events`; null for frames the app does not know. */
@@ -414,6 +415,9 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
     }
     case "session":
       return { ...state, session: event.session };
+    case "watch":
+      // The chat section keeps watch mode's state; the transcript does not change.
+      return state;
   }
 }
 

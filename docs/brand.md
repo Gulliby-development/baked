@@ -42,7 +42,7 @@ The PNGs are exports of their SVG at the listed sizes with a transparent backgro
 | `attention` | counter bell | items that need you |
 | `projects` | tiles | all projects |
 | `settings` | oven knob | settings |
-| `new`, `undo`, `redo`, `send`, `stop`, `mic`, `chevron-right`, `chevron-down` | controls | buttons and menus |
+| `new`, `undo`, `redo`, `send`, `stop`, `mic`, `eye`, `chevron-right`, `chevron-down` | controls | buttons and menus |
 | `research`, `spec`, `plan`, `implement`, `checks`, `review`, `accept` | wheat ear, checked sheet, loaf in a tin, whisk, thermometer, tasting spoon, quality seal | workflow stages on the run conveyor and in the run list's Stage column |
 | `ok`, `failed`, `waiting`, `warning`, `running` | ticked box, crossed box, hourglass, triangle, open ring | stage states on conveyor stations, run status pills, tool call results |
 | `read`, `edit`, `shell`, `search`, `git`, `image` | open book, pencil, terminal, magnifier, branch, picture | chat tool calls, by tool |

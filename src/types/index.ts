@@ -110,6 +110,15 @@ export interface QueuedMessage {
   content: string;
   queuedAt: number;
   images?: ImageAttachment[];
+  /** How the turn is submitted; watch mode queues its turns with these. */
+  options?: SubmitOptions;
+}
+
+export interface SubmitOptions {
+  /** Shown as the user message instead of `input`; the model still gets `input`. */
+  display?: string;
+  /** Send `input` as is: no custom slash command, `@` mention or `!command` expansion. */
+  verbatim?: boolean;
 }
 
 export type MessageSegment =
@@ -310,6 +319,8 @@ export interface AppConfig {
   performance?: PerformanceConfig;
   contextManagement?: ContextManagementConfig;
   compaction?: CompactionConfig;
+  /** Watch mode: `baked!` and `baked?` comments start the agent. See `src/core/watch/`. */
+  watch?: import("../core/watch/config.js").WatchConfig;
   /** Limits on what the project coordinator may launch (see docs/coordinator.md). */
   coordinator?: {
     /** Launched sessions, runs and initiatives active at once. Default: 3 */

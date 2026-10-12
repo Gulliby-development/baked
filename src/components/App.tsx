@@ -26,6 +26,7 @@ import {
   PROVIDER_CONFIGS,
 } from "../core/llm/models.js";
 import { notifyProviderSwitch } from "../core/llm/provider.js";
+import { soleReadyModel } from "../core/llm/ready-model.js";
 import { disposeMCPManager, getMCPManager } from "../core/mcp/index.js";
 import { projectSwitchArgs } from "../core/restart.js";
 import { initForbidden } from "../core/security/forbidden.js";
@@ -64,6 +65,7 @@ import { logBackgroundError } from "../stores/errors.js";
 import { startMemoryPoll } from "../stores/statusbar.js";
 import { useToolsStore } from "../stores/tools.js";
 import { type ModalName, selectIsAnyModalOpen, useUIStore } from "../stores/ui.js";
+import { useWatchStore } from "../stores/watch.js";
 import type { AppConfig, ChatEffort, ChatMessage, TaskRouter } from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
 import { artText } from "./brand/artText.js";
@@ -532,6 +534,7 @@ export function App({
   const [bakeMode, setBakeModeHeader] = useState<import("../types/index.js").BakeMode>("default");
   const modeLabel = getModeLabel(bakeMode);
   const modeColor = getModeColor(bakeMode);
+  const watching = useWatchStore((s) => s.tabId !== null);
 
   useConfigSync({
     effectiveConfig,
@@ -1246,6 +1249,11 @@ export function App({
           <text wrapMode="none" flexShrink={0}>
             <Chip label={modeLabel.toUpperCase()} fill={modeColor} />
           </text>
+          {watching && (
+            <text wrapMode="none" flexShrink={0}>
+              <Chip label="WATCHING" fill={t.info} />
+            </text>
+          )}
           <ContextBar
             contextManager={contextManager}
             modelId={activeModelForHeader}
@@ -1616,6 +1624,15 @@ export function App({
         onClose={() => {
           useUIStore.getState().closeModal("firstRunWizard");
           saveToScope({ onboardingComplete: true }, "global");
+          // No model picked: use the only provider that is ready, such as a signed-in Codex.
+          if (activeModelForHeader === "none")
+            void soleReadyModel().then((modelId) => {
+              if (!modelId) return;
+              notifyProviderSwitch(modelId);
+              setActiveModelForHeader(modelId);
+              saveToScope({ defaultModel: modelId }, modelScope);
+              addSystemMessage(`Model set to ${modelId}, the only provider ready to use.`);
+            });
         }}
       />
 

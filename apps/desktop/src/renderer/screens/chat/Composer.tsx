@@ -1,4 +1,5 @@
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from "react";
+import type { MicrophoneAccess } from "../../../shared/api.js";
 import type {
   ChatEffort,
   ChatMode,
@@ -13,7 +14,13 @@ import { LABEL } from "../../lib/styles.js";
 import { matchCommands, slashAtCaret } from "./commands.js";
 import { type Attachment, dataUrl, MAX_IMAGES, pickImages, readAttachment } from "./images.js";
 import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
-import { clock, microphoneError, Recorder, VOICE_MAX_SECONDS } from "./voice.js";
+import {
+  clock,
+  MICROPHONE_BLOCKED,
+  microphoneError,
+  Recorder,
+  VOICE_MAX_SECONDS,
+} from "./voice.js";
 
 const ROUND_BUTTON =
   "w-[38px] h-[38px] flex-none rounded-base border-2 border-border shadow-sm-hard flex items-center justify-center cursor-pointer hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none";
@@ -45,6 +52,10 @@ export interface VoiceInput {
   unavailable: string | null;
   /** Transcribes 16 kHz mono samples to text on this computer. */
   transcribe(samples: Float32Array): Promise<string>;
+  /** Asks the system for the microphone; macOS prompts the first time. */
+  requestAccess(): Promise<MicrophoneAccess>;
+  /** Opens the system's microphone privacy page. */
+  openSettings(): void;
 }
 
 /** The keyboard shortcut that starts and stops a recording. */
@@ -366,6 +377,8 @@ export function Composer({
   const area = useRef<HTMLTextAreaElement>(null);
   const [voiceState, setVoiceState] = useState<VoiceState>({ kind: "idle" });
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  /** The microphone was refused; the error line then offers the system's privacy page. */
+  const [micBlocked, setMicBlocked] = useState(false);
   const recorder = useRef<Recorder | null>(null);
   const stopRecording = async (): Promise<void> => {
     const active = recorder.current;
@@ -397,15 +410,25 @@ export function Composer({
   const startRecording = async (): Promise<void> => {
     if (!voice || voice.unavailable) return;
     setVoiceError(null);
+    setMicBlocked(false);
     setVoiceState({ kind: "starting" });
     try {
+      const access = await voice.requestAccess();
+      if (!access.granted) {
+        setVoiceError(MICROPHONE_BLOCKED);
+        setMicBlocked(access.canOpenSettings);
+        setVoiceState({ kind: "idle" });
+        return;
+      }
       recorder.current = await Recorder.start({
         onProgress: (seconds, level) => setVoiceState({ kind: "recording", seconds, level }),
         onLimit: () => void stopRecording(),
       });
       setVoiceState({ kind: "recording", seconds: 0, level: 0 });
     } catch (e) {
-      setVoiceError(microphoneError(e));
+      const message = microphoneError(e);
+      setVoiceError(message);
+      setMicBlocked(message === MICROPHONE_BLOCKED);
       setVoiceState({ kind: "idle" });
     }
   };
@@ -589,6 +612,18 @@ export function Composer({
       {voiceError && (
         <p className="m-0 text-[13px] text-[var(--err)]" role="alert">
           {voiceError}
+          {micBlocked && voice && (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="p-0 border-0 bg-transparent text-[13px] text-foreground underline cursor-pointer"
+                onClick={() => voice.openSettings()}
+              >
+                Open microphone settings
+              </button>
+            </>
+          )}
         </p>
       )}
       <label htmlFor="chat-prompt" className="sr-only">

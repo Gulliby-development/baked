@@ -240,7 +240,21 @@ export type ChatEventBody =
       error?: string;
       context: ContextFill | null;
     }
-  | { type: "session"; session: SessionSummary };
+  | { type: "session"; session: SessionSummary }
+  | { type: "watch"; watch: WatchStatus };
+
+/** Watch mode as one session sees it: `GET /v1/sessions/ID/watch` and the `watch` event. */
+export interface WatchStatus {
+  /** This session receives the turns from saved `baked!` and `baked?` comments. */
+  watching: boolean;
+  /** The session that watches, when another one does. */
+  watchingSession: string | null;
+  method: "native" | "poll" | null;
+  turns: number;
+  /** Where the last watch turn came from, e.g. "src/x.ts:42 (baked!)". */
+  last: string | null;
+  error: string | null;
+}
 
 /** A numbered session event, or `reset` when the client must refetch the session. */
 export type ChatEvent = (ChatEventBody & { seq: number; at: number }) | { type: "reset" };
@@ -323,6 +337,10 @@ export const chat = {
   compact: (key: string, id: string) =>
     call<{ compactionId: string }>(key, "POST", sessionPath(id, "compact"), {}),
   diff: (key: string, id: string) => call<SessionDiffStats>(key, "GET", sessionPath(id, "diff")),
+  watch: (key: string, id: string) => call<WatchStatus>(key, "GET", sessionPath(id, "watch")),
+  /** Turns watch mode on for this chat (moving it from another chat) or off. */
+  setWatch: (key: string, id: string, on: boolean) =>
+    call<WatchStatus>(key, "POST", sessionPath(id, "watch"), { on }),
   interrupt: (key: string, id: string) =>
     call<{ interrupted: boolean }>(key, "POST", sessionPath(id, "interrupt"), {}),
   /** Answers an approval; a split card is approved with the digest it shows. */

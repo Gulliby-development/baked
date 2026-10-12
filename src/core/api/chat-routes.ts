@@ -30,6 +30,7 @@ import {
   SessionListQuery,
   UndoSessionBody,
   UpdateSessionBody,
+  WatchBody,
 } from "./schemas.js";
 
 export interface ChatRouteContext extends RouteContext {
@@ -38,7 +39,7 @@ export interface ChatRouteContext extends RouteContext {
 
 const ID = "[A-Za-z0-9-]+";
 const SESSION = new RegExp(
-  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|export|undo|redo|checkpoints)(?:/(${ID}))?)?$`,
+  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|export|undo|redo|checkpoints|watch)(?:/(${ID}))?)?$`,
 );
 
 export function chatErrorStatus(error: ChatError): number {
@@ -180,6 +181,13 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
         "content-disposition": `attachment; filename="${fileName}"`,
       },
     });
+  }
+  if (action === "watch") {
+    only("GET", "POST");
+    if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
+    if (method === "GET") return ctx.json(200, chat.watchStatus(id));
+    const { on } = WatchBody.parse(await ctx.readJson());
+    return ctx.json(200, chat.setWatch(id, on));
   }
   only("POST");
   if (action === "prompts") {

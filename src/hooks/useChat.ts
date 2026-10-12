@@ -94,6 +94,7 @@ import type {
   PlanReviewAction,
   PlanStepStatus,
   QueuedMessage,
+  SubmitOptions,
 } from "../types/index.js";
 import { clampWatchdogTimeouts } from "../types/index.js";
 import { compressImageForApi } from "../utils/image-compress.js";
@@ -251,7 +252,11 @@ export interface ChatInstance {
   planMode: boolean;
   planRequest: string | null;
   // Actions
-  handleSubmit: (input: string, images?: ImageAttachment[]) => Promise<void>;
+  handleSubmit: (
+    input: string,
+    images?: ImageAttachment[],
+    options?: SubmitOptions,
+  ) => Promise<void>;
   summarizeConversation: (opts?: { skipQueueDrain?: boolean }) => Promise<void>;
   abort: () => void;
   interactiveCallbacks: InteractiveCallbacks;
@@ -269,6 +274,8 @@ export interface ChatInstance {
   setEffort: (effort: ChatEffort) => void;
   cycleMode: () => import("../types/index.js").BakeMode;
   rotateRoutingSession: () => void;
+  /** Saves this tab now, for changes made outside a turn such as an undo. */
+  persist: () => void;
 }
 
 export function useChat({
@@ -637,6 +644,10 @@ export function useChat({
     },
     [tabId, tabLabel, cwd, sessionManager, coAuthorCommits],
   );
+  const persist = useCallback(
+    () => persistThisTab(messagesRef.current, coreMessagesRef.current),
+    [persistThisTab],
+  );
   const customTitleRef = useRef<string | null>(null);
   const setCustomTitle = useCallback((title: string | null) => {
     customTitleRef.current = title;
@@ -817,7 +828,9 @@ export function useChat({
   });
   const syncV2Slots = syncV2SlotsRef.current;
 
-  const handleSubmitRef = useRef<(input: string) => void>(() => {});
+  const handleSubmitRef = useRef<
+    (input: string, images?: ImageAttachment[], options?: SubmitOptions) => void
+  >(() => {});
   // Stream stall watchdog state — persists across handleSubmit calls so
   // auto-retry "Continue." inherits the count from the previous attempt.
   const stallRetryCountRef = useRef<number>(0);
@@ -1195,7 +1208,10 @@ export function useChat({
             if (queue.length > 0) {
               const [next, ...rest] = queue;
               if (next) {
-                setTimeout(() => handleSubmitRef.current(next.content), 0);
+                setTimeout(
+                  () => handleSubmitRef.current(next.content, next.images, next.options),
+                  0,
+                );
               }
               return rest;
             }
@@ -1430,7 +1446,7 @@ export function useChat({
   );
 
   const handleSubmit = useCallback(
-    async (rawInput: string, images?: ImageAttachment[]) => {
+    async (rawInput: string, images?: ImageAttachment[], options?: SubmitOptions) => {
       // Read current config via ref — effectiveConfig object is NOT in deps
       // (new object every render would force constant callback recreation)
       const effectiveConfig = effectiveConfigRef.current;
@@ -1438,7 +1454,9 @@ export function useChat({
       if (abortRef.current) return;
 
       // Custom slash commands (.baked/commands/*.md) expand here, so direct and queued runs match.
-      const input = expandCustomSlashInput(rawInput, cwd) ?? rawInput;
+      const input = options?.verbatim
+        ? rawInput
+        : (expandCustomSlashInput(rawInput, cwd) ?? rawInput);
 
       if (activeModelRef.current === "none") {
         const hint: ChatMessage = {
@@ -1478,7 +1496,7 @@ export function useChat({
       // the message as typed with what was attached under it.
       let modelInput = input;
       let inputContext: ChatMessage["inputContext"];
-      if (hasInputReferences(input)) {
+      if (!options?.verbatim && hasInputReferences(input)) {
         const expandAbort = new AbortController();
         abortRef.current = expandAbort;
         setIsLoading(true);
@@ -1517,7 +1535,7 @@ export function useChat({
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
-        content: input,
+        content: options?.display ?? input,
         timestamp: Date.now(),
         images: images && images.length > 0 ? images : undefined,
         ...(inputContext ? { inputContext } : {}),
@@ -2042,9 +2060,12 @@ export function useChat({
           const drainSteering = (): { text: string; images?: ImageAttachment[] } | null => {
             if (steeringAbortedRef.current) return null;
             // A queued message with `@` mentions or a `!command` waits for the turn to end, so it is
-            // expanded like a typed message; the ones before it steer now.
+            // expanded like a typed message; the ones before it steer now. A watch turn (queued with
+            // options) also waits, as a turn of its own.
             const pending = messageQueueRef.current;
-            const firstRef = pending.findIndex((m) => hasInputReferences(m.content));
+            const firstRef = pending.findIndex(
+              (m) => m.options !== undefined || hasInputReferences(m.content),
+            );
             const queue = firstRef === -1 ? pending : pending.slice(0, firstRef);
             const rest = firstRef === -1 ? [] : pending.slice(firstRef);
             if (queue.length === 0) return null;
@@ -2379,6 +2400,46 @@ export function useChat({
             lastActivityTs = Date.now();
             lastToolActivityTs = Date.now();
           };
+          /** Starts showing a tool call: its segment and its live entry. */
+          const startToolCall = (id: string, toolName: string) => {
+            gotFirstContent = true;
+            markToolStart();
+            segmentsDirty.current = true;
+            toolCallsDirty.current = true;
+
+            // Detect code_execution child calls: if a code_execution call is currently
+            // running (state !== "done"/"error"), any new tool call is a child spawned from it.
+            const activeCodeExec = tcBuf.find(
+              (c) => c.toolName === "code_execution" && c.state === "running",
+            );
+            const isChildCall = activeCodeExec && toolName !== "code_execution";
+
+            // Child calls don't get their own segment — they're nested under the parent
+            if (!isChildCall) {
+              const lastToolSeg = finalSegments[finalSegments.length - 1];
+              if (lastToolSeg?.type === "tools") {
+                lastToolSeg.toolCallIds.push(id);
+              } else {
+                finalSegments.push({ type: "tools", toolCallIds: [id] });
+              }
+              const lastBufSeg = buf[buf.length - 1];
+              if (lastBufSeg?.type === "tools") {
+                lastBufSeg.callIds.push(id);
+              } else {
+                buf.push({ type: "tools" as const, callIds: [id] });
+              }
+            }
+
+            tcBuf.push({
+              id: id,
+              toolName: toolName,
+              state: "running",
+              ...(isChildCall ? { parentId: activeCodeExec.id } : {}),
+              ...(toolName === "web_search" && webSearchModelLabelRef.current
+                ? { backend: webSearchModelLabelRef.current }
+                : {}),
+            });
+          };
           const onUserAbort = () => {
             // Only mark as user-aborted if the abort wasn't from the stall watchdog.
             if (!stallAborted) {
@@ -2551,44 +2612,21 @@ export function useChat({
                 break;
               }
               case "tool-input-start": {
-                gotFirstContent = true;
-                markToolStart();
-                segmentsDirty.current = true;
-                toolCallsDirty.current = true;
-
-                // Detect code_execution child calls: if a code_execution call is currently
-                // running (state !== "done"/"error"), any new tool call is a child spawned from it.
-                const activeCodeExec = tcBuf.find(
-                  (c) => c.toolName === "code_execution" && c.state === "running",
-                );
-                const isChildCall = activeCodeExec && part.toolName !== "code_execution";
-
-                // Child calls don't get their own segment — they're nested under the parent
-                if (!isChildCall) {
-                  const lastToolSeg = finalSegments[finalSegments.length - 1];
-                  if (lastToolSeg?.type === "tools") {
-                    lastToolSeg.toolCallIds.push(part.id);
-                  } else {
-                    finalSegments.push({ type: "tools", toolCallIds: [part.id] });
-                  }
-                  const lastBufSeg = buf[buf.length - 1];
-                  if (lastBufSeg?.type === "tools") {
-                    lastBufSeg.callIds.push(part.id);
-                  } else {
-                    buf.push({ type: "tools" as const, callIds: [part.id] });
-                  }
-                }
-
-                tcBuf.push({
-                  id: part.id,
-                  toolName: part.toolName,
-                  state: "running",
-                  ...(isChildCall ? { parentId: activeCodeExec.id } : {}),
-                  ...(part.toolName === "web_search" && webSearchModelLabelRef.current
-                    ? { backend: webSearchModelLabelRef.current }
-                    : {}),
-                });
+                startToolCall(part.id, part.toolName);
                 toolCallArgs.set(part.id, "");
+                queueMicrotaskFlush();
+                break;
+              }
+              case "tool-call": {
+                // CLI providers (Codex, Claude Code) send whole tool calls without input deltas,
+                // so the call starts here and its input is taken from the call itself.
+                if (!tcBuf.some((c) => c.id === part.toolCallId))
+                  startToolCall(part.toolCallId, part.toolName);
+                const input =
+                  typeof part.input === "string" ? part.input : JSON.stringify(part.input);
+                toolCallArgs.set(part.toolCallId, input);
+                const call = tcBuf.find((c) => c.id === part.toolCallId);
+                if (call) call.args = input;
                 queueMicrotaskFlush();
                 break;
               }
@@ -3776,7 +3814,10 @@ export function useChat({
               if (queue.length > 0) {
                 const [next, ...rest] = queue;
                 if (next) {
-                  setTimeout(() => handleSubmitRef.current(next.content), 0);
+                  setTimeout(
+                    () => handleSubmitRef.current(next.content, next.images, next.options),
+                    0,
+                  );
                 }
                 return rest;
               }
@@ -3958,6 +3999,7 @@ export function useChat({
     cycleMode: cycleModeFn,
     effort,
     setEffort,
+    persist,
   };
 }
 function causeChain(err: unknown): string {

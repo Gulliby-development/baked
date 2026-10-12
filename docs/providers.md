@@ -80,7 +80,7 @@ BAKED's tools are registered with Codex as native function tools, and replies st
 - Codex hands over one tool call at a time, so parallel calls from one model response arrive as consecutive steps.
 - A new user message starts a new turn on the same thread with only that message. A compacted, edited or retried conversation, or a changed tool list, starts a new thread with the conversation so far as a transcript.
 - Codex has no way to force a tool choice; BAKED asks for it in the turn text instead.
-- Token usage comes from Codex's thread totals, including cached input. The usage of a response that called tools is counted in the step after the tool result.
+- Token usage comes from Codex's thread totals, including cached input. Codex reports a response's usage only after the tool call it made has been answered, so the usage of a response that called tools is counted in the step after the tool result, and the step that ends the turn carries two responses. Each step also records how many responses it carried (`modelRequests` in `baked --headless --events`); over a run they add up to the model requests it cost, which is one per step when Codex makes no extra request.
 
 Images attached to a message go into the turn's input next to its text, as data URLs. With `codex exec` they are written to temporary files and passed with `--image`.
 

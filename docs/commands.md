@@ -120,6 +120,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/repo-map` | Baked map settings (AST index) |
 | `/skills` | Browse & install skills |
 | `/tools` | Enable/disable tools for the agent |
+| `/watch` | Watch files: saved baked! and baked? comments start the agent; `/watch on` starts it in this tab, `/watch off` stops it, `/watch status` shows it ([watch mode](watch.md)) |
 
 ### Settings
 

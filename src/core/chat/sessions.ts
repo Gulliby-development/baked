@@ -69,6 +69,8 @@ import { recordModelCall } from "../diagnostics/model-events.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import { watchOptions } from "../watch/config.js";
+import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
 import {
   coordinatorLimits,
@@ -170,6 +172,19 @@ export interface SessionSummary {
   kind?: "coordinator";
 }
 
+/** Watch mode of the project as one session sees it (`/v1/sessions/:id/watch`). */
+export interface WatchStatus {
+  /** This session receives the watch turns. */
+  watching: boolean;
+  /** The session that watches, when another one does. */
+  watchingSession: string | null;
+  method: "native" | "poll" | null;
+  turns: number;
+  /** Where the last watch turn came from, e.g. "src/x.ts:42 (baked!)". */
+  last: string | null;
+  error: string | null;
+}
+
 export interface SessionDetail extends SessionSummary {
   messages: ChatMessage[];
   prompts: ChatPrompt[];
@@ -240,7 +255,8 @@ export type ChatEventBody =
       error?: string;
       context: SessionDetail["context"];
     }
-  | { type: "session"; session: SessionSummary };
+  | { type: "session"; session: SessionSummary }
+  | { type: "watch"; watch: WatchStatus };
 export type CompactionStatus = "compacted" | "skipped" | "failed" | "interrupted";
 export type PromptOutcome = "approved" | "denied" | "answered" | "skipped";
 export type ChatEvent = ChatEventBody & { seq: number; at: number };
@@ -334,10 +350,15 @@ export class ChatError extends Error {
 interface QueuedInput {
   text: string;
   images?: ImageAttachment[];
+  /** Shown as the user message instead of `text`; the model still gets `text`. */
+  display?: string;
+  /** Sent as is, without `@` or `!` expansion, and as a turn of its own (watch mode). */
+  verbatim?: boolean;
 }
 
 /** Queued messages sent as one: texts joined, images relabelled `image-1`… in order. */
 function mergeQueued(items: QueuedInput[]): QueuedInput {
+  if (items.length === 1 && items[0]) return items[0];
   const text = items
     .map((q) => q.text)
     .filter((t) => t.length > 0)
@@ -588,7 +609,7 @@ export class ChatSession {
       ...this.summary(),
       messages: this.messages,
       prompts: this.pendingPrompts,
-      queued: this.queue.map((q) => q.text),
+      queued: this.queue.map((q) => q.display ?? q.text),
       usage: { ...this.usage },
       context: this.context,
       filesEdited: editedFiles(this.messages),
@@ -654,6 +675,15 @@ export class ChatSession {
     // queued messages carry the same prompt as a direct one.
     const text = this.owner.expandCommand(typed);
     return this.submit(images && images.length > 0 ? { text, images } : { text });
+  }
+
+  /** Starts a watch mode turn, or queues it as a turn of its own behind the running one. */
+  sendWatch(turn: WatchTurn): { turnId: string; queued: boolean } {
+    return this.submit({ text: turn.prompt, display: watchTurnDisplay(turn), verbatim: true });
+  }
+
+  emitWatch(watch: WatchStatus): void {
+    this.emit({ type: "watch", watch });
   }
 
   private submit(input: QueuedInput): { turnId: string; queued: boolean } {
@@ -1048,8 +1078,9 @@ export class ChatSession {
       onApproveDestructive: (description) => approve({ kind: "destructive", description }),
       drainSteering: () => {
         if (!this.turn || this.queue.length === 0) return null;
-        // A message with `@` mentions or a `!command` waits for the next turn, which expands it.
-        const firstRef = this.queue.findIndex((q) => hasInputReferences(q.text));
+        // A message with `@` mentions or a `!command` waits for the next turn, which expands it;
+        // a watch turn waits too, as a turn of its own.
+        const firstRef = this.queue.findIndex((q) => q.verbatim || hasInputReferences(q.text));
         const count = firstRef === -1 ? this.queue.length : firstRef;
         if (count === 0) return null;
         const { text, images } = mergeQueued(this.queue.splice(0, count));
@@ -1085,7 +1116,7 @@ export class ChatSession {
     let send = true;
     const { host } = this.owner;
     // A plan's text is not a typed message: its `@` and `!` are plan content.
-    if (host.expandInput && !executing && hasInputReferences(text)) {
+    if (host.expandInput && !executing && !input.verbatim && hasInputReferences(text)) {
       try {
         const expanded = await host.expandInput({
           sessionId: this.meta.id,
@@ -1105,7 +1136,7 @@ export class ChatSession {
       id: crypto.randomUUID(),
       role: "user",
       // The model gets the whole plan; the transcript names it, as the plan is shown above.
-      content: executing ? `Execute the plan: ${executing.title}` : text,
+      content: executing ? `Execute the plan: ${executing.title}` : (input.display ?? text),
       timestamp: started,
       ...(images ? { images } : {}),
       ...(inputContext ? { inputContext } : {}),
@@ -1370,8 +1401,9 @@ export class ChatSession {
     }
     // Text that arrived after the last step of the turn starts the next one.
     if (this.queue.length > 0 && status === "completed") {
-      // Messages with `@` or `!` start a turn of their own so their expansion stays separate.
-      const firstRef = this.queue.findIndex((q) => hasInputReferences(q.text));
+      // Messages with `@` or `!` start a turn of their own so their expansion stays separate, and
+      // so does each watch turn.
+      const firstRef = this.queue.findIndex((q) => q.verbatim || hasInputReferences(q.text));
       const count = firstRef === 0 ? 1 : firstRef === -1 ? this.queue.length : firstRef;
       const next = mergeQueued(this.queue.splice(0, count));
       const rest = this.queue;
@@ -1491,6 +1523,15 @@ export class ChatService {
   private readonly store: SessionManager;
   private readonly live = new Map<string, ChatSession>();
   private closed = false;
+  /** Watch mode: one session of the project receives the turns from `baked!` comments. */
+  private fileWatch: {
+    session: ChatSession;
+    controller: WatchController;
+    method: WatchStatus["method"];
+    turns: number;
+    last: string | null;
+    error: string | null;
+  } | null = null;
 
   constructor(private readonly options: ChatServiceOptions) {
     this.host = options.host;
@@ -1766,9 +1807,99 @@ export class ChatService {
     }
   }
 
+  /** Watch mode as session `idOrPrefix` sees it. */
+  watchStatus(idOrPrefix: string): WatchStatus {
+    const session = this.get(idOrPrefix);
+    return this.watchStatusFor(session.id);
+  }
+
+  private watchStatusFor(sessionId: string): WatchStatus {
+    const w = this.fileWatch;
+    if (!w)
+      return {
+        watching: false,
+        watchingSession: null,
+        method: null,
+        turns: 0,
+        last: null,
+        error: null,
+      };
+    const own = w.session.id === sessionId;
+    return {
+      watching: own,
+      watchingSession: own ? null : w.session.id,
+      method: w.method,
+      turns: w.turns,
+      last: w.last,
+      error: w.error,
+    };
+  }
+
+  /**
+   * Turns watch mode on for session `idOrPrefix`, moving it from another session, or off. Each
+   * saved `baked!` or `baked?` comment then starts a turn in that session.
+   */
+  setWatch(idOrPrefix: string, on: boolean): WatchStatus {
+    const session = this.get(idOrPrefix);
+    if (!on) {
+      if (this.fileWatch?.session === session) this.stopWatch();
+      return this.watchStatusFor(session.id);
+    }
+    if (this.fileWatch?.session === session) return this.watchStatusFor(session.id);
+    // The session that watched hears that this one watches now.
+    const previous = this.fileWatch;
+    this.fileWatch = null;
+    previous?.controller.stop("moved");
+    const emit = (): void => {
+      const w = this.fileWatch;
+      if (w) w.session.emitWatch(this.watchStatusFor(w.session.id));
+    };
+    const controller = new WatchController(
+      this.workspace,
+      watchOptions(this.options.config.watch),
+      {
+        send: (turn) => {
+          const w = this.fileWatch;
+          if (!w) return;
+          try {
+            w.session.sendWatch(turn);
+            w.turns++;
+            w.last = turn.label;
+            w.error = null;
+          } catch (err) {
+            w.error = errorText(err);
+          }
+          emit();
+        },
+        onEvent: (event) => {
+          const w = this.fileWatch;
+          if (!w) return;
+          if (event.type === "started") w.method = event.method;
+          else if (event.type === "error") w.error = event.message;
+          else return;
+          emit();
+        },
+      },
+    );
+    this.fileWatch = { session, controller, method: null, turns: 0, last: null, error: null };
+    controller.start();
+    emit();
+    if (previous) previous.session.emitWatch(this.watchStatusFor(previous.session.id));
+    return this.watchStatusFor(session.id);
+  }
+
+  private stopWatch(): void {
+    const w = this.fileWatch;
+    if (!w) return;
+    this.fileWatch = null;
+    w.controller.stop("off");
+    w.session.emitWatch(this.watchStatusFor(w.session.id));
+  }
+
   delete(idOrPrefix: string): void {
     const session = this.get(idOrPrefix);
     if (session.busy) throw new ChatError("SESSION_BUSY", "Interrupt the running turn first");
+    if (this.fileWatch?.session === session) this.stopWatch();
     this.live.delete(session.id);
     this.host.release(session.id);
     this.store.deleteSession(session.id);
@@ -1780,6 +1911,7 @@ export class ChatService {
    */
   clearAll(): number {
     this.assertIdleWorkspace("clearing sessions");
+    this.stopWatch();
     for (const id of this.live.keys()) this.host.release(id);
     this.live.clear();
     return this.store.clearAllSessions();
@@ -1802,6 +1934,7 @@ export class ChatService {
     this.closed = true;
     if (this.watch) clearInterval(this.watch);
     this.watch = null;
+    this.stopWatch();
     const sessions = [...this.live.values()];
     for (const session of sessions) session.interrupt();
     await Promise.allSettled(sessions.map((s) => s.settled()));
