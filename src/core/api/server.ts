@@ -170,6 +170,7 @@ export const CAPABILITIES = [
   "hooks",
   "provider-switch",
   "chat-export",
+  "chat-effort",
   "diagnostics",
   "gate-drafts",
   "progress",

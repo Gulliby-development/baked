@@ -6,6 +6,7 @@ export { githubModels } from "./github-models.js";
 export { openai } from "./openai.js";
 export type { ProviderDefinition, ProviderModelInfo } from "./types.js";
 
+import { registerProviderSecrets } from "../../secrets.js";
 import { anthropic } from "./anthropic.js";
 import { claudeCode } from "./claude-code.js";
 import { codex } from "./codex.js";
@@ -60,3 +61,7 @@ export function getProviderSecretEntries(): ProviderSecretEntry[] {
       keyUrl: p.keyUrl,
     }));
 }
+
+// Every entry point that reaches a provider (TUI, headless, `baked serve`) knows its key's
+// environment variable, even one that starts before boot registers the providers.
+registerProviderSecrets(getProviderSecretEntries());

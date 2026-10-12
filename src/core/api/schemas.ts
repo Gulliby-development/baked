@@ -2,6 +2,7 @@ import { z } from "zod";
 import { BriefContentSchema } from "../chat/coordinator.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
+import { CHAT_EFFORTS } from "../llm/provider-options.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
@@ -102,6 +103,7 @@ export const WorkingSetBody = z
   });
 
 const ChatModeSchema = z.enum(CHAT_MODES);
+const ChatEffortSchema = z.enum(CHAT_EFFORTS);
 const ModelId = z
   .string()
   .min(3)
@@ -122,6 +124,7 @@ export const CreateSessionBody = z.strictObject({
   title: Title.optional(),
   model: ModelId.optional(),
   mode: ChatModeSchema.optional(),
+  effort: ChatEffortSchema.optional(),
   text: Text.optional(),
   images: Images.optional(),
 });
@@ -134,6 +137,7 @@ export const UpdateSessionBody = z
     title: Title.optional(),
     model: ModelId.optional(),
     mode: ChatModeSchema.optional(),
+    effort: ChatEffortSchema.optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: "Name a field to change" });
 export const ForkSessionBody = z.strictObject({

@@ -491,6 +491,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["provider", "llm", "switch"],
   },
   {
+    cmd: "/effort",
+    ic: "system",
+    desc: "Reasoning effort of this chat (low … max, or default)",
+    category: "Models",
+    tags: ["effort", "reasoning", "thinking"],
+  },
+  {
     cmd: "/provider-settings",
     ic: "system",
     desc: "Provider options — thinking, effort, speed, context",
