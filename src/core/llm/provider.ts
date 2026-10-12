@@ -8,6 +8,8 @@ export interface ProviderStatus {
   name: string;
   available: boolean;
   envVar: string;
+  /** Set when the provider is usable only through a login another tool holds (see `detectLogin`). */
+  detected?: string;
 }
 
 let cachedStatuses: ProviderStatus[] | null = null;
@@ -35,7 +37,17 @@ export async function checkProviders(): Promise<ProviderStatus[]> {
       } else {
         available = p.envVar === "" ? true : Boolean(getProviderApiKey(p.envVar));
       }
-      return { id: p.id, name: p.name, envVar: p.envVar, available };
+      const detected =
+        available && p.detectLogin && !(p.envVar && getProviderApiKey(p.envVar))
+          ? p.detectLogin()?.source
+          : undefined;
+      return {
+        id: p.id,
+        name: p.name,
+        envVar: p.envVar,
+        available,
+        ...(detected ? { detected } : {}),
+      };
     }),
   );
   cachedStatuses = results;
