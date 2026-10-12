@@ -87,6 +87,8 @@ export interface RunSnapshot {
   activeMs: number;
   estimatedCostUsd: number | null;
   pendingRequestIds: string[];
+  /** Findings the run is accepted with; absent from servers before the field existed. */
+  limitations?: { count: number; ids: string[] };
   approvalDigest?: string | null;
   projectId?: string;
 }

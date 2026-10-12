@@ -823,6 +823,10 @@ describe("a stopped convergence asks for a decision", () => {
     )) as { status: string };
     expect(result.status).toBe("completed");
     expect(service.store.state(run.runId).limitations).toHaveLength(1);
+    // The status projection says so too, with the exit code unchanged.
+    const snapshot = service.store.snapshot(run.runId);
+    expect(snapshot.limitations.count).toBe(1);
+    expect(snapshot.limitations.ids).toEqual(service.store.state(run.runId).limitations.map((l) => l.findingId));
   }, 60000);
 
   test("an approval decision is refused for a convergence request", async () => {

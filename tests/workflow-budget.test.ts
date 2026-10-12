@@ -32,7 +32,7 @@ describe("budget extension proposal", () => {
     const budget: BudgetView = { tokens: 390000, heldTokens: 0, inFlightTokens: 0, maxTokens: 400000, calls: 10, maxCalls: 80, activeMs: 60000, maxActiveMs: 3600000, repairRounds: 0, maxRepairRounds: 2 };
     expect(extensionText(budget)).toBe("tokens 400k → 800k");
     expect(extensionFor({ ...budget, maxTokens: 50_000_000, tokens: 50_000_000, maxCalls: 1000, calls: 1000, maxActiveMs: 24 * 3600 * 1000, activeMs: 1 })).toBeNull();
-    const snapshot = { runId: "r", featureId: "f", status: "blocked" as const, reason: "budget_exhausted" as const, revision: 1, eventSeq: 1, stageId: "plan", approvalDigest: null, inputHash: "a".repeat(64), workspaceHash: null, tokenUsage: 0, activeMs: 0, estimatedCostUsd: null, verificationState: "not_verified" as const, pendingRequestIds: [] };
+    const snapshot = { runId: "r", featureId: "f", status: "blocked" as const, reason: "budget_exhausted" as const, revision: 1, eventSeq: 1, stageId: "plan", approvalDigest: null, inputHash: "a".repeat(64), workspaceHash: null, tokenUsage: 0, activeMs: 0, estimatedCostUsd: null, verificationState: "not_verified" as const, limitations: { count: 0, ids: [] }, pendingRequestIds: [] };
     expect(runActions(snapshot, budget).map((a) => a.key)).toEqual(["B", "F", "U", "C"]);
     expect(runActions(snapshot, { ...budget, maxTokens: 50_000_000, tokens: 50_000_000, maxCalls: 1000, calls: 1000, maxActiveMs: 24 * 3600 * 1000, activeMs: 1 }).map((a) => a.key)).toEqual(["F", "U", "C"]);
     expect(headline(snapshot, [{ id: "plan", kind: "plan", status: "failed", generation: 0 }], false, budget).next).toContain("Press B to raise the limits (tokens 400k → 800k)");

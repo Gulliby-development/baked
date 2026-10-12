@@ -665,6 +665,9 @@ function RunBody({
     estimate?.workflowId,
     trace.writers.length > 1 ? `${trace.writers.length} writers` : null,
     run.featureId !== title ? run.featureId : null,
+    run.limitations?.count
+      ? `${run.limitations.count} accepted limitation${run.limitations.count === 1 ? "" : "s"}`
+      : null,
   ].filter(Boolean);
 
   const stages = pipeline(data.stages, trace, run);
