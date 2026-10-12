@@ -11,7 +11,7 @@ Pick a provider and model with `Ctrl+L` or `/models`. Models are named `provider
 | GitHub Copilot | `copilot` | An existing Copilot sign-in in VS Code, JetBrains or Neovim is found automatically; or `COPILOT_API_KEY`, `/keys`, `--set-key copilot`, see below |
 | GitHub Models | `github-models` | `GITHUB_MODELS_API_KEY` or `/keys`; otherwise `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI's login (`gh auth login`), see below |
 
-Keys are stored outside project configuration ([configuration](configuration.md#provider-keys)). `/provider-settings` sets thinking, effort, speed and context options. From a shell:
+Keys are stored outside project configuration ([configuration](configuration.md#provider-keys)). `/provider-settings` sets thinking, effort, speed and context options; a chat can choose its own [reasoning effort](#reasoning-effort-per-chat). From a shell:
 
 ```sh
 baked --list-providers
@@ -21,6 +21,22 @@ baked --remove-key anthropic        # forget the saved key
 ```
 
 `baked workflow models` lists the same models for [model routing](workflows/runtime.md#routing-screen), with the routing model names and the providers that still need a key or login.
+
+## Reasoning effort per chat
+
+Each chat has a reasoning effort: `default`, `low`, `medium`, `high`, `xhigh` or `max`. `default` follows `performance.effort` (and the OpenAI and OpenAI-compatible effort settings) from `/provider-settings`; any other level replaces them for that chat's turns, and the saved session keeps it. The terminal sets it per tab with `/effort` (a picker, or `/effort high`) and shows a level other than `default` after the model in the header; the desktop composer has an effort chip next to the model; headless runs take `--effort` ([headless](headless.md#options)); the local API takes `effort` on `POST` and `PATCH /v1/sessions` ([API](desktop/api.md)).
+
+The levels offered are the ones BAKED sends to the chat's model, which `GET /v1/models` lists as `efforts`:
+
+| Provider | How the effort is sent | Levels |
+| --- | --- | --- |
+| Anthropic | `effort` provider option | the model's own (`low` to `max`; Haiku none) |
+| OpenAI | `reasoningEffort` | `low`, `medium`, `high` on reasoning models |
+| Codex | `effort` on each app-server turn (`model_reasoning_effort` with `codex exec`) | `low` to `xhigh` on GPT-5 and o-series models |
+| Claude Code | `--effort` on the CLI, when the installed version has the flag | `low` to `max` (Sonnet without `xhigh`, Haiku none) |
+| GitHub Copilot, GitHub Models | `reasoning_effort` in the request body | `low` to `xhigh` on reasoning models; none for Claude models |
+
+A level the model does not support sends the next lower one it does; a model with no levels runs at its provider's default. Since this change, `performance.effort` also reaches Codex and Claude Code, which ignored it before. Workflow routes set effort per agent instead ([runtime guide](workflows/runtime.md#effort-and-fallback-models)).
 
 ## Claude Code
 
