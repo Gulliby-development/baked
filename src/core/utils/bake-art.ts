@@ -240,6 +240,11 @@ export function ovenMarkCells(palette: ArtPalette): ArtCell[] {
   ];
 }
 
+/** The header's brand chip: the oven mark with a one-cell hard shadow. */
+export function brandChipCells(palette: ArtPalette): ArtCell[] {
+  return [...ovenMarkCells(palette), { ch: "▌", fg: palette.shadow }];
+}
+
 // ── Bun mascot ──────────────────────────────────────────────────────
 
 export type BunFace = "none" | "sleep" | "open" | "blink" | "left" | "right" | "focus" | "happy";
@@ -354,6 +359,14 @@ export function chipCells(label: string, fill: string, onFill: string, shadow?: 
   const cells = textCells(` ${label} `, onFill, fill);
   if (shadow) cells.push({ ch: "▌", fg: shadow });
   return cells;
+}
+
+const DARK_INK = "#191410";
+const LIGHT_INK = "#fff4e5";
+
+/** Text colour that stays readable on a chip filled with `fill`, in either theme. */
+export function inkOn(fill: string): string {
+  return isLightColor(fill) ? DARK_INK : LIGHT_INK;
 }
 
 /** A chunky progress bar: filled blocks for done, light shade for the rest. */

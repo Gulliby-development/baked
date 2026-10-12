@@ -1,8 +1,9 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import { spinnerGlyph } from "../../core/utils/spinner.js";
 import type { Checkpoint } from "../../stores/checkpoints.js";
-import { SPINNER_FRAMES, useSpinnerFrame } from "../layout/shared.js";
+import { useSpinnerFrame } from "../layout/shared.js";
 import { listScrollAccel } from "../ui/scroll.js";
 
 interface CheckpointRailProps {
@@ -26,7 +27,7 @@ function getDotChar(
 ): { char: string; color: string } {
   if (cp.status === "running")
     return {
-      char: SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] ?? "⠋",
+      char: spinnerGlyph(spinnerFrame),
       color: t.brandSecondary,
     };
   if (isViewing) return { char: DOT, color: t.warning };

@@ -132,18 +132,20 @@ async function main() {
   // ── tree-sitter WASM (required for repo map / syntax) ──
   const wasmDir = join(appDataDir(), "wasm");
   mkdirSync(wasmDir, { recursive: true });
-  const wts = findPackageRoot("web-tree-sitter");
-  if (wts) {
-    for (const c of [join(wts, "tree-sitter.wasm"), join(wts, "web-tree-sitter.wasm")]) {
-      if (existsSync(c)) {
-        try {
-          copyFile(c, join(wasmDir, "tree-sitter.wasm"));
-          log("✓ tree-sitter.wasm");
-        } catch (err) {
-          warn(`failed to copy tree-sitter.wasm: ${err.message}`);
-        }
-        break;
-      }
+  // tree-sitter.wasm (0.25.10) serves OpenTUI's syntax highlighting, web-tree-sitter.wasm (0.27,
+  // the web-tree-sitter-engine alias) the code intelligence backend.
+  for (const [pkg, file] of [
+    ["web-tree-sitter", "tree-sitter.wasm"],
+    ["web-tree-sitter-engine", "web-tree-sitter.wasm"],
+  ]) {
+    const root = findPackageRoot(pkg);
+    const src = root ? join(root, file) : null;
+    if (!src || !existsSync(src)) continue;
+    try {
+      copyFile(src, join(wasmDir, file));
+      log(`✓ ${file}`);
+    } catch (err) {
+      warn(`failed to copy ${file}: ${err.message}`);
     }
   }
   const tsWasms = findPackageRoot("tree-sitter-wasms");
