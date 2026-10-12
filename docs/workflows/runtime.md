@@ -225,7 +225,7 @@ Each announcement goes to three places:
   ```
 
   `headers` adds request headers, such as an authorization token; `blockingOnly: true` skips advisory acceptance decisions (`blocking: false`), which the run does not wait for. Only `http://` and `https://` URLs are used. A failed delivery is logged and not retried.
-- **A native desktop notification** from the terminal app and from `baked workflow` run in an interactive terminal, for blocking items only: `osascript` on macOS, `notify-send` on Linux (when installed) and a PowerShell toast on Windows. `notifications.system: false` turns it off. `baked serve` shows none: the desktop app raises its own from `GET /v1/attention`.
+- **A native desktop notification** from the terminal app and from `baked workflow` run in an interactive terminal, for blocking items only: `osascript` on macOS, `notify-send` on Linux (when installed) and a PowerShell toast on Windows. `notifications.system: false` turns it off, and so does the environment variable `BAKED_NO_SYSTEM_NOTIFICATIONS=1`, which the test suite sets so a test run never reaches the developer's notification centre. `baked serve` shows none: the desktop app raises its own from `GET /v1/attention`.
 
 ```json
 "notifications": {
