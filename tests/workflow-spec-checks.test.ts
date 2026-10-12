@@ -8,6 +8,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   type RunPolicy,
   type Spec,
+  manualRepositoryCriteria,
   specCoverageProblems,
   validateSpecCoverage,
   validateTaskGraph,
@@ -34,6 +35,16 @@ describe("spec-side checks", () => {
     expect(message).toContain("requirement without criterion FR-001");
     expect(message).toContain("requirementIds");
     expect(specCoverageProblems(fixed)).toEqual([]);
+  });
+  test("a manual criterion about a repository file is sent back to the spec author", () => {
+    const readme = { ...criterion("AC-003", ["FR-001"]), given: "the README.md", when: "a person reads it", then: "it lists the install command", method: "manual" as const };
+    const spec: Spec = { ...fixed, criteria: [...fixed.criteria, readme] };
+    expect(manualRepositoryCriteria(spec)).toEqual(["AC-003"]);
+    expect(specCoverageProblems(spec).join(" ")).toContain("criterion AC-003 is about a file in the repository");
+    // A behavior only a person can observe stays manual.
+    const visual = { ...readme, id: "AC-004", given: "the app in a browser", when: "a person opens it", then: "the layout looks balanced" };
+    expect(specCoverageProblems({ ...fixed, criteria: [...fixed.criteria, visual] })).toEqual([]);
+    expect(specCoverageProblems({ ...fixed, criteria: [...fixed.criteria, { ...readme, method: "automated" as const }] })).toEqual([]);
   });
   test("the task graph check still reports the spec defects", () => {
     const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "", planHash: "", tasks: [] };
