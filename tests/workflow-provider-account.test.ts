@@ -120,12 +120,13 @@ describe("a model at capacity", () => {
     expect(isTransient(Object.assign(new Error("The operation timed out"), { name: "TimeoutError" }))).toBe(true);
   });
 
-  async function drive(models: string[], fallback: string[] | undefined) {
+  async function drive(models: string[], fallback: string[] | undefined, calls: number[] = []) {
     const root = mkdtempSync(join(tmpdir(), "baked-capacity-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     const executor: AgentExecutor = {
       async execute(request) {
         models.push(request.profile.model);
+        calls.push(Date.now());
         throw capacity;
       },
     };
@@ -157,9 +158,11 @@ describe("a model at capacity", () => {
 
   test("goes to the next model of the route at once", async () => {
     const models: string[] = [];
-    const started = Date.now();
-    await drive(models, ["fixture/other"]);
+    const calls: number[] = [];
+    await drive(models, ["fixture/other"], calls);
     expect(models.slice(0, 2)).toEqual(["fixture/model", "fixture/other"]);
-    expect(Date.now() - started).toBeLessThan(4_000);
+    // Measured between the two calls, not from the run's start, so a slow runner's setup does not
+    // count; the capacity backoff alone would take at least 5 seconds.
+    expect((calls[1] ?? Number.POSITIVE_INFINITY) - (calls[0] ?? 0)).toBeLessThan(4_000);
   }, 30_000);
 });

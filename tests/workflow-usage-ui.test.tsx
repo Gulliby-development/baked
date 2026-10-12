@@ -123,3 +123,30 @@ test("a project without a run database has no usage", () => {
   const result = workflowUsageLoader(workspace)(7, "model");
   expect(result).toMatchObject({ runs: 0, attempts: 0, tokens: 0, groups: [] });
 });
+
+test("E on the usage screen exports the shown period and grouping as Markdown", async () => {
+  const exported: UsageSummary[] = [];
+  let view!: View;
+  await act(async () => {
+    view = await testRender(
+      <UsagePopup
+        load={summary}
+        width={100}
+        height={30}
+        onBack={() => undefined}
+        onExport={(shown) => {
+          exported.push(shown);
+          return "/project/baked-usage-30d.md";
+        }}
+      />,
+      { width: 100, height: 30 },
+    );
+  });
+  await press(view, "right");
+  await act(async () => {
+    view.mockInput.pressKey("e");
+  });
+  const text = await frame(view, 100, 30, "exported");
+  expect(exported.map((s) => [s.days, s.groupBy])).toEqual([[30, ["model"]]]);
+  expect(text).toContain("Markdown written to /project/baked-usage-30d.md");
+});

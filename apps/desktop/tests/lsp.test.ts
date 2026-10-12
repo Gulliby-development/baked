@@ -6,7 +6,7 @@ scope.window = {};
 const { ApiError } = await import("../src/renderer/client/api.ts");
 const { lsp } = await import("../src/renderer/client/lsp.ts");
 const { parseRoute, projectHref } = await import("../src/renderer/router.ts");
-const { lspSourceLine, lspState, visibleServers } = await import(
+const { backendState, lspSourceLine, lspState, visibleServers } = await import(
   "../src/renderer/screens/setup/lsp-logic.ts"
 );
 delete scope.window;
@@ -36,6 +36,19 @@ describe("language server client", () => {
 
     const retried = await lsp.restart("baked", "gopls");
     expect(retried.servers.find((s) => s.id === "gopls")?.ready).toBe(true);
+  });
+
+  test("checks code intelligence on every backend", async () => {
+    const check = await lsp.diagnose("baked");
+    expect(check.language).toBe("typescript");
+    expect(check.failing).toEqual([]);
+    expect(check.backends.map((b) => b.backend)).toEqual([
+      "lsp:standalone",
+      "ts-morph",
+      "tree-sitter",
+      "regex",
+    ]);
+    expect((await lsp.status("baked")).started).toBe(true);
   });
 
   test("has its own project section", () => {
@@ -97,5 +110,31 @@ describe("language server rows", () => {
     };
     expect(visibleServers(view, false).map((s) => s.id)).toEqual(["gopls"]);
     expect(visibleServers(view, true)).toHaveLength(2);
+  });
+
+  test("a check backend is failing, working, empty or not for the language", () => {
+    const backend = (name: string, supports: boolean, statuses: string[]) => ({
+      backend: name,
+      tier: 1,
+      supports,
+      initialized: true,
+      probes: statuses.map((status) => ({ operation: "findSymbols", status })),
+    });
+    const lspDown = backend("lsp:standalone", true, ["empty"]);
+    const tsMorph = backend("ts-morph", true, ["pass", "timeout"]);
+    const treeSitter = backend("tree-sitter", true, ["pass", "unsupported"]);
+    const none = backend("rust-only", false, []);
+    const check = {
+      language: "typescript",
+      probeFile: "a.ts",
+      backends: [lspDown, tsMorph, treeSitter, none],
+      failing: ["ts-morph"],
+    } as Parameters<typeof backendState>[0];
+    expect(check.backends.map((b) => backendState(check, b))).toEqual([
+      "empty",
+      "failing",
+      "ok",
+      "unsupported",
+    ]);
   });
 });

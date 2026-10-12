@@ -3,7 +3,7 @@
  * shows in the terminal and the changes `/lsp` makes there. Shapes follow `docs/desktop/api.md`.
  */
 import { ApiError, call } from "./api.js";
-import { LSP_CAPABILITY, offers } from "./capabilities.js";
+import { LSP_CAPABILITY, LSP_DIAGNOSE_CAPABILITY, offers } from "./capabilities.js";
 
 export type LspScope = "global" | "project";
 export type LspSource = "PATH" | "baked" | "mason";
@@ -52,9 +52,33 @@ export interface LspActionView extends LspView {
   log?: string[];
 }
 
+export type ProbeStatus = "pass" | "empty" | "error" | "timeout" | "unsupported";
+
+export interface BackendCheck {
+  /** `lsp:standalone`, `ts-morph`, `tree-sitter` or `regex`. */
+  backend: string;
+  tier: number;
+  /** Whether the backend handles the project's main language at all. */
+  supports: boolean;
+  initialized: boolean;
+  initMs?: number;
+  initError?: string;
+  probes: { operation: string; status: ProbeStatus; ms?: number; error?: string }[];
+}
+
+/** The code intelligence health check `/diagnose` shows in the terminal. */
+export interface IntelligenceCheck {
+  language: string;
+  /** The project file the probes ran against; empty when none was found. */
+  probeFile: string;
+  backends: BackendCheck[];
+  /** Backends that support the language but failed to start, or whose probes failed. */
+  failing: string[];
+}
+
 const item = (id: string, action: string) => `/v1/lsp/${encodeURIComponent(id)}/${action}`;
 
-async function offered(key: string): Promise<void> {
+async function offered(key: string, capability = LSP_CAPABILITY): Promise<void> {
   let capabilities: string[] | null = null;
   try {
     capabilities =
@@ -62,8 +86,14 @@ async function offered(key: string): Promise<void> {
   } catch {
     capabilities = null;
   }
-  if (offers(capabilities, LSP_CAPABILITY) === false)
-    throw new ApiError(404, "NOT_FOUND", "This BAKED has no language-server endpoints");
+  if (offers(capabilities, capability) === false)
+    throw new ApiError(
+      404,
+      "NOT_FOUND",
+      capability === LSP_CAPABILITY
+        ? "This BAKED has no language-server endpoints"
+        : "This BAKED cannot check code intelligence; update it",
+    );
 }
 
 export const lsp = {
@@ -78,4 +108,9 @@ export const lsp = {
   /** One server, or every server without `id`; starts the project's servers when none run yet. */
   restart: (key: string, id?: string) =>
     call<LspActionView>(key, "POST", id ? item(id, "restart") : "/v1/lsp/restart", {}),
+  /** Starts the servers when none run yet, then probes every backend; it can take a while. */
+  diagnose: async (key: string) => {
+    await offered(key, LSP_DIAGNOSE_CAPABILITY);
+    return call<IntelligenceCheck>(key, "POST", "/v1/lsp/diagnose", {});
+  },
 };

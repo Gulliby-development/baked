@@ -570,6 +570,18 @@ One Markdown file for a run, at any status, read from the run's database without
 
 The report is the pull request body of a [delivery](#delivery). In the TUI, `/workflow report RUN_ID` shows it in the chat (`--output FILE` writes it). The desktop app shows it in the run's Report tab with Copy and Save buttons, and `GET /v1/workflow/runs/RUN_ID/report` returns it.
 
+## Usage reports
+
+```sh
+baked usage --days 30 --group-by stage,model --format md          # prints Markdown
+baked usage --days 30 --group-by stage,model --output usage.md    # writes usage.md in the project
+baked workflow usage RUN_ID --format md [--output FILE]           # one run
+```
+
+Token use and estimated cost can be shared as one Markdown document. The project document has the window (days and UTC dates), the grouping, the model and stage filters, a totals table (runs, attempts, tokens, input with cache reads, output, cache reads, cache writes, estimated cost and unpriced tokens) and one row per group with the same figures, followed by a note on how cost is estimated. A run's document has its totals and the same figures by stage and by model; `--top` does not shorten it. Only model IDs, stage IDs, the run ID and figures go in: no paths, prompts or account names. `--output` paths are relative to the project, and `--output` implies `--format md`.
+
+In the TUI, E on the [usage screen](#usage-screen) writes the shown period as `baked-usage-30d-YYYY-MM-DD.md` in the project, grouped as on the screen; `/workflow usage RUN_ID --format md` shows a run's document in the chat (`--output FILE` writes it). The desktop Usage screen has Copy as Markdown and Export as .md for the chosen range, run and filters; the local API answers `GET /v1/usage?format=md` and `GET /v1/workflow/runs/RUN_ID/usage?format=md` with `{markdown}` ([API](../desktop/api.md)).
+
 ## Import, export and retention
 
 ```sh
@@ -622,7 +634,7 @@ A run freezes its routing at start in the `routing.json` artifact (each profile'
 
 ### Usage screen
 
-`/workflow usage`, or U on the run list of `/workflow`, opens the usage screen of the TUI: the tokens and estimated cost of every workflow attempt that started in the last 7, 30 or 90 days, across the project's runs. The first line sums runs, attempts, tokens, cost and the tokens no model price covers (`unpriced`, left out of the cost); the table below groups them by model (`(host)` for host attempts), stage or UTC day. ←→ changes the period, Tab the grouping, Esc returns to the run list. The numbers come from the same code as [`baked usage`](../headless.md) and `GET /v1/usage`, so they match the CLI and the desktop Usage screen. With a run ID, `/workflow usage RUN_ID` still prints that run's per-stage usage in the chat.
+`/workflow usage`, or U on the run list of `/workflow`, opens the usage screen of the TUI: the tokens and estimated cost of every workflow attempt that started in the last 7, 30 or 90 days, across the project's runs. The first line sums runs, attempts, tokens, cost and the tokens no model price covers (`unpriced`, left out of the cost); the table below groups them by model (`(host)` for host attempts), stage or UTC day. ←→ changes the period, Tab the grouping, E writes the period and grouping shown as a Markdown file in the project ([usage reports](#usage-reports)), Esc returns to the run list. The numbers come from the same code as [`baked usage`](../headless.md) and `GET /v1/usage`, so they match the CLI and the desktop Usage screen. With a run ID, `/workflow usage RUN_ID` still prints that run's per-stage usage in the chat.
 
 ### Routing screen
 
@@ -798,7 +810,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/runs` | `list` | `?feature=&status=&limit=&cursor=` |
 | `POST /v1/workflow/runs` | `run` | `commandId`, `feature` and `prompt` (both optional with `issue`), optional `issue` (as `--issue`), `workflow`, `policy` (object), `model`, `owner` (default `API`), `confirmAutoApproval`, `worktree`, `writers`, `clarification` (`ask` or `assume`, as `--clarification`) |
 | `GET /v1/workflow/runs/RUN_ID` | `status` | snapshot with `requests` |
-| `GET /v1/workflow/runs/RUN_ID/usage` | `usage` | |
+| `GET /v1/workflow/runs/RUN_ID/usage` | `usage` | `?format=md`: `{runId, markdown}`, the [usage report](#usage-reports) |
 | `GET /v1/workflow/runs/RUN_ID/artifacts` | `artifacts` | `?file=ARTIFACT_ID` returns `{content}` |
 | `GET /v1/workflow/runs/RUN_ID/report` | `report` | returns `{runId, markdown}` ([run report](#run-report)) |
 | `POST /v1/workflow/runs/RUN_ID/pause`, `/cancel`, `/resume` | `pause`, `cancel`, `resume` | `commandId`, `expectedRevision` |
@@ -821,7 +833,7 @@ baked serve [--port N] [--token-file FILE] [--allow-origin ORIGIN]... [--cwd DIR
 | `GET /v1/workflow/route` | `route` | `?workflow=&model=&route=` |
 | `POST /v1/workflow/runs/RUN_ID/candidate`, `/revise` | `candidate`, `revise` | candidate takes `commandId` and inline `spec`, `plan`, `tasks`, `policy`; revise takes `candidate` plus `commandId`, `expectedRevision` |
 | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; `GET /v1/commands`, `GET /v1/skills` | | the terminal UI's gate editor, custom commands and skills; see `docs/desktop/api.md` |
-| `GET /v1/usage` | `baked usage --json` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads, cache writes) and estimated cost of every attempt started in the window, grouped |
+| `GET /v1/usage` | `baked usage --json` | `?days=7&groupBy=model\|stage\|day` (or two, comma-separated), optional `model` and `stage` filters: tokens (input, output, cache reads, cache writes) and estimated cost of every attempt started in the window, grouped; `format=md` answers `{markdown}` ([usage reports](#usage-reports)) |
 | `/v1/initiatives` and `/v1/initiatives/ID/ACTION` | `initiative ...` | see `docs/desktop/api.md`; start, approve, resume and reroute with `resume: true` drive the initiative in the background |
 | `GET /v1/progress` | stderr of `workflow run`, `quick` and `resume` in a terminal | long-running work: opening the project, indexing (files counted), starting a run; SSE, or `{items}` with `Accept: application/json`; see `docs/desktop/api.md` |
 | `GET /v1/attention` | `baked attention --json` (runs and initiatives) | everything waiting for a person across all runs; SSE, or `{items}` with `Accept: application/json` |

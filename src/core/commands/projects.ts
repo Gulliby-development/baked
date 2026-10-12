@@ -25,6 +25,7 @@ import {
   projectDetails,
   resolveFolderInput,
   runsExecutingInProcess,
+  waitingAcrossProjects,
 } from "../projects/switcher.js";
 import { SessionManager } from "../sessions/manager.js";
 import type { CommandContext, CommandHandler } from "./types.js";
@@ -376,6 +377,44 @@ export async function showCurrentProject(ctx: CommandContext): Promise<void> {
 }
 
 /**
+ * /project waiting: run requests and blocked runs waiting for a person here and in the other
+ * projects the status-bar badge reads. Enter opens a run of this project, or switches to the
+ * project of another one.
+ */
+export async function showWaitingAcrossProjects(ctx: CommandContext): Promise<void> {
+  const host = projectHost(ctx);
+  const projects = await waitingAcrossProjects(ctx.cwd);
+  if (!projects.length) {
+    sysMsg(ctx, "Nothing waits for you in this project or in your other recent projects.");
+    return;
+  }
+  type Pick = { path: string; runId: string };
+  const picked = await openSelect<Pick>({
+    title: "Waiting for you",
+    titleIcon: "folder",
+    placeholder: "Runs across projects · fuzzy filter…",
+    equals: (a, b) => a.path === b.path && a.runId === b.runId,
+    options: projects.flatMap((project) =>
+      project.items.map((item) => ({
+        value: { path: project.path, runId: item.run_id },
+        label: item.feature_id,
+        meta: `${item.request_id ? reasonText(item.kind) : `blocked (${reasonText(item.kind)})`} · ${age(item.created_at)}`,
+        category: project.current ? `${project.name} (this project)` : project.name,
+        icon: statusGlyph(item.status, true),
+        status: "warning" as const,
+      })),
+    ),
+  });
+  if (!picked) return;
+  if (picked.value.path === realPath(ctx.cwd)) {
+    useWorkflowStore.getState().select(picked.value.runId, ctx.tabMgr.activeTabId);
+    useUIStore.getState().openModal("workflow");
+    return;
+  }
+  await switchToProject(host, picked.value.path);
+}
+
+/**
  * /project rename NAME: sets the current folder's display name in the shared project list, which
  * the picker, `baked projects` and the desktop app all read. No name restores the default.
  */
@@ -404,4 +443,5 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/projects", (_input, ctx) => openProjectPicker(projectHost(ctx)));
   map.set("/project", (_input, ctx) => showCurrentProject(ctx));
   map.set("/project rename", (input, ctx) => renameCurrentProject(input, ctx));
+  map.set("/project waiting", (_input, ctx) => showWaitingAcrossProjects(ctx));
 }

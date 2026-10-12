@@ -1,4 +1,5 @@
 import { getCwd } from "../core/cwd.js";
+import { healthCheckLines, healthCheckView } from "../core/intelligence/health.js";
 import {
   installLspServer,
   type LspScope,
@@ -93,7 +94,11 @@ function failing(status: LspStatusView, id?: string): LspServerView[] {
   );
 }
 
-async function check(workspace: string): Promise<LspStatusView> {
+/** Starts code intelligence in this process, waits for the language servers, runs `use`. */
+async function withIntelligence<T>(
+  workspace: string,
+  use: (client: import("../core/workers/intelligence-client.js").IntelligenceClient) => Promise<T>,
+): Promise<T> {
   const { IntelligenceClient } = await import("../core/workers/intelligence-client.js");
   const { setIntelligenceClient } = await import("../core/intelligence/instance.js");
   const client = new IntelligenceClient(workspace);
@@ -106,10 +111,48 @@ async function check(workspace: string): Promise<LspStatusView> {
         timer = setTimeout(done, CHECK_TIMEOUT_MS);
       }),
     ]).finally(() => clearTimeout(timer));
-    return await lspStatus({ workspace });
+    return await use(client);
   } finally {
     setIntelligenceClient(null);
     await client.close().catch(() => {});
+  }
+}
+
+const check = (workspace: string): Promise<LspStatusView> =>
+  withIntelligence(workspace, () => lspStatus({ workspace }));
+
+const diagnoseHelp = `Usage: baked diagnose [--json]
+
+Probes every code intelligence backend (language server, ts-morph, tree-sitter, regex) for the
+project's main language against a real file of the project, as /diagnose does in the terminal
+UI. Exits 1 when a backend that supports the language fails to start or a probe errors or
+times out.
+`;
+
+/** `baked diagnose`: the code intelligence health check of `/diagnose`. */
+export async function runDiagnoseCli(argv: string[]): Promise<number> {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(diagnoseHelp);
+    return 0;
+  }
+  const unknown = argv.find((arg) => arg !== "--json");
+  if (unknown) {
+    process.stderr.write(`Unknown argument: ${unknown}\n\n${diagnoseHelp}`);
+    return 2;
+  }
+  try {
+    const view = healthCheckView(
+      await withIntelligence(getCwd(), (client) => client.routerRunHealthCheck()),
+    );
+    process.stdout.write(
+      argv.includes("--json")
+        ? `${JSON.stringify(view, null, 2)}\n`
+        : `${healthCheckLines(view).join("\n")}\n`,
+    );
+    return view.failing.length > 0 ? 1 : 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
   }
 }
 

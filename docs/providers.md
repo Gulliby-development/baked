@@ -26,7 +26,7 @@ baked --remove-key anthropic        # forget the saved key
 
 The Claude Code connection runs Claude models through the official `claude` CLI and the account it is signed in to, so a Claude subscription works without an API key.
 
-1. Install Claude Code and make sure `claude` is on `PATH`. On Windows use the native build (`claude.exe`, `claude install`); the npm `claude.cmd` shim cannot be started directly. `BAKED_CLAUDE_CODE_PATH` points BAKED at another executable.
+1. Install Claude Code. BAKED finds `claude` as described in [Finding the CLIs](#finding-the-clis). On Windows use the native build (`claude.exe`, `claude install`); the npm `claude.cmd` shim cannot be started directly. `BAKED_CLAUDE_CODE_PATH` points BAKED at another executable.
 2. Sign in with `/claude-code login` (it runs `claude auth login` and opens the browser), with Sign in under Settings > All projects > Providers and keys in the desktop app, or run `claude auth login` in a terminal.
 3. Pick a model: `claude-code/opus`, `claude-code/sonnet`, `claude-code/haiku` or `claude-code/fable` follow the newest model of each family. Any model name Claude Code accepts also works, for example `claude-code/claude-opus-4-8` or `claude-code/sonnet[1m]` for the 1M context window where the plan allows it.
 
@@ -66,7 +66,18 @@ BAKED's tools are registered with Codex as native function tools, and replies st
 - Codex has no way to force a tool choice; BAKED asks for it in the turn text instead.
 - Token usage comes from Codex's thread totals, including cached input. The usage of a response that called tools is counted in the step after the tool result.
 
-The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`.
+The native tools need a Codex CLI with the app-server `dynamicTools` API (checked with 0.162). If `codex app-server` cannot start or open a thread, the step runs as a separate `codex exec` instead, which asks for tool calls as JSON and shows output when the step finishes. Set `BAKED_CODEX_TRANSPORT=exec` to always use `codex exec`. BAKED finds `codex` as described in [Finding the CLIs](#finding-the-clis); `BAKED_CODEX_PATH` points it at another executable.
+
+## Finding the CLIs
+
+The Codex and Claude Code providers run the `codex` and `claude` executables. BAKED looks for each one in this order and stops at the first hit:
+
+1. `BAKED_CODEX_PATH` or `BAKED_CLAUDE_CODE_PATH`, when set.
+2. The folders on `PATH`.
+3. On macOS and Linux, the `PATH` that the user's login shell builds (`$SHELL -ilc`, read once per process with a 5-second limit; `BAKED_LOGIN_SHELL_PATH=0` skips it). An app started from the Finder, the Dock or a desktop launcher, and the `baked serve` it starts, only get the system `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin` on macOS), so Homebrew, npm, nvm and installer folders from the shell profile are missing there.
+4. Folders installers use: `~/.local/bin`, `~/.claude/local` (Claude Code's local install, which is often only a shell alias), `~/.bun/bin`, `~/.npm-global/bin`, `~/.volta/bin`, asdf and mise shims, pnpm, every `~/.nvm/versions/node/*/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and Linuxbrew; on Windows `~/.local/bin`, `~/.bun/bin` and `%APPDATA%\npm`.
+
+The folder where the CLI was found is added to the front of the process `PATH`, so a CLI that starts with `#!/usr/bin/env node` finds the Node.js next to it, and tools BAKED runs later see the same `PATH`. A found location is remembered for the process; a miss is checked again on the next provider check, so a CLI installed while BAKED runs shows up without a restart. When nothing is found, the provider status (`/codex status`, `/claude-code status`, Settings > All projects > Providers and keys in the desktop app) names the folders it searched.
 
 ## Model fallback
 
