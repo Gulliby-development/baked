@@ -50,7 +50,7 @@ type Dialogs =
 function ViewSkill({ projectKey, skill }: { projectKey: string; skill: SkillEntry }) {
   const [file] = useLoad(
     () => setup.skill(projectKey, skill.scope, skill.id),
-    [projectKey, skill.scope, skill.id],
+    [projectKey, "skill", skill.scope, skill.id],
   );
   return (
     <>
@@ -198,7 +198,10 @@ function Catalog({
     const timer = setTimeout(() => setDebounced(query), SEARCH_DELAY_MS);
     return () => clearTimeout(timer);
   }, [query]);
-  const [found] = useLoad(() => setup.skillCatalog(projectKey, debounced), [projectKey, debounced]);
+  const [found] = useLoad(
+    () => setup.skillCatalog(projectKey, debounced),
+    [projectKey, "skillCatalog", debounced],
+  );
   const scopesOf = (skill: CatalogSkill) =>
     installed.filter((s) => s.id === skill.skillId || s.id === skill.name).map((s) => s.scope);
 
@@ -256,7 +259,7 @@ function Catalog({
  * terminal, through `/v1/skills*` of the project's backend.
  */
 export function SkillsSection({ project }: SectionProps) {
-  const [list, , setList] = useLoad(() => setup.skills(project.key), [project.key]);
+  const [list, , setList] = useLoad(() => setup.skills(project.key), [project.key, "skills"]);
   const [dialog, setDialog] = useState<Dialogs | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

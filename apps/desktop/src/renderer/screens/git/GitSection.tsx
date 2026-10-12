@@ -39,7 +39,7 @@ const NAME_MAX = 200;
 export function GitSection({ project }: SectionProps) {
   const key = project.key;
   const { refresh } = useDesktop();
-  const [loaded, reload, setOverview] = useLoad(() => git.overview(key), [key]);
+  const [loaded, reload, setOverview] = useLoad(() => git.overview(key), [key, "git-overview"]);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string; output: string } | null>(
     null,

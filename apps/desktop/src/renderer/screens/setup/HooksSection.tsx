@@ -106,7 +106,7 @@ function EventGroup({
  * their config files.
  */
 export function HooksSection({ project }: SectionProps) {
-  const [hooks, , setHooks] = useLoad(() => setup.hooks(project.key), [project.key]);
+  const [hooks, , setHooks] = useLoad(() => setup.hooks(project.key), [project.key, "hooks"]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

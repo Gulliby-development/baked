@@ -1,6 +1,7 @@
 import type { ApiErrorBody, ApiResponse, RunList } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
 import { bridge } from "./bridge.js";
+import { invalidateProject } from "./cache.js";
 
 export class ApiError extends Error {
   constructor(
@@ -35,8 +36,18 @@ export async function call<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  return unwrap<T>(await bridge.request(key, method, path, body));
+  if (method === "GET" || READS.has(path))
+    return unwrap<T>(await bridge.request(key, method, path, body));
+  // A write, even a refused one, may change what any cached read of the project returned.
+  try {
+    return unwrap<T>(await bridge.request(key, method, path, body));
+  } finally {
+    invalidateProject(key);
+  }
 }
+
+/** POST endpoints that only read: they leave the query cache alone. */
+const READS = new Set(["/v1/graph"]);
 
 export const api = {
   runs: (key: string, limit = 20) => call<RunList>(key, "GET", `/v1/workflow/runs?limit=${limit}`),

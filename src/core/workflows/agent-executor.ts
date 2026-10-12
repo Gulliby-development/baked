@@ -1,4 +1,5 @@
 import { readFileSync, unlinkSync } from "node:fs";
+import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
   generateText,
   isStepCount,
@@ -81,6 +82,10 @@ const MAX_SEMANTIC_CORRECTIONS = 2;
 const EDIT_NUDGE_AFTER_READS = 4;
 
 /** Input and output tokens over steps; a side stays undefined when no step reported it. */
+/** Sent after a step that ended without a tool call, before the one forced submission. */
+const SUBMIT_NOW_NOTICE =
+  "You ended your turn without calling submit_result. Call submit_result now with the complete result for the work already done. If the task is not finished or something failed, submit outcome blocked (or the matching unfinished state) and list what is unresolved. Do not call any other tool.";
+
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   const add = (a: number | undefined, b: number | undefined) =>
     a === undefined ? b : b === undefined ? a : a + b;
@@ -489,12 +494,18 @@ export class NativeAgentExecutor implements AgentExecutor {
         });
         stepStartedAt = Date.now();
       };
-      let result: { steps: readonly StepLike[]; text: string; usage: Partial<LanguageModelUsage> };
+      let result: {
+        steps: readonly StepLike[];
+        text: string;
+        usage: Partial<LanguageModelUsage>;
+        /** The conversation so far, when the loop ended normally: a continuation resumes it. */
+        messages?: ModelMessage[];
+      };
       try {
         // Anthropic prompt cache: a breakpoint after the tools and system prompt, and the
         // automatic one after the newest message, so each step re-reads the earlier ones.
         const cacheTtl = this.config.cache?.ttl ?? "5m";
-        result = await generateText({
+        const generated = await generateText({
           model: resolveModel(request.profile.model),
           instructions: {
             role: "system",
@@ -539,6 +550,12 @@ export class NativeAgentExecutor implements AgentExecutor {
             lastCallUsage = usage;
           },
         });
+        result = {
+          steps: generated.steps,
+          text: generated.text,
+          usage: generated.usage,
+          messages: generated.response.messages,
+        };
       } catch (error) {
         // A forced submit step answered with text. Keep that text for the format correction
         // below, and record the rejected step's spend, which never reaches onStepEnd.
@@ -568,6 +585,97 @@ export class NativeAgentExecutor implements AgentExecutor {
           throw error;
         }
       }
+      // The loop ended on a step without a tool call. Its context is intact, so the model is asked
+      // once more to submit in the same conversation, with only the submit tool active, instead of
+      // a context-free reformat that has neither the task id nor the evidence handles (R7: keeplint
+      // T003, md-site T006, url-shortener T002 and the mouse-mover plan ended on prose).
+      let proseEnd = "";
+      if (
+        submitted === undefined &&
+        result.messages &&
+        !request.signal.aborted &&
+        result.steps.at(-1)?.toolCalls.length === 0 &&
+        result.steps.at(-1)?.finishReason !== "length" &&
+        !budget.overBudget(result.steps)
+      ) {
+        proseEnd = result.text;
+        try {
+          const continued = await generateText({
+            model: resolveModel(request.profile.model),
+            instructions: {
+              role: "system",
+              content: request.profile.instructions,
+              providerOptions: getEphemeralCache(this.config.cache?.ttl ?? "5m"),
+            },
+            messages: [
+              { role: "user", content: request.prompt },
+              ...result.messages,
+              { role: "user", content: SUBMIT_NOW_NOTICE },
+            ],
+            tools: available,
+            activeTools: submitTools,
+            toolChoice: "required",
+            // One more step corrects a submission the stage validators reject.
+            stopWhen: [() => submitted !== undefined, isStepCount(2)],
+            maxRetries: 0,
+            maxOutputTokens: request.profile.maxOutputTokens,
+            abortSignal: request.signal,
+            providerOptions: withAutomaticCache(
+              provider.providerOptions,
+              this.config.cache?.ttl ?? "5m",
+            ),
+            headers: provider.headers,
+            onStepEnd: (step) => {
+              finished.push(step);
+              recordStep(step.usage);
+              this.store.recordAttemptUsage(
+                request.runId,
+                request.attemptId,
+                budget.consumed(finished),
+              );
+            },
+            prepareStep: () => {
+              request.signal.throwIfAborted();
+              return {};
+            },
+            onLanguageModelCallEnd: ({ usage: callUsage }) => {
+              lastCallUsage = callUsage;
+            },
+          });
+          result = {
+            steps: finished,
+            text: continued.text || result.text,
+            usage: sumUsage(finished),
+          };
+        } catch (error) {
+          if (request.signal.aborted || isTransient(error)) {
+            if (!request.signal.aborted) recordStep(undefined, error);
+            throw error;
+          }
+          // A text reply to the forced step or a submission the schema rejects: the format
+          // correction below makes the last attempt with whatever text exists.
+          if (ToolChoiceViolationError.isInstance(error)) {
+            if (lastCallUsage) {
+              finished.push({ usage: lastCallUsage, toolCalls: [] });
+              this.store.recordAttemptUsage(
+                request.runId,
+                request.attemptId,
+                budget.consumed(finished),
+              );
+            }
+            result = {
+              steps: finished,
+              text:
+                error.content.map((part) => (part.type === "text" ? part.text : "")).join("") ||
+                proseEnd,
+              usage: sumUsage(finished),
+            };
+          } else {
+            recordStep(undefined, error);
+            result = { steps: finished, text: proseEnd, usage: sumUsage(finished) };
+          }
+        }
+      }
       const usage = budget.record(result.steps, submitted !== undefined, meta);
       writeUsage(usage);
       if (usage.stopReason === "tokens")
@@ -589,6 +697,15 @@ export class NativeAgentExecutor implements AgentExecutor {
         try {
           submitted = schema.parse(JSON.parse(result.text));
         } catch {
+          // The raw text is the only record of what the model said instead of submitting.
+          this.store.transaction(() =>
+            this.store.artifact(
+              request.runId,
+              "diagnostic",
+              `attempts/${request.attemptId}/prose-end.json`,
+              canonical({ profileId: request.profile.id, text: result.text.slice(0, 64 * 1024) }),
+            ),
+          );
           const step = this.store
             .attempts(request.runId)
             .find((a) => a.id === request.attemptId)?.step_id;
@@ -650,6 +767,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             throw new WorkflowFault(
               "OUTPUT_INVALID",
               `Profile ${request.profile.id} returned invalid output after one format correction`,
+              { reason: "prose_end", prose: result.text.slice(0, 4000) },
             );
           }
         }

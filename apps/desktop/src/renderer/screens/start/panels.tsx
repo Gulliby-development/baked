@@ -10,6 +10,7 @@ import {
 } from "../../client/start.js";
 import { tokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { type Query, useQuery } from "../../lib/query.js";
 import { PANEL as CARD, LABEL, STACK, TABLE } from "../../lib/styles.js";
 import {
   FIT_TEXT,
@@ -381,28 +382,22 @@ export function usePreRun(key: string, input: PreRunInput, delayMs = 350): PreRu
   return state;
 }
 
-/** A value loaded once per project, with its error. */
+/**
+ * A value of one project read through the shared query cache under `name`: the last answer at
+ * once, refreshed in the background when older than `staleMs`. `error` is set only while there is no value to show.
+ */
 export function useLoad<T>(
   key: string,
+  name: string,
   load: (key: string) => Promise<T>,
-): { value: T | null; error: unknown } {
-  const [state, setState] = useState<{ value: T | null; error: unknown }>({
-    value: null,
-    error: null,
-  });
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `load` is a module-level function.
-  useEffect(() => {
-    let live = true;
-    setState({ value: null, error: null });
-    load(key).then(
-      (value) => live && setState({ value, error: null }),
-      (error: unknown) => live && setState({ value: null, error }),
-    );
-    return () => {
-      live = false;
-    };
-  }, [key]);
-  return state;
+  staleMs?: number,
+): Query<T> & { value: T | null } {
+  const query = useQuery([key, name], () => load(key), staleMs);
+  return {
+    ...query,
+    value: query.hasData ? (query.data as T) : null,
+    error: query.hasData ? null : query.error,
+  };
 }
 
 export { message };

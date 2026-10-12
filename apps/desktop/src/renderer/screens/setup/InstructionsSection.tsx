@@ -273,14 +273,14 @@ function scopeCounts(items: { scope: "project" | "global" }[]): string {
 }
 
 function AlsoGiven({ projectKey }: { projectKey: string }) {
-  const [summary] = useLoad(() => setup.project(projectKey), [projectKey]);
+  const [summary] = useLoad(() => setup.project(projectKey), [projectKey, "project"]);
   const [skills] = useLoad(
     () => setup.skills(projectKey).then((d) => scopeCounts(d.skills)),
-    [projectKey],
+    [projectKey, "skill-counts"],
   );
   const [commands] = useLoad(
     () => setup.commands(projectKey).then((d) => scopeCounts(d.commands)),
-    [projectKey],
+    [projectKey, "command-counts"],
   );
   const files = summary.state === "ready" ? summary.data.workingSet.files : null;
   return (
@@ -313,7 +313,7 @@ function AlsoGiven({ projectKey }: { projectKey: string }) {
 
 /** What an older backend still tells: the manifest's instruction files, by name. */
 function FromSummary({ projectKey }: { projectKey: string }) {
-  const [summary] = useLoad(() => setup.project(projectKey), [projectKey]);
+  const [summary] = useLoad(() => setup.project(projectKey), [projectKey, "project"]);
   if (summary.state !== "ready") return <LoadState value={summary} what="instruction files" />;
   const { files, skipped } = summary.data.instructions;
   return (
@@ -403,8 +403,8 @@ function Sources({
 
 export function InstructionsSection({ project }: SectionProps) {
   const key = project.key;
-  const [list, reloadList, setList] = useLoad(() => setup.instructions(key), [key]);
-  const [runs, reloadRuns] = useLoad(() => api.runs(key, 50), [key]);
+  const [list, reloadList, setList] = useLoad(() => setup.instructions(key), [key, "instructions"]);
+  const [runs, reloadRuns] = useLoad(() => api.runs(key, 50), [key, "runs", 50]);
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState<InstructionFile | null>(null);
   const [affected, setAffected] = useState<string[]>([]);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { accountRefusal, isTransient, reportsLostTool, retryDelay } from "../src/core/workflows/retry.js";
+import { accountRefusal, isCapacityError, isTransient, reportsLostTool, retryDelay } from "../src/core/workflows/retry.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -101,4 +101,65 @@ describe("provider account refusals", () => {
     expect(final.status).toBe("blocked");
     expect(service.store.run(run.runId).reason).toBe("provider_account");
   });
+});
+
+describe("a model at capacity", () => {
+  const capacity = new Error("Selected model is at capacity. Please try a different model.");
+
+  test("is transient and waits with a growing backoff, four times", () => {
+    expect(isCapacityError(capacity)).toBe(true);
+    expect(isCapacityError({ statusCode: 400, message: "Bad request", responseBody: '{"error":"model is at capacity"}' })).toBe(true);
+    expect(isTransient(capacity)).toBe(true);
+    expect(isCapacityError(new Error("Capacity of the cache is 3"))).toBe(false);
+    const waits = [0, 1, 2, 3].map((retry) => retryDelay(capacity, retry) ?? 0);
+    expect(waits[0]).toBeGreaterThanOrEqual(5_000);
+    expect(waits[0]).toBeLessThan(6_000);
+    expect(waits[1]).toBeGreaterThanOrEqual(15_000);
+    expect(waits[3]).toBeGreaterThanOrEqual(90_000);
+    expect(retryDelay(capacity, 4)).toBeNull();
+    expect(isTransient(Object.assign(new Error("The operation timed out"), { name: "TimeoutError" }))).toBe(true);
+  });
+
+  async function drive(models: string[], fallback: string[] | undefined) {
+    const root = mkdtempSync(join(tmpdir(), "baked-capacity-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const executor: AgentExecutor = {
+      async execute(request) {
+        models.push(request.profile.model);
+        throw capacity;
+      },
+    };
+    const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [{ id: "check", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }] };
+    const config = {
+      ...DEFAULT_CONFIG,
+      defaultModel: "fixture/model",
+      ...(fallback ? { modelFallback: { "fixture/model": fallback } } : {}),
+      workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy },
+    };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+    const controller = new AbortController();
+    // The call waits for the capacity backoff; stop the run after the first retry has started.
+    const stop = setInterval(() => { if (models.length >= 2) controller.abort(); }, 50);
+    try {
+      await service.drive(run.runId, controller.signal).catch(() => undefined);
+    } finally {
+      clearInterval(stop);
+    }
+  }
+
+  test("is retried on the same model after a wait when the route has no other model", async () => {
+    const models: string[] = [];
+    await drive(models, undefined);
+    expect(models.slice(0, 2)).toEqual(["fixture/model", "fixture/model"]);
+  }, 30_000);
+
+  test("goes to the next model of the route at once", async () => {
+    const models: string[] = [];
+    const started = Date.now();
+    await drive(models, ["fixture/other"]);
+    expect(models.slice(0, 2)).toEqual(["fixture/model", "fixture/other"]);
+    expect(Date.now() - started).toBeLessThan(4_000);
+  }, 30_000);
 });

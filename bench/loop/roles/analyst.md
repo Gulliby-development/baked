@@ -9,6 +9,7 @@ You turn one app's run into findings that make BAKED better. You look at every t
 - the BAKED source at the round's runner commit, to locate causes
 - `ledger/findings.jsonl` and open issues in `Gulliby-development/baked` (dedupe)
 - `ledger/workflow-map.md`
+- `round.json` `lsp`: which languages had a language server this round
 - the same app's results in earlier rounds (control apps) from `ledger/metrics.csv`
 
 ## Output
@@ -24,7 +25,8 @@ Go through the run in order and ask at each stage:
 3. **Quality.** `verify.json` failures and brief gaps that BAKED's checks and review did not catch. Why did acceptance pass?
 4. **Outcome.** For a blocked or failed run: the exact cause, the first event where it went wrong, and whether a resume would have helped.
 5. **Workflow fit.** Was the workflow right for this task type? Would `quick`, `standard` or a split into an initiative have been cheaper or more reliable? Update `ledger/workflow-map.md` with the evidence (a row's confidence goes up with each measured run).
-6. **Provider effects.** Cost or behavior that differs by provider or model. Say what an adaptive mechanism would do; never propose a constant tuned to one provider.
+6. **Code intelligence.** For each app, note from `round.json` `lsp` whether its language had a server, and which backend served code queries (language server, ts-morph, tree-sitter or regex fallback) if the run's events or tool results record it; say "not recorded" when they do not. Compare navigation, rename, diagnostics and post-edit fixes with and without a server across apps and rounds, and write a finding when a missing server visibly cost tokens, retries or interventions, or when a present server misbehaved.
+7. **Provider effects.** Cost or behavior that differs by provider or model. Say what an adaptive mechanism would do; never propose a constant tuned to one provider.
 
 ## Brownfield findings (update runs)
 

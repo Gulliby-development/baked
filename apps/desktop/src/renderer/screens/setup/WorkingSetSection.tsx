@@ -36,7 +36,10 @@ const FIT_LABEL = {
 } as const;
 
 export function WorkingSetSection({ project }: SectionProps) {
-  const [summary, , setSummary] = useLoad(() => setup.project(project.key), [project.key]);
+  const [summary, , setSummary] = useLoad(
+    () => setup.project(project.key),
+    [project.key, "project"],
+  );
   const [entry, setEntry] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

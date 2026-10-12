@@ -83,8 +83,8 @@ export function QuickTaskScreen({ project }: SectionProps) {
   const [prompt, setPrompt] = useState(() => takeDraft("quick", key));
   const [featureEdit, setFeatureEdit] = useState<string | null>(null);
   const [budget, setBudget] = useState<BudgetPreset>("quick");
-  const definitions = useLoad(key, start.definitions);
-  const taken = useLoad(key, takenFeatures);
+  const definitions = useLoad(key, "definitions", start.definitions);
+  const taken = useLoad(key, "taken-features", takenFeatures);
   const policy = usePolicy(key);
   const preRun = usePreRun(key, { workflow: QUICK });
   const limits = presetLimits(budget, policy.policy, preRun.estimate);
