@@ -6,6 +6,7 @@ import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { ago, tokens, usd } from "../../format.js";
 import { TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
@@ -79,7 +80,7 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
         ))}
       </SegmentGroup>
       {error && <Alert tone="error">{error}</Alert>}
-      {!error && !list && <div className="text-dim-foreground">Loading runs…</div>}
+      {!error && !list && <Skeleton label="Loading runs" />}
       {list?.length === 0 && (
         <Empty className="flex flex-col items-center gap-3">
           {!status && <BlockIcon name="runs" />}

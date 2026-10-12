@@ -402,6 +402,28 @@ interface GraphView {
 
 `tone` 0 to 2 cycle over the top-level folders by size and 3 marks tests. `key` is a file in the top 3% by rank. Each edge sums the file links between two visible units; `top` keeps its strongest file pairs. With `typeEdges: false` links into type-heavy files are left out, with `tests: false` test files.
 
+## Progress
+
+Long-running work of the server that someone waits on, from `src/core/progress.ts` (capability `progress`).
+
+| Method and path | Body or query | Result |
+| --- | --- | --- |
+| `GET /v1/progress` | `Accept: application/json` | `{items: ProgressItem[]}`: the work running now |
+| `GET /v1/progress` | `Accept: text/event-stream` | the same list as `event: progress` whenever it changes, first at once |
+
+```ts
+interface ProgressItem {
+  id: string;            // the task for once-per-process work, else a unique id
+  task: "open" | "index" | "run-start";
+  label: string;         // "Opening the project: mapping the codebase", "Indexing files", "Building edges", "Starting the run"
+  done: number | null;   // counted work only: files parsed while indexing
+  total: number | null;
+  startedAt: string;
+}
+```
+
+`open` covers creating the project's shared context (memory, the intelligence worker, tools), which the first chat message, run step or graph request starts. `index` lasts while the repository map scans: a count of files while they are parsed (`RepoMap.onProgress`), then the later phases without a count. `run-start` lasts from a start or resume request until the run is driven. Language server start-up is not reported here; the LSP status endpoints cover it.
+
 ## Git
 
 The terminal Git menu (`Ctrl+G`, `/git`) for the project folder, with the `git` capability. Both run the actions of `src/core/git/menu.ts` with Git's own configuration, credentials and hooks; Git never prompts (`GIT_TERMINAL_PROMPT=0`), so a remote that needs a password it does not have fails with Git's message.
