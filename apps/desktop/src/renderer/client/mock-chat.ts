@@ -14,6 +14,7 @@ import type {
   SessionSummary,
   StoredImage,
   ToolCall,
+  WatchStatus,
 } from "./chat.js";
 import type { LaunchedView, ProjectBrief } from "./coordinator.js";
 import { type MockRoute, type MockStream, response } from "./mock-routes.js";
@@ -944,7 +945,35 @@ function diffStats(session: MockSession): SessionDiffStats {
 }
 
 const SESSION_PATH =
-  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork|compact|diff|undo|redo)(?:\/([A-Za-z0-9-]+))?)?$/;
+  /^\/v1\/sessions\/([A-Za-z0-9-]+)(?:\/(messages|interrupt|prompts|fork|compact|diff|undo|redo|watch)(?:\/([A-Za-z0-9-]+))?)?$/;
+
+/** The session that watches each project's files, by project key. */
+const watching = new Map<string, string>();
+
+function watchStatus(session: MockSession): WatchStatus {
+  const id = watching.get(session.key) ?? null;
+  const own = id === session.summary.id;
+  return {
+    watching: own,
+    watchingSession: own ? null : id,
+    method: id ? "native" : null,
+    turns: 0,
+    last: null,
+    error: null,
+  };
+}
+
+/** `POST /v1/sessions/ID/watch`: moves the watch to this session or turns it off. */
+function setWatch(session: MockSession, on: boolean): WatchStatus {
+  const before = watching.get(session.key);
+  if (on) watching.set(session.key, session.summary.id);
+  else if (before === session.summary.id) watching.delete(session.key);
+  for (const id of new Set([before, session.summary.id])) {
+    const other = id ? sessions.get(id) : undefined;
+    if (other) emit(other, { type: "watch", watch: watchStatus(other) });
+  }
+  return watchStatus(session);
+}
 
 const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (path === "/v1/models" && method === "GET")
@@ -1099,6 +1128,13 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (action === "undo" || action === "redo")
     return rewind(session, action, (body as { toCheckpoint?: number } | undefined)?.toCheckpoint);
   if (action === "diff") return response(200, diffStats(session));
+  if (action === "watch") {
+    if (method === "GET") return response(200, watchStatus(session));
+    const on = (body as { on?: unknown } | undefined)?.on;
+    if (typeof on !== "boolean")
+      return response(400, { error: { code: "INVALID_REQUEST", message: "on must be a boolean" } });
+    return response(200, setWatch(session, on));
+  }
   const resolve = sub ? session.turn?.waiters.get(sub) : undefined;
   if (!sub || !resolve)
     return response(409, { error: { code: "STALE_PROMPT", message: "Not waiting" } });

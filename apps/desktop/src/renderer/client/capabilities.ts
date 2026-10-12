@@ -39,6 +39,9 @@ export const SKILLS_INSTALL_CAPABILITY = "skills-install";
 /** `GET|PATCH /v1/settings` (the Chat settings pages). */
 export const SETTINGS_CAPABILITY = "settings";
 
+/** `GET|POST /v1/sessions/ID/watch` (Watch files in the chat header). */
+export const WATCH_CAPABILITY = "watch";
+
 /** `GET /v1/sessions/ID/export` (Export in the chat menu). */
 export const CHAT_EXPORT_CAPABILITY = "chat-export";
 
