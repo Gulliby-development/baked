@@ -34,21 +34,27 @@ type Group = UsageSummary["groups"][number];
 
 const GROUP_TITLE: Record<UsageDimension, string> = { model: "MODEL", stage: "STAGE", day: "DAY" };
 
+/** Writes a summary as Markdown into the project; returns where, or throws. */
+export type UsageExporter = (summary: UsageSummary) => string;
+
 export function UsagePopup({
   load,
   width,
   height,
   onBack,
+  onExport,
 }: {
   load: UsageLoader;
   width: number;
   height: number;
   onBack: () => void;
+  onExport?: UsageExporter;
 }) {
   const t = useTheme();
   const [period, setPeriod] = useState(0);
   const [group, setGroup] = useState(0);
   const [cursor, setCursor] = useState(0);
+  const [exported, setExported] = useState<{ ok: boolean; text: string } | null>(null);
   const days = USAGE_PERIODS[period] ?? 7;
   const groupBy = USAGE_GROUPS[group] ?? "model";
   const result = useMemo((): { summary: UsageSummary } | { error: string } => {
@@ -75,6 +81,13 @@ export function UsagePopup({
       const step = event.shift ? USAGE_GROUPS.length - 1 : 1;
       setGroup((g) => (g + step) % USAGE_GROUPS.length);
       setCursor(0);
+    } else if (key === "e" && onExport && "summary" in result) {
+      event.preventDefault();
+      try {
+        setExported({ ok: true, text: `Markdown written to ${onExport(result.summary)}` });
+      } catch (err) {
+        setExported({ ok: false, text: err instanceof Error ? err.message : String(err) });
+      }
     } else if (key === "up" || key === "down") {
       event.preventDefault();
       setCursor((c) => Math.max(0, Math.min(groups.length - 1, c + (key === "up" ? -1 : 1))));
@@ -99,6 +112,7 @@ export function UsagePopup({
         { key: "←→", label: "period" },
         { key: "Tab", label: "group" },
         { key: "↑↓", label: "select" },
+        ...(onExport ? [{ key: "E", label: "export .md" }] : []),
         { key: "Esc", label: "back" },
       ]}
     >
@@ -122,6 +136,7 @@ export function UsagePopup({
                 out.
               </text>
             ) : null}
+            {exported ? <text fg={exported.ok ? t.success : t.error}>{exported.text}</text> : null}
           </>
         )}
       </box>

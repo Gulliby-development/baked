@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { type LspActionView, type LspServer, type LspView, lsp } from "../../client/lsp.js";
+import {
+  type IntelligenceCheck,
+  type LspActionView,
+  type LspServer,
+  type LspView,
+  lsp,
+} from "../../client/lsp.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Dot } from "../../components/ui/dot.js";
@@ -9,10 +15,14 @@ import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
 import {
+  BACKEND_STATE_LABEL,
+  BACKEND_STATE_TONE,
+  backendState,
   LSP_STATE_LABEL,
   LSP_STATE_TONE,
   lspSourceLine,
   lspState,
+  PROBE_LABEL,
   visibleServers,
 } from "./lsp-logic.js";
 import {
@@ -116,6 +126,62 @@ function ServerRow({
   );
 }
 
+/** Every backend of the check with how each key operation went, as `/diagnose` shows it. */
+function CheckPanel({ check }: { check: IntelligenceCheck }) {
+  return (
+    <section aria-label="Code intelligence check" className={STACK}>
+      <h2 className={LABEL}>Code intelligence check · {check.language}</h2>
+      <span className={cn(WRAP, "font-mono text-dim-foreground", NOTE)}>
+        {check.probeFile ? `Probed ${check.probeFile}` : "No file of this language to probe."}
+      </span>
+      <ul className={cn(PANEL, LIST, "p-0")}>
+        {check.backends.map((backend) => {
+          const state = backendState(check, backend);
+          return (
+            <li
+              key={backend.backend}
+              className="flex flex-col gap-1 border-b border-[var(--line)] px-[14px] py-[10px] text-[13px] text-soft-foreground"
+            >
+              <div className={ROW}>
+                <span className={cn(GROW, "font-mono font-semibold text-foreground")}>
+                  {backend.backend}
+                  <span className="font-normal text-dim-foreground"> · tier {backend.tier}</span>
+                </span>
+                <span className="flex items-center gap-2 whitespace-nowrap">
+                  <Dot tone={BACKEND_STATE_TONE[state]} />
+                  {BACKEND_STATE_LABEL[state]}
+                </span>
+              </div>
+              {backend.initError && (
+                <span className={cn(WRAP, "text-[12px] text-[var(--err)]")}>
+                  Failed to start: {backend.initError}
+                </span>
+              )}
+              {backend.supports && backend.probes.length > 0 && (
+                <span className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[12px] text-dim-foreground">
+                  {backend.probes.map((probe) => (
+                    <span
+                      key={probe.operation}
+                      title={probe.error}
+                      className={cn(
+                        (probe.status === "error" || probe.status === "timeout") &&
+                          "text-[var(--err)]",
+                      )}
+                    >
+                      {probe.operation} {PROBE_LABEL[probe.status]}
+                      {probe.ms !== undefined && probe.status !== "unsupported" && ` ${probe.ms}ms`}
+                    </span>
+                  ))}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function restartedText(view: LspActionView, what: string): string {
   if (view.startedNow) return "Started the project's language servers.";
   return view.restarted.length ? `${what} Restarted ${view.restarted.join(", ")}.` : what;
@@ -123,7 +189,7 @@ function restartedText(view: LspActionView, what: string): string {
 
 /**
  * Language servers for the project's languages: whether they are installed, turned off, running
- * or failing, with Install, Turn off and Restart. The same as `/lsp` in the terminal and
+ * or failing, with Install, Turn off and Restart, and the code intelligence check of `/diagnose`. The same as `/lsp` in the terminal and
  * `baked lsp`, through `/v1/lsp*` of the project's backend.
  */
 export function LspSection({ project }: SectionProps) {
@@ -132,6 +198,8 @@ export function LspSection({ project }: SectionProps) {
   const [busy, setBusy] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; failed?: boolean } | null>(null);
+  const [check, setCheck] = useState<IntelligenceCheck | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const starting = list.state === "ready" && list.data.servers.some((s) => s.running && !s.ready);
   useEffect(() => {
@@ -151,6 +219,21 @@ export function LspSection({ project }: SectionProps) {
     } finally {
       setBusy(false);
       setInstalling(null);
+    }
+  };
+
+  const runCheck = async () => {
+    setChecking(true);
+    setNotice(null);
+    try {
+      const result = await lsp.diagnose(project.key);
+      setCheck(result);
+      // The check starts the servers when none ran yet.
+      reload();
+    } catch (e) {
+      setNotice({ text: errorText(e), failed: true });
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -179,6 +262,14 @@ export function LspSection({ project }: SectionProps) {
         >
           {view.started ? "Restart all" : "Start servers"}
         </Button>
+        <Button
+          variant="secondary"
+          size="md"
+          disabled={busy || checking}
+          onClick={() => void runCheck()}
+        >
+          {checking ? "Checking…" : "Check code intelligence"}
+        </Button>
       </div>
       {!view.started && (
         <Alert>
@@ -192,6 +283,7 @@ export function LspSection({ project }: SectionProps) {
         </Alert>
       )}
       {notice && <Alert tone={notice.failed ? "error" : undefined}>{notice.text}</Alert>}
+      {check && <CheckPanel check={check} />}
       <section aria-label="Servers" className={STACK}>
         <div className={ROW}>
           <h2 className={cn(LABEL, GROW)}>
