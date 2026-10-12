@@ -2,8 +2,9 @@ import type { ConfigScope } from "../../components/layout/shared.js";
 import { loadConfig } from "../../config/index.js";
 import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
-import type { AgentFeatures, AppConfig } from "../../types/index.js";
+import type { AgentFeatures, AppConfig, ChatEffort } from "../../types/index.js";
 import { icon } from "../icons.js";
+import { CHAT_EFFORTS, getModelEffortLevels } from "../llm/provider-options.js";
 import {
   applyNotificationsChange,
   describeNotifications,
@@ -145,6 +146,53 @@ function handleMode(input: string, ctx: CommandContext): void {
       },
     });
   }
+}
+
+const EFFORT_DESCRIPTIONS: Record<ChatEffort, string> = {
+  default: "the effort in /provider-settings, or the provider's default",
+  low: "fastest, least reasoning",
+  medium: "balanced",
+  high: "more reasoning for harder tasks",
+  xhigh: "extra reasoning",
+  max: "the most reasoning the model allows",
+};
+
+/** `/effort [level]`: the reasoning effort of this tab's turns, from the model's own levels. */
+function handleEffort(input: string, ctx: CommandContext): void {
+  const arg = input.trim().slice("/effort".length).trim().toLowerCase();
+  const model = ctx.chat.activeModel;
+  const levels: readonly string[] = getModelEffortLevels(model);
+  const apply = (effort: ChatEffort) => {
+    ctx.setEffort(effort);
+    const note =
+      effort === "default" || levels.includes(effort)
+        ? ""
+        : levels.length === 0
+          ? `. ${model} takes no reasoning effort, so it runs at its provider's default`
+          : `. ${model} sends the next lower level it supports`;
+    sysMsg(ctx, `Reasoning effort for this chat: ${effort}${note}`);
+  };
+  if (arg) {
+    const matched = CHAT_EFFORTS.find((e) => e === arg);
+    if (matched) apply(matched);
+    else sysMsg(ctx, `Unknown effort: ${arg}. Available: ${CHAT_EFFORTS.join(", ")}`);
+    return;
+  }
+  const current = ctx.chat.effort;
+  const choices = CHAT_EFFORTS.filter(
+    (e) => e === "default" || e === current || levels.includes(e),
+  );
+  ctx.openCommandPicker({
+    title: levels.length > 0 ? "Reasoning Effort" : "Reasoning Effort (model takes none)",
+    icon: icon("ai"),
+    currentValue: current,
+    options: choices.map((value) => ({
+      value,
+      label: value === "default" ? "Default" : value,
+      description: EFFORT_DESCRIPTIONS[value],
+    })),
+    onSelect: (value) => apply(value as ChatEffort),
+  });
 }
 
 const handleVerbose = createTogglePicker({
@@ -1079,6 +1127,7 @@ function handleNotifications(input: string, ctx: CommandContext): void {
 export function register(map: Map<string, CommandHandler>): void {
   map.set("/chat-style", handleChatStyle);
   map.set("/mode", handleMode);
+  map.set("/effort", handleEffort);
   map.set("/verbose", handleVerbose);
   map.set("/reasoning", handleReasoning);
   map.set("/motion", handleMotion);
@@ -1102,6 +1151,7 @@ export function register(map: Map<string, CommandHandler>): void {
 export function matchConfigPrefix(cmd: string): CommandHandler | null {
   if (cmd === "/chat-style" || cmd.startsWith("/chat-style ")) return handleChatStyle;
   if (cmd === "/mode" || cmd.startsWith("/mode ")) return handleMode;
+  if (cmd.startsWith("/effort ")) return handleEffort;
   if (cmd === "/theme" || cmd.startsWith("/theme ")) return handleTheme;
   if (cmd.startsWith("/telemetry ")) return handleTelemetry;
   if (cmd.startsWith("/notifications ")) return handleNotifications;
