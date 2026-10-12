@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { type AppSettings, DEFAULT_SETTINGS } from "../shared/api.js";
+import { type AppSettings, DEFAULT_SETTINGS, VOICE_LANGUAGES } from "../shared/api.js";
 
 const THEMES = ["system", "dark", "light"];
 const DENSITIES = ["comfortable", "compact"];
@@ -26,6 +26,11 @@ export function sanitizeSettings(input: unknown): AppSettings {
     openProjects: Array.isArray(raw.openProjects)
       ? raw.openProjects.filter((p): p is string => typeof p === "string")
       : [],
+    voiceInput: bool("voiceInput"),
+    voiceLanguage:
+      raw.voiceLanguage === "auto" || VOICE_LANGUAGES.includes(raw.voiceLanguage as never)
+        ? (raw.voiceLanguage as AppSettings["voiceLanguage"])
+        : DEFAULT_SETTINGS.voiceLanguage,
   };
 }
 

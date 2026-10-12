@@ -3,6 +3,7 @@ import type {
   AppSettings,
   AttentionItem,
   DesktopProject,
+  MicrophoneAccess,
   NewProjectCheck,
   NewProjectDraft,
   StreamEvent,
@@ -85,6 +86,10 @@ export interface DesktopBridge {
    * en, de, fr, es, it, nl, pl, or omitted to detect it.
    */
   transcribe(samples: Float32Array, language?: string): Promise<VoiceTranscript>;
+  /** Asks the system for the microphone (macOS prompts the first time) and says whether it may be used. */
+  microphoneAccess(): Promise<MicrophoneAccess>;
+  /** Opens the system's microphone privacy page (macOS, Windows). */
+  openMicrophoneSettings(): Promise<void>;
 }
 
 export const IPC = {
@@ -116,4 +121,6 @@ export const IPC = {
   windowState: "baked:window:state",
   voiceStatus: "baked:voice:status",
   transcribe: "baked:voice:transcribe",
+  microphoneAccess: "baked:voice:microphone",
+  openMicrophoneSettings: "baked:voice:microphone-settings",
 } as const;

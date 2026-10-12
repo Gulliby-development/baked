@@ -4,7 +4,13 @@ import { test as base, expect, type Page } from "@playwright/test";
 export const NOW = new Date("2026-10-12T09:00:00Z");
 
 /** A mock bridge scenario from `src/renderer/client/mock.ts`. */
-export type Scenario = "default" | "empty" | "start-failure" | "older" | "uninitialized";
+export type Scenario =
+  | "default"
+  | "empty"
+  | "start-failure"
+  | "older"
+  | "uninitialized"
+  | "mic-denied";
 
 export const test = base.extend<{ app: (hash: string, scenario?: Scenario) => Promise<Page> }>({
   page: async ({ page }, use) => {
