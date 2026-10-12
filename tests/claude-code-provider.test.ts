@@ -253,3 +253,42 @@ describe("claude-code provider", () => {
     expect(spawned[0]?.killed).toBe(true);
   });
 });
+
+describe("claude-code images", () => {
+  test("a turn sends the message's image as an image block", async () => {
+    const { factory, spawned } = fakeFactory([stopResult]);
+    const runner = new ClaudeCodeSessionRunner(factory);
+    const model = createClaudeCodeLanguageModel("sonnet", runner);
+    await model.doGenerate({
+      prompt: [
+        { role: "system", content: "You are baked." },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What colour is this?" },
+            { type: "file", mediaType: "image/png", data: "data:image/png;base64,iVBORw==" },
+          ],
+        },
+      ],
+    });
+    const sent = JSON.parse(spawned[0]?.sent[0] ?? "{}") as {
+      message: { content: Array<Record<string, unknown>> };
+    };
+    const [text, image] = sent.message.content;
+    expect(text?.type).toBe("text");
+    expect(String(text?.text)).toContain("[image image/png, attached to this message]");
+    expect(image).toEqual({
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "iVBORw==" },
+    });
+    runner.close();
+  });
+
+  test("a turn without images stays plain text", async () => {
+    const { factory, spawned } = fakeFactory([toolCallResult]);
+    const runner = new ClaudeCodeSessionRunner(factory);
+    await createClaudeCodeLanguageModel("sonnet", runner).doGenerate(FIRST);
+    expect(typeof userTurn(spawned[0]?.sent[0] ?? "")).toBe("string");
+    runner.close();
+  });
+});

@@ -13,6 +13,7 @@ import { LABEL } from "../../lib/styles.js";
 import { matchCommands, slashAtCaret } from "./commands.js";
 import { type Attachment, dataUrl, MAX_IMAGES, pickImages, readAttachment } from "./images.js";
 import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
+import { clock, microphoneError, Recorder, VOICE_MAX_SECONDS } from "./voice.js";
 
 const ROUND_BUTTON =
   "w-[38px] h-[38px] flex-none rounded-base border-2 border-border shadow-sm-hard flex items-center justify-center cursor-pointer hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none";
@@ -37,6 +38,37 @@ export const MODE_LABELS: Record<ChatMode, { name: string; detail: string }> = {
 export const BASE_MODES: readonly ChatMode[] = ["default", "architect", "auto"];
 
 const MAX_TEXTAREA_PX = 240;
+
+/** Voice input for the composer; the chat passes it when the setting is on. */
+export interface VoiceInput {
+  /** Why the microphone button is disabled, or null when voice input works here. */
+  unavailable: string | null;
+  /** Transcribes 16 kHz mono samples to text on this computer. */
+  transcribe(samples: Float32Array): Promise<string>;
+}
+
+/** The keyboard shortcut that starts and stops a recording. */
+export const VOICE_SHORTCUT = "Ctrl+Shift+Space";
+
+/** Puts transcribed text at the caret with a space on either side where words would touch. */
+export function insertAtCaret(
+  text: string,
+  caret: number,
+  insert: string,
+): { text: string; caret: number } {
+  const before = text.slice(0, caret);
+  const after = text.slice(caret);
+  const lead = before && !/\s$/.test(before) ? " " : "";
+  const trail = after && !/^\s/.test(after) ? " " : "";
+  const middle = `${lead}${insert}${trail}`;
+  return { text: before + middle + after, caret: before.length + lead.length + insert.length };
+}
+
+type VoiceState =
+  | { kind: "idle" }
+  | { kind: "starting" }
+  | { kind: "recording"; seconds: number; level: number }
+  | { kind: "transcribing" };
 
 /** The `@` token that ends at the caret; `@` on a `!command` line is shell text. */
 export function mentionAtCaret(
@@ -210,6 +242,7 @@ export function Composer({
   loadMentions,
   loadCommands,
   acceptsImages = false,
+  voice,
 }: {
   busy: boolean;
   canStop: boolean;
@@ -235,6 +268,8 @@ export function Composer({
   loadCommands?: () => Promise<CommandEntry[]>;
   /** Paste and drop of images; only when the backend lists the `images` capability. */
   acceptsImages?: boolean;
+  /** The microphone button; without it the composer has none. */
+  voice?: VoiceInput;
 }) {
   const [text, setText] = useState(initialText);
   const [caret, setCaret] = useState(initialText.length);
@@ -329,6 +364,71 @@ export function Composer({
     return true;
   };
   const area = useRef<HTMLTextAreaElement>(null);
+  const [voiceState, setVoiceState] = useState<VoiceState>({ kind: "idle" });
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const recorder = useRef<Recorder | null>(null);
+  const stopRecording = async (): Promise<void> => {
+    const active = recorder.current;
+    if (!active || !voice) return;
+    recorder.current = null;
+    setVoiceState({ kind: "transcribing" });
+    try {
+      const clip = await active.stop();
+      const said = (await voice.transcribe(clip)).trim();
+      if (!said) setVoiceError("No speech was recognized.");
+      else {
+        // The textarea, not a captured state value, holds what was typed while transcribing.
+        const el = area.current;
+        const current = el?.value ?? "";
+        const next = insertAtCaret(current, el?.selectionStart ?? current.length, said);
+        setText(next.text);
+        setCaret(next.caret);
+        requestAnimationFrame(() => {
+          el?.focus();
+          el?.setSelectionRange(next.caret, next.caret);
+        });
+      }
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVoiceState({ kind: "idle" });
+    }
+  };
+  const startRecording = async (): Promise<void> => {
+    if (!voice || voice.unavailable) return;
+    setVoiceError(null);
+    setVoiceState({ kind: "starting" });
+    try {
+      recorder.current = await Recorder.start({
+        onProgress: (seconds, level) => setVoiceState({ kind: "recording", seconds, level }),
+        onLimit: () => void stopRecording(),
+      });
+      setVoiceState({ kind: "recording", seconds: 0, level: 0 });
+    } catch (e) {
+      setVoiceError(microphoneError(e));
+      setVoiceState({ kind: "idle" });
+    }
+  };
+  const toggleVoice = (): void => {
+    if (voiceState.kind === "recording") void stopRecording();
+    else if (voiceState.kind === "idle") void startRecording();
+  };
+  const toggleVoiceRef = useRef(toggleVoice);
+  toggleVoiceRef.current = toggleVoice;
+  const hasVoice = voice !== undefined && voice.unavailable === null;
+  useEffect(() => {
+    if (!hasVoice) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.code === "Space" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        toggleVoiceRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [hasVoice]);
+  // A recording never outlives the composer.
+  useEffect(() => () => recorder.current?.cancel(), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refocus when the session changes
   useEffect(() => {
     area.current?.focus();
@@ -486,6 +586,11 @@ export function Composer({
           {imageError}
         </p>
       )}
+      {voiceError && (
+        <p className="m-0 text-[13px] text-[var(--err)]" role="alert">
+          {voiceError}
+        </p>
+      )}
       <label htmlFor="chat-prompt" className="sr-only">
         Message BAKED
       </label>
@@ -629,9 +734,56 @@ export function Composer({
             )}
           </Popover>
         )}
-        <span className="ml-auto text-[12px] text-dim-foreground [@media(max-width:720px)]:hidden">
-          {busy ? "Esc stops · Enter adds to the turn" : "Enter sends · Shift+Enter new line"}
-        </span>
+        {voiceState.kind === "recording" ? (
+          <span
+            className="ml-auto inline-flex items-center gap-2 font-mono text-[12px] text-foreground"
+            role="status"
+            aria-label={`Recording ${clock(voiceState.seconds)} of ${clock(VOICE_MAX_SECONDS)}`}
+          >
+            <span className="w-2 h-2 rounded-full bg-fill-err" aria-hidden="true" />
+            {clock(voiceState.seconds)} / {clock(VOICE_MAX_SECONDS)}
+            <span
+              className="w-16 h-[6px] border border-border rounded-base overflow-hidden"
+              aria-hidden="true"
+            >
+              <span
+                className="block h-full bg-main"
+                style={{ width: `${Math.round(voiceState.level * 100)}%` }}
+              />
+            </span>
+          </span>
+        ) : voiceState.kind === "transcribing" ? (
+          <span className="ml-auto text-[12px] text-dim-foreground" role="status">
+            Transcribing on this computer…
+          </span>
+        ) : (
+          <span className="ml-auto text-[12px] text-dim-foreground [@media(max-width:720px)]:hidden">
+            {busy ? "Esc stops · Enter adds to the turn" : "Enter sends · Shift+Enter new line"}
+          </span>
+        )}
+        {voice && (
+          <button
+            type="button"
+            className={cn(
+              ROUND_BUTTON,
+              "bg-raised text-foreground disabled:opacity-[0.45] disabled:cursor-default disabled:translate-none disabled:shadow-sm-hard",
+              voiceState.kind === "recording" && "bg-fill-err text-main-foreground",
+            )}
+            aria-label={
+              voiceState.kind === "recording" ? "Stop recording and transcribe" : "Voice input"
+            }
+            aria-pressed={voiceState.kind === "recording"}
+            title={voice.unavailable ?? `Voice input (${VOICE_SHORTCUT})`}
+            disabled={
+              voice.unavailable !== null ||
+              voiceState.kind === "starting" ||
+              voiceState.kind === "transcribing"
+            }
+            onClick={toggleVoice}
+          >
+            <Icon name={voiceState.kind === "recording" ? "stop" : "mic"} size={16} />
+          </button>
+        )}
         {canStop && (
           <button
             type="button"

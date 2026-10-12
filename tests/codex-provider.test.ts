@@ -643,3 +643,38 @@ describe("codex app-server native model", () => {
     expect(fallbackCalls).toBe(1);
   });
 });
+
+describe("codex images", () => {
+  const RED = new Uint8Array([137, 80, 78, 71]);
+  const withImage: LanguageModelV2CallOptions["prompt"] = [
+    { role: "system", content: "You are baked." },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "What colour is this?" },
+        { type: "file", mediaType: "image/png", data: RED },
+      ],
+    },
+  ];
+
+  test("an app-server turn sends the image beside the text", async () => {
+    const fake = new FakeCodex();
+    const sessions = new CodexAppServerSessions(async () => fake.connection);
+    const model = createCodexNativeLanguageModel("gpt-5.5", sessions, unusedFallback);
+    fake.onTurnStart = (threadId) => {
+      fake.text(threadId, "m1", "Red");
+      fake.complete(threadId);
+    };
+    await model.doGenerate({ prompt: withImage });
+    const turn = fake.requests.find((request) => request.method === "turn/start");
+    const input = turn?.params.input as Array<Record<string, unknown>>;
+    expect(input[0]?.text).toContain("[image image/png, attached to this message]");
+    expect(input[1]).toEqual({ type: "image", url: "data:image/png;base64,iVBORw==" });
+  });
+
+  test("exec prompt parts carry the conversation's images", () => {
+    const parts = buildCodexPromptParts({ prompt: withImage });
+    expect(parts.images).toEqual([{ mediaType: "image/png", base64: "iVBORw==" }]);
+    expect(parts.messages[1]?.text).not.toContain("binary:");
+  });
+});

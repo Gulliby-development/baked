@@ -146,19 +146,45 @@ describe("claude-code native tool calls", () => {
     expect(result.providerMetadata).toBeUndefined();
   });
 
-  test("gives up after the correction fails too and drops the session", async () => {
+  test("retries the step in a fresh session when the correction fails", async () => {
+    const { factory, spawned } = scriptedFactory(
+      [[nativeToolUse("read")], [nativeToolUse("read"), noSuchTool("read")], [answer]],
+      [interruptedResult],
+    );
+    const runner = new ClaudeCodeSessionRunner(factory);
+    const model = createClaudeCodeLanguageModel("sonnet", runner);
+
+    const result = await model.doGenerate(OPTIONS);
+    expect(result.finishReason.unified).toBe("tool-calls");
+    expect(spawned).toHaveLength(2);
+    expect(spawned[0]?.killed).toBe(true);
+    // The fresh session gets the whole transcript.
+    expect(spawned[1]?.sent[0]).toContain("CONVERSATION TRANSCRIPT\\n");
+    expect(result.providerMetadata?.["claude-code"]?.nativeToolAborts).toEqual(["read", "read"]);
+    // Two interrupted results (700 each) and the answer (40).
+    expect(result.usage.outputTokens.total).toBe(1440);
+    runner.close();
+  });
+
+  test("gives up when the fresh session loses the tools too and drops both sessions", async () => {
     const { factory, spawned } = scriptedFactory(
       [
         [nativeToolUse("read")],
         [nativeToolUse("read"), noSuchTool("read")],
+        [nativeToolUse("glob")],
+        [nativeToolUse("glob"), noSuchTool("glob")],
       ],
       [interruptedResult],
     );
     const runner = new ClaudeCodeSessionRunner(factory);
     const model = createClaudeCodeLanguageModel("sonnet", runner);
 
-    await expect(model.doGenerate(OPTIONS)).rejects.toBeInstanceOf(ClaudeCodeNativeToolError);
-    expect(spawned[0]?.killed).toBe(true);
+    const error = await model.doGenerate(OPTIONS).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ClaudeCodeNativeToolError);
+    expect((error as ClaudeCodeNativeToolError).nativeTools).toEqual(["read", "read", "glob", "glob"]);
+    expect((error as ClaudeCodeNativeToolError).usage.outputTokens.total).toBe(2800);
+    expect(spawned).toHaveLength(2);
+    expect(spawned.every((proc) => proc.killed)).toBe(true);
     expect(runner.sessionCount).toBe(0);
   });
 });

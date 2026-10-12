@@ -31,6 +31,7 @@ const PATHS = {
   redo: "M15 5l5 5-5 5M20 10H9a5 5 0 0 0 0 10h3",
   send: "M12 20V4M5 11l7-7 7 7",
   stop: "M6 6h12v12H6z",
+  mic: "M9 3h6v10H9zM5 11a7 7 0 0 0 14 0M12 18v3M8 21h8",
   export: "M12 4v11M7 10l5 5 5-5M4 20h16",
   delete: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
   "chevron-right": "M9 5l7 7-7 7",

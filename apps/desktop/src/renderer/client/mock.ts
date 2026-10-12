@@ -289,5 +289,11 @@ export function createMockBridge(scenario: MockScenario = "default"): DesktopBri
     onNavigate: () => () => {},
     windowAction: async () => {},
     onMaximized: () => () => {},
+    voiceStatus: async () => ({ available: true, model: "whistle" }),
+    transcribe: async (samples, language) => ({
+      text: `mock transcript of ${(samples.length / 16_000).toFixed(1)} s`,
+      language: language ?? "en",
+      durationSeconds: samples.length / 16_000,
+    }),
   };
 }
