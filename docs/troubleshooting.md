@@ -4,7 +4,7 @@ Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic
 
 ## No models in the picker
 
-No key is configured for any provider. Save one with `/keys` or `baked --set-key anthropic sk-ant-...`, or export it (`export ANTHROPIC_API_KEY=...`) and restart the terminal. `baked --list-providers` shows what each provider sees. If an exported key keeps overriding a stored one, set `"keyPriority": "app"`.
+No key is configured for any provider. Save one with `/keys` or `baked --set-key anthropic sk-ant-...`, or export it (`export ANTHROPIC_API_KEY=...`) and restart the terminal. `baked --list-providers` shows what each provider sees. If an exported key keeps overriding a stored one, set `"keyPriority": "app"`. A signed-in Codex or Claude Code CLI also provides models without an API key.
 
 ## Rate limits (429) and overloads
 
