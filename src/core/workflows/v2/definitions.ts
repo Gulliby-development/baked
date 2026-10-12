@@ -130,7 +130,7 @@ export function listDefinitions(workspace: string, policy: RunPolicy): Definitio
       preset: loaded.schemaVersion === 2 ? loaded.definition.preset : null,
       description: v2.description,
       stages: v2.stages.map((s) => s.id),
-      line: workflowLine(v2),
+      line: workflowLine(v2, library.gates),
       writes: v2.stages.some((s) => s.effects === "workspace-write"),
       problems: validateDefinition(v2, library),
       execution: v2.execution ?? null,

@@ -85,6 +85,7 @@ mock.module("../../src/hooks/useWorkflow.js", () => ({
     load: async () => ({ initiatives: [initiative], driving: [], errors: {} }),
     act: async () => initiative,
   }),
+  workflowUsageLoader: () => (days: number) => ({ days, since: 0, groupBy: ["model"], filters: {}, runs: 0, attempts: 0, tokens: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, unpricedTokens: 0, groups: [] }),
   useWorkflowBadge: () => {},
 }));
 const { useWorkflowStore } = await import("../../src/stores/workflow.js");
