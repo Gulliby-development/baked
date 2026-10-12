@@ -42,6 +42,8 @@ The Copilot connection uses your Copilot subscription through the same API as th
 
 Sign in to Copilot in VS Code, a JetBrains IDE or Neovim. BAKED reads that login's GitHub token from `apps.json` (then `hosts.json`) in `~/.config/github-copilot/` on Linux and macOS (`$XDG_CONFIG_HOME/github-copilot/` when set) or `%LOCALAPPDATA%\github-copilot\` on Windows. It only reads these files and checks them again on every provider check, so signing out of the IDE makes `copilot` unavailable again. `baked --list-providers`, `/keys`, the first-start wizard and the desktop settings show `Copilot IDE login` as the source.
 
+The GitHub Copilot CLI's login (`~/.copilot`) is not used: the CLI keeps its token in its own credential store, and the Copilot API accepts only a token issued to a Copilot app. Sign in through an IDE, or save a token.
+
 To use another token, save it with `baked --set-key copilot <token>` or `/keys`, or set `COPILOT_API_KEY`; a saved or environment key always wins over the IDE login. A 401 means the token was rotated: sign in to Copilot in the IDE again, or save the new token.
 
 ## GitHub Models
