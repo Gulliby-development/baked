@@ -32,6 +32,7 @@ import {
   proposeExtension,
 } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
+import { unresolvedChecks } from "./check-preflight.js";
 import { answerInvalidatesAnalysis, clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
@@ -373,7 +374,20 @@ export class NativeWorkflowService implements WorkflowService {
         `These models cannot be called:\n${refusals.join("\n")}`,
         { reason: "model_unavailable", problems: refusals },
       );
-    const warnings = checks.filter((check) => check.status === "warn").map(checkLine);
+    const unresolved = unresolvedChecks(prepared.policy.checks, this.workspace);
+    const notFound = (m: { checkId: string; executable: string }) =>
+      `check ${m.checkId}: ${m.executable} was not found on the PATH`;
+    const missing = unresolved.filter((probe) => probe.required);
+    if (missing.length)
+      throw new WorkflowFault(
+        "CAPABILITY_DENIED",
+        `These required checks cannot start:\n${missing.map(notFound).join("\n")}`,
+        { reason: "check_unavailable", problems: missing },
+      );
+    const warnings = [
+      ...checks.filter((check) => check.status === "warn").map(checkLine),
+      ...unresolved.map(notFound),
+    ];
     if (warnings.length)
       prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
   }

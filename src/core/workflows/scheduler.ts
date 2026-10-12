@@ -70,6 +70,7 @@ import {
   withCoveringChecks,
   writtenCodePaths,
 } from "./check-policy.js";
+import { failFastUnavailable } from "./check-preflight.js";
 import {
   ASSUME_NOTE,
   assumeProblems,
@@ -3150,7 +3151,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (
         error instanceof WorkflowFault &&
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
-          error.details.reason === "provider_account")
+          error.details.reason === "provider_account" ||
+          error.details.reason === "check_unavailable")
       )
         return { kind: "fatal", entry, error };
       // The task's worker or its worktree lease is gone; the other tasks continue.
@@ -3729,6 +3731,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     const attempt = this.store.reserve(runId, child, null, 0, policy);
     const checked = await this.checks.run(runId, attempt, check, signal, root);
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    failFastUnavailable(check, checked);
     return checked;
   }
   /**
@@ -3998,6 +4001,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      failFastUnavailable(check, result);
       if (result.status === "passed") passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if (result.status === "failed" && check.required) {
@@ -4560,6 +4564,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       const attempt = this.store.reserve(runId, stepId, null, 0, policy);
       const result = await this.checks.run(runId, attempt, check, signal, this.rootOf(runId));
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      failFastUnavailable(check, result);
       if (result.status === "passed")
         return { status: "passed", evidenceId: result.evidenceId, attempts, flaky: unstable };
       unstable = true;
