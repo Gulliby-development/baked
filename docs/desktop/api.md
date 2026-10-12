@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`) and `diagnostics` (`/v1/diagnostics/*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `diagnostics` (`/v1/diagnostics/*`) and `coordinator` (`/v1/coordinator*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -192,6 +192,19 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `reset` | the requested sequence is no longer buffered or belongs to an earlier server start: fetch `GET /v1/sessions/ID` and continue from its `lastSeq` |
 
 The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/ID` returns the same assistant message that the event carried.
+
+### Project coordinator
+
+The project coordinator is one long-lived chat session per project ([guide](../coordinator.md)). It is an ordinary session with `kind: "coordinator"` in its `SessionSummary`, so messages, events, prompts, interrupt and compaction use the `/v1/sessions/ID/...` endpoints above; `GET /v1/sessions` does not list it.
+
+| Method and path | Body | Answer |
+| --- | --- | --- |
+| `GET /v1/coordinator` | | `SessionDetail` of the coordinator; 404 `NOT_FOUND` when the project has none |
+| `POST /v1/coordinator` | `{model?}` | 201 with the new coordinator's `SessionDetail`, or 200 with the existing one |
+| `GET /v1/coordinator/brief` | | `Brief` |
+| `PUT /v1/coordinator/brief` | `{expectedRevision, decisions, conventions, openQuestions, launched}` | the saved `Brief`; 409 `STALE_REVISION` when the brief changed since `expectedRevision`, 400 `TOO_LARGE` over 8000 characters |
+
+`Brief` is `{revision, updatedAt, decisions: string[], conventions: string[], openQuestions: string[], launched: [{kind: "session" \| "run" \| "initiative", id, why, status}]}`; a brief never saved has revision 0. The coordinator always runs in `architect` mode (a `PATCH` to another mode is a 400): it reads but does not edit files or run commands, and it edits the brief itself with its `coordinator_brief` tool. Every turn puts the current brief into its system prompt. After a completed turn whose context fill passes `compaction.triggerThreshold` (0.7 by default), the server compacts the coordinator on its own, with the same `compaction-start` and `compaction-done` events as a manual compaction; a compaction that summarizes nothing is not retried until the fill drops below `compaction.resetThreshold`.
 
 ### Attention (exists, extended by A)
 

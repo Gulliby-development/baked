@@ -100,8 +100,9 @@ export function SessionPicker({ visible, cwd, onClose, onRestore, onSystemMessag
     setLoading(true);
     mgr
       .listSessionsAsync()
-      .then(setSessions)
-      .catch(() => setSessions(mgr.listSessions()))
+      // The project coordinator is a desktop/API session; resuming it here would drop its kind.
+      .then((all) => setSessions(all.filter((s) => s.kind !== "coordinator")))
+      .catch(() => setSessions(mgr.listSessions().filter((s) => s.kind !== "coordinator")))
       .finally(() => setLoading(false));
   }, [cwd]);
 

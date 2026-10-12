@@ -67,6 +67,7 @@ import { recordModelCall } from "../diagnostics/model-events.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
+import { COORDINATOR_MODE } from "./coordinator.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
 import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
@@ -136,6 +137,8 @@ export interface SessionSummary {
   mode: ChatMode;
   /** True while a manual compaction runs; the state is then `working`. */
   compacting: boolean;
+  /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
+  kind?: "coordinator";
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -231,6 +234,8 @@ export interface TurnAgentRequest {
   mode: ChatMode;
   /** The turn carries out an accepted plan: the agent keeps to the plan's tools. */
   planExecution: boolean;
+  /** The session is the project's coordinator: its prompt and brief tool apply. */
+  coordinator?: boolean;
   callbacks: InteractiveCallbacks;
   onApproveOutsideCwd: (toolName: string, path: string) => Promise<boolean>;
   onApproveDestructive: (description: string) => Promise<boolean>;
@@ -534,7 +539,12 @@ export class ChatSession {
       model: this.model,
       mode: this.mode,
       compacting: this.compaction !== null,
+      ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
     };
+  }
+
+  get isCoordinator(): boolean {
+    return this.meta.kind === "coordinator";
   }
 
   detail(): SessionDetail {
@@ -588,6 +598,8 @@ export class ChatSession {
   update(changes: { title?: string; model?: string; mode?: ChatMode }): SessionSummary {
     if (changes.title !== undefined) this.meta = { ...this.meta, customTitle: changes.title };
     if (changes.model !== undefined) this.model = changes.model;
+    if (changes.mode !== undefined && this.isCoordinator && changes.mode !== COORDINATOR_MODE)
+      throw new ChatError("INVALID_REQUEST", "The coordinator always runs in architect mode");
     if (changes.mode !== undefined) this.mode = changes.mode;
     this.emitSession();
     void this.owner.persist(this);
@@ -759,6 +771,7 @@ export class ChatSession {
         note = result.reason;
       } else {
         status = "compacted";
+        this.autoCompactHeld = false;
         compacted = result.compacted;
         this.core = result.messages;
         const window = response.contextWindow ?? this.context?.windowTokens ?? 0;
@@ -1079,6 +1092,7 @@ export class ChatSession {
         modelId: model,
         mode: this.mode,
         planExecution,
+        ...(this.isCoordinator ? { coordinator: true } : {}),
         ...this.approvalCallbacks(),
       });
       stepStartedAt = Date.now();
@@ -1284,7 +1298,31 @@ export class ChatSession {
       this.queue = [];
       this.sendQueued(next);
       this.queue.push(...rest);
-    } else this.queue = [];
+    } else {
+      this.queue = [];
+      if (status === "completed") this.autoCompact();
+    }
+  }
+
+  /** Set after an automatic compaction that did not compact; cleared below the reset threshold. */
+  private autoCompactHeld = false;
+
+  /**
+   * Compacts a coordinator once its context passes the compaction trigger, as the terminal UI does
+   * for its chat. A compaction that saves nothing is not retried until the fill drops below the
+   * reset threshold, so a long brief cannot make every turn pay for one.
+   */
+  private autoCompact(): void {
+    if (!this.isCoordinator || !this.context) return;
+    const { trigger, reset } = this.owner.compactionThresholds;
+    const fill = this.context.percent / 100;
+    if (fill < reset) this.autoCompactHeld = false;
+    if (fill < trigger || this.autoCompactHeld || this.busy) return;
+    if (!this.owner.host.compact || !this.model) return;
+    if (compactionBlocker(this.core, this.owner.keepRecent)) return;
+    // Cleared again when the compaction compacts; kept when it skips or fails.
+    this.autoCompactHeld = true;
+    this.compact();
   }
 
   /**
@@ -1401,6 +1439,15 @@ export class ChatService {
       throw new ChatError("SESSION_BUSY", `Wait for running turns to finish before ${action}`);
   }
 
+  /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */
+  get compactionThresholds(): { trigger: number; reset: number } {
+    const config = this.options.config.compaction;
+    return {
+      trigger: config?.triggerThreshold ?? DEFAULT_COMPACTION_CONFIG.triggerThreshold ?? 0.7,
+      reset: config?.resetThreshold ?? DEFAULT_COMPACTION_CONFIG.resetThreshold ?? 0.4,
+    };
+  }
+
   /** Model messages a compaction keeps verbatim. */
   get keepRecent(): number {
     return this.options.config.compaction?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
@@ -1414,6 +1461,7 @@ export class ChatService {
   list(limit = 50): SessionSummary[] {
     const summaries = new Map<string, SessionSummary>();
     for (const entry of this.store.listSessions()) {
+      if (entry.kind === "coordinator") continue;
       summaries.set(entry.id, {
         id: entry.id,
         title: entry.title,
@@ -1427,7 +1475,8 @@ export class ChatService {
         compacting: false,
       });
     }
-    for (const session of this.live.values()) summaries.set(session.id, session.summary());
+    for (const session of this.live.values())
+      if (!session.isCoordinator) summaries.set(session.id, session.summary());
     return [...summaries.values()]
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, Math.max(1, limit));
@@ -1457,6 +1506,7 @@ export class ChatService {
     mode?: ChatMode;
     messages?: ChatMessage[];
     core?: ModelMessage[];
+    kind?: "coordinator";
   }): Promise<ChatSession> {
     if (this.closed) throw new ChatError("SESSION_BUSY", "The server is shutting down");
     const id = crypto.randomUUID();
@@ -1466,6 +1516,7 @@ export class ChatService {
       id,
       title: messages.length > 0 ? SessionManager.deriveTitle(messages) : "New session",
       ...(input.title ? { customTitle: input.title } : {}),
+      ...(input.kind ? { kind: input.kind } : {}),
       cwd: this.options.workspace,
       startedAt: now,
       updatedAt: now,
@@ -1495,6 +1546,24 @@ export class ChatService {
     this.live.set(id, session);
     await this.persist(session);
     return session;
+  }
+
+  /**
+   * The project's coordinator session: the most recently updated one, or a new one when `create`
+   * is set and there is none. Null when there is none and `create` is not set.
+   */
+  async coordinator(create: boolean, model?: string): Promise<ChatSession | null> {
+    const live = [...this.live.values()].find((s) => s.isCoordinator);
+    if (live) return live;
+    const saved = this.store.listSessions().find((entry) => entry.kind === "coordinator");
+    if (saved) return this.get(saved.id);
+    if (!create) return null;
+    return this.create({
+      title: "Coordinator",
+      mode: COORDINATOR_MODE,
+      kind: "coordinator",
+      ...(model ? { model } : {}),
+    });
   }
 
   /**
