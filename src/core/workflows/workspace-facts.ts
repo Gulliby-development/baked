@@ -14,7 +14,7 @@ const SKIPPED = new Set([".git", "node_modules", ".baked", "baked", ".venv", "di
 const SCAN_LIMIT = 2000;
 const LISTED_LIMIT = 80;
 const MANIFEST =
-  /^(package\.json|tsconfig[^/]*\.json|biome\.jsonc?|pyproject\.toml|requirements[^/]*\.txt|setup\.(py|cfg)|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|Gemfile|composer\.json|deno\.jsonc?|bunfig\.toml|Makefile)$/i;
+  /^(package\.json|tsconfig[^/]*\.json|biome\.jsonc?|pyproject\.toml|requirements[^/]*\.txt|setup\.(py|cfg)|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|global\.json|[^/]+\.(csproj|fsproj|vbproj|slnx?)|Gemfile|composer\.json|deno\.jsonc?|bunfig\.toml|Makefile)$/i;
 
 export type WorkspaceKind =
   /** No file at all (besides skipped folders). */

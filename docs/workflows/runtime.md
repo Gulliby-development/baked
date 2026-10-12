@@ -252,8 +252,14 @@ Detection offers gates; nothing is added until the user confirms. It reads the p
 | bun, npm, pnpm, yarn | `package.json` scripts; the runner follows the lock file | `typecheck` (also `type-check`, `check-types`), `lint`, `tests` (the npm placeholder test script is ignored), `build` (advisory, not preselected) |
 | Python | `pytest.ini`, `[tool.pytest]` in `pyproject.toml`, `[tool:pytest]` in `setup.cfg`, `[pytest]` in `tox.ini`, `conftest.py`, or a declared pytest dependency | `pytest`: `python -m pytest -q` (`python3` outside Windows) |
 | Python lint | `ruff.toml`, `.ruff.toml`, `[tool.ruff]`, or a declared ruff dependency | `ruff`: `ruff check .` |
-| Go | `go.mod` | `go-test`: `go test ./...` |
-| Rust | `Cargo.toml` | `cargo-test`: `cargo test`, `cargo-clippy`: `cargo clippy --all-targets -- -D warnings` |
+| Go | `go.mod` | `go-vet`: `go vet ./...` with the fixer `go fmt ./...` (`gofmt -l` exits 0 whatever it lists, so formatting is applied by the fixer, not verified), `go-test`: `go test ./...` |
+| .NET | a `.slnx`, `.sln`, `.csproj`, `.fsproj` or `.vbproj` file in the root (solutions first; with several such files the first is named on the command line, because `dotnet` refuses an ambiguous folder) | `dotnet-build`: `dotnet build`, `dotnet-format`: `dotnet format --verify-no-changes` with the fixer `dotnet format`, `dotnet-test`: `dotnet test` |
+| Rust | `Cargo.toml` | `cargo-fmt`: `cargo fmt --check` with the fixer `cargo fmt`, `cargo-clippy`: `cargo clippy --all-targets -- -D warnings`, `cargo-test`: `cargo test` |
+| Java (Maven) | `pom.xml` | `maven-verify`: `mvn -B -q verify` |
+
+Workspace facts list `go.mod`, `Cargo.toml`, `pom.xml`, `global.json` and any `.csproj`, `.fsproj`, `.vbproj`, `.sln` or `.slnx` file among the manifests, and the project line of the context names a .NET project.
+
+**Language review.** When the policy names no `reviewProfiles.language` and the workspace root holds a Go, .NET, Rust or Java manifest, the run starts with the `language-reviewer` profile as its language review dimension. It looks for platform and idiom pitfalls a general reviewer misses: platform newlines in output the spec fixes byte for byte (`Environment.NewLine` is CRLF on Windows), hard-coded separators in tests, culture-dependent formatting, ignored errors, unreleased resources and code the language's formatter or linter rejects. A policy that sets another profile keeps it.
 
 The same detection fills the checks written when E enables workflows on the runs screen; the build gate is not part of that set. Gates that are already configured (same ID or same command) are not offered again. Existing CI scripts are not read. On Windows, give the command name (`npm`, `pnpm`, `yarn`), not the shim file: Bun launches `npm` without a shell, but a name ending in `.cmd` fails with `EINVAL`. Only `npm` was tried on this host (npm 11.16); `pnpm` and `yarn` were not installed here.
 

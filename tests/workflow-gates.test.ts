@@ -107,15 +107,42 @@ describe("gate detection by ecosystem", () => {
       expect(found[0]?.check).toMatchObject({ executable: "ruff", args: ["check", "."] });
     }
   });
-  test("go and cargo projects get their test and lint gates", () => {
+  test("go and cargo projects get their format, lint and test gates", () => {
     const go = detectGates(workspace({ "go.mod": "module example.com/x\n" }));
     expect(go.map((s) => s.check)).toMatchObject([
+      { id: "go-vet", executable: "go", args: ["vet", "./..."], fix: { executable: "go", args: ["fmt", "./..."] } },
       { id: "go-test", executable: "go", args: ["test", "./..."] },
     ]);
     const cargo = detectGates(workspace({ "Cargo.toml": '[package]\nname = "x"\n' }));
     expect(cargo.map((s) => s.check)).toMatchObject([
-      { id: "cargo-test", executable: "cargo", args: ["test"] },
+      { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], fix: { executable: "cargo", args: ["fmt"] } },
       { id: "cargo-clippy", executable: "cargo", args: ["clippy", "--all-targets", "--", "-D", "warnings"] },
+      { id: "cargo-test", executable: "cargo", args: ["test"] },
+    ]);
+  });
+  test(".NET projects get build, format and test gates", () => {
+    const found = detectGates(workspace({ "App.slnx": "<Solution />" }));
+    expect(found.map((s) => s.check)).toMatchObject([
+      { id: "dotnet-build", executable: "dotnet", args: ["build", "--nologo"] },
+      {
+        id: "dotnet-format",
+        executable: "dotnet",
+        args: ["format", "--verify-no-changes"],
+        fix: { executable: "dotnet", args: ["format"] },
+      },
+      { id: "dotnet-test", executable: "dotnet", args: ["test", "--nologo"] },
+    ]);
+    expect(found[0]?.source).toBe("App.slnx");
+    expect(ids(workspace({ "App.csproj": "<Project />" }))).toEqual(["dotnet-build", "dotnet-format", "dotnet-test"]);
+  });
+  test("several .NET files at the root name the solution explicitly", () => {
+    const found = detectGates(workspace({ "A.csproj": "", "B.csproj": "", "All.sln": "" }));
+    expect(found[0]?.check.args).toEqual(["build", "All.sln", "--nologo"]);
+    expect(found[1]?.check.fix?.args).toEqual(["format", "All.sln"]);
+  });
+  test("a Maven project gets its verify gate", () => {
+    expect(detectGates(workspace({ "pom.xml": "<project />" })).map((s) => s.check)).toMatchObject([
+      { id: "maven-verify", executable: "mvn", args: ["-B", "-q", "verify"] },
     ]);
   });
   test("a polyglot project lists every ecosystem and an empty one lists nothing", () => {
@@ -125,7 +152,7 @@ describe("gate detection by ecosystem", () => {
       "go.mod": "module x\n",
       "ruff.toml": "",
     });
-    expect(ids(root)).toEqual(["tests", "ruff", "go-test"]);
+    expect(ids(root)).toEqual(["tests", "ruff", "go-vet", "go-test"]);
     expect(ids(workspace())).toEqual([]);
   });
   test("gates that are already configured are not suggested again", () => {
@@ -143,7 +170,7 @@ describe("gate detection by ecosystem", () => {
       "Cargo.toml": "[package]\n",
     });
     const all = detectGates(root).map((s) => s.check);
-    expect(all.length).toBe(9);
+    expect(all.length).toBe(11);
     expect(writeGates(root, all)).toBeUndefined();
     expect(readGates(root).map((c) => c.id)).toEqual(all.map((c) => c.id));
   });
