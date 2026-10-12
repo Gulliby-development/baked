@@ -188,6 +188,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["folder", "workspace", "name", "title"],
   },
   {
+    cmd: "/coordinator",
+    ic: "dispatch",
+    desc: "The project coordinator: one chat that splits work into runs and keeps the brief",
+    category: "Session",
+    tags: ["project", "brief", "split", "launch", "runs", "orchestrate"],
+  },
+  {
     cmd: "/projects",
     ic: "folder",
     desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",

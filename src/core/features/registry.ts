@@ -149,7 +149,7 @@ export const FEATURES: readonly Feature[] = [
     id: "coordinator",
     group: "Chat and sessions",
     title: "Project coordinator chat with a durable project brief",
-    tui: gap(152),
+    tui: ["/coordinator"],
     cli: ["baked session coordinator: prints the brief"],
     api: ["/v1/coordinator", "/v1/coordinator/brief", "/v1/coordinator/launched"],
     desktop: [
