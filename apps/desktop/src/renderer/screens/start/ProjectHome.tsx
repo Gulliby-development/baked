@@ -19,8 +19,9 @@ import {
   TableRow,
 } from "../../components/ui/table.js";
 import { Textarea } from "../../components/ui/textarea.js";
-import { ago, tokens, usd } from "../../format.js";
+import { ago, tokens, updated, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { useNow } from "../../lib/now.js";
 import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { useDesktop } from "../../store.js";
@@ -167,7 +168,7 @@ function NeedsYou({ items }: { items: AttentionItem[] }) {
 }
 
 function RunsCard({ projectKey }: { projectKey: string }) {
-  const runs = useLoad(projectKey, (key) => api.runs(key, 8));
+  const runs = useLoad(projectKey, "runs-8", (key) => api.runs(key, 8), 0);
   return (
     <section aria-labelledby="home-runs" className="flex flex-col gap-3">
       <SectionHead id="home-runs" title="Runs in this project">
@@ -302,8 +303,9 @@ function WorkingSetCard({ projectKey, summary }: { projectKey: string; summary: 
 }
 
 function DoctorCard({ projectKey }: { projectKey: string }) {
-  const doctor = useLoad(projectKey, (key) => start.doctor(key));
+  const doctor = useLoad(projectKey, "doctor", (key) => start.doctor(key));
   const report = doctor.value;
+  const now = useNow(doctor.updatedAt === null ? null : 5_000);
   return (
     <section aria-labelledby="home-doctor" className={PANEL}>
       <SectionHead id="home-doctor" title="Doctor">
@@ -318,9 +320,25 @@ function DoctorCard({ projectKey }: { projectKey: string }) {
       ) : (
         <p className={NOTE}>Checking…</p>
       )}
-      <a className={LINK} href={projectHref(projectKey, "runs", "new")}>
-        Open full report
-      </a>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <a className={LINK} href={projectHref(projectKey, "runs", "new")}>
+          Open full report
+        </a>
+        {report && (
+          <span className={cn(HINT, "ml-auto flex items-center gap-2")} aria-live="polite">
+            {doctor.fetching ? "Checking…" : updated(doctor.updatedAt, now)}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2"
+              disabled={doctor.fetching}
+              onClick={doctor.refresh}
+            >
+              Refresh
+            </Button>
+          </span>
+        )}
+      </div>
     </section>
   );
 }
@@ -329,7 +347,7 @@ function DoctorCard({ projectKey }: { projectKey: string }) {
 export function ProjectHome({ project }: SectionProps) {
   const key = project.key;
   const { attention } = useDesktop();
-  const summary = useLoad(key, start.summary);
+  const summary = useLoad(key, "project", start.summary);
   const waiting = attention.filter((item) => item.projectKey === key);
   const extraRoots = summary.value
     ? summary.value.roots.filter((root) => root !== summary.value?.root)

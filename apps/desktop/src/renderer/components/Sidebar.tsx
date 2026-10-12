@@ -1,11 +1,15 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { SessionState } from "../client/chat.js";
 import { useChatSessions } from "../client/chat-sessions.js";
+import { type RunRow, runs } from "../client/runs.js";
 import { backendLabel, initial, projectLine } from "../format.js";
 import { cn } from "../lib/cn.js";
 import { LABEL } from "../lib/styles.js";
 import { href, type ProjectSection, projectHref, type Route } from "../router.js";
+import { useBriefs } from "../screens/runs/load.js";
+import { STATUS_TEXT } from "../screens/runs/model.js";
+import { recentRunsVersion, runDot, runWait } from "../screens/runs/recent.js";
 import { useDesktop } from "../store.js";
 import { Icon, type IconName } from "./Icon.js";
 import { Badge } from "./ui/badge.js";
@@ -16,6 +20,10 @@ import { Dot, type DotTone } from "./ui/dot.js";
 const SIDEBAR_PROJECTS = 8;
 /** How many recent chats the selected project lists under Chat; the rest are in the chat's menu. */
 const SIDEBAR_CHATS = 5;
+/** How many recent runs the selected project lists under Runs; the rest are on the Runs screen. */
+const SIDEBAR_RUNS = 5;
+/** Runs routes that are not a run. */
+const RUN_PAGES = new Set(["new", "new-quick"]);
 /** How many sessions are asked for to count them. */
 const COUNTED_CHATS = 200;
 
@@ -58,7 +66,7 @@ const SUB_LINE = "truncate font-mono text-xs text-dim-foreground";
 
 const COUNT = "ml-auto font-mono text-xs text-dim-foreground";
 
-/** The indented list under a section (chats under Chat, Acceptance under Runs). */
+/** The indented list under a section (recent chats under Chat, recent runs under Runs). */
 const NESTED = "ml-7 flex flex-col gap-0.5 border-l-2 border-border pl-1.5";
 
 const NESTED_ROW = "min-h-7 py-1 text-[13px]";
@@ -87,6 +95,33 @@ function ProjectEntry({ project, route }: { project: DesktopProject; route: Rout
   return <SelectedProject project={project} section={route.section} id={route.id} />;
 }
 
+/**
+ * The latest runs of a project, newest first; null until loaded and while the backend is not
+ * running. Reloads when a run starts, finishes or starts waiting, and when another run is opened.
+ */
+function useRecentRuns(project: DesktopProject, openRun: string | null): RunRow[] | null {
+  const { attention } = useDesktop();
+  const running = project.backend.kind === "running";
+  const version = recentRunsVersion(project.key, project.overview.activeRuns, attention);
+  const [list, setList] = useState<RunRow[] | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version and openRun only trigger a reload
+  useEffect(() => {
+    if (!running) {
+      setList(null);
+      return;
+    }
+    let live = true;
+    runs.list(project.key, { limit: SIDEBAR_RUNS }).then(
+      (page) => live && setList(page.items),
+      () => live && setList(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [project.key, running, version, openRun]);
+  return list;
+}
+
 /** The selected project with its sections, New chat and its recent chats. */
 function SelectedProject({
   project,
@@ -100,6 +135,10 @@ function SelectedProject({
   const chats = useChatSessions(project.key, project.backend.kind === "running", COUNTED_CHATS);
   const chatCount = chats ? chats.length : project.overview.sessions;
   const chatId = section === "chat" ? routeId : null;
+  const runId = section === "runs" && routeId && !RUN_PAGES.has(routeId) ? routeId : null;
+  const { attention } = useDesktop();
+  const recentRuns = useRecentRuns(project, runId);
+  const briefs = useBriefs(project.key, recentRuns);
   return (
     <div className="flex flex-col gap-0.5 rounded-base border-2 border-border bg-secondary-background p-1.5 shadow-shadow">
       <a className={cn(NAV, "bg-hover")} href={projectHref(project.key)}>
@@ -130,7 +169,11 @@ function SelectedProject({
           <a
             className={cn(NAV, "pl-5")}
             href={projectHref(project.key, id)}
-            aria-current={current(section === id && (id !== "chat" || chatId === null))}
+            aria-current={current(
+              section === id &&
+                (id !== "chat" || chatId === null) &&
+                (id !== "runs" || runId === null),
+            )}
           >
             <Icon name={icon} />
             {label}
@@ -167,16 +210,32 @@ function SelectedProject({
               ))}
             </div>
           )}
-          {id === "runs" && (
+          {id === "runs" && recentRuns && recentRuns.length > 0 && (
             <div className={NESTED}>
-              <a
-                className={cn(NAV, NESTED_ROW)}
-                href={projectHref(project.key, "acceptance")}
-                aria-current={current(section === "acceptance")}
-              >
-                <Icon name="acceptance" size={13} />
-                Acceptance
-              </a>
+              {recentRuns.slice(0, SIDEBAR_RUNS).map((run) => {
+                const title = briefs.get(run.runId)?.title ?? run.featureId;
+                const wait = runWait(project.key, run, attention);
+                return (
+                  <a
+                    key={run.runId}
+                    className={cn(NAV, NESTED_ROW)}
+                    href={projectHref(project.key, "runs", run.runId)}
+                    aria-current={current(runId === run.runId)}
+                    title={`${title}: ${STATUS_TEXT[run.status]}`}
+                  >
+                    <Dot tone={runDot(run.status)} />
+                    <span className="min-w-0 truncate">{title}</span>
+                    {wait && (
+                      <Badge
+                        tone="warn"
+                        className="ml-auto px-1.5 py-0 text-[10px] tracking-normal"
+                      >
+                        {wait}
+                      </Badge>
+                    )}
+                  </a>
+                );
+              })}
             </div>
           )}
         </Fragment>

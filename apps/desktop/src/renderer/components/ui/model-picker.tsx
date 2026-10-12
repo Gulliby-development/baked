@@ -1,36 +1,39 @@
-import { type KeyboardEvent, useEffect, useId, useMemo, useState } from "react";
+import { type KeyboardEvent, useId, useMemo, useState } from "react";
 import {
   type ModelCatalog,
   type ModelChoice,
   modelChoiceGroups,
 } from "../../../../../../src/core/llm/model-choices.js";
 import { cn } from "../../lib/cn.js";
+import { useQuery } from "../../lib/query.js";
 import { Button } from "./button.js";
 import { Input } from "./input.js";
 
-/** The catalog of `GET /v1/models`, loaded once per `load`; `error` when the backend refused. */
-export function useModelCatalog(load: (() => Promise<ModelCatalog>) | null): {
+/**
+ * The catalog of `GET /v1/models` for a project, read through the shared query cache so a screen
+ * opened again lists the models at once; `error` when the backend refused. A null key reads nothing.
+ */
+export function useModelCatalog(
+  projectKey: string | null,
+  load: (projectKey: string) => Promise<ModelCatalog>,
+): {
   catalog: ModelCatalog | null;
   error: string | null;
 } {
-  const [state, setState] = useState<{ catalog: ModelCatalog | null; error: string | null }>({
+  const query = useQuery(projectKey === null ? null : [projectKey, "models"], () =>
+    load(projectKey ?? ""),
+  );
+  if (query.hasData) return { catalog: query.data ?? null, error: null };
+  const { error } = query;
+  return {
     catalog: null,
-    error: null,
-  });
-  useEffect(() => {
-    if (!load) return;
-    let live = true;
-    setState({ catalog: null, error: null });
-    load().then(
-      (catalog) => live && setState({ catalog, error: null }),
-      (e: unknown) =>
-        live && setState({ catalog: null, error: e instanceof Error ? e.message : String(e) }),
-    );
-    return () => {
-      live = false;
-    };
-  }, [load]);
-  return state;
+    error:
+      query.loading || error === null
+        ? null
+        : error instanceof Error
+          ? error.message
+          : String(error),
+  };
 }
 
 export interface ModelPickerProps {

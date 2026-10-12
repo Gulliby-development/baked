@@ -188,8 +188,8 @@ export function NewRunScreen({ project }: SectionProps) {
   const [showReadiness, setShowReadiness] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const definitions = useLoad(key, start.definitions);
-  const models = useLoad(key, loadModels);
+  const definitions = useLoad(key, "definitions", start.definitions);
+  const models = useLoad(key, "profile-models", loadModels);
   const policy = usePolicy(key);
   const preRun = usePreRun(key, {
     workflow,

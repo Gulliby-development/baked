@@ -373,7 +373,7 @@ function Group({
  * in the terminal, through `/v1/mcp*` of the project's backend.
  */
 export function McpSection({ project }: SectionProps) {
-  const [list, reload, setList] = useLoad(() => mcp.list(project.key), [project.key]);
+  const [list, reload, setList] = useLoad(() => mcp.list(project.key), [project.key, "mcp"]);
   const [dialog, setDialog] = useState<Dialogs | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { chat } from "../../client/chat.js";
 import {
   errorText,
@@ -306,8 +306,7 @@ function Models({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const stopped = STOPPED.has(run.status);
-  const loadModels = useCallback(() => chat.models(projectKey), [projectKey]);
-  const models = useModelCatalog(stopped ? loadModels : null);
+  const models = useModelCatalog(stopped ? projectKey : null, chat.models);
   if (!routing) return null;
   const routed = Object.entries(routing.stages);
   const providerStop =
