@@ -5,7 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
-import type { BudgetLimits } from "../core/workflows/budget.js";
+import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
 import type { PullRequestProvider } from "../core/workflows/delivery-provider.js";
@@ -190,14 +190,16 @@ export async function executeWorkflowCommand(
   };
   const jsonFile = (flag: string): unknown =>
     args.inline && flag in args.inline ? args.inline[flag] : JSON.parse(readFlagFile(flag));
+  // `--policy FILE` or the configured policy, scaled by `--budget`.
+  const startPolicy = (run: WorkflowArgs) =>
+    presetPolicy(
+      run.flags.policy ? jsonFile("policy") : service.config.workflows?.policy,
+      typeof run.flags.budget === "string" ? (run.flags.budget as BudgetPresetId) : "standard",
+    );
   switch (args.command) {
     case "quick": {
       const run = quickRunArgs(service, args);
-      const policy = PolicySchema.parse(
-        run.flags.policy
-          ? jsonFile("policy")
-          : (service.config.workflows?.policy ?? defaultWorkflowPolicy),
-      );
+      const policy = startPolicy(run);
       if (!policy.checks.some((c) => c.scope === "feature"))
         throw new WorkflowFault(
           "INVALID_DEFINITION",
@@ -206,11 +208,7 @@ export async function executeWorkflowCommand(
       return executeWorkflowCommand(service, run, signal, onDrive, options);
     }
     case "run": {
-      const policy = PolicySchema.parse(
-        args.flags.policy
-          ? jsonFile("policy")
-          : (service.config.workflows?.policy ?? defaultWorkflowPolicy),
-      );
+      const policy = startPolicy(args);
       const typed = args.flags["prompt-file"]
         ? readFlagFile("prompt-file")
         : typeof args.flags.prompt === "string"

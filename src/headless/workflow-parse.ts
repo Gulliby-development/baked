@@ -1,4 +1,5 @@
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
+import { BUDGET_PRESETS } from "../core/workflows/budget.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus } from "../core/workflows/schemas.js";
 
@@ -123,6 +124,7 @@ const flags = new Set([
   "output",
   "text",
   "provider",
+  "budget",
 ]);
 const booleanFlags = new Set([
   "all",
@@ -172,11 +174,13 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "model-strict",
     "clarification",
     "issue",
+    "budget",
   ],
   quick: [
     "feature",
     "prompt-file",
     "policy",
+    "budget",
     "owner",
     "model",
     "events",
@@ -399,6 +403,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   }
   if (
     !result.flags.help &&
+    "budget" in result.flags &&
+    !(BUDGET_PRESETS as readonly string[]).includes(String(result.flags.budget))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", `--budget accepts ${BUDGET_PRESETS.join(", ")}`);
+  if (
+    !result.flags.help &&
     "clarification" in result.flags &&
     !["ask", "assume"].includes(String(result.flags.clarification))
   )
@@ -428,7 +438,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -442,7 +452,10 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --clarification assume lets research, spec and analysis settle blocking questions with recorded
   assumptions, shown at approval; only questions without a safe default wait for you. Default: the
   policy's clarification, otherwise ask
-quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--events] [--worktree] [--confirm-auto-approval HASH]
+  --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
+  workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
+  checkpoints drops the token cap and pauses for your go-ahead. Default: standard
+quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick

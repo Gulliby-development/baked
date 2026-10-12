@@ -19,6 +19,19 @@ describe("workflow argv parser", () => {
     expect(args.flags.model).toBe("claude-code/sonnet");
   });
 
+  test.each([
+    ["run", ["--feature", "x", "--prompt", "hi"]],
+    ["quick", ["fix", "it"]],
+  ])("%s takes a --budget preset and rejects unknown ones", (command, rest) => {
+    expect(
+      validateWorkflowArgs(parseWorkflowArgs([command, ...rest, "--budget", "extended"])).flags
+        .budget,
+    ).toBe("extended");
+    expect(() =>
+      validateWorkflowArgs(parseWorkflowArgs([command, ...rest, "--budget", "huge"])),
+    ).toThrow("--budget accepts quick, standard, extended, checkpoints");
+  });
+
   test("a duplicate --model-strict is still rejected", () => {
     expect(() =>
       parseWorkflowArgs(["run", "--model-strict", "--model", "m", "--model-strict"]),

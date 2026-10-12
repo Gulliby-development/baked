@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
+import { BUDGET_PRESETS } from "../workflows/budget.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 
@@ -23,6 +24,8 @@ export const StartBody = z
     workflow: SafeId.optional(),
     /** A run policy object, as the CLI reads from `--policy FILE`. */
     policy: z.unknown().optional(),
+    /** A budget preset scaling the policy (or the configured or default one), as `--budget`. */
+    budget: z.enum(BUDGET_PRESETS).optional(),
     model: z.string().min(1).optional(),
     owner: z.string().min(1).max(200).optional(),
     confirmAutoApproval: z.string().min(1).optional(),
