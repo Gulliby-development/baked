@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { PROJECT_NAME_MAX } from "../../../../../src/core/projects/new-project.js";
 import type { AttentionItem, DesktopProject } from "../../shared/api.js";
 import { attentionTitle } from "../../shared/attention.js";
 import type { ProjectAction } from "../../shared/bridge.js";
 import { bridge } from "../client/bridge.js";
+import { CreateProjectDialog } from "../components/CreateProjectDialog.js";
 import { BlockIcon } from "../components/Icon.js";
 import { Alert } from "../components/ui/alert.js";
 import { Button, buttonVariants } from "../components/ui/button.js";
@@ -52,9 +54,6 @@ export function matchesProject(project: DesktopProject, query: string): boolean 
     v.toLowerCase().includes(q),
   );
 }
-
-/** The longest display name the project list keeps (`renameKnownProject`). */
-export const PROJECT_NAME_MAX = 120;
 
 /** The rename form: an empty name restores the manifest or folder name. */
 function RenameProject({
@@ -316,6 +315,7 @@ function Card({
 export function ProjectsScreen() {
   const { projects, attention, addFolder, refresh } = useDesktop();
   const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const shown = projects.filter((p) => matchesProject(p, query));
@@ -348,10 +348,14 @@ export function ProjectsScreen() {
         <Button variant="secondary" size="md" onClick={() => void refresh()}>
           Refresh
         </Button>
-        <Button variant="primary" size="md" onClick={() => void addFolder()}>
-          Open folder…
+        <Button variant="secondary" size="md" onClick={() => void addFolder()}>
+          Open existing folder…
+        </Button>
+        <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+          Create project
         </Button>
       </header>
+      <CreateProjectDialog open={creating} onOpenChange={setCreating} />
       <p className={LEDE}>
         Every folder you open becomes a project with its own sessions, runs, memory and settings.
         Open projects keep working in the background, each with its own backend; a closed project
@@ -365,7 +369,15 @@ export function ProjectsScreen() {
       {projects.length === 0 ? (
         <Empty className="flex flex-col items-center gap-3">
           <BlockIcon name="projects" />
-          No projects yet. Open a folder to start.
+          No projects yet.
+          <span className={ACTIONS}>
+            <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+              Create project
+            </Button>
+            <Button variant="secondary" size="md" onClick={() => void addFolder()}>
+              Open existing folder…
+            </Button>
+          </span>
         </Empty>
       ) : shown.length === 0 ? (
         <Empty>No project matches “{query}”.</Empty>

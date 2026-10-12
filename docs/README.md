@@ -14,6 +14,7 @@ This folder describes BAKED as it works now. It is the only place for long-lived
 - [Extensions](extensions.md): MCP servers, hooks and skills.
 - [Custom commands](custom-commands.md): Markdown files that become slash commands.
 - [Projects](projects.md): the project manifest, working set and known-projects list.
+- [Project coordinator](coordinator.md): one long-lived chat per project with a durable project brief.
 - [Privacy and telemetry](privacy.md): what is stored, what is sent, how to opt out.
 - [Troubleshooting](troubleshooting.md).
 

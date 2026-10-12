@@ -19,6 +19,7 @@ import {
   projectDetails,
   resolveFolderInput,
   runsExecutingInProcess,
+  waitingAcrossProjects,
   waitingBadgeText,
   waitingElsewhere,
 } from "../src/core/projects/switcher.js";
@@ -180,6 +181,32 @@ describe("with a temporary profile", () => {
       },
     });
     expect(result).toEqual({ waiting: 3, projects: 2 });
+  });
+
+  test("waitingAcrossProjects lists this project first, then others with something waiting", async () => {
+    const here = folder("here");
+    const other = folder("other");
+    const quiet = folder("quiet");
+    for (const [i, path] of [here, other, quiet].entries()) addKnownProject(path, { configDir, now: 1000 + i });
+    const row = (runId: string, createdAt: number) => ({
+      run_id: runId,
+      feature_id: `feature-${runId}`,
+      status: "waiting" as const,
+      request_id: `req-${runId}`,
+      kind: "approval",
+      body_json: null,
+      created_at: createdAt,
+    });
+    const rows: Record<string, ReturnType<typeof row>[]> = {
+      [realPath(here)]: [row("h2", 20), row("h1", 10)],
+      [realPath(other)]: [row("o1", 5)],
+    };
+    const result = await waitingAcrossProjects(here, { configDir, read: (path) => rows[path] ?? [] });
+    expect(result.map((p) => [p.name, p.current, p.items.map((i) => i.run_id)])).toEqual([
+      ["here", true, ["h1", "h2"]],
+      ["other", false, ["o1"]],
+    ]);
+    expect(await waitingAcrossProjects(quiet, { configDir, read: () => [] })).toEqual([]);
   });
 
   test("waitingElsewhere reads real empty folders as nothing waiting", async () => {

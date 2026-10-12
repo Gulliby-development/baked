@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BriefContentSchema } from "../chat/coordinator.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
@@ -123,6 +124,10 @@ export const CreateSessionBody = z.strictObject({
   mode: ChatModeSchema.optional(),
   text: Text.optional(),
   images: Images.optional(),
+});
+export const CoordinatorBody = z.strictObject({ model: ModelId.optional() });
+export const BriefBody = BriefContentSchema.extend({
+  expectedRevision: z.number().int().min(0),
 });
 export const UpdateSessionBody = z
   .strictObject({

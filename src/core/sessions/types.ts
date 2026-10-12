@@ -43,4 +43,6 @@ export interface SessionMeta {
   tabs: TabMeta[];
   /** The project (`baked/project.json`) of `cwd` when the session was saved. */
   projectId?: string;
+  /** `coordinator` for the project's coordinator chat; absent for an ordinary session. */
+  kind?: "coordinator";
 }

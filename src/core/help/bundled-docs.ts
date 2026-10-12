@@ -9,6 +9,7 @@ import benchLoopMd from "../../../docs/bench-loop.md" with { type: "text" };
 import brandMd from "../../../docs/brand.md" with { type: "text" };
 import commandsMd from "../../../docs/commands.md" with { type: "text" };
 import configurationMd from "../../../docs/configuration.md" with { type: "text" };
+import coordinatorMd from "../../../docs/coordinator.md" with { type: "text" };
 import customCommandsMd from "../../../docs/custom-commands.md" with { type: "text" };
 import desktopApiMd from "../../../docs/desktop/api.md" with { type: "text" };
 import desktopAppMd from "../../../docs/desktop/app.md" with { type: "text" };
@@ -43,6 +44,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["brand.md", brandMd],
   ["commands.md", commandsMd],
   ["configuration.md", configurationMd],
+  ["coordinator.md", coordinatorMd],
   ["custom-commands.md", customCommandsMd],
   ["desktop/api.md", desktopApiMd],
   ["desktop/app.md", desktopAppMd],
