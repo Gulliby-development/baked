@@ -670,6 +670,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "approval-review",
+    group: "Workflow runs",
+    title: "Approval reviewer: a model decides low-risk plans outside the auto approval limits",
+    tui: ["/workflow: approval prompt shows the reviewer's verdict"],
+    cli: ["baked workflow run", "baked quick", "approval-review"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: approval card shows the reviewer's verdict"],
+  },
+  {
     id: "checks",
     group: "Workflow runs",
     title: "Checks: list, edit, run now, suggestions",

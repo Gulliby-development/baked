@@ -19,6 +19,7 @@ import {
 } from "../src/renderer/screens/runs/model.ts";
 import {
   answersOf,
+  approvalReviewText,
   blockingRequests,
   clarificationTask,
   questionsOf,
@@ -297,5 +298,17 @@ describe("acceptance gate view", () => {
     expect(view.criteria[3]?.url).toBe("http://localhost/");
     expect(view).toMatchObject({ passed: 2, total: 4, setup: "browser · outbound: localhost only" });
     expect(view.decisions[0]).toMatchObject({ requestId: "t1", digest: "d", testPath: "a.spec.ts" });
+  });
+});
+
+describe("approval reviewer verdict", () => {
+  test("says what the reviewer decided, or that it failed closed", () => {
+    expect(approvalReviewText({ declined: ["Limits: 4 tasks exceed 3"] })).toBeNull();
+    expect(
+      approvalReviewText({
+        review: { verdict: "escalate", risk: "medium", reasons: ["It edits the login flow."] },
+      }),
+    ).toBe("The approval reviewer escalated at medium risk: It edits the login flow.");
+    expect(approvalReviewText({ reviewError: "timeout" })).toContain("could not decide (timeout)");
   });
 });

@@ -116,6 +116,7 @@ bun test tests/feature-parity.test.ts
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Deliver a run (commit, pull request) | `/workflow` | `baked workflow deliver` | `/v1/workflow/runs/:id/deliver`, `/v1/workflow/runs/:id/deliver/execute` | `project/runs`, `attention` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
+| Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Gates from a plain-language sentence | **Gap** [#372](https://github.com/Gulliby-development/baked/issues/372): create a gate from text in the workflow editor | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |

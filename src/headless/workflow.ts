@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
+import { withModelReview } from "../core/workflows/auto-approval.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { executeDelivery, prepareDelivery } from "../core/workflows/delivery.js";
@@ -231,7 +232,8 @@ export async function executeWorkflowCommand(
       return executeWorkflowCommand(service, run, signal, onDrive, options);
     }
     case "run": {
-      const policy = startPolicy(args);
+      const base = startPolicy(args);
+      const policy = args.flags["approval-review"] === true ? withModelReview(base) : base;
       const typed = args.flags["prompt-file"]
         ? readFlagFile("prompt-file")
         : typeof args.flags.prompt === "string"

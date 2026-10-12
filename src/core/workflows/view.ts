@@ -520,5 +520,6 @@ function autoApprovalText(policy: RunPolicy): string | null {
         ]
       : []),
   ];
-  return parts.length ? parts.join(" or ") : null;
+  if (!parts.length) return null;
+  return `${parts.join(" or ")}${policy.autoApproval?.modelReview ? "; outside the limits by size or paths, the approval reviewer decides" : ""}`;
 }

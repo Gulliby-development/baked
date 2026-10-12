@@ -141,9 +141,29 @@ export const AutoApprovalSchema = z
       })
       .strict()
       .nullable(),
+    /**
+     * Opt-in: a package that leaves the limits only by its task count, file count or paths goes
+     * to the `approval-reviewer` profile, which may approve a low-risk one. Everything else, and
+     * any reviewer failure, still waits for a person.
+     */
+    modelReview: z.boolean().optional(),
   })
   .strict()
-  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
+  .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")
+  .refine(
+    (value) => !value.modelReview || value.limits !== null,
+    "Model review of approvals requires limits",
+  );
+
+/** What the `approval-reviewer` profile returns for a package auto approval declined. */
+export const ApprovalReviewSchema = z
+  .object({
+    verdict: z.enum(["approve", "escalate"]),
+    risk: z.enum(["low", "medium", "high"]),
+    reasons: z.array(z.string().min(1).max(2000)).min(1).max(10),
+  })
+  .strict();
+export type ApprovalReview = z.infer<typeof ApprovalReviewSchema>;
 
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
@@ -298,6 +318,7 @@ export const ProfileSchema = z
       "acceptance",
       "acceptance-draft",
       "initiativePlan",
+      "approval-review",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),

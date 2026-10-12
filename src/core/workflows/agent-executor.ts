@@ -40,6 +40,7 @@ import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
+  ApprovalReviewSchema,
   generatedPaths,
   ImplementationSchema,
   PlanSchema,
@@ -76,6 +77,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   acceptance: AcceptanceWalkSchema,
   "acceptance-draft": AcceptanceDraftSchema,
   initiativePlan: InitiativePlanSchema,
+  "approval-review": ApprovalReviewSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Read-only steps in a row before an implementer is told to edit. */

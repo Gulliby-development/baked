@@ -36,6 +36,8 @@ export const StartBody = z
     clarification: z.enum(["ask", "assume"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
+    /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */
+    approvalReview: z.boolean().optional(),
   })
   .refine((body) => body.issue !== undefined || (body.feature && body.prompt), {
     message: "feature and prompt are required without issue",
