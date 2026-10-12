@@ -100,7 +100,7 @@ describe("readsChangedFile", () => {
 // jsondelta 9fbc18e7: a repair of one function in src/diff.ts restored T001 and invalidated T002,
 // T003 and T004, whose reruns cost 494k of 1.94M tokens.
 describe("a repair task restoring its predecessor", () => {
-  async function scenario(changed: string[] | null, withChecks = false) {
+  async function scenario(changed: string[] | null, withChecks = false, dependents: Task[] = []) {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
     const { service, root } = fixture;
@@ -122,13 +122,13 @@ describe("a repair task restoring its predecessor", () => {
       findingIds: ["F1"],
       checkIds: [],
     });
-    state.graph = { ...state.graph, tasks: [t1, t2, t3, t4] };
+    state.graph = { ...state.graph, tasks: [t1, t2, t3, t4, ...dependents] };
     state.repairPredecessors = { F1: "T001" };
     state.taskGates = {};
     store.transaction(() => {
       const snapshot = store.putSnapshot(run.runId, {}).id;
       store.syncTasks(run.runId, state.graph as never);
-      for (const id of ["T001", "T002", "T003"]) store.taskStatus(run.runId, id, "implemented", snapshot);
+      for (const id of ["T001", "T002", "T003", ...dependents.map((d) => d.id)]) store.taskStatus(run.runId, id, "implemented", snapshot);
       store.taskStatus(run.runId, "T001", "invalidated");
       store.taskStatus(run.runId, "T004", "implemented", snapshot);
       if (changed)
@@ -162,6 +162,27 @@ describe("a repair task restoring its predecessor", () => {
     const { store, runId, state } = await scenario(["src/diff.ts"], true);
     expect(statuses(store, runId)).toMatchObject({ T002: "implemented", T003: "implemented" });
     expect(state.taskGates.T002).toBeUndefined();
+  });
+
+  // R6 md-site a586cde0: corrections rewrote src/site.ts and src/cli.ts, then their planned owner
+  // T003 ran again from its original description, three times in all.
+  test("a dependent whose every written file the repair rewrote is superseded and only rechecked", async () => {
+    const owner = task("T005", ["src/diff.ts"], { dependsOn: ["T001"], checkIds: ["unit"] });
+    const { store, runId, state } = await scenario(["src/diff.ts"], true, [owner]);
+    expect(statuses(store, runId)).toMatchObject({ T005: "implemented" });
+    expect(state.taskGates.T005).toBeUndefined();
+  });
+
+  test("a dependent that writes more than the repair rewrote is still invalidated", async () => {
+    const owner = task("T005", ["src/diff.ts", "src/other.ts"], { dependsOn: ["T001"], checkIds: ["unit"] });
+    const { store, runId } = await scenario(["src/diff.ts"], true, [owner]);
+    expect(statuses(store, runId)).toMatchObject({ T005: "invalidated" });
+  });
+
+  test("a dependent without task checks is invalidated even when the repair rewrote its files", async () => {
+    const owner = task("T005", ["src/diff.ts"], { dependsOn: ["T001"], checkIds: [] });
+    const { store, runId } = await scenario(["src/diff.ts"], true, [owner]);
+    expect(statuses(store, runId)).toMatchObject({ T005: "invalidated" });
   });
 
   test("without the repair's diff every dependent is invalidated", async () => {
