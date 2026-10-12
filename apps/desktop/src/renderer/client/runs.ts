@@ -107,6 +107,13 @@ export interface EventPayloads {
     evidenceId: string | null;
   };
   "acceptance.phase": { gateId: string; phase: string; detail: string | null };
+  "tool.started": { attemptId: string; tool: string };
+  "tool.finished": {
+    attemptId: string;
+    tool: string;
+    status: "ok" | "error" | "deadline";
+    durationMs: number;
+  };
 }
 export type EventType = keyof EventPayloads;
 export type WorkflowEvent = {
