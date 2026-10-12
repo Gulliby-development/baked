@@ -3,6 +3,8 @@ import type {
   AppSettings,
   AttentionItem,
   DesktopProject,
+  NewProjectCheck,
+  NewProjectDraft,
   StreamEvent,
 } from "./api.js";
 
@@ -38,6 +40,12 @@ export interface DesktopBridge {
   renameProject(key: string, name: string): Promise<DesktopProject[]>;
   /** Shows the folder picker and adds the chosen folder; null when cancelled. */
   addFolder(): Promise<DesktopProject | null>;
+  /** Shows the folder picker and only returns the chosen path; null when cancelled. */
+  pickFolder(): Promise<string | null>;
+  /** Where a Create project form would put the project and why it cannot; writes nothing. */
+  checkNewProject(draft: NewProjectDraft): Promise<NewProjectCheck>;
+  /** Creates the folder and the project (`baked projects create`), opens it and returns it. */
+  createProject(draft: NewProjectDraft): Promise<DesktopProject>;
   onProjects(listener: (projects: DesktopProject[]) => void): () => void;
   request<T = unknown>(
     key: string,
@@ -77,6 +85,9 @@ export const IPC = {
   closeProject: "baked:projects:close",
   restartProject: "baked:projects:restart",
   addFolder: "baked:projects:add-folder",
+  pickFolder: "baked:projects:pick-folder",
+  checkNewProject: "baked:projects:check-new",
+  createProject: "baked:projects:create",
   manageProject: "baked:projects:manage",
   renameProject: "baked:projects:rename",
   projectsChanged: "baked:projects:changed",
