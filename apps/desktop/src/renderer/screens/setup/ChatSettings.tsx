@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { chat } from "../../client/chat.js";
 import {
   type SettingDefinition,
@@ -91,12 +91,11 @@ function ChatSettingsFor({
   const project = projects.find((p) => p.key === projectKey) ?? projects[0];
   const key = project?.key ?? "";
   const [scope, setScope] = useState<SettingScope>("global");
-  const [view, , setView] = useLoad(() => settingsApi.load(key), [key]);
+  const [view, , setView] = useLoad(() => settingsApi.load(key), [key, "chat-settings"]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
-  const loadModels = useCallback(() => chat.models(key), [key]);
-  const models = useModelCatalog(key ? loadModels : null);
+  const models = useModelCatalog(key || null, chat.models);
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new page clears the last result.
   useEffect(() => {
     setSaved(null);

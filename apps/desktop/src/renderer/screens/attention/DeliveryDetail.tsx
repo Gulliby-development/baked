@@ -44,7 +44,7 @@ export function DeliveryDetail({ item, onDone }: DetailProps) {
   const runId = item.runId ?? "";
   const [load] = useLoad(
     () => attentionApi.run(item.projectKey, runId),
-    `${item.projectKey}:${runId}:${item.requestId}`,
+    [item.projectKey, "attention-run", runId, item.requestId],
   );
   const action = useAction();
   return (

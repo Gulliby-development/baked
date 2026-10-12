@@ -10,6 +10,15 @@ export function ago(at: number | null, now = Date.now()): string {
   return `${Math.round(hours / 24)} days ago`;
 }
 
+/** "Updated 12s ago": seconds for the first minute, then as `ago`. */
+export function updated(at: number | null, now = Date.now()): string {
+  if (at === null) return "Not loaded yet";
+  const seconds = Math.max(0, Math.floor((now - at) / 1000));
+  if (seconds < 5) return "Updated just now";
+  if (seconds < 60) return `Updated ${seconds}s ago`;
+  return `Updated ${ago(at, now)}`;
+}
+
 export function tokens(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
   if (count >= 1000) return `${Math.round(count / 1000)}k`;

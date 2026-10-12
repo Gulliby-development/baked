@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import type { AttentionItem } from "../../../shared/api.js";
 import { attentionTitle, kindLabel } from "../../../shared/attention.js";
 import { ApiError } from "../../client/api.js";
@@ -6,6 +6,7 @@ import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { ago } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { type QueryKey, useQuery } from "../../lib/query.js";
 import { LABEL, PANEL } from "../../lib/styles.js";
 
 /** Class strings the detail panes share; BTN sizes the action buttons up from the `md` button. */
@@ -37,23 +38,18 @@ export type Load<T> =
   | { state: "error"; message: string }
   | { state: "ready"; value: T };
 
-/** Loads once per key; `reload` fetches again after an action. */
-export function useLoad<T>(load: () => Promise<T>, key: string): [Load<T>, () => void] {
-  const [result, setResult] = useState<Load<T>>({ state: "loading" });
-  const [epoch, setEpoch] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` names what `load` reads; epoch forces a reload
-  useEffect(() => {
-    let live = true;
-    setResult({ state: "loading" });
-    load().then(
-      (value) => live && setResult({ state: "ready", value }),
-      (error: unknown) => live && setResult({ state: "error", message: errorText(error) }),
-    );
-    return () => {
-      live = false;
-    };
-  }, [key, epoch]);
-  return [result, useCallback(() => setEpoch((e) => e + 1), [])];
+/**
+ * Reads `key` through the shared query cache: what was shown last at once, fetched again on every
+ * visit; `reload` fetches again after an action.
+ */
+export function useLoad<T>(load: () => Promise<T>, key: QueryKey): [Load<T>, () => void] {
+  const query = useQuery(key, load, 0);
+  const result: Load<T> = query.hasData
+    ? { state: "ready", value: query.data as T }
+    : query.loading || query.error === null
+      ? { state: "loading" }
+      : { state: "error", message: errorText(query.error) };
+  return [result, query.refresh];
 }
 
 /** Runs one action at a time and keeps its error. */

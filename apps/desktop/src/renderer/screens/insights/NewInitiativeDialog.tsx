@@ -1,4 +1,4 @@
-import { useCallback, useId, useState } from "react";
+import { useId, useState } from "react";
 import { chat } from "../../client/chat.js";
 import { insights } from "../../client/insights.js";
 import { start } from "../../client/start.js";
@@ -35,9 +35,8 @@ export function NewInitiativeDialog({
   const [model, setModel] = useState("");
   const [budget, setBudget] = useState<BudgetFields | null>(null);
   const [tiered, setTiered] = useState<{ maxTasks: string; maxFiles: string } | null>(null);
-  const definitions = useLoad(projectKey, start.definitions);
-  const loadModels = useCallback(() => chat.models(projectKey), [projectKey]);
-  const models = useModelCatalog(loadModels);
+  const definitions = useLoad(projectKey, "definitions", start.definitions);
+  const models = useModelCatalog(projectKey, chat.models);
   const initiativeId = idEdit ?? suggestInitiativeId(prompt);
   const parsed = startBody({ prompt, initiativeId, workflow, model, budget, tiered });
   return (
