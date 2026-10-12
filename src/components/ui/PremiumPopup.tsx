@@ -5,6 +5,7 @@ import { useTheme } from "../../core/theme/index.js";
 import type { ThemeTokens } from "../../core/theme/tokens.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { Overlay } from "../layout/shared.js";
+import { HardShadow } from "./BrutalBox.js";
 import { PopupScroll } from "./FocusTarget.js";
 import { KeyCaps } from "./KeyCap.js";
 import { Flash, type FlashProps } from "./layout.js";
@@ -209,97 +210,104 @@ function PremiumPopupImpl<Id extends string>({
         onChange={onTabChange}
       />
     ) : null;
-  return (
-    <Overlay>
-      <box
-        id="baked-popup"
-        flexDirection="column"
-        borderStyle="rounded"
-        border
-        borderColor={borderColor ?? t.borderActive}
-        width={w}
-        height={h}
-        backgroundColor={t.bgPopup}
-        overflow="hidden"
-      >
-        <box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
-          {sideWidth > 0 && navigation}
-          <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} minHeight={0}>
-            <box
-              flexDirection="column"
-              height={subtitle ? 3 : 2}
-              flexShrink={0}
-              paddingX={2}
-              backgroundColor={t.bgElevated}
-            >
-              <box flexDirection="row" height={1}>
-                <text fg={t.brand} attributes={1} flexShrink={0}>
-                  {titleIcon ? `${iconFn(titleIcon)}  ` : ""}
-                </text>
-                <text fg={t.textPrimary} attributes={1} flexGrow={1} wrapMode="none" truncate>
-                  {active ? `${title} / ${active.label}` : title}
-                </text>
-                <text fg={state ? t[TAB_STATUS_FG[state]] : t.brand} flexShrink={0}>
-                  {state ? ` ● ${state}` : " BAKED"}
-                </text>
-              </box>
-              {subtitle && (
-                <text fg={t.textMuted} wrapMode="none" truncate>
-                  {subtitle}
-                </text>
-              )}
-            </box>
-            {!sideWidth && navigation}
-            <scrollbox
-              ref={body}
-              key={activeTab ?? title}
-              id="baked-popup-body"
-              flexGrow={1}
-              flexShrink={1}
-              minHeight={0}
-              scrollX={false}
-              scrollbarOptions={{ showArrows: false }}
-            >
-              <PopupViewport
-                value={{
-                  width: w - 2 - (sideWidth && navigation ? sideWidth : 0),
-                  height:
-                    h -
-                    2 -
-                    (subtitle ? 3 : 2) -
-                    (navigation && !sideWidth ? 2 : 0) -
-                    (hints.length ? hints.length + 1 : 0) -
-                    (flash ? 1 : 0),
-                }}
-              >
-                <PopupScroll value={body}>
-                  <box flexDirection="column" flexShrink={0}>
-                    {children}
-                  </box>
-                </PopupScroll>
-              </PopupViewport>
-            </scrollbox>
-          </box>
-        </box>
-        {flash && <Flash kind={flash.kind} message={flash.message} />}
-        {hints.length > 0 && (
+  const frame = (
+    <box
+      id="baked-popup"
+      flexDirection="column"
+      borderStyle="heavy"
+      border
+      borderColor={borderColor ?? t.borderActive}
+      width={w}
+      height={h}
+      backgroundColor={t.bgPopup}
+      overflow="hidden"
+    >
+      <box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
+        {sideWidth > 0 && navigation}
+        <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} minHeight={0}>
           <box
             flexDirection="column"
+            height={subtitle ? 3 : 2}
             flexShrink={0}
             paddingX={2}
-            paddingTop={1}
             backgroundColor={t.bgElevated}
           >
-            {hints.map((line) => (
-              <KeyCaps
-                key={line.map((hint) => hint.key).join("|")}
-                hints={line}
-                bg={t.bgElevated}
-              />
-            ))}
+            <box flexDirection="row" height={1}>
+              <text fg={t.brand} attributes={1} flexShrink={0}>
+                {titleIcon ? `${iconFn(titleIcon)}  ` : ""}
+              </text>
+              <text fg={t.textPrimary} attributes={1} flexGrow={1} wrapMode="none" truncate>
+                {active ? `${title} / ${active.label}` : title}
+              </text>
+              <text fg={state ? t[TAB_STATUS_FG[state]] : t.brand} flexShrink={0}>
+                {state ? ` ● ${state}` : " BAKED"}
+              </text>
+            </box>
+            {subtitle && (
+              <text fg={t.textMuted} wrapMode="none" truncate>
+                {subtitle}
+              </text>
+            )}
           </box>
-        )}
+          {!sideWidth && navigation}
+          <scrollbox
+            ref={body}
+            key={activeTab ?? title}
+            id="baked-popup-body"
+            flexGrow={1}
+            flexShrink={1}
+            minHeight={0}
+            scrollX={false}
+            scrollbarOptions={{ showArrows: false }}
+          >
+            <PopupViewport
+              value={{
+                width: w - 2 - (sideWidth && navigation ? sideWidth : 0),
+                height:
+                  h -
+                  2 -
+                  (subtitle ? 3 : 2) -
+                  (navigation && !sideWidth ? 2 : 0) -
+                  (hints.length ? hints.length + 1 : 0) -
+                  (flash ? 1 : 0),
+              }}
+            >
+              <PopupScroll value={body}>
+                <box flexDirection="column" flexShrink={0}>
+                  {children}
+                </box>
+              </PopupScroll>
+            </PopupViewport>
+          </scrollbox>
+        </box>
       </box>
+      {flash && <Flash kind={flash.kind} message={flash.message} />}
+      {hints.length > 0 && (
+        <box
+          flexDirection="column"
+          flexShrink={0}
+          paddingX={2}
+          paddingTop={1}
+          backgroundColor={t.bgElevated}
+        >
+          {hints.map((line) => (
+            <KeyCaps key={line.map((hint) => hint.key).join("|")} hints={line} bg={t.bgElevated} />
+          ))}
+        </box>
+      )}
+    </box>
+  );
+  // The hard shadow needs one spare column and row; a popup that fills the terminal goes without.
+  const shadowed = w + 1 <= terminal.width && h + 1 <= terminal.height;
+  return (
+    <Overlay>
+      {shadowed ? (
+        <HardShadow width={w + 1} height={h + 1}>
+          {frame}
+        </HardShadow>
+      ) : (
+        frame
+      )}
     </Overlay>
   );
 }

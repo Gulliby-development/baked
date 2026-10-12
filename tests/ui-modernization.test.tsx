@@ -82,8 +82,8 @@ describe("Baked terminal UI", () => {
           bounds(view, width!, height!);
           const frame = view.captureCharFrame();
           expect(frame).toContain("Esc");
-          expect(frame).toContain("╰");
-          expect(frame).toContain("╯");
+          expect(frame).toContain("┗");
+          expect(frame).toContain("┛");
         });
       }
     });

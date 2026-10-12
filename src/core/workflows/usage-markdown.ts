@@ -3,6 +3,8 @@
  * one run. Only model IDs, stage IDs, run IDs and figures go in; no paths, prompts or accounts.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { RunUsageReport, UsageDimension, UsageSummary } from "./usage.js";
 
 const PRICE_NOTE =
@@ -204,4 +206,21 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     );
   out.push(PRICE_NOTE);
   return `${out.join("\n")}\n`;
+}
+
+/** The default file name of an exported project summary: `baked-usage-30d-2026-10-12.md`. */
+export function usageFileName(days: number, now: number = Date.now()): string {
+  return `baked-usage-${days}d-${day(now)}.md`;
+}
+
+/** Writes the Markdown of a summary to `output`, relative to `workspace`; returns the full path. */
+export function writeUsageMarkdown(
+  workspace: string,
+  output: string,
+  summary: UsageSummary,
+): string {
+  const path = resolve(workspace, output);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, usageMarkdown(summary));
+  return path;
 }

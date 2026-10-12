@@ -6,6 +6,7 @@ The application uses React 19 and OpenTUI. `PremiumPopup` is the shared shell fo
 
 Baked Dark is the default: warm toasted surfaces, cream text and orange focus. Baked Light uses flour-white surfaces, brown text and toasted orange accents. Only these two palettes are selectable. Use semantic tokens from `useTheme()`; do not hardcode component colors.
 
+- Popups, the chat input and cards use a heavy outline and the one-cell hard shadow of `HardShadow` (`BrutalBox.tsx`); a popup that fills the terminal drops the shadow. `Chip` and `KeyChip` (`KeyCap.tsx`) draw bold labels on a fill with `inkOn` picking readable text. Spinners use the one glyph set in `core/utils/spinner.ts`.
 - The header identifies the screen and active section; descriptions occupy their own line.
 - At widths below 88 cells, sidebar navigation becomes a horizontal strip. The active tab scrolls into view. Mouse selection uses the same state setters as keyboard selection and respects pending operations.
 - Popup dimensions are bounded by the terminal. Preferred sizes are not minimum sizes. Use `fitPopupWidth`, `fitPopupHeight` and `popupContentWidth` when calculating child layouts.

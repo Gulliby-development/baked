@@ -54,6 +54,7 @@ const SHORT_HELP = `
 /workflow gates      Add, edit, remove and try the checks every run uses
 /workflow edit ID    Edit a workflow definition: stages, transitions and their gates
 /workflow routing    Which model runs each class, role, stage and profile (modelRouting)
+/workflow usage      Tokens and cost of every run over 7, 30 or 90 days, by model, stage or day
 /workflow report ID  The run's report in Markdown (--output FILE writes it)
 /workflow usage ID --format md  The run's tokens and cost in Markdown (--output FILE)
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
@@ -81,6 +82,12 @@ export function register(map: Map<string, CommandHandler>): void {
     }
     if (tokens[0] === "routing") {
       ui.showRouting();
+      useUIStore.getState().openModal("workflow");
+      return;
+    }
+    // With a run ID, `usage` stays the per-run report of the workflow commands.
+    if (tokens[0] === "usage" && tokens.length === 1) {
+      ui.showUsage();
       useUIStore.getState().openModal("workflow");
       return;
     }

@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
 import { workspacePath } from "../core/specs/validate.js";
@@ -12,7 +11,7 @@ import {
   type UsageSummary,
   usageSummary,
 } from "../core/workflows/usage.js";
-import { usageMarkdown } from "../core/workflows/usage-markdown.js";
+import { usageMarkdown, writeUsageMarkdown } from "../core/workflows/usage-markdown.js";
 
 const usageHelp = `Usage: baked usage [--days N] [--group-by DIM[,DIM]] [--model ID] [--stage ID]
                    [--json | --format md] [--output FILE]
@@ -77,7 +76,7 @@ export interface UsageArgs {
   output?: string;
 }
 
-/** The options of `baked usage` (and the TUI's `/usage`), or the error to show. */
+/** The options of `baked usage`, or the error to show. */
 export function parseUsageArgs(argv: string[]): UsageArgs | string {
   const flags = parseFlags(
     argv,
@@ -127,14 +126,6 @@ export function projectUsage(cwd: string, args: UsageArgs): UsageSummary {
   } finally {
     service?.close();
   }
-}
-
-/** Writes the Markdown of a summary to `output`, relative to `cwd`; returns the full path. */
-export function writeUsageMarkdown(cwd: string, output: string, summary: UsageSummary): string {
-  const path = resolve(cwd, output);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, usageMarkdown(summary));
-  return path;
 }
 
 export async function runUsageCli(argv: string[]): Promise<number> {

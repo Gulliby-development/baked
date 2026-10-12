@@ -60,7 +60,7 @@ bun test tests/feature-parity.test.ts
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
 | Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Undo and redo a turn with its file edits | `/checkpoint`, `/checkpoint undo`, `/checkpoint redo` +2 | `baked session undo`, `baked session redo` | `/v1/sessions/:id/undo`, `/v1/sessions/:id/redo` | `project/chat` |
-| Checkpoint list and rewind to a checkpoint | `/checkpoint` | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no list | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no checkpoint list | **Gap** [#273](https://github.com/Gulliby-development/baked/issues/273) |
+| Checkpoint list and rewind to a checkpoint | `/checkpoint` | `baked session checkpoints`, `baked session undo` | `/v1/sessions/:id/checkpoints`, `/v1/sessions/:id/undo` | `project/chat` |
 | Fork a session | `/checkpoint fork` | `baked session fork` | `/v1/sessions/:id/fork` | `project/chat` |
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
 | Reasoning effort per chat | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384): set globally in /provider-settings only | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) |
@@ -118,8 +118,8 @@ bun test tests/feature-parity.test.ts
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): read-only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
-| Usage across runs: days, by stage and model | `/usage`, `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
-| Export usage to Markdown to share | `/usage`, `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
+| Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
+| Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): export-progress only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 
 ### Initiatives
@@ -135,6 +135,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Projects: list, add, pin, forget, this project | `/projects`, `/project` | `baked projects`, `baked project` | `/v1/projects`, `/v1/projects/pin`, `/v1/projects/unpin` +2 | `projects`, `project/overview` |
+| Create a project in a new folder with a name | `/projects` | `baked projects create` | Not needed: a new project has no backend yet; the desktop app creates it through baked projects create | `projects` |
 | Rename a project | `/project rename` | `baked projects rename` | `/v1/projects/rename` | `projects` |
 | Working set | `/project` | `baked project` | `/v1/projects/current/working-set` | `project/working-set` |
 | What waits for me across projects | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): this project only | `baked attention` | `/v1/attention` | `attention` |
@@ -157,7 +158,6 @@ bun test tests/feature-parity.test.ts
 
 ### Open gaps by issue
 
-- [#273](https://github.com/Gulliby-development/baked/issues/273): Checkpoint list and rewind to a checkpoint
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Diagnose LSP, tree-sitter and index health; Workflow definition editor; Import, export, gc and redact runs; What waits for me across projects

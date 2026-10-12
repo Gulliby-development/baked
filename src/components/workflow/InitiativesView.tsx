@@ -15,6 +15,7 @@ import {
 } from "../../core/workflows/initiatives/view-model.js";
 import type { WorkflowInfo } from "../../core/workflows/view.js";
 import { useKeyboard } from "../../hooks/useTerminalEvents.js";
+import { HardShadow } from "../ui/BrutalBox.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, PremiumPopup, Section } from "../ui/index.js";
 import { errorHint, formatDuration, formatTokens } from "./format.js";
@@ -358,23 +359,24 @@ export function InitiativesPopup({
         ) : typing?.option.input ? (
           <box flexDirection="column">
             <text fg={t.warning}>{typing.option.input.question}</text>
-            <box
-              border
-              borderStyle="rounded"
-              borderColor={t.brand}
-              paddingX={1}
-              width={Math.max(20, contentW - 2)}
-              backgroundColor={t.bgPopup}
-            >
-              <input
-                value={typing.text}
-                onInput={(text: string) => setTyping((cur) => (cur ? { ...cur, text } : cur))}
-                onSubmit={submitTyped}
-                placeholder={typing.option.input.placeholder}
-                focused
+            <HardShadow width={Math.max(20, contentW - 2) + 1}>
+              <box
+                border
+                borderStyle="heavy"
+                borderColor={t.brand}
+                paddingX={1}
                 backgroundColor={t.bgPopup}
-              />
-            </box>
+              >
+                <input
+                  value={typing.text}
+                  onInput={(text: string) => setTyping((cur) => (cur ? { ...cur, text } : cur))}
+                  onSubmit={submitTyped}
+                  placeholder={typing.option.input.placeholder}
+                  focused
+                  backgroundColor={t.bgPopup}
+                />
+              </box>
+            </HardShadow>
           </box>
         ) : confirm ? (
           <text fg={t.warning}>{confirm.confirm}</text>
