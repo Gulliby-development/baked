@@ -578,6 +578,9 @@ export const DeliveryConfigSchema = z
       .default("https://api.github.com"),
   })
   .strict();
+/** Runs that may execute in one workspace at once when `workflows.maxParallelRuns` is unset. */
+export const DEFAULT_MAX_PARALLEL_RUNS = 2;
+export const MAX_PARALLEL_RUNS = 8;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -587,6 +590,11 @@ export const WorkflowConfigSchema = z
     quickWorkflow: SafeId.optional(),
     policy: PolicySchema,
     delivery: DeliveryConfigSchema.optional(),
+    /**
+     * How many runs may execute in the workspace at once. Only runs in their own worktree execute
+     * side by side; inline runs share the working copy and still take turns.
+     */
+    maxParallelRuns: z.number().int().min(1).max(MAX_PARALLEL_RUNS).optional(),
   })
   .strict();
 /** Workflows are on unless a configuration layer turns them off with `workflows.enabled: false`. */
