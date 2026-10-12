@@ -102,14 +102,19 @@ export class ArtifactStore {
     return meta;
   }
 
-  /** The page of a version, the latest by default. */
-  read(id: string, version?: number): string {
+  /** The file of a version, the latest by default, for opening it in a browser. */
+  pagePath(id: string, version?: number): string {
     const meta = this.get(id);
     const wanted = version ?? meta.version;
     const file = join(this.dir(id), `v${wanted}.html`);
     if (!existsSync(file))
       throw new ArtifactError("NOT_FOUND", `Artifact ${id} has no version ${wanted}`);
-    return readFileSync(file, "utf8");
+    return file;
+  }
+
+  /** The page of a version, the latest by default. */
+  read(id: string, version?: number): string {
+    return readFileSync(this.pagePath(id, version), "utf8");
   }
 
   save(input: SaveArtifact): ArtifactMeta {

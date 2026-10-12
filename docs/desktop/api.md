@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `workflow-editor` (`POST /v1/workflow/editor*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `diagnostics` (`/v1/diagnostics/*`), `coordinator` (`/v1/coordinator*`), `watch` (`GET|POST /v1/sessions/ID/watch`) and `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `workflow-editor` (`POST /v1/workflow/editor*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `diagnostics` (`/v1/diagnostics/*`), `coordinator` (`/v1/coordinator*`), `watch` (`GET|POST /v1/sessions/ID/watch`), `artifacts` (`/v1/artifacts*`) and `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -583,6 +583,21 @@ interface ModelCallEvent {
 ```
 
 Events and errors live in the server's memory: they cover the chats and runs this `baked serve` process drove and are gone when it stops.
+
+## Artifacts
+
+The [artifacts](../artifacts.md) of the user, the same for every project's server (`artifacts` capability).
+
+| Endpoint | Does |
+| --- | --- |
+| `GET /v1/artifacts` | `{items}`, each `{id, title, description, version, createdAt, updatedAt, project, bytes, deploys: [{id, url, target, version, at}]}`, the most recently updated first |
+| `POST /v1/artifacts` | `{html, id?, title?, description?}` saves a page (up to 5 MiB) as a new artifact, or as a new version of `id`; `201` with the artifact |
+| `GET /v1/artifacts/ID` | The artifact; `404` when there is none |
+| `DELETE /v1/artifacts/ID` | Removes every version; `{removed}` |
+| `GET /v1/artifacts/ID/page` | `{id, version, html}`, the latest version or `?version=N` |
+| `POST /v1/artifacts/ID/open` | Opens the page in the default browser of the machine running the server; `{opened, path}` |
+| `GET /v1/artifacts/ID/deploy` | The plan of a deploy, `?target=preview|production`: `{artifact, target, project, teamId, findings, refusal}`; `refusal` says why it cannot go ahead (deploys off, no Vercel token, a secret in the page, with `findings` naming lines) |
+| `POST /v1/artifacts/ID/deploy` | `{target?, confirm: true}` deploys the latest version after the person approved the plan; `{deployment: {id, url, target}, artifact}`. A refused plan answers `400 DEPLOY_REFUSED`, a Vercel failure `502 VERCEL` |
 
 ## Screen map
 

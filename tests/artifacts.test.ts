@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deployArtifact, planDeploy } from "../src/core/artifacts/deploy.js";
 import { findSecrets } from "../src/core/artifacts/scan.js";
 import { ArtifactStore, titleOf } from "../src/core/artifacts/store.js";
 import { deployToVercel, VercelError } from "../src/core/artifacts/vercel.js";
+import { startApiServer } from "../src/core/api/server.js";
+import { deployRequest } from "../src/core/commands/artifacts.js";
+import { createArtifactTool } from "../src/core/tools/artifact.js";
 import { runArtifactsCli } from "../src/headless/artifacts.js";
+import { workflowFixture } from "./helpers/workflow-fixture.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 
 const dirs: string[] = [];
@@ -164,5 +168,96 @@ describe("baked artifacts", () => {
     expect(output).toContain("Refused: Deploying artifacts is off");
     expect(await runArtifactsCli(["show", "missing"], s, out)).toBe(2);
     expect(await runArtifactsCli(["bogus"], s, out)).toBe(2);
+  });
+});
+
+describe("artifact tool", () => {
+  const run = (t: ReturnType<typeof createArtifactTool>, args: Record<string, unknown>) =>
+    (t.execute as (a: unknown, o: unknown) => Promise<string>)(args, { toolCallId: "t", messages: [] });
+
+  test("saves from a project file, lists, and asks before every deploy", async () => {
+    const s = store();
+    const project = join(s.root, "..", "project");
+    mkdirSync(project);
+    writeFileSync(join(project, "chart.html"), page("Chart"));
+    const asked: string[] = [];
+    const vercel = fakeVercel();
+    let answer = false;
+    const t = createArtifactTool({
+      cwd: project,
+      store: s,
+      config: () => ({ artifactDeploy: true }),
+      onApproveDeploy: async (question) => {
+        asked.push(question);
+        return answer;
+      },
+    });
+    expect(await run(t, { action: "save", path: "chart.html" })).toContain("Saved artifact chart v1");
+    expect(await run(t, { action: "save", path: "../outside.html" })).toContain("outside the project");
+    expect(await run(t, { action: "list" })).toContain('- chart v1 "Chart"');
+    const saved = process.env.VERCEL_TOKEN;
+    process.env.VERCEL_TOKEN = "tok";
+    try {
+      expect(await run(t, { action: "deploy", id: "chart" })).toBe("Not deployed: the user declined.");
+      expect(asked[0]).toContain('Deploy artifact "Chart" (chart v1');
+      expect(vercel.seen).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.VERCEL_TOKEN;
+      else process.env.VERCEL_TOKEN = saved;
+    }
+    answer = true;
+    const noAsk = createArtifactTool({ cwd: project, store: s, config: () => ({ artifactDeploy: true }) });
+    expect(await run(noAsk, { action: "deploy", id: "chart" })).toMatch(/^Not deployed/);
+  });
+
+  test("/artifacts deploy asks the agent to use the tool", () => {
+    expect(deployRequest("chart", true)).toContain("action deploy, id chart, target production");
+  });
+});
+
+describe("artifacts API", () => {
+  test("lists, saves, previews, opens, plans and deploys only with confirm", async () => {
+    const s = store();
+    const fixture = workflowFixture();
+    fixture.service.config.artifactDeploy = true;
+    const vercel = fakeVercel();
+    const opened: string[] = [];
+    const server = await startApiServer({
+      service: fixture.service,
+      artifacts: s,
+      vercel: { baseUrl: vercel.baseUrl, token: "tok", pollMs: 1 },
+      openArtifact: (path) => {
+        opened.push(path);
+        return true;
+      },
+    });
+    try {
+      const call = (path: string, init: RequestInit = {}) =>
+        fetch(`${server.url}${path}`, {
+          ...init,
+          headers: { Authorization: `Bearer ${server.token}`, "Content-Type": "application/json" },
+        });
+      const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
+      expect(health.capabilities).toContain("artifacts");
+      const saved = await call("/v1/artifacts", { method: "POST", body: JSON.stringify({ html: page("Api Page") }) });
+      expect(saved.status).toBe(201);
+      expect(((await (await call("/v1/artifacts")).json()) as { items: { id: string }[] }).items.map((a) => a.id)).toEqual(["api-page"]);
+      expect(await (await call("/v1/artifacts/api-page/page")).json()).toEqual({ id: "api-page", version: 1, html: page("Api Page") });
+      expect((await (await call("/v1/artifacts/api-page/open", { method: "POST" })).json()) as { opened: boolean }).toMatchObject({ opened: true });
+      expect(opened).toEqual([s.pagePath("api-page")]);
+      const plan = (await (await call("/v1/artifacts/api-page/deploy?target=production")).json()) as { refusal: string | null; target: string };
+      expect(plan).toMatchObject({ refusal: null, target: "production" });
+      expect((await call("/v1/artifacts/api-page/deploy", { method: "POST", body: "{}" })).status).toBe(400);
+      expect(vercel.seen).toEqual([]);
+      const deployed = await call("/v1/artifacts/api-page/deploy", { method: "POST", body: JSON.stringify({ confirm: true }) });
+      expect(deployed.status).toBe(200);
+      expect(((await deployed.json()) as { deployment: { url: string } }).deployment.url).toBe("https://baked-x-abc.vercel.app");
+      expect((await call("/v1/artifacts/missing")).status).toBe(404);
+      expect((await call("/v1/artifacts/api-page", { method: "DELETE" })).status).toBe(200);
+      expect(s.list()).toEqual([]);
+    } finally {
+      await server.stop();
+      await fixture.dispose();
+    }
   });
 });

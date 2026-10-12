@@ -418,7 +418,7 @@ export const FEATURES: readonly Feature[] = [
     id: "artifacts",
     group: "Tools and code intelligence",
     title: "Artifacts: HTML pages shared by every project, deployed to the user's Vercel",
-    tui: gap(136, "/artifacts and the chat tools follow in the next pull request"),
+    tui: ["/artifacts", "/artifacts open", "/artifacts deploy"],
     cli: [
       "baked artifacts list",
       "baked artifacts show",
@@ -426,8 +426,14 @@ export const FEATURES: readonly Feature[] = [
       "baked artifacts deploy",
       "baked artifacts remove",
     ],
-    api: gap(136, "/v1/artifacts follows in the next pull request"),
-    desktop: gap(136, "the Artifacts screen follows in the next pull request"),
+    api: [
+      "/v1/artifacts",
+      "/v1/artifacts/:id",
+      "/v1/artifacts/:id/page",
+      "/v1/artifacts/:id/open",
+      "/v1/artifacts/:id/deploy",
+    ],
+    desktop: ["project/artifacts"],
   },
   {
     id: "diagnose",

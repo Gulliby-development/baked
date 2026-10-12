@@ -1,4 +1,5 @@
 import { getCwd } from "../cwd.js";
+import { register as registerArtifacts } from "./artifacts.js";
 import { matchCheckpointPrefix, register as registerCheckpoint } from "./checkpoint.js";
 import { matchClaimsPrefix, register as registerClaims } from "./claims.js";
 import { register as registerClaudeCode } from "./claude-code.js";
@@ -37,6 +38,7 @@ registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
 registerProjects(commandMap);
 registerWatch(commandMap);
+registerArtifacts(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -540,6 +542,29 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Clear injected context (memory, skills)",
     category: "Intelligence",
     tags: ["reset"],
+    hidden: true,
+  },
+  {
+    cmd: "/artifacts",
+    ic: "globe",
+    desc: "Artifacts: HTML pages shared by every project; open one, or deploy it to Vercel",
+    category: "Intelligence",
+    tags: ["html", "page", "vercel", "deploy", "publish", "site"],
+  },
+  {
+    cmd: "/artifacts open",
+    ic: "globe",
+    desc: "Open an artifact in the browser",
+    category: "Intelligence",
+    tags: ["html", "page"],
+    hidden: true,
+  },
+  {
+    cmd: "/artifacts deploy",
+    ic: "globe",
+    desc: "Deploy an artifact to your Vercel (asks first)",
+    category: "Intelligence",
+    tags: ["vercel", "publish"],
     hidden: true,
   },
   {
