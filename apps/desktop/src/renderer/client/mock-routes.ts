@@ -3,6 +3,7 @@ import type { HttpMethod } from "../../shared/bridge.js";
 import { attentionRoutes } from "./mock-attention.js";
 import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
 import { diagnosticsRoutes } from "./mock-diagnostics.js";
+import { editorRoutes } from "./mock-editor.js";
 import { gitRoutes } from "./mock-git.js";
 import { graphRoutes, progressRoutes } from "./mock-graph.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
@@ -114,6 +115,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   progressRoutes,
   mcpRoutes,
   lspRoutes,
+  editorRoutes,
   gitRoutes,
   diagnosticsRoutes,
 ];

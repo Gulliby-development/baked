@@ -63,5 +63,8 @@ export function offers(capabilities: readonly string[] | null, name: string): bo
 /** `/v1/mcp*` (the MCP servers section). */
 export const MCP_CAPABILITY = "mcp";
 
+/** `POST /v1/workflow/editor*` (the Workflows section's editor). */
+export const WORKFLOW_EDITOR_CAPABILITY = "workflow-editor";
+
 /** `/v1/lsp*` (the Language servers section). */
 export const LSP_CAPABILITY = "lsp";

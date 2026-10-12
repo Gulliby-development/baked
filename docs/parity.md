@@ -118,7 +118,7 @@ bun test tests/feature-parity.test.ts
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Gates on the run's line: what each does, blocks or advises, last result | **Gap** [#533](https://github.com/Gulliby-development/baked/issues/533): gate results only in the activity lines | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
-| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): read-only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
+| Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): export-progress only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
@@ -163,7 +163,7 @@ bun test tests/feature-parity.test.ts
 - [#152](https://github.com/Gulliby-development/baked/issues/152): Project coordinator chat with a durable project brief
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#413](https://github.com/Gulliby-development/baked/issues/413): Diagnose LSP, tree-sitter and index health; Workflow definition editor; Import, export, gc and redact runs
+- [#413](https://github.com/Gulliby-development/baked/issues/413): Diagnose LSP, tree-sitter and index health; Import, export, gc and redact runs
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
 

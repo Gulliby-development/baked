@@ -20,6 +20,7 @@ const TITLES: Record<ProjectSection, string> = {
   graph: "Code graph",
   git: "Git",
   gates: "Gates and checks",
+  workflows: "Workflows",
   instructions: "Instructions",
   "working-set": "Working set",
   "run-memory": "Run memory",

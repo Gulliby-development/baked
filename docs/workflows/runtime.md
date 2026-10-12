@@ -397,6 +397,8 @@ Definitions of schema version 2 describe stages, transitions, contracts and gate
 - Switching an approval stage to `auto` adds the default limits of the design (3 tasks, 5 files, `src/**`, `tests/**` and `docs/**`, no deletions, no new dependencies, 200,000 tokens); switching the last one back to `human` removes them. When a save writes auto approval limits that the file does not already hold, the review names the limits and the save waits until the first 12 characters of the limits hash (`--confirm-auto-approval` takes the whole hash) are typed. A run of the definition still asks for its own confirmation when it starts.
 - Esc with unsaved changes asks before discarding them.
 
+The desktop app has the same editor under Setup > Workflows ([desktop app](../desktop/app.md)); it goes through `POST /v1/workflow/editor*` ([API](../desktop/api.md#workflow-editor)), which runs these rules in the project's backend.
+
 ### AI acceptance gates
 
 An `ai-acceptance` gate ([design, section 9](v2-design.md#9-the-ai-acceptance-gate), [example](examples/ai-acceptance-gate.json)) is bound on a transition and is always advisory. When the transition is taken, after its required gates, the host runs it on the current snapshot:
