@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LspBackend, serverRootFor } from "../src/core/intelligence/backends/lsp/index.js";
 import { buildCheckEnv } from "../src/core/verification/check-runner.js";
 import {
   isWindowsBatch,
@@ -103,18 +104,72 @@ describe("worktree removal under a lock", () => {
     ).rejects.toThrow("EIO");
   });
 
-  test("a task worktree that stays locked is a warning, not a failure", async () => {
+  test("a locked task worktree is moved aside so its path is free", async () => {
     const workspace = scratch();
-    mkdirSync(join(workspace, ".baked", "worktrees", "r", "T001"), { recursive: true });
+    const path = join(workspace, ".baked", "worktrees", "r", "T001");
+    mkdirSync(path, { recursive: true });
+    const order: string[] = [];
     const result = await removeTaskWorktree(workspace, ".baked/worktrees/r/T001", {
       attempts: 2,
       delayMs: 1,
+      stopHolders: async () => {
+        order.push("stop");
+      },
       rm: () => {
+        order.push("rm");
         throw busy();
       },
     });
-    expect(result.removed).toBe(false);
-    expect(result.warning).toContain("T001");
+    expect(order[0]).toBe("stop");
+    expect(result).toEqual({ removed: true, movedAside: true });
+    expect(existsSync(path)).toBe(false);
+    expect(readdirSync(join(workspace, ".baked", "trash"))).toHaveLength(1);
+    // The next removal purges the trash.
+    await removeTaskWorktree(workspace, ".baked/worktrees/r/T002", { stopHolders: async () => {} });
+    expect(existsSync(join(workspace, ".baked", "trash")) ? readdirSync(join(workspace, ".baked", "trash")) : []).toHaveLength(0);
+  });
+
+  test("removal gives up after its time bound", async () => {
+    let calls = 0;
+    const locked = await removeDirectory("x", {
+      attempts: 50,
+      delayMs: 20,
+      maxMs: 60,
+      rm: () => {
+        calls++;
+        throw busy();
+      },
+    });
+    expect(locked).not.toBeNull();
+    expect(calls).toBeLessThan(10);
+  });
+});
+
+describe("language server roots", () => {
+  test("a root inside a task worktree maps to the workspace", () => {
+    expect(serverRootFor("/w/app/.baked/worktrees/r1/T001", "/fb")).toBe("/w/app");
+    expect(serverRootFor(String.raw`C:\w\app\.baked\worktrees\r1\T001\pkg`, "/fb")).toBe(
+      String.raw`C:\w\app`,
+    );
+    expect(serverRootFor("/w/app/packages/a", "/fb")).toBe("/w/app/packages/a");
+  });
+
+  test("stopServersUnder stops only servers rooted below the path", async () => {
+    const backend = new LspBackend();
+    const stopped: string[] = [];
+    const fake = (root: string) => ({
+      workspaceRoot: root,
+      stop: async () => {
+        stopped.push(root);
+      },
+    });
+    const clients = (backend as unknown as { standaloneClients: Map<string, unknown> }).standaloneClients;
+    const inside = join(tmpdir(), "ws", ".baked", "worktrees", "r", "T001");
+    clients.set("a", fake(inside));
+    clients.set("b", fake(join(tmpdir(), "ws")));
+    expect(await backend.stopServersUnder(join(tmpdir(), "ws", ".baked", "worktrees", "r", "T001"))).toBe(1);
+    expect(stopped).toEqual([inside]);
+    expect(clients.has("b")).toBe(true);
   });
 });
 

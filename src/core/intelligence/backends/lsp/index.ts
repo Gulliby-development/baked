@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import {
   type CallHierarchyResult,
   type CodeAction,
@@ -980,6 +980,28 @@ export class LspBackend implements IntelligenceBackend {
     return restarted;
   }
 
+  /**
+   * Stops every server whose root is `path` or below it, so a directory about to be deleted (a
+   * task worktree) is no server's working directory. Returns how many were stopped.
+   */
+  async stopServersUnder(path: string): Promise<number> {
+    const doomed: [string, StandaloneLspClient][] = [];
+    for (const entry of this.standaloneClients) {
+      if (isPathWithin(entry[1].workspaceRoot, path)) doomed.push(entry);
+    }
+    for (const [key, client] of doomed) {
+      this.standaloneClients.delete(key);
+      for (const [langKey, clients] of this.languageClients) {
+        const index = clients.indexOf(client);
+        if (index < 0) continue;
+        clients.splice(index, 1);
+        if (clients.length === 0) this.languageClients.delete(langKey);
+      }
+      await client.stop().catch(() => {});
+    }
+    return doomed.length;
+  }
+
   dispose(): void {
     for (const client of this.standaloneClients.values()) {
       client.stop().catch(() => {});
@@ -1045,7 +1067,10 @@ export class LspBackend implements IntelligenceBackend {
     const language = detectLanguage(file);
     if (!language) return [];
 
-    const projectRoot = findProjectRootForLanguage(file, language) ?? this.cwd;
+    const projectRoot = serverRootFor(
+      findProjectRootForLanguage(file, language) ?? this.cwd,
+      this.cwd,
+    );
     const langKey = `${language}:${projectRoot}`;
 
     const existing = this.languageClients.get(langKey);
@@ -1385,6 +1410,30 @@ const PROJECT_FILES: Partial<Record<Language, string[]>> = {
   php: ["composer.json"],
   swift: ["Package.swift"],
 };
+
+const WORKTREE_SEGMENT = /[\\/]\.baked[\\/]worktrees[\\/]/;
+
+/**
+ * A server never runs in a task worktree: a process whose working directory is a worktree keeps
+ * the directory locked on Windows and blocks its removal. A root below `.baked/worktrees` maps to
+ * the workspace the worktrees belong to; the server then sees the same project, rooted outside.
+ */
+export function serverRootFor(root: string, fallback: string): string {
+  const match = WORKTREE_SEGMENT.exec(root);
+  if (!match) return root;
+  const workspace = root.slice(0, match.index);
+  return workspace.length > 0 ? workspace : fallback;
+}
+
+function isPathWithin(path: string, parent: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = resolve(value).replace(/[\\/]+$/, "");
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  const child = normalize(path);
+  const base = normalize(parent);
+  return child === base || child.startsWith(`${base}${sep}`);
+}
 
 function findProjectRootForLanguage(file: string, language: Language): string | null {
   const markers = PROJECT_FILES[language];

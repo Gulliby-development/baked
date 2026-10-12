@@ -10,6 +10,7 @@ import {
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
 import {
+  CHAT_EFFORT_CAPABILITY,
   CHAT_EXPORT_CAPABILITY,
   CHAT_UNDO_CAPABILITY,
   CHECKPOINTS_CAPABILITY,
@@ -23,6 +24,7 @@ import {
 } from "../../client/capabilities.js";
 import {
   CHAT_MODES,
+  type ChatEffort,
   type ChatMode,
   chat,
   type ImageUpload,
@@ -192,6 +194,7 @@ export function SessionView({
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [draftMode, setDraftMode] = useState<ChatMode>("default");
+  const [draftEffort, setDraftEffort] = useState<ChatEffort>("default");
   const [forking, setForking] = useState(false);
   const [forkReport] = useState(() => (draft ? null : takeForkReport(sessionId)));
   const [rewinding, setRewinding] = useState(false);
@@ -278,6 +281,7 @@ export function SessionView({
   const canRewindTo = canRewind && capabilities?.includes(CHECKPOINTS_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
+  const hasEffort = capabilities?.includes(CHAT_EFFORT_CAPABILITY) === true;
   const canWatch = !coordinator && capabilities?.includes(WATCH_CAPABILITY) === true;
   const voice = useVoiceInput();
   // Older servers list commands under `library` but send them to the model unexpanded.
@@ -349,6 +353,7 @@ export function SessionView({
           ...(images.length > 0 ? { images } : {}),
           mode: draftMode,
           ...(draftModel ? { model: draftModel } : {}),
+          ...(draftEffort !== "default" ? { effort: draftEffort } : {}),
         });
         chatSessionsChanged();
         window.location.replace(projectHref(key, "chat", created.id));
@@ -415,10 +420,11 @@ export function SessionView({
     window.location.assign(projectHref(key, "coordinator"));
   };
 
-  const update = (changes: { model?: string; mode?: ChatMode }): void => {
+  const update = (changes: { model?: string; mode?: ChatMode; effort?: ChatEffort }): void => {
     if (draft) {
       if (changes.model) setDraftModel(changes.model);
       if (changes.mode) setDraftMode(changes.mode);
+      if (changes.effort) setDraftEffort(changes.effort);
       return;
     }
     chat.update(key, sessionId, changes).catch((e: unknown) => setActionError(message(e)));
@@ -630,12 +636,14 @@ export function SessionView({
           canStop={canStop}
           model={draft ? draftModel : (session?.model ?? null)}
           mode={draft ? draftMode : (session?.mode ?? "default")}
+          effort={draft ? draftEffort : (session?.effort ?? "default")}
           autoFocusKey={sessionId}
           initialText={seed.n > 0 ? seed.text : initialText}
           onSend={send}
           onStop={interrupt}
           onModel={(model) => update({ model })}
           onMode={(mode) => update({ mode })}
+          {...(hasEffort ? { onEffort: (effort: ChatEffort) => update({ effort }) } : {})}
           modes={modes}
           loadModels={loadModels}
           loadMentions={loadMentions}
