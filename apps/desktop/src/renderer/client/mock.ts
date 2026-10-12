@@ -99,6 +99,7 @@ const FULL_CAPABILITIES = [
   "chat-export",
   "diagnostics",
   "gate-drafts",
+  "run-compare",
   "coordinator",
 ];
 /** What a backend from before the optional capability groups answers. */

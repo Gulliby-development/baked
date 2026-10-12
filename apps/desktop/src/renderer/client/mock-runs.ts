@@ -4,8 +4,10 @@ import type { SavedEstimate, Spec, TaskGraph } from "../screens/runs/model.js";
 import { type MockRoute, type MockStream, response } from "./mock-routes.js";
 import type {
   ArtifactEntry,
+  ComparedRun,
   EventPayloads,
   EventType,
+  RunComparison,
   RunDetailStatus,
   RunRequest,
   RunUsage,
@@ -140,7 +142,7 @@ function usageTotals(): MockRun {
   const log = new Log(runId, 14);
   log.add("run.created", { featureId: "usage-totals" }, 0);
   log.add("run.state_changed", { from: "created", to: "running", reason: "none", revision: 1 }, 1);
-  log.stage("research", "claude-sonnet-5-5");
+  log.stage("research", "provider/model-b");
   log.stage("specify", "claude-opus-5-5");
   log.add("artifact.committed", { artifactId: `${runId}-a1`, kind: "spec", hash: DIGEST }, 2);
   log.stage("plan", "claude-opus-5-5");
@@ -298,10 +300,10 @@ function headlessJson(): MockRun {
   log.add("run.created", { featureId: "headless-json" }, 0);
   log.add("run.state_changed", { from: "created", to: "running", reason: "none", revision: 1 }, 1);
   for (const id of ["research", "specify", "plan", "analyze"])
-    log.stage(id, id === "plan" ? "claude-opus-5-5" : "claude-sonnet-5-5");
+    log.stage(id, id === "plan" ? "claude-opus-5-5" : "provider/model-b");
   log.stage("approve", null);
   log.add("request.decided", { requestId: "req-hj-approval", status: "accepted", actor: "user" });
-  log.stage("implement", "claude-sonnet-5-5", "running");
+  log.stage("implement", "provider/model-b", "running");
   log.task("T001", "running", 5);
   log.task("T001", "implemented", 120);
   log.add("check.finished", { checkId: "typecheck", evidenceId: "ev-1", status: "passed" }, 20);
@@ -377,7 +379,7 @@ function headlessJson(): MockRun {
         }),
       },
     ],
-    usage: usage(["research", "specify", "plan", "analyze", "implement"], ["claude-sonnet-5-5"]),
+    usage: usage(["research", "specify", "plan", "analyze", "implement"], ["provider/model-b"]),
   };
 }
 
@@ -413,8 +415,8 @@ function settingsDarkMode(): MockRun {
   const log = new Log(runId, 180);
   log.add("run.created", { featureId: "settings-dark-mode" }, 0);
   log.add("run.state_changed", { from: "created", to: "running", reason: "none", revision: 1 }, 1);
-  for (const id of SDD.slice(0, 5)) log.stage(id, id === "approve" ? null : "claude-sonnet-5-5");
-  log.stage("implement", "claude-sonnet-5-5", "running");
+  for (const id of SDD.slice(0, 5)) log.stage(id, id === "approve" ? null : "provider/model-b");
+  log.stage("implement", "provider/model-b", "running");
   for (const id of ["T001", "T002", "T003"]) {
     log.task(id, "running", 5);
     log.task(id, "verified", 200);
@@ -452,7 +454,7 @@ function settingsDarkMode(): MockRun {
   ] as const)
     log.add("criterion.assessed", { criterionId, snapshotId: "snap-2", verdict }, 4);
   log.add("finding.recorded", { findingId: "F7", artifactId: `${runId}-a6` }, 2);
-  log.stage("learn", "claude-sonnet-5-5");
+  log.stage("learn", "provider/model-b");
   log.add(
     "run.state_changed",
     { from: "running", to: "completed", reason: "none", revision: 31 },
@@ -684,7 +686,7 @@ function settingsDarkMode(): MockRun {
     ],
     usage: usage(
       SDD.filter((s) => s !== "approve" && s !== "checks"),
-      ["claude-sonnet-5-5", "gpt-5.1"],
+      ["provider/model-b", "gpt-5.1"],
     ),
   };
 }
@@ -705,12 +707,7 @@ function themeContrast(): MockRun {
     "checks",
     "review",
   ])
-    log.stage(
-      id,
-      id === "approve" || id === "checks" ? null : "claude-sonnet-5-5",
-      "completed",
-      60,
-    );
+    log.stage(id, id === "approve" || id === "checks" ? null : "provider/model-b", "completed", 60);
   log.stage("converge", "claude-opus-5-5", "waiting");
   log.add(
     "criterion.assessed",
@@ -794,7 +791,7 @@ function themeContrast(): MockRun {
         }),
       },
     ],
-    usage: usage(["research", "specify", "plan", "review", "converge"], ["claude-sonnet-5-5"]),
+    usage: usage(["research", "specify", "plan", "review", "converge"], ["provider/model-b"]),
   };
 }
 
@@ -807,7 +804,7 @@ function localeValidation(): MockRun {
   for (const id of ["research", "specify", "plan", "analyze", "approve", "implement", "checks"])
     log.stage(
       id,
-      id === "approve" || id === "checks" ? null : "claude-sonnet-5-5",
+      id === "approve" || id === "checks" ? null : "provider/model-b",
       "completed",
       200,
     );
@@ -831,7 +828,7 @@ function localeValidation(): MockRun {
       artifact(runId, 4, "estimates/start.json", "estimate", estimate(600_000, 300_000, 520_000)),
       artifact(runId, 5, "routing.json", "routing", {
         schemaVersion: 1,
-        runModel: "claude-sonnet-5-5",
+        runModel: "provider/model-b",
         profiles: {},
         stages: { review: { model: "gpt-5.1", source: "route override review" } },
       }),
@@ -839,7 +836,7 @@ function localeValidation(): MockRun {
     requests: [],
     usage: usage(
       ["research", "specify", "plan", "implement", "review"],
-      ["claude-sonnet-5-5", "gpt-5.1"],
+      ["provider/model-b", "gpt-5.1"],
     ),
   };
 }
@@ -856,8 +853,8 @@ function cacheWarmup(): MockRun {
   const log = new Log(runId, 90);
   log.add("run.created", { featureId: "cache-warmup" }, 0);
   for (const id of ["research", "specify", "plan", "analyze", "approve"])
-    log.stage(id, id === "approve" ? null : "claude-sonnet-5-5", "completed", 120);
-  log.stage("implement", "claude-sonnet-5-5", "running");
+    log.stage(id, id === "approve" ? null : "provider/model-b", "completed", 120);
+  log.stage("implement", "provider/model-b", "running");
   log.add("request.created", { requestId: "req-cache-recovery", kind: "recovery", digest: DIGEST });
   log.add(
     "run.state_changed",
@@ -889,7 +886,7 @@ function cacheWarmup(): MockRun {
         }),
       },
     ],
-    usage: usage(["research", "specify", "plan", "implement"], ["claude-sonnet-5-5"]),
+    usage: usage(["research", "specify", "plan", "implement"], ["provider/model-b"]),
     worktree: worktreeOf(runId),
   };
 }
@@ -900,7 +897,7 @@ function exportCsv(): MockRun {
   const log = new Log(runId, 600);
   log.add("run.created", { featureId: "export-csv" }, 0);
   for (const id of ["research", "specify", "plan", "analyze", "approve", "implement"])
-    log.stage(id, id === "approve" ? null : "claude-sonnet-5-5", "completed", 150);
+    log.stage(id, id === "approve" ? null : "provider/model-b", "completed", 150);
   log.stage("checks", null, "failed");
   log.add(
     "run.state_changed",
@@ -921,7 +918,7 @@ function exportCsv(): MockRun {
       artifact(runId, 4, "estimates/start.json", "estimate", estimate(600_000, 300_000, 520_000)),
     ],
     requests: [],
-    usage: usage(["research", "specify", "plan", "implement"], ["claude-sonnet-5-5"]),
+    usage: usage(["research", "specify", "plan", "implement"], ["provider/model-b"]),
     worktree: worktreeOf(runId),
   };
 }
@@ -1046,7 +1043,7 @@ export function addStartedRun(key: string, runId: string, featureId: string, sta
   if (key !== PROJECT || find(runId)) return;
   const log = new Log(runId, 0);
   log.add("run.created", { featureId }, 0);
-  log.stage(stageId, "claude-sonnet-5-5", "running");
+  log.stage(stageId, "provider/model-b", "running");
   all().unshift({
     runId,
     featureId,
@@ -1287,6 +1284,51 @@ function mockReport(run: MockRun): string {
   ].join("\n");
 }
 
+/** `GET /v1/workflow/compare`: run A on the default routes, B with its stages routed elsewhere. */
+function mockCompare(a: MockRun, b: MockRun): RunComparison {
+  const side = (run: MockRun, model: string): ComparedRun => ({
+    runId: run.runId,
+    featureId: run.featureId,
+    workflowId: "sdd",
+    status: run.status,
+    reason: run.reason,
+    routes: [{ target: "run", model }],
+    tokens: run.tokenUsage,
+    costUsd: run.tokenUsage / 330_000,
+    activeMs: run.activeMs,
+    agentCalls: run.usage.attempts.length,
+    repairRounds: 0,
+    correctiveTasks: 0,
+    stages: run.usage.stages,
+    models: run.usage.models.map((m) => ({ model: m.model, tokens: m.tokens })),
+    checks: { passed: 3, failed: run.status === "failed" ? 1 : 0 },
+    findings: { critical: 0, high: 0, medium: 1, low: 2 },
+    openFindings: 0,
+    limitations: 0,
+  });
+  const left = side(a, "provider/model-a");
+  const right = side(b, "provider/model-b");
+  const stages = [...new Set([...left.stages, ...right.stages].map((s) => s.stage))];
+  return {
+    a: left,
+    b: right,
+    sameFeature: a.featureId === b.featureId,
+    sameWorkflow: true,
+    routeDifferences: [{ target: "run", a: "provider/model-a", b: "provider/model-b" }],
+    stages: stages.map((stage) => ({
+      stage,
+      a: left.stages.find((s) => s.stage === stage)?.tokens ?? null,
+      b: right.stages.find((s) => s.stage === stage)?.tokens ?? null,
+    })),
+    delta: {
+      tokens: right.tokens - left.tokens,
+      costUsd: (right.costUsd ?? 0) - (left.costUsd ?? 0),
+      activeMs: right.activeMs - left.activeMs,
+    },
+    markdown: `# Run comparison: ${a.runId} (A) and ${b.runId} (B)\n`,
+  };
+}
+
 const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
   if (key !== PROJECT) return undefined;
   if (method === "GET" && path === "/v1/workflow/runs") {
@@ -1299,6 +1341,13 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
   }
   // Workflow definitions come from the start screen's fixtures, which carry the full summary
   // (problems, execution) the New run form reads; their `sdd` stages match `SDD`.
+  if (method === "GET" && path === "/v1/workflow/compare") {
+    const a = find(query.get("a") ?? "");
+    const b = find(query.get("b") ?? "");
+    if (!a || !b)
+      return response(404, { error: { code: "NOT_FOUND", message: "No such run in the mock" } });
+    return response(200, mockCompare(a, b));
+  }
   if (method === "POST" && path === "/v1/workflow/gc") return gc(body as GcBody);
   if (method === "POST" && path === "/v1/workflow/import")
     return importCandidate(body as ImportBody);
