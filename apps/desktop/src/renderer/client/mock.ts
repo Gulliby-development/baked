@@ -164,6 +164,7 @@ export function createMockBridge(): DesktopBridge {
             "provider-switch",
             "chat-export",
             "diagnostics",
+            "gate-drafts",
           ],
         });
       const url = new URL(path, "http://mock");

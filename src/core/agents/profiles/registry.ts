@@ -77,6 +77,7 @@ export class ProfileRegistry {
       "app_stop",
       "terminal_send",
       "terminal_read",
+      "command_run",
       "browser_open",
       "browser_snapshot",
       "browser_click",

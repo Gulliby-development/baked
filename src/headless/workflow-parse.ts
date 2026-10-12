@@ -37,6 +37,7 @@ const commands = [
   "validate",
   "define",
   "gates",
+  "gate",
   "deliver",
   "discard-worktree",
   "route",
@@ -123,9 +124,13 @@ const flags = new Set([
   "output",
   "text",
   "provider",
+  "kind",
+  "id",
+  "save",
 ]);
 const booleanFlags = new Set([
   "all",
+  "save",
   "model-strict",
   "json",
   "events",
@@ -242,6 +247,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   validate: ["file"],
   define: ["from"],
   gates: ["all"],
+  gate: ["text", "kind", "id", "model", "save", "file", "json"],
   deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
@@ -347,7 +353,8 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !result.flags.help &&
     result.command !== "run" &&
     result.command !== "quick" &&
-    result.command !== "gates"
+    result.command !== "gates" &&
+    result.command !== "gate"
   ) {
     const count =
       ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
@@ -489,6 +496,11 @@ validate (ID | --file FILE)   check a definition against the gate library; exit 
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
 gates                     list the gate library with each gate's source and what it shadows
 gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
+gate new "TEXT" [--kind command|ai-acceptance] [--id ID] [--model ID] [--save] [--json]
+  draft a gate from a sentence: a command gate for an exact check, a terminal AI walk-through
+  for a judged one; prints the draft and what it may do, and writes it only with --save
+gate save --file DRAFT.json   save a draft printed by gate new --json (confirms it)
+gate list [--json]   |   gate show ID [--json]   the gate library in words
 profiles [--model ID]     artifacts RUN_ID [--file ARTIFACT_ID]
 route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
   show the model each stage and profile would use and where each choice comes from

@@ -286,9 +286,9 @@ A model starts the application and walks a user scenario. The result of the walk
 
 ### 9.1 Definition
 
-An `ai-acceptance` gate holds a plain language scenario (steps and expected observations), how to start the application (executable, argv, cwd, env names, a readiness signal), the driver (`browser` or `terminal`), the capabilities it may use and the promotion target. The example is [ai-acceptance-gate.json](examples/ai-acceptance-gate.json).
+An `ai-acceptance` gate holds a plain language scenario (steps and expected observations), how to start the application (executable, argv, cwd, env names, a readiness signal), for the terminal driver optional one-shot `commands` (up to 20 argvs without a shell, run in order with `command_run`), the driver (`browser` or `terminal`), the capabilities it may use and the promotion target. The example is [ai-acceptance-gate.json](examples/ai-acceptance-gate.json).
 
-Rules enforced by `validateGate`: `required` must be `false` ("an AI walk-through is advisory until its test is promoted"), the scope is the whole result, ports need `spawnApp`, outbound hosts are exact names (no wildcards), the promoted gate has its own ID, and the schema rejects unknown capabilities and privileged ports.
+Rules enforced by `validateGate`: `required` must be `false` ("an AI walk-through is advisory until its test is promoted"), the scope is the whole result, ports need `spawnApp`, outbound hosts are exact names (no wildcards), the promoted gate has its own ID, `commands` need the terminal driver, and the schema rejects unknown capabilities and privileged ports.
 
 ### 9.2 Capabilities
 

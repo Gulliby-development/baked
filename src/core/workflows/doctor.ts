@@ -291,6 +291,15 @@ function commandChecks(
         cwd: gate.acceptance.start.cwd,
         required: true,
       });
+  for (const gate of prepared.gates)
+    if (gate.type === "ai-acceptance")
+      for (const [index, command] of (gate.acceptance.commands ?? []).entries())
+        commands.push({
+          id: `${gate.id} (command ${index + 1})`,
+          executable: command.executable,
+          cwd: gate.acceptance.start.cwd,
+          required: true,
+        });
   return commands.map((command): DoctorCheck => {
     const cwd = command.cwd === "." ? workspace : join(workspace, command.cwd);
     const severity = command.required ? "fail" : "warn";

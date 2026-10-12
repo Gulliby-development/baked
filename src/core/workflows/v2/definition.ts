@@ -52,6 +52,9 @@ const PathPattern = z
 
 // --- Gates -----------------------------------------------------------------------------------
 
+/** The most one-shot commands a terminal walk-through declares. */
+export const MAX_ACCEPTANCE_COMMANDS = 20;
+
 const GateCommon = {
   schemaVersion: z.literal(1),
   id: SafeId,
@@ -165,6 +168,21 @@ export const AiAcceptanceGate = z
               .strict(),
           })
           .strict(),
+        /**
+         * Terminal driver: one-shot commands the walk-through runs in order with `command_run`,
+         * each an argv without a shell, in `start.cwd` with `start.envNames`.
+         */
+        commands: z
+          .array(
+            z
+              .object({
+                executable: z.string().min(1).max(512),
+                args: z.array(z.string().max(2048)),
+              })
+              .strict(),
+          )
+          .max(MAX_ACCEPTANCE_COMMANDS)
+          .optional(),
         driver: z.enum(["browser", "terminal"]),
         /** Everything is denied unless listed. These are the only grants the walk-through receives. */
         capabilities: z
@@ -209,6 +227,8 @@ export function validateGate(gate: Gate): string[] {
       errors.push(`${gate.id}: ports need spawnApp`);
     if (grants.outboundHosts.some((h) => h.includes("*")))
       errors.push(`${gate.id}: outbound hosts must be exact`);
+    if (gate.acceptance.commands?.length && gate.acceptance.driver !== "terminal")
+      errors.push(`${gate.id}: commands run only with the terminal driver`);
     if (gate.acceptance.promote.commandGateId === gate.id)
       errors.push(`${gate.id}: the promoted gate needs its own ID`);
     // The walk-through and its test never touch run state, Git metadata or definitions.

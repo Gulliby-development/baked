@@ -31,11 +31,13 @@ import {
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
+import { recordedSteps } from "../core/workflows/v2/acceptance-gate.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
 import { readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
+import { executeGateCommand } from "./workflow-gate.js";
 import { runInitiativeCli } from "./workflow-initiative.js";
 import { formatWorkflowModels, workflowModels } from "./workflow-models.js";
 import {
@@ -159,6 +161,25 @@ export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): 
     out.push("", `Forgotten (${String(view.hidden.length)}):`, ...view.hidden.map((e) => line(e)));
   return `${out.join("\n")}\n`;
 }
+/** AI walk-throughs of a run: their phase, verdict, recorded steps and generated test. */
+function walkThroughs(store: NativeWorkflowService["store"], runId: string) {
+  return Object.fromEntries(
+    Object.entries(store.state(runId).acceptance ?? {}).map(([gateId, entry]) => [
+      gateId,
+      {
+        ...entry,
+        steps: entry?.attemptId
+          ? recordedSteps(store, runId, gateId, entry.attemptId).map((s) => ({
+              stepId: s.stepId,
+              action: s.action,
+              observation: s.observation,
+              expectationIds: s.expectationIds,
+            }))
+          : [],
+      },
+    ]),
+  );
+}
 export async function executeWorkflowCommand(
   service: NativeWorkflowService,
   args: WorkflowArgs,
@@ -265,6 +286,7 @@ export async function executeWorkflowCommand(
         requests: service.store.requests(runId),
         worktree: worktreeView(service.workspace, service.store.state(runId)),
         routing: readRoutingSummary(service.store, runId),
+        acceptance: walkThroughs(service.store, runId),
       };
     case "list":
       return service.list({
@@ -536,6 +558,15 @@ export async function executeWorkflowCommand(
         service.store.workspace,
         PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy),
       ).result;
+    case "gate":
+      return (
+        await executeGateCommand(
+          args,
+          service.store.workspace,
+          service.config,
+          PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy),
+        )
+      ).result;
     case "route":
       return explainRoute(service.workspace, service.config, routeRequest(args, service.config));
     case "models": {
@@ -640,6 +671,16 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
         args.flags.json ? `${JSON.stringify(estimate, null, 2)}\n` : formatEstimate(estimate),
       );
       return 0;
+    }
+    if (args.command === "gate") {
+      const { result, text, exitCode } = await executeGateCommand(
+        args,
+        cwd,
+        config,
+        PolicySchema.parse(config.workflows?.policy ?? defaultWorkflowPolicy),
+      );
+      process.stdout.write(args.flags.json ? `${JSON.stringify(result, null, 2)}\n` : text);
+      return exitCode;
     }
     if ((DEFINITION_COMMANDS as readonly string[]).includes(args.command)) {
       const { result, exitCode } = executeDefinitionCommand(
