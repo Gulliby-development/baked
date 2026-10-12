@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 export const PROJECT_SECTIONS = [
   "overview",
   "chat",
+  "coordinator",
   "runs",
   "initiatives",
   "usage",

@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import type { DesktopProject } from "../../shared/api.js";
 import type { ProjectSection } from "../router.js";
 import { ChatSection } from "./chat/ChatSection.js";
+import { CoordinatorSection } from "./coordinator/CoordinatorSection.js";
 import { GitSection } from "./git/GitSection.js";
 import { GraphSection } from "./graph/GraphSection.js";
 import { InitiativesSection } from "./insights/InitiativesSection.js";
@@ -29,6 +30,7 @@ export interface SectionProps {
 export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<SectionProps>>> = {
   overview: ProjectHome,
   chat: ChatSection,
+  coordinator: CoordinatorSection,
   runs: RunsView,
   gates: GatesSection,
   instructions: InstructionsSection,

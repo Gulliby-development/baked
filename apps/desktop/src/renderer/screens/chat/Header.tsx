@@ -39,6 +39,8 @@ const STATE_TONE: Record<SessionState, DotTone> = { idle: "", working: "busy", w
 export interface ChatManageControl {
   canExport: boolean;
   deleteDisabled: string | null;
+  /** Sends the chat's request to the project coordinator; absent when the backend has none. */
+  handOff?: () => Promise<void>;
 }
 
 function SessionMenu({
@@ -138,6 +140,17 @@ function ChatActions({
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const handOff = (run: () => Promise<void>): void => {
+    setSaving(true);
+    setNote(null);
+    run().then(
+      () => setSaving(false),
+      (e: unknown) => {
+        setSaving(false);
+        setNote(`Hand-off failed: ${e instanceof Error ? e.message : String(e)}`);
+      },
+    );
+  };
   const save = (format: ChatExportFormat): void => {
     setSaving(true);
     setNote(null);
@@ -170,6 +183,18 @@ function ChatActions({
             {label}
           </button>
         ))}
+      {manage.handOff && (
+        <button
+          type="button"
+          className={MENU_ITEM}
+          disabled={saving}
+          title="Send this chat's request to the project coordinator and open it"
+          onClick={() => manage.handOff && handOff(manage.handOff)}
+        >
+          <Icon name="coordinator" size={13} />
+          Hand to coordinator
+        </button>
+      )}
       {note && (
         <p className={cn(MENU_NOTE, "break-all")} role="status">
           {note}
@@ -551,10 +576,13 @@ export function ChatHeader({
   compact,
   rewind,
   manage,
+  coordinator = false,
 }: {
   project: DesktopProject;
   title: string;
   sessionId: string | null;
+  /** The project coordinator: one conversation, so no chat switcher and no New chat. */
+  coordinator?: boolean;
   context?: ContextFill | null;
   usage?: Usage;
   model?: string | null;
@@ -577,7 +605,11 @@ export function ChatHeader({
       <span className="text-[var(--line-strong)]" aria-hidden="true">
         /
       </span>
-      <SessionMenu project={project} title={title} currentId={sessionId} manage={manage} />
+      {coordinator ? (
+        <h1 className="m-0 px-2 text-[15px] font-bold truncate">{title}</h1>
+      ) : (
+        <SessionMenu project={project} title={title} currentId={sessionId} manage={manage} />
+      )}
       <div className="ml-auto flex flex-wrap gap-[6px] [@media(max-width:720px)]:ml-0">
         {usage && (
           <ContextChip
@@ -590,7 +622,7 @@ export function ChatHeader({
         {diff ? <DiffChip diff={diff} /> : filesEdited && <FilesChip files={filesEdited} />}
         <WorkingSetChip project={project} />
         {rewind && <RewindChips rewind={rewind} />}
-        {sessionId !== null && (
+        {sessionId !== null && !coordinator && (
           <a className={CHIP} href={projectHref(project.key, "chat", "new")}>
             <Icon name="new" size={13} />
             New chat
