@@ -24,6 +24,22 @@ function runInWorktree(store: WorkflowStore, runId: string | null): boolean {
     return false;
   }
 }
+/**
+ * The execution lease a run holds while it executes: its own (`execution:` and the run id) when it
+ * runs in a worktree, so worktree runs execute side by side, otherwise the workspace-wide one.
+ */
+export function executionLeaseFor(store: WorkflowStore, runId: string): LeaseResource {
+  return runInWorktree(store, runId) ? `execution:${runId}` : "execution";
+}
+export function isExecutionLease(resource: string): boolean {
+  return resource === "execution" || resource.startsWith("execution:");
+}
+/** The execution leases whose owner may still be alive: the runs executing in this workspace. */
+export function executingLeases(store: WorkflowStore): LeaseRow[] {
+  return store
+    .leases()
+    .filter((lease) => isExecutionLease(lease.resource) && leaseOwnerAlive(lease) !== false);
+}
 /** The execution lease when it blocks edits of the project working copy, otherwise null. */
 function blockingExecution(store: WorkflowStore): LeaseRow | null {
   const execution = store.lease("execution");
@@ -137,14 +153,23 @@ export class WorkspaceLeases {
   /**
    * Takes a lease. An isolated lease (a task worktree of a run with several writers) is renewed
    * with the others, but losing it aborts only `signalOf(resource)`, so one lost task does not
-   * stop the tasks beside it.
+   * stop the tasks beside it. `maxExecuting` caps an execution lease: it is refused while that
+   * many other runs already execute in the workspace.
    */
   acquire(
     resource: LeaseRow["resource"],
     runId: string | null,
-    options: { isolated?: boolean } = {},
+    options: { isolated?: boolean; maxExecuting?: number } = {},
   ): void {
     this.store.transaction(() => {
+      if (options.maxExecuting !== undefined && isExecutionLease(resource)) {
+        const others = executingLeases(this.store).filter((lease) => lease.run_id !== runId);
+        if (others.length >= options.maxExecuting)
+          throw new WorkflowFault(
+            "WORKSPACE_BUSY",
+            `${others.length} run${others.length === 1 ? " is" : "s are"} already executing in this workspace (workflows.maxParallelRuns is ${options.maxExecuting}): ${others.map((lease) => lease.run_id ?? lease.owner_id).join(", ")}`,
+          );
+      }
       const previous = this.store.lease(resource);
       if (previous?.owner_id === this.owner && previous.run_id !== runId)
         throw new WorkflowFault("WORKSPACE_BUSY", "Another run is executing in this service");

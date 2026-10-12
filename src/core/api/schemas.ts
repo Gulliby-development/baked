@@ -268,6 +268,25 @@ export const EditorSaveBody = z.strictObject({
   /** The first characters of the auto approval limits hash, when the review asked for them. */
   confirm: z.string().max(200).optional(),
 });
+/** `POST /v1/workflow/runs/:id/export`: a new directory, relative to the workspace. */
+export const ExportBody = z.strictObject({ destination: z.string().min(1).max(500).optional() });
+export const RedactBody = z.strictObject({
+  artifactId: SafeId,
+  reason: z.string().trim().min(1).max(500),
+});
+export const GcBody = z.strictObject({
+  before: z.string().refine((value) => Number.isFinite(Date.parse(value)), {
+    message: "Expected an ISO date",
+  }),
+  dryRun: z.boolean().optional(),
+});
+export const ImportBody = z.strictObject({
+  source: z.enum(["spec-kit", "ecc", "markdown-edit"]),
+  /** A local directory, relative to the workspace or absolute. */
+  path: z.string().min(1).max(1000),
+  featureId: SafeId,
+  commandId: SafeId.optional(),
+});
 export const RouteQuery = z.strictObject({
   workflow: SafeId.optional(),
   model: z.string().min(1).optional(),
