@@ -29,6 +29,14 @@ export const LaunchedEntrySchema = z.strictObject({
   id: z.string().trim().min(1).max(200),
   why: Line,
   status: z.string().trim().min(1).max(200),
+  /** The task the item belongs to: an issue (`owner/name#N`) or a local task without GitHub. */
+  task: z
+    .strictObject({
+      ref: z.string().trim().min(1).max(200),
+      url: z.string().url().max(500).optional(),
+      state: z.enum(["open", "closed", "local"]),
+    })
+    .optional(),
 });
 export type LaunchedEntry = z.infer<typeof LaunchedEntrySchema>;
 
@@ -77,7 +85,8 @@ export function renderBrief(brief: BriefContent): string {
       ? [
           "### Launched work",
           ...brief.launched.map(
-            (l, i) => `${i}. ${l.kind} ${l.id} [${l.status}]: ${l.why.replace(/\s+/g, " ")}`,
+            (l, i) =>
+              `${i}. ${l.kind} ${l.id}${l.task ? ` (task ${l.task.ref}, ${l.task.state})` : ""} [${l.status}]: ${l.why.replace(/\s+/g, " ")}`,
           ),
           "",
         ]
@@ -158,7 +167,7 @@ export class BriefStore {
 export function coordinatorInstructions(brief: ProjectBrief): string {
   return [
     "## Project coordinator",
-    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: start them with launch_session, start_run or start_initiative, one line of why each. When a request is large, propose_split it into flows with clear boundaries and let the user approve the split as one card instead of starting the pieces one by one; you cannot edit files or run commands here, and you never answer the approvals of what you launched. Answer questions about what is running or waiting with the project_state tool (start with its overview) rather than from memory.",
+    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: start them with launch_session, start_run or start_initiative, one line of why each. When a request is large, propose_split it into flows with clear boundaries and let the user approve the split as one card instead of starting the pieces one by one. Every flow belongs to a task: give a flow the GitHub issue it does, or leave it out and approving the split creates one; when the user names issues to run, start_run with that issue or propose_split flows that name them; you cannot edit files or run commands here, and you never answer the approvals of what you launched. Answer questions about what is running or waiting with the project_state tool (start with its overview) rather than from memory.",
     `Keep the project brief current with the ${BRIEF_TOOL} tool: record decisions the user makes, project conventions, work you or the user launched with its id and status, and open questions. Keep each entry to one line, remove entries that no longer hold, and never repeat what the brief already says. The brief survives compaction and restarts; the conversation does not.`,
     `### Project brief (revision ${brief.revision})`,
     renderBrief(brief),

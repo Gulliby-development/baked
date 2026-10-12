@@ -29,6 +29,7 @@ import type { Server } from "bun";
 import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
+import { githubTasks, type TaskTracker } from "../chat/coordinator-launch.js";
 import { BakeChatHost } from "../chat/host.js";
 import { serviceStateSource } from "../chat/project-state.js";
 import { scriptedHostFromEnv } from "../chat/scripted-host.js";
@@ -182,6 +183,8 @@ export interface ApiServerOptions {
   lspDiagnose?: LspRouteContext["diagnose"];
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
+  /** The GitHub issues the coordinator's flows belong to; tests pass a fake one. */
+  tasks?: TaskTracker;
   /** Drafts gates from a sentence; tests pass a scripted model. */
   gateDraftModel?: DraftModel;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -445,14 +448,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     {
       // The coordinator starts work through the same paths as POST /v1/workflow/runs and
       // /v1/initiatives; approvals stay with the person.
-      startRun: async ({ prompt, workflow, feature, worktree }) =>
+      startRun: async ({ prompt, workflow, feature, worktree, issue }) =>
         launch(
           startArgs({
             commandId: crypto.randomUUID(),
             prompt,
-            feature:
-              feature ??
-              uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
+            // From an issue without a feature, the core names the feature after the issue.
+            ...(issue
+              ? { issue, ...(feature ? { feature } : {}) }
+              : {
+                  feature:
+                    feature ??
+                    uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
+                }),
             owner: "Coordinator",
             ...(workflow ? { workflow } : {}),
             ...(worktree ? { worktree: true } : {}),
@@ -479,6 +487,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         driveInitiative(view.initiativeId);
         return view;
       },
+      tasks: options.tasks ?? githubTasks(service.workspace, service.config),
     },
   );
   const graphCache = new CodeGraphCache(service.workspace);
