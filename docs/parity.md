@@ -122,7 +122,7 @@ bun test tests/feature-parity.test.ts
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
-| Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): export-progress only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
+| Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | `/v1/workflow/import`, `/v1/workflow/runs/:id/export`, `/v1/workflow/gc` +2 | `project/runs` |
 
 ### Initiatives
 
@@ -164,7 +164,7 @@ bun test tests/feature-parity.test.ts
 - [#152](https://github.com/Gulliby-development/baked/issues/152): Project coordinator chat with a durable project brief
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Import, export, gc and redact runs
+- [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
 
