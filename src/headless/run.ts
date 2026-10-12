@@ -42,6 +42,7 @@ import {
   writeEvent,
   writeMarkdown,
 } from "./output.js";
+import { followProgress } from "./progress.js";
 import type { HeadlessChatOptions, HeadlessEvent, HeadlessRunOptions } from "./types.js";
 
 interface AgentEnv {
@@ -150,7 +151,8 @@ async function setupAgent(
   contextManager.setContextWindow(providerOpts.contextWindow);
   if (!repoMapDisabled && !contextManager.isRepoMapReady()) {
     if (showProgress) stderrDim("Waiting for Baked Map…");
-    const ready = await contextManager.waitForRepoMap(30_000);
+    const stopFollowing = showProgress ? followProgress(stderrDim) : () => {};
+    const ready = await contextManager.waitForRepoMap(30_000).finally(stopFollowing);
     if (!ready && showProgress) {
       stderrDim("⚠ Baked Map not ready — proceeding without code-map tools.");
     }

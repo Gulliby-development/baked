@@ -13,8 +13,8 @@ import { cn } from "../../lib/cn.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
-import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
-import type { Transcript, TranscriptPrompt } from "./transcript.js";
+import { type ToolDiff, toolDiff, toolIcon, toolTitle } from "./tools.js";
+import { type Transcript, type TranscriptPrompt, turnEnds } from "./transcript.js";
 
 /** Tools the agent uses for its own bookkeeping; they say nothing to the person. */
 const HIDDEN_TOOLS = new Set(["final_response"]);
@@ -62,12 +62,12 @@ function Status({ call }: { call: ToolCall }) {
       </span>
     );
   return call.result.success ? (
-    <span className="text-[var(--ok)]" role="img" aria-label="Done">
-      ✓
+    <span className="flex text-[var(--ok)]" role="img" aria-label="Done">
+      <Icon name="ok" size={13} />
     </span>
   ) : (
-    <span className="text-[var(--err)]" role="img" aria-label="Failed">
-      ✕
+    <span className="flex text-[var(--err)]" role="img" aria-label="Failed">
+      <Icon name="failed" size={13} />
     </span>
   );
 }
@@ -99,6 +99,7 @@ function ToolLine({ call }: { call: ToolCall }) {
       >
         <Chevron open={open} />
         <Status call={call} />
+        <Icon name={toolIcon(call.name)} size={13} className="flex-none text-dim-foreground" />
         <Title call={call} />
       </button>
       {open && (
@@ -122,6 +123,7 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
     >
       <figcaption className="flex items-center gap-[10px] px-3 py-[10px] text-[13px] font-semibold text-muted-foreground border-b-2 border-b-border">
         <Status call={call} />
+        <Icon name="edit" size={13} className="flex-none text-dim-foreground" />
         <span className="font-mono text-soft-foreground min-w-0 truncate">{diff.path}</span>
         {diff.created && <span className="text-dim-foreground">new file</span>}
         <span className="font-mono ml-auto text-[var(--ok)]">+{diff.added}</span>
@@ -236,17 +238,21 @@ function Assistant({
 const FORK_ROW =
   "m-0 flex flex-wrap items-center gap-2 border-0 p-0 text-[13px] text-dim-foreground";
 const FORK_LINK =
-  "cursor-pointer border-0 bg-transparent p-0 [font-family:inherit] [font-size:inherit] leading-[inherit] text-dim-foreground underline hover:text-foreground disabled:cursor-default disabled:opacity-50";
+  "inline-flex items-center gap-1 cursor-pointer border-0 bg-transparent p-0 [font-family:inherit] [font-size:inherit] leading-[inherit] text-dim-foreground underline hover:text-foreground disabled:cursor-default disabled:opacity-50";
 
-function ForkAction({
+/** Fork from here and, at the end of an earlier turn, Rewind to here. */
+function TurnActions({
   disabled,
   onFork,
+  rewindTo,
 }: {
   disabled: boolean;
-  onFork: (rollbackFiles: boolean) => void;
+  onFork?: ((rollbackFiles: boolean) => void) | undefined;
+  /** Undoes the chat to the end of this turn; absent where a rewind cannot go. */
+  rewindTo?: (() => void) | undefined;
 }) {
-  const [open, setOpen] = useState(false);
-  if (!open)
+  const [open, setOpen] = useState<"fork" | "rewind" | null>(null);
+  if (open === null)
     return (
       <div
         className={cn(
@@ -254,19 +260,55 @@ function ForkAction({
           "opacity-0 transition-opacity duration-[120ms] group-hover/turn:opacity-100 focus-within:opacity-100",
         )}
       >
-        <button
-          type="button"
-          className={FORK_LINK}
-          disabled={disabled}
-          onClick={() => setOpen(true)}
-        >
-          Fork from here
-        </button>
+        {onFork && (
+          <button
+            type="button"
+            className={FORK_LINK}
+            disabled={disabled}
+            onClick={() => setOpen("fork")}
+          >
+            <Icon name="fork" size={12} />
+            Fork from here
+          </button>
+        )}
+        {rewindTo && (
+          <button
+            type="button"
+            className={FORK_LINK}
+            disabled={disabled}
+            onClick={() => setOpen("rewind")}
+          >
+            <Icon name="rewind" size={12} />
+            Rewind to here
+          </button>
+        )}
       </div>
     );
+  if (open === "rewind")
+    return (
+      <fieldset className={FORK_ROW} aria-label="Rewind to here">
+        <span>
+          Drop the later turns from this chat and restore the files they edited? Redo brings them
+          back until you send a new message.
+        </span>
+        <Button
+          variant="primary"
+          size="md"
+          onClick={() => {
+            setOpen(null);
+            rewindTo?.();
+          }}
+        >
+          Rewind
+        </Button>
+        <button type="button" className={FORK_LINK} onClick={() => setOpen(null)}>
+          Cancel
+        </button>
+      </fieldset>
+    );
   const pick = (rollbackFiles: boolean) => {
-    setOpen(false);
-    onFork(rollbackFiles);
+    setOpen(null);
+    onFork?.(rollbackFiles);
   };
   return (
     <fieldset className={FORK_ROW} aria-label="Fork from here">
@@ -277,7 +319,7 @@ function ForkAction({
       <Button variant="primary" size="md" onClick={() => pick(true)}>
         Chat and files
       </Button>
-      <button type="button" className={FORK_LINK} onClick={() => setOpen(false)}>
+      <button type="button" className={FORK_LINK} onClick={() => setOpen(null)}>
         Cancel
       </button>
     </fieldset>
@@ -689,6 +731,7 @@ export function Conversation({
   onReviewPlan,
   forking,
   onFork,
+  onRewind,
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
@@ -699,6 +742,8 @@ export function Conversation({
   forking?: boolean;
   /** Forks the session after `messageId`; absent while the session cannot be forked. */
   onFork?: (messageId: string, rollbackFiles: boolean) => void;
+  /** Undoes the chat to checkpoint N; absent while the server cannot list checkpoints. */
+  onRewind?: (checkpoint: number) => void;
 }) {
   const { messages, live, prompts, pending, notice, thoughtMs } = transcript;
   const running = transcript.turnId !== null;
@@ -707,6 +752,7 @@ export function Conversation({
   // The review card shows a proposed plan; the checklist follows one being carried out.
   const reviewing = prompts.some((p) => p.prompt.kind === "plan-review");
   const plan = transcript.plan && !reviewing ? transcript.plan : null;
+  const ends = onRewind ? turnEnds(messages) : null;
   return (
     <>
       {messages.map((message) =>
@@ -721,10 +767,15 @@ export function Conversation({
         ) : message.role === "assistant" ? (
           <div key={message.id} className="group/turn flex min-w-0 flex-col gap-1.5">
             <Assistant message={message} thoughtMs={thoughtMs[message.id]} thinking={false} />
-            {onFork && !running && (
-              <ForkAction
+            {(onFork || ends?.has(message.id)) && !running && (
+              <TurnActions
                 disabled={forking === true}
-                onFork={(rollbackFiles) => onFork(message.id, rollbackFiles)}
+                onFork={onFork && ((rollbackFiles) => onFork(message.id, rollbackFiles))}
+                rewindTo={
+                  onRewind && ends?.has(message.id)
+                    ? () => onRewind(ends.get(message.id) ?? 0)
+                    : undefined
+                }
               />
             )}
           </div>

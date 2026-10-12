@@ -9,6 +9,8 @@ import {
   loopText,
   type Station,
   sectionsOf,
+  stageIcon,
+  stageIconOf,
   stations,
 } from "../src/renderer/screens/runs/line-model.ts";
 import type { PipelineStage, PipelineState } from "../src/renderer/screens/runs/model.ts";
@@ -100,5 +102,27 @@ describe("workflow line", () => {
       contract: "gates",
     });
     expect(handoff(after, after, LINE.loops)).toBeNull();
+  });
+});
+
+describe("stage icons", () => {
+  test("each station of the line gets the icon of its role", () => {
+    const pending = IDS.map((id) => ({ id, label: id, state: "pending" as PipelineState }));
+    const list = stations(pending, LINE, new Map(), "running");
+    expect(list.map(stageIcon)).toEqual([
+      "plan",
+      "attention",
+      "implement",
+      "checks",
+      "review",
+      "accept",
+    ]);
+  });
+
+  test("a stage guessed from its ID alone", () => {
+    expect(stageIconOf("research")).toBe("research");
+    expect(stageIconOf("spec")).toBe("spec");
+    expect(stageIconOf("implement")).toBe("implement");
+    expect(stageIconOf("verify")).toBe("checks");
   });
 });

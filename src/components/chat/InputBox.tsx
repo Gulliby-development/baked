@@ -20,6 +20,7 @@ import {
 } from "../../core/history/index.js";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
+import type { ThemeTokens } from "../../core/theme/tokens.js";
 import type { IntelligenceClient } from "../../core/workers/intelligence-client.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { logBackgroundError } from "../../stores/errors.js";
@@ -28,6 +29,7 @@ import type { ImageAttachment } from "../../types/index.js";
 import { readClipboardImageAsync } from "../../utils/clipboard.js";
 import { toErrorMessage } from "../../utils/errors.js";
 import { compressImageForApi } from "../../utils/image-compress.js";
+import { HardShadow } from "../ui/BrutalBox.js";
 import { compactScrollAccel } from "../ui/scroll.js";
 import { pickTip } from "./tips.js";
 
@@ -157,6 +159,11 @@ function syncImageExtmarks(ta: TextareaRenderable): void {
   }
 }
 
+/** The unfocused input outline; `textFaint` keeps at least 4.5:1 against the input in both built-in themes. */
+export function idleInputBorder(t: ThemeTokens): string {
+  return t.textFaint;
+}
+
 export const InputBox = memo(function InputBox({
   tabId,
   onSubmit,
@@ -226,7 +233,7 @@ export const InputBox = memo(function InputBox({
   }, [value.length, showBusy, viewingCheckpoint]);
   const tip = useMemo(() => pickTip(Date.now() + tipTick * 12_000), [tipTick]);
 
-  // textarea width = container - border(2) - paddingX(2) - prompt(2) = containerWidth - 6
+  // textarea width = container - border(2) - paddingX(2) - prompt(2) - shadow(1) = containerWidth - 7
   // When busy/clipboard hints are shown, subtract their widths too.
   // (containerWidth / hintWidth / textareaWidth are recomputed below, after
   // showAutocomplete is declared, so the right-side hints don't fight the
@@ -327,7 +334,7 @@ export const InputBox = memo(function InputBox({
   const clipboardHintWidth = clipboardReading ? 18 : 0;
   const stopHintWidth = showBusy && !showAutocomplete ? 8 : 0;
   const hintWidth = clipboardHintWidth + stopHintWidth;
-  const textareaWidth = Math.max(10, containerWidth - 6 - hintWidth);
+  const textareaWidth = Math.max(10, containerWidth - 7 - hintWidth);
   // Calculate visual lines manually (virtualLineCount is viewport-constrained — chicken-and-egg)
   const calcVisualLines = useCallback(
     (text: string) => {
@@ -1030,7 +1037,7 @@ export const InputBox = memo(function InputBox({
           ? t.brandDim
           : focused
             ? t.borderFocused
-            : t.border;
+            : idleInputBorder(t);
 
   const lines = value.split("\n");
   const isMultiline = lines.length > 1;
@@ -1166,75 +1173,77 @@ export const InputBox = memo(function InputBox({
         )}
 
         {/* ── Bordered input area ── */}
-        <box
-          ref={containerRef}
-          flexDirection="column"
-          width="100%"
-          borderStyle="rounded"
-          border={true}
-          borderColor={borderColor}
-          paddingX={1}
-        >
-          {fuzzyMode ? (
-            <box flexDirection="row">
-              <text fg={t.warning} attributes={TextAttributes.BOLD}>
-                {"search: "}
-              </text>
-              <text fg={t.textPrimary}>{fuzzyQuery}</text>
-              <text fg={t.warning}>▌</text>
-            </box>
-          ) : (
-            <box flexDirection="row" width="100%">
-              <text fg={t.brandSecondary} attributes={TextAttributes.BOLD} flexShrink={0}>
-                {">"}{" "}
-              </text>
-              <textarea
-                ref={textareaRef}
-                initialValue={value}
-                onContentChange={handleContentChange}
-                onCursorChange={handleCursorChange}
-                keyBindings={INPUT_KEY_BINDINGS}
-                placeholder={
-                  viewingCheckpoint != null
-                    ? `${icon("rewind")} send a message to rewind to checkpoint #${String(viewingCheckpoint)}`
-                    : showBusy && !showAutocomplete
-                      ? "'/' for commands · or steer by sending a new message"
-                      : tabVerbose
-                        ? "Ask Baked... · /verbose-tab for raw stream"
-                        : tip.hint
-                          ? `${tip.text} · ${tip.hint}`
-                          : tip.text
-                }
-                placeholderColor={viewingCheckpoint != null ? t.warning : t.textMuted}
-                focused={focused}
-                wrapMode="char"
-                width={textareaWidth}
-                height={Math.min(maxInputRows, Math.max(1, visualLines))}
-                flexShrink={0}
-                backgroundColor={t.bgInput}
-                focusedBackgroundColor={t.bgInput}
-                textColor={t.textPrimary}
-                focusedTextColor={t.textPrimary}
-                cursorColor={t.textPrimary}
-                selectionBg={t.textPrimary}
-                selectionFg={t.bgInput}
-              />
-              {clipboardReading ? (
-                <text fg={t.textDim} flexShrink={0}>
-                  {" · reading image…"}
+        <HardShadow width="100%">
+          <box
+            ref={containerRef}
+            flexDirection="column"
+            width="100%"
+            borderStyle="heavy"
+            border={true}
+            borderColor={borderColor}
+            paddingX={1}
+          >
+            {fuzzyMode ? (
+              <box flexDirection="row">
+                <text fg={t.warning} attributes={TextAttributes.BOLD}>
+                  {"search: "}
                 </text>
-              ) : showBusy && !showAutocomplete ? (
-                <text fg={t.error} attributes={TextAttributes.BOLD} flexShrink={0}>
-                  {" ^X stop"}
+                <text fg={t.textPrimary}>{fuzzyQuery}</text>
+                <text fg={t.warning}>▌</text>
+              </box>
+            ) : (
+              <box flexDirection="row" width="100%">
+                <text fg={t.brandSecondary} attributes={TextAttributes.BOLD} flexShrink={0}>
+                  {">"}{" "}
                 </text>
-              ) : ghost ? (
-                <text fg={t.textDim} flexShrink={0}>
-                  {ghost}
-                </text>
-              ) : null}
-            </box>
-          )}
-        </box>
+                <textarea
+                  ref={textareaRef}
+                  initialValue={value}
+                  onContentChange={handleContentChange}
+                  onCursorChange={handleCursorChange}
+                  keyBindings={INPUT_KEY_BINDINGS}
+                  placeholder={
+                    viewingCheckpoint != null
+                      ? `${icon("rewind")} send a message to rewind to checkpoint #${String(viewingCheckpoint)}`
+                      : showBusy && !showAutocomplete
+                        ? "'/' for commands · or steer by sending a new message"
+                        : tabVerbose
+                          ? "Ask Baked... · /verbose-tab for raw stream"
+                          : tip.hint
+                            ? `${tip.text} · ${tip.hint}`
+                            : tip.text
+                  }
+                  placeholderColor={viewingCheckpoint != null ? t.warning : t.textMuted}
+                  focused={focused}
+                  wrapMode="char"
+                  width={textareaWidth}
+                  height={Math.min(maxInputRows, Math.max(1, visualLines))}
+                  flexShrink={0}
+                  backgroundColor={t.bgInput}
+                  focusedBackgroundColor={t.bgInput}
+                  textColor={t.textPrimary}
+                  focusedTextColor={t.textPrimary}
+                  cursorColor={t.textPrimary}
+                  selectionBg={t.textPrimary}
+                  selectionFg={t.bgInput}
+                />
+                {clipboardReading ? (
+                  <text fg={t.textDim} flexShrink={0}>
+                    {" · reading image…"}
+                  </text>
+                ) : showBusy && !showAutocomplete ? (
+                  <text fg={t.error} attributes={TextAttributes.BOLD} flexShrink={0}>
+                    {" ^X stop"}
+                  </text>
+                ) : ghost ? (
+                  <text fg={t.textDim} flexShrink={0}>
+                    {ghost}
+                  </text>
+                ) : null}
+              </box>
+            )}
+          </box>
+        </HardShadow>
 
         {/* ── Hints bar ── */}
         {focused && !fuzzyMode && isMultiline && (

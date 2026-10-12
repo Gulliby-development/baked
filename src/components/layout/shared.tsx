@@ -1,43 +1,47 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
+import { reducedMotion, subscribeMotion } from "../../core/utils/motion.js";
+import { SPINNER_FRAMES, SPINNER_TICK_MS } from "../../core/utils/spinner.js";
 import { useCopySelection } from "../../hooks/useCopySelection.js";
 
 export type ConfigScope = "project" | "global";
 export const CONFIG_SCOPES: ConfigScope[] = ["project", "global"];
 
-export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// Frames count up to a multiple of every frame-set length so `divisor` slowdowns stay even.
+const FRAME_WRAP = 3600;
 
 let globalFrame = 0;
-let refCount = 0;
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 const frameListeners = new Set<(frame: number) => void>();
 
-function ensureTick() {
-  if (tickTimer) return;
-  tickTimer = setInterval(() => {
-    globalFrame = (globalFrame + 1) % SPINNER_FRAMES.length;
-    for (const fn of frameListeners) fn(globalFrame);
-  }, 150);
+/** One shared timer for every spinner; it runs only while a spinner is mounted and motion is on. */
+function syncTick(): void {
+  const wanted = frameListeners.size > 0 && !reducedMotion();
+  if (wanted && !tickTimer) {
+    tickTimer = setInterval(() => {
+      globalFrame = (globalFrame + 1) % FRAME_WRAP;
+      for (const fn of frameListeners) fn(globalFrame);
+    }, SPINNER_TICK_MS);
+  } else if (!wanted && tickTimer) {
+    clearInterval(tickTimer);
+    tickTimer = null;
+  }
+}
+
+subscribeMotion(syncTick);
+
+function subscribeFrames(listener: (frame: number) => void): () => void {
+  frameListeners.add(listener);
+  syncTick();
+  return () => {
+    frameListeners.delete(listener);
+    syncTick();
+  };
 }
 
 export function useSpinnerFrame(): number {
   const [frame, setFrame] = useState(globalFrame);
-  useEffect(() => {
-    refCount++;
-    frameListeners.add(setFrame);
-    ensureTick();
-    return () => {
-      frameListeners.delete(setFrame);
-      refCount--;
-      if (refCount <= 0) {
-        refCount = 0;
-        if (tickTimer) {
-          clearInterval(tickTimer);
-          tickTimer = null;
-        }
-      }
-    };
-  }, []);
+  useEffect(() => subscribeFrames(setFrame), []);
   return frame;
 }
 
@@ -45,25 +49,13 @@ export function useSpinnerFrame(): number {
  * Use with imperative `.content =` updates or pass to children that read `.current`. */
 export function useSpinnerFrameRef(): React.RefObject<number> {
   const ref = useRef(globalFrame);
-  useEffect(() => {
-    const listener = (f: number) => {
-      ref.current = f;
-    };
-    frameListeners.add(listener);
-    refCount++;
-    ensureTick();
-    return () => {
-      frameListeners.delete(listener);
-      refCount--;
-      if (refCount <= 0) {
-        refCount = 0;
-        if (tickTimer) {
-          clearInterval(tickTimer);
-          tickTimer = null;
-        }
-      }
-    };
-  }, []);
+  useEffect(
+    () =>
+      subscribeFrames((f: number) => {
+        ref.current = f;
+      }),
+    [],
+  );
   return ref;
 }
 
@@ -75,7 +67,7 @@ export const Spinner = memo(function Spinner({
   bold,
   inline,
 }: {
-  frames?: string[];
+  frames?: readonly string[];
   color?: string;
   /** Slow down frame rate — e.g. divisor=4 updates every 4th tick */
   divisor?: number;
@@ -96,7 +88,7 @@ export const Spinner = memo(function Spinner({
       try {
         if (textRef.current) {
           const idx = Math.floor(f / divisor) % frames.length;
-          const val = (frames[idx] ?? "⠋") + (suffix ?? "");
+          const val = (frames[idx] ?? "") + (suffix ?? "");
           if (isInline) {
             // TextNodeRenderable (<span>) uses children, not content
             textRef.current.children = [val];
@@ -106,24 +98,11 @@ export const Spinner = memo(function Spinner({
         }
       } catch {}
     };
-    frameListeners.add(listener);
-    refCount++;
-    ensureTick();
-    return () => {
-      frameListeners.delete(listener);
-      refCount--;
-      if (refCount <= 0) {
-        refCount = 0;
-        if (tickTimer) {
-          clearInterval(tickTimer);
-          tickTimer = null;
-        }
-      }
-    };
+    return subscribeFrames(listener);
   }, [frames, divisor, suffix, inline]);
 
   const initIdx = Math.floor(globalFrame / divisor) % frames.length;
-  const content = (frames[initIdx] ?? "⠋") + (suffix ?? "");
+  const content = (frames[initIdx] ?? "") + (suffix ?? "");
   const attrs = bold ? 1 : undefined;
 
   if (inline) {
