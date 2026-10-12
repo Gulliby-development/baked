@@ -69,6 +69,8 @@ export const MAX_REWRITES = 2;
 const MAX_STEPS = 60;
 const FRAME_LINES = 40;
 const READ_LIMIT = 8000;
+/** The longest a declared one-shot command runs before it is stopped. */
+const COMMAND_MS = 60000;
 const PORT_POLL_MS = 200;
 const BROWSER_ACTION_MS = 30000;
 
@@ -160,6 +162,8 @@ export class WalkSession {
   /** Proxy decisions already shown to the model and already stored with a step. */
   private shown = 0;
   private stepped = 0;
+  /** The last declared command's output, shown with the next recorded step instead of the app's. */
+  private commandFrame: { text: string; exit: WalkStep["exit"] } | null = null;
   constructor(
     private store: WorkflowStore,
     private runId: string,
@@ -206,7 +210,26 @@ export class WalkSession {
       : { ...common, ...this.terminalTools() };
   }
   private terminalTools(): Record<string, HostTool> {
+    const commands = this.gate.acceptance.commands ?? [];
+    const run: Record<string, HostTool> = commands.length
+      ? {
+          command_run: {
+            description: `Run one of the gate's declared commands (index 0 to ${commands.length - 1}, in order) to completion, without a shell and with no added arguments, and return its output and exit code. The application started with app_start keeps running meanwhile.`,
+            inputSchema: z
+              .object({
+                index: z
+                  .number()
+                  .int()
+                  .min(0)
+                  .max(commands.length - 1),
+              })
+              .strict(),
+            execute: (input) => this.runCommand((input as { index: number }).index),
+          },
+        }
+      : {};
     return {
+      ...run,
       terminal_send: {
         description:
           "Write text to the application's standard input. enter (default true) appends a newline; eof closes the input afterwards.",
@@ -416,6 +439,64 @@ export class WalkSession {
     const ready = await this.ready(app);
     return { started: true, ready, output: clean(app.frame(FRAME_LINES)), exit: app.exited };
   }
+  /** Runs a declared one-shot command to its exit, under the same grant as the application. */
+  private async runCommand(index: number): Promise<unknown> {
+    const { start, capabilities, commands = [] } = this.gate.acceptance;
+    const command = commands[index];
+    if (!command)
+      throw new WorkflowFault(
+        "OUTPUT_INVALID",
+        `No command ${index}; the gate declares ${commands.length}`,
+      );
+    if (!capabilities.spawnApp) {
+      this.violations.push("command_run was refused: spawnApp is not granted");
+      throw new WorkflowFault("CAPABILITY_DENIED", "spawnApp is not granted to this walk-through");
+    }
+    const cwd = start.cwd === "." ? this.workspace : workspacePath(this.workspace, start.cwd);
+    const effectId = this.store.transaction(() =>
+      this.store.prepareEffect(
+        this.runId,
+        this.attemptId,
+        "command",
+        {
+          acceptanceGateId: this.gate.id,
+          commandIndex: index,
+          executable: command.executable,
+          args: command.args,
+        },
+        null,
+        null,
+      ),
+    );
+    const child = new TerminalApp(resolveExecutable(command.executable), command.args, {
+      cwd,
+      env: appEnv(start.envNames, capabilities.listenPorts),
+      onSpawn: (pid, scope) =>
+        this.store.transaction(() => this.store.recordProcess(this.runId, effectId, pid, scope)),
+    });
+    try {
+      try {
+        await child.start();
+      } catch (error) {
+        throw new WorkflowFault("OUTPUT_INVALID", `The command did not start: ${message(error)}`);
+      }
+      child.closeInput();
+      const limit = Math.min(this.gate.timeoutMs, COMMAND_MS);
+      const finished = await child.waitFor(() => child.exited !== null, limit, this.signal);
+      const exit = finished ? child.exited : await child.stop();
+      this.commandFrame = { text: clean(child.frame(FRAME_LINES)), exit };
+      return {
+        index,
+        command: [command.executable, ...command.args],
+        output: clean(child.frame(FRAME_LINES * 4)).slice(-READ_LIMIT),
+        exit,
+        timedOut: !finished,
+      };
+    } finally {
+      await child.stop();
+      this.store.transaction(() => this.store.effectStatus(this.runId, effectId, "reconciled"));
+    }
+  }
   private async ready(app: TerminalApp): Promise<boolean> {
     const { readyWhen } = this.gate.acceptance.start;
     const limit = Math.min(this.gate.timeoutMs, 60000);
@@ -503,9 +584,10 @@ export class WalkSession {
       action: input.action,
       observation: input.observation,
       expectationIds: input.expectationIds,
-      frame: terminal,
-      exit: this.app?.exited ?? null,
+      frame: this.commandFrame?.text ?? terminal,
+      exit: this.commandFrame ? this.commandFrame.exit : (this.app?.exited ?? null),
     };
+    this.commandFrame = null;
     if (this.gate.acceptance.driver === "browser") {
       const page = this.page;
       const decisions = this.proxy?.decisions ?? [];
@@ -1058,6 +1140,16 @@ function walkBrief(gate: AcceptanceGateDefinition): unknown {
     expectations: scenario.expectations.map((text, i) => ({ id: `E${i + 1}`, text })),
     driver,
     application: { command: [start.executable, ...start.args], cwd: start.cwd },
+    ...(gate.acceptance.commands?.length
+      ? {
+          commands: gate.acceptance.commands.map((c, index) => ({
+            index,
+            command: [c.executable, ...c.args],
+          })),
+          commandRule:
+            "Run each declared command with command_run in order and record a step for each one.",
+        }
+      : {}),
     capabilities,
     ...(driver === "browser"
       ? {
@@ -1102,6 +1194,9 @@ function draftBrief(
       ...(s.url !== undefined ? { url: s.url } : {}),
     })),
     application: { command: [start.executable, ...start.args], cwd: start.cwd },
+    ...(gate.acceptance.commands?.length
+      ? { commands: gate.acceptance.commands.map((c) => [c.executable, ...c.args]) }
+      : {}),
     testPath: promote.testPath,
     framework: promote.framework,
     runsWith: [testCommand(promote.testPath).executable, ...testCommand(promote.testPath).args],

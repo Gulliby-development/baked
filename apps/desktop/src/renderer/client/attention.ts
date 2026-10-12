@@ -82,6 +82,13 @@ export type ChatPrompt = { id: string; createdAt: number } & (
       planFile: string;
       content: string;
     }
+  | {
+      kind: "split";
+      title: string;
+      mode: "runs" | "initiative";
+      flows: { id: string; title: string; paths: string[]; dependsOn: string[] }[];
+      digest: string;
+    }
 );
 
 export interface SessionPrompts {
@@ -195,7 +202,7 @@ export const attentionApi = {
     sessionId: string,
     promptId: string,
     body:
-      | { approve: boolean }
+      | { approve: boolean; digest?: string }
       | { answer: string }
       | { action: "execute" | "clear-execute" | "cancel" },
   ) =>

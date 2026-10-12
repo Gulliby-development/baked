@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { attentionApi, type ChatPrompt } from "../../client/attention.js";
+import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
 import { LABEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
@@ -36,6 +37,10 @@ export function promptSummary(prompt: ChatPrompt): string {
       return `The agent proposes a plan: ${prompt.title} (${prompt.steps.length} ${
         prompt.steps.length === 1 ? "step" : "steps"
       })`;
+    case "split":
+      return `The coordinator proposes splitting "${prompt.title}" into ${prompt.flows.length} ${
+        prompt.mode === "runs" ? "parallel runs" : "features of one initiative"
+      }`;
   }
 }
 
@@ -49,7 +54,7 @@ export function ChatDetail({ item, onDone }: DetailProps) {
   const [text, setText] = useState("");
   const send = (
     body:
-      | { approve: boolean }
+      | { approve: boolean; digest?: string }
       | { answer: string }
       | { action: "execute" | "clear-execute" | "cancel" },
     message: string,
@@ -136,6 +141,42 @@ export function ChatDetail({ item, onDone }: DetailProps) {
                   {openChat}
                 </div>
               </form>
+            ) : prompt.kind === "split" ? (
+              <>
+                <p className={LEDE}>{promptSummary(prompt)}</p>
+                <SplitFlows prompt={prompt} />
+                <p className={NOTE}>
+                  The coordinator waits until you decide. Approving starts every flow; to change the
+                  split, deny it and tell the coordinator what to change.
+                </p>
+                <ActionError error={action.error} />
+                <div className={ACTIONS}>
+                  <Button
+                    variant="primary"
+                    size="md"
+                    className={BTN}
+                    disabled={action.busy}
+                    onClick={() =>
+                      send(
+                        { approve: true, digest: prompt.digest },
+                        "Split approved. The flows start.",
+                      )
+                    }
+                  >
+                    Approve split
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    className={BTN}
+                    disabled={action.busy}
+                    onClick={() => send({ approve: false }, "Split rejected. Nothing started.")}
+                  >
+                    Reject
+                  </Button>
+                  {openChat}
+                </div>
+              </>
             ) : prompt.kind === "plan-review" ? (
               <>
                 <p className={LEDE}>{promptSummary(prompt)}</p>

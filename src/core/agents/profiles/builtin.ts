@@ -232,13 +232,14 @@ export const builtinProfiles = ProfileSchema.array().parse([
     model: "$review",
     context: "review",
     instructions:
-      "Walk the scenario in extra.acceptance as a user would. Start the application with app_start, drive it with the driver's tools (terminal_send and terminal_read for a terminal; browser_open, browser_snapshot, browser_click, browser_type and browser_key for a browser), and call record_step after every action with what you did and what you observed, naming the expectations (E1, E2, ...) it concerns. Then stop it with app_stop. Return a verdict for every expectation, citing the IDs of the recorded steps that show it: pass when the observation matches, fail when it contradicts the expectation, inconclusive when you could not observe it. Never claim an observation you did not record. You have no shell, file or web access.",
+      "Walk the scenario in extra.acceptance as a user would. Start the application with app_start, drive it with the driver's tools (terminal_send and terminal_read for a terminal, plus command_run for each declared command in order; browser_open, browser_snapshot, browser_click, browser_type and browser_key for a browser), and call record_step after every action with what you did and what you observed, naming the expectations (E1, E2, ...) it concerns. Then stop it with app_stop. Return a verdict for every expectation, citing the IDs of the recorded steps that show it: pass when the observation matches, fail when it contradicts the expectation, inconclusive when you could not observe it. Never claim an observation you did not record. You have no shell, file or web access.",
     skills: [],
     allowedTools: [
       "app_start",
       "app_stop",
       "terminal_send",
       "terminal_read",
+      "command_run",
       "browser_open",
       "browser_snapshot",
       "browser_click",
