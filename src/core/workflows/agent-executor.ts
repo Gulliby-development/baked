@@ -30,6 +30,7 @@ import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
+import { fixerCommand } from "./check-policy.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
@@ -362,8 +363,10 @@ export class NativeAgentExecutor implements AgentExecutor {
               // One run per file, each recorded like an edit, so undo and rollback see it.
               for (const path of paths)
                 await guard.execute("edit_file", { path }, async () => {
-                  const executable = fix.executable === "bun" ? process.execPath : fix.executable;
-                  const result = await executeCheckCommand(scope, executable, [...fix.args, path], {
+                  const command = fixerCommand(fix, path);
+                  const executable =
+                    command.executable === "bun" ? process.execPath : command.executable;
+                  const result = await executeCheckCommand(scope, executable, command.args, {
                     cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
                     env: buildCheckEnv(check),
                     timeoutMs: check.timeoutMs,
