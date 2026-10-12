@@ -2,6 +2,7 @@
 const PATHS = {
   overview: "M3 3h18v18H3zM3 8h18M6 5.5h1M9 5.5h1M7 12h10v5H7z",
   chat: "M3 4h18v12H10l-5 4v-4H3zM7 8.5h10M7 12h6",
+  coordinator: "M3 4h18v12H10l-5 4v-4H3zM12 7v2.5M8 12.5v-3h8v3",
   runs: "M2.5 17c0-3 1.1-5 2.5-5s2.5 2 2.5 5zM9.5 17c0-3 1.1-5 2.5-5s2.5 2 2.5 5zM16.5 17c0-3 1.1-5 2.5-5s2.5 2 2.5 5zM1.5 17h21v3h-21z",
   initiatives: "M5 3h14l-3 4.5 3 4.5H5zM5 3v19",
   acceptance:

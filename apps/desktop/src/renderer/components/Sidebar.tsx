@@ -32,6 +32,7 @@ const WORK: [ProjectSection, string, IconName][] = [
   ["overview", "Overview", "overview"],
   ["initiatives", "Initiatives", "initiatives"],
   ["chat", "Chat", "chat"],
+  ["coordinator", "Coordinator", "coordinator"],
   ["runs", "Runs", "runs"],
   ["usage", "Usage", "usage"],
   ["graph", "Code graph", "graph"],

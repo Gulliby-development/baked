@@ -118,6 +118,20 @@ function liveState(
   }
 }
 
+/** A launched entry with its live status, whether it still runs, and the tokens it used. */
+export type LaunchedView = LaunchedEntry & { active: boolean; tokens: number };
+
+/** What the coordinator launched, as it is now; `GET /v1/coordinator/launched`. */
+export function launchedView(
+  chat: ChatService,
+  coordinatorId: string,
+  state: ProjectStateSource | null,
+): LaunchedView[] {
+  return new BriefStore(chat.workspace, coordinatorId)
+    .read()
+    .launched.map((entry) => ({ ...entry, ...liveState(chat, state, entry) }));
+}
+
 /**
  * Refreshes the status of everything the coordinator launched. Returns the notices it added to the
  * coordinator's transcript; a brief edited meanwhile is left for the next call.

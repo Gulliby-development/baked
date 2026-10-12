@@ -584,12 +584,14 @@ function PromptCard({
   onApprove,
   onAnswer,
   onReviewPlan,
+  onEditSplit,
 }: {
   entry: TranscriptPrompt;
   busy: boolean;
   onApprove: (id: string, approve: boolean, digest?: string) => void;
   onAnswer: (id: string, answer: string) => void;
   onReviewPlan?: (id: string, review: PlanReview) => void;
+  onEditSplit?: (id: string) => void;
 }) {
   const [text, setText] = useState("");
   const inputId = useId();
@@ -657,6 +659,17 @@ function PromptCard({
           >
             Reject
           </Button>
+          {onEditSplit && (
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={busy}
+              title="Reject this split and tell the coordinator what to change"
+              onClick={() => onEditSplit(prompt.id)}
+            >
+              Edit
+            </Button>
+          )}
         </div>
       </section>
     );
@@ -764,6 +777,7 @@ export function Conversation({
   onApprove,
   onAnswer,
   onReviewPlan,
+  onEditSplit,
   forking,
   onFork,
   onRewind,
@@ -774,6 +788,8 @@ export function Conversation({
   onAnswer: (id: string, answer: string) => void;
   /** Answers a plan review; without it plan reviews are not shown. */
   onReviewPlan?: (id: string, review: PlanReview) => void;
+  /** Rejects a split card and asks for changes; without it split cards have no Edit. */
+  onEditSplit?: (id: string) => void;
   forking?: boolean;
   /** Forks the session after `messageId`; absent while the session cannot be forked. */
   onFork?: (messageId: string, rollbackFiles: boolean) => void;
@@ -839,6 +855,7 @@ export function Conversation({
           onApprove={onApprove}
           onAnswer={onAnswer}
           {...(onReviewPlan ? { onReviewPlan } : {})}
+          {...(onEditSplit ? { onEditSplit } : {})}
         />
       ))}
       {pending.map((text, i) => (

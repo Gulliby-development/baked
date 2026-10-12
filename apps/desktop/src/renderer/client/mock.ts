@@ -98,6 +98,7 @@ const FULL_CAPABILITIES = [
   "chat-export",
   "diagnostics",
   "gate-drafts",
+  "coordinator",
 ];
 /** What a backend from before the optional capability groups answers. */
 const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];

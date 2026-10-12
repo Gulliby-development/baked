@@ -72,6 +72,8 @@ import { COORDINATOR_MODE } from "./coordinator.js";
 import {
   coordinatorLimits,
   launchTools,
+  type LaunchedView,
+  launchedView,
   type ProjectLauncher,
   syncLaunched,
 } from "./coordinator-launch.js";
@@ -1539,6 +1541,11 @@ export class ChatService {
     } finally {
       this.syncing = false;
     }
+  }
+
+  /** What the coordinator `coordinatorId` launched, with live status and tokens. */
+  launched(coordinatorId: string): LaunchedView[] {
+    return launchedView(this, coordinatorId, this.projectState);
   }
 
   /** The coordinator's tools over this service: project state and launching. */
