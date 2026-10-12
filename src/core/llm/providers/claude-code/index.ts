@@ -5,6 +5,7 @@ import type {
   LanguageModelV3StreamPart,
   SharedV3Warning,
 } from "@ai-sdk/provider";
+import { cliReasoningEffort } from "../cli-effort.js";
 import type { ProviderDefinition, ProviderModelInfo } from "../types.js";
 import { assertClaudeCodeReady, getClaudeCodeLoginStatus } from "./cli.js";
 import { buildClaudeCodePromptParts, parseClaudeCodeResponse } from "./prompt.js";
@@ -59,8 +60,10 @@ export function createClaudeCodeLanguageModel(
   runner: ClaudeCodeRunner = getDefaultClaudeCodeRunner(),
 ): LanguageModelV3 {
   const generate = async (options: LanguageModelV3CallOptions) => {
+    const effort = cliReasoningEffort(options.providerOptions, "claude-code");
     const result = await runner.run({
       modelId,
+      ...(effort ? { effort } : {}),
       parts: buildClaudeCodePromptParts(options),
       abortSignal: options.abortSignal,
     });

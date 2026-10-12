@@ -1,4 +1,5 @@
 import { extractReasoningMiddleware, type LanguageModel, wrapLanguageModel } from "ai";
+import type { AppConfig } from "../../types/index.js";
 import { getProviderApiKey } from "../secrets.js";
 import { detectModelFamily } from "./provider-options.js";
 import { getAllProviders, getProvider } from "./providers/index.js";
@@ -92,7 +93,8 @@ export function deactivateCurrentProvider(): void {
   }
 }
 
-export function resolveModel(modelId: string): LanguageModel {
+/** With `config`, providers that read options at creation use it instead of the saved config. */
+export function resolveModel(modelId: string, config?: AppConfig): LanguageModel {
   if (modelId === "none") {
     throw new Error("No model selected — use Ctrl+L or /model to choose a provider and model");
   }
@@ -108,7 +110,7 @@ export function resolveModel(modelId: string): LanguageModel {
   if (!provider) {
     throw new Error(`Unknown provider "${providerId}"`);
   }
-  const base = provider.createModel(model);
+  const base = provider.createModel(model, config ? { config } : undefined);
 
   // Only attach the inline-reasoning extractor for families that emit thinking
   // as <think>/<thinking> tags inside their TEXT stream (local / OpenAI-compatible
