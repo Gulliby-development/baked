@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { GatesApi } from "../components/workflow/GatesView.js";
 import type { InitiativesApi } from "../components/workflow/InitiativesView.js";
 import type { RoutingApi } from "../components/workflow/RoutingView.js";
+import type { UsageLoader } from "../components/workflow/UsageView.js";
 import type { WorkflowEditorApi } from "../components/workflow/WorkflowEditor.js";
 import {
   loadConfig,
@@ -17,9 +18,12 @@ import { getIntelligenceClient } from "../core/intelligence/instance.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { type WorkflowAction, WorkflowClient } from "../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
+import { WorkflowFault } from "../core/workflows/errors.js";
 import { detectGates, readGates, writeGates } from "../core/workflows/gates.js";
 import { explainRoute } from "../core/workflows/routing.js";
 import { PolicySchema, workflowsEnabled } from "../core/workflows/schemas.js";
+import { WorkflowStore } from "../core/workflows/store.js";
+import { usageSummary } from "../core/workflows/usage.js";
 import { listDefinitions } from "../core/workflows/v2/definitions.js";
 import { readEditorSource, writeDefinitionFile } from "../core/workflows/v2/editor.js";
 import type { RunSummary, WorkflowInfo } from "../core/workflows/view.js";
@@ -249,6 +253,26 @@ export function workflowEditorApi(workspace: string): WorkflowEditorApi {
  * Reads and writes `modelRouting` for the routing screen. Each layer is read from its own file, so
  * saving the project layer never copies global or manifest settings into `.baked/config.json`.
  */
+/**
+ * Usage across the project's runs, read from the run database opened read-only for each read; a
+ * project that never ran a workflow has no usage.
+ */
+export function workflowUsageLoader(workspace: string): UsageLoader {
+  return (days, groupBy) => {
+    let store: WorkflowStore | null = null;
+    try {
+      store = new WorkflowStore(workspace, true);
+    } catch (err) {
+      if (!(err instanceof WorkflowFault && err.code === "NOT_FOUND")) throw err;
+    }
+    try {
+      return usageSummary(store, { days, groupBy: [groupBy] });
+    } finally {
+      store?.close();
+    }
+  };
+}
+
 export function workflowRoutingApi(workspace: string): RoutingApi {
   const config = () => mergeConfigs(loadConfig(), loadEffectiveProjectConfig(workspace));
   return {

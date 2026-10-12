@@ -43,6 +43,18 @@ export interface LineStage {
   consumes: string[];
   produces: string;
   human: boolean;
+  /** The stage's own gates, then those on the transitions leaving it; absent from older backends. */
+  gates?: LineGate[];
+}
+
+/** A gate where it stands on the line (`LineGate` in src/core/workflows/v2/line.ts). */
+export interface LineGate {
+  id: string;
+  type: "command" | "human" | "ai-review" | "ai-acceptance" | null;
+  mode: "required" | "advisory";
+  does: string;
+  /** The transition the gate guards; null for a gate of the stage itself. */
+  transition: { id: string; to: string; on: string } | null;
 }
 
 /** A transition back to the same or an earlier stage. */

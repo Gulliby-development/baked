@@ -26,6 +26,10 @@ import { GateView } from "./GateView.js";
 import {
   describe,
   focusStation,
+  GATE_KIND,
+  gatePlace,
+  gateResultText,
+  gateTone,
   lineOf,
   SECTION_LABEL,
   SECTIONS,
@@ -558,6 +562,7 @@ function StationCard({
   station,
   index,
   total,
+  stationIds,
   loops,
   contractState,
   waiting,
@@ -565,6 +570,7 @@ function StationCard({
   station: Station;
   index: number;
   total: number;
+  stationIds: ReadonlyMap<string, number>;
   loops: LineLoop[];
   contractState: (name: string) => "made" | "failed" | "coming";
   /** Requests wait for the user; they are shown above the station. */
@@ -608,6 +614,7 @@ function StationCard({
             </>
           )}
         </div>
+        {station.gates.length > 0 && <StationGates station={station} stationIds={stationIds} />}
       </div>
       <div
         className={cn(
@@ -631,6 +638,50 @@ function StationCard({
     </section>
   );
 }
+
+/** The station's gates in words: what each does, where it stands, blocks or advises, last result. */
+function StationGates({
+  station,
+  stationIds,
+}: {
+  station: Station;
+  stationIds: ReadonlyMap<string, number>;
+}) {
+  return (
+    <section aria-label={`Gates of ${station.label}`} className="mt-1 flex flex-col gap-1">
+      <span className={LABEL}>Gates</span>
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
+        {station.gates.map((gate) => (
+          <li
+            key={`${gate.id}:${gate.transition?.id ?? "stage"}`}
+            className="flex flex-col gap-[2px] rounded-base border-2 border-border bg-background px-3 py-2 text-[13px]"
+          >
+            <span className="flex flex-wrap items-center gap-x-2">
+              <span className="font-bold">{gate.id}</span>
+              <span className="text-[12px] text-muted-foreground">
+                {GATE_KIND[gate.type ?? "unknown"]} ·{" "}
+                {gate.mode === "required" ? "blocks when it fails" : "only advises"}
+              </span>
+              <span
+                className={cn(
+                  "ml-auto text-[12px] font-semibold",
+                  TONE_TEXT[GATE_TEXT_TONE[gateTone(gate)]],
+                )}
+              >
+                {gateResultText(gate)}
+              </span>
+            </span>
+            <span className="text-muted-foreground">{gate.does}</span>
+            <span className="text-[12px] text-dim-foreground">
+              {gatePlace(gate, stationIds, station.id)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+const GATE_TEXT_TONE = { ok: "ok", err: "err", warn: "warn", idle: "" } as const;
 
 function RunBody({
   projectKey,
@@ -676,7 +727,14 @@ function RunBody({
     data.line,
   );
   const rounds = new Map([...trace.stages].map(([id, s]) => [id, s.generation]));
-  const list = stations(stages, line, rounds, run.status);
+  // A v1 check stage records its command gates as checks; a gate's own result wins.
+  const results = new Map([
+    ...[...trace.checks].map(
+      ([id, c]) => [id, { status: c.status, mode: "required", attempts: 1, flaky: false }] as const,
+    ),
+    ...trace.gates,
+  ]);
+  const list = stations(stages, line, rounds, run.status, results);
   const selectedId = picked && list.some((s) => s.id === picked) ? picked : focusStation(list);
   const index = Math.max(
     0,
@@ -743,6 +801,7 @@ function RunBody({
         station={station}
         index={index}
         total={list.length - 1}
+        stationIds={new Map(list.map((s, i) => [s.id, i]))}
         loops={line.loops}
         contractState={contractState}
         waiting={pending.length}
