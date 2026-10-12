@@ -6,6 +6,8 @@ import type {
   NewProjectCheck,
   NewProjectDraft,
   StreamEvent,
+  VoiceStatus,
+  VoiceTranscript,
 } from "./api.js";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -76,6 +78,13 @@ export interface DesktopBridge {
   windowAction(action: WindowAction): Promise<void>;
   /** Calls back with whether the window is maximized now and whenever that changes. */
   onMaximized(listener: (maximized: boolean) => void): () => void;
+  /** Whether local speech-to-text can run on this computer, and why not. */
+  voiceStatus(): Promise<VoiceStatus>;
+  /**
+   * Transcribes up to 30 seconds of 16 kHz mono samples on this computer; `language` is one of
+   * en, de, fr, es, it, nl, pl, or omitted to detect it.
+   */
+  transcribe(samples: Float32Array, language?: string): Promise<VoiceTranscript>;
 }
 
 export const IPC = {
@@ -105,4 +114,6 @@ export const IPC = {
   windowAction: "baked:window:action",
   windowMaximized: "baked:window:maximized",
   windowState: "baked:window:state",
+  voiceStatus: "baked:voice:status",
+  transcribe: "baked:voice:transcribe",
 } as const;

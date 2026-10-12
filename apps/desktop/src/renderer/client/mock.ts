@@ -288,5 +288,12 @@ export function createMockBridge(scenario: MockScenario = "default"): DesktopBri
     onNavigate: () => () => {},
     windowAction: async () => {},
     onMaximized: () => () => {},
+    voiceStatus: async () => ({
+      available: false,
+      reason: "Voice input runs only in the desktop app.",
+    }),
+    transcribe: async () => {
+      throw new Error("Voice input runs only in the desktop app.");
+    },
   };
 }

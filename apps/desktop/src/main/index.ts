@@ -36,6 +36,7 @@ import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
 import { closeAction } from "./tray-model.js";
+import { resolveVoiceDir, VoiceEngine, type VoiceLanguage } from "./voice.js";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const settings = new SettingsStore(join(app.getPath("userData"), "settings.json"));
@@ -57,6 +58,15 @@ function backendCommand() {
     platform: process.platform,
   });
 }
+
+const voice = new VoiceEngine(
+  resolveVoiceDir({
+    override: process.env.BAKED_VOICE_DIR,
+    packaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  }),
+);
 
 let window: BrowserWindow | null = null;
 let quitting = false;
@@ -319,6 +329,10 @@ function registerIpc(): void {
       else target.maximize();
     } else if (action === "close") target.close();
   });
+  handle(IPC.voiceStatus, () => voice.status());
+  handle(IPC.transcribe, (_e, samples: Float32Array, language?: VoiceLanguage) =>
+    voice.transcribe(samples, language),
+  );
   handle(
     IPC.windowState,
     (event) => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false,
@@ -426,6 +440,6 @@ else {
     event.preventDefault();
     quitting = true;
     for (const stream of attentionStreams.values()) stream.close();
-    void supervisor.stopAll().finally(() => app.quit());
+    void Promise.all([supervisor.stopAll(), voice.close()]).finally(() => app.quit());
   });
 }

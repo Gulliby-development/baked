@@ -136,6 +136,23 @@ export interface StreamEvent {
   data: string;
 }
 
+/** Whether the local speech engine can transcribe here, and why not. */
+export interface VoiceStatus {
+  available: boolean;
+  /** Why transcription is unavailable; set only when `available` is false. */
+  reason?: string;
+  /** The model that transcribes; set only when `available` is true. */
+  model?: string;
+}
+
+/** One transcribed recording. */
+export interface VoiceTranscript {
+  text: string;
+  /** The detected or requested language code; empty for silence. */
+  language: string;
+  durationSeconds: number;
+}
+
 export type Theme = "system" | "dark" | "light";
 
 /** Settings of this app on this computer; agents and runs never read them. */

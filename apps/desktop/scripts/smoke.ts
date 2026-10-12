@@ -1,7 +1,7 @@
 /**
  * Smoke test of the packaged app on Linux, Windows or macOS: registers a project with the bundled
  * `baked`, launches the app under a throwaway home, and checks that All projects lists that
- * project next to the sidebar. On Linux run it under a display, for example
+ * project next to the sidebar, and that the bundled speech engine transcribes. On Linux run it under a display, for example
  * `xvfb-run -a bun run smoke`.
  *
  *   bun run smoke [-- --app <executable>]
@@ -107,6 +107,17 @@ try {
       .getByRole("article", { name: basename(project) })
       .waitFor({ timeout: 30_000 });
     console.log(`smoke: ${await page.title()} shows All projects, the sidebar and the project`);
+    // The bundled speech engine (resources/voice) transcribes a second of silence.
+    const voice = await page.evaluate(async () => {
+      const baked = window.baked;
+      if (!baked) return "no desktop bridge";
+      const status = await baked.voiceStatus();
+      if (!status.available) return status.reason ?? "unavailable";
+      const result = await baked.transcribe(new Float32Array(16_000), "en");
+      return `transcribed ${result.durationSeconds} s`;
+    });
+    if (!voice.startsWith("transcribed")) throw new Error(`voice input: ${voice}`);
+    console.log(`smoke: voice input ${voice}`);
   } finally {
     await app.close();
   }
