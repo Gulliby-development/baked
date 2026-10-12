@@ -432,11 +432,14 @@ function GateDetails({
 
 export function GatesSection({ project }: SectionProps) {
   const key = project.key;
-  const [gates, reloadGates] = useLoad(() => setup.gates(key), [key]);
-  const [config, reloadConfig, setConfig] = useLoad(() => setup.config(key), [key]);
+  const [gates, reloadGates] = useLoad(() => setup.gates(key), [key, "gates"]);
+  const [config, reloadConfig, setConfig] = useLoad(() => setup.config(key), [key, "config"]);
   // `missing` means an older backend: checks are then read from and written to the config.
-  const [checkList, , setCheckList] = useLoad(() => setup.checks(key), [key]);
-  const [suggestions, reloadSuggestions] = useLoad(() => setup.checkSuggestions(key), [key]);
+  const [checkList, , setCheckList] = useLoad(() => setup.checks(key), [key, "checks"]);
+  const [suggestions, reloadSuggestions] = useLoad(
+    () => setup.checkSuggestions(key),
+    [key, "checkSuggestions"],
+  );
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);

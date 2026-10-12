@@ -43,7 +43,7 @@ export function ChatDetail({ item, onDone }: DetailProps) {
   const sessionId = item.sessionId ?? "";
   const [load] = useLoad(
     () => attentionApi.session(item.projectKey, sessionId),
-    `${item.projectKey}:${sessionId}:${item.requestId}`,
+    [item.projectKey, "attention-session", sessionId, item.requestId],
   );
   const action = useAction();
   const [text, setText] = useState("");

@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useMemo, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import type { ModelCatalog } from "../../../../../../src/core/llm/model-choices.js";
 import { ApiError } from "../../client/api.js";
 import { chat } from "../../client/chat.js";
@@ -84,14 +84,13 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
   const [scope, setScope] = useState<RoutingScope>("global");
   const [workflow, setWorkflow] = useState<string | null>(null);
   const key = project?.key ?? "";
-  const [view, , setView] = useLoad(() => setup.routing(key, workflow), [key, workflow]);
+  const [view, , setView] = useLoad(() => setup.routing(key, workflow), [key, "routing", workflow]);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [busy, setBusy] = useState(false);
   const [problems, setProblems] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
-  const loadModels = useCallback(() => chat.models(key), [key]);
-  const models = useModelCatalog(key ? loadModels : null);
+  const models = useModelCatalog(key || null, chat.models);
 
   const change = async (next: RoutingChange, what: string): Promise<boolean> => {
     setBusy(true);

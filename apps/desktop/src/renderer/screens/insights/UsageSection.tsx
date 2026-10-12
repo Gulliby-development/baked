@@ -416,7 +416,7 @@ export function UsageSection({ project, id }: SectionProps) {
   const [filter, setFilter] = useState<UsageFilter>({ stage: null, model: null });
   const { state } = useLoad(
     () => loadSource(project.key, scope),
-    [project.key, scope.kind, scope.kind === "run" ? scope.runId : scope.days],
+    [project.key, "usage", scope.kind, scope.kind === "run" ? scope.runId : scope.days],
   );
   // With a filter, a current backend answers the exact totals (runs above all) in a second
   // request; until it arrives, or when the filter cannot be sent, the totals add up groups.
@@ -436,7 +436,7 @@ export function UsageSection({ project, id }: SectionProps) {
             .usage(project.key, { days: scope.days, groupBy: STAGE_MODEL, ...exactQuery })
             .then((summary) => ({ key: exactKey, summary }))
       : null,
-    [project.key, exactKey],
+    [project.key, "usage-exact", exactKey],
   );
   const exact =
     exactState.kind === "ready" &&
