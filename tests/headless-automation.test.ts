@@ -153,6 +153,44 @@ describe("baked session list and delete", () => {
   });
 });
 
+describe("baked session checkpoints", () => {
+  test("lists the turns of the active tab with their prompts, files and snapshots", async () => {
+    const dir = tempDir();
+    const store = new SessionManager(dir);
+    const messages = [
+      { id: "u1", role: "user", content: "Fix the router\nand its test", timestamp: 1 },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "done",
+        timestamp: 2,
+        toolCalls: [{ id: "t1", name: "edit_file", args: { path: "src/router.ts" }, result: { success: true, output: "" } }],
+      },
+      { id: "s1", role: "user", content: "also the docs", timestamp: 3, isSteering: true },
+      { id: "u2", role: "user", content: "Explain it", timestamp: 4 },
+      { id: "a2", role: "assistant", content: "sure", timestamp: 5 },
+    ] as unknown as ChatMessage[];
+    const base = meta("cp-1", "Checkpoints", dir);
+    const tab = { ...base.tabs[0], checkpointTags: [{ index: 1, anchorMessageId: "u1", gitTag: "baked/cp-1" }] };
+    await store.saveSession({ ...base, tabs: [tab] } as SessionMeta, new Map([["tab-1", messages]]));
+
+    const json = await cli(dir, () => runSessionCli(["checkpoints", "cp", "--json"]));
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual({
+      sessionId: "cp-1",
+      checkpoints: [
+        { index: 1, anchorMessageId: "u1", endMessageId: "s1", prompt: "Fix the router", startedAt: 1, filesEdited: ["src/router.ts"], snapshot: true },
+        { index: 2, anchorMessageId: "u2", endMessageId: "a2", prompt: "Explain it", startedAt: 4, filesEdited: [], snapshot: false },
+      ],
+      redo: [],
+    });
+    const text = await cli(dir, () => runSessionCli(["checkpoints", "cp-1"]));
+    expect(text.stdout.split("\n")[0]).toBe("#1   snapshot  1 file(s)  Fix the router");
+    expect((await cli(dir, () => runSessionCli(["checkpoints", "nope"]))).code).toBe(1);
+    expect((await cli(dir, () => runSessionCli(["checkpoints", "cp-1", "--all"]))).code).toBe(1);
+  });
+});
+
 describe("baked session export", () => {
   test("writes the active tab as Markdown or JSON", async () => {
     const dir = tempDir();

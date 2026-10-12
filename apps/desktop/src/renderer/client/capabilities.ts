@@ -19,6 +19,8 @@ export const DIFF_STATS_CAPABILITY = "diff-stats";
 export const PLAN_MODE_CAPABILITY = "plan-mode";
 /** `POST /v1/sessions/ID/undo` and `/redo` (Undo and Redo in chat). */
 export const CHAT_UNDO_CAPABILITY = "chat-undo";
+/** `GET /v1/sessions/ID/checkpoints` (Rewind to here at the end of each earlier turn). */
+export const CHECKPOINTS_CAPABILITY = "checkpoints";
 /** `GET|POST /v1/workflow/memory` (the Run memory section). */
 export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `/v1/memory*` (the Chat memory section). */

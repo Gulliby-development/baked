@@ -48,7 +48,7 @@ const press = async (view: View, key: string, options?: { ctrl?: boolean }) => {
   });
 };
 /** The frame as one line without the popup border and scrollbar, so wrapped sentences match. */
-const flat = (text: string) => text.replace(/[│█▀▄]/g, " ").replace(/\s+/g, " ");
+const flat = (text: string) => text.replace(/[│┃█▀▄]/g, " ").replace(/\s+/g, " ");
 
 /** Three initiatives: one waiting for its split approval, one running with a blocked feature, one done. */
 function initiatives(): InitiativeView[] {

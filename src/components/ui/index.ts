@@ -26,7 +26,7 @@ export { buildGroupedRows, GroupedList } from "./GroupedList.js";
 export type { InfoLineData, InfoLineKind, InfoLineProps } from "./InfoLine.js";
 export { InfoLine } from "./InfoLine.js";
 export type { KeyCapProps, KeyCapsProps } from "./KeyCap.js";
-export { KeyCap, KeyCaps } from "./KeyCap.js";
+export { Chip, KeyCap, KeyCaps, KeyChip } from "./KeyCap.js";
 export { handleCursorNavKey, handleTextInputKey, type KeyEvt } from "./keyboard.js";
 export type {
   Field as FormFieldops,

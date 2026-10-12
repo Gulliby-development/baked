@@ -33,7 +33,7 @@ export interface ChatRouteContext extends RouteContext {
 
 const ID = "[A-Za-z0-9-]+";
 const SESSION = new RegExp(
-  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|export|undo|redo)(?:/(${ID}))?)?$`,
+  `^/v1/sessions/(${ID})(?:/(fork|messages|interrupt|events|prompts|compact|diff|export|undo|redo|checkpoints)(?:/(${ID}))?)?$`,
 );
 
 export function chatErrorStatus(error: ChatError): number {
@@ -119,6 +119,11 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     only("GET");
     if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
     return ctx.json(200, await chat.get(id).diffStats());
+  }
+  if (action === "checkpoints") {
+    only("GET");
+    if (sub !== undefined) ctx.fail(404, "NOT_FOUND", `No endpoint ${path}`);
+    return ctx.json(200, chat.get(id).checkpoints());
   }
   if (action === "export") {
     only("GET");

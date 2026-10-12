@@ -19,6 +19,12 @@ export function buildCheckEnv(check: Check): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = buildSafeEnv();
   for (const name of check.envNames)
     if (process.env[name] !== undefined) env[name] = process.env[name];
+  // A build server a check leaves running keeps its working directory, and so a task worktree,
+  // locked on Windows (EBUSY when the worktree is removed): .NET and MSBuild reuse worker nodes and
+  // a shared compiler server by default.
+  env.MSBUILDDISABLENODEREUSE ??= "1";
+  env.DOTNET_CLI_USE_MSBUILD_SERVER ??= "0";
+  env.UseSharedCompilation ??= "false";
   if (process.platform === "win32") {
     const path = env.PATH ?? env.Path;
     for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];

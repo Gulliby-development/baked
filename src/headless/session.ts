@@ -1,6 +1,7 @@
 import { relative, resolve } from "node:path";
 import type { RollbackReport } from "../core/checkpoints/fork.js";
 import { RollbackError } from "../core/checkpoints/fork.js";
+import { SavedCheckpointsError, savedSessionCheckpoints } from "../core/checkpoints/list.js";
 import { forkSavedSession, SessionForkError } from "../core/checkpoints/session-fork.js";
 import { rewindSavedSession, SessionRewindError } from "../core/checkpoints/session-rewind.js";
 import { TurnUndoError } from "../core/checkpoints/undo.js";
@@ -11,6 +12,7 @@ import { type SessionListEntry, SessionManager } from "../core/sessions/manager.
 const help = `Usage: baked session list [--limit N] [--json]
        baked session delete SESSION [--json]
        baked session export SESSION [--format markdown|json] [--output FILE] [--json]
+       baked session checkpoints SESSION [--json]
        baked session fork SESSION [options]
        baked session undo SESSION [--to N] [--force] [--json]
        baked session redo SESSION [--force] [--json]
@@ -19,6 +21,7 @@ list prints the saved sessions of this project, most recently updated first (def
 delete removes a saved session and the checkpoint tags it made; the files stay as they are.
 export writes the conversation of the session's active tab as Markdown (default) or JSON, to FILE
 or to .baked/exports/, as /session export does in the terminal UI.
+checkpoints lists the turns of the session's active conversation: undo --to N keeps turns 1 to N.
 SESSION is an id or a unique id prefix.
 
 fork saves a new session with the active conversation of SESSION (an id or unique id prefix) up to a
@@ -54,6 +57,7 @@ export async function runSessionCli(argv: string[]): Promise<number> {
   if (command === "list") return list(rest);
   if (command === "delete") return remove(rest);
   if (command === "export") return exportSession(rest);
+  if (command === "checkpoints") return checkpoints(rest);
   if (command !== "fork") {
     process.stderr.write(`Unknown session command: ${command}\n\n${help}`);
     return 1;
@@ -173,6 +177,40 @@ async function rewind(action: "undo" | "redo", rest: string[]): Promise<number> 
     }
     throw err;
   }
+}
+
+function checkpoints(rest: string[]): number {
+  const ids = rest.filter((a) => !a.startsWith("--"));
+  const unknown = rest.find((a) => a.startsWith("--") && a !== "--json");
+  if (ids.length !== 1 || unknown) {
+    process.stderr.write(
+      `${unknown ? `Unknown argument: ${unknown}` : "Name one session."}\n\n${help}`,
+    );
+    return 1;
+  }
+  let result: ReturnType<typeof savedSessionCheckpoints>;
+  try {
+    result = savedSessionCheckpoints(new SessionManager(getCwd()), ids[0] ?? "");
+  } catch (err) {
+    if (!(err instanceof SavedCheckpointsError)) throw err;
+    process.stderr.write(`${err.message}\n`);
+    return 1;
+  }
+  if (rest.includes("--json")) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return 0;
+  }
+  if (!result.checkpoints.length && !result.redo.length) {
+    process.stdout.write(`Session ${result.sessionId} has no turns yet.\n`);
+    return 0;
+  }
+  const out = result.checkpoints.map((c) => {
+    const files = c.filesEdited.length ? `  ${String(c.filesEdited.length)} file(s)` : "";
+    return `#${String(c.index).padEnd(3)} ${c.snapshot ? "snapshot" : "        "}${files}  ${c.prompt}`;
+  });
+  for (const r of result.redo) out.push(`#${String(r.index).padEnd(3)} undone  ${r.prompt}`);
+  process.stdout.write(`${out.join("\n")}\n`);
+  return 0;
 }
 
 function list(rest: string[]): number {
