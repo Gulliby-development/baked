@@ -323,6 +323,7 @@ const NESTED_KEYS = [
   "compaction",
   "retry",
   "workflows",
+  "watch",
 ] as const;
 
 export function applyConfigPatch<T extends Partial<AppConfig>>(
