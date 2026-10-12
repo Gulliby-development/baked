@@ -268,5 +268,6 @@ function acceptanceSummary(gate: Extract<Gate, { type: "ai-acceptance" }>): stri
     c.outboundHosts.length ? `outboundHosts ${c.outboundHosts.join(",")}` : null,
     c.writePaths.length ? `writePaths ${c.writePaths.join(",")}` : null,
   ].filter(Boolean);
-  return `AI walk-through (${driver}) of ${[start.executable, ...start.args].join(" ")} in ${start.cwd}; grants ${grants.length ? grants.join("; ") : "nothing"}`;
+  const criteria = gate.acceptance.scenario.fromCriteria ? " and the run's manual criteria" : "";
+  return `AI walk-through (${driver}) of ${[start.executable, ...start.args].join(" ")} in ${start.cwd}${criteria}; grants ${grants.length ? grants.join("; ") : "nothing"}`;
 }
