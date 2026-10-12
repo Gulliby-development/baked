@@ -33,6 +33,13 @@ import { closeAction } from "./tray-model.js";
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const settings = new SettingsStore(join(app.getPath("userData"), "settings.json"));
 const tokenDir = join(app.getPath("userData"), "tokens");
+/**
+ * Delays between backend restarts, comma-separated milliseconds. Only the Electron UI tests set
+ * it, so a crashing backend reaches "failed" in a moment instead of half a minute.
+ */
+const restartDelaysMs = process.env.BAKED_DESKTOP_RESTART_DELAYS_MS?.split(",")
+  .map(Number)
+  .filter((n) => Number.isFinite(n) && n >= 0);
 
 function backendCommand() {
   return resolveBackendCommand({
@@ -82,6 +89,7 @@ const supervisor = new ProjectSupervisor({
       command: backendCommand(),
       tokenFile: join(tokenDir, `${key}.token`),
       onState,
+      ...(restartDelaysMs?.length ? { restartDelaysMs } : {}),
     });
   },
   onChange: (projects) => {

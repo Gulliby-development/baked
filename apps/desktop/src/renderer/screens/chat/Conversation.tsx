@@ -13,7 +13,7 @@ import { cn } from "../../lib/cn.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
-import { type ToolDiff, toolDiff, toolTitle } from "./tools.js";
+import { type ToolDiff, toolDiff, toolIcon, toolTitle } from "./tools.js";
 import type { Transcript, TranscriptPrompt } from "./transcript.js";
 
 /** Tools the agent uses for its own bookkeeping; they say nothing to the person. */
@@ -62,12 +62,12 @@ function Status({ call }: { call: ToolCall }) {
       </span>
     );
   return call.result.success ? (
-    <span className="text-[var(--ok)]" role="img" aria-label="Done">
-      ✓
+    <span className="flex text-[var(--ok)]" role="img" aria-label="Done">
+      <Icon name="ok" size={13} />
     </span>
   ) : (
-    <span className="text-[var(--err)]" role="img" aria-label="Failed">
-      ✕
+    <span className="flex text-[var(--err)]" role="img" aria-label="Failed">
+      <Icon name="failed" size={13} />
     </span>
   );
 }
@@ -99,6 +99,7 @@ function ToolLine({ call }: { call: ToolCall }) {
       >
         <Chevron open={open} />
         <Status call={call} />
+        <Icon name={toolIcon(call.name)} size={13} className="flex-none text-dim-foreground" />
         <Title call={call} />
       </button>
       {open && (
@@ -122,6 +123,7 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
     >
       <figcaption className="flex items-center gap-[10px] px-3 py-[10px] text-[13px] font-semibold text-muted-foreground border-b-2 border-b-border">
         <Status call={call} />
+        <Icon name="edit" size={13} className="flex-none text-dim-foreground" />
         <span className="font-mono text-soft-foreground min-w-0 truncate">{diff.path}</span>
         {diff.created && <span className="text-dim-foreground">new file</span>}
         <span className="font-mono ml-auto text-[var(--ok)]">+{diff.added}</span>
@@ -236,7 +238,7 @@ function Assistant({
 const FORK_ROW =
   "m-0 flex flex-wrap items-center gap-2 border-0 p-0 text-[13px] text-dim-foreground";
 const FORK_LINK =
-  "cursor-pointer border-0 bg-transparent p-0 [font-family:inherit] [font-size:inherit] leading-[inherit] text-dim-foreground underline hover:text-foreground disabled:cursor-default disabled:opacity-50";
+  "inline-flex items-center gap-1 cursor-pointer border-0 bg-transparent p-0 [font-family:inherit] [font-size:inherit] leading-[inherit] text-dim-foreground underline hover:text-foreground disabled:cursor-default disabled:opacity-50";
 
 function ForkAction({
   disabled,
@@ -260,6 +262,7 @@ function ForkAction({
           disabled={disabled}
           onClick={() => setOpen(true)}
         >
+          <Icon name="fork" size={12} />
           Fork from here
         </button>
       </div>

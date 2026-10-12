@@ -3,6 +3,8 @@
  * events carry only the tool name, its input and its output, so the screen derives both here.
  */
 
+import type { IconName } from "../../components/Icon.js";
+
 export interface ToolTitle {
   /** The plain part, e.g. "Read". */
   verb: string;
@@ -52,6 +54,40 @@ function humanize(name: string): string {
     .replace(/[_-]+/g, " ")
     .trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+const TOOL_ICON: Record<string, IconName> = {
+  read: "read",
+  fetch_page: "read",
+  edit_file: "edit",
+  multi_edit: "edit",
+  write_file: "edit",
+  create_file: "edit",
+  ast_edit: "edit",
+  structural_edit: "edit",
+  rename_file: "edit",
+  rename_symbol: "edit",
+  move_symbol: "edit",
+  refactor: "edit",
+  undo_edit: "undo",
+  shell: "shell",
+  project: "shell",
+  grep: "search",
+  bake_grep: "search",
+  glob: "search",
+  bake_find: "search",
+  bake_query: "search",
+  list_dir: "search",
+  navigate: "search",
+  web_search: "search",
+  git: "git",
+  bake_vision: "image",
+  task_list: "plan",
+};
+
+/** The icon for a tool call; tools without one of their own show the model chip. */
+export function toolIcon(name: string): IconName {
+  return TOOL_ICON[name] ?? "model";
 }
 
 /** A one-line title for a tool call from its name and input. */
@@ -113,6 +149,13 @@ export function toolTitle(name: string, args: Args): ToolTitle {
       return { verb: "Searched the web for", subject: shorten(str(args.query) ?? "") };
     case "fetch_page":
       return { verb: "Fetched", subject: str(args.url), code: true };
+    case "baked_help":
+      return {
+        verb: "Read BAKED docs",
+        ...(str(args.query) || str(args.page)
+          ? { subject: shorten(str(args.query) ?? str(args.page) ?? "") }
+          : {}),
+      };
     case "git":
       return { verb: "Git", subject: str(args.action) ?? str(args.command), code: true };
     case "project":

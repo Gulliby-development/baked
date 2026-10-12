@@ -505,7 +505,14 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
           name: status.name,
           configured: status.available,
           acceptsKey: Boolean(secret),
-          source: source === "none" ? null : source === "env" ? "env" : "app",
+          source: status.detected
+            ? "detected"
+            : source === "none"
+              ? null
+              : source === "env"
+                ? "env"
+                : "app",
+          ...(status.detected ? { detectedFrom: status.detected } : {}),
           ...(secret?.keyUrl ? { keyUrl: secret.keyUrl } : {}),
           ...(isCliLoginProvider(status.id)
             ? { signIn: { ...cliSignInStatus(status.id), login: getCliLogin(status.id) } }

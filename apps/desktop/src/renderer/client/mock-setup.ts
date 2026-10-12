@@ -421,11 +421,12 @@ const providers: ProviderStatus[] = [
     keyUrl: "https://aistudio.google.com/apikey",
   },
   {
-    id: "github-copilot",
+    id: "copilot",
     name: "GitHub Copilot",
     configured: true,
-    acceptsKey: false,
-    source: null,
+    acceptsKey: true,
+    source: "detected",
+    detectedFrom: "Copilot IDE login",
   },
   {
     id: "codex",

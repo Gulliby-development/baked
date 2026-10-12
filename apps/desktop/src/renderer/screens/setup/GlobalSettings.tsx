@@ -257,7 +257,9 @@ function ProviderRow({
                 ? "configured · key from an environment variable"
                 : provider.source === "app"
                   ? "configured · key saved by BAKED"
-                  : "configured"
+                  : provider.source === "detected"
+                    ? `configured · signed in through ${provider.detectedFrom ?? "another app"}`
+                    : "configured"
               : "not configured"}
           {!provider.acceptsKey && !provider.signIn && " · signs in without an API key"}
         </span>

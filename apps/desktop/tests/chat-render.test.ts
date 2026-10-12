@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseInline, parseMarkdown } from "../src/renderer/screens/chat/markdown-parse.ts";
-import { toolDiff, toolTitle } from "../src/renderer/screens/chat/tools.ts";
+import { toolDiff, toolIcon, toolTitle } from "../src/renderer/screens/chat/tools.ts";
 import {
   forkReportLines,
   rememberForkReport,
@@ -39,6 +39,18 @@ describe("tool titles", () => {
     const subject = toolTitle("shell", { command: "x".repeat(200) }).subject ?? "";
     expect(subject.length).toBe(80);
     expect(subject.endsWith("…")).toBe(true);
+  });
+});
+
+describe("tool icons", () => {
+  test("tools show the icon of what they do, unknown ones the model chip", () => {
+    expect(toolIcon("read")).toBe("read");
+    expect(toolIcon("multi_edit")).toBe("edit");
+    expect(toolIcon("shell")).toBe("shell");
+    expect(toolIcon("bake_grep")).toBe("search");
+    expect(toolIcon("git")).toBe("git");
+    expect(toolIcon("bake_vision")).toBe("image");
+    expect(toolIcon("mcp__acme__thing")).toBe("model");
   });
 });
 

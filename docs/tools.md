@@ -18,6 +18,19 @@ The agent picks tools itself; this page lists what they do. `/tools` turns tools
 | `discover_pattern` | Finds how a concept is already implemented in the codebase |
 | `bake_vision` | Shows an image or video file inline in the chat, for example a screenshot path given in the prompt |
 | `web_search`, `fetch_page` | Web search and page reading (asks before each search) |
+| `baked_help` | Searches and reads BAKED's own documentation, bundled with the build; see [Asking about BAKED](#asking-about-baked) |
+
+## Asking about BAKED
+
+Questions about BAKED itself (commands, settings, providers, workflows, the desktop app, the local API) are answered from the pages in `docs/`, which are bundled into every build and binary, so this works in any project, offline and in the same version as the running BAKED. The prompt carries one line telling the agent to use `baked_help`; the pages themselves are read only when asked, so they cost no prompt tokens otherwise.
+
+`baked_help` takes `action`:
+
+- `search` with `query`: the best matching sections, as `page.md#section` with a preview line;
+- `read` with `page` (a path such as `workflows/quick.md`, with or without `.md`, or a page title) and an optional `section` (an anchor or heading): the page or the section with its subsections, cut at 12,000 characters with an outline of the sections to read next;
+- `list`: every page with its title and the BAKED version.
+
+It is read-only, so it is available in plan and other read-only modes, in chat on every surface (terminal UI, headless `baked --headless`, desktop chat through `baked serve`). Workflow stages do not get it: their tool lists come from the stage profiles. A new page in `docs/` is added to `src/core/help/bundled-docs.ts`; `tests/docs.test.ts` fails when a page is missing there.
 
 ## Editing
 
