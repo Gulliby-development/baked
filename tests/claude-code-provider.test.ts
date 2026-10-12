@@ -202,6 +202,24 @@ describe("claude-code provider", () => {
     expect(spawned[0]?.killed).toBe(true);
   });
 
+  test("passes the chat's effort to the CLI and keeps sessions apart by effort", async () => {
+    const { factory: inner, spawned } = fakeFactory([toolCallResult, stopResult, toolCallResult]);
+    const efforts: Array<string | undefined> = [];
+    const factory: ClaudeCodeProcessFactory = (options) => {
+      efforts.push(options.effort);
+      return inner(options);
+    };
+    const runner = new ClaudeCodeSessionRunner(factory);
+    const model = createClaudeCodeLanguageModel("opus", runner);
+    const high = { "claude-code": { reasoningEffort: "high" } };
+    await model.doGenerate({ ...FIRST, providerOptions: high });
+    await model.doGenerate({ ...SECOND, providerOptions: high });
+    expect(spawned).toHaveLength(1);
+    await model.doGenerate({ ...SECOND, providerOptions: { "claude-code": { reasoningEffort: "low" } } });
+    expect(efforts).toEqual(["high", "low"]);
+    runner.close();
+  });
+
   test("starts a new session when the transcript does not extend one", async () => {
     const { factory, spawned } = fakeFactory([toolCallResult, stopResult]);
     const runner = new ClaudeCodeSessionRunner(factory);
