@@ -12,6 +12,7 @@ import { ApiError } from "../../client/api.js";
 import {
   CHAT_EXPORT_CAPABILITY,
   CHAT_UNDO_CAPABILITY,
+  CHECKPOINTS_CAPABILITY,
   COMPACTION_CAPABILITY,
   CUSTOM_COMMANDS_CAPABILITY,
   DIFF_STATS_CAPABILITY,
@@ -28,9 +29,11 @@ import {
 } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { setup } from "../../client/setup.js";
+import { BlockIcon, Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { emptyClass } from "../../components/ui/empty.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -111,7 +114,7 @@ function LatestSession({ project }: { project: DesktopProject }) {
   return (
     <Centered project={project}>
       {state === "loading" ? (
-        <p className="text-dim-foreground">Loading sessions…</p>
+        <Skeleton label="Loading sessions" />
       ) : (
         <Alert tone="error">{state}</Alert>
       )}
@@ -223,6 +226,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
   }, [key]);
   const canCompact = capabilities?.includes(COMPACTION_CAPABILITY) === true;
   const canRewind = capabilities?.includes(CHAT_UNDO_CAPABILITY) === true;
+  const canRewindTo = canRewind && capabilities?.includes(CHECKPOINTS_CAPABILITY) === true;
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
   // Older servers list commands under `library` but send them to the model unexpanded.
@@ -352,9 +356,11 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
         }
       : undefined;
 
-  const rewind = (action: "undo" | "redo"): void => {
+  /** Undo (to `toCheckpoint` when given, already confirmed in the turn) or redo. */
+  const rewind = (action: "undo" | "redo", toCheckpoint?: number): void => {
     if (
       action === "undo" &&
+      toCheckpoint === undefined &&
       !window.confirm(
         "Undo the last turn? It is dropped from the chat and the files it edited are restored; files changed since then stay as they are. Redo puts it back until you send a new message.",
       )
@@ -362,7 +368,10 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       return;
     setRewinding(true);
     setActionError(null);
-    (action === "undo" ? chat.undo(key, sessionId) : chat.redo(key, sessionId))
+    (action === "undo"
+      ? chat.undo(key, sessionId, toCheckpoint === undefined ? {} : { toCheckpoint })
+      : chat.redo(key, sessionId)
+    )
       .then((detail) => {
         dispatch({ type: "snapshot", detail });
         setRewindReport(rewindReportLines(action, detail.rollback));
@@ -436,10 +445,11 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
       />
       <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
         <div className={COLUMN} aria-live="off">
-          {load === "loading" && <p className="text-dim-foreground">Loading the session…</p>}
+          {load === "loading" && <Skeleton lines={5} label="Loading the session" />}
           {load !== "loading" && load !== "ready" && <Alert tone="error">{load}</Alert>}
           {(draft || empty) && transcript.pending.length === 0 && (
             <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">
+              <BlockIcon name="chat" className="mb-1" />
               <p className={cn("m-0", EMPTY_TITLE)}>What should BAKED do in {project.name}?</p>
               <p className="m-0 text-dim-foreground">
                 Describe a change, ask about the code, or paste an error. Tool approvals show up
@@ -448,16 +458,20 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             </div>
           )}
           {forkReport && (
-            <Alert role="status">
-              {forkReport.map((line) => (
-                <p key={line} className="m-0">
-                  {line}
-                </p>
-              ))}
+            <Alert role="status" className="flex items-start gap-3">
+              <Icon name="fork" size={15} className="mt-[2px] flex-none" />
+              <div className="min-w-0 flex-1">
+                {forkReport.map((line) => (
+                  <p key={line} className="m-0">
+                    {line}
+                  </p>
+                ))}
+              </div>
             </Alert>
           )}
           {rewindReport && (
             <Alert role="status" className="flex items-start gap-3">
+              <Icon name="rewind" size={15} className="mt-[2px] flex-none" />
               <div className="min-w-0 flex-1">
                 {rewindReport.map((line) => (
                   <p key={line} className="m-0">
@@ -475,6 +489,9 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             deciding={deciding}
             forking={forking}
             {...(draft ? {} : { onFork: fork })}
+            {...(canRewindTo && !draft && !rewinding
+              ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
+              : {})}
             onApprove={(id, approve) => decide(id, () => chat.approve(key, sessionId, id, approve))}
             onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
             onReviewPlan={(id, review) =>

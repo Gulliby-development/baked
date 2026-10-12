@@ -797,6 +797,7 @@ export function createBakeAgent({
     // Memory & skills
     "memory",
     "skills",
+    "baked_help",
     // Tool management
     "request_tools",
     "release_tools",

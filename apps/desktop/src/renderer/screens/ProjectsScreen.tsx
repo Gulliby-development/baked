@@ -3,6 +3,7 @@ import type { AttentionItem, DesktopProject } from "../../shared/api.js";
 import { attentionTitle } from "../../shared/attention.js";
 import type { ProjectAction } from "../../shared/bridge.js";
 import { bridge } from "../client/bridge.js";
+import { BlockIcon } from "../components/Icon.js";
 import { Alert } from "../components/ui/alert.js";
 import { Button, buttonVariants } from "../components/ui/button.js";
 import {
@@ -362,7 +363,10 @@ export function ProjectsScreen() {
         </Alert>
       )}
       {projects.length === 0 ? (
-        <Empty>No projects yet. Open a folder to start.</Empty>
+        <Empty className="flex flex-col items-center gap-3">
+          <BlockIcon name="projects" />
+          No projects yet. Open a folder to start.
+        </Empty>
       ) : shown.length === 0 ? (
         <Empty>No project matches “{query}”.</Empty>
       ) : (

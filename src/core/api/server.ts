@@ -31,6 +31,7 @@ import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
 import { BakeChatHost } from "../chat/host.js";
 import { serviceStateSource } from "../chat/project-state.js";
+import { scriptedHostFromEnv } from "../chat/scripted-host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
 import { storageDirs } from "../diagnostics/storage.js";
@@ -39,6 +40,7 @@ import { CodeGraphCache } from "../intelligence/code-graph.js";
 import type { LspServiceDeps } from "../intelligence/lsp-service.js";
 import { MemoryManager } from "../memory/manager.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
+import { progress } from "../progress.js";
 import { listKnownProjects } from "../projects/known.js";
 import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
@@ -74,6 +76,7 @@ import { initiativeRoute } from "./initiative-routes.js";
 import { lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
+import { progressRoute } from "./progress-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
   AnswerBody,
@@ -121,6 +124,7 @@ export const CAPABILITIES = [
   "diff-stats",
   "plan-mode",
   "chat-undo",
+  "checkpoints",
   "run-memory",
   "chat-memory",
   "images",
@@ -135,6 +139,7 @@ export const CAPABILITIES = [
   "provider-switch",
   "chat-export",
   "diagnostics",
+  "progress",
   "coordinator",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -414,7 +419,10 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     new ChatService({
       workspace: service.workspace,
       config: service.config,
-      host: new BakeChatHost(service.workspace, service.config, service.rootContext),
+      // BAKED_TEST_SCRIPT (tests only) plays a scripted model instead of calling one.
+      host:
+        scriptedHostFromEnv() ??
+        new BakeChatHost(service.workspace, service.config, service.rootContext),
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);
@@ -536,7 +544,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       onDrive = resolve;
     });
     let driven: string | undefined;
+    const progressId = `run-start-${crypto.randomUUID()}`;
+    progress.set(
+      "run-start",
+      args.command === "resume" ? "Resuming the run" : "Starting the run",
+      null,
+      progressId,
+    );
     const execution = executeWorkflowCommand(service, args, shutdown.signal, (runId) => {
+      progress.end(progressId);
       started = true;
       driven = runId;
       // A second drive of a run this server is driving fails at once; keep waiting on the first.
@@ -550,6 +566,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         log(JSON.stringify({ event: "drive-error", code, message: redactSecrets(message) }));
       })
       .finally(() => {
+        progress.end(progressId);
         drives.delete(tracked);
         if (driven !== undefined && runDrives.get(driven) === tracked) runDrives.delete(driven);
       });
@@ -782,6 +799,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       keepOpen: () => server.timeout(req, 0),
     };
     const routed =
+      progressRoute({ ...ctx, tracker: progress }) ??
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??

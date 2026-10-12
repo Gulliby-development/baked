@@ -1,5 +1,6 @@
 import { Alert } from "../../components/ui/alert.js";
 import { Empty } from "../../components/ui/empty.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import type { Load } from "./useLoad.js";
 
 /**
@@ -17,7 +18,7 @@ export function LoadState({
 }) {
   switch (state.kind) {
     case "loading":
-      return <div className="text-dim-foreground">Loading…</div>;
+      return <Skeleton />;
     case "error":
       return <Alert tone="error">{state.message}</Alert>;
     case "missing":

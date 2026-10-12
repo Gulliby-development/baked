@@ -4,6 +4,7 @@ import { attentionTitle, kindLabel } from "../../../shared/attention.js";
 import { ApiError } from "../../client/api.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { ago } from "../../format.js";
 import { cn } from "../../lib/cn.js";
 import { type QueryKey, useQuery } from "../../lib/query.js";
@@ -105,7 +106,7 @@ export function Loading<T>({
   load: Load<T>;
   children: (value: T) => ReactNode;
 }) {
-  if (load.state === "loading") return <p className="text-dim-foreground">Loading…</p>;
+  if (load.state === "loading") return <Skeleton />;
   if (load.state === "error")
     return (
       <Alert tone="error" role="alert">

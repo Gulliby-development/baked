@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { isMissingEndpoint, isNoProject } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Empty } from "../../components/ui/empty.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
 import { type Query, type QueryKey, useQuery } from "../../lib/query.js";
 
 /** Class strings the setup screens share (project gates, instructions, working set, settings). */
@@ -84,7 +85,7 @@ export function NeedsNewer({ what }: { what: string }) {
 
 /** The non-ready states of a `Loaded`, or null when the data is there. */
 export function LoadState({ value, what }: { value: Loaded<unknown>; what: string }) {
-  if (value.state === "loading") return <div className="text-dim-foreground">Loading {what}…</div>;
+  if (value.state === "loading") return <Skeleton label={`Loading ${what}`} />;
   if (value.state === "missing") return <NeedsNewer what={what} />;
   if (value.state === "no-project")
     return (

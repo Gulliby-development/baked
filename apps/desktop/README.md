@@ -50,6 +50,18 @@ No browser is downloaded: the tests use the installed Google Chrome (`channel: "
 test keeps a screenshot and a trace in `test-results/`; in CI they are uploaded as the
 `desktop-ui-report` artifact.
 
+`bun run e2e:electron` builds the app and launches it from `out/` with Playwright's Electron
+support (Linux: run it under `xvfb-run -a`). Each test gets a throwaway home whose settings point
+the BAKED executable at `tests/fixtures/fake-serve.ts` (through a small shell wrapper), so it
+covers preload IPC, the bearer token, backend start, crash and restart, project open and close,
+and attention streams that drop and resume with `Last-Event-ID`, without a real `baked`. The
+fake's known projects live in the file named by `FAKE_BAKED_PROJECTS`, and
+`BAKED_DESKTOP_RESTART_DELAYS_MS` shortens the restart backoff. The chat scenario
+(`e2e/electron/chat.electron.ts`) runs the repository's own `baked serve` from source instead,
+with `BAKED_TEST_SCRIPT` pointing at a JSON chat script, so it needs `bun install` at the
+repository root too. Install the Electron binary first
+(`bun install` without `ELECTRON_SKIP_BINARY_DOWNLOAD`).
+
 `apps/desktop` is its own package with its own lockfile: the root `bun install` does not download
 Electron, and the root checks do not cover this folder.
 

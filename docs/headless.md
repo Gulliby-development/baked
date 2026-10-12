@@ -1,6 +1,6 @@
 # Headless CLI
 
-`baked --headless` runs the same agent and tools without the terminal UI, for scripts and CI. Agent text goes to stdout; progress goes to stderr, so pipes stay clean.
+`baked --headless` runs the same agent and tools without the terminal UI, for scripts and CI. Agent text goes to stdout; progress goes to stderr, so pipes stay clean. While the repository map is still being built, stderr shows how far it got (`Indexing files 412/1,380`, then each later phase such as `Building edges`), at most one count every two seconds; `--json`, `--events` and `--quiet` leave it out.
 
 ```sh
 baked --headless "explain the auth middleware"
@@ -95,11 +95,14 @@ Headless runs do not snapshot the workspace, so a session made only with `--save
 
 ```sh
 baked session undo <id>            # drop the last turn and restore the files it edited
+baked session checkpoints <id>     # list the turns: number, snapshot, files, prompt
 baked session undo <id> --to 1     # keep only checkpoint 1
 baked session redo <id>            # put the oldest undone turn back
 ```
 
 `baked session undo ID` drops the last turn of the active conversation of session `ID` (with `--to N`, every turn after checkpoint N; `--to 0` drops them all) and restores the files those turns edited, with the safeguards of `/undo` in the terminal UI ([checkpoints](guide.md#checkpoints)): a backup tag first, and files changed since the agent last wrote them are left as they are unless `--force`. The undone turns are saved with the session; `baked session redo ID` puts back the oldest one and restores the files it edited. After a new message in the session they can no longer be put back. `--json` prints `{sessionId, action, checkpoint, messageCount, redoCount, rollback}`. The command exits 1 when the session does not exist or there is nothing to undo or redo.
+
+`baked session checkpoints ID` lists the turns of the active conversation, one per line: the checkpoint number to pass to `--to`, `snapshot` when the files of that turn can be restored, how many files it edited and the first line of its prompt; undone turns follow, marked `undone`. `--json` prints `{sessionId, checkpoints, redo}` as `GET /v1/sessions/ID/checkpoints` does.
 
 ## MCP servers
 

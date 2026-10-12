@@ -155,11 +155,17 @@ try {
     }
     Write-Host "    OK worker leak canary"
 
-    $wts = Join-Path $repoRoot "node_modules/web-tree-sitter"
-    $wasmTargets = @((Join-Path $wts "tree-sitter.wasm"), (Join-Path $wts "web-tree-sitter.wasm"))
-    $wasmSrc = $wasmTargets | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $wasmSrc) { throw "tree-sitter.wasm not found in node_modules/web-tree-sitter" }
-    Copy-Item $wasmSrc (Join-Path $depsDir "wasm/tree-sitter.wasm") -Force
+    # tree-sitter.wasm is web-tree-sitter 0.25.10, which OpenTUI's syntax highlighting pins;
+    # web-tree-sitter.wasm is 0.27 (the web-tree-sitter-engine alias) for code intelligence.
+    $runtimes = @(
+        @{ Src = "node_modules/web-tree-sitter/tree-sitter.wasm"; Dest = "wasm/tree-sitter.wasm" },
+        @{ Src = "node_modules/web-tree-sitter-engine/web-tree-sitter.wasm"; Dest = "wasm/web-tree-sitter.wasm" }
+    )
+    foreach ($r in $runtimes) {
+        $src = Join-Path $repoRoot $r.Src
+        if (-not (Test-Path $src)) { throw "$($r.Src) not found" }
+        Copy-Item $src (Join-Path $depsDir $r.Dest) -Force
+    }
     $grammars = Join-Path $repoRoot "node_modules/tree-sitter-wasms/out"
     if (Test-Path $grammars) {
         Get-ChildItem $grammars -Filter *.wasm | Copy-Item -Destination (Join-Path $depsDir "wasm") -Force

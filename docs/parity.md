@@ -61,7 +61,7 @@ bun test tests/feature-parity.test.ts
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
 | Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Undo and redo a turn with its file edits | `/checkpoint`, `/checkpoint undo`, `/checkpoint redo` +2 | `baked session undo`, `baked session redo` | `/v1/sessions/:id/undo`, `/v1/sessions/:id/redo` | `project/chat` |
-| Checkpoint list and rewind to a checkpoint | `/checkpoint` | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no list | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no checkpoint list | **Gap** [#273](https://github.com/Gulliby-development/baked/issues/273) |
+| Checkpoint list and rewind to a checkpoint | `/checkpoint` | `baked session checkpoints`, `baked session undo` | `/v1/sessions/:id/checkpoints`, `/v1/sessions/:id/undo` | `project/chat` |
 | Fork a session | `/checkpoint fork` | `baked session fork` | `/v1/sessions/:id/fork` | `project/chat` |
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
 | Reasoning effort per chat | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384): set globally in /provider-settings only | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) |
@@ -90,10 +90,12 @@ bun test tests/feature-parity.test.ts
 | Diagnose LSP, tree-sitter and index health | `/diagnose` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check |
 | Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
+| Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
 | Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
+| Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
 | Instruction files: view and edit content | `/instructions show`, `/instructions edit` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/instructions` |
 | Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/instructions` |
 | Long-term chat memory: browse, pin, reword, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/chat-memory` |
@@ -157,7 +159,6 @@ bun test tests/feature-parity.test.ts
 
 - [#151](https://github.com/Gulliby-development/baked/issues/151): Project coordinator chat with a durable project brief
 - [#152](https://github.com/Gulliby-development/baked/issues/152): Project coordinator chat with a durable project brief
-- [#273](https://github.com/Gulliby-development/baked/issues/273): Checkpoint list and rewind to a checkpoint
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Diagnose LSP, tree-sitter and index health; Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects

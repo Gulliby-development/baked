@@ -397,7 +397,10 @@ function ContextChip({
             <span className="font-mono">{tokens(usage.output)}</span>
           </div>
           <div className={`${KV} border-t-2 border-t-border pt-2 font-bold`}>
-            <span>Model</span>
+            <span className="inline-flex items-center gap-[6px]">
+              <Icon name="model" size={13} />
+              Model
+            </span>
             <span className="font-mono">{shortModel(model)}</span>
           </div>
           {compact && (
@@ -408,6 +411,7 @@ function ContextChip({
                 disabled={compact.disabled !== null}
                 onClick={compact.run}
               >
+                <Icon name="compact" size={13} />
                 Compact now
               </Button>
               <p className={cn(MENU_NOTE, "m-0")}>

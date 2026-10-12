@@ -21,6 +21,8 @@ import {
 import { MemoryManager } from "../memory/manager.js";
 import { MemoryRecall } from "../memory/recall.js";
 import { describeRecallSignals, MEMORY_RECALL_ACK } from "../memory/types.js";
+// buildForbiddenContext removed from system prompt — gates enforce at tool level
+import { indexProgress, progress } from "../progress.js";
 import { activeProject } from "../projects/resolve.js";
 import { renderWorkingSet, resolveWorkingSet } from "../projects/working-set.js";
 import {
@@ -31,7 +33,6 @@ import {
   invalidateDirectoryTree,
   type PromptBuilderOptions,
 } from "../prompts/index.js";
-// buildForbiddenContext removed from system prompt — gates enforce at tool level
 import { onFileEdited, onFileRead } from "../tools/file-events.js";
 import { IntelligenceClient } from "../workers/intelligence-client.js";
 import { dotnetFiles } from "../workflows/language.js";
@@ -376,15 +377,9 @@ export class ContextManager {
   private wireRepoMapCallbacks(): void {
     this.repoMap.onProgress = (indexed: number, total: number) => {
       const store = useRepoMapStore.getState();
-      const phaseLabels: Record<number, string> = {
-        [-1]: "resolving refs",
-        [-2]: "building call graph",
-        [-3]: "building edges",
-        [-4]: "linking tests",
-        [-5]: "analyzing git history",
-      };
-      const label = phaseLabels[indexed] ?? `${String(indexed)}/${String(total)}`;
-      store.setScanProgress(label);
+      const { label, counts } = indexProgress(indexed, total);
+      progress.set("index", label, counts);
+      store.setScanProgress(counts ? `${String(counts.done)}/${String(counts.total)}` : label);
       const stats = this.repoMap.getStatsCached();
       store.setStats(stats.files, stats.symbols, stats.edges, this.repoMap.dbSizeBytesCached());
     };
@@ -466,6 +461,11 @@ export class ContextManager {
   }
 
   private syncRepoMapStore(status: "off" | "scanning" | "ready" | "error"): void {
+    // Only the root that scans reports it; children and borrowers share its map.
+    if (this.ownsIntelligence && !this.isChild) {
+      if (status === "scanning") progress.set("index", "Scanning the project");
+      else progress.end("index");
+    }
     const store = useRepoMapStore.getState();
     if (status !== "scanning") {
       const stats = this.repoMap.getStatsCached();

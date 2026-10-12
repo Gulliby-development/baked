@@ -1,15 +1,20 @@
 import { fg as fgStyle, StyledText, type TextRenderable } from "@opentui/core";
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { ContextManager } from "../../core/context/manager.js";
 import { icon } from "../../core/icons.js";
-import { getThemeTokens } from "../../core/theme/index.js";
+import { getThemeTokens, useTheme } from "../../core/theme/index.js";
+import { reducedMotion } from "../../core/utils/motion.js";
+import { SPINNER_TICK_MS, spinnerGlyph } from "../../core/utils/spinner.js";
 import { useStatusBarStore } from "../../stores/statusbar.js";
 import { useWorkerStore, type WorkerStatus } from "../../stores/workers.js";
 
-const BAR_WIDTH = 8;
+export const METER_WIDTH = 8;
+/** Context use at or above this percentage paints the meter red. */
+export const METER_DANGER_PCT = 85;
 const CHARS_PER_TOKEN = 4;
 const STEP_MS = 50;
 const EASE = 0.35;
+const MEMORY_HINT_INTERVAL_MS = 30_000;
 
 function approach(current: number, target: number): number {
   if (current === target) return target;
@@ -17,31 +22,11 @@ function approach(current: number, target: number): number {
   return Math.abs(next - target) < 1 ? target : Math.round(next);
 }
 
-function getBarColor(pct: number): string {
+export function meterColor(pct: number): string {
   const tk = getThemeTokens();
-  if (pct < 50) return tk.success;
-  if (pct < 70) return tk.warning;
-  if (pct < 85) return tk.warning;
-  return tk.error;
+  if (pct >= METER_DANGER_PCT) return tk.error;
+  return pct < 50 ? tk.success : tk.warning;
 }
-
-function getPctColor(pct: number): string {
-  const tk = getThemeTokens();
-  if (pct < 50) return tk.success;
-  if (pct < 70) return tk.warning;
-  if (pct < 85) return tk.warning;
-  return tk.error;
-}
-
-function getFlashColor(pct: number): string {
-  const tk = getThemeTokens();
-  if (pct < 50) return tk.success;
-  if (pct < 70) return tk.warning;
-  if (pct < 85) return tk.warning;
-  return tk.error;
-}
-
-const COMPACT_FRAMES = ["◐", "◓", "◑", "◒"];
 
 function humanizeTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
@@ -52,7 +37,6 @@ function humanizeTokens(n: number): string {
 interface BarTarget {
   pct: number;
   live: boolean;
-  flash: boolean;
   usedTokens: number;
   windowTokens: number;
 }
@@ -62,51 +46,36 @@ interface WorkerIndicator {
   io: WorkerStatus;
 }
 
-function buildContent(
-  pct: number,
-  live: boolean,
-  flash: boolean,
-  usedTokens: number,
-  windowTokens: number,
-  compacting?: { active: boolean; frame: number },
-  workers?: WorkerIndicator,
-  browsing?: boolean,
-  memoryHint?: { stale: number } | null,
-): StyledText {
-  const filled = Math.round((pct / 100) * BAR_WIDTH);
-  const empty = BAR_WIDTH - filled;
-  const barColor = getBarColor(pct);
-  const pulse = pct > 80;
+export interface ContextMeterState {
+  pct: number;
+  live: boolean;
+  usedTokens: number;
+  windowTokens: number;
+  /** Spinner tick while compacting, null otherwise. */
+  compactFrame?: number | null;
+  workers?: WorkerIndicator;
+  browsing?: boolean;
+  memoryHint?: { stale: number } | null;
+}
 
-  const pctColor = flash ? getFlashColor(pct) : getPctColor(pct);
+/** `████░░░░ 52% ~104k/200k`: a block meter, green, then amber, then red from 85%. */
+export function buildContextMeter(state: ContextMeterState): StyledText {
+  const { pct, live, usedTokens, windowTokens, workers, browsing, memoryHint } = state;
+  const filled = Math.round((Math.max(0, Math.min(100, pct)) / 100) * METER_WIDTH);
   const t = getThemeTokens();
+  const color = browsing ? t.warning : meterColor(pct);
   const tokenLabel =
     usedTokens > 0 ? ` ~${humanizeTokens(usedTokens)}/${humanizeTokens(windowTokens)}` : "";
-  // When browsing a past checkpoint, render everything in warning/muted tones
-  if (browsing) {
-    const chunks = [
-      fgStyle(t.warning)("◀ "),
-      fgStyle(t.textFaint)("["),
-      fgStyle(t.warning)("▰".repeat(filled)),
-      fgStyle(t.textSubtle)("▱".repeat(empty)),
-      fgStyle(t.textFaint)("]"),
-      fgStyle(t.warning)(`~${String(pct)}%`),
-      fgStyle(t.textDim)(tokenLabel),
-    ];
-    return new StyledText(chunks);
-  }
   const chunks = [
-    fgStyle(live ? t.success : t.textDim)("● "),
-    fgStyle(t.textFaint)("["),
-    fgStyle(pulse ? t.error : barColor)("▰".repeat(filled)),
-    fgStyle(t.textSubtle)("▱".repeat(empty)),
-    fgStyle(t.textFaint)("]"),
-    fgStyle(pctColor)(live ? `${String(pct)}%` : `~${String(pct)}%`),
+    ...(browsing ? [fgStyle(t.warning)("◄ ")] : []),
+    fgStyle(color)("█".repeat(filled)),
+    fgStyle(t.textFaint)("░".repeat(METER_WIDTH - filled)),
+    fgStyle(color)(live && !browsing ? ` ${String(pct)}%` : ` ~${String(pct)}%`),
     fgStyle(t.textDim)(tokenLabel),
   ];
-  if (compacting?.active) {
-    const spinner = COMPACT_FRAMES[compacting.frame % COMPACT_FRAMES.length] ?? "◐";
-    chunks.push(fgStyle(t.info)(` ${spinner} compacting`));
+  if (browsing) return new StyledText(chunks);
+  if (state.compactFrame != null) {
+    chunks.push(fgStyle(t.info)(` ${spinnerGlyph(state.compactFrame)} compacting`));
   }
   if (workers) {
     const worst =
@@ -137,40 +106,31 @@ interface Props {
   suppressCompacting?: boolean;
 }
 
+/**
+ * Context budget meter for the header. It repaints on store changes; a timer runs only while
+ * the meter eases toward a new value or the compaction spinner turns, so an idle screen
+ * schedules nothing.
+ */
 export function ContextBar({ contextManager, suppressCompacting }: Props) {
+  const theme = useTheme();
   const textRef = useRef<TextRenderable>(null);
+  const suppressRef = useRef(suppressCompacting);
+  suppressRef.current = suppressCompacting;
+  const renderedRef = useRef<StyledText | null>(null);
+  const repaintRef = useRef<() => void>(() => {});
 
-  const targetRef = useRef<BarTarget>({
-    pct: 0,
-    live: false,
-    flash: false,
-    usedTokens: 0,
-    windowTokens: 200_000,
-  });
-  const prevTotalRef = useRef(0);
-  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentPctRef = useRef(0);
-  const compactFrameRef = useRef(0);
-  const wasCompactingRef = useRef(false);
-  const prevWindowRef = useRef(0);
-  const workerRef = useRef<WorkerIndicator>({ intel: "idle", io: "idle" });
-  const browsingRef = useRef(false);
-  const suppressCompactingRef = useRef(suppressCompacting);
-  suppressCompactingRef.current = suppressCompacting;
-  // Cleanup-hint state — polled lazily inside the render tick (every 30s)
-  // so we don't recompute it on every frame. Cheap query: counts only.
-  const memoryHintRef = useRef<{ stale: number } | null>(null);
-  const memoryHintLastCheckRef = useRef(0);
-  const renderedContentRef = useRef(buildContent(0, false, false, 0, 200_000));
+  useEffect(() => {
+    let target: BarTarget = { pct: 0, live: false, usedTokens: 0, windowTokens: 200_000 };
+    let currentPct = 0;
+    let compactFrame = 0;
+    let workers: WorkerIndicator = { intel: "idle", io: "idle" };
+    let memoryHint: { stale: number } | null = null;
+    let memoryCheckedAt = Number.NEGATIVE_INFINITY;
+    let lastKey = "";
+    let timer: ReturnType<typeof setInterval> | null = null;
 
-  const computeTarget = useCallback(
-    (state: {
-      contextTokens: number;
-      contextWindow: number;
-      chatChars: number;
-      chatCharsAtSnapshot: number;
-      subagentChars: number;
-    }) => {
+    const computeTarget = () => {
+      const state = useStatusBarStore.getState();
       const ctxWindow = state.contextWindow || 200_000;
       const isApi = state.contextTokens > 0;
       const breakdown = contextManager.getContextBreakdown();
@@ -180,126 +140,110 @@ export function ContextBar({ contextManager, suppressCompacting }: Props) {
       const totalTokens = isApi
         ? state.contextTokens + (chatCharsDelta + state.subagentChars) / CHARS_PER_TOKEN
         : charEstimate;
-      const rawPct = (totalTokens / ctxWindow) * 100;
-      const pct = totalTokens > 0 ? Math.min(100, Math.max(1, Math.round(rawPct))) : 0;
-
-      let flash = targetRef.current.flash;
-      if (totalTokens > prevTotalRef.current + 50) {
-        flash = true;
-        if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
-        flashTimerRef.current = setTimeout(() => {
-          targetRef.current = { ...targetRef.current, flash: false };
-        }, 500);
-      }
-      prevTotalRef.current = totalTokens;
-      targetRef.current = {
-        pct,
-        live: isApi,
-        flash,
-        usedTokens: totalTokens,
-        windowTokens: ctxWindow,
-      };
-    },
-    [contextManager],
-  );
-
-  useEffect(() => {
-    const state = useStatusBarStore.getState();
-    computeTarget(state);
-    currentPctRef.current = targetRef.current.pct;
-    return useStatusBarStore.subscribe(computeTarget);
-  }, [computeTarget]);
-
-  useEffect(() => {
-    return useWorkerStore.subscribe((state) => {
-      workerRef.current = { intel: state.intelligence.status, io: state.io.status };
-    });
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (flashTimerRef.current) {
-        clearTimeout(flashTimerRef.current);
-        flashTimerRef.current = null;
-      }
+      const pct =
+        totalTokens > 0
+          ? Math.min(100, Math.max(1, Math.round((totalTokens / ctxWindow) * 100)))
+          : 0;
+      target = { pct, live: isApi, usedTokens: totalTokens, windowTokens: ctxWindow };
     };
-  }, []);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const target = targetRef.current;
-      const store = useStatusBarStore.getState();
-      const isCompacting = suppressCompactingRef.current ? false : store.compacting;
-      if (isCompacting) compactFrameRef.current++;
-      const wasCompacting = wasCompactingRef.current;
-      wasCompactingRef.current = isCompacting;
-      const pct = approach(currentPctRef.current, target.pct);
-      const wk = workerRef.current;
-      const wkChanged =
-        wk.intel === "crashed" ||
-        wk.intel === "restarting" ||
-        wk.io === "crashed" ||
-        wk.io === "restarting";
-      const compactChanged = isCompacting !== wasCompacting;
-      const windowChanged = target.windowTokens !== prevWindowRef.current;
-      if (windowChanged) prevWindowRef.current = target.windowTokens;
-      const browsing = store.browsingCheckpoint;
-      const browsingChanged = browsing !== browsingRef.current;
-      browsingRef.current = browsing;
-
-      // Poll cleanup hint every 30s — cheap (count + threshold check), but
-      // not zero. We don't need higher frequency: hint is a banner, not a
-      // live metric.
+    // Polled from store updates instead of a timer: stale memories only appear after work.
+    const refreshMemoryHint = () => {
       const now = Date.now();
-      let memoryHintChanged = false;
-      if (now - memoryHintLastCheckRef.current >= 30_000) {
-        memoryHintLastCheckRef.current = now;
-        try {
-          const next = contextManager.getMemoryManager().cleanupHint();
-          const nextSimple = next ? { stale: next.stale } : null;
-          const prev = memoryHintRef.current;
-          const same =
-            (prev === null && nextSimple === null) ||
-            (prev !== null && nextSimple !== null && prev.stale === nextSimple.stale);
-          if (!same) {
-            memoryHintRef.current = nextSimple;
-            memoryHintChanged = true;
-          }
-        } catch {}
-      }
-
-      if (
-        pct === currentPctRef.current &&
-        !target.flash &&
-        !isCompacting &&
-        !compactChanged &&
-        !wkChanged &&
-        !windowChanged &&
-        !browsingChanged &&
-        !memoryHintChanged
-      )
-        return;
-      currentPctRef.current = pct;
+      if (now - memoryCheckedAt < MEMORY_HINT_INTERVAL_MS) return;
+      memoryCheckedAt = now;
       try {
-        const content = buildContent(
-          pct,
-          target.live,
-          target.flash,
-          target.usedTokens,
-          target.windowTokens,
-          isCompacting ? { active: true, frame: compactFrameRef.current } : undefined,
-          wk,
-          browsing,
-          memoryHintRef.current,
-        );
-        renderedContentRef.current = content;
-        if (textRef.current) {
-          textRef.current.content = content;
-        }
+        const next = contextManager.getMemoryManager().cleanupHint();
+        memoryHint = next ? { stale: next.stale } : null;
       } catch {}
-    }, STEP_MS);
-    return () => clearInterval(timer);
+    };
+
+    const isCompacting = () => !suppressRef.current && useStatusBarStore.getState().compacting;
+
+    const paint = () => {
+      const compacting = isCompacting();
+      const state: ContextMeterState = {
+        ...target,
+        pct: currentPct,
+        compactFrame: compacting ? compactFrame : null,
+        workers,
+        browsing: useStatusBarStore.getState().browsingCheckpoint,
+        memoryHint,
+      };
+      const key = JSON.stringify(state);
+      if (key === lastKey) return;
+      lastKey = key;
+      try {
+        const content = buildContextMeter(state);
+        renderedRef.current = content;
+        if (textRef.current) textRef.current.content = content;
+      } catch {}
+    };
+
+    let timerMs = 0;
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+
+    const spinning = () => isCompacting() && !reducedMotion();
+
+    const schedule = () => {
+      const easing = currentPct !== target.pct;
+      if (!easing && !spinning()) {
+        stop();
+        return;
+      }
+      const ms = easing ? STEP_MS : SPINNER_TICK_MS;
+      if (timer && timerMs === ms) return;
+      stop();
+      timerMs = ms;
+      timer = setInterval(step, ms);
+    };
+
+    function step() {
+      if (spinning()) compactFrame++;
+      currentPct = approach(currentPct, target.pct);
+      paint();
+      schedule();
+    }
+
+    const wake = () => {
+      paint();
+      schedule();
+    };
+
+    repaintRef.current = () => {
+      lastKey = "";
+      wake();
+    };
+
+    computeTarget();
+    refreshMemoryHint();
+    currentPct = target.pct;
+    wake();
+
+    const offStatus = useStatusBarStore.subscribe(() => {
+      computeTarget();
+      refreshMemoryHint();
+      wake();
+    });
+    const offWorkers = useWorkerStore.subscribe((state) => {
+      workers = { intel: state.intelligence.status, io: state.io.status };
+      wake();
+    });
+    return () => {
+      offStatus();
+      offWorkers();
+      stop();
+      repaintRef.current = () => {};
+    };
   }, [contextManager]);
 
-  return <text ref={textRef} truncate content={renderedContentRef.current} />;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: theme and suppression only trigger a repaint
+  useEffect(() => {
+    repaintRef.current();
+  }, [theme, suppressCompacting]);
+
+  return <text ref={textRef} truncate content={renderedRef.current ?? ""} />;
 }
