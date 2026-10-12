@@ -35,6 +35,7 @@ import {
   stations,
 } from "./line-model.js";
 import { type RunData, useRun } from "./load.js";
+import { RunMaintenance } from "./Maintenance.js";
 import { clock, duration, pipeline, type RunTrace, taskCount } from "./model.js";
 import { Meter, Panel, StatusPill, TONE_TEXT } from "./parts.js";
 import { ReportView } from "./ReportView.js";
@@ -111,6 +112,7 @@ function Controls({
           {error}
         </span>
       )}
+      <RunMaintenance projectKey={projectKey} data={data} />
       {canUndo && (
         <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("undo")}>
           Undo edits

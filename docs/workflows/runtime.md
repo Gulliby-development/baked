@@ -583,6 +583,8 @@ For a review by another model, route it with `modelRouting` (see [Model routing]
 
 Export creates a new directory inside the workspace. The host API allows a separate outside-path approval callback; the CLI does not provide one automatically. Raw provider messages and command output are not part of the portable report; known credentials are masked. Redaction removes the selected artifact content, keeps the original hash and a tombstone and invalidates evidence. It does not promise to remove every possible copy of a string from other artifacts.
 
+In the desktop app, a run's screen has Export (into `.baked/exports/RUN_ID-STAMP`) and Redact…, and the run list has Import… and Clean up old runs…, which previews the runs it would remove before removing them. The local API has the same as `POST /v1/workflow/runs/RUN_ID/export` and `/redact`, `POST /v1/workflow/import` and `POST /v1/workflow/gc` ([desktop API](../desktop/api.md)).
+
 GC removes only terminal runs older than 30 days and the given cutoff when no child run needs them and they hold no lease. Active/waiting/blocked data and the shared `specs/` are kept. For a backup, stop the writers and save `.baked/workflows.sqlite` together with `.baked/workflow-runs/`. Copying a live SQLite database also needs the WAL/SHM files or an SQLite backup; an arbitrary copy of one file during writes is not a consistent backup.
 
 ## Model routing

@@ -88,6 +88,7 @@ const FULL_CAPABILITIES = [
   "skills-install",
   "mcp",
   "lsp",
+  "run-maintenance",
   "custom-commands",
   "settings",
   "git",
