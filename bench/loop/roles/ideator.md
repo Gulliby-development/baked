@@ -20,7 +20,7 @@ You propose the round's new apps and the small features for existing projects. B
 ## <name>
 - One line: what it does, for whom.
 - Task type: <a row of workflow-map.md, e.g. "TS CLI greenfield">
-- Stack: <language, runtime, test runner>; standard library or well-known permissive deps only
+- Stack: <language, runtime, test runner; for Go, .NET, Rust or Java the scaffold kind go, dotnet, rust or java>; standard library or well-known permissive deps only
 - Why useful: <a real situation where someone reaches for it>
 - Why it tests BAKED: <what part of the harness it stresses: parsing edge cases, UI + e2e, timers, file IO, Python lint, ...>
 - Size guess: <S | M>, <number of source files>, <number of test files>
@@ -41,7 +41,8 @@ Append each candidate to `ledger/ideas.jsonl` as `{"round": N, "kind": "new", "n
 ## Mix per round
 
 Across the round's 2 accepted new apps, aim for:
-- different stacks (TypeScript on Bun, Python 3.11+, React + Vite for UI apps), and a different stack or task type from the previous round's new apps when possible;
+- different stacks (TypeScript on Bun, Python 3.11+, React + Vite for UI apps; from round 7 also Go, .NET (C#, xUnit), Rust and Java (Maven, JUnit)), and a different stack or task type from the previous round's new apps when possible;
+- from round 7 at least two of the new languages across the round's new apps and updates (the controls are fixed); the orchestrator tells you which ones the update picks already cover, so cover the rest with new apps;
 - a task type that `workflow-map.md` marks as under-measured when one exists;
 - a UI app when none of the recent rounds had one (it gets a screenshot).
 
@@ -52,7 +53,7 @@ Propose `ideaCandidates` (5) so the reviewer can keep `newApps` (2).
 For each repository picked for the round (names in `round.json`), propose one small useful feature. The pick is not yours: the orchestrator draws it at random (seeded with the round number) from all public repositories of the organization. Private repositories are never candidates and are never cloned or read.
 
 1. **Read the repository first.** Clone the current default branch into a temporary folder (outside the loop root and the BAKED checkouts), read the README, the source, the tests, the CI config and the open issues (`gh issue list --repo Gulliby-development/<repo>`). Do not propose from the repository's description alone.
-2. **Pick one feature** that a user of the tool would ask for next: a missing flag or output format, an input the tool rejects but should accept, a better error message with a hint, a summary mode, a filter. Target: one BAKED run, 1 to 3 source files plus tests plus a README update. If the repository has no `.github/workflows`, a CI pipeline can be the feature: a GitHub Actions workflow with a three-OS matrix (`ubuntu-latest`, `windows-latest`, `macos-latest`) for the repository's stack, using the repository's real install, test and lint commands (start from `templates/ci/<stack>.yml`).
+2. **Pick one feature** that a user of the tool would ask for next: a missing flag or output format, an input the tool rejects but should accept, a better error message with a hint, a summary mode, a filter. Target: one BAKED run, 1 to 3 source files plus tests plus a README update. If the repository has no `.github/workflows`, a CI pipeline can be the feature: a GitHub Actions workflow with a three-OS matrix (`ubuntu-latest`, `windows-latest`, `macos-latest`) for the repository's stack, using the repository's real install, test and lint commands (start from `templates/ci/<stack>.yml`; stacks: bun, vite, python, go, dotnet, rust, java).
 3. **Constraints.** No breaking change (existing flags, output and exit codes stay as they are), no new dependencies, works offline, deterministic tests. Do not duplicate an open issue or something the repository already does.
 4. **Optional extras (side part only).** The update may bundle small hygiene, never as the whole update, and each extra must be listed in the brief: an MIT `LICENSE` only where the repository has no license at all (never replace or edit an existing license); a logo or icon when the README has none (the publisher's one-shot SVG routine); GitHub topics and a description when the repository has none; a README badge or section only when clearly missing.
 5. **Shape** (in `ideas.md`, one section per repository):

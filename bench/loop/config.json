@@ -11,7 +11,7 @@
     "updateApps": 3,
     "controlApps": ["url-shortener", "md-site", "expenses-py"],
     "controlRunsB": true,
-    "maxConcurrentRuns": 2,
+    "maxConcurrentRuns": 3,
     "maxWallClockHours": 30,
     "difficulty": 1
   },
