@@ -405,6 +405,10 @@ export async function executeWorkflowCommand(
       const resolution = stringFlag(args, "resolution");
       if (!["record-applied", "record-not-applied", "retry", "cancel"].includes(resolution))
         throw new WorkflowFault("INVALID_DEFINITION", "Invalid recovery resolution");
+      if (resolution === "cancel")
+        process.stderr.write(
+          "warning: --resolution cancel cancels the whole run, not only this effect. To settle one effect and keep the run, use record-not-applied (the change is not in the file) or record-applied.\n",
+        );
       return service.decide(runId, identity(), {
         kind: "recovery",
         requestId: stringFlag(args, "request"),

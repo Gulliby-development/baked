@@ -95,7 +95,17 @@ export class EffectJournal {
       }
       this.store.transaction(() => this.store.effectStatus(runId, id, "applied"));
     } catch (error) {
-      this.store.transaction(() => this.store.effectStatus(runId, id, "unknown"));
+      // A file that still has its old content proves the write never took effect. Anything else,
+      // including the new content (the acknowledgement may be what failed), stays `unknown` for
+      // `reconcile`, which can tell applied from not applied once the file is readable.
+      let current: string | null | undefined;
+      try {
+        current = fileHash(path);
+      } catch {
+        current = undefined;
+      }
+      const status = current !== undefined && current === expected ? "failed" : "unknown";
+      this.store.transaction(() => this.store.effectStatus(runId, id, status));
       throw error;
     }
     return id;

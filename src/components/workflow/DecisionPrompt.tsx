@@ -96,12 +96,13 @@ interface AcceptanceBody {
 interface RecoveryBody {
   effectId?: string;
   intent?: Record<string, unknown>;
+  note?: string;
 }
 const RESOLUTIONS = [
   { key: "1", value: "record-applied", label: "It ran and its effect is in place" },
   { key: "2", value: "record-not-applied", label: "It did not run / had no effect" },
   { key: "3", value: "retry", label: "Allow a new attempt" },
-  { key: "4", value: "cancel", label: "Abandon it (all its processes are stopped)" },
+  { key: "4", value: "cancel", label: "Cancel the whole run (all its processes are stopped)" },
 ] as const;
 
 function parse<T>(json: string): T {
@@ -727,6 +728,7 @@ export function DecisionPrompt({
         <text
           fg={t.textMuted}
         >{`Effect ${body.effectId ?? "?"}: ${JSON.stringify(body.intent ?? {})}`}</text>
+        {body.note ? <text fg={t.textSecondary}>{body.note}</text> : null}
         {RESOLUTIONS.map((r) => (
           <text key={r.value} fg={resolution === r.value ? t.brand : t.textSecondary}>
             {`${resolution === r.value ? "▸" : " "} ${r.key}  ${r.label}`}

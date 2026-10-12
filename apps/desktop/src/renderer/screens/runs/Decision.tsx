@@ -303,7 +303,7 @@ export const RESOLUTIONS: readonly { value: RecoveryResolution; label: string }[
   { value: "record-applied", label: "It ran and its effect is in place" },
   { value: "record-not-applied", label: "It did not run or had no effect" },
   { value: "retry", label: "Allow a new attempt" },
-  { value: "cancel", label: "Abandon it (all its processes are stopped)" },
+  { value: "cancel", label: "Cancel the whole run (all its processes are stopped)" },
 ];
 
 /** What the interrupted effect was meant to do, from the request body, in one line. */
@@ -346,6 +346,7 @@ function Recovery({
           {intent && `: ${intent}`}
         </p>
       )}
+      {body.note && <p>{body.note}</p>}
       {!data.capabilities.includes(GROUP_B_CAPABILITY) || !effectId ? (
         <p>
           Resolve it in the terminal: <code className="font-mono">{command}</code>
