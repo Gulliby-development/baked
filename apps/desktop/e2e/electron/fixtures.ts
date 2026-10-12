@@ -29,6 +29,8 @@ export interface LaunchOptions {
   script?: unknown;
   /** Extra environment for the app, e.g. BAKED_VOICE_DIR. */
   env?: Record<string, string>;
+  /** Extra Chromium switches, e.g. a fake microphone. */
+  args?: string[];
 }
 
 interface Fixtures {
@@ -106,7 +108,10 @@ export const test = base.extend<Fixtures>({
         JSON.stringify({ bakedPath: baked, openLastProjects: false, keepRunningInTray: false }),
       );
       // CI runners may run as root, where Chromium refuses its sandbox.
-      const app = await _electron.launch({ args: [root, "--no-sandbox"], env });
+      const app = await _electron.launch({
+        args: [root, "--no-sandbox", ...(options.args ?? [])],
+        env,
+      });
       apps.push(app);
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
       const page = await app.firstWindow();

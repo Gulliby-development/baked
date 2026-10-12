@@ -39,3 +39,24 @@ test("the main process loads the speech engine in its worker", async ({ workspac
   });
   expect(error).toContain(".cact model");
 });
+
+test("the window may open the microphone but not the camera", async ({ launch }) => {
+  // A fake device but no fake permission UI, so the app's own permission handler decides.
+  const { page } = await launch({ args: ["--use-fake-device-for-media-stream"] });
+  const open = (constraints: MediaStreamConstraints) =>
+    page.evaluate(async (c) => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(c);
+        for (const track of stream.getTracks()) track.stop();
+        return "granted";
+      } catch (error) {
+        return (error as DOMException).name;
+      }
+    }, constraints);
+  expect(await open({ audio: true })).toBe("granted");
+  expect(await open({ video: true })).toBe("NotAllowedError");
+  expect(await page.evaluate(() => window.baked?.microphoneAccess())).toEqual({
+    granted: true,
+    canOpenSettings: false,
+  });
+});

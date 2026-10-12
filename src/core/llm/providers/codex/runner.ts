@@ -16,6 +16,13 @@ import type {
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
 import { trackProcess } from "../../../process-tracker.js";
+import {
+  imageExtension,
+  imagePlaceholder,
+  type PromptImage,
+  promptImage,
+  promptImages,
+} from "../prompt-images.js";
 import { codexCommand } from "./client.js";
 
 export interface CodexRunnerCall {
@@ -104,6 +111,7 @@ export function renderMessageContent(content: PromptArrayContent): string {
         case "reasoning":
           return `[reasoning]\n${part.text}`;
         case "file":
+          if (promptImage(part)) return imagePlaceholder(part.mediaType);
           return `[file mediaType=${part.mediaType}${part.filename ? ` filename=${part.filename}` : ""} data=${renderDataValue(part.data)}]`;
         case "tool-call":
           return `[assistant tool call ${part.toolName} id=${part.toolCallId}]\n${JSON.stringify(part.input, null, 2)}`;
@@ -140,6 +148,8 @@ export interface CodexPromptParts {
   instructions: string;
   messages: CodexTranscriptEntry[];
   step: string;
+  /** Images of the whole conversation, passed beside the text. */
+  images: PromptImage[];
 }
 
 export function buildCodexPromptParts(options: LanguageModelV2CallOptions): CodexPromptParts {
@@ -184,6 +194,7 @@ export function buildCodexPromptParts(options: LanguageModelV2CallOptions): Code
     instructions,
     messages,
     step: [jsonInstruction, describeToolChoice(options)].join("\n"),
+    images: promptImages(options.prompt),
   };
 }
 
@@ -309,8 +320,8 @@ export function parseCodexResponse(text: string): ParsedCodexResponse {
 
 export function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
   const warnings: LanguageModelV2CallWarning[] = [];
+  // BAKED sets maxOutputTokens on every agent; the CLI ignoring it is expected, not a warning.
   for (const setting of [
-    "maxOutputTokens",
     "temperature",
     "stopSequences",
     "topP",
@@ -371,6 +382,14 @@ export class CodexCliRunner implements CodexRunner {
     const instructionsPath = join(dir, "instructions.md");
     await writeFile(schemaPath, JSON.stringify(call.schema, null, 2), "utf8");
     await writeFile(instructionsPath, call.parts.instructions, "utf8");
+    // `codex exec --image` takes files; an http(s) image has no file and stays a placeholder.
+    const imageArgs: string[] = [];
+    for (const [index, image] of call.parts.images.entries()) {
+      if (!("base64" in image)) continue;
+      const path = join(dir, `image-${index + 1}.${imageExtension(image.mediaType)}`);
+      await writeFile(path, Buffer.from(image.base64, "base64"));
+      imageArgs.push("--image", path);
+    }
 
     const args = [
       "exec",
@@ -388,6 +407,7 @@ export class CodexCliRunner implements CodexRunner {
       schemaPath,
       "--model",
       call.modelId,
+      ...imageArgs,
     ];
 
     try {

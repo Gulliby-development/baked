@@ -42,7 +42,8 @@ function project(
  * - `empty`: no projects yet (first start);
  * - `start-failure`: every project is closed and opening one fails; Restart then succeeds;
  * - `older`: the backends are an older BAKED that offers none of the optional capabilities;
- * - `uninitialized`: only `client-api`, open, in a folder without `baked/project.json`.
+ * - `uninitialized`: only `client-api`, open, in a folder without `baked/project.json`;
+ * - `mic-denied`: as `default`, but the system refuses the microphone to voice input.
  */
 export const MOCK_SCENARIOS = [
   "default",
@@ -50,6 +51,7 @@ export const MOCK_SCENARIOS = [
   "start-failure",
   "older",
   "uninitialized",
+  "mic-denied",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 
@@ -288,12 +290,16 @@ export function createMockBridge(scenario: MockScenario = "default"): DesktopBri
     onNavigate: () => () => {},
     windowAction: async () => {},
     onMaximized: () => () => {},
-    voiceStatus: async () => ({
-      available: false,
-      reason: "Voice input runs only in the desktop app.",
+    voiceStatus: async () => ({ available: true, model: "whistle" }),
+    transcribe: async (samples, language) => ({
+      text: `mock transcript of ${(samples.length / 16_000).toFixed(1)} s`,
+      language: language ?? "en",
+      durationSeconds: samples.length / 16_000,
     }),
-    transcribe: async () => {
-      throw new Error("Voice input runs only in the desktop app.");
-    },
+    microphoneAccess: async () =>
+      scenario === "mic-denied"
+        ? { granted: false, canOpenSettings: true }
+        : { granted: true, canOpenSettings: true },
+    openMicrophoneSettings: async () => {},
   };
 }

@@ -6,6 +6,8 @@ import type {
   LanguageModelV3FinishReason,
 } from "@ai-sdk/provider";
 
+import { imagePlaceholder, type PromptImage, promptImage, promptImages } from "../prompt-images.js";
+
 type PromptMessage = LanguageModelV3CallOptions["prompt"][number];
 type PromptArrayContent = Exclude<PromptMessage["content"], string>;
 type PromptPart = PromptArrayContent[number];
@@ -20,6 +22,8 @@ interface SerializedTool {
 export interface ClaudeCodeTranscriptEntry {
   role: string;
   text: string;
+  /** Images of the message, sent as image blocks after the turn text. */
+  images?: PromptImage[];
 }
 
 /**
@@ -84,6 +88,7 @@ function renderContent(content: PromptArrayContent): string {
         case "reasoning":
           return `[reasoning]\n${part.text}`;
         case "file":
+          if (promptImage(part)) return imagePlaceholder(part.mediaType);
           return `[file mediaType=${part.mediaType}${part.filename ? ` filename=${part.filename}` : ""} data=${renderData(part.data)}]`;
         case "tool-call":
           return `[assistant tool call ${part.toolName} id=${part.toolCallId}]\n${JSON.stringify(part.input, null, 2)}`;
@@ -150,7 +155,12 @@ export function buildClaudeCodePromptParts(
   const messages = options.prompt.map((message, index) => {
     const content =
       typeof message.content === "string" ? message.content : renderContent(message.content);
-    return { role: message.role, text: `${index + 1}. ${message.role.toUpperCase()}\n${content}` };
+    const images = typeof message.content === "string" ? [] : promptImages([message]);
+    return {
+      role: message.role,
+      text: `${index + 1}. ${message.role.toUpperCase()}\n${content}`,
+      ...(images.length > 0 ? { images } : {}),
+    };
   });
 
   const toolBlock =
@@ -200,6 +210,27 @@ export function renderClaudeCodeTurn(parts: ClaudeCodePromptParts, fromIndex = 0
     "CURRENT STEP",
     parts.step,
   ].join("\n");
+}
+
+/** An image as a Claude content block. */
+function imageBlock(image: PromptImage) {
+  return "url" in image
+    ? { type: "image" as const, source: { type: "url" as const, url: image.url } }
+    : {
+        type: "image" as const,
+        source: { type: "base64" as const, media_type: image.mediaType, data: image.base64 },
+      };
+}
+
+/**
+ * The content of a turn's user message: the turn text, then the images of the messages it
+ * sends as image blocks. Without images it is the text alone.
+ */
+export function claudeCodeTurnContent(parts: ClaudeCodePromptParts, fromIndex = 0) {
+  const text = renderClaudeCodeTurn(parts, fromIndex);
+  const images = parts.messages.slice(fromIndex).flatMap((message) => message.images ?? []);
+  if (images.length === 0) return text;
+  return [{ type: "text" as const, text }, ...images.map(imageBlock)];
 }
 
 /** Reads the first JSON object of a text reply, with or without a Markdown fence. */

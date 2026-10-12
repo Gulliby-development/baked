@@ -6,7 +6,7 @@ import readline from "node:readline";
 import type { JSONSchema7, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { trackProcess } from "../../../process-tracker.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
-import { type ClaudeCodePromptParts, renderClaudeCodeTurn } from "./prompt.js";
+import { type ClaudeCodePromptParts, claudeCodeTurnContent } from "./prompt.js";
 
 /** Sessions kept alive at once; the least recently used idle one closes beyond this. */
 const MAX_SESSIONS = 4;
@@ -33,12 +33,15 @@ export interface ClaudeCodeTurnResult {
  */
 export class ClaudeCodeNativeToolError extends Error {
   readonly nativeTools: string[];
-  constructor(nativeTools: string[]) {
+  /** Tokens the failed attempts used. */
+  readonly usage: LanguageModelV3Usage;
+  constructor(nativeTools: string[], usage: LanguageModelV3Usage = usageFromResult(undefined)) {
     super(
       `Claude Code lost the BAKED tools: the model called ${nativeTools.map((name) => `"${name}"`).join(", ")} as native tools (No such tool available) and ignored the correction`,
     );
     this.name = "ClaudeCodeNativeToolError";
     this.nativeTools = nativeTools;
+    this.usage = usage;
   }
 }
 
@@ -299,10 +302,35 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
   constructor(private readonly spawnProcess: ClaudeCodeProcessFactory = spawnClaudeCodeProcess) {}
 
   async run(call: ClaudeCodeCall): Promise<ClaudeCodeTurnResult> {
+    try {
+      return await this.runStep(call, false);
+    } catch (error) {
+      if (!(error instanceof ClaudeCodeNativeToolError) || call.abortSignal?.aborted) throw error;
+      // The session is closed by now. A fresh process with the whole transcript usually has the
+      // tools (a session can lose them right at start-up); the step fails if it loses them too.
+      try {
+        const retry = await this.runStep(call, true);
+        return {
+          ...retry,
+          usage: sumUsage([error.usage, retry.usage]),
+          nativeToolAborts: [...error.nativeTools, ...(retry.nativeToolAborts ?? [])],
+        };
+      } catch (retryError) {
+        if (!(retryError instanceof ClaudeCodeNativeToolError)) throw retryError;
+        throw new ClaudeCodeNativeToolError(
+          [...error.nativeTools, ...retryError.nativeTools],
+          sumUsage([error.usage, retryError.usage]),
+        );
+      }
+    }
+  }
+
+  /** One attempt at a step; `fresh` skips the open sessions. */
+  private async runStep(call: ClaudeCodeCall, fresh: boolean): Promise<ClaudeCodeTurnResult> {
     call.abortSignal?.throwIfAborted();
     const keys = call.parts.messages.map(messageKey);
     const schemaKey = JSON.stringify(call.parts.schema);
-    const match = this.findSession(call, keys, schemaKey);
+    const match = fresh ? null : this.findSession(call, keys, schemaKey);
     const session = match?.session ?? this.startSession(call, schemaKey);
     const fromIndex = match?.fromIndex ?? 0;
 
@@ -421,7 +449,9 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       pending.carriedUsage.push(usageFromResult(result.usage));
       if (pending.nativeTools.length > MAX_NATIVE_TOOL_CORRECTIONS) {
         session.pending = null;
-        pending.reject(new ClaudeCodeNativeToolError(pending.nativeTools));
+        pending.reject(
+          new ClaudeCodeNativeToolError(pending.nativeTools, sumUsage(pending.carriedUsage)),
+        );
         return;
       }
       const last = pending.nativeTools[pending.nativeTools.length - 1] as string;
@@ -457,7 +487,9 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     pending.interruptTimer = setTimeout(() => {
       if (session.pending !== pending) return;
       session.pending = null;
-      pending.reject(new ClaudeCodeNativeToolError(pending.nativeTools));
+      pending.reject(
+        new ClaudeCodeNativeToolError(pending.nativeTools, sumUsage(pending.carriedUsage)),
+      );
       this.closeSession(session);
     }, INTERRUPT_TIMEOUT_MS);
     pending.interruptTimer.unref?.();
@@ -507,7 +539,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       session.process.send(
         JSON.stringify({
           type: "user",
-          message: { role: "user", content: renderClaudeCodeTurn(call.parts, fromIndex) },
+          message: { role: "user", content: claudeCodeTurnContent(call.parts, fromIndex) },
         }),
       );
     });

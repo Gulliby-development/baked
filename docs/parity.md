@@ -56,7 +56,7 @@ bun test tests/feature-parity.test.ts
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
-| Voice input in chat (Cactus Whistle speech to text) | Desktop only: desktop only by decision (#419) | Desktop only: desktop only by decision (#419) | Desktop only: speech is transcribed in the app and sent as text | **Gap** [#419](https://github.com/Gulliby-development/baked/issues/419): planned |
+| Voice input in chat (Cactus Whistle speech to text) | Desktop only: desktop only by decision (#419) | Desktop only: desktop only by decision (#419) | Desktop only: speech is transcribed in the app and sent as text | `project/chat`, `settings/app` |
 | @ mentions and ! shell in the input | `key @`, `key !` | `--include` | `/v1/mentions` | `project/chat` |
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
 | Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
@@ -163,7 +163,6 @@ bun test tests/feature-parity.test.ts
 
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
 
 <!-- parity:end -->
