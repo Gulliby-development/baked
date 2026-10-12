@@ -85,7 +85,7 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "./initiatives/plan.js";
-import { readsChangedFile, repairChangedFiles } from "./invalidation.js";
+import { changeReach, repairChangedFiles } from "./invalidation.js";
 import {
   commandMayBeRunning,
   mutationLeaseFor,
@@ -3350,7 +3350,14 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             if (!candidate.dependsOn.some((id) => invalid.has(id))) continue;
             const row = rows.find((entry) => entry.id === candidate.id);
             const finished = row && ["implemented", "verified"].includes(row.status);
-            if (finished && changedFiles && !readsChangedFile(root, candidate, changedFiles))
+            // A task only reached through an import keeps its implementation too when it has task
+            // checks: the host runs them first, and a failure becomes a repair of that task.
+            const reach =
+              finished && changedFiles ? changeReach(root, candidate, changedFiles) : null;
+            if (
+              reach === "none" ||
+              (reach === "imports" && taskChecks(policy, candidate).length > 0)
+            )
               recheck.add(candidate.id);
             else invalid.add(candidate.id);
             changed = true;

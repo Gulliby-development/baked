@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonical } from "../src/core/specs/hash.js";
-import { readsChangedFile } from "../src/core/workflows/invalidation.js";
+import { changeReach, readsChangedFile } from "../src/core/workflows/invalidation.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -75,15 +75,32 @@ describe("readsChangedFile", () => {
   });
 
   test("a file the scan cannot read counts as touching the change", () => {
-    const root = workspace({ "docs/a.md": "text" });
-    expect(readsChangedFile(root, task("T5", ["docs/a.md"]), new Set(["src/diff.ts"]))).toBe(true);
+    const root = workspace({ "config/a.json": "{}" });
+    expect(readsChangedFile(root, task("T5", ["config/a.json"]), new Set(["src/diff.ts"]))).toBe(true);
+    expect(changeReach(root, task("T5", ["config/a.json"]), new Set(["src/diff.ts"]))).toBe("unknown");
+  });
+
+  // R5: md-site T004/T005 and expenses-py A T003/T005 reran for 280k and ended already_satisfied.
+  test("a documentation writer is reached only by a file in its writes or read hints", () => {
+    const root = workspace({ "README.md": "text", "docs/usage.md": "text" });
+    const changed = new Set(["src/diff.ts"]);
+    expect(changeReach(root, task("T6", ["README.md", "docs/usage.md"]), changed)).toBe("none");
+    expect(changeReach(root, task("T6", ["README.md"], { readHints: ["src/diff.ts"] }), changed)).toBe("named");
+    expect(changeReach(root, task("T6", ["README.md"]), new Set(["README.md"]))).toBe("named");
+  });
+
+  test("a task reached only through an import is told apart from one that names the file", () => {
+    const root = workspace({ "tests/diff.test.ts": 'import { diff } from "../src/diff.js";\n' });
+    const changed = new Set(["src/diff.ts"]);
+    expect(changeReach(root, task("T3", ["tests/diff.test.ts"]), changed)).toBe("imports");
+    expect(changeReach(root, task("T3", ["tests/diff.test.ts"], { readHints: ["src/diff.ts"] }), changed)).toBe("named");
   });
 });
 
 // jsondelta 9fbc18e7: a repair of one function in src/diff.ts restored T001 and invalidated T002,
 // T003 and T004, whose reruns cost 494k of 1.94M tokens.
 describe("a repair task restoring its predecessor", () => {
-  async function scenario(changed: string[] | null) {
+  async function scenario(changed: string[] | null, withChecks = false) {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);
     const { service, root } = fixture;
@@ -98,7 +115,7 @@ describe("a repair task restoring its predecessor", () => {
     writeFileSync(join(root, "tests/a.test.ts"), 'import { x } from "../src/diff.js";\n');
     writeFileSync(join(root, "src/cli.ts"), 'import { y } from "./parse.js";\n');
     const t1 = { ...base, id: "T001", writes: [{ path: "src/diff.ts", action: "modify" as const }] };
-    const t2 = task("T002", ["tests/a.test.ts"], { dependsOn: ["T001"] });
+    const t2 = task("T002", ["tests/a.test.ts"], { dependsOn: ["T001"], checkIds: withChecks ? ["unit"] : [] });
     const t3 = task("T003", ["src/cli.ts"], { dependsOn: ["T001"] });
     const t4 = task("T004", ["src/diff.ts"], {
       origin: "repair",
@@ -122,7 +139,10 @@ describe("a repair task restoring its predecessor", () => {
     const scheduler = service.scheduler as unknown as {
       settleTask(...args: unknown[]): void;
     };
-    scheduler.settleTask(run.runId, state, JSON.parse(store.run(run.runId).policy_json) as RunPolicy, t4, child, [], ["E1"]);
+    const policy = JSON.parse(store.run(run.runId).policy_json) as RunPolicy;
+    if (withChecks)
+      policy.checks = [...policy.checks, { id: "unit", executable: "bun", args: ["-e", "0"], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] }];
+    scheduler.settleTask(run.runId, state, policy, t4, child, [], ["E1"]);
     return { store, runId: run.runId, state };
   }
   const statuses = (store: { tasks(id: string): { id: string; status: string }[] }, runId: string) =>
@@ -136,6 +156,12 @@ describe("a repair task restoring its predecessor", () => {
       T003: "implemented",
     });
     expect(state.taskGates.T003).toBeUndefined();
+  });
+
+  test("a dependent reached only through an import reruns its checks first when it has task checks", async () => {
+    const { store, runId, state } = await scenario(["src/diff.ts"], true);
+    expect(statuses(store, runId)).toMatchObject({ T002: "implemented", T003: "implemented" });
+    expect(state.taskGates.T002).toBeUndefined();
   });
 
   test("without the repair's diff every dependent is invalidated", async () => {
