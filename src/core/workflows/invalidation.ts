@@ -5,6 +5,8 @@ import type { Task } from "./types.js";
 
 const MAX_SOURCE_BYTES = 256 * 1024;
 const EXTENSIONS = /\.(?:[cm]?[jt]sx?|py|pyi|rs|go|rb|php|java|kt|cs|swift)$/i;
+/** Prose a documentation writer produces; it reads only what its read hints and writes name. */
+const DOCUMENTATION = /.(?:mdx?|rst|txt|adoc)$/i;
 const SPECIFIER =
   /(?:\bfrom\s+|\bimport\s*\(?\s*|\brequire\s*\(\s*|\bimport\s+|\bmod\s+|\buse\s+|\binclude\s+|\bsource\s+)["']?([\w@./:-]+)/g;
 
@@ -47,27 +49,33 @@ function specifiers(source: string): string[] {
 }
 
 /**
- * Whether a task reads or writes one of the changed files: it lists the file in its writes or
- * read hints, or one of the files it writes imports it (a relative specifier that resolves to
- * the file, or a dotted module name that ends in its path). A written file that cannot be read or
- * is not a source file the scan understands counts as touching the change, so the answer errs
- * toward rerunning.
+ * How a task is reached by a change to files: `named` when it lists one in its writes or read
+ * hints, `imports` when only a file it writes imports one (a relative specifier that resolves to
+ * the file, or a dotted module name that ends in its path), `unknown` when a written file cannot
+ * be read or is not a file the scan understands, and `none` otherwise. A documentation file
+ * (Markdown, reStructuredText, text) is understood: its writer reads what its read hints name,
+ * so a change elsewhere does not reach it (md-site T004, T005; expenses-py A T003, T005 reran
+ * for nothing).
  */
-export function readsChangedFile(root: string, task: Task, changed: ReadonlySet<string>): boolean {
+export type Reach = "named" | "imports" | "unknown" | "none";
+
+export function changeReach(root: string, task: Task, changed: ReadonlySet<string>): Reach {
   const named = new Set([...task.writes.map((w) => w.path), ...task.readHints]);
-  if ([...changed].some((path) => named.has(path))) return true;
+  if ([...changed].some((path) => named.has(path))) return "named";
   const stems = new Map([...changed].map((path) => [stem(path), path] as const));
+  let reach: Reach = "none";
   for (const write of task.writes) {
     if (write.action === "delete") continue;
+    if (DOCUMENTATION.test(write.path)) continue;
     const file = join(root, write.path);
     if (!existsSync(file)) continue;
-    if (!EXTENSIONS.test(write.path)) return true;
+    if (!EXTENSIONS.test(write.path)) return "unknown";
     let source: string;
     try {
-      if (statSync(file).size > MAX_SOURCE_BYTES) return true;
+      if (statSync(file).size > MAX_SOURCE_BYTES) return "unknown";
       source = readFileSync(file, "utf8");
     } catch {
-      return true;
+      return "unknown";
     }
     for (const name of specifiers(source)) {
       const relative = name.startsWith(".")
@@ -75,16 +83,21 @@ export function readsChangedFile(root: string, task: Task, changed: ReadonlySet<
         : null;
       const dotted = name.replaceAll(".", "/");
       for (const [changedStem] of stems) {
-        if (relative !== null && relative === changedStem) return true;
+        if (relative !== null && relative === changedStem) reach = "imports";
         if (
           relative === null &&
           (stem(name) === changedStem ||
             changedStem.endsWith(`/${dotted}`) ||
             changedStem === dotted)
         )
-          return true;
+          reach = "imports";
       }
     }
   }
-  return false;
+  return reach;
+}
+
+/** Whether a change reaches a task at all; the answer errs toward rerunning. */
+export function readsChangedFile(root: string, task: Task, changed: ReadonlySet<string>): boolean {
+  return changeReach(root, task, changed) !== "none";
 }
