@@ -679,6 +679,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/gates"],
   },
   {
+    id: "custom-gates",
+    group: "Workflow runs",
+    title:
+      "Custom gates: a script or container that reports its result as JSON (command.report json)",
+    tui: ["/workflow: gates (Result: JSON report)"],
+    cli: ["baked workflow gates", "baked workflow validate"],
+    api: ["/v1/workflow/checks", "/v1/workflow/checks/:id/run"],
+    desktop: ["project/gates: Result toggle"],
+  },
+  {
     id: "gate-drafts",
     group: "Workflow runs",
     title: "Gates from a plain-language sentence",
