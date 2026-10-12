@@ -105,6 +105,7 @@ import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery
 import {
   abortableDelay,
   accountRefusal,
+  endedOnProse,
   isTransient,
   reportsLostTool,
   retryAfterMs,
@@ -141,6 +142,9 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
+
+type Implementation = ReturnType<typeof ImplementationSchema.parse>;
+
 import {
   codeTaskCheckProblems,
   plannerSizing,
@@ -1396,11 +1400,14 @@ export class WorkflowScheduler {
     task: Task,
     result: { outcome: string; summary: string; unresolved: string[] },
     changed: string[],
+    proseEnd = false,
   ): string | null {
     if ((state.taskRestarts[task.id] ?? 0) > 0) return null;
     const unfinished =
       ["blocked", "failed"].includes(result.outcome) || result.unresolved.length > 0;
     if (!unfinished) return null;
+    // The host's own record that the session ended on text; the worker's wording is not consulted.
+    if (proseEnd) return "its session ended on a text reply and never submitted a result";
     if (changed.length === 0 && reportsLostTool(result))
       return "a tool was unavailable to its worker, which submitted no change";
     const usage = this.lastAttemptUsage(runId, stepId);
@@ -1757,8 +1764,8 @@ export class WorkflowScheduler {
           ? { attemptTokens: taskSize(state, task, "taskBudgets") }
           : {}),
         ...(validate ? { validate } : {}),
-        ...(this.formatHints(runId, state, profile.output)
-          ? { formatHints: this.formatHints(runId, state, profile.output) }
+        ...(this.formatHints(runId, state, profile.output, task)
+          ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
         ...(hostTools ? { hostTools: hostTools(attempt) } : {}),
         ...(route.effort ? { effort: route.effort } : {}),
@@ -2266,8 +2273,21 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       this.store.addEvidence(runId, "diff", snapshotId, artifact.id);
     });
   }
-  /** What a format correction of a review needs and cannot see: the hash and the citable ids. */
-  private formatHints(runId: string, state: RuntimeState, output: string): string | undefined {
+  /**
+   * What a format correction needs and cannot see: the hash and the citable ids of a review, the
+   * task id and evidence handles of an implementation, the feature id of a plan.
+   */
+  private formatHints(
+    runId: string,
+    state: RuntimeState,
+    output: string,
+    task?: Task,
+  ): string | undefined {
+    if (output === "plan") return `featureId is ${this.store.run(runId).feature_id}.`;
+    if (output === "implementation" && task && state.snapshotId)
+      return `taskId is ${task.id}. ${validEvidenceNote(
+        currentEvidence(this.store, runId, state.snapshotId),
+      )}`;
     if ((output !== "review" && output !== "convergence") || !state.snapshotId) return undefined;
     return `snapshotHash is ${state.workspaceHash ?? ""}. ${validEvidenceNote(
       currentEvidence(this.store, runId, state.snapshotId),
@@ -2466,6 +2486,29 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         task.writes,
         `${task.title}\n${task.description}`,
       );
+      // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
+      // effect journal recorded every file this task changed, so it counts as well.
+      const currentChanges = async (): Promise<{
+        after: Record<string, string>;
+        changed: string[];
+      }> => {
+        const now = await sourceManifest(root, generatedPaths(policy), signal);
+        const journaled = this.store
+          .effects(runId)
+          .filter(
+            (e) =>
+              !knownEffects.has(e.id) &&
+              e.kind === "file_patch" &&
+              ["applied", "reconciled"].includes(e.status) &&
+              e.before_hash !== e.after_hash,
+          )
+          .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+        return {
+          after: now,
+          changed: [...new Set([...changedPaths(before, now), ...journaled, ...stillEdited()])],
+        };
+      };
+      let proseEnd = false;
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2503,26 +2546,24 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           },
           signal,
           task,
-        ),
+        ).catch(async (error: unknown) => {
+          if (!endedOnProse(error)) throw error;
+          proseEnd = true;
+          return this.proseEndResult(
+            runId,
+            child,
+            policy,
+            task,
+            root,
+            signal,
+            error,
+            async () => (await currentChanges()).changed,
+          );
+        }),
       );
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, child, root, policy, task, signal);
-      const after = await sourceManifest(root, generatedPaths(policy), signal);
-      // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
-      // effect journal recorded every file this task changed, so it counts as well.
-      const journaled = this.store
-        .effects(runId)
-        .filter(
-          (e) =>
-            !knownEffects.has(e.id) &&
-            e.kind === "file_patch" &&
-            ["applied", "reconciled"].includes(e.status) &&
-            e.before_hash !== e.after_hash,
-        )
-        .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-      const changed = [
-        ...new Set([...changedPaths(before, after), ...journaled, ...stillEdited()]),
-      ];
+      const { after, changed } = await currentChanges();
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
         throw new WorkflowFault(
@@ -2546,6 +2587,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           task,
           result,
           changed,
+          proseEnd,
         );
         const account = { summary: result.summary, unresolved: result.unresolved };
         if (
@@ -2935,6 +2977,14 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     try {
       before = await sourceManifest(root, generatedPaths(policy), signal);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
+      const currentChanges = async (): Promise<{
+        after: Record<string, string>;
+        changed: string[];
+      }> => {
+        const now = await sourceManifest(root, generatedPaths(policy), signal);
+        return { after: now, changed: this.workerChanges(runId, entry, known, before ?? {}, now) };
+      };
+      let proseEnd = false;
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2952,12 +3002,24 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           undefined,
           undefined,
           { root, attemptId: entry.attemptId },
-        ),
+        ).catch(async (error: unknown) => {
+          if (!endedOnProse(error)) throw error;
+          proseEnd = true;
+          return this.proseEndResult(
+            runId,
+            entry.child,
+            policy,
+            task,
+            root,
+            signal,
+            error,
+            async () => (await currentChanges()).changed,
+          );
+        }),
       );
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, entry.child, root, policy, task, signal);
-      const after = await sourceManifest(root, generatedPaths(policy), signal);
-      const changed = this.workerChanges(runId, entry, known, before, after);
+      const { after, changed } = await currentChanges();
       const outside = changed.filter((path) => !task.writes.some((w) => w.path === path));
       if (outside.length)
         return {
@@ -2976,6 +3038,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         task,
         result,
         changed,
+        proseEnd,
       );
       const account = { summary: result.summary, unresolved: result.unresolved };
       if (restartReason && changed.length === 0)
@@ -3401,6 +3464,72 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       );
     if (owned && !unsettled) await removeTaskWorktree(this.store.workspace, entry.path);
     this.leases.releaseOne(entry.lease());
+  }
+  /**
+   * The result of an implementer that ended on text after the continuation and the format
+   * correction failed (R7 keeplint T003: finished work lost with its checks green). The host
+   * holds the facts: with a change in the worktree, no unsettled effect and every check of the
+   * task passing, it records the implementation itself and review judges it; otherwise the same
+   * ending is a blocked result that goes down the restart path.
+   */
+  private async proseEndResult(
+    runId: string,
+    child: string,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    signal: AbortSignal,
+    fault: WorkflowFault,
+    currentPaths: () => Promise<string[]>,
+  ): Promise<Implementation> {
+    const prose = typeof fault.details.prose === "string" ? fault.details.prose : "";
+    const said = prose.trim() ? ` Its last text: ${prose.trim().slice(0, 1500)}` : "";
+    const result = (
+      outcome: "implemented" | "blocked",
+      summary: string,
+      unresolved: string[],
+    ): Implementation => ({
+      schemaVersion: 1,
+      taskId: task.id,
+      outcome,
+      summary: `${summary}${said}`.slice(0, 15000),
+      evidenceIds: [],
+      unresolved: unresolved.map((u) => u.slice(0, 15000)),
+    });
+    const blocked = (reason: string) =>
+      result(
+        "blocked",
+        "The worker ended its session with a text reply and never called submit_result.",
+        [reason],
+      );
+    const paths = await currentPaths();
+    if (!paths.length)
+      return blocked("The session changed no file in the task's write scope before it ended.");
+    const unsettled = this.store
+      .effects(runId)
+      .some((e) => ["prepared", "unknown"].includes(e.status));
+    if (unsettled) return blocked("An effect of the session has no known outcome.");
+    await this.fixTaskFiles(runId, child, root, policy, task, signal);
+    for (const check of taskChecks(policy, task)) {
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status !== "passed")
+        return blocked(
+          `Task check ${check.id} ${checked.status} after the session ended: ${(checked.output ?? "").slice(-1500)}`,
+        );
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/host-result.json`,
+        canonical({ taskId: task.id, reason: "prose_end", changed: paths }),
+      ),
+    );
+    return result(
+      "implemented",
+      `The worker ended its session with a text reply and never called submit_result; the host recorded this result because the task changed ${paths.length} file(s) and its checks pass.`,
+      [],
+    );
   }
   /** Runs one task check in `root` under its own host attempt. */
   /**
