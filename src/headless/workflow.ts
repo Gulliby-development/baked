@@ -19,7 +19,6 @@ import {
   type ProjectMemoryView,
   projectMemoryView,
 } from "../core/workflows/project-memory.js";
-import { stopDetail } from "../core/workflows/reasons.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import { explainRoute, type RouteExplanation, routedProfiles } from "../core/workflows/routing.js";
 import { runReport } from "../core/workflows/run-report.js";
@@ -30,6 +29,7 @@ import {
   type RunState,
 } from "../core/workflows/schemas.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
+import { stopDetail } from "../core/workflows/stop-detail.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
