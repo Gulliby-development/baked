@@ -108,3 +108,28 @@ export const taskCheckList = (policy: RunPolicy, task: Task): Check[] => {
     (c) => task.checkIds.includes(c.id) && (c.scope === "task" || covering.has(c.id)),
   );
 };
+
+/**
+ * The command that applies a check's fixer to one file. Most fixers take the file as a last
+ * argument (`ruff check --fix <file>`, `biome check --write <file>`), but the whole-project
+ * formatters do not, and an unaccepted argument makes them format nothing (bench round 08,
+ * commitbump: `cargo fmt src/main.rs` answers "unexpected argument", 17 of 19 fmt checks stayed
+ * red): `cargo fmt` takes file arguments only after `--`, `go fmt` takes packages (`gofmt -w`
+ * takes files) and `dotnet format` takes a project and selects files with `--include`.
+ */
+export function fixerCommand(
+  fix: { executable: string; args: string[] },
+  path: string,
+): { executable: string; args: string[] } {
+  const name = fix.executable
+    .replace(/^.*[\\/]/, "")
+    .replace(/\.(?:exe|cmd|bat)$/i, "")
+    .toLowerCase();
+  const [first] = fix.args;
+  if (name === "cargo" && fix.args.includes("fmt") && !fix.args.includes("--"))
+    return { executable: fix.executable, args: [...fix.args, "--", path] };
+  if (name === "go" && first === "fmt") return { executable: "gofmt", args: ["-w", path] };
+  if (name === "dotnet" && first === "format" && !fix.args.includes("--include"))
+    return { executable: fix.executable, args: [...fix.args, "--include", path] };
+  return { executable: fix.executable, args: [...fix.args, path] };
+}

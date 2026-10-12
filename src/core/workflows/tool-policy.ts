@@ -6,6 +6,15 @@ import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { capturePreImage, createdByRunLineage } from "./rollback.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
+import {
+  DEFAULT_STALL_SETTINGS,
+  type StallSettings,
+  ToolDeadlineError,
+  toolDeadlineMs,
+  toolEnded,
+  toolStarted,
+  withDeadline,
+} from "./stall.js";
 import type { WorkflowStore } from "./store.js";
 import type { Task } from "./types.js";
 
@@ -34,6 +43,9 @@ export class WorkflowToolPolicy {
     private policy: RunPolicy,
     private task?: Task,
     private root: string = store.workspace,
+    private settings: StallSettings = DEFAULT_STALL_SETTINGS,
+    /** Called for each tool call that hit its deadline, so the attempt can give up on repeats. */
+    private onDeadline?: (tool: string) => void,
   ) {}
   path(value: string): string {
     const path = (isAbsolute(value) ? relative(this.root, value) : value).replaceAll("\\", "/");
@@ -129,11 +141,66 @@ export class WorkflowToolPolicy {
     this.leases.assert(mutationLeaseFor(this.store.workspace, this.root));
     return path;
   }
+  /**
+   * Runs a tool call under its deadline and journals it (`tool.started`, `tool.finished`), so a
+   * run that stops advancing names the call it is in. A call that does not return in time is
+   * abandoned: an edit whose file was already written is recorded as applied from the file hash.
+   */
   async execute(
     name: string,
     args: Record<string, unknown>,
     action: () => Promise<unknown>,
   ): Promise<unknown> {
+    const started = Date.now();
+    const journal = (
+      type: "tool.started" | "tool.finished",
+      status?: "ok" | "error" | "deadline",
+    ) => {
+      try {
+        this.store.transaction(() =>
+          this.store.emit(
+            this.runId,
+            type === "tool.started"
+              ? { type, payload: { attemptId: this.attemptId, tool: name } }
+              : {
+                  type,
+                  payload: {
+                    attemptId: this.attemptId,
+                    tool: name,
+                    status: status ?? "ok",
+                    durationMs: Date.now() - started,
+                  },
+                },
+          ),
+        );
+      } catch {
+        // The journal is evidence for attribution; a call never fails because it could not be written.
+      }
+    };
+    journal("tool.started");
+    toolStarted(this.runId);
+    let status: "ok" | "error" | "deadline" = "ok";
+    try {
+      return await this.guarded(name, args, action, (hit) => {
+        if (hit) status = "deadline";
+      });
+    } catch (error) {
+      status = error instanceof ToolDeadlineError ? "deadline" : "error";
+      throw error;
+    } finally {
+      toolEnded(this.runId);
+      journal("tool.finished", status);
+      if (status === "deadline") this.onDeadline?.(name);
+    }
+  }
+  private async guarded(
+    name: string,
+    args: Record<string, unknown>,
+    rawAction: () => Promise<unknown>,
+    deadlineHit: (hit: boolean) => void,
+  ): Promise<unknown> {
+    const deadlineMs = toolDeadlineMs(this.settings, name);
+    const action = () => withDeadline(name, deadlineMs, rawAction);
     const path = this.validate(name, args);
     if (!path) return action();
     const absolute = workspacePath(this.root, path);
@@ -156,6 +223,23 @@ export class WorkflowToolPolicy {
       );
       return result;
     } catch (error) {
+      if (error instanceof ToolDeadlineError) {
+        // The write happens before the tool's follow-up work (formatting, language servers), so a
+        // file that differs from its pre-image was written: the same decision an operator makes
+        // from the file hash with `record-applied`, made here.
+        const current = fileHash(absolute);
+        const before = this.store.effects(this.runId).find((e) => e.id === effectId)?.before_hash;
+        if (current !== (before ?? null)) {
+          this.store.transaction(() => this.store.finishFileEffect(this.runId, effectId, current));
+          deadlineHit(true);
+          return {
+            success: true,
+            output: `${name} wrote ${path} but did not finish its follow-up work within ${Math.round(deadlineMs / 1000)} s (formatter or language server); the edit is applied, re-read the file before editing it again.`,
+          };
+        }
+        this.store.transaction(() => this.store.effectStatus(this.runId, effectId, "failed"));
+        throw error;
+      }
       this.store.transaction(() => this.store.effectStatus(this.runId, effectId, "unknown"));
       throw error;
     }

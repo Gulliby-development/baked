@@ -65,6 +65,7 @@ import {
 } from "./auto-approval.js";
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
+  fixerCommand,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -167,6 +168,7 @@ import {
   splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
+import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import { hasTaskGate, pendingOwners, readyTasks } from "./task-graph.js";
@@ -1368,6 +1370,7 @@ export class WorkflowScheduler {
         );
       });
     } finally {
+      forgetProgress(runId);
       clearInterval(poll);
       clearTimeout(timeout);
       outerSignal.removeEventListener("abort", abort);
@@ -4122,7 +4125,6 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       for (const check of fixable) {
         const fix = check.fix;
         if (!fix) continue;
-        const executable = fix.executable === "bun" ? process.execPath : fix.executable;
         for (const path of paths) {
           signal.throwIfAborted();
           this.leases.assert(lease);
@@ -4146,12 +4148,18 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           );
           try {
             // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-            await executeCheckCommand(scope, executable, [...fix.args, path], {
-              cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-              env: buildCheckEnv(check),
-              timeoutMs: check.timeoutMs,
-              signal,
-            });
+            const command = fixerCommand(fix, path);
+            await executeCheckCommand(
+              scope,
+              command.executable === "bun" ? process.execPath : command.executable,
+              command.args,
+              {
+                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                env: buildCheckEnv(check),
+                timeoutMs: check.timeoutMs,
+                signal,
+              },
+            );
             const after = fileHash(target);
             this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
             if (after !== preImage) changed = true;

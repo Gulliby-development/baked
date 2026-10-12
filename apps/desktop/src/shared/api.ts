@@ -105,6 +105,8 @@ export interface RunSnapshot {
   pendingRequestIds: string[];
   /** Findings the run is accepted with; absent from servers before the field existed. */
   limitations?: { count: number; ids: string[] };
+  /** Present while a running run has journaled nothing for longer than the stall limit. */
+  stalled?: { silentMs: number; lastEventAt: string | null };
   approvalDigest?: string | null;
   projectId?: string;
 }
