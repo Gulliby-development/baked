@@ -928,6 +928,10 @@ export class IntelligenceClient extends WorkerClient {
     return this.call("routerRestartLspServers", filter);
   }
 
+  async routerStopLspServersUnder(path: string): Promise<number> {
+    return this.call("routerStopLspServersUnder", path);
+  }
+
   async routerGetChildPids(): Promise<number[]> {
     return this.call("routerGetChildPids");
   }

@@ -517,6 +517,7 @@ const handlers: Record<string, (...args: unknown[]) => unknown> = {
   routerRestartLspServers: (filter: unknown) =>
     requireRouter().restartLspServers(filter as string | undefined),
   routerGetChildPids: () => requireRouter().getChildPids(),
+  routerStopLspServersUnder: (path: unknown) => requireRouter().stopLspServersUnder(path as string),
   routerGetAvailableBackends: (language: unknown) =>
     requireRouter().getAvailableBackends(language as import("../intelligence/types.js").Language),
   routerWarmup: () => requireRouter().warmup(),
