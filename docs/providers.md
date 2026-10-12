@@ -32,6 +32,8 @@ The Claude Code connection runs Claude models through the official `claude` CLI 
 
 BAKED keeps one `claude -p --input-format stream-json` process per conversation, with all of Claude Code's built-in tools, MCP servers, hooks, skills and project `CLAUDE.md` turned off. BAKED's tool list and adapter rules become the Claude Code system prompt, and each agent step sends only the messages added since the previous step. Claude Code puts its prompt-cache breakpoints on that growing conversation, so later steps read the earlier context from the cache; usage records cache reads and cache writes separately. A step whose transcript does not continue an open conversation (after compaction, a retry, or a changed tool list) starts a new process. Idle processes stop after 10 minutes, and at most four stay open.
 
+BAKED's tools are not native Claude Code tools. When the model calls one natively anyway (the CLI answers "No such tool available"), the adapter watches the event stream, interrupts the turn at once and sends a corrective line in the same session, so the step costs a few thousand tokens instead of a whole wasted turn. The tokens of the interrupted attempt are added to the step's usage and the step's provider metadata lists the aborted tool names (`providerMetadata["claude-code"].nativeToolAborts`). If the correction fails too, the step fails with a `ClaudeCodeNativeToolError` and the session is closed, so the next attempt starts in a fresh process.
+
 Replies arrive when each step finishes (no token streaming). The CLI ignores sampling settings such as temperature and maximum output tokens. Usage counts against the Claude Code plan limits; the cost BAKED shows is the API-price equivalent.
 
 ## GitHub Copilot
