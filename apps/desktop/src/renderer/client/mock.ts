@@ -90,6 +90,7 @@ const FULL_CAPABILITIES = [
   "lsp",
   "run-maintenance",
   "lsp-diagnose",
+  "workflow-editor",
   "custom-commands",
   "settings",
   "git",

@@ -17,6 +17,7 @@ import { LspSection } from "./setup/LspSection.js";
 import { McpSection } from "./setup/McpSection.js";
 import { RunMemorySection } from "./setup/RunMemorySection.js";
 import { SkillsSection } from "./setup/SkillsSection.js";
+import { WorkflowsSection } from "./setup/WorkflowsSection.js";
 import { WorkingSetSection } from "./setup/WorkingSetSection.js";
 import { ProjectHome } from "./start/index.js";
 
@@ -33,6 +34,7 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   coordinator: CoordinatorSection,
   runs: RunsView,
   gates: GatesSection,
+  workflows: WorkflowsSection,
   instructions: InstructionsSection,
   "working-set": WorkingSetSection,
   "run-memory": RunMemorySection,
