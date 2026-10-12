@@ -494,33 +494,35 @@ export function Composer({
             <ModelMenu model={model} loadModels={loadModels} onModel={onModel} close={close} />
           )}
         </Popover>
-        <Popover
-          label="Approval mode"
-          up
-          buttonLabel={`Approval mode: ${MODE_LABELS[mode].name}`}
-          button={MODE_LABELS[mode].name}
-        >
-          {(close) => (
-            <div className={MENU_LIST}>
-              {modes.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  className={MENU_ITEM_STACKED}
-                  aria-pressed={m === mode}
-                  onClick={() => {
-                    onMode(m);
-                    close();
-                  }}
-                >
-                  <span>{MODE_LABELS[m].name}</span>
-                  <span className="text-dim-foreground">{MODE_LABELS[m].detail}</span>
-                </button>
-              ))}
-              <p className={MENU_NOTE}>Applies from the next turn.</p>
-            </div>
-          )}
-        </Popover>
+        {modes.length > 1 && (
+          <Popover
+            label="Approval mode"
+            up
+            buttonLabel={`Approval mode: ${MODE_LABELS[mode].name}`}
+            button={MODE_LABELS[mode].name}
+          >
+            {(close) => (
+              <div className={MENU_LIST}>
+                {modes.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    className={MENU_ITEM_STACKED}
+                    aria-pressed={m === mode}
+                    onClick={() => {
+                      onMode(m);
+                      close();
+                    }}
+                  >
+                    <span>{MODE_LABELS[m].name}</span>
+                    <span className="text-dim-foreground">{MODE_LABELS[m].detail}</span>
+                  </button>
+                ))}
+                <p className={MENU_NOTE}>Applies from the next turn.</p>
+              </div>
+            )}
+          </Popover>
+        )}
         <span className="ml-auto text-[12px] text-dim-foreground [@media(max-width:720px)]:hidden">
           {busy ? "Esc stops · Enter adds to the turn" : "Enter sends · Shift+Enter new line"}
         </span>

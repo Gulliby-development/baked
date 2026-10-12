@@ -203,3 +203,91 @@ export async function issueStart(
     issue: issueSource(issue),
   };
 }
+
+/** The repository new issues go to and the token to create them, or null without either. */
+export async function issueTarget(
+  workspace: string,
+  config: AppConfig,
+  env: Record<string, string | undefined> = process.env,
+): Promise<{ repository: string; token: string } | null> {
+  const { host, tokenEnv } = settings(config);
+  const token = env[tokenEnv];
+  if (!token) return null;
+  const repository = await originRepository(workspace, host);
+  return repository ? { repository, token } : null;
+}
+
+/**
+ * Creates an issue in the workspace's origin repository, as a sub-issue of `parent` when one is
+ * given. A parent that cannot take the sub-issue leaves the issue standing, with a warning.
+ */
+export async function createIssue(
+  workspace: string,
+  config: AppConfig,
+  input: { title: string; body: string; parent?: string },
+  options: { fetch?: typeof fetch; env?: Record<string, string | undefined> } = {},
+): Promise<{ issue: FetchedIssue; warning?: string }> {
+  const { api, host, tokenEnv } = settings(config);
+  const target = await issueTarget(workspace, config, options.env);
+  if (!target)
+    throw new WorkflowFault(
+      "CAPABILITY_DENIED",
+      `Creating an issue needs ${tokenEnv} and an origin remote on ${host}`,
+      { reason: "issue_unreachable" },
+    );
+  const post = async (path: string, body: unknown): Promise<Response> =>
+    (options.fetch ?? fetch)(`${api}${path}`, {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        "content-type": "application/json",
+        "x-github-api-version": "2022-11-28",
+        authorization: `Bearer ${target.token}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
+    });
+  const response = await post(`/repos/${target.repository}/issues`, {
+    title: input.title,
+    body: input.body,
+  }).catch((error: unknown) => {
+    throw new WorkflowFault(
+      "CAPABILITY_DENIED",
+      `Cannot create an issue in ${target.repository}: ${error instanceof Error ? error.message : String(error)}`,
+      { reason: "issue_unreachable" },
+    );
+  });
+  const created = (await response.json().catch(() => null)) as {
+    id?: unknown;
+    number?: unknown;
+    html_url?: unknown;
+  } | null;
+  if (!response.ok || typeof created?.number !== "number")
+    throw new WorkflowFault(
+      "CAPABILITY_DENIED",
+      `GitHub answered ${response.status} creating an issue in ${target.repository}. Check that ${tokenEnv} can write issues there.`,
+      { reason: "issue_unreachable" },
+    );
+  const issue: FetchedIssue = {
+    repository: target.repository,
+    number: created.number,
+    url:
+      typeof created.html_url === "string"
+        ? created.html_url
+        : `https://${host}/${target.repository}/issues/${created.number}`,
+    title: input.title,
+    body: input.body,
+    state: "open",
+  };
+  if (!input.parent) return { issue };
+  const parent = parseIssueReference(input.parent, host, target.repository);
+  const linked = await post(`/repos/${parent.repository}/issues/${parent.number}/sub_issues`, {
+    sub_issue_id: created.id,
+  }).catch(() => null);
+  return linked?.ok
+    ? { issue }
+    : {
+        issue,
+        warning: `${target.repository}#${issue.number} is not a sub-issue of ${parent.repository}#${parent.number} (GitHub answered ${linked?.status ?? "nothing"})`,
+      };
+}
