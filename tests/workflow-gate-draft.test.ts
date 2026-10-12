@@ -187,3 +187,54 @@ describe("baked workflow gate", () => {
     expect(again.text).toContain("Cannot be saved");
   });
 });
+
+describe("gates without a model and their place in a workflow", () => {
+  test("a person's approval and an AI review are built from the sentence alone", async () => {
+    const root = workspace();
+    const never: DraftModel = async () => {
+      throw new Error("no model for these kinds");
+    };
+    const human = await draftGate(root, { text: "Product owner signs off the copy", kind: "human" }, never);
+    expect(human.gate).toMatchObject({ id: "product-owner-signs-off-the", type: "human", required: true, scope: "transition" });
+    expect(human.problems).toEqual([]);
+    expect(human.capabilities[0]).toContain("until a person approves");
+    const review = await draftGate(root, { text: "Check that every error message is actionable", kind: "ai-review", id: "error-review" }, never);
+    expect(review.gate).toMatchObject({ type: "ai-review", review: { dimension: "custom", instructions: "Check that every error message is actionable" } });
+    expect(review.problems).toEqual([]);
+  });
+
+  test("places are listed in words and binding copies a built-in workflow as custom", async () => {
+    const root = workspace();
+    const never: DraftModel = async () => "";
+    const draft = await draftGate(root, { text: "A person checks the release notes", kind: "human", id: "notes-ok" }, never);
+    saveGateDraft(root, draft, () => loadGateLibrary(root, policy));
+    // sdd's check stage runs the policy checks; a workflow file needs at least one there.
+    const withCheck = PolicySchema.parse({
+      ...defaultWorkflowPolicy,
+      checks: [{ id: "lint", executable: "bun", args: ["run", "lint"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }],
+    });
+    const run = (argv: string[]) =>
+      executeGateCommand(parseWorkflowArgs(["gate", ...argv]), root, DEFAULT_CONFIG, withCheck, never);
+    const places = (await run(["places", "notes-ok", "--workflow", "sdd"])).result as {
+      copyTo: string;
+      places: { key: string; label: string; disabled: string | null }[];
+    };
+    expect(places.copyTo).toBe("sdd-custom");
+    const open = places.places.filter((p) => p.disabled === null);
+    expect(open.length).toBeGreaterThan(0);
+    // A person's gate cannot run inside a check stage.
+    expect(places.places.find((p) => p.key.startsWith("stage:"))?.disabled).not.toBeNull();
+    const at = open[0]?.key ?? "";
+    expect(open[0]?.label).toMatch(/^After .+, before /);
+    const bound = await run(["bind", "notes-ok", "--workflow", "sdd", "--at", at]);
+    expect(bound.result).toEqual({ workflowId: "sdd-custom", path: "baked/workflows/sdd-custom.json", copiedFrom: "sdd" });
+    const again = (await run(["places", "notes-ok", "--workflow", "sdd-custom"])).result as {
+      copyTo: string | null;
+      places: { key: string; bound: boolean }[];
+    };
+    expect(again.copyTo).toBeNull();
+    expect(again.places.find((p) => p.key === at)?.bound).toBe(true);
+    await expect(run(["bind", "notes-ok", "--workflow", "sdd-custom", "--at", at])).rejects.toThrow("already bound");
+    await expect(run(["bind", "notes-ok", "--workflow", "sdd-custom", "--at", "transition:nope"])).rejects.toThrow("no place");
+  });
+});

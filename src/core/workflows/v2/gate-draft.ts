@@ -17,7 +17,9 @@ import { confirmGates, describeGate, type GateLibrary, gateDirectories } from ".
  * nothing until a person saves the draft. The browser driver is never drafted.
  */
 
-export type DraftKind = "command" | "ai-acceptance";
+/** Kinds a model drafts; `human` and `ai-review` are built from the sentence without a model. */
+export type DraftKind = "command" | "ai-acceptance" | "human" | "ai-review";
+export const DRAFT_KINDS: readonly DraftKind[] = ["command", "ai-acceptance", "human", "ai-review"];
 
 export interface GateDraftRequest {
   text: string;
@@ -214,7 +216,16 @@ export function gateCapabilities(gate: Gate, script: DraftScript | null): string
       ...(script ? [`Writes the test script ${script.path} when saved`] : []),
     ];
   }
-  if (gate.type !== "ai-acceptance") return [describe(gate)];
+  if (gate.type === "human")
+    return [
+      `Stops the workflow until a person approves: ${gate.human.prompt}`,
+      "Runs nothing and reads nothing",
+    ];
+  if (gate.type === "ai-review")
+    return [
+      `An AI reviewer (${gate.review.profileId}) reads the change with these instructions; ${gate.review.blockingSeverities.join(" and ")} findings block`,
+      "Read-only: the reviewer cannot change files or run commands",
+    ];
   const { start, commands = [], capabilities } = gate.acceptance;
   return [
     `Starts ${[start.executable, ...start.args].join(" ")} in ${start.cwd} and drives its terminal`,
@@ -262,6 +273,57 @@ export function draftProblems(
   return problems;
 }
 
+/** A gate ID made from the first words of a sentence. */
+export function idFromText(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .split("-")
+    .slice(0, 5)
+    .join("-")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+  return /^[a-z0-9]/.test(slug) ? slug : "gate";
+}
+
+/**
+ * A gate that needs no model: a person's decision with the sentence as its prompt, or an AI
+ * review with the sentence as its instructions. Both block; the review runs in a review stage.
+ */
+export function plainGate(kind: "human" | "ai-review", id: string, text: string): Gate {
+  const common = {
+    schemaVersion: 1 as const,
+    id,
+    description: text.length > 200 ? `${text.slice(0, 197)}...` : text,
+    required: true,
+    timeoutMs: kind === "human" ? 3600000 : 900000,
+    retries: { max: 0, retryOn: [] },
+  };
+  if (kind === "human")
+    return {
+      ...common,
+      type: "human",
+      scope: "transition",
+      evidence: { kind: "decision", keepOutputLines: 0, artifactPaths: [] },
+      human: { prompt: text, answer: "approve", bindsDigest: true },
+    };
+  return {
+    ...common,
+    type: "ai-review",
+    scope: "feature",
+    evidence: { kind: "review", keepOutputLines: 40, artifactPaths: [] },
+    review: {
+      profileId: "reviewer",
+      dimension: "custom",
+      instructions: text,
+      blockingSeverities: ["critical", "high"],
+      skepticProfileId: "skeptic",
+      appliesWhen: "always",
+    },
+  };
+}
+
 /** Drafts a gate from a sentence; writes nothing. */
 export async function draftGate(
   workspace: string,
@@ -273,8 +335,19 @@ export async function draftGate(
   if (!text) throw new Error("Describe the check in a sentence.");
   if (request.id !== undefined && !SafeId.safeParse(request.id).success)
     throw new Error(`${request.id} is not a valid gate ID`);
-  if (request.fromCriteria && request.kind === "command")
+  if (request.fromCriteria && request.kind !== undefined && request.kind !== "ai-acceptance")
     throw new Error("Only an AI check walks the spec's acceptance criteria.");
+  if (request.kind === "human" || request.kind === "ai-review") {
+    const gate = plainGate(request.kind, request.id ?? idFromText(text), text);
+    return {
+      gate,
+      script: null,
+      summary: describe(gate),
+      capabilities: gateCapabilities(gate, null),
+      problems: draftProblems(workspace, gate, null, library),
+      path: `baked/gates/${gate.id}.json`,
+    };
+  }
   const kind = request.kind ?? (request.fromCriteria ? "ai-acceptance" : undefined);
   const user = [
     `The check: ${text}`,

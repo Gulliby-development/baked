@@ -130,6 +130,7 @@ const flags = new Set([
   "id",
   "save",
   "from-criteria",
+  "at",
   "budget",
 ]);
 const booleanFlags = new Set([
@@ -254,7 +255,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   validate: ["file"],
   define: ["from"],
   gates: ["all"],
-  gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json"],
+  gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
   deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
@@ -516,11 +517,14 @@ validate (ID | --file FILE)   check a definition against the gate library; exit 
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
 gates                     list the gate library with each gate's source and what it shadows
 gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
-gate new "TEXT" [--kind command|ai-acceptance] [--id ID] [--from-criteria] [--model ID] [--save] [--json]
+gate new "TEXT" [--kind command|ai-acceptance|human|ai-review] [--id ID] [--from-criteria] [--model ID] [--save] [--json]
   draft a gate from a sentence: a command gate for an exact check, a terminal AI walk-through
-  for a judged one; prints the draft and what it may do, and writes it only with --save
+  for a judged one (human and ai-review need no model); prints the draft and what it may do,
+  and writes it only with --save
 gate save --file DRAFT.json   save a draft printed by gate new --json (confirms it)
 gate list [--json]   |   gate show ID [--json]   the gate library in words
+gate places ID [--workflow W]   where the gate can go in a workflow (default: the default workflow)
+gate bind ID --at PLACE [--workflow W]   bind it there; sdd and presets are copied as W-custom first
 profiles [--model ID]     artifacts RUN_ID [--file ARTIFACT_ID]
 route [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--json]
   show the model each stage and profile would use and where each choice comes from
