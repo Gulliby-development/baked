@@ -5,7 +5,7 @@ import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
 import { resolveModel } from "../llm/provider.js";
-import { buildProviderOptions } from "../llm/provider-options.js";
+import { buildProviderOptions, withChatEffort } from "../llm/provider-options.js";
 import { resolveTaskModel } from "../llm/task-router.js";
 import { emitCacheReset } from "../tools/file-events.js";
 import { createChatAgent, createSharedCacheRef } from "./agent.js";
@@ -68,8 +68,9 @@ export class BakeChatHost implements ChatAgentHost {
   }
 
   async agent(request: TurnAgentRequest): Promise<{ agent: TurnAgent; contextWindow: number }> {
-    const model = resolveModel(request.modelId);
-    const provider = await buildProviderOptions(request.modelId, this.config);
+    const config = withChatEffort(request.modelId, this.config, request.effort);
+    const model = resolveModel(request.modelId, config);
+    const provider = await buildProviderOptions(request.modelId, config);
     if (!this.mcpConnected && this.config.mcpServers?.length) {
       this.mcpConnected = true;
       const { getMCPManager } = await import("../mcp/index.js");
@@ -94,7 +95,7 @@ export class BakeChatHost implements ChatAgentHost {
     // tokens, as in the terminal UI.
     context.maybeReseedExpiredCache(this.config.cache?.ttl === "1h" ? 3_540_000 : 270_000);
     const agent = createChatAgent({
-      config: this.config,
+      config,
       cwd: this.workspace,
       modelId: request.modelId,
       model,
