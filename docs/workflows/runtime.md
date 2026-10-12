@@ -481,7 +481,7 @@ Convergence repairs the findings of its final review for at most `maxConvergence
 - `rounds`: the convergence rounds of the policy are used;
 - `tasks`: the corrective tasks of the policy are used;
 - `repeat`: the last repair left the same findings against the same criteria;
-- `contradiction`: a new finding names the same file, the same symbol (or none on both, with the same kind) and a criterion of an earlier finding that a correction already addressed. The findings ledger is keyed by criterion, file and symbol, not by finding id or claim, because a reviewer words one defect differently each round and the ids change with it. The second occurrence of a location is a residual: another repair would likely undo the first one or chase the same edge case again, so a person decides (under `clarification: assume` the residual is accepted when the checks pass and nothing high or critical remains). This stop can come before the round limit; it is listed with the finding it repeats.
+- `contradiction`: a new finding repeats one that a correction of the run already addressed. The convergence agent is given those earlier findings (`earlierFindings`, with their file, symbol, criteria and claim) and sets `repeatOf` on every finding: the id of the earlier finding when it is the same defect, even if the file, symbol or wording changed or the earlier fix was partial, and `null` for a different defect, even in the same file or function. `repeatOf` is the key of the findings ledger. A finding without the field (a reviewer that did not say) falls back to the location: the same file, a symbol sharing a word with the earlier one (or none on both, with the same kind) and a shared criterion. The second occurrence of a defect is a residual: another repair would likely undo the first one or chase the same edge case again, so a decision is requested. This stop can come before the round limit; it is listed with the finding it repeats and how the repeat was recognized (`repeatOf` or `location`).
 
 The person decides, on every surface:
 
@@ -491,9 +491,15 @@ The person decides, on every surface:
 | One more round | `C` | `baked workflow continue RUN_ID --request ID --expected-revision N --resume` | `POST .../continue` | The limit that stopped the run is raised just enough for these findings and they are repaired now. The findings a person decided to repair are not asked about again. |
 | Stop | `X` | `baked workflow reject RUN_ID --request ID --reason TEXT --expected-revision N` | `POST .../reject` | The run is `paused`; resuming reviews again and asks again if the findings remain. |
 
-`accept` continues the run after the decision like `approve`, `answer` and `evidence`; pass `--no-resume` to only record it. `continue` resumes only with `--resume`. In the desktop app the run's decision card has "Accept as known limitations", "One more round" and "Stop here".
+`accept` continues the run after the decision like `approve`, `answer` and `evidence`; pass `--no-resume` to only record it. `continue` on a stopped convergence resumes the same way (`--no-resume` only records it); `continue` on a token checkpoint resumes only with `--resume`. In the desktop app the run's decision card has "Accept as known limitations", "One more round" and "Stop here".
 
-With `clarification: "assume"` nobody is asked when the stop is safe: every required check passes, at most a quarter of the criteria fail, and no remaining finding is critical or high. The request is recorded and accepted at once (decided by `auto-approval`), the findings are listed as known limitations decided by the assume rule, and the run goes on. A run with no required check, or with a high finding, still waits for a person.
+With `clarification: "assume"` the host applies a decision policy to a stopped convergence and shows it in the request body (`hostRule`: `decision` `accept`, `extend` or `ask`, the three `rules`, and `why` for this stop; the terminal and desktop decision views print it):
+
+1. **Accept** when every required check passes, at most 2 distinct findings remain (findings that repeat one cause through `repeatOf` count once; the share of failing criteria is not the measure, because one defect in a shared function fails 2 or 3 criteria at once), none is critical, and none is high with a reproduction the host ran (a high finding that rests on a static trace is accepted). The request is recorded and accepted at once (decided by `auto-approval`), the findings are listed as known limitations decided by the assume rule, and the run goes on.
+2. **Extend** on a `contradiction` stop, once per run (`autoExtensions` in the run state): the stop is recorded as an automatic "one more round", the limits that stopped it are raised just enough and the findings are repaired now, because a repeat is often an incomplete earlier fix. If the next stop is for the same or another reason, rule 1 decides.
+3. **Ask** otherwise, with `why` naming what stopped the host (a failing check, the number of distinct findings, a critical or reproduced high finding).
+
+A run with no required check still waits for a person.
 
 ## TUI
 

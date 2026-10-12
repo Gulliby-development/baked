@@ -13,11 +13,13 @@ type Finding = Review["findings"][number];
  */
 export type ConvergenceStopReason = "rounds" | "tasks" | "repeat" | "contradiction";
 
-/** A finding that returns to a (criterion, file, symbol) an earlier correction already fixed. */
+/** A finding that returns to a defect an earlier correction of the run already addressed. */
 export interface Contradiction {
   findingId: string;
   earlierId: string;
   earlierClaim: string;
+  /** How the repeat was recognized: the reviewer named it, or the locations match. */
+  via?: "repeatOf" | "location";
 }
 
 export interface ConvergenceStop {
@@ -54,9 +56,38 @@ export interface ConvergenceRequestBody {
     claim: string;
     impact: string;
     suggestedFix: string;
+    /** The earlier finding the reviewer says this one repeats, when it said so. */
+    repeatOf?: string | null;
+    /** Whether the finding carries a reproduction the host ran (a static trace has none). */
+    reproduced?: boolean;
   }[];
   contradictions: Contradiction[];
+  /** What the `assume` rule does with this stop and why; absent when a person always decides. */
+  hostRule?: HostRule;
 }
+
+/** The rule of `clarification: assume` for a stopped convergence, shown with the request. */
+export interface HostRule {
+  decision: "accept" | "extend" | "ask";
+  /** The rules the host applies, in order. */
+  rules: string[];
+  /** Why the host chose `decision` for this stop. */
+  why: string;
+}
+
+/** The limits of the `assume` rule for a stopped convergence. */
+export const ASSUME_RULE = {
+  /** Distinct findings that may remain and be accepted as known limitations. */
+  maxFindings: 2,
+  /** Rounds granted automatically after a contradiction stop. */
+  extensions: 1,
+} as const;
+
+const ASSUME_RULES = [
+  `Accept the findings as known limitations when every required check passes, at most ${String(ASSUME_RULE.maxFindings)} distinct findings remain, none is critical, and none is high with a reproduction the host ran.`,
+  `On a contradiction stop, repair one more round before deciding (${String(ASSUME_RULE.extensions)} time per run): a repeated finding is often an incomplete earlier fix.`,
+  "Otherwise ask a person.",
+];
 
 /** The identity of a finding set: the same claims against the same criteria. */
 export const findingSetHash = (findings: Review["findings"]): string =>
@@ -66,13 +97,38 @@ export const findingSetHash = (findings: Review["findings"]): string =>
       .sort((a, b) => a.claim.localeCompare(b.claim)),
   );
 
+const symbolTokens = (symbol: string | null | undefined): Set<string> =>
+  new Set(
+    (symbol ?? "")
+      .toLowerCase()
+      .split(/[^a-z0-9_$]+/)
+      .filter((token) => token.length > 1),
+  );
+
+/** Whether two locations name the same code: the same file and overlapping symbols. */
+function sameLocation(
+  earlier: Partial<Finding>,
+  finding: Pick<Finding, "file" | "symbol" | "kind">,
+): boolean {
+  if (earlier.file !== finding.file) return false;
+  const a = symbolTokens(earlier.symbol);
+  const b = symbolTokens(finding.symbol);
+  // Without a symbol the file is all that locates it, so the kind must agree too.
+  if (!a.size && !b.size) return earlier.kind === finding.kind;
+  return [...a].some((token) => b.has(token));
+}
+
 /**
- * The findings ledger: a finding keyed by (criterion, file, symbol) that an earlier correction of
- * the run already addressed. A reviewer words the same defect differently each round and the
- * finding ids change with it (md-site F2, F2-2, F2-3 on one unreadable-file test; expenses-py A
- * F-001..F-003 on 28-digit Decimal), so the key is the location, not the id or the claim. The
- * second occurrence of a location for the same criterion is a residual: another repair would
- * likely undo the first one or chase the same edge again, so a decision is requested instead.
+ * The findings ledger: a finding that repeats one an earlier correction of the run already
+ * addressed. A reviewer words the same defect differently each round and the finding ids change
+ * with it (md-site F2, F2-2, F2-3 on one unreadable-file test; expenses-py A F-001..F-003 on
+ * 28-digit Decimal), so the claim and the id are not the key. The reviewer is asked to name the
+ * earlier finding (`repeatOf`) and that is the key: `repeatOf: null` says the defect is new, which
+ * ends the false stops on one file or function that holds different defects (jsonshape, expenses-py
+ * A `_share` underflow after overflow). A finding without the field (a reviewer that did not say)
+ * falls back to the location: the same file, a shared symbol word and a shared criterion. The
+ * second occurrence is a residual: another repair would likely undo the first one or chase the
+ * same edge again, so a decision is requested instead.
  */
 export function contradictions(
   store: WorkflowStore,
@@ -84,22 +140,71 @@ export function contradictions(
     .findings(runId)
     .filter((row) => row.repair_task_id && !live.has(row.id))
     .map((row) => ({ id: row.id, body: JSON.parse(row.body_json) as Partial<Finding> }));
-  return findings.flatMap((finding) => {
-    // A finding without a file or a symbol has no location to recognize.
+  return findings.flatMap((finding): Contradiction[] => {
+    if (finding.repeatOf === null) return [];
+    const named = finding.repeatOf ? earlier.find((e) => e.id === finding.repeatOf) : undefined;
+    if (named)
+      return [
+        {
+          findingId: finding.id,
+          earlierId: named.id,
+          earlierClaim: named.body.claim ?? "",
+          via: "repeatOf",
+        },
+      ];
+    // A finding without a file has no location to recognize.
     if (!finding.file) return [];
     const match = earlier.find(
       (e) =>
-        e.body.file === finding.file &&
-        (e.body.symbol ?? null) === (finding.symbol ?? null) &&
-        // Without a symbol the file is all that locates it, so the kind must agree too.
-        (finding.symbol !== null || e.body.kind === finding.kind) &&
+        sameLocation(e.body, finding) &&
         (e.body.criterionIds ?? []).some((id) => finding.criterionIds.includes(id)),
     );
     return match
-      ? [{ findingId: finding.id, earlierId: match.id, earlierClaim: match.body.claim ?? "" }]
+      ? [
+          {
+            findingId: finding.id,
+            earlierId: match.id,
+            earlierClaim: match.body.claim ?? "",
+            via: "location",
+          },
+        ]
       : [];
   });
 }
+
+/**
+ * The earlier findings a reviewer can name in `repeatOf`: those a correction of the run already
+ * addressed. Capped so a long run does not grow the prompt.
+ */
+export function earlierFindings(
+  store: WorkflowStore,
+  runId: string,
+): {
+  id: string;
+  criterionIds: string[];
+  file: string | null;
+  symbol: string | null;
+  claim: string;
+}[] {
+  return store
+    .findings(runId)
+    .filter((row) => row.repair_task_id)
+    .slice(-30)
+    .map((row) => {
+      const body = JSON.parse(row.body_json) as Partial<Finding>;
+      return {
+        id: row.id,
+        criterionIds: body.criterionIds ?? [],
+        file: body.file ?? null,
+        symbol: body.symbol ?? null,
+        claim: (body.claim ?? "").slice(0, 300),
+      };
+    });
+}
+
+/** What the reviewer is told next to the earlier findings. */
+export const REPEAT_NOTE =
+  "earlierFindings are findings a correction of this run already addressed. Set repeatOf on every finding: the id of the earlier finding when it is the same defect (the same root cause, even if the file, symbol or wording changed or the earlier fix was only partial), and null when it is a different defect, even in the same file or function.";
 
 /**
  * The reason the next convergence round must not start without a decision, or null when
@@ -149,24 +254,79 @@ export function requiredChecksPass(
   });
 }
 
-/** The share of criteria that may fail for `clarification: assume` to accept the residual. */
-export const ASSUME_FAILING_SHARE = 0.25;
+/** Distinct findings: a finding that repeats another counts with it. */
+const distinctFindings = (findings: ConvergenceRequestBody["findings"]): number =>
+  new Set(findings.map((f) => f.repeatOf ?? f.id)).size;
 
 /**
- * Whether the `assume` rule accepts the stopped convergence without asking: every required check
- * passes, only a small share of the criteria fail, and no remaining finding is critical or high.
+ * What the `assume` rule does with a stopped convergence. The share of failing criteria is not
+ * the measure (2 of 7 criteria is 28.6% and one defect in a shared function fails 2 or 3 of
+ * them): the count of distinct findings is. Under `assume` and with every required check
+ * passing, at most `ASSUME_RULE.maxFindings` distinct findings none critical and none high with
+ * a reproduction the host ran are accepted as known limitations. A contradiction stop first
+ * repairs one more round (jsonshape 079329e3: the repeat was an incomplete fix and one more round
+ * repaired it). Everything else goes to a person, with the reason in the request.
  */
-export function assumeAccepts(
+export function assumeDecision(
   policy: RunPolicy,
+  state: Pick<RuntimeState, "autoExtensions">,
+  stop: Pick<ConvergenceStop, "reason">,
   body: Pick<ConvergenceRequestBody, "checksPassing" | "criteria" | "findings">,
-): boolean {
-  return (
-    policy.clarification === "assume" &&
-    body.checksPassing &&
-    body.criteria.total > 0 &&
-    body.criteria.failing.length / body.criteria.total <= ASSUME_FAILING_SHARE &&
-    body.findings.every((f) => f.severity !== "critical" && f.severity !== "high")
+): HostRule | null {
+  if (policy.clarification !== "assume") return null;
+  const count = distinctFindings(body.findings);
+  const rules = [...ASSUME_RULES];
+  if (stop.reason === "contradiction" && state.autoExtensions < ASSUME_RULE.extensions)
+    return {
+      decision: "extend",
+      rules,
+      why: `A finding repeats an earlier one: one more round is granted before the residual is judged (${String(count)} distinct finding(s) now).`,
+    };
+  const blockers: string[] = [];
+  if (!body.checksPassing) blockers.push("a required check does not pass");
+  if (body.criteria.total === 0) blockers.push("the spec has no criteria");
+  if (count > ASSUME_RULE.maxFindings)
+    blockers.push(
+      `${String(count)} distinct findings remain (at most ${String(ASSUME_RULE.maxFindings)} are accepted)`,
+    );
+  for (const f of body.findings) {
+    if (f.severity === "critical") blockers.push(`${f.id} is critical`);
+    else if (f.severity === "high" && f.reproduced !== false)
+      blockers.push(`${f.id} is high with a reproduction`);
+  }
+  return blockers.length
+    ? { decision: "ask", rules, why: `A person decides: ${blockers.join("; ")}.` }
+    : {
+        decision: "accept",
+        rules,
+        why: `Every required check passes and ${String(count)} distinct finding(s) remain, none critical and none high with a reproduction.`,
+      };
+}
+
+/**
+ * Raises the limits that stopped a convergence just far enough for `findings` to be repaired now
+ * and records them as decided, so the same stop does not ask again. A person's "one more round"
+ * and the automatic extension of the `assume` rule both use it.
+ */
+export function grantRound(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  policy: RunPolicy,
+  findings: readonly { id: string }[],
+): void {
+  const run = store.run(runId);
+  state.extraConvergenceRounds = Math.max(
+    state.extraConvergenceRounds,
+    run.convergence_rounds + 1 - policy.maxConvergenceRounds,
   );
+  state.extraCorrectiveTasks = Math.max(
+    state.extraCorrectiveTasks,
+    run.corrective_tasks + findings.length - policy.maxCorrectiveTasks,
+  );
+  state.previousFindingSet = null;
+  state.noProgressRounds = 0;
+  state.decidedFindings = [...new Set([...state.decidedFindings, ...findings.map((f) => f.id)])];
 }
 
 /** The request body for a stopped convergence. */
@@ -195,7 +355,7 @@ export function convergenceBody(
         ? `the ${stop.limit} corrective task(s) the policy allows are used`
         : stop.reason === "repeat"
           ? "the last repair left the same findings"
-          : "a finding returns to a file and symbol an earlier correction already fixed for the same criterion";
+          : "a finding repeats one an earlier correction of the run already addressed";
   return {
     topic: "convergence",
     reason: stop.reason,
@@ -215,6 +375,8 @@ export function convergenceBody(
       claim: f.claim,
       impact: f.impact,
       suggestedFix: f.suggestedFix,
+      ...(f.repeatOf !== undefined ? { repeatOf: f.repeatOf } : {}),
+      reproduced: f.repro !== undefined,
     })),
     contradictions: stop.contradictions,
   };

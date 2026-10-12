@@ -13,7 +13,11 @@ import {
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage } from "../specs/validate.js";
 import { appendCorrections } from "../verification/convergence.js";
-import { acceptResidual, type ConvergenceRequestBody } from "../verification/convergence-stop.js";
+import {
+  acceptResidual,
+  type ConvergenceRequestBody,
+  grantRound,
+} from "../verification/convergence-stop.js";
 import { hostDiff } from "../verification/snapshot.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { supersedeResearch } from "./analysis-notes.js";
@@ -274,6 +278,7 @@ export class NativeWorkflowService implements WorkflowService {
       extraConvergenceRounds: 0,
       extraCorrectiveTasks: 0,
       decidedFindings: [],
+      autoExtensions: 0,
       limitations: [],
       verificationState: "not_verified",
       instructionText: instructions.text,
@@ -545,18 +550,8 @@ export class NativeWorkflowService implements WorkflowService {
   ): void {
     const run = this.store.run(runId);
     const policy = PolicySchema.parse(JSON.parse(run.policy_json));
-    state.extraConvergenceRounds = Math.max(
-      state.extraConvergenceRounds,
-      run.convergence_rounds + 1 - policy.maxConvergenceRounds,
-    );
-    state.extraCorrectiveTasks = Math.max(
-      state.extraCorrectiveTasks,
-      run.corrective_tasks + body.findings.length - policy.maxCorrectiveTasks,
-    );
-    state.previousFindingSet = null;
-    state.noProgressRounds = 0;
+    grantRound(this.store, runId, state, policy, body.findings);
     const ids = new Set(body.findings.map((f) => f.id));
-    state.decidedFindings = [...new Set([...state.decidedFindings, ...ids])];
     const parsed = parseRunDefinition(run.definition_json);
     if (parsed.schemaVersion !== 1) return;
     const findings = this.store
@@ -1008,6 +1003,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.extraConvergenceRounds = 0;
         state.extraCorrectiveTasks = 0;
         state.decidedFindings = [];
+        state.autoExtensions = 0;
         state.limitations = [];
         state.manifest.correctionHashes = [];
         state.rootGraph = structuredClone(state.graph);
@@ -1348,6 +1344,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.extraConvergenceRounds = 0;
       state.extraCorrectiveTasks = 0;
       state.decidedFindings = [];
+      state.autoExtensions = 0;
       state.limitations = [];
       const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
       if (rebase) {
