@@ -231,4 +231,6 @@ export const UsageQuery = z.strictObject({
     .optional(),
   model: z.string().min(1).optional(),
   stage: z.string().min(1).optional(),
+  /** `md` answers `{ markdown }`, the summary as a Markdown document to share. */
+  format: z.literal("md").optional(),
 });

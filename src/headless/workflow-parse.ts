@@ -94,6 +94,7 @@ const flags = new Set([
   "status",
   "stage",
   "top",
+  "format",
   "after",
   "effect",
   "resolution",
@@ -225,7 +226,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
-  usage: ["model", "stage", "top"],
+  usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
   memory: ["text"],
   extend: [
@@ -315,6 +316,10 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         );
     }
   }
+  if ("format" in result.flags && result.flags.format !== "md")
+    throw new WorkflowFault("INVALID_DEFINITION", "--format takes md");
+  if (result.command === "usage" && "output" in result.flags && !("format" in result.flags))
+    result.flags.format = "md";
   if (typeof result.flags.route === "string") parseRouteOverrides(result.flags.route);
   if (!result.flags.help && result.command === "memory") {
     const [action = "list", ...rest] = result.positional;
@@ -518,7 +523,9 @@ estimate [WORKFLOW] (same options as doctor)
   tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
-usage RUN_ID [--model ID] [--stage NAME] [--top N]   per-stage and per-attempt token and step usage
+usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
+  per-stage and per-attempt token and step usage; --format md renders tokens and estimated cost
+  by stage and model as Markdown, printed or written to FILE (project-wide: baked usage)
 report RUN_ID [--output FILE] [--json]
   One Markdown report of the run: summary, changes, tasks, checks, criteria, findings, decisions,
   tokens by stage and model, artifacts. Printed, or written to FILE; deliver uses it as the PR body.

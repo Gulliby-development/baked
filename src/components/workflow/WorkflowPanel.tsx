@@ -3,6 +3,7 @@ import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { UndoResult } from "../../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../../core/workflows/defaults.js";
+import { usageFileName, writeUsageMarkdown } from "../../core/workflows/usage-markdown.js";
 import type { StartRunInput } from "../../core/workflows/view.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import {
@@ -447,6 +448,7 @@ export function WorkflowPanel({
         width={popupW}
         height={Math.min(40, height)}
         onBack={() => useWorkflowStore.getState().showHome()}
+        onExport={(summary) => writeUsageMarkdown(workspace, usageFileName(summary.days), summary)}
       />
     );
 

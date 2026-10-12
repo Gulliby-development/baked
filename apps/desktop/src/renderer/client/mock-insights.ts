@@ -534,6 +534,23 @@ function summary(
   };
 }
 
+/** A short stand-in for the Markdown `GET /v1/usage?format=md` renders in the core. */
+function mockMarkdown(result: UsageSummary): string {
+  const rows = result.groups.map(
+    (g) => `| ${g.key} | ${g.tokens.toLocaleString("en-US")} | $${(g.costUsd ?? 0).toFixed(2)} |`,
+  );
+  return [
+    "# BAKED usage",
+    "",
+    `- Window: last ${result.days} days`,
+    "",
+    "| Group | Tokens | USD (estimate) |",
+    "| --- | ---: | ---: |",
+    ...rows,
+    "",
+  ].join("\n");
+}
+
 const error = (message: string) => response(400, { error: { code: "INVALID_REQUEST", message } });
 
 const usageRoutes: MockRoute = ({ method, path, query }) => {
@@ -548,12 +565,13 @@ const usageRoutes: MockRoute = ({ method, path, query }) => {
       return error("groupBy: one or two of model, stage, day");
     const model = query.get("model");
     const stage = query.get("stage");
+    const result = summary(Number(query.get("days") ?? 7), groupBy, {
+      ...(model !== null ? { model } : {}),
+      ...(stage !== null ? { stage } : {}),
+    });
     return response(
       200,
-      summary(Number(query.get("days") ?? 7), groupBy, {
-        ...(model !== null ? { model } : {}),
-        ...(stage !== null ? { stage } : {}),
-      }),
+      query.get("format") === "md" ? { markdown: mockMarkdown(result) } : result,
     );
   }
   const match = /^\/v1\/workflow\/runs\/([^/]+)\/usage$/.exec(path);
@@ -565,6 +583,11 @@ const usageRoutes: MockRoute = ({ method, path, query }) => {
     totalTokens: rows.reduce((sum, r) => sum + (r.usedTokens ?? 0), 0),
     attempts: rows,
   };
+  if (query.get("format") === "md")
+    return response(200, {
+      runId,
+      markdown: `# BAKED usage of run ${runId}\n\n- Tokens: ${report.totalTokens.toLocaleString("en-US")}\n`,
+    });
   return response(200, report);
 };
 

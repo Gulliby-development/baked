@@ -121,6 +121,7 @@ bun test tests/feature-parity.test.ts
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): read-only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
+| Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): export-progress only | **Gap** [#413](https://github.com/Gulliby-development/baked/issues/413) |
 
 ### Initiatives

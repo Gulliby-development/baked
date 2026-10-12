@@ -712,6 +712,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/usage"],
   },
   {
+    id: "usage-export",
+    group: "Workflow runs",
+    title: "Export usage to Markdown to share",
+    tui: ["/workflow: usage screen, E writes Markdown", "/workflow: usage RUN_ID --format md"],
+    cli: ["baked usage", "baked workflow usage"],
+    api: ["/v1/usage", "/v1/workflow/runs/:id/usage"],
+    desktop: ["project/usage: Export"],
+  },
+  {
     id: "run-maintenance",
     group: "Workflow runs",
     title: "Import, export, gc and redact runs",
