@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { reasonText } from "../../../../../../src/core/workflows/reasons.js";
 import { chat } from "../../client/chat.js";
 import {
   errorText,
@@ -568,6 +569,7 @@ function StationCard({
   loops,
   contractState,
   waiting,
+  blocked,
 }: {
   station: Station;
   index: number;
@@ -577,6 +579,8 @@ function StationCard({
   contractState: (name: string) => "made" | "failed" | "coming";
   /** Requests wait for the user; they are shown above the station. */
   waiting: number;
+  /** The run is blocked; why is shown above the station. */
+  blocked: boolean;
 }) {
   const takes = station.consumes;
   return (
@@ -628,15 +632,35 @@ function StationCard({
         <p className="m-0 text-[13px]">
           {waiting
             ? `${waiting} decision${waiting === 1 ? " waits" : "s wait"} for you above.`
-            : station.state === "current"
-              ? "Nothing is needed from you. This station is working."
-              : station.state === "failed"
-                ? "This station failed. The activity and its sections below say why."
-                : station.state === "done"
-                  ? "Done. Its results are in the sections below."
-                  : "Nothing yet. This station has not started."}
+            : blocked && station.state !== "done"
+              ? "The run is blocked. Why it stopped is shown above: retry, switch the model or fork it."
+              : station.state === "current"
+                ? "Nothing is needed from you. This station is working."
+                : station.state === "failed"
+                  ? "This station failed. The activity and its sections below say why."
+                  : station.state === "done"
+                    ? "Done. Its results are in the sections below."
+                    : "Nothing yet. This station has not started."}
         </p>
       </div>
+    </section>
+  );
+}
+
+/** Why a blocked or failed run stopped: the reason in words and the error the runtime recorded. */
+function StopNote({ run }: { run: RunData["status"] }) {
+  const reason = run.reason && run.reason !== "none" ? reasonText(run.reason) : null;
+  return (
+    <section aria-label="Why the run stopped" className="flex flex-col gap-2">
+      <Alert tone="error">
+        {run.status === "failed" ? "The run failed" : "The run is blocked"}
+        {reason ? `: ${reason}.` : "."}
+      </Alert>
+      {run.stopDetail && (
+        <pre className="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap rounded-base border-2 border-border bg-[var(--bg-sunken)] px-3 py-2 font-mono text-[12px]">
+          {run.stopDetail}
+        </pre>
+      )}
     </section>
   );
 }
@@ -785,6 +809,7 @@ function RunBody({
         onSelect={select}
       />
       {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
+      {(run.status === "blocked" || run.status === "failed") && <StopNote run={run} />}
       {pending.length > 0 && (
         <section aria-label="Your part" className="flex flex-col gap-3">
           {pending.map((r) => (
@@ -807,6 +832,7 @@ function RunBody({
         loops={line.loops}
         contractState={contractState}
         waiting={pending.length}
+        blocked={run.status === "blocked"}
       />
       <div className="flex flex-col gap-[18px] border-t-2 border-border pt-4">
         <div className="flex flex-wrap items-center gap-3">
