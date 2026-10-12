@@ -58,7 +58,7 @@ bun test tests/feature-parity.test.ts
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
 | Voice input in chat (Cactus Whistle speech to text) | Desktop only: desktop only by decision (#419) | Desktop only: desktop only by decision (#419) | Desktop only: speech is transcribed in the app and sent as text | `project/chat`, `settings/app` |
 | @ mentions and ! shell in the input | `key @`, `key !` | `--include` | `/v1/mentions` | `project/chat` |
-| Watch mode: baked! and baked? comments start the agent | **Gap** [#126](https://github.com/Gulliby-development/baked/issues/126): /watch comes after the core | `baked --headless --watch` | **Gap** [#126](https://github.com/Gulliby-development/baked/issues/126): POST /v1/sessions/:id/watch comes with the desktop toggle | **Gap** [#126](https://github.com/Gulliby-development/baked/issues/126): a Watch files toggle in the chat header |
+| Watch mode: baked! and baked? comments start the agent | `/watch`, `/watch on`, `/watch off` | `baked --headless --watch` | `/v1/sessions/:id/watch` | `project/chat` |
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
 | Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Undo and redo a turn with its file edits | `/checkpoint`, `/checkpoint undo`, `/checkpoint redo` +2 | `baked session undo`, `baked session redo` | `/v1/sessions/:id/undo`, `/v1/sessions/:id/redo` | `project/chat` |
@@ -163,7 +163,6 @@ bun test tests/feature-parity.test.ts
 
 ### Open gaps by issue
 
-- [#126](https://github.com/Gulliby-development/baked/issues/126): Watch mode: baked! and baked? comments start the agent
 - [#372](https://github.com/Gulliby-development/baked/issues/372): Gates from a plain-language sentence
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content

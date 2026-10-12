@@ -16,6 +16,7 @@ import { matchSessionPrefix, register as registerSession } from "./session.js";
 import { register as registerStorage } from "./storage.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
+import { register as registerWatch } from "./watch.js";
 import { register as registerWorkflow } from "./workflow.js";
 
 const commandMap = new Map<string, CommandHandler>();
@@ -35,6 +36,7 @@ registerHooks(commandMap);
 registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
 registerProjects(commandMap);
+registerWatch(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -538,6 +540,29 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Clear injected context (memory, skills)",
     category: "Intelligence",
     tags: ["reset"],
+    hidden: true,
+  },
+  {
+    cmd: "/watch",
+    ic: "eye",
+    desc: "Watch files: saved baked! and baked? comments start the agent",
+    category: "Intelligence",
+    tags: ["comments", "editor", "ide", "files"],
+  },
+  {
+    cmd: "/watch on",
+    ic: "eye",
+    desc: "Start watch mode in this tab",
+    category: "Intelligence",
+    tags: ["comments", "editor"],
+    hidden: true,
+  },
+  {
+    cmd: "/watch off",
+    ic: "eye",
+    desc: "Stop watch mode",
+    category: "Intelligence",
+    tags: ["comments", "editor"],
     hidden: true,
   },
   {

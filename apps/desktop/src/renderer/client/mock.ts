@@ -99,6 +99,7 @@ const FULL_CAPABILITIES = [
   "hooks",
   "provider-switch",
   "chat-export",
+  "watch",
   "diagnostics",
   "gate-drafts",
   "run-compare",

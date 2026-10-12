@@ -302,6 +302,22 @@ export function appendCorrections(
     groups.set(key, group);
   }
   const root = state.rootGraph;
+  // A failure that names files of other tasks of the same profile: their owners join the group,
+  // so the correction may write them and the acceptance rule still finds them related.
+  for (const group of groups.values())
+    for (const finding of group.findings)
+      for (const path of state.repairScope?.[finding.id] ?? []) {
+        const owner = root.tasks.find(
+          (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
+        );
+        if (!owner || group.bases.some((b) => b.id === owner.id)) continue;
+        group.bases.push(owner);
+        group.base = {
+          ...group.base,
+          criterionIds: unique([...group.base.criterionIds, ...owner.criterionIds]),
+          requirementIds: unique([...group.base.requirementIds, ...owner.requirementIds]),
+        };
+      }
   const additions = [...groups.values()].map(({ base, bases, findings: grouped }) => {
     const ids = grouped.map((f) => f.id);
     return {

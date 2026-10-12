@@ -171,6 +171,7 @@ export const CAPABILITIES = [
   "gate-drafts",
   "progress",
   "coordinator",
+  "watch",
   "run-compare",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;

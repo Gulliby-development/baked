@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `workflow-editor` (`POST /v1/workflow/editor*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `diagnostics` (`/v1/diagnostics/*`), `coordinator` (`/v1/coordinator*`), `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`) and `run-compare` (`GET /v1/workflow/compare`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `workflow-editor` (`POST /v1/workflow/editor*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `diagnostics` (`/v1/diagnostics/*`), `coordinator` (`/v1/coordinator*`), `watch` (`GET|POST /v1/sessions/ID/watch`), `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`) and `run-compare` (`GET /v1/workflow/compare`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -129,12 +129,29 @@ In `plan` mode the agent works as in the terminal UI's [plan mode](../guide.md#m
 | `POST /v1/sessions/ID/prompts/PROMPT_ID` | `{approve: boolean}`, `{answer: string}` or, for a `plan-review`, `{action: "execute" \| "clear-execute" \| "revise" \| "cancel", feedback?: string}` | `{resolved: true}`; 404 unknown, 409 `STALE_PROMPT` when already answered or the turn ended, 400 for a body that does not fit the prompt's kind or a `revise` without `feedback`. `answer: ""` skips a question that allows it |
 | `POST /v1/sessions/ID/compact` | `{}` | 202 `{compactionId}`; the compaction runs in the background and reports with `compaction-start` and `compaction-done`. 409 `SESSION_BUSY` while a turn or a compaction runs, 409 `NOTHING_TO_COMPACT` when the conversation is too short, 501 `NOT_SUPPORTED` when the server cannot compact |
 | `GET /v1/sessions/ID/diff` | | `SessionDiffStats` below |
+| `GET /v1/sessions/ID/watch` | | `WatchStatus` below: [watch mode](../watch.md) as this session sees it |
+| `POST /v1/sessions/ID/watch` | `{on: boolean}` | `WatchStatus`. `on: true` makes this session receive the watch turns, moving the watch from another session; `on: false` turns it off when this session watches and changes nothing otherwise |
 | `GET /v1/sessions/ID/export?format=markdown\|json` | | 200 with the chat as a file: `text/markdown` (default) or `application/json`, and `Content-Disposition: attachment; filename="TITLE-TIMESTAMP.md"` (or `.json`). Markdown is what the terminal UI's `/session export` writes (title, time range, messages with tool calls, reasoning and plans); JSON is the session's `messages` array. 400 for another format |
 | `GET /v1/sessions/ID/events` | `?after=SEQ`, or `Last-Event-ID` | SSE stream below |
 | `GET /v1/models` | `?provider=` | `{providers: [{id, name, configured, models: [{id, name, contextWindow?}], error?}]}`; `configured` is whether a key or login is available, `models` is empty for a provider that is not configured, `id` is the `provider/model` id to send as `model` |
 | `GET /v1/mentions` | `?q=&limit=` (default 20, at most 50) | `{mentions: [{kind: "file" \| "directory" \| "symbol", insert, label, detail, indices}]}`: `@` completions for the composer; `insert` is the text after `@`, `indices` the matched characters of `label` |
 
 `ID` accepts a unique prefix of a session id, like `--session` on the command line.
+
+#### Watch mode ("Watch files")
+
+One session of the project at a time watches its files ([watch mode](../watch.md)). When a save adds a `baked!` or `baked?` comment, the server sends that session a turn whose model prompt quotes the comment and the code around it; the user message in `messages` reads `From src/load.ts:2 (baked!): retry twice on a network error`. A watch turn that arrives while a turn or a compaction runs waits in `queued` and starts a turn of its own afterwards; it is never steered into the running turn, and `@` and `!` in it are not expanded. Deleting the session, deleting all sessions or stopping the server stops the watch. The settings come from `watch` in the configuration.
+
+```ts
+interface WatchStatus {
+  watching: boolean;              // this session receives the watch turns
+  watchingSession: string | null; // the session that watches, when another one does
+  method: "native" | "poll" | null; // how changes are found; null while starting or off
+  turns: number;                  // watch turns sent since the watch started
+  last: string | null;            // where the last one came from: "src/load.ts:2 (baked!)"
+  error: string | null;           // the last watcher error, or why a turn could not start
+}
+```
 
 #### Compaction ("Compact now")
 
@@ -207,6 +224,7 @@ Every event is `id: SEQ`, `event: TYPE`, `data: {seq, type, at, ...}`. Sequences
 | `compaction-start` | `compactionId` |
 | `compaction-done` | `compactionId`, `status` (`compacted`, `skipped`, `failed`, `interrupted`), `message` (the `system` `ChatMessage` added to the transcript, null when failed or interrupted), `compacted` (model messages summarized), `error?`, `context` |
 | `session` | `session` (`SessionSummary`) after a state, title, model or mode change |
+| `watch` | `watch` (`WatchStatus`) when the watch starts, stops or moves to another session, finds its method, sends a turn or hits an error; a session that loses the watch gets one too |
 | `reset` | the requested sequence is no longer buffered or belongs to an earlier server start: fetch `GET /v1/sessions/ID` and continue from its `lastSeq` |
 
 The persisted messages are authoritative: after `turn-done`, `GET /v1/sessions/ID` returns the same assistant message that the event carried.
