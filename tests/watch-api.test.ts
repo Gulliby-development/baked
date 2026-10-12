@@ -61,7 +61,13 @@ async function setup() {
   const home = mkdtempSync(join(tmpdir(), "baked-watch-home-"));
   const chat = new ChatService({
     workspace: fixture.root,
-    config: { ...fixture.service.config, defaultModel: "openai/gpt-test", watch: { debounceMs: 50 } },
+    config: {
+      ...fixture.service.config,
+      defaultModel: "openai/gpt-test",
+      // Polling: macOS file events can miss a save made right after the watch starts. Native
+      // events are covered in watch.test.ts; this file tests the API around them.
+      watch: { debounceMs: 50, poll: true },
+    },
     host,
     homeDir: home,
   });
