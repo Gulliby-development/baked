@@ -51,6 +51,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `repoMapTokenBudget` | auto | Token budget of the graph in the prompt |
 | `disabledLspServers` | `[]` | Language servers to skip, by command (`gopls`); Mason package names such as `pyright` work too. A project list replaces the global one. See [language servers](#language-servers) |
 | `compaction` | `strategy: "v2"`, `triggerThreshold: 0.7`, `resetThreshold: 0.4`, `keepRecent: 4`, `maxToolResults: 30`, `llmExtraction: true` | Context compaction; `strategy: "disabled"` turns auto-compaction off |
+| `coordinator` | `maxActive: 3`, `maxTokens: 20000000` | Limits on what the [project coordinator](coordinator.md) may launch: items active at once, and tokens summed over everything it launched |
 | `contextManagement` | unset | Anthropic server-side context management and tool-result pruning |
 | `contextWindowOverrides` | unset | Context window size per model ID |
 | `retry` | `maxTransientRetries: 3`, `maxStallRetries: 3`, `baseDelayMs` 1000 (chat) / 2000 (agents) | Retries on 429, 5xx, overload and stalled streams; the delay doubles each attempt |
