@@ -8,6 +8,7 @@ import { MemoryBrowser } from "../src/components/modals/MemoryBrowser.js";
 import { type InitiativesApi, InitiativesPopup } from "../src/components/workflow/InitiativesView.js";
 import type { ContextManager } from "../src/core/context/manager.js";
 import { MemoryManager } from "../src/core/memory/manager.js";
+import { stopWorkflowSessions } from "../src/hooks/useWorkflow.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 
 type View = Awaited<ReturnType<typeof testRender>>;
@@ -89,6 +90,8 @@ test("the run memory note field keeps every key of a burst", async () => {
   } finally {
     act(() => view.renderer.destroy());
     memory.close();
+    // The run memory tab starts a workflow worker in cwd; Windows keeps the directory busy until it stops.
+    await stopWorkflowSessions();
   }
 });
 
