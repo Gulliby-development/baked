@@ -5,7 +5,6 @@ export const PROJECT_SECTIONS = [
   "chat",
   "runs",
   "initiatives",
-  "acceptance",
   "usage",
   "graph",
   "git",
@@ -63,6 +62,8 @@ export function parseRoute(hash: string): Route {
       : { name: "settings", section };
   }
   if (head === "p" && a) {
+    // Acceptance was a sidebar section before it moved into the run screen and Needs you.
+    if (b === "acceptance") return { name: "project", key: a, section: "runs", id: c ?? null };
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
       ? (b as ProjectSection)
       : "overview";

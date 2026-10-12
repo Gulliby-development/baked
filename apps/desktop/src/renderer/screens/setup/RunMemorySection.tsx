@@ -133,7 +133,10 @@ function EntryLine({
 }
 
 export function RunMemorySection({ project }: SectionProps) {
-  const [memory, , setMemory] = useLoad(() => setup.runMemory(project.key), [project.key]);
+  const [memory, , setMemory] = useLoad(
+    () => setup.runMemory(project.key),
+    [project.key, "runMemory"],
+  );
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

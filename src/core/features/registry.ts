@@ -560,7 +560,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/workflow: acceptance requests"],
     cli: ["baked workflow evidence"],
     api: ["/v1/workflow/runs/:id/evidence"],
-    desktop: ["project/acceptance"],
+    desktop: ["project/runs", "attention"],
   },
   {
     id: "run-recover",

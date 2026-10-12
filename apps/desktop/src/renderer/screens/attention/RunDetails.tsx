@@ -50,7 +50,7 @@ const runIdOf = (item: AttentionItem): string => item.runId ?? "";
 function useRun(item: AttentionItem) {
   return useLoad(
     () => attentionApi.run(item.projectKey, runIdOf(item)),
-    `${item.projectKey}:${item.runId}:${item.requestId}`,
+    [item.projectKey, "attention-run", runIdOf(item), item.requestId],
   );
 }
 

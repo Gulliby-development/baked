@@ -50,7 +50,10 @@ function shortModel(id: string): string {
 }
 
 function StoragePanel({ projectKey }: { projectKey: string }) {
-  const [storage, , setStorage] = useLoad(() => diagnostics.storage(projectKey), [projectKey]);
+  const [storage, , setStorage] = useLoad(
+    () => diagnostics.storage(projectKey),
+    [projectKey, "diagnostics-storage"],
+  );
   const [asking, setAsking] = useState<CleanupAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,7 +185,7 @@ function StoragePanel({ projectKey }: { projectKey: string }) {
 function ModelEventsPanel({ projectKey }: { projectKey: string }) {
   const [events, reload, setEvents] = useLoad(
     () => diagnostics.modelEvents(projectKey),
-    [projectKey],
+    [projectKey, "diagnostics-modelEvents"],
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -322,7 +325,10 @@ function ModelEventsPanel({ projectKey }: { projectKey: string }) {
 }
 
 function ErrorLogPanel({ projectKey }: { projectKey: string }) {
-  const [log, reload] = useLoad(() => diagnostics.errors(projectKey), [projectKey]);
+  const [log, reload] = useLoad(
+    () => diagnostics.errors(projectKey),
+    [projectKey, "diagnostics-errors"],
+  );
   if (log.state !== "ready") return <LoadState value={log} what="the error log" />;
   const { errors } = log.data;
   return (

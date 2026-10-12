@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { chat } from "../../client/chat.js";
 import type { InitiativeFeature, InitiativeView } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
@@ -73,8 +73,7 @@ function ModelSwitch({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const open = canSwitchModel(view);
-  const loadModels = useCallback(() => chat.models(projectKey), [projectKey]);
-  const models = useModelCatalog(open ? loadModels : null);
+  const models = useModelCatalog(open ? projectKey : null, chat.models);
   if (view.model === undefined) return null;
   const inputId = `initiative-model-${view.initiativeId}`;
   const submit = async (): Promise<void> => {
@@ -168,7 +167,10 @@ function FeatureActions({
 }
 
 function Detail({ projectKey, id }: { projectKey: string; id: string }) {
-  const { state, reload } = useLoad(() => insights.initiative(projectKey, id), [projectKey, id]);
+  const { state, reload } = useLoad(
+    () => insights.initiative(projectKey, id),
+    [projectKey, "initiative", id],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Open | null>(null);
@@ -459,7 +461,10 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
 }
 
 export function InitiativesSection({ project, id }: SectionProps) {
-  const { state, reload } = useLoad(() => insights.initiatives(project.key), [project.key]);
+  const { state, reload } = useLoad(
+    () => insights.initiatives(project.key),
+    [project.key, "initiatives"],
+  );
   const [creating, setCreating] = useState(false);
   if (state.kind !== "ready") return <LoadState state={state} what="Initiatives" />;
   const items = state.data;

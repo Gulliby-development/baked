@@ -360,7 +360,10 @@ function Cleanup({
 }
 
 export function ChatMemorySection({ project }: SectionProps) {
-  const [memory, , setMemory] = useLoad(() => setup.chatMemory(project.key), [project.key]);
+  const [memory, , setMemory] = useLoad(
+    () => setup.chatMemory(project.key),
+    [project.key, "chatMemory"],
+  );
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

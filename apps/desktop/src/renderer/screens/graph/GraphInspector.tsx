@@ -184,7 +184,10 @@ function PairView({
   to: string;
   onBack: (() => void) | null;
 }) {
-  const { state } = useLoad(() => graph.link(projectKey, from, to), [projectKey, from, to]);
+  const { state } = useLoad(
+    () => graph.link(projectKey, from, to),
+    [projectKey, "graph-link", from, to],
+  );
   return (
     <>
       <div className="grid gap-1">
@@ -227,7 +230,10 @@ function FileView({
   unit: GraphUnit;
   onReveal: (path: string) => void;
 }) {
-  const { state } = useLoad(() => graph.file(projectKey, unit.path), [projectKey, unit.path]);
+  const { state } = useLoad(
+    () => graph.file(projectKey, unit.path),
+    [projectKey, "graph-file", unit.path],
+  );
   const d: GraphFileAnswer | null = state.kind === "ready" ? state.data : null;
   const note = (names: string[]) => names.slice(0, 2).join(", ") || "types";
   return (

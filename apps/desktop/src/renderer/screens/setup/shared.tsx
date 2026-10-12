@@ -1,7 +1,8 @@
-import { type DependencyList, type ReactNode, useCallback, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { isMissingEndpoint, isNoProject } from "../../client/setup.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Empty } from "../../components/ui/empty.js";
+import { type Query, type QueryKey, useQuery } from "../../lib/query.js";
 
 /** Class strings the setup screens share (project gates, instructions, working set, settings). */
 export const SETUP = "flex min-w-0 flex-col gap-4 [&_input:disabled]:opacity-70";
@@ -51,37 +52,25 @@ export const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
- * Loads once per dependency change; a 404 from an older backend becomes `missing`, and one from a
- * folder without baked/project.json becomes `no-project`.
+ * Reads `key` through the shared query cache: the last answer at once, refreshed in the
+ * background; a 404 from an older backend becomes `missing`, and one from a folder without
+ * baked/project.json becomes `no-project`. `reload` fetches again while the data stays on screen;
+ * `set` stores the view a write returned.
  */
 export function useLoad<T>(
   load: () => Promise<T>,
-  deps: DependencyList,
+  key: QueryKey,
 ): [Loaded<T>, () => void, (data: T) => void] {
-  const [value, setValue] = useState<Loaded<T>>({ state: "loading" });
-  const [tick, setTick] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: callers name the inputs of `load`.
-  useEffect(() => {
-    let live = true;
-    load().then(
-      (data) => live && setValue({ state: "ready", data }),
-      (error: unknown) =>
-        live &&
-        setValue(
-          isMissingEndpoint(error)
-            ? { state: "missing" }
-            : isNoProject(error)
-              ? { state: "no-project" }
-              : { state: "error", message: errorText(error) },
-        ),
-    );
-    return () => {
-      live = false;
-    };
-  }, [...deps, tick]);
-  const reload = useCallback(() => setTick((t) => t + 1), []);
-  const set = useCallback((data: T) => setValue({ state: "ready", data }), []);
-  return [value, reload, set];
+  const query = useQuery(key, load);
+  return [toLoaded(query), query.refresh, query.set];
+}
+
+function toLoaded<T>(query: Query<T>): Loaded<T> {
+  if (query.hasData) return { state: "ready", data: query.data as T };
+  if (query.loading || query.error === null) return { state: "loading" };
+  if (isMissingEndpoint(query.error)) return { state: "missing" };
+  if (isNoProject(query.error)) return { state: "no-project" };
+  return { state: "error", message: errorText(query.error) };
 }
 
 export function NeedsNewer({ what }: { what: string }) {

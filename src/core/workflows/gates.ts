@@ -6,6 +6,7 @@ import { buildCheckEnv } from "../verification/check-runner.js";
 import { validateChecks } from "./check-policy.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
+import { dotnetFiles } from "./language.js";
 import { ProcessScope } from "./process-scope.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId, WorkflowConfigSchema } from "./schemas.js";
@@ -310,36 +311,98 @@ function pythonGates(workspace: string): GateSuggestion[] {
 }
 
 function goGates(workspace: string): GateSuggestion[] {
-  return has(workspace, "go.mod")
-    ? [
-        {
-          check: gate("go-test", "go", ["test", "./..."], 600000),
-          source: "go.mod",
-          reason: "go test ./...",
-          preselected: true,
-        },
-      ]
-    : [];
+  if (!has(workspace, "go.mod")) return [];
+  // `gofmt -l` exits 0 whatever it lists, so formatting is applied by the vet gate's fixer
+  // rather than verified by a check of its own.
+  return [
+    {
+      check: {
+        ...gate("go-vet", "go", ["vet", "./..."], 300000),
+        fix: { executable: "go", args: ["fmt", "./..."] },
+      },
+      source: "go.mod",
+      reason: "go vet ./... (fixer: go fmt ./...)",
+      preselected: true,
+    },
+    {
+      check: gate("go-test", "go", ["test", "./..."], 600000),
+      source: "go.mod",
+      reason: "go test ./...",
+      preselected: true,
+    },
+  ];
+}
+
+function dotnetGates(workspace: string): GateSuggestion[] {
+  const files = dotnetFiles(workspace);
+  const target = files[0];
+  if (!target) return [];
+  // A folder with several solution or project files makes dotnet stop with an ambiguity error.
+  const arg = files.length > 1 ? [target] : [];
+  return [
+    {
+      check: gate("dotnet-build", "dotnet", ["build", ...arg, "--nologo"], 600000),
+      source: target,
+      reason: "dotnet build",
+      preselected: true,
+    },
+    {
+      check: {
+        ...gate("dotnet-format", "dotnet", ["format", ...arg, "--verify-no-changes"], 300000),
+        fix: { executable: "dotnet", args: ["format", ...arg] },
+      },
+      source: target,
+      reason: "dotnet format --verify-no-changes (fixer: dotnet format)",
+      preselected: true,
+    },
+    {
+      check: gate("dotnet-test", "dotnet", ["test", ...arg, "--nologo"], 900000),
+      source: target,
+      reason: "dotnet test",
+      preselected: true,
+    },
+  ];
 }
 
 function cargoGates(workspace: string): GateSuggestion[] {
-  return has(workspace, "Cargo.toml")
+  if (!has(workspace, "Cargo.toml")) return [];
+  return [
+    {
+      check: {
+        ...gate("cargo-fmt", "cargo", ["fmt", "--check"], 120000),
+        fix: { executable: "cargo", args: ["fmt"] },
+      },
+      source: "Cargo.toml",
+      reason: "cargo fmt --check (fixer: cargo fmt)",
+      preselected: true,
+    },
+    {
+      check: gate(
+        "cargo-clippy",
+        "cargo",
+        ["clippy", "--all-targets", "--", "-D", "warnings"],
+        900000,
+      ),
+      source: "Cargo.toml",
+      reason: "cargo clippy --all-targets -- -D warnings",
+      preselected: true,
+    },
+    {
+      check: gate("cargo-test", "cargo", ["test"], 900000),
+      source: "Cargo.toml",
+      reason: "cargo test",
+      preselected: true,
+    },
+  ];
+}
+
+function mavenGates(workspace: string): GateSuggestion[] {
+  return has(workspace, "pom.xml")
     ? [
         {
-          check: gate("cargo-test", "cargo", ["test"], 900000),
-          source: "Cargo.toml",
-          reason: "cargo test",
-          preselected: true,
-        },
-        {
-          check: gate(
-            "cargo-clippy",
-            "cargo",
-            ["clippy", "--all-targets", "--", "-D", "warnings"],
-            900000,
-          ),
-          source: "Cargo.toml",
-          reason: "cargo clippy --all-targets -- -D warnings",
+          check: gate("maven-verify", "mvn", ["-B", "-q", "verify"], 1200000),
+          source: "pom.xml",
+          reason: "mvn -B -q verify",
           preselected: true,
         },
       ]
@@ -357,7 +420,9 @@ export function detectGates(workspace: string, configured: Check[] = []): GateSu
     ...scriptGates(workspace),
     ...pythonGates(workspace),
     ...goGates(workspace),
+    ...dotnetGates(workspace),
     ...cargoGates(workspace),
+    ...mavenGates(workspace),
   ].filter(
     (s) => !ids.has(s.check.id) && !known.has(formatCommandLine(s.check.executable, s.check.args)),
   );

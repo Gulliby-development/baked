@@ -6,7 +6,6 @@ import { GitSection } from "./git/GitSection.js";
 import { GraphSection } from "./graph/GraphSection.js";
 import { InitiativesSection } from "./insights/InitiativesSection.js";
 import { UsageSection } from "./insights/UsageSection.js";
-import { AcceptanceSection } from "./runs/AcceptanceSection.js";
 import { RunsView } from "./runs/RunsView.js";
 import { ChatMemorySection } from "./setup/ChatMemorySection.js";
 import { DiagnosticsSection } from "./setup/DiagnosticsSection.js";
@@ -41,7 +40,6 @@ export const SECTION_VIEWS: Partial<Record<ProjectSection, ComponentType<Section
   mcp: McpSection,
   lsp: LspSection,
   initiatives: InitiativesSection,
-  acceptance: AcceptanceSection,
   usage: UsageSection,
   graph: GraphSection,
   git: GitSection,

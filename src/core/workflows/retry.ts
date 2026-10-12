@@ -110,3 +110,11 @@ export function reportsLostTool(result: {
   if (!["blocked", "failed"].includes(result.outcome)) return false;
   return LOST_TOOL.test([result.summary, ...result.unresolved].join("\n"));
 }
+
+/**
+ * A model call that ended on text instead of a submission, after the continuation and the format
+ * correction (R7: four of six interventions). The fault carries the text it ended with.
+ */
+export function endedOnProse(error: unknown): error is WorkflowFault {
+  return error instanceof WorkflowFault && error.details.reason === "prose_end";
+}
