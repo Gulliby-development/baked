@@ -68,8 +68,11 @@ export const findingSetHash = (findings: Review["findings"]): string =>
 
 /**
  * The findings ledger: a finding keyed by (criterion, file, symbol) that an earlier correction of
- * the run already addressed. The new finding contradicts that fix when it names the same symbol
- * for the same criterion, so another repair would likely undo the first one.
+ * the run already addressed. A reviewer words the same defect differently each round and the
+ * finding ids change with it (md-site F2, F2-2, F2-3 on one unreadable-file test; expenses-py A
+ * F-001..F-003 on 28-digit Decimal), so the key is the location, not the id or the claim. The
+ * second occurrence of a location for the same criterion is a residual: another repair would
+ * likely undo the first one or chase the same edge again, so a decision is requested instead.
  */
 export function contradictions(
   store: WorkflowStore,
@@ -82,11 +85,14 @@ export function contradictions(
     .filter((row) => row.repair_task_id && !live.has(row.id))
     .map((row) => ({ id: row.id, body: JSON.parse(row.body_json) as Partial<Finding> }));
   return findings.flatMap((finding) => {
-    if (!finding.file || !finding.symbol) return [];
+    // A finding without a file or a symbol has no location to recognize.
+    if (!finding.file) return [];
     const match = earlier.find(
       (e) =>
         e.body.file === finding.file &&
-        e.body.symbol === finding.symbol &&
+        (e.body.symbol ?? null) === (finding.symbol ?? null) &&
+        // Without a symbol the file is all that locates it, so the kind must agree too.
+        (finding.symbol !== null || e.body.kind === finding.kind) &&
         (e.body.criterionIds ?? []).some((id) => finding.criterionIds.includes(id)),
     );
     return match
@@ -189,7 +195,7 @@ export function convergenceBody(
         ? `the ${stop.limit} corrective task(s) the policy allows are used`
         : stop.reason === "repeat"
           ? "the last repair left the same findings"
-          : "a new finding contradicts the fix of an earlier one on the same symbol";
+          : "a finding returns to a file and symbol an earlier correction already fixed for the same criterion";
   return {
     topic: "convergence",
     reason: stop.reason,
@@ -244,12 +250,21 @@ export function acceptResidual(
   }
 }
 
+const TEST_OR_DOC_PATH =
+  /(?:^|\/)(?:tests?|__tests__|spec|specs|docs?)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)test_[^/]+\.py$|_test\.(?:py|go)$|\.(?:md|mdx|rst)$/i;
+
+/** Whether a path is a test or documentation file, the only place a medium finding may pass with notes. */
+export const testOrDocFile = (file: string | null): boolean =>
+  file !== null && TEST_OR_DOC_PATH.test(file.replaceAll("\\", "/"));
+
 /**
- * Whether a finding passes with notes instead of starting a repair: it is low severity and
- * `partial` (test strength or documentation completeness, not a defect in behavior), every
- * required check passes and each criterion it names has evidence in the review. zoneslot 409f3022
- * F-001 (the Kolkata test did not assert every UTC column) cost 263k, 23% of its run, while the
- * behavior was already verified.
+ * Whether a finding passes with notes instead of starting a repair: it is `partial` (test
+ * strength or documentation completeness, not a defect in behavior), every required check passes
+ * and each criterion it names has evidence in the review. Low severity qualifies; medium does too
+ * when the finding is on a test or documentation file only, since the behavior is verified and the
+ * gap is in how well it is pinned or described (md-site and url-shortener B spent about 600k each
+ * on such findings). zoneslot 409f3022 F-001 (the Kolkata test did not assert every UTC column)
+ * cost 263k, 23% of its run, while the behavior was already verified.
  */
 export function passesWithNotes(
   finding: Finding,
@@ -258,7 +273,8 @@ export function passesWithNotes(
 ): boolean {
   return (
     checksPass &&
-    finding.severity === "low" &&
+    (finding.severity === "low" ||
+      (finding.severity === "medium" && testOrDocFile(finding.file))) &&
     finding.kind === "partial" &&
     finding.criterionIds.length > 0 &&
     finding.criterionIds.every(
