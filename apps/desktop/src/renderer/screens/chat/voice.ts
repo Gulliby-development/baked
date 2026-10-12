@@ -54,11 +54,13 @@ export function clock(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+export const MICROPHONE_BLOCKED =
+  "Microphone access is blocked. Allow BAKED to use the microphone in your system settings.";
+
 /** Why the microphone could not start, in words for the composer. */
 export function microphoneError(error: unknown): string {
   const name = error instanceof DOMException ? error.name : "";
-  if (name === "NotAllowedError" || name === "SecurityError")
-    return "Microphone access is blocked. Allow BAKED to use the microphone in your system settings.";
+  if (name === "NotAllowedError" || name === "SecurityError") return MICROPHONE_BLOCKED;
   if (name === "NotFoundError" || name === "OverconstrainedError")
     return "No microphone was found.";
   if (name === "NotReadableError") return "The microphone is in use by another app.";

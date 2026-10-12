@@ -33,6 +33,8 @@ export function useVoiceInput(): VoiceInput | undefined {
             unavailable,
             transcribe: async (samples: Float32Array) =>
               (await bridge.transcribe(samples, language === "auto" ? undefined : language)).text,
+            requestAccess: () => bridge.microphoneAccess(),
+            openSettings: () => void bridge.openMicrophoneSettings(),
           }
         : undefined,
     [enabled, unavailable, language],
