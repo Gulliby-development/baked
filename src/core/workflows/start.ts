@@ -7,6 +7,7 @@ import { hashBytes, hashJson } from "../specs/hash.js";
 import { validateChecks } from "./check-policy.js";
 import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
+import { languageReviewProfile } from "./language.js";
 import {
   independenceWarnings,
   independentReviewMode,
@@ -90,6 +91,13 @@ export async function prepareStart(
   if (!model?.trim() || model.trim() === "none")
     throw new WorkflowFault("INVALID_DEFINITION", "Select a model before starting a workflow");
   let policy = PolicySchema.parse(request.policy);
+  // A Go, .NET, Rust or Java project gets the language reviewer unless the policy names one.
+  const languageProfile = policy.reviewProfiles.language ? null : languageReviewProfile(workspace);
+  if (languageProfile)
+    policy = PolicySchema.parse({
+      ...policy,
+      reviewProfiles: { ...policy.reviewProfiles, language: languageProfile },
+    });
   validateChecks(workspace, policy);
   if (policy.maxCostUsd !== null)
     throw new WorkflowFault(

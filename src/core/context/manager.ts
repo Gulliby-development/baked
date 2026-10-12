@@ -34,6 +34,7 @@ import {
 // buildForbiddenContext removed from system prompt — gates enforce at tool level
 import { onFileEdited, onFileRead } from "../tools/file-events.js";
 import { IntelligenceClient } from "../workers/intelligence-client.js";
+import { dotnetFiles } from "../workflows/language.js";
 import { BakeMapSnapshot } from "./bake-map-snapshot.js";
 // extractConversationTerms removed — FTS boosting was noisy
 import { walkDir } from "./file-tree.js";
@@ -1668,6 +1669,8 @@ export class ContextManager {
       { file: "pyproject.toml", label: "Python project" },
       { file: "pom.xml", label: "Java/Maven project" },
     ];
+    const dotnet = dotnetFiles(this.cwd)[0];
+    if (dotnet) checks.push({ file: dotnet, label: ".NET project" });
 
     for (const check of checks) {
       try {

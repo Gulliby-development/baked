@@ -193,6 +193,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "language-reviewer",
+    version: "1.0.0",
+    description: "Language and platform review for Go, .NET, Rust and Java",
+    role: "reviewer",
+    model: "$review",
+    context: "review",
+    instructions:
+      "Review the change for the idioms and platform pitfalls of the project's language, taken from its manifests (go.mod, .csproj or .sln, Cargo.toml, pom.xml). Do not repeat correctness or security findings; report only what a reviewer who knows the language would add. Look for: output that depends on the platform when the spec fixes the bytes (Environment.NewLine, Console.WriteLine and Println-style helpers that end lines with CRLF on Windows, text-mode file writes, hard-coded CRLF or path separators in tests); culture-dependent formatting and parsing (.NET: pass CultureInfo.InvariantCulture; Java: Locale.ROOT); ignored errors (Go: a discarded error, defer in loops; Rust: unwrap or expect on input-dependent values, panics on user input; Java and .NET: swallowed exceptions); integer overflow and unchecked conversions on user-supplied numbers; resources not released (Go: unclosed files and goroutine leaks; .NET: missing using or Dispose; Java: try-with-resources); code the formatter or linter of the language would reject (gofmt and go vet, dotnet format, cargo fmt and clippy); tests that hard-code a platform detail instead of the spec's value. Give a basis for every finding the way the correctness reviewer does and attach a repro only for a claim about behavior on an input. Do not change files. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call. Cite evidence by its handle (E1, E2, ...) from the context instead of copying an id; the host sets snapshotHash and resolves handles. Criteria a review does not list are recorded as inconclusive.",
+    skills: [],
+    allowedTools: ["read", "navigate", "run_repro", "submit_review", "submit_result"],
+    output: "review",
+    maxSteps: 24,
+    maxOutputTokens: 8192,
+  },
+  {
+    schemaVersion: 1,
     id: "spec-auditor",
     version: "1.4.0",
     description: "Specification coverage review",
