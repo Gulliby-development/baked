@@ -28,6 +28,7 @@ import {
 } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
 import { setup } from "../../client/setup.js";
+import { BlockIcon, Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { emptyClass } from "../../components/ui/empty.js";
@@ -440,6 +441,7 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
           {load !== "loading" && load !== "ready" && <Alert tone="error">{load}</Alert>}
           {(draft || empty) && transcript.pending.length === 0 && (
             <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">
+              <BlockIcon name="chat" className="mb-1" />
               <p className={cn("m-0", EMPTY_TITLE)}>What should BAKED do in {project.name}?</p>
               <p className="m-0 text-dim-foreground">
                 Describe a change, ask about the code, or paste an error. Tool approvals show up
@@ -448,16 +450,20 @@ function SessionView({ project, sessionId }: { project: DesktopProject; sessionI
             </div>
           )}
           {forkReport && (
-            <Alert role="status">
-              {forkReport.map((line) => (
-                <p key={line} className="m-0">
-                  {line}
-                </p>
-              ))}
+            <Alert role="status" className="flex items-start gap-3">
+              <Icon name="fork" size={15} className="mt-[2px] flex-none" />
+              <div className="min-w-0 flex-1">
+                {forkReport.map((line) => (
+                  <p key={line} className="m-0">
+                    {line}
+                  </p>
+                ))}
+              </div>
             </Alert>
           )}
           {rewindReport && (
             <Alert role="status" className="flex items-start gap-3">
+              <Icon name="rewind" size={15} className="mt-[2px] flex-none" />
               <div className="min-w-0 flex-1">
                 {rewindReport.map((line) => (
                   <p key={line} className="m-0">

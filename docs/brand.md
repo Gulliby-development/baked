@@ -43,5 +43,13 @@ The PNGs are exports of their SVG at the listed sizes with a transparent backgro
 | `projects` | tiles | all projects |
 | `settings` | oven knob | settings |
 | `new`, `undo`, `redo`, `send`, `stop`, `chevron-right`, `chevron-down` | controls | buttons and menus |
+| `research`, `spec`, `plan`, `implement`, `checks`, `review`, `accept` | wheat ear, checked sheet, loaf in a tin, whisk, thermometer, tasting spoon, quality seal | workflow stages on the run conveyor and in the run list's Stage column |
+| `ok`, `failed`, `waiting`, `warning`, `running` | ticked box, crossed box, hourglass, triangle, open ring | stage states on conveyor stations, run status pills, tool call results |
+| `read`, `edit`, `shell`, `search`, `git`, `image` | open book, pencil, terminal, magnifier, branch, picture | chat tool calls, by tool |
+| `fork`, `rewind`, `compact`, `model` | chat actions | Fork from here, fork and rewind reports, Compact now, the model picker and context panel |
 
-New icons use the same grid, stroke and line ends. Larger places (empty states, 24 px and up) may use the block style: the same shape filled with the accent, an ink outline and a 1.5 px hard ink shadow.
+`stageIcon` in `screens/runs/line-model.ts` picks a stage's icon from its role in the workflow line (a station of type `tasks` gets `implement`, one that makes `spec` gets `spec`, the finish station gets `accept`); stages it cannot place get `research`. `toolIcon` in `screens/chat/tools.ts` maps tool names, and tools without an icon of their own (MCP tools, for example) show `model`.
+
+New icons use the same grid, stroke and line ends. Larger places (empty states, 24 px and up) use the block style through `BlockIcon`: the same shape filled with `--fill-accent`, an `--ink` outline and a 1.5 px hard ink shadow. The empty states for no projects, no runs and a new chat show `projects`, `runs` and `chat` at 40 px.
+
+On Windows the taskbar button carries an overlay icon with the number of items that need you, since `app.setBadgeCount` shows nothing there (`apps/desktop/src/main/tray.ts`).

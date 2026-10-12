@@ -1,4 +1,5 @@
 import type { LineLoop, LineStage, WorkflowLine } from "../../client/start.js";
+import type { IconName } from "../../components/Icon.js";
 import { type PipelineStage, type PipelineState, stageLabel } from "./model.js";
 
 /**
@@ -115,6 +116,28 @@ export function stations(
   });
   return list;
 }
+
+/** A stage's icon, from what it makes and its role: research, spec, plan, implement and so on. */
+export function stageIcon(station: Pick<Station, "id" | "type" | "produces">): IconName {
+  if (station.type === "finish") return "accept";
+  if (station.type === "tasks") return "implement";
+  if (station.type === "check") return "checks";
+  if (station.type === "review" || station.type === "reflection") return "review";
+  if (station.type === "approval") return "attention";
+  if (station.type === "learn") return "run-memory";
+  if (station.produces === "spec" || /spec/.test(station.id)) return "spec";
+  if (station.produces === "plan" || /plan/.test(station.id)) return "plan";
+  if (/accept/.test(station.id)) return "accept";
+  return "research";
+}
+
+/** The icon for a stage's state; none for a stage that has not started. */
+export const STATE_ICON: Partial<Record<PipelineState, IconName>> = {
+  done: "ok",
+  current: "running",
+  waiting: "waiting",
+  failed: "failed",
+};
 
 /** The station to show when the user has not picked one: where the run is, or where it ended. */
 export function focusStation(list: readonly Station[]): string {
@@ -236,4 +259,9 @@ export function handoff(
       return { kind: "forward", from: i, to: i + 1, contract: a.produces };
   }
   return null;
+}
+
+/** A stage's icon from its ID alone, for lists that do not load the run's line. */
+export function stageIconOf(id: string): IconName {
+  return stageIcon({ id, ...guess(id) });
 }
