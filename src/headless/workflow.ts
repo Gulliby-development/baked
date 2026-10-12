@@ -13,6 +13,7 @@ import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { uniqueFeatureId } from "../core/workflows/feature-id.js";
 import { issueStart } from "../core/workflows/issue-source.js";
+import { describeProposal, presetChoice } from "../core/workflows/preset-router.js";
 import {
   editProjectMemory,
   type MemoryEdit,
@@ -34,6 +35,7 @@ import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
 import { recordedSteps } from "../core/workflows/v2/acceptance-gate.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
+import { proposeForWorkspace } from "../core/workflows/v2/propose.js";
 import { readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
@@ -231,7 +233,6 @@ export async function executeWorkflowCommand(
       return executeWorkflowCommand(service, run, signal, onDrive, options);
     }
     case "run": {
-      const policy = startPolicy(args);
       const typed = args.flags["prompt-file"]
         ? readFlagFile("prompt-file")
         : typeof args.flags.prompt === "string"
@@ -245,16 +246,33 @@ export async function executeWorkflowCommand(
               ...(typeof args.flags.feature === "string" ? { featureId: args.flags.feature } : {}),
             })
           : null;
+      const prompt = fromIssue?.prompt ?? typed ?? stringFlag(args, "prompt");
+      const defaultWorkflow = service.config.workflows?.defaultWorkflow ?? "sdd";
+      const named =
+        typeof args.flags.workflow === "string" ? args.flags.workflow : args.positional[0];
+      const proposal =
+        args.flags["auto-preset"] === true
+          ? proposeForWorkspace(service.store.workspace, service.config, prompt)
+          : null;
+      const workflowId = named ?? proposal?.workflowId ?? defaultWorkflow;
+      const choice = proposal ? presetChoice(proposal, workflowId) : null;
+      // The proposed budget applies to the proposed workflow unless --budget names one.
+      const policy = startPolicy(
+        choice && !choice.overridden && typeof args.flags.budget !== "string"
+          ? { ...args, flags: { ...args.flags, budget: choice.budget } }
+          : args,
+      );
+      if (proposal)
+        process.stderr.write(
+          `preset: ${describeProposal(proposal)}${choice?.overridden ? `; running ${workflowId} as asked` : ""}\n`,
+        );
       const run = await service.start({
         commandId: stringFlag(args, "command-id", newId()),
-        workflowId: stringFlag(
-          args,
-          "workflow",
-          args.positional[0] ?? service.config.workflows?.defaultWorkflow ?? "sdd",
-        ),
+        workflowId,
         featureId: fromIssue?.featureId ?? stringFlag(args, "feature"),
-        prompt: fromIssue?.prompt ?? typed ?? stringFlag(args, "prompt"),
+        prompt,
         ...(fromIssue ? { issue: fromIssue.issue } : {}),
+        ...(choice ? { presetChoice: choice } : {}),
         policy,
         ownerLabel: stringFlag(args, "owner", "CLI"),
         ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
@@ -280,6 +298,8 @@ export async function executeWorkflowCommand(
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
     }
+    case "propose":
+      return proposeForWorkspace(service.store.workspace, service.config, proposeText(args));
     case "status":
       return {
         ...(await service.get(runId)),
@@ -598,6 +618,14 @@ export async function executeWorkflowCommand(
       );
   }
 }
+/** The request `propose` reads: its words, `--prompt`, or the file `--prompt-file` names. */
+function proposeText(args: WorkflowArgs): string {
+  const inline = args.inline?.["prompt-file"];
+  if (typeof inline === "string") return inline;
+  if (typeof args.flags["prompt-file"] === "string")
+    return readFileSync(resolve(getCwd(), args.flags["prompt-file"]), "utf8");
+  return typeof args.flags.prompt === "string" ? args.flags.prompt : args.positional.join(" ");
+}
 export async function runWorkflowCli(argv: string[]): Promise<number> {
   if (
     argv.length === 0 ||
@@ -658,6 +686,15 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       const view = workflowModels(config, catalog, model && model !== "none" ? model : null);
       process.stdout.write(
         args.flags.json ? `${JSON.stringify(view, null, 2)}\n` : formatWorkflowModels(view),
+      );
+      return 0;
+    }
+    if (args.command === "propose") {
+      const proposal = proposeForWorkspace(cwd, config, proposeText(args));
+      process.stdout.write(
+        args.flags.json
+          ? `${JSON.stringify(proposal, null, 2)}\n`
+          : `${describeProposal(proposal)}\n`,
       );
       return 0;
     }

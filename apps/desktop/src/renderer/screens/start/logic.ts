@@ -169,3 +169,13 @@ export function preRunQuery(input: PreRunInput): string {
   const text = params.toString();
   return text ? `?${text}` : "";
 }
+
+/** The hint under the recipes: what was proposed from the request, and whether the pick differs. */
+export function proposalText(
+  proposal: { workflowId: string; reason: string; budget: string },
+  workflow: string,
+): string {
+  return workflow === proposal.workflowId
+    ? `Proposed from your request: ${proposal.reason} (${proposal.budget} budget). Pick another recipe to change it.`
+    : `Proposed ${proposal.workflowId}: ${proposal.reason}. Your pick, ${workflow}, is kept and recorded with the run.`;
+}

@@ -25,6 +25,7 @@ import {
 } from "../workflows/initiatives/view-model.js";
 import { issueStart } from "../workflows/issue-source.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
+import { presetChoice } from "../workflows/preset-router.js";
 import { ROLLBACK_ARTIFACT_KIND, type RollbackReport } from "../workflows/rollback.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
 import {
@@ -39,6 +40,7 @@ import { NativeWorkflowService } from "../workflows/service.js";
 import { newId } from "../workflows/store.js";
 import { PRESETS } from "../workflows/v2/definition.js";
 import { listDefinitions, QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
+import { proposeForWorkspace } from "../workflows/v2/propose.js";
 import type { WorkflowInfo } from "../workflows/view.js";
 import {
   BudgetPreset,
@@ -110,6 +112,7 @@ const StartInput = z
     executionMode: z.enum(["inline", "worktree"]).optional(),
     maxConcurrentWriters: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     clarification: z.enum(["ask", "assume"]).optional(),
+    autoPreset: z.boolean().optional(),
   })
   .strict();
 const ctx = createWorkerHandler(
@@ -199,12 +202,21 @@ const ctx = createWorkerHandler(
             ...(request.featureId ? { featureId: request.featureId } : {}),
           })
         : null;
+      const prompt = fromIssue?.prompt ?? request.prompt ?? "";
+      // The form showed this proposal; the run records it with the workflow the person kept.
+      const choice = request.autoPreset
+        ? presetChoice(
+            proposeForWorkspace(runtime.workspace, runtime.config, prompt),
+            request.workflowId,
+          )
+        : null;
       const run = await runtime.start({
         commandId: id,
         workflowId: request.workflowId,
         featureId: fromIssue?.featureId ?? SafeId.parse(request.featureId),
-        prompt: fromIssue?.prompt ?? request.prompt ?? "",
+        prompt,
         ...(fromIssue ? { issue: fromIssue.issue } : {}),
+        ...(choice ? { presetChoice: choice } : {}),
         policy: presetPolicy(runtime.config.workflows?.policy, request.budget),
         ownerLabel: "TUI",
         model: request.model,

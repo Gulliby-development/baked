@@ -52,6 +52,8 @@ export interface StartRunInput {
   maxConcurrentWriters?: number;
   /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
   clarification?: ClarificationMode;
+  /** The form proposed the workflow from the request (`--auto-preset`); the run records it. */
+  autoPreset?: boolean;
 }
 
 /** The execution controls of the new-run form. */

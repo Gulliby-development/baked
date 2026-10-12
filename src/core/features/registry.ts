@@ -539,6 +539,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Quick task"],
   },
   {
+    id: "preset-proposal",
+    group: "Workflow runs",
+    title: "Propose the workflow and budget from the request",
+    tui: ["/workflow: new run form (proposed workflow)"],
+    cli: ["baked workflow propose", "baked workflow run", "auto-preset"],
+    api: ["/v1/workflow/propose"],
+    desktop: ["project/overview: New run (proposed recipe)"],
+  },
+  {
     id: "run-detail",
     group: "Workflow runs",
     title: "Run list, detail, report, artifacts and usage",

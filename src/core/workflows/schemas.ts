@@ -999,6 +999,8 @@ export interface StartRequest {
   routes?: Record<string, string>;
   /** The GitHub issue the request comes from (CLI `--issue`); the delivery pull request closes it. */
   issue?: { repository: string; number: number; url: string; title: string };
+  /** The proposal of `--auto-preset` and the workflow the run took (`PresetChoice`). */
+  presetChoice?: import("./preset-router.js").PresetChoice;
 }
 export type Decision =
   | {

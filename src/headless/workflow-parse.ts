@@ -45,6 +45,7 @@ const commands = [
   "models",
   "doctor",
   "estimate",
+  "propose",
 ] as const;
 export type WorkflowCommand = (typeof commands)[number];
 /** Decisions that continue the run in the terminal unless `--no-resume` is given. */
@@ -132,8 +133,10 @@ const flags = new Set([
   "from-criteria",
   "at",
   "budget",
+  "auto-preset",
 ]);
 const booleanFlags = new Set([
+  "auto-preset",
   "all",
   "save",
   "from-criteria",
@@ -184,6 +187,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "clarification",
     "issue",
     "budget",
+    "auto-preset",
   ],
   quick: [
     "feature",
@@ -262,6 +266,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
   estimate: preRunFlags,
+  propose: ["prompt", "prompt-file", "json"],
 };
 /** The flag tables the argv parser checks, exposed so tests can assert they agree. */
 export const workflowFlagTables = { flags, booleanFlags, commandFlags };
@@ -366,7 +371,8 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     result.command !== "run" &&
     result.command !== "quick" &&
     result.command !== "gates" &&
-    result.command !== "gate"
+    result.command !== "gate" &&
+    result.command !== "propose"
   ) {
     const count =
       ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
@@ -401,6 +407,18 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "--request and --expected-revision apply only with --execute",
       );
   }
+  if (
+    !result.flags.help &&
+    result.command === "propose" &&
+    Number(result.positional.length > 0) +
+      Number(!!result.flags.prompt) +
+      Number(!!result.flags["prompt-file"]) !==
+      1
+  )
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      "Describe the request as text, with --prompt or with --prompt-file",
+    );
   if (!result.flags.help && result.command === "run") {
     if (result.positional.length > 1 || (result.positional.length && result.flags.workflow))
       throw new WorkflowFault(
@@ -470,6 +488,12 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard
+  --auto-preset proposes the workflow and budget from the request (see propose) and runs it; with a
+  WORKFLOW the person's pick wins and both are recorded in the run. --budget still wins
+propose TEXT... | --prompt TEXT | --prompt-file FILE [--json]
+  The workflow and budget --auto-preset would pick for a request, with the reason: a review of
+  existing changes (review-only), research without a change (spike), a failing check (fix-ci),
+  a docs-only or small change (quick, quick budget), a large change (default, extended budget)
 quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from

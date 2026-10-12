@@ -249,6 +249,12 @@ function render(facts: Facts, cap: number): string {
     "",
   );
 
+  const choice = state.presetChoice;
+  if (choice)
+    out.push(
+      `Workflow proposed from the request: ${code(choice.proposed)}, ${choice.reason} (budget ${choice.budget}, ${choice.confidence} confidence)${choice.overridden ? `; the person chose ${code(choice.chosen)}` : ""}.`,
+      "",
+    );
   out.push("## Summary", "");
   if (spec) out.push(spec.outcome, "");
   if (report) {
