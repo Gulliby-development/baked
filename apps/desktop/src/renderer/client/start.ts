@@ -151,6 +151,8 @@ export interface StartBody {
   issue?: string;
   workflow?: string;
   policy?: RunPolicy;
+  /** A budget preset the server applies to the policy (`--budget`); omitted means standard. */
+  budget?: "quick" | "standard" | "extended" | "checkpoints";
   model?: string;
   worktree?: boolean;
   writers?: number;
@@ -174,9 +176,8 @@ export const start = {
   estimate: (key: string, input: PreRunInput) =>
     call<PreRunEstimate>(key, "GET", `/v1/workflow/estimate${preRunQuery(input)}`),
   /**
-   * The configured run policy, which budget presets other than `standard` scale: the effective
-   * config's `workflows.policy` from `GET /v1/config` (contract group B). Null when the config
-   * sets no policy, so the core's default applies and the app cannot scale it.
+   * The configured run policy: the effective config's `workflows.policy` from `GET /v1/config`
+   * (contract group B). Null when the config sets no policy, so the core's default applies.
    */
   policy: (key: string) =>
     call<{ effective: { workflows?: { policy?: RunPolicy } } }>(key, "GET", "/v1/config").then(

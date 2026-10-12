@@ -5,13 +5,13 @@ import type {
   Fit,
   PolicyLimits,
   PreRunInput,
-  RunPolicy,
   TokenRange,
 } from "../../client/start.js";
 import { tokens } from "../../format.js";
 
 /**
- * Pure logic of the start forms. The budget presets follow `src/core/workflows/budget.ts` and
+ * Pure logic of the start forms. The server scales the policy for a budget preset
+ * (`presetPolicy` in `src/core/workflows/budget.ts`); the token limits shown here follow it, and
  * feature IDs follow `src/core/workflows/feature-id.ts`, so a run started here gets the policy
  * and ID the terminal UI and the CLI would give it.
  */
@@ -19,37 +19,7 @@ import { tokens } from "../../format.js";
 export const BUDGET_PRESETS = ["quick", "standard", "extended", "checkpoints"] as const;
 export type BudgetPreset = (typeof BUDGET_PRESETS)[number];
 
-/** Token limit used with soft checkpoints (`UNCAPPED_TOKENS` in the core). */
-export const UNCAPPED_TOKENS = 1_000_000_000;
-
 const factorOf = (preset: BudgetPreset): number => (preset === "quick" ? 0.5 : 2);
-
-/**
- * The policy a budget preset gives a run, from the configured one (`scaledPolicy` in the core).
- * quick and extended scale the three limits; checkpoints removes the token cap, pauses every N
- * tokens (the configured interval, or half the standard cap) and doubles calls and time.
- */
-export function scaledPolicy(base: RunPolicy, preset: BudgetPreset): RunPolicy {
-  if (preset === "standard") return base;
-  const factor = factorOf(preset);
-  const scaled: RunPolicy = {
-    ...base,
-    maxAgentCalls: Math.min(1000, Math.max(1, Math.round(base.maxAgentCalls * factor))),
-    maxActiveMs: Math.max(1000, Math.round(base.maxActiveMs * factor)),
-  };
-  return preset === "checkpoints"
-    ? {
-        ...scaled,
-        maxTotalTokens: UNCAPPED_TOKENS,
-        checkpointTokens:
-          base.checkpointTokens ?? Math.max(10000, Math.round(base.maxTotalTokens / 2)),
-      }
-    : {
-        ...scaled,
-        maxTotalTokens: Math.max(1000, Math.round(base.maxTotalTokens * factor)),
-        checkpointTokens: null,
-      };
-}
 
 /** The token limits of a preset from the configured token cap alone, for display. */
 export function presetTokens(
@@ -82,7 +52,7 @@ export function presetText(
   preset: BudgetPreset,
   limits: Pick<PolicyLimits, "maxTotalTokens" | "checkpointTokens"> | null,
 ): string {
-  if (!limits) return "The configured limits, scaled by the preset.";
+  if (!limits) return "The standard limits, scaled by the preset.";
   const { cap, checkpoint } = presetTokens(
     limits.maxTotalTokens,
     preset,
@@ -90,11 +60,11 @@ export function presetText(
   );
   switch (preset) {
     case "quick":
-      return `${tokens(cap ?? 0)} tokens, half the configured limits`;
+      return `${tokens(cap ?? 0)} tokens, half the standard limits`;
     case "standard":
-      return `${tokens(cap ?? 0)} tokens, the configured policy`;
+      return `${tokens(cap ?? 0)} tokens, the standard limits`;
     case "extended":
-      return `${tokens(cap ?? 0)} tokens, double the limits`;
+      return `${tokens(cap ?? 0)} tokens, double the standard limits`;
     case "checkpoints":
       return `no token cap, pauses every ${tokens(checkpoint ?? 0)} for your go-ahead`;
   }
@@ -147,6 +117,19 @@ export function uniqueFeatureId(text: string, taken: (id: string) => boolean): s
 }
 
 export const isFeatureId = (id: string): boolean => /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(id);
+
+/** Why the start button is disabled, or null when the task can start. */
+export function quickBlocker(input: {
+  prompt: string;
+  feature: string;
+  hasWorkflow: boolean | null;
+}): string | null {
+  if (input.hasWorkflow === false) return "This project has no quick workflow.";
+  if (!input.prompt.trim()) return "Describe the change first.";
+  if (!isFeatureId(input.feature))
+    return "Fix the feature ID: letters, digits, - and _, starting with a letter or digit.";
+  return null;
+}
 
 /** A stage ID as a label: `implement` → `Implement`, `ai-acceptance` → `Ai acceptance`. */
 export function stageLabel(id: string): string {

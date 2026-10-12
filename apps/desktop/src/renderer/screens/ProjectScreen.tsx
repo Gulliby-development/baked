@@ -26,6 +26,7 @@ const TITLES: Record<ProjectSection, string> = {
   skills: "Skills",
   hooks: "Hooks",
   mcp: "MCP servers",
+  lsp: "Language servers",
   diagnostics: "Diagnostics",
 };
 

@@ -9,9 +9,8 @@ import {
   preRunQuery,
   presetText,
   presetTokens,
+  quickBlocker,
   rangeText,
-  scaledPolicy,
-  UNCAPPED_TOKENS,
   uniqueFeatureId,
   usdRange,
 } from "../src/renderer/screens/start/logic.ts";
@@ -21,53 +20,27 @@ const base: RunPolicy = {
   maxAgentCalls: 200,
   maxActiveMs: 7_200_000,
   checkpointTokens: null,
-  checks: [{ id: "test" }],
 };
 
 describe("budget presets", () => {
-  test("standard is the configured policy", () => {
-    expect(scaledPolicy(base, "standard")).toBe(base);
-  });
-
-  test("quick halves and extended doubles the three limits", () => {
-    const quick = scaledPolicy(base, "quick");
-    expect([quick.maxTotalTokens, quick.maxAgentCalls, quick.maxActiveMs]).toEqual([
-      400_000, 100, 3_600_000,
-    ]);
-    expect(quick.checkpointTokens).toBeNull();
-    expect(quick.checks).toEqual(base.checks);
-    const extended = scaledPolicy(base, "extended");
-    expect([extended.maxTotalTokens, extended.maxAgentCalls]).toEqual([1_600_000, 400]);
-  });
-
-  test("checkpoints removes the cap and pauses every half of it", () => {
-    const policy = scaledPolicy(base, "checkpoints");
-    expect(policy.maxTotalTokens).toBe(UNCAPPED_TOKENS);
-    expect(policy.checkpointTokens).toBe(400_000);
-    expect(policy.maxAgentCalls).toBe(400);
-    expect(
-      scaledPolicy({ ...base, checkpointTokens: 50_000 }, "checkpoints").checkpointTokens,
-    ).toBe(50_000);
-  });
-
-  test("limits stay within the schema bounds", () => {
-    const small = scaledPolicy(
-      { ...base, maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 },
-      "quick",
-    );
-    expect([small.maxTotalTokens, small.maxAgentCalls, small.maxActiveMs]).toEqual([
-      1000, 1, 1000,
-    ]);
-    expect(scaledPolicy({ ...base, maxAgentCalls: 900 }, "extended").maxAgentCalls).toBe(1000);
-  });
-
   test("display limits and text", () => {
     expect(presetTokens(800_000, "quick")).toEqual({ cap: 400_000, checkpoint: null });
     expect(presetTokens(800_000, "checkpoints")).toEqual({ cap: null, checkpoint: 400_000 });
-    expect(presetText("extended", base)).toBe("1.60M tokens, double the limits");
+    expect(presetText("extended", base)).toBe("1.60M tokens, double the standard limits");
     expect(presetText("checkpoints", base)).toBe(
       "no token cap, pauses every 400k for your go-ahead",
     );
+  });
+});
+
+describe("quick task", () => {
+  test("says why it cannot start", () => {
+    const ok = { prompt: "Fix the header", feature: "fix-the-header", hasWorkflow: true };
+    expect(quickBlocker(ok)).toBeNull();
+    expect(quickBlocker({ ...ok, prompt: "  " })).toBe("Describe the change first.");
+    expect(quickBlocker({ ...ok, feature: "-bad" })).toMatch(/^Fix the feature ID/);
+    expect(quickBlocker({ ...ok, hasWorkflow: false })).toBe("This project has no quick workflow.");
+    expect(quickBlocker({ ...ok, hasWorkflow: null })).toBeNull();
   });
 });
 

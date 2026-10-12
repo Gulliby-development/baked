@@ -1,4 +1,5 @@
 import { canonical, hashJson } from "../specs/hash.js";
+import { defaultWorkflowPolicy } from "./defaults.js";
 import { type AgentProfile, PolicySchema, type RunPolicy } from "./schemas.js";
 import type { RunRow, WorkflowStore } from "./store.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
@@ -42,6 +43,15 @@ export function scaledPolicy(base: RunPolicy, preset: BudgetPresetId): RunPolicy
           checkpointTokens: null,
         },
   );
+}
+
+/**
+ * The policy a run starts with: the given policy (a `--policy` file or the config's
+ * `workflows.policy`), else the built-in default, scaled by the budget preset. Every surface starts
+ * runs through this, so each preset is available whether or not the config sets a policy.
+ */
+export function presetPolicy(base: unknown, preset: BudgetPresetId = "standard"): RunPolicy {
+  return scaledPolicy(PolicySchema.parse(base ?? defaultWorkflowPolicy), preset);
 }
 
 /** The three limits a budget extension may raise. Scope, tools and checks are never part of it. */
