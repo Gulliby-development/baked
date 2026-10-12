@@ -1337,6 +1337,15 @@ export class WorkflowScheduler {
    */
   private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
     if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
+    const record = this.lastAttemptUsage(runId, stepId);
+    if (!record || record.finalizedBy === null) return false;
+    state.taskContinuations[task.id] = 1;
+    state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
+    state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
+    return true;
+  }
+  /** The usage record of the latest attempt of a step, when the executor wrote one. */
+  private lastAttemptUsage(runId: string, stepId: string): AttemptUsageRecord | undefined {
     const attempt = this.store
       .attempts(runId)
       .filter((a) => a.step_id === stepId)
@@ -1344,13 +1353,61 @@ export class WorkflowScheduler {
     const usage = attempt
       ? this.store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`)
       : undefined;
-    if (!usage) return false;
-    const record = JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord;
-    if (record.finalizedBy === null) return false;
-    state.taskContinuations[task.id] = 1;
-    state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
-    state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
-    return true;
+    return usage
+      ? (JSON.parse(this.store.readArtifact(runId, usage.id)) as AttemptUsageRecord)
+      : undefined;
+  }
+  /**
+   * Why a task that ended without a complete implementation gets one more attempt in a fresh
+   * session, or null. Host facts decide it, not the worker's wording: a session that made no tool
+   * call and submitted nothing lost its tools (run 982ba3e1, `read`); under `clarification:
+   * assume` any other blocked implementer restarts once too, since a plain resume cleared all of
+   * the blocked tasks of round 6. A person is asked only when the restart ends the same way.
+   */
+  private blockedRestartReason(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    stepId: string,
+    task: Task,
+    result: { outcome: string; summary: string; unresolved: string[] },
+    changed: string[],
+  ): string | null {
+    if ((state.taskRestarts[task.id] ?? 0) > 0) return null;
+    const unfinished =
+      ["blocked", "failed"].includes(result.outcome) || result.unresolved.length > 0;
+    if (!unfinished) return null;
+    if (changed.length === 0 && reportsLostTool(result))
+      return "a tool was unavailable to its worker, which submitted no change";
+    const usage = this.lastAttemptUsage(runId, stepId);
+    if (
+      changed.length === 0 &&
+      usage?.stopReason === "no_submission" &&
+      usage.steps.reduce((sum, step) => sum + step.toolCalls, 0) === 0
+    )
+      return "its session made no tool call and submitted no result, so it had no working tools";
+    if (policy.clarification !== "assume") return null;
+    return `the worker ended ${result.outcome === "implemented" ? "unfinished" : result.outcome} under clarification assume`;
+  }
+  /** The worker's own account of the attempt a restart replaces, for the fresh session's prompt. */
+  private previousAttempt(
+    runId: string,
+    taskId: string,
+  ): { previousAttempt?: { summary: string; unresolved: string[]; note: string } } {
+    const artifact = this.store.latestArtifact(runId, `tasks/restarts/${taskId}.json`);
+    if (!artifact) return {};
+    const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+      summary?: string;
+      unresolved?: string[];
+    };
+    if (!record.summary && !record.unresolved?.length) return {};
+    return {
+      previousAttempt: {
+        summary: record.summary ?? "",
+        unresolved: record.unresolved ?? [],
+        note: "An earlier session of this task ended without a complete implementation, as described here. Start from the current files and finish what it left; do not repeat its failed approach.",
+      },
+    };
   }
   /** The planned graph with its oversized test tasks split by file, recorded when it splits. */
   private splitTests(runId: string, graph: TaskGraph, policy: RunPolicy): TaskGraph {
@@ -2299,6 +2356,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
                 }
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
+            ...this.previousAttempt(runId, task.id),
             ...(inherited.length
               ? {
                   earlierEdits: {
@@ -2346,10 +2404,20 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           task.writes.length > 0 &&
           !(await this.correctionSatisfied(runId, child, policy, task, result, signal, root)))
       ) {
+        const restartReason = this.blockedRestartReason(
+          runId,
+          state,
+          policy,
+          child,
+          task,
+          result,
+          changed,
+        );
+        const account = { summary: result.summary, unresolved: result.unresolved };
         if (
+          restartReason &&
           changed.length === 0 &&
-          reportsLostTool(result) &&
-          this.restartOnce(runId, state, child, task.id, "a tool was unavailable to its worker", [])
+          this.restartOnce(runId, state, child, task.id, restartReason, [], account)
         ) {
           // A fresh session gets the task again; a session without its edit tool stays without it.
           this.store.transaction(() => {
@@ -2359,7 +2427,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           });
           return;
         }
-        if (changed.length > 0 && this.continueAtCap(runId, state, child, task)) {
+        if (
+          changed.length > 0 &&
+          (this.continueAtCap(runId, state, child, task) ||
+            (restartReason !== null &&
+              this.restartOnce(runId, state, child, task.id, restartReason, changed, account)))
+        ) {
           // The task is ready again and the next pass of the task loop continues it.
           this.store.transaction(() => {
             this.store.taskStatus(runId, task.id, "interrupted");
@@ -2529,8 +2602,18 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             });
           } else if (outcome.kind === "rejected") {
             const again =
-              outcome.edits !== undefined &&
-              this.continueAtCap(runId, state, entry.child, entry.task);
+              (outcome.edits !== undefined &&
+                this.continueAtCap(runId, state, entry.child, entry.task)) ||
+              (outcome.restart !== undefined &&
+                this.restartOnce(
+                  runId,
+                  state,
+                  entry.child,
+                  entry.task.id,
+                  outcome.restart.reason,
+                  outcome.edits?.changed ?? [],
+                  outcome.restart.account,
+                ));
             if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
             if (!again) failure ??= outcome.error;
             this.store.transaction(() => {
@@ -2592,6 +2675,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       entry.task.id,
       outcome.reason,
       outcome.edits?.changed ?? [],
+      outcome.account,
     );
   }
   /** Records the one restart a task gets per run; false when it already had it. */
@@ -2602,6 +2686,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     taskId: string,
     reason: string,
     carriedPaths: string[],
+    account?: { summary: string; unresolved: string[] },
   ): boolean {
     if ((state.taskRestarts[taskId] ?? 0) > 0) return false;
     this.store.transaction(() => {
@@ -2610,7 +2695,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         runId,
         "recovery",
         `tasks/restarts/${taskId}.json`,
-        canonical({ taskId, stepId, reason, carriedPaths }),
+        canonical({ taskId, stepId, reason, carriedPaths, ...account }),
       );
       this.store.saveState(runId, state);
     });
@@ -2647,6 +2732,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         task,
         evidence: this.evidenceContext(runId, state, { reads: false }),
         unresolvedMeans: UNRESOLVED_MEANING,
+        ...this.previousAttempt(runId, task.id),
       };
       const needed = reserveTokens(
         this.promptFor(runId, state, policy, profile, extra),
@@ -2746,17 +2832,18 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             `Task ${task.id} changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
           ),
         };
-      if (
-        changed.length === 0 &&
-        reportsLostTool(result) &&
-        (state.taskRestarts[task.id] ?? 0) === 0
-      )
-        return {
-          kind: "interrupted",
-          entry,
-          leaseLost: false,
-          reason: "a tool was unavailable to its worker, which submitted no change",
-        };
+      const restartReason = this.blockedRestartReason(
+        runId,
+        state,
+        policy,
+        entry.child,
+        task,
+        result,
+        changed,
+      );
+      const account = { summary: result.summary, unresolved: result.unresolved };
+      if (restartReason && changed.length === 0)
+        return { kind: "interrupted", entry, leaseLost: false, reason: restartReason, account };
       const refused = takeHashRefusals(root);
       if (
         result.taskId !== task.id ||
@@ -2769,6 +2856,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         return {
           kind: "rejected",
           entry,
+          ...(restartReason ? { restart: { reason: restartReason, account } } : {}),
           ...(changed.length ? { edits: { before, changed } } : {}),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
@@ -4684,6 +4772,8 @@ type WorkerOutcome =
       kind: "rejected";
       entry: BatchEntry;
       error: unknown;
+      /** Set when the task gets one restart in a fresh session instead of blocking the run. */
+      restart?: { reason: string; account: { summary: string; unresolved: string[] } };
       /** The files the attempt changed in its worktree, with the manifest before it. */
       edits?: { before: Record<string, string>; changed: string[] };
     }
@@ -4694,6 +4784,8 @@ type WorkerOutcome =
       reason: string;
       /** Another owner took the task worktree's lease, so the worktree is not this run's to reuse. */
       leaseLost: boolean;
+      /** What the worker said when it ended without a complete implementation, for the restart. */
+      account?: { summary: string; unresolved: string[] };
       /** The files the lost worker had changed in its worktree, with the manifest before it. */
       edits?: { before: Record<string, string>; changed: string[] };
     }
