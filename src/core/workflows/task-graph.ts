@@ -123,10 +123,15 @@ export function pendingOwners(
         r.id === id &&
         (r.status === "verified" || (r.status === "implemented" && hasTaskGate(r, gates))),
     );
-  const dependsOn = (id: string, target: string, seen = new Set<string>()): boolean =>
-    (graph.tasks.find((t) => t.id === id)?.dependsOn ?? []).some(
-      (dep) => dep === target || (!seen.has(dep) && (seen.add(dep), dependsOn(dep, target, seen))),
-    );
+  const dependsOn = (id: string, target: string, seen = new Set<string>()): boolean => {
+    for (const dep of graph.tasks.find((t) => t.id === id)?.dependsOn ?? []) {
+      if (dep === target) return true;
+      if (seen.has(dep)) continue;
+      seen.add(dep);
+      if (dependsOn(dep, target, seen)) return true;
+    }
+    return false;
+  };
   const owners = new Set<string>();
   for (const path of named) {
     const pending = graph.tasks.filter(
