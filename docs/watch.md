@@ -50,7 +50,16 @@ def total(items):  # baked? why is tax added here and in checkout()
 
 ## Running it
 
-From a script or a terminal:
+### In the terminal app
+
+- `/watch on` starts watch mode in the current tab. A `WATCHING` chip shows in the header.
+- One tab watches at a time; `/watch on` in another tab moves the watch there.
+- Each watch turn shows in the chat as `From src/load.ts:2 (baked!): retry twice on a network error…`. The model gets the full prompt with the code around the comment.
+- A turn saved while the tab is busy waits in the steering queue under the input.
+- `/watch status` shows the folder, the number of turns and the last one; `/watch off` stops. Closing the watching tab stops it too.
+
+### From a script
+
 
 ```sh
 baked --headless --watch            # turns from baked! and baked? comments until Ctrl+C
@@ -64,7 +73,7 @@ baked --headless --watch --mode auto --events
 - With `--events`, BAKED writes a `watch` event (`started`, `triggered`, `stopped`, `error`) and a `watch-turn` event before each turn.
 - Ctrl+C stops the watch and ends the session.
 
-The terminal UI and the desktop app get watch mode next ([#126](https://github.com/Gulliby-development/baked/issues/126)).
+The desktop app gets watch mode next ([#126](https://github.com/Gulliby-development/baked/issues/126)).
 
 ## Configuration
 

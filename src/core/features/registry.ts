@@ -206,7 +206,7 @@ export const FEATURES: readonly Feature[] = [
     id: "watch-mode",
     group: "Chat and sessions",
     title: "Watch mode: baked! and baked? comments start the agent",
-    tui: gap(126, "/watch comes after the core"),
+    tui: ["/watch", "/watch on", "/watch off"],
     cli: ["baked --headless --watch"],
     api: gap(126, "POST /v1/sessions/:id/watch comes with the desktop toggle"),
     desktop: gap(126, "a Watch files toggle in the chat header"),
