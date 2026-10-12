@@ -70,6 +70,10 @@ export function createClaudeCodeLanguageModel(
       finishReason: parsed.finishReason,
       usage: result.usage,
       warnings: collectWarnings(options),
+      // Host fact: the adapter aborted native tool calls, whatever the worker later says.
+      ...(result.nativeToolAborts?.length
+        ? { providerMetadata: { "claude-code": { nativeToolAborts: result.nativeToolAborts } } }
+        : {}),
     };
   };
 
@@ -154,4 +158,9 @@ export {
   renderClaudeCodeTurn,
 } from "./prompt.js";
 export type { ClaudeCodeProcess, ClaudeCodeProcessFactory, ClaudeCodeRunner } from "./session.js";
-export { ClaudeCodeSessionRunner, usageFromResult } from "./session.js";
+export {
+  ClaudeCodeNativeToolError,
+  ClaudeCodeSessionRunner,
+  nativeToolInEvent,
+  usageFromResult,
+} from "./session.js";

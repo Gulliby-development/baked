@@ -23,6 +23,57 @@ export interface ClaudeCodeTurnResult {
   structured: unknown;
   text: string;
   usage: LanguageModelV3Usage;
+  /** Native tool calls the model attempted and the adapter aborted before the answer. */
+  nativeToolAborts?: string[];
+}
+
+/**
+ * The model kept answering with Claude Code's native tool calls instead of the JSON envelope,
+ * after the turn was interrupted and corrected. BAKED's tools exist only in the system prompt.
+ */
+export class ClaudeCodeNativeToolError extends Error {
+  readonly nativeTools: string[];
+  constructor(nativeTools: string[]) {
+    super(
+      `Claude Code lost the BAKED tools: the model called ${nativeTools.map((name) => `"${name}"`).join(", ")} as native tools (No such tool available) and ignored the correction`,
+    );
+    this.name = "ClaudeCodeNativeToolError";
+    this.nativeTools = nativeTools;
+  }
+}
+
+/** The structured-output tool is the only native tool a turn may call. */
+const STRUCTURED_OUTPUT_TOOL = "structuredoutput";
+/** Corrections sent in one turn before the session is given up on. */
+const MAX_NATIVE_TOOL_CORRECTIONS = 1;
+/** How long an interrupted turn may take to report before the session is given up on. */
+const INTERRUPT_TIMEOUT_MS = 20_000;
+
+export const NATIVE_TOOL_CORRECTION = (name: string) =>
+  `Correction: "${name}" is not a native tool here ("No such tool available"). BAKED tools are not native tools: do not call any tool. Answer the previous step only with the JSON envelope, putting the tool call in toolCalls.`;
+
+/** The name of a native tool the event shows the model calling or being refused, if any. */
+export function nativeToolInEvent(event: unknown): string | null {
+  const message = (event as { message?: { content?: unknown } } | null)?.message;
+  const content = message?.content;
+  if (!Array.isArray(content)) return null;
+  for (const block of content as Record<string, unknown>[]) {
+    if (block.type === "tool_use" && typeof block.name === "string") {
+      if (block.name.toLowerCase() !== STRUCTURED_OUTPUT_TOOL) return block.name;
+    } else if (block.type === "tool_result" && block.is_error === true) {
+      const text =
+        typeof block.content === "string"
+          ? block.content
+          : Array.isArray(block.content)
+            ? (block.content as Array<{ text?: unknown }>)
+                .map((part) => String(part.text ?? ""))
+                .join(" ")
+            : "";
+      const m = text.match(/No such tool available:?\s*([\w.:-]*)/i);
+      if (m) return m[1] || "unknown";
+    }
+  }
+  return null;
 }
 
 export interface ClaudeCodeRunner {
@@ -59,6 +110,12 @@ interface SessionState {
   pending: {
     resolve: (result: ClaudeCodeTurnResult) => void;
     reject: (error: Error) => void;
+    /** An interrupt was sent for a native tool call; the next result event ends that turn. */
+    interrupting: boolean;
+    interruptTimer: ReturnType<typeof setTimeout> | null;
+    nativeTools: string[];
+    /** Usage of the interrupted attempts, charged to the final answer. */
+    carriedUsage: LanguageModelV3Usage[];
   } | null;
 }
 
@@ -92,6 +149,29 @@ export function usageFromResult(usage: ResultEvent["usage"]): LanguageModelV3Usa
     },
     outputTokens: { total: usage?.output_tokens, text: undefined, reasoning: undefined },
   };
+}
+
+function sumUsage(usages: LanguageModelV3Usage[]): LanguageModelV3Usage {
+  const [first, ...rest] = usages;
+  if (!first) return usageFromResult(undefined);
+  const add = (a: number | undefined, b: number | undefined) =>
+    a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+  return rest.reduce<LanguageModelV3Usage>(
+    (acc, usage) => ({
+      inputTokens: {
+        total: add(acc.inputTokens.total, usage.inputTokens.total),
+        noCache: add(acc.inputTokens.noCache, usage.inputTokens.noCache),
+        cacheRead: add(acc.inputTokens.cacheRead, usage.inputTokens.cacheRead),
+        cacheWrite: add(acc.inputTokens.cacheWrite, usage.inputTokens.cacheWrite),
+      },
+      outputTokens: {
+        total: add(acc.outputTokens.total, usage.outputTokens.total),
+        text: undefined,
+        reasoning: undefined,
+      },
+    }),
+    first,
+  );
 }
 
 function resultError(event: ResultEvent): Error {
@@ -324,9 +404,35 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     } catch {
       return;
     }
-    if (event.type !== "result") return;
+    const live = session.pending;
+    if (event.type !== "result") {
+      if (!live.interrupting && (event.type === "assistant" || event.type === "user")) {
+        const nativeTool = nativeToolInEvent(event);
+        if (nativeTool) this.abortNativeToolTurn(session, live, nativeTool);
+      }
+      return;
+    }
     const result = event as ResultEvent;
-    const pending = session.pending;
+    const pending = live;
+    if (pending.interrupting) {
+      pending.interrupting = false;
+      if (pending.interruptTimer) clearTimeout(pending.interruptTimer);
+      pending.interruptTimer = null;
+      pending.carriedUsage.push(usageFromResult(result.usage));
+      if (pending.nativeTools.length > MAX_NATIVE_TOOL_CORRECTIONS) {
+        session.pending = null;
+        pending.reject(new ClaudeCodeNativeToolError(pending.nativeTools));
+        return;
+      }
+      const last = pending.nativeTools[pending.nativeTools.length - 1] as string;
+      session.process.send(
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: NATIVE_TOOL_CORRECTION(last) },
+        }),
+      );
+      return;
+    }
     session.pending = null;
     if (result.is_error || (result.subtype && result.subtype !== "success")) {
       pending.reject(resultError(result));
@@ -335,8 +441,33 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     pending.resolve({
       structured: result.structured_output,
       text: typeof result.result === "string" ? result.result : "",
-      usage: usageFromResult(result.usage),
+      usage: sumUsage([...pending.carriedUsage, usageFromResult(result.usage)]),
+      ...(pending.nativeTools.length > 0 ? { nativeToolAborts: pending.nativeTools } : {}),
     });
+  }
+
+  /** Interrupts a turn that called a native tool; the next result event triggers the correction. */
+  private abortNativeToolTurn(
+    session: SessionState,
+    pending: NonNullable<SessionState["pending"]>,
+    nativeTool: string,
+  ): void {
+    pending.interrupting = true;
+    pending.nativeTools.push(nativeTool);
+    pending.interruptTimer = setTimeout(() => {
+      if (session.pending !== pending) return;
+      session.pending = null;
+      pending.reject(new ClaudeCodeNativeToolError(pending.nativeTools));
+      this.closeSession(session);
+    }, INTERRUPT_TIMEOUT_MS);
+    pending.interruptTimer.unref?.();
+    session.process.send(
+      JSON.stringify({
+        type: "control_request",
+        request_id: `baked-interrupt-${Date.now().toString(36)}`,
+        request: { subtype: "interrupt" },
+      }),
+    );
   }
 
   private runTurn(
@@ -355,15 +486,22 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
         // An interrupted turn leaves the conversation in an unknown state.
         this.closeSession(session);
       };
+      const finish = () => {
+        call.abortSignal?.removeEventListener("abort", onAbort);
+      };
       session.pending = {
         resolve: (result) => {
-          call.abortSignal?.removeEventListener("abort", onAbort);
+          finish();
           resolve(result);
         },
         reject: (error) => {
-          call.abortSignal?.removeEventListener("abort", onAbort);
+          finish();
           reject(error);
         },
+        interrupting: false,
+        interruptTimer: null,
+        nativeTools: [],
+        carriedUsage: [],
       };
       call.abortSignal?.addEventListener("abort", onAbort, { once: true });
       session.process.send(
