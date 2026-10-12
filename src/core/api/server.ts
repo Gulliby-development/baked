@@ -30,6 +30,7 @@ import { ZodError, type z } from "zod";
 import { executeWorkflowCommand } from "../../headless/workflow.js";
 import { validateWorkflowArgs, type WorkflowArgs } from "../../headless/workflow-parse.js";
 import { BakeChatHost } from "../chat/host.js";
+import { serviceStateSource } from "../chat/project-state.js";
 import { scriptedHostFromEnv } from "../chat/scripted-host.js";
 import { ChatError, ChatService } from "../chat/sessions.js";
 import type { ContextManager } from "../context/manager.js";
@@ -51,6 +52,8 @@ import { type AttentionItem, attentionItems } from "../workflows/attention.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { readHistory } from "../workflows/estimate.js";
+import { uniqueFeatureId } from "../workflows/feature-id.js";
+import { initiativeStartRequest } from "../workflows/initiatives/forms.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
 import { redactSecrets } from "../workflows/redaction.js";
 import {
@@ -451,6 +454,35 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     });
   const initiatives = new InitiativeService(service);
+  chat.setProjectState(
+    serviceStateSource(service, initiatives, () => attention()),
+    {
+      // The coordinator starts work through the same paths as POST /v1/workflow/runs and
+      // /v1/initiatives; approvals stay with the person.
+      startRun: async ({ prompt, workflow, feature }) =>
+        launch(
+          startArgs({
+            commandId: crypto.randomUUID(),
+            prompt,
+            feature:
+              feature ??
+              uniqueFeatureId(prompt, (id) => service.store.list(1, id).items.length > 0),
+            owner: "Coordinator",
+            ...(workflow ? { workflow } : {}),
+          }),
+        ),
+      startInitiative: async ({ initiativeId, prompt }) => {
+        const view = await initiatives.start(
+          initiativeStartRequest({ initiativeId, prompt }, service.config, {
+            commandId: crypto.randomUUID(),
+            ownerLabel: "Coordinator",
+          }),
+        );
+        driveInitiative(view.initiativeId);
+        return view;
+      },
+    },
+  );
   const graphCache = new CodeGraphCache(service.workspace);
   let graphRoot: ContextManager | null = null;
   let graphRootStarted = false;

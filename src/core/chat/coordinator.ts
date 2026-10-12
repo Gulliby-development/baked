@@ -158,7 +158,7 @@ export class BriefStore {
 export function coordinatorInstructions(brief: ProjectBrief): string {
   return [
     "## Project coordinator",
-    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: say which you would start and why; you cannot edit files or run commands here.",
+    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: start them with launch_session, start_run or start_initiative, one line of why each; you cannot edit files or run commands here, and you never answer the approvals of what you launched. Answer questions about what is running or waiting with the project_state tool (start with its overview) rather than from memory.",
     `Keep the project brief current with the ${BRIEF_TOOL} tool: record decisions the user makes, project conventions, work you or the user launched with its id and status, and open questions. Keep each entry to one line, remove entries that no longer hold, and never repeat what the brief already says. The brief survives compaction and restarts; the conversation does not.`,
     `### Project brief (revision ${brief.revision})`,
     renderBrief(brief),

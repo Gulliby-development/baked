@@ -69,11 +69,23 @@ import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
+import {
+  coordinatorLimits,
+  launchTools,
+  type ProjectLauncher,
+  syncLaunched,
+} from "./coordinator-launch.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
 import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
 import type { MentionSuggestion } from "./mention-suggest.js";
+import {
+  type ProjectStateSource,
+  type SessionSource,
+  STATE_TOOL,
+  stateTool,
+} from "./project-state.js";
 
 export const CHAT_MODES = ["default", "architect", "plan", "auto"] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
@@ -237,6 +249,8 @@ export interface TurnAgentRequest {
   planExecution: boolean;
   /** The session is the project's coordinator: its prompt and brief tool apply. */
   coordinator?: boolean;
+  /** Tools the service adds for this session's kind (the coordinator's project state tool). */
+  tools?: Record<string, unknown>;
   callbacks: InteractiveCallbacks;
   onApproveOutsideCwd: (toolName: string, path: string) => Promise<boolean>;
   onApproveDestructive: (description: string) => Promise<boolean>;
@@ -880,6 +894,26 @@ export class ChatSession {
     return this.prompts.has(promptId);
   }
 
+  /** Asks a person to approve an action of this session's running turn, as a destructive prompt. */
+  async confirm(description: string): Promise<boolean> {
+    return (await this.ask({ kind: "destructive", description })) === true;
+  }
+
+  /** Adds a note to the transcript that the model does not see, such as a launched run's news. */
+  async addNotice(content: string): Promise<ChatMessage> {
+    const message: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "system",
+      content,
+      timestamp: Date.now(),
+      showInChat: true,
+    };
+    this.messages = [...this.messages, message];
+    this.emit({ type: "notice", message });
+    await this.owner.persist(this);
+    return message;
+  }
+
   private settlePrompt(
     promptId: string,
     value: PromptValue,
@@ -1098,7 +1132,9 @@ export class ChatSession {
         modelId: model,
         mode: this.mode,
         planExecution,
-        ...(this.isCoordinator ? { coordinator: true } : {}),
+        ...(this.isCoordinator
+          ? { coordinator: true, tools: this.owner.coordinatorTools(this) }
+          : {}),
         ...this.approvalCallbacks(),
       });
       stepStartedAt = Date.now();
@@ -1445,6 +1481,67 @@ export class ChatService {
       throw new ChatError("SESSION_BUSY", `Wait for running turns to finish before ${action}`);
   }
 
+  private projectState: ProjectStateSource | null = null;
+  private launcher: ProjectLauncher | null = null;
+  private watch: ReturnType<typeof setInterval> | null = null;
+  private syncing = false;
+
+  /**
+   * Where the coordinator reads runs, initiatives and attention from and starts runs and
+   * initiatives with; the API server sets both. Starts following what the coordinator launched.
+   */
+  setProjectState(
+    source: ProjectStateSource | null,
+    launcher: ProjectLauncher | null = null,
+    watchMs = 2000,
+  ): void {
+    this.projectState = source;
+    this.launcher = launcher;
+    if (this.watch) clearInterval(this.watch);
+    this.watch = null;
+    if (watchMs > 0) {
+      this.watch = setInterval(() => void this.syncLaunched(), watchMs);
+      this.watch.unref?.();
+    }
+  }
+
+  /** Refreshes the statuses of what the coordinator launched and notes changes in its chat. */
+  async syncLaunched(): Promise<string[]> {
+    if (this.syncing || this.closed) return [];
+    const coordinator = [...this.live.values()].find((s) => s.isCoordinator);
+    if (!coordinator) return [];
+    this.syncing = true;
+    try {
+      return await syncLaunched(this, coordinator, this.projectState);
+    } catch (err) {
+      logBackgroundError("chat:coordinator-sync", errorText(err));
+      return [];
+    } finally {
+      this.syncing = false;
+    }
+  }
+
+  /** The coordinator's tools over this service: project state and launching. */
+  coordinatorTools(coordinator: ChatSession): Record<string, unknown> {
+    const sessions: SessionSource = {
+      list: (limit) => this.list(limit),
+      messages: (id) => {
+        const session = this.get(id);
+        return { title: session.title, messages: session.messages };
+      },
+    };
+    return {
+      [STATE_TOOL]: stateTool(this.projectState, sessions),
+      ...launchTools(
+        this,
+        coordinator,
+        this.projectState,
+        this.launcher,
+        coordinatorLimits(this.options.config),
+      ),
+    };
+  }
+
   /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */
   get compactionThresholds(): { trigger: number; reset: number } {
     const config = this.options.config.compaction;
@@ -1655,6 +1752,8 @@ export class ChatService {
   /** Interrupts running turns, waits for them to save, and releases the host. */
   async shutdown(): Promise<void> {
     this.closed = true;
+    if (this.watch) clearInterval(this.watch);
+    this.watch = null;
     const sessions = [...this.live.values()];
     for (const session of sessions) session.interrupt();
     await Promise.allSettled(sessions.map((s) => s.settled()));
