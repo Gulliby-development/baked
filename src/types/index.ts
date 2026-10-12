@@ -205,6 +205,9 @@ interface ThinkingConfig {
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
+/** A chat's reasoning effort: `default` follows the global `performance` settings. */
+export type ChatEffort = EffortLevel | "default";
+
 type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "auto" | "flex" | "priority" | "default";
 export type CompatReasoningEffort = "off" | "low" | "medium" | "high" | "xhigh";

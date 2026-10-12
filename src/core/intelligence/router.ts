@@ -262,6 +262,16 @@ export class CodeIntelligenceRouter {
     return [];
   }
 
+  /** Stops the language servers rooted at or below `path` (a directory about to be deleted). */
+  async stopLspServersUnder(path: string): Promise<number> {
+    const lspBackend = this.backends.find((b) => b.name === "lsp");
+    if (lspBackend && "stopServersUnder" in lspBackend)
+      return (lspBackend as { stopServersUnder: (p: string) => Promise<number> }).stopServersUnder(
+        path,
+      );
+    return 0;
+  }
+
   /** Get PIDs of all child processes (LSP servers) managed by backends */
   getChildPids(): number[] {
     const lspBackend = this.backends.find((b) => b.name === "lsp");

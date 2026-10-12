@@ -65,7 +65,7 @@ bun test tests/feature-parity.test.ts
 | Checkpoint list and rewind to a checkpoint | `/checkpoint` | `baked session checkpoints`, `baked session undo` | `/v1/sessions/:id/checkpoints`, `/v1/sessions/:id/undo` | `project/chat` |
 | Fork a session | `/checkpoint fork` | `baked session fork` | `/v1/sessions/:id/fork` | `project/chat` |
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
-| Reasoning effort per chat | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384): set globally in /provider-settings only | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) |
+| Reasoning effort per chat | `/effort` | `--effort` | `/v1/sessions/:id`, `/v1/models` | `project/chat` |
 | Context and cost dashboard for a chat | `/context`, `/context clear`, `/status` | Not needed: --json reports usage of a one-shot run | `/v1/sessions/:id` | `project/chat` |
 
 ### Models and providers
@@ -164,7 +164,6 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#372](https://github.com/Gulliby-development/baked/issues/372): Gates from a plain-language sentence
-- [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#533](https://github.com/Gulliby-development/baked/issues/533): Gates on the run's line: what each does, blocks or advises, last result
 

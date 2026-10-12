@@ -11,6 +11,7 @@ import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
+import { runBoundedShell } from "./bounded-process.js";
 import { compressShellOutputFull } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
 import { getToolTimeoutMs } from "./tool-timeout.js";
@@ -1091,32 +1092,8 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   // `/var` is `/private/var`) would look outside the project to it.
   const command = `${profile.formatFile} ${shellQuote(realPath(filePath))}`;
   try {
-    const proc = Bun.spawn(bunShellArgs(command), {
-      cwd: effectiveCwd,
-      windowsVerbatimArguments: IS_WIN,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
-    });
-    const killProc = (signal: number | NodeJS.Signals = "SIGTERM") => {
-      try {
-        proc.kill(signal);
-      } catch {}
-    };
-    const softTimer = setTimeout(() => killProc("SIGTERM"), 10_000);
-    const hardTimer = setTimeout(() => killProc("SIGKILL"), 13_000);
-    try {
-      const [, , exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      return exitCode === 0;
-    } finally {
-      clearTimeout(softTimer);
-      clearTimeout(hardTimer);
-    }
+    const result = await runBoundedShell(command, { cwd: effectiveCwd, timeoutMs: 10_000 });
+    return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;
   }

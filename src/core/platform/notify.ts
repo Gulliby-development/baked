@@ -47,8 +47,15 @@ export function notificationCommand(
   return notifySend ? { cmd: notifySend, args: ["--app-name=BAKED", title, body] } : null;
 }
 
+/** True when `BAKED_NO_SYSTEM_NOTIFICATIONS` turns native notifications off (the test suite sets it). */
+export function systemNotificationsDisabled(): boolean {
+  const value = process.env.BAKED_NO_SYSTEM_NOTIFICATIONS?.trim();
+  return !!value && value !== "0";
+}
+
 /** Shows a native notification; resolves whether a notifier ran and exited cleanly. Never rejects. */
 export function showSystemNotification(title: string, body: string): Promise<boolean> {
+  if (systemNotificationsDisabled()) return Promise.resolve(false);
   const command = notificationCommand(title, body);
   if (!command) return Promise.resolve(false);
   return new Promise((resolve) => {

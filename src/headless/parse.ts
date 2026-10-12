@@ -1,6 +1,7 @@
+import { CHAT_EFFORTS } from "../core/llm/provider-options.js";
 import { getAllProviders } from "../core/llm/providers/index.js";
 import { isSandboxMode, type SandboxMode } from "../core/security/sandbox.js";
-import type { BakeMode } from "../types/index.js";
+import type { BakeMode, ChatEffort } from "../types/index.js";
 import { BOLD, EXIT_ERROR, EXIT_OK, RED, RST, VALID_MODES } from "./constants.js";
 import type { HeadlessAction } from "./types.js";
 
@@ -12,6 +13,7 @@ ${BOLD}Usage:${RST}
   baked --headless --events <prompt>                 JSONL event stream
   baked --headless --model <provider/model> <prompt> Override model
   baked --headless --mode <mode> <prompt>            Set mode (default/architect/plan/auto)
+  baked --headless --effort <level> <prompt>         Reasoning effort (default/low/medium/high/xhigh/max)
   baked --headless --max-steps <n> <prompt>          Limit agent steps
   baked --headless --timeout <ms> <prompt>           Abort after timeout
   baked --headless --quiet <prompt>                  Suppress header/footer
@@ -97,6 +99,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
 
   let modelId: string | undefined;
   let mode: BakeMode | undefined;
+  let effort: ChatEffort | undefined;
   let json = false;
   let events = false;
   let quiet = false;
@@ -132,6 +135,15 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
         process.exit(EXIT_ERROR);
       }
       mode = m;
+    } else if ((arg === "--effort" && argv[i + 1]) || arg?.startsWith("--effort=")) {
+      const value = arg === "--effort" ? argv[++i] : arg.slice("--effort=".length);
+      const matched = CHAT_EFFORTS.find((e) => e === value);
+      if (!matched) {
+        process.stderr.write(`${RED()}Error:${RST} Unknown effort "${value}"\n`);
+        process.stderr.write(`Valid: ${CHAT_EFFORTS.join(", ")}\n`);
+        process.exit(EXIT_ERROR);
+      }
+      effort = matched;
     } else if (arg === "--json") {
       json = true;
     } else if (arg === "--events") {
@@ -193,6 +205,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       opts: {
         modelId,
         mode,
+        effort,
         json,
         events,
         quiet,
@@ -226,6 +239,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       prompt,
       modelId,
       mode,
+      effort,
       json,
       events,
       quiet,

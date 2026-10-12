@@ -3,12 +3,15 @@
  * Avoids re-detecting the project profile on every edit.
  */
 
-import { bunShellArgs, IS_WIN } from "../platform/index.js";
+import { IS_WIN } from "../platform/index.js";
 import { realPath } from "../projects/paths.js";
+import { runBoundedShell } from "./bounded-process.js";
 
 // Format command per checkout root; `null` from setFormatCache disables formatting everywhere.
 const formatCommands = new Map<string, string | null>();
 let formatOverride: string | null | undefined;
+
+const AUTO_FORMAT_TIMEOUT_MS = 5_000;
 
 function shellQuote(s: string): string {
   // POSIX: single-quote wrap; Windows cmd.exe: double-quote wrap (no special chars allowed in path-only args).
@@ -50,19 +53,12 @@ export async function autoFormatAfterEdit(filePath: string, cwd?: string): Promi
   // A real path, as in `formatFile`: the formatter sees its working directory as a real path.
   const command = `${cmd} ${shellQuote(realPath(filePath))}`;
   try {
-    const proc = Bun.spawn(bunShellArgs(command), {
+    // A deadline that kills the whole tree: the formatter's own children must not hold the edit.
+    const result = await runBoundedShell(command, {
       cwd: effectiveCwd,
-      windowsVerbatimArguments: IS_WIN,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+      timeoutMs: AUTO_FORMAT_TIMEOUT_MS,
     });
-    const timer = setTimeout(() => proc.kill(), 5_000);
-    await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-    const exitCode = await proc.exited;
-    clearTimeout(timer);
-    return exitCode === 0;
+    return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;
   }

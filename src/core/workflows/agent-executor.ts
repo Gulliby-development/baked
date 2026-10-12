@@ -31,6 +31,7 @@ import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
+import { fixerCommand } from "./check-policy.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
@@ -39,6 +40,7 @@ import type { WorkspaceLeases } from "./leases.js";
 import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { ProcessScope } from "./process-scope.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
+import { settleInterruptedEdits } from "./recovery.js";
 import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
@@ -52,6 +54,7 @@ import {
   type RunPolicy,
   SpecSchema,
 } from "./schemas.js";
+import { type StallSettings, stalledFault, stallSettings, touchProgress } from "./stall.js";
 import {
   AttemptStepController,
   type AttemptUsageRecord,
@@ -100,6 +103,16 @@ function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   );
 }
 
+/** What the stall watchdog of one attempt knows: its progress, its tool in flight, its limits. */
+interface AttemptWatch {
+  settings: StallSettings;
+  lastAt: number;
+  lastTool: string | null;
+  tools: number;
+  deadlines: number;
+  abort(error: Error): void;
+}
+
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
   private readonly ownsRootContext: boolean;
@@ -113,7 +126,61 @@ export class NativeAgentExecutor implements AgentExecutor {
     this.rootContext = rootContext ?? SharedRootContext.forWorkspace(store.workspace, config);
     this.ownsRootContext = !rootContext;
   }
+  /**
+   * Runs one attempt under a stall watchdog: an attempt that journals no model step and no tool
+   * call for `workflows.stall.stepStallMs` is aborted with a `step_stalled` fault, after the
+   * edits it left unsettled are decided from their file hashes. The scheduler then blocks the run
+   * and the service resumes it by itself (see `WorkflowService.drive`).
+   */
   async execute(request: ExecutionRequest): Promise<ExecutionResponse> {
+    const settings = stallSettings(this.config);
+    const stall = new AbortController();
+    const watch: AttemptWatch = {
+      settings,
+      lastAt: Date.now(),
+      lastTool: null,
+      tools: 0,
+      deadlines: 0,
+      abort: (error) => stall.abort(error),
+    };
+    const interval = setInterval(
+      () => {
+        if (watch.tools > 0 || Date.now() - watch.lastAt < settings.stepStallMs) return;
+        stall.abort(
+          stalledFault(
+            `Attempt ${request.attemptId} of ${request.profile.id} made no progress for ${Math.round((Date.now() - watch.lastAt) / 60_000)} min (last tool: ${watch.lastTool ?? "none"})`,
+          ),
+        );
+      },
+      Math.max(1000, Math.min(30_000, Math.floor(settings.stepStallMs / 4))),
+    );
+    interval.unref();
+    try {
+      return await this.runAttempt(
+        { ...request, signal: AbortSignal.any([request.signal, stall.signal]) },
+        watch,
+      );
+    } catch (error) {
+      if (stall.signal.aborted && !request.signal.aborted) {
+        // The edits the stalled call left half-recorded are decided from the files.
+        try {
+          this.store.transaction(() =>
+            settleInterruptedEdits(this.store, request.runId, request.attemptId),
+          );
+        } catch {
+          // A failed settlement leaves the effect for the recovery request.
+        }
+        throw stall.signal.reason;
+      }
+      throw error;
+    } finally {
+      clearInterval(interval);
+    }
+  }
+  private async runAttempt(
+    request: ExecutionRequest,
+    watch: AttemptWatch,
+  ): Promise<ExecutionResponse> {
     // Nothing is spent until the first model step; each finished step raises this record.
     this.store.recordAttemptUsage(request.runId, request.attemptId, 0);
     if (hasToolHooks(this.store.workspace))
@@ -163,8 +230,32 @@ export class NativeAgentExecutor implements AgentExecutor {
         policy,
         request.task,
         root,
+        watch.settings,
+        (tool) => {
+          // Repeated deadlines mean this attempt's tools cannot be used: stop it, do not loop.
+          watch.deadlines++;
+          if (watch.deadlines >= watch.settings.maxToolTimeouts)
+            watch.abort(
+              stalledFault(
+                `${String(watch.deadlines)} tool calls of attempt ${request.attemptId} hit their deadline (last: ${tool})`,
+              ),
+            );
+        },
       );
       const available: ToolSet = {};
+      // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
+      const track = async <T>(name: string, call: () => Promise<T>): Promise<T> => {
+        watch.tools++;
+        watch.lastTool = name;
+        watch.lastAt = Date.now();
+        try {
+          return await call();
+        } finally {
+          watch.tools--;
+          watch.lastAt = Date.now();
+          touchProgress(request.runId);
+        }
+      };
       for (const [name, definition] of Object.entries(rawTools)) {
         if (
           !toolListAllows(request.profile.allowedTools, name) ||
@@ -179,62 +270,63 @@ export class NativeAgentExecutor implements AgentExecutor {
           ...(typeof original.description === "string"
             ? { description: withoutAstEditHint(original.description) }
             : {}),
-          execute: async (input, options) => {
-            const args = input as Record<string, unknown>;
-            const normalized = { ...args };
-            for (const key of ["path", "file", "from", "to"])
-              if (!mcp && typeof args[key] === "string")
-                normalized[key] = workspacePath(root, guard.path(args[key]));
-            if (!mcp && Array.isArray(args.files))
-              normalized.files = args.files.map((f: unknown) =>
-                typeof f === "string"
-                  ? workspacePath(root, guard.path(f))
-                  : f && typeof f === "object" && "path" in f && typeof f.path === "string"
-                    ? { ...f, path: workspacePath(root, guard.path(f.path)) }
-                    : f,
-              );
-            const result = await guard.execute(name, args, async () => {
-              if (name !== "read" || !Array.isArray(normalized.files))
-                return execute(normalized, options);
-              const { files, outlines } = await outlineLargeReads(
-                normalized.files,
-                (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
-              );
-              // The read tool refuses a fourth range read of a file as "already in your
-              // context"; after an outline the agent reads several spans of one file.
-              const fresh = files.length > 0 && files.every(isTargetedRead);
-              const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
-              if (outlines.length === 0) return execute(input, options);
-              const read = files.length
-                ? ((await execute(input, options)) as { output?: unknown })
-                : null;
-              const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
-                .filter(Boolean)
-                .join("\n\n");
-              return { ...(read ?? {}), success: true, output };
-            });
-            if (!["edit_file", "multi_edit"].includes(name)) {
-              const files = await sourceManifest(root, generatedPaths(policy), request.signal);
-              const evidenceId = this.store.transaction(() => {
-                const snapshot = this.store.putSnapshot(request.runId, files);
-                const artifact = this.store.artifact(
-                  request.runId,
-                  "read",
-                  `reads/${request.attemptId}/${crypto.randomUUID()}.json`,
-                  canonical(JSON.parse(JSON.stringify({ tool: name, input, result }))),
+          execute: async (input, options) =>
+            track(name, async () => {
+              const args = input as Record<string, unknown>;
+              const normalized = { ...args };
+              for (const key of ["path", "file", "from", "to"])
+                if (!mcp && typeof args[key] === "string")
+                  normalized[key] = workspacePath(root, guard.path(args[key]));
+              if (!mcp && Array.isArray(args.files))
+                normalized.files = args.files.map((f: unknown) =>
+                  typeof f === "string"
+                    ? workspacePath(root, guard.path(f))
+                    : f && typeof f === "object" && "path" in f && typeof f.path === "string"
+                      ? { ...f, path: workspacePath(root, guard.path(f.path)) }
+                      : f,
                 );
-                return this.store.addEvidence(
-                  request.runId,
-                  "read",
-                  snapshot.id,
-                  artifact.id,
-                  request.attemptId,
+              const result = await guard.execute(name, args, async () => {
+                if (name !== "read" || !Array.isArray(normalized.files))
+                  return execute(normalized, options);
+                const { files, outlines } = await outlineLargeReads(
+                  normalized.files,
+                  (request.task?.writes ?? []).map((w) => workspacePath(root, w.path)),
                 );
+                // The read tool refuses a fourth range read of a file as "already in your
+                // context"; after an outline the agent reads several spans of one file.
+                const fresh = files.length > 0 && files.every(isTargetedRead);
+                const input = { ...normalized, files, ...(fresh ? { fresh: true } : {}) };
+                if (outlines.length === 0) return execute(input, options);
+                const read = files.length
+                  ? ((await execute(input, options)) as { output?: unknown })
+                  : null;
+                const output = [typeof read?.output === "string" ? read.output : "", ...outlines]
+                  .filter(Boolean)
+                  .join("\n\n");
+                return { ...(read ?? {}), success: true, output };
               });
-              return { result, evidenceId };
-            }
-            return result;
-          },
+              if (!["edit_file", "multi_edit"].includes(name)) {
+                const files = await sourceManifest(root, generatedPaths(policy), request.signal);
+                const evidenceId = this.store.transaction(() => {
+                  const snapshot = this.store.putSnapshot(request.runId, files);
+                  const artifact = this.store.artifact(
+                    request.runId,
+                    "read",
+                    `reads/${request.attemptId}/${crypto.randomUUID()}.json`,
+                    canonical(JSON.parse(JSON.stringify({ tool: name, input, result }))),
+                  );
+                  return this.store.addEvidence(
+                    request.runId,
+                    "read",
+                    snapshot.id,
+                    artifact.id,
+                    request.attemptId,
+                  );
+                });
+                return { result, evidenceId };
+              }
+              return result;
+            }),
         });
       }
       for (const [name, host] of Object.entries(request.hostTools ?? {})) {
@@ -364,8 +456,10 @@ export class NativeAgentExecutor implements AgentExecutor {
               // One run per file, each recorded like an edit, so undo and rollback see it.
               for (const path of paths)
                 await guard.execute("edit_file", { path }, async () => {
-                  const executable = fix.executable === "bun" ? process.execPath : fix.executable;
-                  const result = await executeCheckCommand(scope, executable, [...fix.args, path], {
+                  const command = fixerCommand(fix, path);
+                  const executable =
+                    command.executable === "bun" ? process.execPath : command.executable;
+                  const result = await executeCheckCommand(scope, executable, command.args, {
                     cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
                     env: buildCheckEnv(check),
                     timeoutMs: check.timeoutMs,
@@ -530,6 +624,8 @@ export class NativeAgentExecutor implements AgentExecutor {
           providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
           headers: provider.headers,
           onStepEnd: (step) => {
+            watch.lastAt = Date.now();
+            touchProgress(request.runId);
             finished.push(step);
             recordStep(step.usage);
             this.store.recordAttemptUsage(
@@ -539,6 +635,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             );
           },
           prepareStep: ({ stepNumber, steps: done, ...history }) => {
+            watch.lastAt = Date.now();
             request.signal.throwIfAborted();
             // Compaction and the finalize notice are recomputed from the clean history each step.
             const messages = cleanStepMessages(history);

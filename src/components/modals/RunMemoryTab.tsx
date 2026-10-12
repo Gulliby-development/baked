@@ -75,7 +75,14 @@ export function useRunMemory({ cwd, active, flash }: Options) {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
-  const [editing, setEditing] = useState<Editing>(null);
+  const [editing, setEditingState] = useState<Editing>(null);
+  // Keys of a paste or a fast typist arrive before the next render, so each one builds on the
+  // previous key's text, not on the text this render captured.
+  const editingRef = useRef<Editing>(null);
+  const setEditing = useCallback((next: Editing) => {
+    editingRef.current = next;
+    setEditingState(next);
+  }, []);
   const busy = useRef(false);
 
   const run = useCallback(
@@ -108,7 +115,7 @@ export function useRunMemory({ cwd, active, flash }: Options) {
     setCursor(0);
     setEditing(null);
     void run([]);
-  }, [active, run]);
+  }, [active, run, setEditing]);
 
   const rows = runMemoryRows(view, query);
   useEffect(() => {
@@ -117,6 +124,7 @@ export function useRunMemory({ cwd, active, flash }: Options) {
 
   /** Handles a key while the tab is shown; returns false for keys the popup should handle. */
   const handleKey = (evt: KeyEvent): boolean => {
+    const editing = editingRef.current;
     if (editing) {
       if (evt.name === "escape") setEditing(null);
       else if (evt.name === "return") {
