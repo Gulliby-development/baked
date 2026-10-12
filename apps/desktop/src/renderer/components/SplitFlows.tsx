@@ -1,10 +1,17 @@
-/** The flows of a coordinator's split card: what each writes and what it waits for. */
+/** The flows of a coordinator's split card: their task, what each writes and what it waits for. */
 export function SplitFlows({
   prompt,
 }: {
   prompt: {
     mode: "runs" | "initiative";
-    flows: { id: string; title: string; paths: string[]; dependsOn: string[] }[];
+    flows: {
+      id: string;
+      title: string;
+      paths: string[];
+      dependsOn: string[];
+      /** The issue (`owner/name#N`), `new issue` or `local task`; missing from older servers. */
+      task?: string;
+    }[];
   };
 }) {
   return (
@@ -13,6 +20,7 @@ export function SplitFlows({
         <li key={flow.id}>
           <span className="font-semibold">{flow.title}</span>{" "}
           <span className="font-mono text-muted-foreground">{flow.id}</span>
+          {flow.task && <div className="text-[12px]">Task: {flow.task}</div>}
           {flow.paths.length > 0 && (
             <div className="font-mono text-[12px] text-muted-foreground wrap-anywhere">
               {flow.paths.join(", ")}
