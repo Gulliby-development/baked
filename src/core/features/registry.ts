@@ -407,9 +407,9 @@ export const FEATURES: readonly Feature[] = [
     group: "Tools and code intelligence",
     title: "Diagnose LSP, tree-sitter and index health",
     tui: ["/diagnose"],
-    cli: partial(["baked self-check", "baked lsp check"], 413, "no tree-sitter or index check"),
-    api: partial(["/v1/lsp"], 413, "language servers only; no tree-sitter or index check"),
-    desktop: partial(["project/lsp"], 413, "language servers only; no tree-sitter or index check"),
+    cli: ["baked diagnose", "baked lsp check"],
+    api: ["/v1/lsp/diagnose", "/v1/lsp"],
+    desktop: ["project/lsp: Check code intelligence"],
   },
   {
     id: "repo-map-settings",
@@ -715,6 +715,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked usage", "baked workflow usage"],
     api: ["/v1/usage"],
     desktop: ["project/usage"],
+  },
+  {
+    id: "usage-export",
+    group: "Workflow runs",
+    title: "Export usage to Markdown to share",
+    tui: ["/workflow: usage screen, E writes Markdown", "/workflow: usage RUN_ID --format md"],
+    cli: ["baked usage", "baked workflow usage"],
+    api: ["/v1/usage", "/v1/workflow/runs/:id/usage"],
+    desktop: ["project/usage: Export"],
   },
   {
     id: "run-maintenance",

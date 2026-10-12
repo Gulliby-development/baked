@@ -70,7 +70,7 @@ export function runCodexBrowserLogin(
   const promise = (async () => {
     const status = getCodexLoginStatus();
     if (!status.installed) {
-      throw new Error("Codex CLI is not installed. Install Codex first.");
+      throw new Error(status.message);
     }
     if (status.loggedIn) {
       onEvent?.("Codex is already logged in.");

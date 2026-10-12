@@ -10,6 +10,7 @@ import {
 } from "../../client/insights.js";
 import { workflow } from "../../client/workflow.js";
 import { Alert } from "../../components/ui/alert.js";
+import { Button } from "../../components/ui/button.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
@@ -42,7 +43,7 @@ const FRESH = "bg-[var(--accent)]";
 const OUTPUT = "bg-[var(--accent-soft)]";
 const UNSPLIT = "bg-[var(--line-strong)]";
 const PARTIAL = "text-[11px] text-[color:var(--warn)] no-underline";
-type Scope = { kind: "run"; runId: string } | { kind: "days"; days: number };
+export type Scope = { kind: "run"; runId: string } | { kind: "days"; days: number };
 
 /** Runs read one by one when the backend has no project usage summary. */
 const RECENT_RUNS = 20;
@@ -409,6 +410,82 @@ function Figures({ report, source }: { report: UsageReport; source: Source }) {
   );
 }
 
+/** File name an exported usage document is saved under. */
+export function usageFileName(scope: Scope, today = new Date()): string {
+  return scope.kind === "run"
+    ? `baked-usage-${scope.runId.replace(/[^A-Za-z0-9._-]/g, "_")}.md`
+    : `baked-usage-${scope.days}d-${today.toISOString().slice(0, 10)}.md`;
+}
+
+/**
+ * Copies or saves the usage of the chosen range as Markdown, rendered by the backend
+ * (`GET /v1/usage?format=md`, or the run's usage with `format=md`) for the current filters.
+ */
+function ExportUsage({
+  projectKey,
+  scope,
+  filter,
+}: {
+  projectKey: string;
+  scope: Scope;
+  filter: UsageFilter;
+}) {
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = async (): Promise<string | null> => {
+    if (scope.kind === "run") return insights.runUsageMarkdown(projectKey, scope.runId);
+    // The combined implement stage exists only on this screen; the export then covers all stages.
+    const filters = serverFilter(filter) ?? (filter.model !== null ? { model: filter.model } : {});
+    return insights.usageMarkdown(projectKey, {
+      days: scope.days,
+      groupBy: STAGE_MODEL,
+      ...filters,
+    });
+  };
+  const run = async (action: "copy" | "save"): Promise<void> => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const markdown = await load();
+      if (markdown === null) {
+        setNote("This BAKED cannot export usage yet; a newer BAKED can.");
+        return;
+      }
+      if (action === "copy") {
+        await navigator.clipboard.writeText(markdown);
+        setNote("Copied");
+      } else {
+        const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = usageFileName(scope);
+        link.click();
+        URL.revokeObjectURL(url);
+        setNote(null);
+      }
+    } catch (error) {
+      setNote(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="ml-auto flex flex-wrap items-center gap-2">
+      {note && (
+        <span className="text-[12px] text-muted-foreground" role="status">
+          {note}
+        </span>
+      )}
+      <Button variant="secondary" size="md" disabled={busy} onClick={() => void run("copy")}>
+        Copy as Markdown
+      </Button>
+      <Button variant="secondary" size="md" disabled={busy} onClick={() => void run("save")}>
+        Export as .md
+      </Button>
+    </div>
+  );
+}
+
 export function UsageSection({ project, id }: SectionProps) {
   const [scope, setScope] = useState<Scope>(() =>
     id ? { kind: "run", runId: id } : { kind: "days", days: 7 },
@@ -519,6 +596,11 @@ export function UsageSection({ project, id }: SectionProps) {
             ))}
           </select>
         </label>
+        {state.kind === "ready" &&
+          state.data.kind !== "summary" &&
+          !(state.data.kind === "runs" && state.data.fallback) && (
+            <ExportUsage projectKey={project.key} scope={scope} filter={filter} />
+          )}
       </div>
       {scope.kind === "run" && (
         <p className={LEDE}>

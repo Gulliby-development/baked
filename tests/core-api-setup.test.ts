@@ -105,6 +105,13 @@ describe("local API setup and workflow additions", () => {
     expect(planOnly.groups.reduce((sum, g) => sum + g.tokens, 0)).toBe(plan?.tokens ?? -1);
     const host = await get<{ groups: Group[] }>("/v1/usage?model=(host)&groupBy=stage");
     expect(host.groups.every((g) => g.costUsd === 0 && g.unpricedTokens === 0)).toBe(true);
+    const shared = await get<{ markdown: string }>("/v1/usage?groupBy=stage,model&format=md");
+    expect(shared.markdown).toContain("| Stage | Model |");
+    expect(shared.markdown).toContain("| plan |");
+    expect((await call("/v1/usage?format=html")).status).toBe(400);
+    const runShared = await get<{ markdown: string }>(`/v1/workflow/runs/${run.runId}/usage?format=md`);
+    expect(runShared.markdown).toContain(`# BAKED usage of run ${run.runId}`);
+    expect((await call(`/v1/workflow/runs/${run.runId}/usage?format=csv`)).status).toBe(400);
 
     const forked = await post(`/v1/workflow/runs/${run.runId}/fork`, { commandId: newId(), expectedRevision: done.revision });
     expect(forked.status).toBe(200);

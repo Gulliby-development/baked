@@ -28,7 +28,9 @@ const isSnapshot = (value: unknown): value is RunSnapshot =>
 
 const isReport = (value: unknown): value is { runId: string; markdown: string } =>
   !!value && typeof value === "object" && "markdown" in value && typeof value.markdown === "string";
-const isWrittenReport = (value: unknown): value is { runId: string; path: string; bytes: number } =>
+const isWrittenReport = (
+  value: unknown,
+): value is { runId: string; path: string; bytes: number; usage?: true } =>
   !!value && typeof value === "object" && "path" in value && "bytes" in value && "runId" in value;
 
 /** Short chat summary; the panel carries the details. Unknown result shapes stay as JSON. */
@@ -41,7 +43,8 @@ export function formatWorkflowResult(result: unknown): string {
     return `Workflow ${result.featureId}: ${result.status}${reason}.${waiting}\nRun ${result.runId} · /workflow opens the panel.`;
   }
   if (isReport(result)) return result.markdown;
-  if (isWrittenReport(result)) return `Run report written to ${result.path}.`;
+  if (isWrittenReport(result))
+    return `${result.usage ? "Run usage" : "Run report"} written to ${result.path}.`;
   return JSON.stringify(result, null, 2);
 }
 const SHORT_HELP = `
@@ -53,6 +56,7 @@ const SHORT_HELP = `
 /workflow routing    Which model runs each class, role, stage and profile (modelRouting)
 /workflow usage      Tokens and cost of every run over 7, 30 or 90 days, by model, stage or day
 /workflow report ID  The run's report in Markdown (--output FILE writes it)
+/workflow usage ID --format md  The run's tokens and cost in Markdown (--output FILE)
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();
 
 /** The definition a quick task starts with in this project. */
@@ -120,7 +124,13 @@ export function register(map: Map<string, CommandHandler>): void {
       useWorkflowStore.getState().select(runId, ctx.tabMgr.activeTabId);
       useUIStore.getState().openModal("workflow");
     });
-    if (args.command !== "report" && result && typeof result === "object" && "runId" in result) {
+    if (
+      args.command !== "report" &&
+      args.flags.format !== "md" &&
+      result &&
+      typeof result === "object" &&
+      "runId" in result
+    ) {
       useWorkflowStore.getState().select(String(result.runId), ctx.tabMgr.activeTabId);
       useUIStore.getState().openModal("workflow");
     }
