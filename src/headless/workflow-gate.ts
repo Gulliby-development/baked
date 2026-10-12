@@ -99,7 +99,12 @@ export async function executeGateCommand(
       const library = loadGateLibrary(workspace, policy);
       const draft = await draftGate(
         workspace,
-        { text, ...(kind ? { kind: kind as DraftKind } : {}), ...(id ? { id } : {}) },
+        {
+          text,
+          ...(kind ? { kind: kind as DraftKind } : {}),
+          ...(id ? { id } : {}),
+          ...(args.flags["from-criteria"] === true ? { fromCriteria: true } : {}),
+        },
         model ?? configuredDraftModel(config, flag(args, "model")),
         library,
       );

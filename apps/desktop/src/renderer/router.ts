@@ -10,6 +10,7 @@ export const PROJECT_SECTIONS = [
   "graph",
   "git",
   "gates",
+  "workflows",
   "instructions",
   "working-set",
   "run-memory",

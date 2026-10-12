@@ -129,12 +129,14 @@ const flags = new Set([
   "kind",
   "id",
   "save",
+  "from-criteria",
   "at",
   "budget",
 ]);
 const booleanFlags = new Set([
   "all",
   "save",
+  "from-criteria",
   "model-strict",
   "json",
   "events",
@@ -253,7 +255,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   validate: ["file"],
   define: ["from"],
   gates: ["all"],
-  gate: ["text", "kind", "id", "model", "save", "file", "json", "workflow", "at"],
+  gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
   deliver: ["remote", "branch", "draft", "no-pr", "execute", "request", "expected-revision"],
   "discard-worktree": ["expected-revision", "command-id"],
   route: ["workflow", "model", "route", "json"],
@@ -515,7 +517,7 @@ validate (ID | --file FILE)   check a definition against the gate library; exit 
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
 gates                     list the gate library with each gate's source and what it shadows
 gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
-gate new "TEXT" [--kind command|ai-acceptance|human|ai-review] [--id ID] [--model ID] [--save] [--json]
+gate new "TEXT" [--kind command|ai-acceptance|human|ai-review] [--id ID] [--from-criteria] [--model ID] [--save] [--json]
   draft a gate from a sentence: a command gate for an exact check, a terminal AI walk-through
   for a judged one (human and ai-review need no model); prints the draft and what it may do,
   and writes it only with --save

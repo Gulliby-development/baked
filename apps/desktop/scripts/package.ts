@@ -5,6 +5,7 @@
  *
  * The binary (or BAKED_BINARY) is copied to resources/bin; a `deps/` folder next to it, as in the
  * release bundles, goes along so the compiled binary can hydrate its workers and native libraries.
+ * The speech engine and its model are staged into resources/voice (scripts/stage-voice.ts).
  * Installers land in dist/. `--target` replaces the platform's targets from electron-builder.yml,
  * e.g. `--target portable` for a Windows exe that runs without installing.
  */
@@ -60,6 +61,8 @@ const deps = join(dirname(baked), "deps");
 if (existsSync(deps)) cpSync(deps, join(stage, "deps"), { recursive: true });
 else console.warn(`package: no deps/ next to ${baked}; workflows need the bundle's deps folder`);
 
+// The local speech engine for voice input lands in resources/voice.
+run([process.execPath, "scripts/stage-voice.ts"]);
 run([process.execPath, "scripts/build.ts"]);
 
 // Installers carry the repository's version, which is what release tags name.
