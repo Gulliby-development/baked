@@ -60,7 +60,7 @@ bun test tests/feature-parity.test.ts
 | Compact a conversation now | `/compact`, `/session compact` | Not needed: a one-shot run compacts automatically | `/v1/sessions/:id/compact` | `project/chat` |
 | Compaction strategy, thresholds and logs | `/compact settings`, `/compact logs` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Undo and redo a turn with its file edits | `/checkpoint`, `/checkpoint undo`, `/checkpoint redo` +2 | `baked session undo`, `baked session redo` | `/v1/sessions/:id/undo`, `/v1/sessions/:id/redo` | `project/chat` |
-| Checkpoint list and rewind to a checkpoint | `/checkpoint` | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no list | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no checkpoint list | **Gap** [#273](https://github.com/Gulliby-development/baked/issues/273) |
+| Checkpoint list and rewind to a checkpoint | `/checkpoint` | `baked session checkpoints`, `baked session undo` | `/v1/sessions/:id/checkpoints`, `/v1/sessions/:id/undo` | `project/chat` |
 | Fork a session | `/checkpoint fork` | `baked session fork` | `/v1/sessions/:id/fork` | `project/chat` |
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
 | Reasoning effort per chat | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384): set globally in /provider-settings only | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) |
@@ -156,7 +156,6 @@ bun test tests/feature-parity.test.ts
 
 ### Open gaps by issue
 
-- [#273](https://github.com/Gulliby-development/baked/issues/273): Checkpoint list and rewind to a checkpoint
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Diagnose LSP, tree-sitter and index health; Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects

@@ -447,6 +447,25 @@ export function turnCount(state: Transcript): number {
   return state.messages.filter((m) => m.role === "user" && !m.isSteering).length;
 }
 
+/**
+ * The last assistant message of each turn but the latest, by id, with the turn's number: undoing
+ * to that checkpoint keeps the whole turn. Turns are counted as the server counts them, from each
+ * user message that was not sent while working.
+ */
+export function turnEnds(messages: readonly ChatMessage[]): Map<string, number> {
+  const ends = new Map<string, number>();
+  let turn = 0;
+  let last: string | null = null;
+  for (const m of messages) {
+    if (m.role === "user" && !m.isSteering) {
+      if (last !== null) ends.set(last, turn);
+      turn += 1;
+      last = null;
+    } else if (m.role === "assistant" && turn > 0) last = m.id;
+  }
+  return ends;
+}
+
 /** True while a turn runs, waits for a prompt answer, or the session is being compacted. */
 export function isBusy(state: Transcript): boolean {
   return (
