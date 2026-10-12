@@ -71,7 +71,7 @@ import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
 import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
-import { lspRoute } from "./lsp-routes.js";
+import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
 import { progressRoute } from "./progress-routes.js";
@@ -130,6 +130,7 @@ export const CAPABILITIES = [
   "skills-install",
   "mcp",
   "lsp",
+  "lsp-diagnose",
   "custom-commands",
   "settings",
   "git",
@@ -166,6 +167,8 @@ export interface ApiServerOptions {
   settingsSecrets?: SettingsSecretStore;
   /** Language-server lookups and installs; tests pass fakes. */
   lspDeps?: Partial<LspServiceDeps>;
+  /** Replaces the code intelligence health check of `POST /v1/lsp/diagnose` in tests. */
+  lspDiagnose?: LspRouteContext["diagnose"];
   /** Chat sessions; defaults to one over the workspace's sessions with the terminal UI's agent. */
   chat?: ChatService;
   /** Receives one line per background drive failure. Defaults to stderr. */
@@ -783,6 +786,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         workspace: service.workspace,
         start: () => service.rootContext.get(),
         ...(options.lspDeps ? { deps: options.lspDeps } : {}),
+        ...(options.lspDiagnose ? { diagnose: options.lspDiagnose } : {}),
         ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
       (await chatMemoryRoute({ ...ctx, workspace: service.workspace, memory: chatMemory })) ??

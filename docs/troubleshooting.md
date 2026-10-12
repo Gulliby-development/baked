@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic indexing), `/errors` (error log, also `Meta+R`) and, before a workflow, `baked doctor`. In the desktop app, a project's **Diagnostics** page shows the same error log, model events and storage for that project's backend ([desktop app](desktop/app.md#screens)).
+Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic indexing; `baked diagnose` headless), `/errors` (error log, also `Meta+R`) and, before a workflow, `baked doctor`. In the desktop app, a project's **Diagnostics** page shows the same error log, model events and storage for that project's backend ([desktop app](desktop/app.md#screens)).
 
 ## No models in the picker
 

@@ -15,3 +15,14 @@ test("a folder without baked/project.json explains how to set it up", async ({ a
   await expect(page.getByRole("heading", { name: "Working set", level: 1 })).toBeVisible();
   await expect(page.getByText(/This folder has no baked\/project\.json yet/)).toBeVisible();
 });
+
+test("Check code intelligence lists every backend with its probes", async ({ app }) => {
+  const page = await app("#/p/baked/lsp");
+  await page.getByRole("button", { name: "Check code intelligence" }).click();
+  const check = page.getByRole("region", { name: "Code intelligence check" });
+  await expect(check).toContainText("Code intelligence check · typescript");
+  await expect(check).toContainText("tree-sitter");
+  await expect(check).toContainText("Working");
+  await expect(check).toContainText("getDiagnostics —");
+  await expect(page.getByRole("button", { name: "Restart all" })).toBeVisible();
+});
