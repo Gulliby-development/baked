@@ -567,7 +567,7 @@ export class StandaloneLspClient {
 
   /** Workspace root this client is attached to */
   get workspaceRoot(): string {
-    return this.rootUri.replace("file://", "");
+    return this.cwd;
   }
 
   /** Number of documents currently open in this client */

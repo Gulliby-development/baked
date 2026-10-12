@@ -16,6 +16,9 @@ for (const key of ["GITHUB_TOKEN", "GH_TOKEN"]) delete process.env[key];
 process.env.GH_CONFIG_DIR = join(profile, "gh");
 // Looking for the Codex and Claude Code CLIs must not start the developer's login shell.
 process.env.BAKED_LOGIN_SHELL_PATH = "0";
+// Workflow workers raise native notifications when a run waits; a test run must not reach the
+// developer's notification centre. Workers inherit the environment.
+process.env.BAKED_NO_SYSTEM_NOTIFICATIONS = "1";
 
 // Workflow tests drive whole runs with real check processes; on a loaded CI runner they take
 // several seconds, so Bun's 5 s default fails them at random. A preload's setDefaultTimeout
