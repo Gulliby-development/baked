@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import { processTreeAlive } from "../platform/index.js";
 import { canonical } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
+import { DEFAULT_STALL_SETTINGS, silentMs } from "./stall.js";
 import { type LeaseResource, type LeaseRow, newId, WorkflowStore } from "./store.js";
 
 /**
@@ -45,6 +46,24 @@ function blockingExecution(store: WorkflowStore): LeaseRow | null {
   const execution = store.lease("execution");
   return execution && !runInWorktree(store, execution.run_id) ? execution : null;
 }
+
+/**
+ * A lease whose owner stopped renewing because its run showed no progress (`stalledSince` in the
+ * owner identity) may be taken over by another owner once it has been expired this long. The
+ * epoch fences the old owner: its next `assert` fails and it stops writing.
+ */
+export const STALL_TAKEOVER_GRACE_MS = 30_000;
+const stalledOwner = (lease: LeaseRow): boolean => {
+  try {
+    const owner = JSON.parse(lease.process_identity_json) as { stalledSince?: number };
+    return (
+      typeof owner.stalledSince === "number" &&
+      lease.expires_at + STALL_TAKEOVER_GRACE_MS < Date.now()
+    );
+  } catch {
+    return false;
+  }
+};
 
 const identity = {
   pid: process.pid,
@@ -140,6 +159,12 @@ export class WorkspaceLeases {
   private held = new Map<LeaseRow["resource"], LeaseRow>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private lost = new AbortController();
+  /**
+   * A run that journals no progress for this long stops renewing its leases, so a hung but alive
+   * owner expires and another process can take the run over (`workflows.stall.stepStallMs`).
+   */
+  progressWindowMs = Math.ceil(DEFAULT_STALL_SETTINGS.stepStallMs * 1.5);
+  private markedStalled = new Set<LeaseRow["resource"]>();
   /** Leases whose loss stops only the work under them (a task worktree), not the whole owner. */
   private isolated = new Map<LeaseRow["resource"], AbortController>();
   get signal(): AbortSignal {
@@ -174,8 +199,9 @@ export class WorkspaceLeases {
       if (previous?.owner_id === this.owner && previous.run_id !== runId)
         throw new WorkflowFault("WORKSPACE_BUSY", "Another run is executing in this service");
       if (previous && previous.owner_id !== this.owner) {
-        // PID reuse is conservative: a live PID is never taken over on TTL alone.
-        if (leaseOwnerAlive(previous) !== false)
+        // PID reuse is conservative: a live PID is never taken over on TTL alone. The exception
+        // is an owner that stopped renewing because its run made no progress.
+        if (leaseOwnerAlive(previous) !== false && !stalledOwner(previous))
           throw new WorkflowFault(
             "WORKSPACE_BUSY",
             `Workspace ${resource} is owned by ${previous.run_id ?? previous.owner_id}`,
@@ -216,6 +242,25 @@ export class WorkspaceLeases {
     )
       throw new WorkflowFault("WORKSPACE_BUSY", "Workspace lease ownership changed");
   }
+  /**
+   * The row a heartbeat writes: renewed while the lease's run makes progress, otherwise left to
+   * expire after one write that marks the owner as stalled.
+   */
+  private renewal(resource: LeaseRow["resource"], held: LeaseRow): LeaseRow {
+    const stalled = held.run_id !== null && silentMs(held.run_id) > this.progressWindowMs;
+    if (!stalled) {
+      if (this.markedStalled.delete(resource))
+        return {
+          ...held,
+          expires_at: Date.now() + 15000,
+          process_identity_json: canonical(identity),
+        };
+      return { ...held, expires_at: Date.now() + 15000 };
+    }
+    if (this.markedStalled.has(resource)) return held;
+    this.markedStalled.add(resource);
+    return { ...held, process_identity_json: canonical({ ...identity, stalledSince: Date.now() }) };
+  }
   private heartbeat(): void {
     for (const [resource, controller] of this.isolated) {
       const held = this.held.get(resource);
@@ -223,7 +268,7 @@ export class WorkspaceLeases {
       try {
         this.store.transaction(() => {
           this.assert(resource);
-          const renewed = { ...held, expires_at: Date.now() + 15000 };
+          const renewed = this.renewal(resource, held);
           this.store.putLease(renewed);
           this.held.set(resource, renewed);
         });
@@ -239,7 +284,7 @@ export class WorkspaceLeases {
         for (const [resource, held] of this.held) {
           if (this.isolated.has(resource)) continue;
           this.assert(resource);
-          const renewed = { ...held, expires_at: Date.now() + 15000 };
+          const renewed = this.renewal(resource, held);
           this.store.putLease(renewed);
           this.held.set(resource, renewed);
         }
@@ -258,6 +303,7 @@ export class WorkspaceLeases {
     if (held) this.store.releaseLease(resource, this.owner, held.owner_epoch);
     this.held.delete(resource);
     this.isolated.delete(resource);
+    this.markedStalled.delete(resource);
   }
   release(): void {
     if (this.timer) clearInterval(this.timer);
@@ -266,6 +312,7 @@ export class WorkspaceLeases {
       this.store.releaseLease(resource, this.owner, held.owner_epoch);
     this.held.clear();
     this.isolated.clear();
+    this.markedStalled.clear();
     this.lost = new AbortController();
   }
 }

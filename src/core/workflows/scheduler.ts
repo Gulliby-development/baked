@@ -167,6 +167,7 @@ import {
   splitTestTasks,
   withTestDependencies,
 } from "./sizing.js";
+import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import { hasTaskGate, pendingOwners, readyTasks } from "./task-graph.js";
@@ -1368,6 +1369,7 @@ export class WorkflowScheduler {
         );
       });
     } finally {
+      forgetProgress(runId);
       clearInterval(poll);
       clearTimeout(timeout);
       outerSignal.removeEventListener("abort", abort);
