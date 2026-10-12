@@ -109,7 +109,7 @@ export class BakeChatHost implements ChatAgentHost {
       onApproveDestructive: request.onApproveDestructive,
       drainSteering: request.drainSteering,
       sessionId: request.sessionId,
-      ...(brief ? { extraTools: { [BRIEF_TOOL]: briefTool(brief) } } : {}),
+      ...(brief ? { extraTools: { ...request.tools, [BRIEF_TOOL]: briefTool(brief) } } : {}),
     });
     const turnAgent: TurnAgent = agent;
     return { agent: turnAgent, contextWindow: provider.contextWindow };
