@@ -1,4 +1,4 @@
-/** The BAKED line icons on a 24px grid; each is one stroked path. Sources: docs/assets/brand. */
+/** The BAKED line icons on a 24px grid; each is one stroked path. See docs/brand.md. */
 const PATHS = {
   overview: "M3 3h18v18H3zM3 8h18M6 5.5h1M9 5.5h1M7 12h10v5H7z",
   chat: "M3 4h18v12H10l-5 4v-4H3zM7 8.5h10M7 12h6",
@@ -33,9 +33,50 @@ const PATHS = {
   delete: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
   "chevron-right": "M9 5l7 7-7 7",
   "chevron-down": "M5 9l7 7 7-7",
+  // Workflow stages.
+  research:
+    "M12 6.5C10.3 5.2 10 3.2 12 1c2 2.2 1.7 4.2 0 5.5zM12 11.5c-3 0-5-2-5-4 3 0 5 2 5 4zM12 11.5c3 0 5-2 5-4-3 0-5 2-5 4zM12 16.5c-3 0-5-2-5-4 3 0 5 2 5 4zM12 16.5c3 0 5-2 5-4-3 0-5 2-5 4zM12 6.5V23",
+  spec: "M4 3h16v18H4zM8 7.5h8M8 11h5M8 15.5l2 2 4-4",
+  plan: "M2.5 15c0-5.5 4.3-9 9.5-9s9.5 3.5 9.5 9v3h-19zM7 14l3-4.5M11 14l3-4.5M15 14l3-4.5",
+  implement:
+    "M9.5 14.5c-1.5-4.5 1.5-10 6.5-12 4 1.5 6 5 5.5 8-2.5 4-7 5.5-12 4zM9.5 14.5l-7 7M9.5 14.5c3-2.5 6-6.5 8-10M9.5 14.5c4-1 8-3 10.5-6.5",
+  checks: "M10 4a2 2 0 0 1 4 0v10.3a4 4 0 1 1-4 0zM12 9v8M17 6h2M17 9.5h2M17 13h2",
+  review:
+    "M13.5 11c-2.5-2.5-2.5-6.5.5-8.5s6.5-.5 7.5 2-1 6.5-4.5 7.5c-1.5.5-2.5 0-3.5-1zM13.5 11l-10 10",
+  accept:
+    "M8.5 14.5L6.5 22l3-1.2L12 23l2.5-2.2 3 1.2-2-7.5zM5 9a7 7 0 1 0 14 0a7 7 0 1 0 -14 0zM9 9l2 2 4-4",
+  // Status.
+  ok: "M3 3h18v18H3zM7 12l3.5 3.5L17 9",
+  failed: "M3 3h18v18H3zM8 8l8 8M16 8l-8 8",
+  waiting: "M6 3h12v2.5L14 12l4 6.5V21H6v-2.5L10 12 6 5.5zM9 18h6",
+  warning: "M12 2.5L22.5 21h-21zM12 9v6M12 17.5v1.5",
+  running: "M12 3a9 9 0 1 1-9 9M10.8 3a1.2 1.2 0 1 0 2.4 0a1.2 1.2 0 1 0 -2.4 0z",
+  // Chat tools.
+  read: "M2 5h7.5A2.5 2.5 0 0 1 12 7.5V20a2 2 0 0 0-2-2H2zM22 5h-7.5A2.5 2.5 0 0 0 12 7.5V20a2 2 0 0 1 2-2h8z",
+  edit: "M15 3l6 6-12 12H3v-6zM12 6l6 6",
+  shell: "M2 4h20v16H2zM6 9l3 3-3 3M11.5 15H18",
+  search: "M3.5 10a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0zM15 15l6.5 6.5",
+  image: "M3 4h18v16H3zM3 16.5l5-5 4 4 3-3 6 6M14.5 8.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z",
+  fork: "M6 3v5c0 3.5 6 3.5 6 7v6M18 3v5c0 3.5-6 3.5-6 7",
+  rewind: "M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4 3.5V8h4.5M12 8v4l3 2",
+  compact: "M6 9h12v6H6zM1.5 12H6M18 12h4.5M9 9v6M12 9v6M15 9v6",
+  model:
+    "M6 6h12v12H6zM9 2.5V6M12 2.5V6M15 2.5V6M9 18v3.5M12 18v3.5M15 18v3.5M2.5 9H6M2.5 15H6M18 9h3.5M18 15h3.5M9.5 9.5h5v5h-5z",
 } as const;
 
 export type IconName = keyof typeof PATHS;
+
+/**
+ * Block-style parts: the closed shapes that take the accent fill and the hard shadow, and the
+ * open strokes drawn over them. Only icons used in the block style are listed.
+ */
+const BLOCKS = {
+  projects: { fill: PATHS.projects, line: "" },
+  runs: { fill: PATHS.runs, line: "" },
+  chat: { fill: "M3 4h18v12H10l-5 4v-4H3z", line: "M7 8.5h10M7 12h6" },
+} as const;
+
+export type BlockIconName = keyof typeof BLOCKS;
 
 /** A BAKED line icon drawn in the current text colour. */
 export function Icon({
@@ -64,6 +105,39 @@ export function Icon({
       className={className}
     >
       <path d={PATHS[name]} />
+    </svg>
+  );
+}
+
+/**
+ * A BAKED icon in the block style for large places such as empty states: the shape filled with
+ * the accent, an ink outline and a 1.5px hard ink shadow.
+ */
+export function BlockIcon({
+  name,
+  size = 40,
+  className,
+}: {
+  name: BlockIconName;
+  size?: number;
+  className?: string;
+}) {
+  const { fill, line } = BLOCKS[name];
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="-0.5 -0.5 26 26"
+      stroke="var(--ink)"
+      strokeWidth="2"
+      strokeLinecap="square"
+      strokeMiterlimit="3"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d={fill} transform="translate(1.5 1.5)" fill="var(--ink)" />
+      <path d={fill} fill="var(--fill-accent)" />
+      {line && <path d={line} fill="none" />}
     </svg>
   );
 }

@@ -1,6 +1,6 @@
 {
   "name": "@baked/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "description": "BAKED desktop app",
@@ -20,7 +20,8 @@
     "lint:fix": "biome check --write src/ tests/ scripts/",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
-    "e2e": "vite build --config vite.config.ts && playwright test"
+    "e2e": "vite build --config vite.config.ts && playwright test",
+    "e2e:electron": "bun run build && playwright test -c playwright.electron.config.ts"
   },
   "devDependencies": {
     "@base-ui/react": "1.8.0",

@@ -278,7 +278,7 @@ Exists: `GET /v1/projects` (every known folder with counts and `current`), `GET 
 Changing a file a run froze (an instruction file, a gate or a skill) does not pause the run at once. A run that is driving stops at its next step as `blocked` with reason `input_changed`, which `/v1/attention` shows; resuming a waiting or paused run is refused with 409 `INPUT_CHANGED`. To continue with the new text, stage a candidate (`POST /v1/workflow/runs/RUN_ID/candidate` with only `commandId`) and apply it with `revise`; the plan is approved again before the run resumes. `cancel` or `fork` are the other ways out.
 | `GET /v1/config` | | `{global, project, effective, paths: {global, project}}`: both files as stored and the merged config the server runs with. Provider keys live in the secret store, not here, but values the user put in these files themselves (an MCP server's `env`) are returned as written |
 | `PATCH /v1/config` | `{scope: "global" \| "project", set?: object, remove?: string[]}` | as `GET`; `set` replaces top-level keys, `remove` deletes them; the running server uses the new config at once. Model routing, fallbacks, workflow policy (checks, budget presets), default model and mode live here |
-| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| null, keyUrl?, signIn?}]}`; `acceptsKey` is false for providers signed in another way (Copilot, Codex, Claude Code). `signIn` is present for providers that sign in through their own CLI (`claude-code`, `codex`): `{installed, loggedIn, message, command, login: Login \| null}`, where `command` is the terminal command that does the same and `login` the current or last sign-in this server started |
+| `GET /v1/providers` | | `{providers: [{id, name, configured, acceptsKey, source: "env" \| "app" \| "detected" \| null, detectedFrom?, keyUrl?, signIn?}]}`; `acceptsKey` is false for providers signed in another way (Codex, Claude Code). `source` is `detected` when no key is set but a login another tool holds is used, and `detectedFrom` names it: `Copilot IDE login` for `copilot`, `GITHUB_TOKEN`, `GH_TOKEN` or `gh CLI` for `github-models`; a key in the environment or saved by BAKED always wins. `signIn` is present for providers that sign in through their own CLI (`claude-code`, `codex`): `{installed, loggedIn, message, command, login: Login \| null}`, where `command` is the terminal command that does the same and `login` the current or last sign-in this server started |
 | `POST /v1/providers/ID/login` | | 202 `{login: Login}`: starts the CLI's own login (`claude auth login`, or Codex's ChatGPT browser login), which opens the browser on this computer; while one runs, returns it instead of starting another. A CLI that is missing fails at once, one that is already signed in succeeds at once. `Login` is `{provider, state: "running" \| "succeeded" \| "failed" \| "cancelled", lines: string[], url?, error?, startedAt, endedAt?}`: `lines` are the CLI's progress lines (the last 200), `url` the sign-in page it printed or returned. 404 for a provider that does not sign in through a CLI |
 | `GET /v1/providers/ID/login` | | `{login: Login \| null}`; poll it while `state` is `running` |
 | `DELETE /v1/providers/ID/login` | | `{login: Login \| null}`; stops a running sign-in (`state: "cancelled"`) |
@@ -401,6 +401,28 @@ interface GraphView {
 ```
 
 `tone` 0 to 2 cycle over the top-level folders by size and 3 marks tests. `key` is a file in the top 3% by rank. Each edge sums the file links between two visible units; `top` keeps its strongest file pairs. With `typeEdges: false` links into type-heavy files are left out, with `tests: false` test files.
+
+## Progress
+
+Long-running work of the server that someone waits on, from `src/core/progress.ts` (capability `progress`).
+
+| Method and path | Body or query | Result |
+| --- | --- | --- |
+| `GET /v1/progress` | `Accept: application/json` | `{items: ProgressItem[]}`: the work running now |
+| `GET /v1/progress` | `Accept: text/event-stream` | the same list as `event: progress` whenever it changes, first at once |
+
+```ts
+interface ProgressItem {
+  id: string;            // the task for once-per-process work, else a unique id
+  task: "open" | "index" | "run-start";
+  label: string;         // "Opening the project: mapping the codebase", "Indexing files", "Building edges", "Starting the run"
+  done: number | null;   // counted work only: files parsed while indexing
+  total: number | null;
+  startedAt: string;
+}
+```
+
+`open` covers creating the project's shared context (memory, the intelligence worker, tools), which the first chat message, run step or graph request starts. `index` lasts while the repository map scans: a count of files while they are parsed (`RepoMap.onProgress`), then the later phases without a count. `run-start` lasts from a start or resume request until the run is driven. Language server start-up is not reported here; the LSP status endpoints cover it.
 
 ## Git
 

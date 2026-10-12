@@ -5,6 +5,7 @@ import { attentionTitle } from "../../shared/attention.js";
 import type { ProjectAction } from "../../shared/bridge.js";
 import { bridge } from "../client/bridge.js";
 import { CreateProjectDialog } from "../components/CreateProjectDialog.js";
+import { BlockIcon } from "../components/Icon.js";
 import { Alert } from "../components/ui/alert.js";
 import { Button, buttonVariants } from "../components/ui/button.js";
 import {
@@ -366,17 +367,16 @@ export function ProjectsScreen() {
         </Alert>
       )}
       {projects.length === 0 ? (
-        <Empty>
-          <span className="flex flex-col items-center gap-3">
-            No projects yet.
-            <span className={ACTIONS}>
-              <Button variant="primary" size="md" onClick={() => setCreating(true)}>
-                Create project
-              </Button>
-              <Button variant="secondary" size="md" onClick={() => void addFolder()}>
-                Open existing folder…
-              </Button>
-            </span>
+        <Empty className="flex flex-col items-center gap-3">
+          <BlockIcon name="projects" />
+          No projects yet.
+          <span className={ACTIONS}>
+            <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+              Create project
+            </Button>
+            <Button variant="secondary" size="md" onClick={() => void addFolder()}>
+              Open existing folder…
+            </Button>
           </span>
         </Empty>
       ) : shown.length === 0 ? (

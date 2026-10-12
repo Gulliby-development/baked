@@ -83,6 +83,7 @@ const FULL_CAPABILITIES = [
   "chat-memory",
   "images",
   "code-graph",
+  "progress",
   "skills-install",
   "mcp",
   "lsp",
