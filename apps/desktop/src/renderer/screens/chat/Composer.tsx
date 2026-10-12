@@ -53,7 +53,7 @@ export function mentionAtCaret(
 const MENTION_ICONS = { file: "·", directory: "▸", symbol: "ƒ" } as const;
 
 export const EFFORT_LABELS: Record<ChatEffort, string> = {
-  default: "Default effort",
+  default: "Default",
   low: "Low",
   medium: "Medium",
   high: "High",
@@ -110,7 +110,7 @@ function EffortMenu({
             close();
           }}
         >
-          <span>{level === "default" ? "Default" : EFFORT_LABELS[level]}</span>
+          <span>{EFFORT_LABELS[level]}</span>
           {level === "default" ? (
             <span className="text-dim-foreground">The effort set in Settings, if any.</span>
           ) : !levels.includes(level) ? (
@@ -582,7 +582,7 @@ export function Composer({
             label="Reasoning effort"
             up
             buttonLabel={`Reasoning effort: ${EFFORT_LABELS[effort]}`}
-            button={EFFORT_LABELS[effort]}
+            button={`${EFFORT_LABELS[effort]} effort`}
           >
             {(close) => (
               <EffortMenu

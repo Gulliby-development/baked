@@ -63,7 +63,7 @@ bun test tests/feature-parity.test.ts
 | Checkpoint list and rewind to a checkpoint | `/checkpoint` | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no list | Partial [#273](https://github.com/Gulliby-development/baked/issues/273): no checkpoint list | **Gap** [#273](https://github.com/Gulliby-development/baked/issues/273) |
 | Fork a session | `/checkpoint fork` | `baked session fork` | `/v1/sessions/:id/fork` | `project/chat` |
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
-| Reasoning effort per chat | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384): set globally in /provider-settings only | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) | **Gap** [#384](https://github.com/Gulliby-development/baked/issues/384) |
+| Reasoning effort per chat | `/effort` | `--effort` | `/v1/sessions/:id`, `/v1/models` | `project/chat` |
 | Context and cost dashboard for a chat | `/context`, `/context clear`, `/status` | Not needed: --json reports usage of a one-shot run | `/v1/sessions/:id` | `project/chat` |
 
 ### Models and providers
@@ -156,7 +156,6 @@ bun test tests/feature-parity.test.ts
 
 - [#273](https://github.com/Gulliby-development/baked/issues/273): Checkpoint list and rewind to a checkpoint
 - [#374](https://github.com/Gulliby-development/baked/issues/374): Language servers: status, install, enable, restart; Diagnose LSP, tree-sitter and index health
-- [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
 - [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Usage across runs: days, by stage and model; Import, export, gc and redact runs; What waits for me across projects
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)

@@ -29,7 +29,7 @@ type Script = (turn: {
 /** Plays one scripted stream per turn instead of calling a model. */
 class ScriptedHost implements ChatAgentHost {
   scripts: Script[] = [];
-  seen: { modelId: string; mode: string; messages: ModelMessage[] }[] = [];
+  seen: { modelId: string; mode: string; effort: string; messages: ModelMessage[] }[] = [];
   released: string[] = [];
   suggestMentions?: ChatAgentHost["suggestMentions"];
   compact?: (request: CompactionRequest) => Promise<CompactionResponse>;
@@ -39,7 +39,12 @@ class ScriptedHost implements ChatAgentHost {
       contextWindow: 1000,
       agent: {
         stream: async (args: { messages: ModelMessage[]; abortSignal: AbortSignal }) => {
-          this.seen.push({ modelId: request.modelId, mode: request.mode, messages: args.messages });
+          this.seen.push({
+            modelId: request.modelId,
+            mode: request.mode,
+            effort: request.effort,
+            messages: args.messages,
+          });
           return {
             stream: script({ request, signal: args.abortSignal, messages: args.messages }),
             responseMessages: Promise.resolve([]),
@@ -156,6 +161,31 @@ describe("local API chat sessions", () => {
     const { call } = await setup();
     const health = (await (await call("/v1/health")).json()) as { capabilities: string[] };
     expect(health.capabilities).toContain("sessions");
+    expect(health.capabilities).toContain("chat-effort");
+  });
+
+  test("a session keeps its reasoning effort, passes it to each turn and to forks", async () => {
+    const { host, send, post, detail, fixture } = await setup();
+    const created = await post("/v1/sessions", { text: "Hello", effort: "high" });
+    const session = (await created.json()) as SessionDetail;
+    expect(session.effort).toBe("high");
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+    expect(host.seen.at(-1)?.effort).toBe("high");
+
+    const patched = await send("PATCH", `/v1/sessions/${session.id}`, { effort: "low" });
+    expect(await patched.json()).toMatchObject({ effort: "low" });
+    expect((await send("PATCH", `/v1/sessions/${session.id}`, { effort: "extreme" })).status).toBe(400);
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Again" });
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
+    expect(host.seen.at(-1)?.effort).toBe("low");
+
+    const fork = (await (await post(`/v1/sessions/${session.id}/fork`, {})).json()) as SessionDetail;
+    expect(fork.effort).toBe("low");
+    const reloaded = new ChatService({ workspace: fixture.root, config: fixture.service.config, host });
+    expect(reloaded.get(session.id).summary().effort).toBe("low");
+
+    const plain = (await (await post("/v1/sessions", {})).json()) as SessionDetail;
+    expect(plain.effort).toBe("default");
   });
 
   test("mentions answers with the host's @ completions", async () => {

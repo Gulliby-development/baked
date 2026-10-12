@@ -541,6 +541,17 @@ describe("codex app-server native model", () => {
     expect(fake.count("turn/start")).toBe(1);
   });
 
+  test("sends the chat's reasoning effort on the turn", async () => {
+    const { fake, model } = setup();
+    fake.onTurnStart = (threadId) => fake.complete(threadId);
+    await model.doGenerate({
+      prompt: userPrompt,
+      providerOptions: { codex: { reasoningEffort: "xhigh" } },
+    });
+    expect(fake.requests.find((r) => r.method === "turn/start")?.params.effort).toBe("xhigh");
+    expect(buildCodexNativeRequest("gpt-5.5", { prompt: userPrompt }).effort).toBeUndefined();
+  });
+
   test("sends only the new user message as the next turn on the same thread", async () => {
     const { fake, model } = setup();
     const inputs: string[] = [];
