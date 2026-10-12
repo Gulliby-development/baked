@@ -11,11 +11,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { git, gitMode, internalPath, looksSecret, statusPaths } from "./delivery-git.js";
@@ -305,7 +306,7 @@ const BUSY_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
 /**
  * Removes a directory tree, retrying a Windows sharing violation (a build server, an indexer or
  * antivirus still holding a handle) with a short backoff. Returns the last error when it never
- * succeeded; a failure that is not a lock is thrown.
+ * succeeded; a failure that is not a lock is thrown. `maxMs` bounds the whole removal.
  */
 export async function removeDirectory(
   path: string,
@@ -313,11 +314,13 @@ export async function removeDirectory(
     rm?: (path: string) => void;
     attempts?: number;
     delayMs?: number;
+    maxMs?: number;
   } = {},
 ): Promise<Error | null> {
   const rm = options.rm ?? ((target: string) => rmSync(target, { recursive: true, force: true }));
   const attempts = options.attempts ?? 8;
   const delay = options.delayMs ?? 150;
+  const deadline = Date.now() + (options.maxMs ?? 20_000);
   let last: Error | null = null;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
@@ -327,29 +330,78 @@ export async function removeDirectory(
       const code = (error as NodeJS.ErrnoException).code;
       if (!code || !BUSY_CODES.has(code)) throw error;
       last = error as Error;
+      if (Date.now() + delay * (attempt + 1) > deadline) break;
       await new Promise((resolve) => setTimeout(resolve, delay * (attempt + 1)));
     }
   }
   return last;
 }
 
+/** Directory (relative to the project root) that takes locked worktree directories aside. */
+const TRASH = join(".baked", "trash");
+
+/** Deletes what earlier runs moved aside; a directory that is still locked stays for the next call. */
+export function purgeWorktreeTrash(workspace: string): void {
+  const trash = join(workspace, TRASH);
+  if (!existsSync(trash)) return;
+  for (const entry of readdirSync(trash)) {
+    try {
+      rmSync(join(trash, entry), { recursive: true, force: true });
+    } catch {
+      /* still locked */
+    }
+  }
+}
+
+/** Renames a locked directory into the trash so its path is free again; false when that fails too. */
+function moveAside(workspace: string, absolute: string): boolean {
+  try {
+    const trash = join(workspace, TRASH);
+    mkdirSync(trash, { recursive: true });
+    renameSync(absolute, join(trash, `${basename(absolute)}-${Date.now().toString(36)}`));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stops the language servers rooted below `absolute`, bounded in time; never throws. */
+async function stopHolders(absolute: string): Promise<void> {
+  try {
+    const { stopLanguageServersUnder } = await import("../intelligence/instance.js");
+    await Promise.race([
+      stopLanguageServersUnder(absolute),
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  } catch {
+    /* a missing intelligence stack holds nothing */
+  }
+}
+
 /**
- * Removes a task worktree, if present; its edits are integrated or abandoned by then. A directory
- * that stays locked after the retries is left in place and reported in the return value (the run
- * goes on; `removeRunWorktree` and the next creation of the same task worktree remove it later).
+ * Removes a task worktree, if present; its edits are integrated or abandoned by then. Processes
+ * that hold the directory (language servers rooted in it) are stopped first. A directory that
+ * stays locked after the retries is renamed into `.baked/trash` (purged later), so its path is
+ * free for the next worktree; when even that fails it is left in place and reported in the return
+ * value (the run goes on; `removeRunWorktree` removes it later).
  */
 export async function removeTaskWorktree(
   workspace: string,
   path: string,
-  options: Parameters<typeof removeDirectory>[1] = {},
-): Promise<{ removed: boolean; warning?: string }> {
+  options: Parameters<typeof removeDirectory>[1] & {
+    stopHolders?: (path: string) => Promise<void>;
+  } = {},
+): Promise<{ removed: boolean; warning?: string; movedAside?: boolean }> {
   const absolute = join(workspace, path);
+  purgeWorktreeTrash(workspace);
+  await (options.stopHolders ?? stopHolders)(absolute);
   if (existsSync(join(absolute, ".git")))
     await git(workspace, ["worktree", "remove", "--force", absolute]);
   const locked = await removeDirectory(absolute, options);
   await git(workspace, ["worktree", "prune"]);
-  if (locked) return { removed: false, warning: `${path} stays on disk: ${locked.message}` };
-  return { removed: true };
+  if (!locked) return { removed: true };
+  if (moveAside(workspace, absolute)) return { removed: true, movedAside: true };
+  return { removed: false, warning: `${path} stays on disk: ${locked.message}` };
 }
 
 /**
@@ -459,7 +511,10 @@ export async function removeRunWorktree(
         await removeTaskWorktree(workspace, join(dirname(worktree.path), entry));
   if (existsSync(absolute)) await required(workspace, ["worktree", "remove", "--force", absolute]);
   await git(workspace, ["worktree", "prune"]);
-  const left = await removeDirectory(join(workspace, ".baked", "worktrees", runId));
+  const runRoot = join(workspace, ".baked", "worktrees", runId);
+  await stopHolders(runRoot);
+  let left = await removeDirectory(runRoot);
+  if (left && moveAside(workspace, runRoot)) left = null;
   if (left)
     throw new WorkflowFault(
       "INPUT_CHANGED",

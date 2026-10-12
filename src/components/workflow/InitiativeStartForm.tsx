@@ -18,6 +18,7 @@ type FieldId = (typeof FIELDS)[number];
 /** The start form of an initiative: the request, its ID, workflow, shared budget and approval. */
 export function InitiativeStartForm({
   active,
+  initialPrompt = "",
   model,
   workflows,
   defaultWorkflow,
@@ -27,6 +28,8 @@ export function InitiativeStartForm({
   onCancel,
 }: {
   active: boolean;
+  /** Text typed before the form rendered. */
+  initialPrompt?: string;
   /** The chat tab's model; feature runs start with it. */
   model: string | null;
   workflows: string[];
@@ -39,8 +42,10 @@ export function InitiativeStartForm({
 }) {
   const t = useTheme();
   const [focus, setFocus] = useState<FieldId>("prompt");
-  const [prompt, setPrompt] = useState("");
-  const [id, setId] = useState("");
+  const [prompt, setPrompt] = useState(initialPrompt);
+  const [id, setId] = useState(() =>
+    initialPrompt.trim() ? suggestInitiativeId(initialPrompt, taken) : "",
+  );
   const [idTouched, setIdTouched] = useState(false);
   const [workflow, setWorkflow] = useState(defaultWorkflow);
   const [budget, setBudget] = useState("");
