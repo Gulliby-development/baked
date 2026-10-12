@@ -147,8 +147,8 @@ import {
   withTestDependencies,
 } from "./sizing.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import { type LeaseResource, newId, type WorkflowStore } from "./store.js";
-import { hasTaskGate, readyTasks } from "./task-graph.js";
+import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
+import { hasTaskGate, pendingOwners, readyTasks } from "./task-graph.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
@@ -2164,16 +2164,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("STALE_DECISION", "Approved tasks required");
     for (;;) {
       const rows = this.store.tasks(runId);
-      const checking = state.graph.tasks.find((candidate) =>
-        rows.some(
-          (row) =>
-            row.id === candidate.id &&
-            row.status === "implemented" &&
-            !hasTaskGate(row, state.taskGates),
-        ),
-      );
+      const checking = this.checkableTask(state.graph, rows, state);
       const task = checking ?? readyTasks(state.graph, rows, state.taskGates)[0];
-      if (!task) break;
+      if (!task) {
+        // Owners that cannot run leave their waiting tasks checked as they are, and repaired if they fail.
+        if (this.releaseDeferred(state)) continue;
+        break;
+      }
       signal.throwIfAborted();
       await this.implementTask(runId, stepId, state, policy, profiles, signal, task, !!checking);
     }
@@ -2189,6 +2186,38 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("OUTPUT_INVALID", "Task dependencies remain blocked", {
         reason: "dependency_failed",
       });
+  }
+  /**
+   * An implemented task whose check gate is missing and whose check is not deferred: its owners
+   * are done, or it never waited. A task still waiting for its owners is left alone.
+   */
+  private checkableTask(graph: TaskGraph, rows: TaskRow[], state: RuntimeState): Task | undefined {
+    const finished = (id: string): boolean =>
+      rows.some(
+        (r) =>
+          r.id === id &&
+          (r.status === "verified" ||
+            (r.status === "implemented" && hasTaskGate(r, state.taskGates))),
+      );
+    return graph.tasks.find((candidate) => {
+      const waiting = state.deferredChecks[candidate.id];
+      if (waiting?.every(finished)) delete state.deferredChecks[candidate.id];
+      return (
+        !state.deferredChecks[candidate.id] &&
+        rows.some(
+          (row) =>
+            row.id === candidate.id &&
+            row.status === "implemented" &&
+            !hasTaskGate(row, state.taskGates),
+        )
+      );
+    });
+  }
+  /** Ends every wait of a deferred check; true when one was waiting. */
+  private releaseDeferred(state: RuntimeState): boolean {
+    const waiting = Object.keys(state.deferredChecks);
+    for (const id of waiting) delete state.deferredChecks[id];
+    return waiting.length > 0;
   }
   /**
    * Implements one task in the run's own root, or only checks it when `checking` (implemented
@@ -2422,14 +2451,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     for (;;) {
       const rows = this.store.tasks(runId);
       const current = state.graph ?? graph;
-      const checking = current.tasks.find((candidate) =>
-        rows.some(
-          (row) =>
-            row.id === candidate.id &&
-            row.status === "implemented" &&
-            !hasTaskGate(row, state.taskGates),
-        ),
-      );
+      const checking = this.checkableTask(current, rows, state);
       const ready = readyTasks(current, rows, state.taskGates).filter((t) => !lost.has(t.id));
       const single = checking ?? ready.find((t) => t.writes.length === 0);
       signal.throwIfAborted();
@@ -2446,7 +2468,10 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         );
         continue;
       }
-      if (!ready.length) break;
+      if (!ready.length) {
+        if (this.releaseDeferred(state)) continue;
+        break;
+      }
       const plan = planBatch(
         ready,
         policy.maxConcurrentWriters,
@@ -3204,7 +3229,11 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     policy: RunPolicy,
     signal: AbortSignal,
     root: string,
-  ): Promise<{ status: "passed" | "failed" | "inconclusive"; evidenceId: string }> {
+  ): Promise<{
+    status: "passed" | "failed" | "inconclusive";
+    evidenceId: string;
+    output?: string;
+  }> {
     const attempt = this.store.reserve(runId, child, null, 0, policy);
     const checked = await this.checks.run(runId, attempt, check, signal, root);
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
@@ -3220,12 +3249,31 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     state: RuntimeState,
     task: Task,
     check: Check,
-    checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string },
+    checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string },
     taskFailures: Review["findings"],
     checkEvidence: string[],
   ): string | undefined {
     if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
     if (!check.required || checked.status === "passed") return undefined;
+    const owners =
+      checked.status === "failed" && task.origin === "planned" && checked.output
+        ? pendingOwners(
+            state.rootGraph ?? state.graph,
+            this.store.tasks(runId),
+            state.taskGates,
+            task,
+            checked.output,
+          )
+        : [];
+    if (owners.length) {
+      // contrastgrid d372ea22: main.tsx imported App.tsx of a task that had not run, and a repair
+      // agent started for a failure the owner resolves. The check runs again when the owners are done.
+      state.deferredChecks[task.id] = owners;
+      this.store.transaction(() =>
+        this.store.taskStatus(runId, task.id, "implemented", state.snapshotId),
+      );
+      return undefined;
+    }
     this.store.transaction(() =>
       this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
     );
@@ -3268,7 +3316,15 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     taskFailures: Review["findings"],
     checkEvidence: string[],
   ): void {
+    if (state.deferredChecks[task.id] && !taskFailures.length) {
+      this.store.transaction(() => {
+        this.store.finishStep(runId, child, "completed");
+        this.store.saveState(runId, state);
+      });
+      return;
+    }
     if (taskFailures.length) {
+      delete state.deferredChecks[task.id];
       const recorded = this.recordFindings(runId, {
         schemaVersion: 1,
         snapshotHash: state.workspaceHash ?? "",
@@ -4611,7 +4667,7 @@ interface BatchEntry {
 }
 interface WorkerCheck {
   check: Check;
-  checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string };
+  checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string };
 }
 /** How a task worker ended; only `done` is integrated. */
 type WorkerOutcome =
