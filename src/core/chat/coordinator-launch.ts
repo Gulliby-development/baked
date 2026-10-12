@@ -3,6 +3,8 @@
  * brief's `launched` section, which is the link table; `syncLaunched` refreshes each entry's
  * status and tells the coordinator, in its transcript, when an item finishes, fails or waits for a
  * person. Decisions stay on the item: no tool here answers a run's or a session's requests.
+ * Every flow of a split belongs to a task: a GitHub issue it links or creates, or a local task
+ * when the project has no GitHub token.
  */
 import { tool } from "ai";
 import { z } from "zod";
@@ -15,6 +17,7 @@ import {
   MIN_FEATURES,
   planStructureProblems,
 } from "../workflows/initiatives/plan.js";
+import { createIssue, fetchIssue, issueTarget } from "../workflows/issue-source.js";
 import { terminalStates } from "../workflows/state-machine.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
 import type { ProjectStateSource } from "./project-state.js";
@@ -29,14 +32,34 @@ export const LAUNCH_TOOLS = [
 export const DEFAULT_MAX_ACTIVE = 3;
 export const DEFAULT_MAX_TOKENS = 20_000_000;
 
+export type FlowTask = NonNullable<LaunchedEntry["task"]>;
+
+/** Reads and creates the GitHub issues flows belong to. */
+export interface TaskTracker {
+  /** The repository new issues go to, or null when none can be created (no token or remote). */
+  target(): Promise<string | null>;
+  /** The open issue a reference names, as `owner/name#N`. */
+  link(reference: string): Promise<FlowTask>;
+  create(input: { title: string; body: string; parent?: string }): Promise<{
+    task: FlowTask;
+    warning?: string;
+  }>;
+  /** Whether the issue is closed now, or null when it cannot be read. */
+  closed(ref: string): Promise<boolean | null>;
+}
+
 /** Starts runs and initiatives through the server's own start paths. */
 export interface ProjectLauncher {
-  /** `worktree` runs the run in its own Git worktree, so several execute side by side. */
+  /**
+   * `worktree` runs the run in its own Git worktree, so several execute side by side. With
+   * `issue` the run starts from that issue, `prompt` adds to it, and delivery closes it.
+   */
   startRun(input: {
     prompt: string;
     workflow?: string;
     feature?: string;
     worktree?: boolean;
+    issue?: string;
   }): Promise<{ runId: string }>;
   /**
    * With `plan` the initiative skips decomposition; `approveSplit` then approves that split at
@@ -48,6 +71,34 @@ export interface ProjectLauncher {
     plan?: InitiativePlan;
     approveSplit?: boolean;
   }): Promise<{ initiativeId: string }>;
+  /** Issues for flows; without it every flow gets a local task. */
+  tasks?: TaskTracker;
+}
+
+/** Tasks as GitHub issues, read and created with `workflows.delivery.tokenEnv`. */
+export function githubTasks(
+  workspace: string,
+  config: AppConfig,
+  options: { fetch?: typeof fetch; env?: Record<string, string | undefined> } = {},
+): TaskTracker {
+  const asTask = (issue: { repository: string; number: number; url: string; state: string }) => ({
+    ref: `${issue.repository}#${issue.number}`,
+    url: issue.url,
+    state: issue.state === "closed" ? ("closed" as const) : ("open" as const),
+  });
+  return {
+    target: async () => (await issueTarget(workspace, config, options.env))?.repository ?? null,
+    link: async (reference) => asTask(await fetchIssue(workspace, config, reference, options)),
+    create: async (input) => {
+      const { issue, warning } = await createIssue(workspace, config, input, options);
+      return { task: asTask(issue), ...(warning ? { warning } : {}) };
+    },
+    closed: async (ref) =>
+      fetchIssue(workspace, config, ref, options).then(
+        (issue) => issue.state === "closed",
+        () => null,
+      ),
+  };
 }
 
 export function coordinatorLimits(config: AppConfig): { maxActive: number; maxTokens: number } {
@@ -118,6 +169,20 @@ function liveState(
   }
 }
 
+/** A launched entry with its live status, whether it still runs, and the tokens it used. */
+export type LaunchedView = LaunchedEntry & { active: boolean; tokens: number };
+
+/** What the coordinator launched, as it is now; `GET /v1/coordinator/launched`. */
+export function launchedView(
+  chat: ChatService,
+  coordinatorId: string,
+  state: ProjectStateSource | null,
+): LaunchedView[] {
+  return new BriefStore(chat.workspace, coordinatorId)
+    .read()
+    .launched.map((entry) => ({ ...entry, ...liveState(chat, state, entry) }));
+}
+
 /**
  * Refreshes the status of everything the coordinator launched. Returns the notices it added to the
  * coordinator's transcript; a brief edited meanwhile is left for the next call.
@@ -126,19 +191,32 @@ export async function syncLaunched(
   chat: ChatService,
   coordinator: ChatSession,
   state: ProjectStateSource | null,
+  tasks: TaskTracker | null = null,
 ): Promise<string[]> {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const brief = store.read();
   const notices: string[] = [];
   let changed = false;
-  const launched = brief.launched.map((entry) => {
+  const launched: LaunchedEntry[] = [];
+  for (const entry of brief.launched) {
     const { status } = liveState(chat, state, entry);
-    if (status === entry.status) return entry;
-    changed = true;
-    if (NOTEWORTHY.test(status))
-      notices.push(`${entry.kind} ${entry.id}: ${status} (${entry.why})`);
-    return { ...entry, status };
-  });
+    const label = `${entry.kind} ${entry.id}${entry.task ? ` (${entry.task.ref})` : ""}`;
+    let next = entry;
+    if (status !== entry.status) {
+      if (NOTEWORTHY.test(status)) notices.push(`${label}: ${status} (${entry.why})`);
+      next = { ...next, status };
+    }
+    // A completed run's pull request closes its issue when it merges.
+    if (tasks && next.task?.state === "open" && status === "completed") {
+      const closed = await tasks.closed(next.task.ref).catch(() => null);
+      if (closed) {
+        notices.push(`task ${next.task.ref} closed: the pull request of ${label} merged`);
+        next = { ...next, task: { ...next.task, state: "closed" } };
+      }
+    }
+    if (next !== entry) changed = true;
+    launched.push(next);
+  }
   if (!changed) return [];
   try {
     store.write({ ...brief, launched }, brief.revision);
@@ -171,6 +249,19 @@ function overLimit(
 
 const Why = z.string().trim().min(1).max(300).describe("One line on why, kept in the brief");
 
+const IssueRef = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .describe("A GitHub issue URL, owner/name#N or #N");
+
+export const SplitFlowSchema = InitiativeFeatureSchema.extend({
+  issue: IssueRef.optional().describe(
+    "The existing issue this flow does; left out, approving the split creates one",
+  ),
+});
+
 export const SplitInput = z.strictObject({
   id: z
     .string()
@@ -179,7 +270,10 @@ export const SplitInput = z.strictObject({
   title: z.string().trim().min(1).max(200),
   goals: z.array(z.string().trim().min(1).max(4000)).min(1).max(20),
   completionCriteria: z.array(z.string().trim().min(1).max(4000)).min(1).max(30),
-  flows: z.array(InitiativeFeatureSchema).min(2).max(MAX_FEATURES),
+  flows: z.array(SplitFlowSchema).min(2).max(MAX_FEATURES),
+  parentIssue: IssueRef.optional().describe(
+    "The request's own issue; created issues become its sub-issues",
+  ),
   why: Why,
 });
 export type SplitRequest = z.infer<typeof SplitInput>;
@@ -207,7 +301,7 @@ export function splitShape(
     title: split.title,
     goals: split.goals,
     completionCriteria: split.completionCriteria,
-    features: split.flows,
+    features: split.flows.map(({ issue: _issue, ...feature }) => feature),
   };
   const problems = planStructureProblems(plan);
   if (problems.length) return { problem: problems.join("; ") };
@@ -235,8 +329,30 @@ export function splitShape(
   return { mode: "runs", plan };
 }
 
+type SplitFlow = SplitRequest["flows"][number];
+
+/** The body of the issue a split creates for a flow. */
+function flowIssueBody(flow: SplitFlow, split: SplitRequest): string {
+  return [
+    flow.boundary.scope,
+    "",
+    `**Boundary:** ${flow.boundary.paths.map((p) => `\`${p}\``).join(", ") || "not fixed yet"}`,
+    "",
+    `**Contract:** ${flow.contract}`,
+    "",
+    "**Acceptance criteria**",
+    ...split.completionCriteria.map((c) => `- ${c}`),
+    "",
+    `Part of "${split.title}", split by the BAKED coordinator.`,
+  ].join("\n");
+}
+
+/** How the split card names a flow's task before approval. */
+const taskLabel = (task: FlowTask | "new" | "local"): string =>
+  task === "new" ? "new issue" : task === "local" ? "local task" : task.ref;
+
 /** The prompt of one flow's run: its title, scope and contract. */
-function flowPrompt(flow: SplitRequest["flows"][number], split: SplitRequest): string {
+function flowPrompt(flow: SplitFlow, split: SplitRequest): string {
   return [
     flow.title,
     "",
@@ -256,6 +372,14 @@ export function launchTools(
 ) {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const failed = (error: string) => ({ success: false, output: "", error });
+  const tracker = launcher?.tasks ?? null;
+  /** The task an issue reference names; read from GitHub when this server can. */
+  const linkTask = async (reference: string): Promise<FlowTask> => {
+    if (!tracker) return { ref: reference, state: "open" };
+    const task = await tracker.link(reference);
+    if (task.state === "closed") throw new Error(`Issue ${task.ref} is already closed`);
+    return task;
+  };
   /** Runs `start` when the limits allow, then records the launched entry in the brief. */
   const launch = async (
     start: () => Promise<Omit<LaunchedEntry, "why">>,
@@ -321,17 +445,22 @@ export function launchTools(
           .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/)
           .optional()
           .describe("Feature id to group the run under; derived from the prompt when left out"),
+        issue: IssueRef.optional().describe(
+          "Start from this issue: its text is the request, the prompt adds to it, and the pull request closes it",
+        ),
         why: Why,
       }),
-      execute: async ({ prompt, workflow, feature, why }) => {
+      execute: async ({ prompt, workflow, feature, issue, why }) => {
         if (!launcher) return failed("This server cannot start workflow runs");
         return launch(async () => {
+          const task = issue ? await linkTask(issue) : undefined;
           const { runId } = await launcher.startRun({
             prompt,
             ...(workflow ? { workflow } : {}),
             ...(feature ? { feature } : {}),
+            ...(task ? { issue: task.ref } : {}),
           });
-          return { kind: "run", id: runId, status: "started" };
+          return { kind: "run", id: runId, status: "started", ...(task ? { task } : {}) };
         }, why);
       },
     }),
@@ -365,16 +494,31 @@ export function launchTools(
         const adding = shape.mode === "runs" ? split.flows.length : 1;
         const blocked = overLimit(chat, state, store.read().launched, limits, adding);
         if (blocked) return failed(blocked);
-        const digest = hashJson({ id: split.id, mode: shape.mode, plan: shape.plan });
+        // Each flow's task: its own issue, a new one in the origin repository, or a local task.
+        const target = tracker ? await tracker.target().catch(() => null) : null;
+        const planned: (FlowTask | "new" | "local")[] = [];
+        for (const flow of split.flows)
+          try {
+            planned.push(flow.issue ? await linkTask(flow.issue) : target ? "new" : "local");
+          } catch (err) {
+            return failed(`${flow.id}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        const digest = hashJson({
+          id: split.id,
+          mode: shape.mode,
+          plan: shape.plan,
+          tasks: planned.map(taskLabel),
+        });
         const approved = await coordinator.proposeSplit({
           kind: "split",
           title: split.title,
           mode: shape.mode,
-          flows: split.flows.map((flow) => ({
+          flows: split.flows.map((flow, i) => ({
             id: flow.id,
             title: flow.title,
             paths: flow.boundary.paths,
             dependsOn: flow.dependsOn,
+            task: taskLabel(planned[i] ?? "local"),
           })),
           digest,
         });
@@ -388,6 +532,32 @@ export function launchTools(
         }
         const entries: LaunchedEntry[] = [];
         const errors: string[] = [];
+        const notes: string[] = [];
+        const tasks: FlowTask[] = [];
+        for (const [i, flow] of split.flows.entries()) {
+          const plan = planned[i] ?? "local";
+          if (plan === "local" || plan === "new") {
+            const local: FlowTask = { ref: `local:${split.id}/${flow.id}`, state: "local" };
+            if (plan === "local" || !tracker) {
+              tasks.push(local);
+              continue;
+            }
+            try {
+              const created = await tracker.create({
+                title: flow.title,
+                body: flowIssueBody(flow, split),
+                ...(split.parentIssue ? { parent: split.parentIssue } : {}),
+              });
+              tasks.push(created.task);
+              if (created.warning) notes.push(created.warning);
+            } catch (err) {
+              tasks.push(local);
+              notes.push(
+                `${flow.id} has a local task: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          } else tasks.push(plan);
+        }
         if (shape.mode === "initiative")
           try {
             const { initiativeId } = await launcher.startInitiative({
@@ -400,17 +570,20 @@ export function launchTools(
               kind: "initiative",
               id: initiativeId,
               status: "started",
-              why: split.why,
+              why: `${split.why}; tasks ${tasks.map((t) => t.ref).join(", ")}`.slice(0, 1000),
             });
           } catch (err) {
             errors.push(err instanceof Error ? err.message : String(err));
           }
         else
-          for (const flow of split.flows)
+          for (const [i, flow] of split.flows.entries())
             try {
+              const task = tasks[i];
+              const issue = task && task.state !== "local" ? task.ref : undefined;
               const { runId } = await launcher.startRun({
                 prompt: flowPrompt(flow, split),
-                feature: `${split.id}-${flow.id}`.slice(0, 96),
+                // From an issue the run is named after it, so reruns of the task group together.
+                ...(issue ? { issue } : { feature: `${split.id}-${flow.id}`.slice(0, 96) }),
                 worktree: true,
               });
               entries.push({
@@ -418,6 +591,7 @@ export function launchTools(
                 id: runId,
                 status: "started",
                 why: `${flow.title} (${split.id})`,
+                ...(task ? { task } : {}),
               });
             } catch (err) {
               errors.push(`${flow.id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -427,10 +601,12 @@ export function launchTools(
           decisions: [...brief.decisions, decided],
           launched: [...brief.launched, ...entries],
         }));
-        const started = entries.map((e) => `${e.kind} ${e.id}`).join(", ") || "nothing";
+        const started =
+          entries.map((e) => `${e.kind} ${e.id}${e.task ? ` for ${e.task.ref}` : ""}`).join(", ") ||
+          "nothing";
         return {
           success: errors.length === 0,
-          output: `The user approved the split. Started ${started}. Each run stops at its own approval; you get a note here as they finish or wait.`,
+          output: `The user approved the split. Started ${started}. Tasks: ${tasks.map((t) => t.url ?? t.ref).join(", ")}.${notes.length ? ` Note: ${notes.join("; ")}.` : ""} Each run stops at its own approval; you get a note here as they finish or wait, and when a task's pull request merges.`,
           ...(errors.length ? { error: `Not started: ${errors.join("; ")}` } : {}),
         };
       },

@@ -15,6 +15,7 @@ import type {
   StoredImage,
   ToolCall,
 } from "./chat.js";
+import type { LaunchedView, ProjectBrief } from "./coordinator.js";
 import { type MockRoute, type MockStream, response } from "./mock-routes.js";
 
 /**
@@ -22,6 +23,7 @@ import { type MockRoute, type MockStream, response } from "./mock-routes.js";
  * conversation like the mockup, and a scripted reply to every message that streams text, reasoning
  * and tool calls and waits for an approval and a question like a real turn. In plan mode the
  * reply proposes a plan and waits for its review; an accepted plan runs in a turn of its own.
+ * The project coordinator answers with a split card and records what it launches in its brief.
  */
 
 const MINUTE = 60_000;
@@ -36,6 +38,8 @@ interface MockSession {
   queue: string[];
   /** Turns an undo dropped, oldest first, with their messages. */
   undone?: ChatMessage[][];
+  /** The project coordinator, left out of the session list. */
+  coordinator?: boolean;
 }
 
 interface MockTurn {
@@ -438,6 +442,119 @@ async function say(
   steer(session, turn);
 }
 
+/** Each project's coordinator: its session and brief. */
+const coordinators = new Map<string, { session: MockSession; brief: ProjectBrief }>();
+
+function mockBrief(): ProjectBrief {
+  return {
+    revision: 1,
+    updatedAt: Date.now() - 30 * MINUTE,
+    decisions: ["Retries are counted per model, not per request"],
+    conventions: ["Every provider change ships with a router test"],
+    openQuestions: [],
+    launched: [
+      {
+        kind: "run",
+        id: "run-usage-totals",
+        why: "Usage totals per model (usage)",
+        status: "waiting: approval",
+        task: {
+          ref: "acme/baked#212",
+          url: "https://github.com/acme/baked/issues/212",
+          state: "open",
+        },
+      },
+    ],
+  };
+}
+
+function launchedNow(brief: ProjectBrief): LaunchedView[] {
+  return brief.launched.map((entry, i) => ({
+    ...entry,
+    active: !/^(completed|done|failed|cancelled)/.test(entry.status),
+    tokens: 120_000 * (i + 1),
+  }));
+}
+
+/** The coordinator's turn: proposes splitting the request and launches it when approved. */
+async function coordinatorScript(session: MockSession, turn: MockTurn, text: string) {
+  const entry = coordinators.get(session.key);
+  await say(
+    session,
+    turn,
+    "This touches the API and the screen separately, so they can run in parallel.",
+    "reasoning",
+  );
+  await say(session, turn, "I'd split this into two flows that write different folders.\n\n");
+  const approved = await ask(session, turn, {
+    id: nextId("prompt"),
+    createdAt: Date.now(),
+    kind: "split",
+    title: text.length > 60 ? `${text.slice(0, 57)}…` : text,
+    mode: "runs",
+    flows: [
+      {
+        id: "api",
+        title: "API endpoint",
+        paths: ["src/core/api/**"],
+        dependsOn: [],
+        task: "new issue",
+      },
+      {
+        id: "ui",
+        title: "Desktop screen",
+        paths: ["apps/desktop/src/**"],
+        dependsOn: [],
+        task: "acme/baked#120",
+      },
+    ],
+    digest: "d".repeat(64),
+  });
+  if (approved !== true || !entry) {
+    await say(
+      session,
+      turn,
+      "Okay, nothing started. Tell me what to change and I'll propose again.",
+    );
+    return;
+  }
+  entry.brief = {
+    ...entry.brief,
+    revision: entry.brief.revision + 1,
+    updatedAt: Date.now(),
+    launched: [
+      ...entry.brief.launched,
+      {
+        kind: "run",
+        id: nextId("run"),
+        why: "API endpoint (split)",
+        status: "started",
+        task: {
+          ref: "acme/baked#231",
+          url: "https://github.com/acme/baked/issues/231",
+          state: "open",
+        },
+      },
+      {
+        kind: "run",
+        id: nextId("run"),
+        why: "Desktop screen (split)",
+        status: "started",
+        task: {
+          ref: "acme/baked#120",
+          url: "https://github.com/acme/baked/issues/120",
+          state: "open",
+        },
+      },
+    ],
+  };
+  await say(
+    session,
+    turn,
+    "Started both runs, for #231 (new) and #120. Each stops at its own approval.",
+  );
+}
+
 function steer(session: MockSession, turn: MockTurn): void {
   if (session.queue.length === 0) return;
   const text = session.queue.splice(0).join("\n\n");
@@ -656,6 +773,7 @@ async function startTurn(
     let choice: PlanChoice | null = null;
     try {
       if (executing) await executeScript(session, turn);
+      else if (session.coordinator) await coordinatorScript(session, turn, text);
       else if (session.summary.mode === "plan") choice = await planScript(session, turn, text);
       else await script(session, turn, text);
     } catch (error) {
@@ -873,11 +991,44 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
         })),
       },
     });
+  if (path === "/v1/coordinator" && (method === "GET" || method === "POST")) {
+    let entry = coordinators.get(key);
+    if (!entry && method === "GET")
+      return response(404, { error: { code: "NOT_FOUND", message: "No coordinator yet" } });
+    if (!entry) {
+      const session = create(key, { title: "Coordinator", mode: "architect" });
+      session.coordinator = true;
+      entry = { session, brief: mockBrief() };
+      coordinators.set(key, entry);
+    }
+    return response(200, detail(entry.session));
+  }
+  if (path.startsWith("/v1/coordinator/")) {
+    const entry = coordinators.get(key);
+    if (!entry)
+      return response(404, { error: { code: "NOT_FOUND", message: "No coordinator yet" } });
+    if (path === "/v1/coordinator/launched" && method === "GET")
+      return response(200, { launched: launchedNow(entry.brief) });
+    if (path === "/v1/coordinator/brief" && method === "GET") return response(200, entry.brief);
+    if (path === "/v1/coordinator/brief" && method === "PUT") {
+      const { expectedRevision, ...content } = (body ?? {}) as Omit<
+        ProjectBrief,
+        "revision" | "updatedAt"
+      > & { expectedRevision: number };
+      if (expectedRevision !== entry.brief.revision)
+        return response(409, {
+          error: { code: "STALE_REVISION", message: "The brief changed since it was read" },
+        });
+      entry.brief = { ...content, revision: entry.brief.revision + 1, updatedAt: Date.now() };
+      return response(200, entry.brief);
+    }
+    return undefined;
+  }
   if (path === "/v1/sessions") {
     if (method === "GET") {
       const limit = Number(query.get("limit") ?? 50);
       const list = [...sessions.values()]
-        .filter((s) => s.key === key)
+        .filter((s) => s.key === key && !s.coordinator)
         .map((s) => ({ ...s.summary, state: stateOf(s) }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, limit);
