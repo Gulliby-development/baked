@@ -11,7 +11,11 @@ import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
-import { appendCorrections, failedCheckFindings } from "../verification/convergence.js";
+import {
+  appendCorrections,
+  failedCheckFindings,
+  pathsInOutput,
+} from "../verification/convergence.js";
 import {
   acceptResidual,
   assumeDecision,
@@ -103,6 +107,7 @@ import {
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
   withDerivedRequirements,
+  withModuleDependencies,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
@@ -228,11 +233,13 @@ function planGraph(
 ): TaskGraph {
   return withCoveringChecks(
     withTestDependencies(
-      withDerivedRequirements(spec, {
-        ...plan.taskGraph,
-        specHash: hashJson(spec),
-        planHash: hashBytes(plan.markdown),
-      }),
+      withModuleDependencies(
+        withDerivedRequirements(spec, {
+          ...plan.taskGraph,
+          specHash: hashJson(spec),
+          planHash: hashBytes(plan.markdown),
+        }),
+      ),
     ),
     policy,
   );
@@ -1866,6 +1873,48 @@ export class WorkflowScheduler {
       // An attempt that used its steps without submitting and changed nothing is repeated once
       // with half again as many steps; the same cap would repeat the same experiment (tasks grow
       // the same way through `taskSteps`).
+      // A stage agent (not a task: tasks have their own restart) that ended in prose the format
+      // correction could not turn into a result, and changed nothing, is repeated once in a
+      // fresh session that is shown its prose ending.
+      if (
+        error instanceof WorkflowFault &&
+        error.details.reason === "prose_end" &&
+        !task &&
+        !placement.stepRetry &&
+        !signal.aborted &&
+        !wrote
+      ) {
+        const prose = typeof error.details.prose === "string" ? error.details.prose : "";
+        const retryExtra =
+          extra && typeof extra === "object" && !Array.isArray(extra)
+            ? {
+                ...extra,
+                previousAttempt: `Your previous attempt ended with this text instead of calling submit_result, and was discarded: ${JSON.stringify(prose.slice(0, 800))}. This time end by calling submit_result with the complete result.`,
+              }
+            : extra;
+        return this.call(
+          runId,
+          stepId,
+          state,
+          policy,
+          stageProfile,
+          retryExtra,
+          signal,
+          task,
+          0,
+          validate,
+          limits,
+          hostTools,
+          {
+            ...(placement.root ? { root: placement.root } : {}),
+            ...(fallbackIndex ? { fallbackIndex } : {}),
+            ...(placement.primaryError !== undefined
+              ? { primaryError: placement.primaryError }
+              : {}),
+            stepRetry: true,
+          },
+        );
+      }
       if (
         error instanceof WorkflowFault &&
         error.details.reason === "no_submission" &&
@@ -3722,8 +3771,28 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
     );
     if (checked.status === "inconclusive") return check.id;
+    // Files the output names that this task may not write: a repair of the task gets the ones
+    // the run's other tasks own (commitbump cd842f0f: fmt of tests/docs.rs failed on src/*.rs).
+    const rootTasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    const named = checked.output ? pathsInOutput(checked.output, rootTasks) : [];
+    const outside = named.filter((path) => !task.writes.some((w) => w.path === path));
+    const owned = outside.filter((path) =>
+      rootTasks.some(
+        (t) => t.profileId === task.profileId && t.writes.some((w) => w.path === path),
+      ),
+    );
+    // Every file the output names is one this task cannot get write access to: a repair would
+    // end "outside this task's approved write scope" after attempts that change nothing.
+    if (named.length && outside.length === named.length && !owned.length)
+      throw new WorkflowFault(
+        "RECOVERY_REQUIRED",
+        `out_of_scope_failure: check ${check.id} fails on ${outside.slice(0, 5).join(", ")}, which ${task.id} may not write and no task of its profile owns (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
+        { reason: "no_progress" },
+      );
+    const findingId = newId();
+    if (owned.length) state.repairScope[findingId] = owned;
     taskFailures.push({
-      id: newId(),
+      id: findingId,
       kind: "correctness",
       severity: "high",
       requirementIds: task.requirementIds,
@@ -3733,7 +3802,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       evidenceIds: [checked.evidenceId],
       claim: `Task ${task.id} required check ${check.id} failed`,
       impact: "Dependent tasks cannot run",
-      suggestedFix: `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
+      suggestedFix: owned.length
+        ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
+        : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
     return undefined;
   }

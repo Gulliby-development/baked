@@ -294,6 +294,34 @@ export interface CompactControl {
   disabled: string | null;
 }
 
+/** Watch files in the header: saved `baked!` and `baked?` comments start turns in this chat. */
+export interface WatchControl {
+  on: boolean;
+  toggle: () => void;
+  /** The tooltip: what watching does, or where the watch is now. */
+  title: string;
+  disabled: boolean;
+}
+
+function WatchChip({ watch }: { watch: WatchControl }) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        REWIND_CHIP,
+        watch.on && "bg-main text-main-foreground hover:bg-main hover:text-main-foreground",
+      )}
+      aria-pressed={watch.on}
+      disabled={watch.disabled}
+      title={watch.title}
+      onClick={watch.toggle}
+    >
+      <Icon name="eye" size={13} />
+      {watch.on ? "Watching files" : "Watch files"}
+    </button>
+  );
+}
+
 /** Undo and Redo in the header; each `disabled` says why the action cannot run, if it cannot. */
 export interface RewindControl {
   undo: () => void;
@@ -575,6 +603,7 @@ export function ChatHeader({
   diff,
   compact,
   rewind,
+  watch,
   manage,
   coordinator = false,
 }: {
@@ -591,6 +620,7 @@ export function ChatHeader({
   diff?: SessionDiffStats | null;
   compact?: CompactControl;
   rewind?: RewindControl;
+  watch?: WatchControl;
   manage?: ChatManageControl;
 }) {
   return (
@@ -622,6 +652,7 @@ export function ChatHeader({
         {diff ? <DiffChip diff={diff} /> : filesEdited && <FilesChip files={filesEdited} />}
         <WorkingSetChip project={project} />
         {rewind && <RewindChips rewind={rewind} />}
+        {watch && <WatchChip watch={watch} />}
         {sessionId !== null && !coordinator && (
           <a className={CHIP} href={projectHref(project.key, "chat", "new")}>
             <Icon name="new" size={13} />
