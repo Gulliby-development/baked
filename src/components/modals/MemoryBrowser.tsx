@@ -8,7 +8,7 @@ import { fitPopupHeight, fitPopupWidth, popupContentWidth } from "../ui/popup-ge
  *   - Cleanup   : Quick (dupes + dead refs) and Stale candidates
  *   - Runs      : project memory new workflow runs read (RunMemoryTab.tsx)
  *
- * Per-row actions: Pin/Unpin, Soft-delete / Restore.
+ * Per-row actions: Pin/Unpin, Reword (All tab), Soft-delete / Restore.
  * Cleanup tab: bulk review with Soft-delete / Pin / Skip per candidate.
  */
 
@@ -21,6 +21,7 @@ import {
   type CleanupAction,
   type CleanupCandidate,
   chatMemoryCleanup,
+  editChatMemory,
 } from "../../core/memory/browse.js";
 import type { ScopedMemory } from "../../core/memory/manager.js";
 import type { MemoryRecord, MemoryScope } from "../../core/memory/types.js";
@@ -184,6 +185,8 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
     message: string;
   } | null>(null);
   const [confirmPurge, setConfirmPurge] = useState(false);
+  // Rewording a memory's summary on the All tab (Ctrl+E); details, category and topics are kept.
+  const [rewording, setRewording] = useState<{ row: MemoryRow; text: string } | null>(null);
 
   // Cleanup mode: all candidates loaded once when entering tab; user marks
   // each row's intended action. Apply all on Enter on "✓ Apply" row.
@@ -230,6 +233,7 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
     setQuery("");
     setCursor(0);
     setConfirmPurge(false);
+    setRewording(null);
     setFlash(null);
     setSettingsModal(null);
     if (tab === "Cleanup") refreshCleanup();
@@ -342,6 +346,18 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
     bumpGen();
   };
 
+  const saveReword = (row: MemoryRow, text: string) => {
+    const summary = text.trim();
+    if (!summary) {
+      popFlash("err", "Summary must not be empty");
+      return;
+    }
+    const found = editChatMemory(memMgr, { action: "edit", scope: row.scope, id: row.id, summary });
+    popFlash(found ? "ok" : "err", found ? `Reworded ${row.id.slice(0, 8)}` : "Memory not found");
+    setRewording(null);
+    bumpGen();
+  };
+
   const cycleCleanupAction = (id: string) => {
     setCleanupSelected((prev) => {
       const next = new Map(prev);
@@ -422,6 +438,22 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
         const opt = opts[cursorRef.current];
         if (opt) applySettingsModal(opt.value);
         return;
+      }
+      return;
+    }
+
+    if (rewording) {
+      // Functional updates: a pasted or fast-typed burst arrives before the next render.
+      const change = (edit: (text: string) => string) =>
+        setRewording((r) => (r ? { ...r, text: edit(r.text) } : r));
+      if (evt.name === "escape") setRewording(null);
+      else if (evt.name === "return") saveReword(rewording.row, rewording.text);
+      else if (evt.name === "backspace" || evt.name === "delete") change((x) => x.slice(0, -1));
+      else if (evt.ctrl && evt.name === "u") change(() => "");
+      else {
+        const ch = evt.sequence;
+        if (typeof ch === "string" && ch.length === 1 && ch >= " " && !evt.ctrl && !evt.meta)
+          change((x) => x + ch);
       }
       return;
     }
@@ -524,6 +556,10 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
     }
     if (evt.ctrl && evt.name === "p") {
       if (row) togglePin(row);
+      return;
+    }
+    if (evt.ctrl && evt.name === "e" && tab === "All") {
+      if (row) setRewording({ row, text: row.record.summary });
       return;
     }
     if (evt.ctrl && evt.name === "d") {
@@ -629,7 +665,12 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
     baseHints = [
       { key: "↑↓", label: "nav" },
       { key: "Enter", label: "pin" },
-      ...(tab === "Hidden" ? [{ key: "^R", label: "restore" }] : [{ key: "^D", label: "hide" }]),
+      ...(tab === "Hidden"
+        ? [{ key: "^R", label: "restore" }]
+        : [
+            { key: "^E", label: "reword" },
+            { key: "^D", label: "hide" },
+          ]),
       { key: "^X", label: "purge all" },
       { key: "Tab", label: "panel" },
       { key: "Esc", label: "close" },
@@ -693,19 +734,25 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
       tabs={sidebarTabs}
       activeTab={tab}
       onTabChange={(next) => {
-        if (settingsModal || confirmPurge || runMemory.editing) return;
+        if (settingsModal || confirmPurge || rewording || runMemory.editing) return;
         setTab(next);
         setCursor(0);
         setQuery("");
       }}
       sidebarWidth={SIDEBAR_W}
       footerHints={
-        confirmPurge
+        rewording
           ? [
-              { key: "y", label: "confirm" },
-              { key: "any", label: "cancel" },
+              { key: "Enter", label: "save" },
+              { key: "^U", label: "clear" },
+              { key: "Esc", label: "cancel" },
             ]
-          : baseHints
+          : confirmPurge
+            ? [
+                { key: "y", label: "confirm" },
+                { key: "any", label: "cancel" },
+              ]
+            : baseHints
       }
       flash={flash}
     >
@@ -756,23 +803,34 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
           </>
         ) : (
           <>
-            <Search
-              value={query}
-              focused={!confirmPurge}
-              placeholder={tab === "Hidden" ? "Filter hidden…" : "Filter by summary, topic, scope…"}
-              count={
-                query
-                  ? `${String(filteredRows.length)} / ${String(tab === "Hidden" ? hiddenRows.length : allRows.length)}`
-                  : undefined
-              }
-            />
+            {rewording ? (
+              <Search
+                value={rewording.text}
+                focused
+                icon="edit"
+                placeholder="Reword the memory's summary…"
+              />
+            ) : (
+              <Search
+                value={query}
+                focused={!confirmPurge}
+                placeholder={
+                  tab === "Hidden" ? "Filter hidden…" : "Filter by summary, topic, scope…"
+                }
+                count={
+                  query
+                    ? `${String(filteredRows.length)} / ${String(tab === "Hidden" ? hiddenRows.length : allRows.length)}`
+                    : undefined
+                }
+              />
+            )}
             <VSpacer />
             <Table
               columns={COLUMNS}
               rows={filteredRows}
               width={contentW}
               selectedIndex={confirmPurge ? -1 : cursor}
-              focused={!confirmPurge}
+              focused={!confirmPurge && !rewording}
               maxRows={Math.max(5, popupH - 14)}
               emptyMessage={
                 query
