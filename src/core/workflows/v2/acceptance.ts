@@ -16,6 +16,37 @@ export const AssertionId = z.string().regex(/^A[1-9][0-9]?$/);
 export const expectationIds = (gate: AcceptanceGateDefinition): string[] =>
   gate.acceptance.scenario.expectations.map((_, index) => `E${index + 1}`);
 
+/** At most this many expectations reach the walk-through, the declared ones first. */
+export const MAX_EXPECTATIONS = 30;
+
+/**
+ * The scenario a gate walks in a run: its declared expectations, then, with `fromCriteria`, one
+ * per manual acceptance criterion of the run's spec, named by the criterion ID so a verdict points
+ * back to it. Without a spec only the declared expectations remain.
+ */
+export function withCriteria(
+  gate: AcceptanceGateDefinition,
+  spec: {
+    criteria: { id: string; given: string; when: string; then: string; method: string }[];
+  } | null,
+): AcceptanceGateDefinition {
+  const scenario = gate.acceptance.scenario;
+  if (scenario.fromCriteria !== "manual" || !spec) return gate;
+  const criteria = spec.criteria
+    .filter((c) => c.method === "manual")
+    .map((c) => `${c.id}: given ${c.given}, when ${c.when}, then ${c.then}`);
+  return {
+    ...gate,
+    acceptance: {
+      ...gate.acceptance,
+      scenario: {
+        ...scenario,
+        expectations: [...scenario.expectations, ...criteria].slice(0, MAX_EXPECTATIONS),
+      },
+    },
+  };
+}
+
 /** What the walk-through model returns: a verdict per expectation and the steps that show it. */
 export const AcceptanceWalkSchema = z
   .object({
