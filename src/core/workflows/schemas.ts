@@ -931,6 +931,11 @@ export interface RunSnapshot {
   activeMs: number;
   estimatedCostUsd: number | null;
   verificationState: "not_verified" | "current" | "stale" | "invalid";
+  /**
+   * Findings the run is accepted with (known limitations): a completed run with any is not
+   * clean. The exit code stays 0.
+   */
+  limitations: { count: number; ids: string[] };
   pendingRequestIds: string[];
   /** The project of the run's workspace when it was created. */
   projectId?: string;

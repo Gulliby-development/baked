@@ -173,6 +173,7 @@ export function RunOverview({
           `Checks ${latestChecks.size ? `${latestChecks.size - failedChecks}/${latestChecks.size} passing` : "not run"}`,
           `Findings ${openFindings} open`,
           `Verification ${snapshot.verificationState.replace("_", " ")}`,
+          ...(snapshot.limitations.count ? [`Limitations ${snapshot.limitations.count} accepted`] : []),
         ].join("  ·  ")}
       </text>
       {model ? <text fg={t.textFaint}>{`Model: ${model}`}</text> : null}

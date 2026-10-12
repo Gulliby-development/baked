@@ -408,12 +408,18 @@ export class WorkflowStore {
   private readSnapshot(id: string): RunSnapshot {
     const row = this.run(id);
     const projection = this.latestArtifact(id, "internal/projection.json");
-    const state = projection?.inline_content
+    const projected = projection?.inline_content
       ? (JSON.parse(projection.inline_content) as Pick<
           RuntimeState,
           "workspaceHash" | "verificationState"
-        >)
-      : this.state(id);
+        > & { limitations?: string[] })
+      : null;
+    // A projection from before limitations were projected is read from the full state.
+    const state = projected?.limitations ? projected : this.state(id);
+    const limitationIds =
+      "limitations" in state && Array.isArray(state.limitations)
+        ? state.limitations.map((l) => (typeof l === "string" ? l : l.findingId))
+        : [];
     return {
       runId: id,
       featureId: row.feature_id,
@@ -430,6 +436,7 @@ export class WorkflowStore {
       estimatedCostUsd:
         row.estimated_cost_microusd === null ? null : row.estimated_cost_microusd / 1e6,
       verificationState: state.verificationState,
+      limitations: { count: limitationIds.length, ids: limitationIds },
       pendingRequestIds: this.requests(id)
         .filter((r) => r.status === "pending")
         .map((r) => r.id),
@@ -597,7 +604,11 @@ export class WorkflowStore {
       id,
       "state",
       "internal/projection.json",
-      canonical({ workspaceHash: state.workspaceHash, verificationState: state.verificationState }),
+      canonical({
+        workspaceHash: state.workspaceHash,
+        verificationState: state.verificationState,
+        limitations: state.limitations.map((l) => l.findingId),
+      }),
     );
     this.db.run("UPDATE runs SET input_manifest_json=?,input_hash=? WHERE id=?", [
       canonical(state.manifest),
