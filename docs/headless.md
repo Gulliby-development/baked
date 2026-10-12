@@ -8,6 +8,7 @@ echo "find unused exports" | baked --headless
 baked --headless --json "list all TODOs"          # one JSON result
 baked --headless --events "refactor the store"    # JSONL event stream
 baked --headless --chat                           # interactive multi-turn chat
+baked --headless --watch                          # turns from baked! / baked? comments (watch mode)
 ```
 
 ## Options

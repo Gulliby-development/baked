@@ -255,17 +255,13 @@ export const TabInstance = memo(function TabInstance({
     useCheckpointStore.getState().syncFromMessages(tabId, chat.messages, chat.isLoading);
   }, [tabId, chat.messages, chat.isLoading]);
 
-  // Auto-tag checkpoints on completion (loading → false) — tag ALL untagged checkpoints with edits
+  // Auto-tag checkpoints on completion (loading → false) — tag ALL untagged checkpoints with edits.
+  // Its own ref: the activity effect above has already moved prevLoading to the new state.
+  const wasLoading = useRef(chat.isLoading);
   useEffect(() => {
-    if (prevLoading.current && !chat.isLoading) {
-      const store = useCheckpointStore.getState();
-      const cps = store.getCheckpoints(tabId);
-      for (const cp of cps) {
-        if (cp.filesEdited.length > 0 && !cp.gitTag && !cp.undone) {
-          store.createGitTag(tabId, cp.index, cwd);
-        }
-      }
-    }
+    const finished = wasLoading.current && !chat.isLoading;
+    wasLoading.current = chat.isLoading;
+    if (finished) void useCheckpointStore.getState().tagFinishedTurns(tabId, cwd);
   }, [chat.isLoading, tabId, cwd]);
 
   // Checkpoint browsing state
