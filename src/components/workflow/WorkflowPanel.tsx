@@ -15,6 +15,7 @@ import {
   workflowInitiativesApi,
   workflowRoutingApi,
   workflowSession,
+  workflowUsageLoader,
 } from "../../hooks/useWorkflow.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
 import { Hint, PremiumPopup, type SidebarTab } from "../ui/index.js";
@@ -41,6 +42,7 @@ import { orderRuns, RunList } from "./RunList.js";
 import { RunOverview } from "./RunOverview.js";
 import { TaskGraphView } from "./TaskGraphView.js";
 import { UndoReport } from "./UndoReport.js";
+import { UsagePopup } from "./UsageView.js";
 import { WorkflowEditorPopup } from "./WorkflowEditor.js";
 
 const sections = [
@@ -125,6 +127,7 @@ export function WorkflowPanel({
   const editorApi = useMemo(() => workflowEditorApi(workspace), [workspace]);
   const initiativesApi = useMemo(() => workflowInitiativesApi(workspace), [workspace]);
   const routingApi = useMemo(() => workflowRoutingApi(workspace), [workspace]);
+  const loadUsage = useMemo(() => workflowUsageLoader(workspace), [workspace]);
   const pending =
     service && runId
       ? service.store.requests(runId).find((r) => r.status === "pending")
@@ -204,7 +207,8 @@ export function WorkflowPanel({
       screen === "gates" ||
       screen === "editor" ||
       screen === "initiatives" ||
-      screen === "routing"
+      screen === "routing" ||
+      screen === "usage"
     )
       return;
     if (!onRun) {
@@ -223,6 +227,11 @@ export function WorkflowPanel({
       if (key === "g") {
         event.preventDefault();
         useWorkflowStore.getState().showGates();
+        return;
+      }
+      if (key === "u") {
+        event.preventDefault();
+        useWorkflowStore.getState().showUsage();
         return;
       }
       if (key === "r") {
@@ -348,6 +357,7 @@ export function WorkflowPanel({
     { key: "I", label: "initiatives" },
     { key: "G", label: "gates" },
     { key: "R", label: "routing" },
+    { key: "U", label: "usage" },
     { key: "Esc", label: "close" },
   ];
   if (screen === "new")
@@ -427,6 +437,16 @@ export function WorkflowPanel({
           const driving = existingWorkflowSession(workspace)?.drivingRuns() ?? [];
           void reloadWorkflowSession(workspace, driving);
         }}
+      />
+    );
+
+  if (screen === "usage")
+    return (
+      <UsagePopup
+        load={loadUsage}
+        width={popupW}
+        height={Math.min(40, height)}
+        onBack={() => useWorkflowStore.getState().showHome()}
       />
     );
 

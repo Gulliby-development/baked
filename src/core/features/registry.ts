@@ -676,6 +676,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/gates"],
   },
   {
+    id: "run-gates",
+    group: "Workflow runs",
+    title: "Gates on the run's line: what each does, blocks or advises, last result",
+    tui: gap(533, "gate results only in the activity lines"),
+    cli: ["baked workflow definitions", "baked workflow status"],
+    api: ["/v1/workflow/definitions", "/v1/workflow/runs/:id/events"],
+    desktop: ["project/runs: conveyor gate marks and station gates"],
+  },
+  {
     id: "workflow-editor",
     group: "Workflow runs",
     title: "Workflow definition editor",
@@ -697,7 +706,7 @@ export const FEATURES: readonly Feature[] = [
     id: "usage",
     group: "Workflow runs",
     title: "Usage across runs: days, by stage and model",
-    tui: partial(["/workflow: per run"], 413, "no totals over days"),
+    tui: ["/workflow: usage screen (U on the run list, /workflow usage)"],
     cli: ["baked usage", "baked workflow usage"],
     api: ["/v1/usage"],
     desktop: ["project/usage"],
@@ -776,6 +785,17 @@ export const FEATURES: readonly Feature[] = [
       "/v1/projects/current",
     ],
     desktop: ["projects", "project/overview"],
+  },
+  {
+    id: "project-create",
+    group: "Projects and setup",
+    title: "Create a project in a new folder with a name",
+    tui: ["/projects: Create project…"],
+    cli: ["baked projects create"],
+    api: notNeeded(
+      "a new project has no backend yet; the desktop app creates it through baked projects create",
+    ),
+    desktop: ["projects: Create project", "projects: Create project… in the sidebar"],
   },
   {
     id: "project-rename",

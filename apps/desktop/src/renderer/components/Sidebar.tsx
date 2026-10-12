@@ -11,6 +11,7 @@ import { useBriefs } from "../screens/runs/load.js";
 import { STATUS_TEXT } from "../screens/runs/model.js";
 import { recentRunsVersion, runDot, runWait } from "../screens/runs/recent.js";
 import { useDesktop } from "../store.js";
+import { CreateProjectDialog } from "./CreateProjectDialog.js";
 import { Icon, type IconName } from "./Icon.js";
 import { Badge } from "./ui/badge.js";
 import { buttonVariants } from "./ui/button.js";
@@ -259,6 +260,7 @@ function SelectedProject({
 
 export function Sidebar({ route }: { route: Route }) {
   const { projects, attention, addFolder } = useDesktop();
+  const [creating, setCreating] = useState(false);
   const blocking = attention.filter((item) => item.blocking).length;
   const running = projects.filter((p) => p.backend.kind === "running").length;
   const failed = projects.filter((p) => p.backend.kind === "failed").length;
@@ -301,10 +303,15 @@ export function Sidebar({ route }: { route: Route }) {
         {shown.map((project) => (
           <ProjectEntry key={project.key} project={project} route={route} />
         ))}
-        <button type="button" className={NAV} onClick={() => void addFolder()}>
+        <button type="button" className={NAV} onClick={() => setCreating(true)}>
           <Icon name="new" />
-          Open folder…
+          Create project…
         </button>
+        <button type="button" className={NAV} onClick={() => void addFolder()}>
+          <Icon name="projects" />
+          Open existing folder…
+        </button>
+        <CreateProjectDialog open={creating} onOpenChange={setCreating} />
       </div>
       <div className="mt-auto flex flex-col gap-0.5 border-t-2 border-border pt-2.5">
         <a
