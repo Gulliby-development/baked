@@ -176,6 +176,9 @@ export function RunOverview({
           ...(snapshot.limitations.count
             ? [`Limitations ${snapshot.limitations.count} accepted`]
             : []),
+          ...(snapshot.stalled
+            ? [`Stalled: no event for ${formatDuration(snapshot.stalled.silentMs)}`]
+            : []),
         ].join("  ·  ")}
       </text>
       {model ? <text fg={t.textFaint}>{`Model: ${model}`}</text> : null}
