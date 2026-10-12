@@ -491,7 +491,7 @@ After the worker exit is confirmed, the application creates a new session for re
 
 If the run's owner process has exited, `pause` and `cancel` release that run's leases when the owner is proven gone and the run has no command effect of unknown outcome whose process may still run. These are the same conditions under which `resume` would take the lease over. The release is recorded as the artifact `released-leases/ID.json`; afterwards, ordinary BAKED edits in the workspace are allowed again. A live owner or such a command keeps the lease.
 
-Ctrl+C stores a pause and stops only the processes of that run. A second Ctrl+C forcibly ends the CLI; the next start requires recovery of unfinished effects. A lost heartbeat does not allow taking the lease from a live PID. With an unknown command outcome, repetition is forbidden:
+Ctrl+C stores a pause and stops only the processes of that run. A second Ctrl+C forcibly ends the CLI; the next start requires recovery of unfinished effects. A lost heartbeat does not allow taking the lease from a live PID, except from an owner that stopped renewing because its run made no progress (see [stalls](#stalls-deadlines-and-automatic-resume)). With an unknown command outcome, repetition is forbidden:
 
 ```sh
 baked workflow recover RUN_ID --request ID --effect EFFECT_ID --resolution record-applied --file observed-result.txt --expected-revision N
@@ -502,6 +502,26 @@ Resolutions: `record-applied`, `record-not-applied`, `retry`, `cancel`. `record-
 Before recovery or a lease takeover, the runtime checks the recorded command process and its descendants: on Windows, live processes whose parent is the recorded PID and that started after the command; on POSIX, the command's process group, and on Linux and macOS also any process that inherited the command's `BAKED_PROCESS_SCOPE` marker (Linux reads `/proc/<pid>/environ`, macOS runs `ps -E`), which finds descendants that left the group with `setsid`. Cancel and timeout signal the same set. A process table that cannot be read counts as running. On Windows, a descendant whose intermediate parent also exited cannot be linked to the command; confirm such cases by hand. Recovery `cancel` requires confirmation that all processes of the run and their descendants stopped. A known live command PID blocks this decision. The runtime stores an immutable `abandoned-effects` artifact, keeps the effect's original unknown status in history and releases only the previous leases of that run. Cancelling does not claim that the command did not change files.
 
 Workspace and evidence files are written to a unique temp file and renamed into place. A failed write, including ENOSPC part-way through, removes the partial temp file, leaves the target unchanged and keeps the effect unknown until reconcile compares hashes. Interrupted task checks repeat before dependent tasks open. After a successful check, the runtime stores a gate bound to the generation, the snapshot and the task definition. Nested corrective tasks restore the whole chain of predecessors only after the required checks pass. The final `verified` is set during final acceptance.
+
+### Stalls, deadlines and automatic resume
+
+A run can stay alive and renew its lease while one call inside it never returns (benchmark round 8: an `edit_file` whose formatter child kept its output pipe open froze runs for 20 to 60 minutes after the file was written). Three bounds keep that from holding a run:
+
+- **Tool deadlines.** Every tool call of an agent attempt runs under a deadline: file tools (`read`, `edit_file`, `multi_edit`, `undo_edit`, `ast_edit`, `structural_edit`, `delete_file`, `list_dir`, `grep`, `glob`, `navigate`) 2 minutes, every other tool (commands, git, analysis, MCP) 30 minutes on top of the limits those tools carry. A call that does not return is abandoned. If it was an edit and the file differs from its pre-image, the edit is recorded as applied from the file hash (the decision an operator makes with `record-applied`) and the model is told to re-read the file; if the file is unchanged the effect is recorded as failed and the model gets the deadline as the tool error. After `maxToolTimeouts` (3) deadlines in one attempt the attempt is stopped as stalled. The post-edit formatter (`auto-format.ts`, `project.ts formatFile`) kills the whole process tree on its own timeout (`taskkill /T /F` on Windows, the process group elsewhere) and reads its output pipes against the timer, so a surviving child no longer holds the edit.
+- **Journaled tool calls.** `tool.started` and `tool.finished` events (attempt, tool, status `ok`, `error` or `deadline`, duration) are part of the run's event log, so a stall can be attributed to the call it is in. The terminal view and the desktop timeline show only calls that hit their deadline.
+- **Step watchdog.** An attempt that journals no model step and no tool call for `stepStallMs` (20 minutes by default; the longest healthy silent step measured was a 569 second review) is aborted through its signal. The file edits it left unsettled are decided from their hashes, the attempt ends with a `step_stalled` fault and the run blocks with reason `step_stalled`. The service then resumes the run itself, at most `autoResumes` (3) times, counted in `stallResumes` of the run state; each resume records `stalled/resume-N.json`. After the last one the run stays blocked for a person.
+
+The lease follows progress. While a run's owner shows progress (an event, a model step, a tool call in flight) its heartbeat renews the lease. When the run is silent for 1.5 times `stepStallMs` the owner stops renewing and marks its identity as stalled; once the lease has been expired for 30 seconds another process (`baked workflow resume`, a second TUI, the desktop app) may take it over even though the owner's PID is alive. The new owner's epoch fences the old one: its next lease assertion fails and it stops writing. A command effect whose process may still run still blocks a takeover, and a live owner that keeps making progress is never taken over.
+
+`workflow status` (headless JSON, TUI overview, desktop run header) shows `stalled` for a running run that has journaled no event for longer than `stepStallMs`.
+
+Configuration (milliseconds, all optional):
+
+```json
+{ "workflows": { "stall": { "toolTimeoutMs": 120000, "commandToolMs": 1800000, "stepStallMs": 1200000, "maxToolTimeouts": 3, "autoResumes": 3 } } }
+```
+
+`autoResumes: 0` turns the automatic resume off. Set `stepStallMs` above the longest model call of the models you route to.
 
 ### Stopped convergence
 
