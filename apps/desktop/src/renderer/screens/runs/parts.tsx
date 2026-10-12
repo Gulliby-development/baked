@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { RunState } from "../../../shared/api.js";
+import { Icon, type IconName } from "../../components/Icon.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, PANEL } from "../../lib/styles.js";
 import { STATUS_TEXT, STATUS_TONE } from "./model.js";
@@ -14,7 +15,7 @@ export const TONE_TEXT: Record<string, string> = {
 };
 
 const PILL =
-  "inline-block whitespace-nowrap rounded-[10px] px-[9px] py-[2px] text-[12px] font-medium";
+  "inline-flex items-center gap-1 whitespace-nowrap rounded-[10px] px-[9px] py-[2px] text-[12px] font-medium";
 const PILL_TONE: Record<string, string> = {
   ok: `${PILL} bg-[var(--ok)] text-[var(--accent-text)]`,
   warn: `${PILL} bg-[var(--warn)] text-[var(--accent-text)]`,
@@ -23,9 +24,19 @@ const PILL_TONE: Record<string, string> = {
   "": `${PILL} bg-hover text-soft-foreground`,
 };
 
+const STATUS_ICON: Partial<Record<RunState, IconName>> = {
+  running: "running",
+  waiting: "waiting",
+  blocked: "warning",
+  completed: "ok",
+  failed: "failed",
+};
+
 export function StatusPill({ status, children }: { status: RunState; children?: ReactNode }) {
+  const icon = STATUS_ICON[status];
   return (
     <span className={PILL_TONE[STATUS_TONE[status]]}>
+      {icon && <Icon name={icon} size={11} />}
       {STATUS_TEXT[status]}
       {children}
     </span>

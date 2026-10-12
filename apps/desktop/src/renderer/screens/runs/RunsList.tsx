@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RunState } from "../../../shared/api.js";
 import { errorText, type RunRow, runs } from "../../client/runs.js";
+import { BlockIcon, Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { Empty } from "../../components/ui/empty.js";
@@ -9,6 +10,7 @@ import { ago, tokens, usd } from "../../format.js";
 import { TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
+import { stageIconOf } from "./line-model.js";
 import { useBriefs } from "./load.js";
 import { STATUS_TEXT, stageLabel } from "./model.js";
 import { StatusPill } from "./parts.js";
@@ -79,7 +81,8 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
       {error && <Alert tone="error">{error}</Alert>}
       {!error && !list && <div className="text-dim-foreground">Loading runs…</div>}
       {list?.length === 0 && (
-        <Empty>
+        <Empty className="flex flex-col items-center gap-3">
+          {!status && <BlockIcon name="runs" />}
           {status ? `No ${STATUS_TEXT[status]} runs.` : "No workflow runs in this project yet."}
         </Empty>
       )}
@@ -113,7 +116,14 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
                       <StatusPill status={run.status} />
                     </td>
                     <td>
-                      {run.stageId ? stageLabel(run.stageId) : "–"}
+                      {run.stageId ? (
+                        <span className="inline-flex items-center gap-[6px]">
+                          <Icon name={stageIconOf(run.stageId)} size={13} />
+                          {stageLabel(run.stageId)}
+                        </span>
+                      ) : (
+                        "–"
+                      )}
                       {brief && brief.stage.total > 0 && (
                         <span className="font-mono text-dim-foreground">
                           {" "}
