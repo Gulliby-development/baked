@@ -88,6 +88,7 @@ import {
   workflowsEnabled,
   writerPolicyProblem,
 } from "./schemas.js";
+import { stallSettings } from "./stall.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
@@ -168,6 +169,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.providerReady = executor ? null : defaultDoctorDeps.providerReady;
     this.store = new WorkflowStore(workspace, readonly);
     this.leases = new WorkspaceLeases(this.store);
+    this.leases.progressWindowMs = Math.ceil(stallSettings(this.config).stepStallMs * 1.5);
     this.injectedExecutor = executor ?? null;
     this.attention = readonly ? null : new AttentionNotifier(this.store, workspace, config);
     this.scheduler = new WorkflowScheduler(
@@ -301,6 +303,7 @@ export class NativeWorkflowService implements WorkflowService {
       taskContinuations: {},
       taskRestarts: {},
       ownerLostResumes: 0,
+      stallResumes: 0,
       taskCarry: {},
       taskGates: {},
       position: v2 ? initialPosition(v2) : null,
@@ -407,7 +410,9 @@ export class NativeWorkflowService implements WorkflowService {
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     for (;;) {
       const snapshot = await this.driveOnce(runId, signal);
-      if (!(await this.resumeOwnerLost(runId, signal))) return snapshot;
+      if (await this.resumeOwnerLost(runId, signal)) continue;
+      if (await this.resumeStalled(runId, signal)) continue;
+      return snapshot;
     }
   }
   /**
@@ -451,6 +456,40 @@ export class NativeWorkflowService implements WorkflowService {
     }
     return true;
   }
+  /**
+   * A run that blocked with `step_stalled` (an attempt made no progress, or its tools kept hitting
+   * their deadlines) resumes by itself, at most `workflows.stall.autoResumes` times. The edits the
+   * stalled attempt left open were already settled from the file hashes, so nothing needs a person.
+   * Each resume is journaled as a recovery artifact.
+   */
+  private async resumeStalled(runId: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const run = this.store.run(runId);
+    if (run.status !== "blocked" || run.reason !== "step_stalled") return false;
+    const state = this.store.state(runId);
+    const limit = stallSettings(this.config).autoResumes;
+    if (state.stallResumes >= limit || this.store.requests(runId).some(blocksRun)) return false;
+    const attempt = state.stallResumes + 1;
+    this.store.transaction(() => {
+      state.stallResumes = attempt;
+      this.store.artifact(
+        runId,
+        "recovery",
+        `stalled/resume-${attempt}.json`,
+        canonical({ attempt, of: limit }),
+      );
+      this.store.saveState(runId, state);
+    });
+    try {
+      await this.resume(runId, {
+        commandId: newId(),
+        expectedRevision: this.store.run(runId).revision,
+      });
+    } catch {
+      return false;
+    }
+    return true;
+  }
   private async driveOnce(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     this.enabled();
     assertMutable(this.store.run(runId).status);
@@ -485,6 +524,7 @@ export class NativeWorkflowService implements WorkflowService {
    */
   private lane(): WorkflowScheduler {
     const leases = new WorkspaceLeases(this.store);
+    leases.progressWindowMs = Math.ceil(stallSettings(this.config).stepStallMs * 1.5);
     const lane = new WorkflowScheduler(
       this.store,
       leases,
