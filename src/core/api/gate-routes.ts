@@ -28,6 +28,7 @@ const DraftBody = z.strictObject({
   text: z.string().min(1).max(4000),
   kind: z.enum(["command", "ai-acceptance"]).optional(),
   id: SafeId.optional(),
+  fromCriteria: z.boolean().optional(),
   model: z.string().min(1).max(200).optional(),
 });
 const SaveBody = z.strictObject({
@@ -52,6 +53,7 @@ export async function gateRoute(ctx: GateRouteContext): Promise<Response | null>
           text: body.text,
           ...(body.kind ? { kind: body.kind } : {}),
           ...(body.id ? { id: body.id } : {}),
+          ...(body.fromCriteria ? { fromCriteria: true } : {}),
         },
         ctx.draftModel ?? configuredDraftModel(ctx.config, body.model),
         library(),

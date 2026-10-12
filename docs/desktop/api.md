@@ -250,7 +250,7 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `POST /v1/workflow/runs/RUN_ID/revise` | `candidate` (the hash) | `revise`: applies the candidate; the plan is approved again, then `resume` |
 | `GET /v1/workflow/gates` | | `gates`: gates with `required`, `scope`, `source`, `confirmed`, plus `problems` |
 | `POST /v1/workflow/gates/confirm` | `{ids?: string[], all?: true}` | `gates confirm` |
-| `POST /v1/workflow/gates/draft` | `{text, kind?: "command"\|"ai-acceptance", id?, model?}` | `gate new`: `{gate, script, summary, capabilities, problems, path}`; writes nothing; 422 when the model's reply is not a gate |
+| `POST /v1/workflow/gates/draft` | `{text, kind?: "command"\|"ai-acceptance", id?, fromCriteria?: boolean, model?}` | `gate new`: `{gate, script, summary, capabilities, problems, path}`; writes nothing; 422 when the model's reply is not a gate |
 | `POST /v1/workflow/gates` | `{gate, script?: {path, content}}` | `gate save`: writes `baked/gates/ID.json` (and the script) and confirms it; 201 `{id, path, script}`, 422 with the problems when it cannot be saved or would overwrite a file |
 | `GET /v1/workflow/gates/ID` | | `gate show`: `{id, type, mode, source, path, summary, confirmed?, capabilities, gate}`, 404 for an unknown ID |
 | `GET /v1/workflow/route` | `?workflow=&model=&route=` | `route`: who runs each stage and why |

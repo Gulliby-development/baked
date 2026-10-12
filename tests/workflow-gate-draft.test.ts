@@ -129,6 +129,30 @@ describe("gates drafted from a sentence", () => {
     await expect(draftGate(root, { text: "x" }, async () => "no json here")).rejects.toThrow("did not return");
   });
 
+  test("an AI check of the spec's criteria walks them without expectations of its own", async () => {
+    const root = workspace();
+    const reply = { ...walkReply, acceptance: { ...walkReply.acceptance, expectations: [], fromCriteria: true } };
+    const model = fake(reply);
+    const draft = await draftGate(root, { text: "walk the spec's criteria" }, model);
+    expect(draft.problems).toEqual([]);
+    if (draft.gate.type !== "ai-acceptance") throw new Error("not a walk-through");
+    expect(draft.gate.acceptance.scenario).toMatchObject({ expectations: [], fromCriteria: "manual" });
+    expect(draft.summary).toContain("the run's manual criteria");
+    const asked = fake({ ...walkReply });
+    const forced = await draftGate(root, { text: "the help is friendly", fromCriteria: true }, asked);
+    if (forced.gate.type !== "ai-acceptance") throw new Error("not a walk-through");
+    expect(forced.gate.acceptance.scenario.fromCriteria).toBe("manual");
+    expect(asked.prompts[0]?.user).toContain('Use the kind "ai-acceptance"');
+    expect(asked.prompts[0]?.user).toContain('"fromCriteria": true');
+    await expect(
+      draftGate(root, { text: "x" }, fake({ ...reply, acceptance: { ...reply.acceptance, fromCriteria: false } })),
+    ).rejects.toThrow("no expectation");
+    await expect(draftGate(root, { text: "x", kind: "command", fromCriteria: true }, fake(commandReply))).rejects.toThrow(
+      "Only an AI check",
+    );
+    expect(parseWorkflowArgs(["gate", "new", "walk it", "--from-criteria"]).flags["from-criteria"]).toBe(true);
+  });
+
   test("the requested ID wins over the model's", async () => {
     const root = workspace();
     const draft = await draftGate(root, { text: "x", id: "answer-check" }, fake(commandReply));
