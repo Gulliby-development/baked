@@ -101,7 +101,7 @@ import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from ".
 import { PLAN_CONSISTENCY_CHECKS, planConsistencyProblems } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { preloadTaskFiles } from "./read-outline.js";
-import { recoverRun } from "./recovery.js";
+import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import {
   abortableDelay,
   accountRefusal,
@@ -1298,6 +1298,15 @@ export class WorkflowScheduler {
           };
           this.store.request(runId, "checkpoint", hashJson(body), body);
           this.store.transition(runId, "waiting", "checkpoint");
+          return;
+        }
+        // An effect nobody can settle is a question for a person, not a block with no request.
+        if (
+          fault instanceof WorkflowFault &&
+          fault.code === "RECOVERY_REQUIRED" &&
+          Array.isArray(fault.details.effectIds)
+        ) {
+          requestRecovery(this.store, runId, fault.details.effectIds.map(String));
           return;
         }
         const code = fault instanceof WorkflowFault ? fault.code : "OUTPUT_INVALID";
@@ -4600,9 +4609,15 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (writes) assertAcceptanceV2(this.store, runId, state, policy, definition, gates);
       else if (this.store.requests(runId).some(blocksRun))
         throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
-      if (this.store.effects(runId).some((e) => ["prepared", "unknown"].includes(e.status)))
-        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain");
+      const unreconciled = this.store
+        .effects(runId)
+        .filter((e) => ["prepared", "unknown"].includes(e.status));
+      if (unreconciled.length)
+        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain", {
+          effectIds: unreconciled.map((e) => e.id),
+        });
     };
+    settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);
     this.store.transaction(() => {
       acceptable();
@@ -4705,9 +4720,15 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     await this.assertWorkspace(runId, state, policy, signal);
     const acceptable = (): void => {
       assertAcceptance(this.store, runId, state, policy);
-      if (this.store.effects(runId).some((e) => ["prepared", "unknown"].includes(e.status)))
-        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain");
+      const unreconciled = this.store
+        .effects(runId)
+        .filter((e) => ["prepared", "unknown"].includes(e.status));
+      if (unreconciled.length)
+        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain", {
+          effectIds: unreconciled.map((e) => e.id),
+        });
     };
+    settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);
     this.store.transaction(() => {
       acceptable();

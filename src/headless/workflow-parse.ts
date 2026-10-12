@@ -483,6 +483,7 @@ revise RUN_ID --candidate SHA256 --expected-revision N [--resume [--events]]   (
   --resume resumes and drives the revised run in the same command (exit codes as resume)
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
 recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
+  record-not-applied / record-applied settle the one effect and the run goes on; cancel CANCELS THE WHOLE RUN (prints a warning)
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow

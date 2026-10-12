@@ -284,3 +284,27 @@ test("the scope marker is found in the environment column of macOS ps", () => {
   ].join("\n");
   expect(parseScopedPs(table, scope)).toEqual([101, 102]);
 });
+
+test("recover --resolution cancel from the terminal warns that it cancels the whole run", async () => {
+  const { spyOn } = await import("bun:test");
+  const { executeWorkflowCommand } = await import("../src/headless/workflow.js");
+  const { parseWorkflowArgs } = await import("../src/headless/workflow-parse.js");
+  const { service, root } = setup(); const { run } = await start(service);
+  writeFileSync(join(root, "evidence.txt"), "The file does not contain the change");
+  const step = service.store.beginStep(run.runId, "crashed-check");
+  const attempt = service.store.reserve(run.runId, step, null, 0, policy);
+  const effect = service.store.prepareEffect(run.runId, attempt, "command", { checkId: "check" }, null, null);
+  service.store.putLease({ resource: "execution", owner_id: "dead-owner", owner_epoch: 1, run_id: run.runId, expires_at: 0, process_identity_json: JSON.stringify({ pid: 2147483647 }) });
+  const resumed = await service.resume(run.runId, { commandId: newId(), expectedRevision: (await service.get(run.runId)).revision });
+  const request = service.store.requests(run.runId).find((r) => JSON.parse(r.body_json).effectId === effect)!;
+  const written: string[] = [];
+  const stderr = spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => { written.push(String(chunk)); return true; }) as never);
+  try {
+    const recover = (resolution: string, revision: number) =>
+      executeWorkflowCommand(service, parseWorkflowArgs(["recover", run.runId, "--request", request.id, "--effect", effect, "--resolution", resolution, "--file", join(root, "evidence.txt"), "--expected-revision", String(revision)]), new AbortController().signal);
+    expect(written.join("")).not.toContain("cancels the whole run");
+    const cancelled = (await recover("cancel", resumed.revision)) as { status: string };
+    expect(cancelled.status).toBe("cancelled");
+    expect(written.join("")).toContain("cancels the whole run");
+  } finally { stderr.mockRestore(); }
+});

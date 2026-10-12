@@ -61,6 +61,8 @@ interface Behavior {
   gapSymbol?: string;
   /** Every gap names the same file and no symbol, as a reviewer rewording one defect does. */
   gapSameLocation?: boolean;
+  /** An edit effect of the first attempt of `task` (or of the convergence review, which nothing supersedes) stays unknown, as after a failed edit_file whose worktree was removed. */
+  unknownEffect?: "task" | "converge";
   /** The symbol of the gap of each round, in order; overrides `gapSymbol`. */
   gapSymbols?: string[];
   /** The `repeatOf` of the gap of a round: an earlier finding id, null for a new defect, absent when the reviewer did not say. */
@@ -104,6 +106,12 @@ class V2Executor implements AgentExecutor {
   private passing(evidence: string[], explanation: string) {
     return this.spec.criteria.map((c) => ({ criterionId: c.id, verdict: "pass" as const, evidenceIds: evidence, explanation }));
   }
+  private leaveUnknownEffect(request: ExecutionRequest) {
+    const store = this.service?.store;
+    if (!store) throw new Error("No service");
+    const id = store.prepareEffect(request.runId, request.attemptId, "file_patch", { path: "value.txt", root: "vanished-worktree" }, "a".repeat(64), "b".repeat(64));
+    store.effectStatus(request.runId, id, "unknown");
+  }
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     this.prompts.push(request.prompt);
@@ -117,6 +125,7 @@ class V2Executor implements AgentExecutor {
         output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["value.txt"] };
         break;
       case "spec":
+        
         output = this.behavior.renamedFeature ? { ...this.spec, featureId: "expense-report" } : this.spec;
         break;
       case "plan": {
@@ -137,6 +146,7 @@ class V2Executor implements AgentExecutor {
         break;
       case "implementation":
         this.implementations++;
+        if (this.behavior.unknownEffect === "task" && this.implementations === 1) this.leaveUnknownEffect(request);
         this.maxTokens.push(request.attemptTokens ?? 0);
         if (this.implementations <= (this.behavior.capped ?? 0)) {
           writeFileSync(join(this.root, "value.txt"), "rea");
@@ -158,6 +168,7 @@ class V2Executor implements AgentExecutor {
           : { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.passing(evidence, "Evidence checked"), findings: [] };
         break;
       case "convergence": {
+        if (this.behavior.unknownEffect === "converge") this.leaveUnknownEffect(request);
         const round = ++this.convergences;
         output = round <= (this.behavior.gaps ?? 0)
           ? {
@@ -959,6 +970,40 @@ describe("a stopped convergence asks for a decision", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.requests(run.runId).filter((r) => r.kind === "convergence")).toHaveLength(1);
+  }, 60000);
+});
+
+describe("an unknown effect at acceptance", () => {
+  const recoveryRequests = (service: NativeWorkflowService, runId: string) => service.store.requests(runId).filter((r) => r.kind === "recovery");
+  for (const workflow of ["sdd", "v2-sdd"] as const) {
+    test(`${workflow}: an effect of a task attempt that a completed attempt superseded is settled and the run completes`, async () => {
+      const fixture = setup({ unknownEffect: "task" });
+      fixture.define({ ...upgradeWorkflowV1(sddWorkflow, policy), id: "v2-sdd" });
+      const run = await fixture.start(workflow);
+      const final = await fixture.complete(run.runId);
+      expect(lastError(fixture.service, run.runId)).toBe("");
+      expect(final.status).toBe("completed");
+      expect(recoveryRequests(fixture.service, run.runId)).toEqual([]);
+      expect(fixture.service.store.effects(run.runId).filter((e) => e.kind === "file_patch").map((e) => e.status)).toEqual(["failed"]);
+      expect(fixture.service.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("superseded-effects/"))).toBe(true);
+    }, 60000);
+  }
+
+  test("an effect nothing superseded opens a recovery request at the stop, and recording it not applied finishes the run", async () => {
+    const fixture = setup({ unknownEffect: "converge" });
+    const run = await fixture.start("sdd");
+    const state = await fixture.complete(run.runId);
+    expect(state.status).toBe("waiting");
+    expect(fixture.service.store.run(run.runId).reason).toBe("interrupted_effect");
+    const request = recoveryRequests(fixture.service, run.runId).find((r) => r.status === "pending");
+    expect(request).toBeDefined();
+    const body = JSON.parse(request?.body_json ?? "{}");
+    expect(body.stoppedAt).toBe("acceptance");
+    expect(body.note).toContain("record-not-applied");
+    await fixture.service.decide(run.runId, { commandId: newId(), expectedRevision: state.revision }, { kind: "recovery", requestId: request?.id ?? "", effectId: body.effectId, resolution: "record-not-applied", evidence: "The file does not contain the change" });
+    const final = await fixture.complete(run.runId);
+    expect(lastError(fixture.service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
   }, 60000);
 });
 

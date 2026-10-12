@@ -914,7 +914,8 @@ describe("full disk during file writes", () => {
       expect(() => service.scheduler.journal.publish(run.runId, attempt, "value.txt", "after", hashBytes("before"))).toThrow("ENOSPC");
       expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("before");
       expect(tempFiles(root)).toEqual([]);
-      expect(service.store.effects(run.runId)[0]?.status).toBe("unknown");
+      // The file still has its old content, so the journal records it as not applied right away.
+      expect(service.store.effects(run.runId)[0]?.status).toBe("failed");
       const artifacts = service.store.artifacts(run.runId).length;
       expect(() => service.store.transaction(() => service.store.artifact(run.runId, "check", "checks/big.json", "x".repeat(300 * 1024)))).toThrow("ENOSPC");
       expect(service.store.artifacts(run.runId).length).toBe(artifacts);

@@ -15,6 +15,7 @@ export interface RecoveryBody {
   effectId?: string;
   intent?: Record<string, unknown>;
   delivery?: boolean;
+  note?: string;
 }
 /** A convergence that cannot start another repair round (`convergenceBody` in the core). */
 export interface ConvergenceBody {
