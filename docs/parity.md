@@ -86,7 +86,7 @@ bun test tests/feature-parity.test.ts
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Language servers: status, install, enable, restart | `/lsp`, `/lsp install`, `/lsp restart` +1 | `baked lsp status`, `baked lsp install`, `baked lsp enable` +2 | `/v1/lsp`, `/v1/lsp/restart`, `/v1/lsp/:id/install` +3 | `project/lsp`, `project/overview` |
-| Diagnose LSP, tree-sitter and index health | `/diagnose` | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check | Partial [#413](https://github.com/Gulliby-development/baked/issues/413): language servers only; no tree-sitter or index check |
+| Diagnose LSP, tree-sitter and index health | `/diagnose` | `baked diagnose`, `baked lsp check` | `/v1/lsp/diagnose`, `/v1/lsp` | `project/lsp` |
 | Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
 | Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
@@ -158,7 +158,7 @@ bun test tests/feature-parity.test.ts
 
 - [#384](https://github.com/Gulliby-development/baked/issues/384): Reasoning effort per chat
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#413](https://github.com/Gulliby-development/baked/issues/413): Diagnose LSP, tree-sitter and index health; Workflow definition editor; Import, export, gc and redact runs; What waits for me across projects
+- [#413](https://github.com/Gulliby-development/baked/issues/413): Workflow definition editor; Import, export, gc and redact runs; What waits for me across projects
 - [#419](https://github.com/Gulliby-development/baked/issues/419): Voice input in chat (Cactus Whistle speech to text)
 
 <!-- parity:end -->

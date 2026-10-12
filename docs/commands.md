@@ -107,7 +107,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | Command | Does |
 | --- | --- |
 | `/context` | Context & system dashboard |
-| `/diagnose` | Health check — LSP, tree-sitter, semantic indexing |
+| `/diagnose` | Health check — LSP, tree-sitter, semantic indexing (also `baked diagnose`, and Check code intelligence in the desktop) |
 | `/graph` | Code graph at a glance: biggest groups and key files |
 | `/lsp` | Manage LSP servers — install, disable, enable |
 | `/lsp install` | Install & manage LSP servers (Mason registry) |

@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`) and `diagnostics` (`/v1/diagnostics/*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`) and `diagnostics` (`/v1/diagnostics/*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 ## Sessions and chat (A)
 
@@ -343,6 +343,7 @@ The language servers code intelligence uses for the project ([language servers](
 | `POST /v1/lsp/ID/enable` | `{scope?}` or none | `{...LspView, restarted}`; removes the server from every list that names it, or only from `scope` |
 | `POST /v1/lsp/ID/restart` | | `{...LspView, restarted, startedNow}`: restarts the server (or a language's servers) and retries ones that failed. Before anything started the servers, it starts the project's servers instead (`startedNow: true`) |
 | `POST /v1/lsp/restart` | | The same for every server |
+| `POST /v1/lsp/diagnose` | | `IntelligenceCheck`: the health check of `/diagnose` and `baked diagnose`. Starts the project's servers when nothing started them, then probes every backend against a file of the project's main language; it can take tens of seconds. 503 `NOT_STARTED` when code intelligence did not start |
 
 ```ts
 interface LspView {
@@ -357,6 +358,16 @@ interface LspView {
   started: boolean;
   registry: boolean; // whether the Mason registry is cached; the first install downloads it
   paths: { global; project };
+}
+
+interface IntelligenceCheck {
+  language: string; // the project's main language
+  probeFile: string; // the file the probes ran against; empty when none was found
+  backends: { backend: string /* lsp:standalone, ts-morph, tree-sitter, regex */; tier: number;
+    supports: boolean /* handles this language */; initialized: boolean; initMs?: number; initError?: string;
+    probes: { operation: string /* findSymbols, getDiagnostics, ... */;
+      status: "pass" | "empty" | "error" | "timeout" | "unsupported"; ms?: number; error?: string }[] }[];
+  failing: string[]; // backends that support the language but failed to start, or whose probes errored or timed out
 }
 ```
 
@@ -534,7 +545,7 @@ Events and errors live in the server's memory: they cover the chats and runs thi
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
 | Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
-| Project setup: language servers | `GET /v1/lsp`, `POST /v1/lsp/ID/install\|enable\|disable\|restart`, `POST /v1/lsp/restart` |
+| Project setup: language servers | `GET /v1/lsp`, `POST /v1/lsp/ID/install\|enable\|disable\|restart`, `POST /v1/lsp/restart`, `POST /v1/lsp/diagnose` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |
 | Project setup: working set | `GET /v1/projects/current`, `POST /v1/projects/current/working-set` |
 | Project setup: diagnostics | `GET /v1/diagnostics/storage`, `POST /v1/diagnostics/storage/cleanup`, `GET\|POST /v1/diagnostics/model-events`, `GET /v1/diagnostics/errors` |
