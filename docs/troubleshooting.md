@@ -6,6 +6,8 @@ Start with `/status` (system dashboard), `/diagnose` (LSP, tree-sitter, semantic
 
 No key is configured for any provider. Save one with `/keys` or `baked --set-key anthropic sk-ant-...`, or export it (`export ANTHROPIC_API_KEY=...`) and restart the terminal. `baked --list-providers` shows what each provider sees. If an exported key keeps overriding a stored one, set `"keyPriority": "app"`.
 
+`baked login` shows whether the Codex and Claude Code CLIs are installed and signed in.
+
 ## Rate limits (429) and overloads
 
 Raise the retries and add a fallback model:
