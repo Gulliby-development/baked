@@ -45,6 +45,8 @@ import {
   isCountNit,
   knownRisks,
   persistentDefect,
+  REQUEST_NOTE,
+  restrictsRequest,
 } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
@@ -702,10 +704,16 @@ export class WorkflowScheduler {
               // text and a note that it is a defect to fix, not a decision to assume.
               const defectRound =
                 state.analysisReplans === 2 && findings.some((f) => persistentDefect(f));
+              // A scope finding that adds a restriction absent from the request gets the same extra
+              // return with the instruction that the request is authoritative; a survivor is assumed.
+              const restrictsRound =
+                !defectRound &&
+                state.analysisReplans === 2 &&
+                findings.some((f) => restrictsRequest(f));
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
-                (state.analysisReplans < 2 || defectRound) &&
+                (state.analysisReplans < 2 || defectRound || restrictsRound) &&
                 findings.some((f) => f.blocking)
               ) {
                 const blockingFindings = findings.filter((f) => f.blocking);
@@ -717,8 +725,9 @@ export class WorkflowScheduler {
                 });
                 if (target !== asking && this.moveTo(state, stages, target, v2)) {
                   // Findings a default settles go back to the stage they refer to before a person.
-                  state.analysisReplans = defectRound ? 3 : 2;
-                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound ? DEFECT_NOTE : `Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                  state.analysisReplans = defectRound || restrictsRound ? 3 : 2;
+                  const restricted = blockingFindings.some((f) => restrictsRequest(f));
+                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound ? DEFECT_NOTE : `${restricted ? `${REQUEST_NOTE} ` : ""}Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
                   rerouted = v2 !== null;
                   break;
@@ -726,13 +735,14 @@ export class WorkflowScheduler {
               }
               // Under assume a person is not asked about what a default settles: the findings that
               // survived the reroute are recorded as assumptions and the run goes on to approval,
-              // where a person sees them. A scope finding still asks.
+              // where a person sees them. A scope finding still asks, unless it only adds a restriction the
+              // request lacks: the request wins.
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
                 state.analysisReplans >= 2 &&
                 analysis.verdict !== "inconclusive" &&
-                findings.every((f) => !f.blocking || assumable(f))
+                findings.every((f) => !f.blocking || assumable(f) || restrictsRequest(f))
               ) {
                 const assumed = findings.filter((f) => f.blocking);
                 this.store.transaction(() =>
