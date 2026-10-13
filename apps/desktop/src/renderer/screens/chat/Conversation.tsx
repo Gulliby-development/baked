@@ -14,7 +14,7 @@ import { cn } from "../../lib/cn.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
-import { type ToolDiff, toolDiff, toolIcon, toolTitle } from "./tools.js";
+import { type ToolDiff, toolDiff, toolIcon, toolTitle, unfinishedVerb } from "./tools.js";
 import { type Transcript, type TranscriptPrompt, turnEnds } from "./transcript.js";
 
 /** Tools the agent uses for its own bookkeeping; they say nothing to the person. */
@@ -77,7 +77,7 @@ function Title({ call }: { call: ToolCall }) {
   const title = toolTitle(call.name, call.args);
   return (
     <span className="min-w-0 truncate">
-      {title.verb}
+      {call.result ? title.verb : unfinishedVerb(title.verb)}
       {title.subject && (
         <> {title.code ? <code className={INLINE_CODE}>{title.subject}</code> : title.subject}</>
       )}
