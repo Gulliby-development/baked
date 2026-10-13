@@ -49,4 +49,6 @@ export interface SessionMeta {
   kind?: "coordinator";
   /** The session's own Git worktree (absolute path), branch and base commit (#897). */
   worktree?: { path: string; branch: string; baseHead: string };
+  /** The session that launched this one, such as the project coordinator. */
+  parentId?: string;
 }

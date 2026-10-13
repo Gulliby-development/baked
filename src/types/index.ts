@@ -429,6 +429,12 @@ export interface AppConfig {
    */
   editDiagnostics?: "feedback" | "reject";
   /**
+   * The BAKED kit (docs/kit.md): `auto` (default) tells the agent to style web UI with it in
+   * projects with no styles of their own, `always` in every project, `off` never. Artifacts without
+   * styles get it inlined unless this is `off`.
+   */
+  designKit?: "auto" | "off" | "always";
+  /**
    * Where workflow implementers get docs for the locked versions of the libraries a task uses: a
    * directory of `<name>@<version>.md` files or an MCP tool. A project value replaces the global one.
    */

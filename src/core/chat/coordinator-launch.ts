@@ -192,12 +192,26 @@ function liveState(
   }
 }
 
-/** A launched entry with its live status, whether it still runs, and the tokens it used. */
+/**
+ * A launched entry with its live status, whether it still runs, and the tokens it used; a working
+ * session also says which tool it is in, and a session with its own worktree names it.
+ */
 export type LaunchedView = LaunchedEntry & {
   active: boolean;
   tokens: number;
+  activity?: string;
   worktree?: { path: string; branch: string };
 };
+
+/** The tool a launched session's turn is in now. */
+function activityOf(chat: ChatService, entry: LaunchedEntry): string | null {
+  if (entry.kind !== "session") return null;
+  try {
+    return chat.get(entry.id).activity;
+  } catch {
+    return null;
+  }
+}
 
 /** The entry's title, or for a session recorded without one, the session's own title. */
 function titleOf(chat: ChatService, entry: LaunchedEntry): string | undefined {
@@ -279,11 +293,13 @@ export function launchedView(
 ): LaunchedView[] {
   return new BriefStore(chat.workspace, coordinatorId).read().launched.map((entry) => {
     const title = titleOf(chat, entry);
+    const activity = activityOf(chat, entry);
     return {
       ...entry,
       ...(title ? { title } : {}),
       ...worktreeOf(chat, entry),
       ...liveState(chat, state, entry),
+      ...(activity ? { activity } : {}),
     };
   });
 }
@@ -571,6 +587,7 @@ export function launchTools(
           const { session, detail } = await createLaunched(chat, {
             title,
             mode: mode as ChatMode,
+            parentId: coordinator.id,
             worktree: mode !== "architect" && worktree !== false,
           });
           session.send(brief);
@@ -834,21 +851,21 @@ export function issueOf(task: FlowTask | undefined, title: string): IssueSource 
  */
 async function createLaunched(
   chat: ChatService,
-  input: { title: string; mode: ChatMode; worktree: boolean },
+  input: { title: string; mode: ChatMode; parentId: string; worktree: boolean },
 ): Promise<{ session: ChatSession; detail: string }> {
-  const { title, mode } = input;
+  const { title, mode, parentId } = input;
   if (!input.worktree) {
     const shared = input.mode === "architect" ? "" : "It works in the shared project folder.";
-    return { session: await chat.create({ title, mode }), detail: shared };
+    return { session: await chat.create({ title, mode, parentId }), detail: shared };
   }
   try {
-    const session = await chat.create({ title, mode, worktree: true });
+    const session = await chat.create({ title, mode, parentId, worktree: true });
     const own = session.summary().worktree;
     return { session, detail: own ? `It works in ${own.path} on branch ${own.branch}.` : "" };
   } catch (err) {
     // A ChatError; checked by its code, as this module cannot import sessions.ts at run time.
     if ((err as { code?: unknown }).code !== "NOT_SUPPORTED") throw err;
-    const session = await chat.create({ title, mode });
+    const session = await chat.create({ title, mode, parentId });
     return { session, detail: `${(err as Error).message}; it works in the shared project folder.` };
   }
 }

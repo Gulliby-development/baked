@@ -47,6 +47,7 @@ The PNGs are exports of their SVG at the listed sizes with a transparent backgro
 | `ok`, `failed`, `waiting`, `warning`, `running` | ticked box, crossed box, hourglass, triangle, open ring | stage states on conveyor stations, run status pills, tool call results |
 | `read`, `edit`, `shell`, `search`, `git`, `image` | open book, pencil, terminal, magnifier, branch, picture | chat tool calls, by tool |
 | `fork`, `rewind`, `compact`, `model` | chat actions | Fork from here, fork and rewind reports, Compact now, the model picker and context panel |
+| `database`, `shield`, `globe` | storage drum, shield, globe | Diagnostics: the Storage section, the Sandbox section and its mode, the sandboxed chat network |
 
 `stageIcon` in `screens/runs/line-model.ts` picks a stage's icon from its role in the workflow line (a station of type `tasks` gets `implement`, one that makes `spec` gets `spec`, the finish station gets `accept`); stages it cannot place get `research`. `toolIcon` in `screens/chat/tools.ts` maps tool names, and tools without an icon of their own (MCP tools, for example) show `model`.
 
