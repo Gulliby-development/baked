@@ -38,6 +38,7 @@ import { setup } from "../../client/setup.js";
 import { BlockIcon, Icon } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
+import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { emptyClass } from "../../components/ui/empty.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
@@ -201,6 +202,8 @@ export function SessionView({
   const [watchState, setWatchState] = useState<WatchStatus | null>(null);
   const [watchSwitching, setWatchSwitching] = useState(false);
   const [rewindReport, setRewindReport] = useState<string[] | null>(null);
+  // Undo of the last turn waits for the in-app confirmation.
+  const [confirmUndo, setConfirmUndo] = useState(false);
   // A task typed on the project home ("Ask in chat") starts the new session's composer.
   const [initialText] = useState(() => (draft ? peekDraft("chat", key) : ""));
   // Text put into the composer later, such as Edit on a split card; `n` remounts the composer.
@@ -379,7 +382,7 @@ export function SessionView({
     chat
       .fork(key, sessionId, { atMessageId, rollbackFiles })
       .then((created) => {
-        rememberForkReport(created.id, forkReportLines(created.rollback));
+        rememberForkReport(created.id, forkReportLines(created.rollback, project.path));
         chatSessionsChanged();
         window.location.assign(projectHref(key, "chat", created.id));
       })
@@ -466,14 +469,7 @@ export function SessionView({
 
   /** Undo (to `toCheckpoint` when given, already confirmed in the turn) or redo. */
   const rewind = (action: "undo" | "redo", toCheckpoint?: number): void => {
-    if (
-      action === "undo" &&
-      toCheckpoint === undefined &&
-      !window.confirm(
-        "Undo the last turn? It is dropped from the chat and the files it edited are restored; files changed since then stay as they are. Redo puts it back until you send a new message.",
-      )
-    )
-      return;
+    setConfirmUndo(false);
     setRewinding(true);
     setActionError(null);
     (action === "undo"
@@ -482,7 +478,7 @@ export function SessionView({
     )
       .then((detail) => {
         dispatch({ type: "snapshot", detail });
-        setRewindReport(rewindReportLines(action, detail.rollback));
+        setRewindReport(rewindReportLines(action, detail.rollback, project.path));
         chatSessionsChanged();
       })
       .catch((e: unknown) => setActionError(message(e)))
@@ -494,7 +490,7 @@ export function SessionView({
   const rewindControl: RewindControl | undefined =
     canRewind && !draft
       ? {
-          undo: () => rewind("undo"),
+          undo: () => setConfirmUndo(true),
           redo: () => rewind("redo"),
           undoDisabled: rewindBlocked ?? (turns === 0 ? "Nothing to undo." : null),
           redoDisabled: rewindBlocked ?? (nextRedo ? null : "Nothing to redo."),
@@ -584,6 +580,16 @@ export function SessionView({
               </div>
             </Alert>
           )}
+          <ConfirmDialog
+            open={confirmUndo}
+            title="Undo the last turn?"
+            confirmLabel="Undo"
+            onConfirm={() => rewind("undo")}
+            onClose={() => setConfirmUndo(false)}
+          >
+            It is dropped from the chat and the files it edited are restored; files changed since
+            then stay as they are. Redo puts it back until you send a new message.
+          </ConfirmDialog>
           {rewindReport && (
             <Alert role="status" className="flex items-start gap-3">
               <Icon name="rewind" size={15} className="mt-[2px] flex-none" />
