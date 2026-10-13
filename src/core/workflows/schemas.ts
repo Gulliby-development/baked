@@ -411,6 +411,7 @@ export const ReasonCode = z.enum([
   "checkpoint",
   "no_progress",
   "verification_failed",
+  "check_unavailable",
   "provider_unavailable",
   "provider_account",
   "tool_denied",
