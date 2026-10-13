@@ -9,6 +9,7 @@ import {
   runs,
 } from "../../client/runs.js";
 import { workflow } from "../../client/workflow.js";
+import { type TestsFirstBody, TestsFirstReview } from "../../components/TestsFirst.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { CHECK } from "../../lib/styles.js";
@@ -138,6 +139,50 @@ function Approval({
       ? ` in the worktree ${body.worktree?.branch ?? ""}`.trimEnd()
       : " in the working copy";
   const files = body.writes?.length ?? 0;
+  const tests = parse<TestsFirstBody>(request.body_json).testsFirst;
+  if (tests)
+    return (
+      <div className={DECISION}>
+        <h3>The tests written first wait for your approval</h3>
+        <p>
+          These tests fail on the current code. Approving makes them read-only and lets the agents
+          write the code until they pass. Rejecting writes them again with your note.
+        </p>
+        <TestsFirstReview tests={tests} />
+        <label htmlFor="decision-note" className={FIELD_LABEL}>
+          Note for the agents (needed to reject)
+        </label>
+        <textarea
+          className={TEXTAREA}
+          id="decision-note"
+          rows={2}
+          value={note}
+          placeholder="What the tests should check instead"
+          onChange={(e) => setNote(e.target.value)}
+        />
+        {error && <Alert tone="error">{error}</Alert>}
+        <div className={ROW_ACTIONS}>
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy}
+            onClick={() => void decide(() => approveRequest(projectKey, run, request))}
+          >
+            Approve the tests
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            disabled={busy || !note.trim()}
+            onClick={() =>
+              void decide(() => workflow.reject(projectKey, run, request.id, note.trim()))
+            }
+          >
+            Write them again
+          </Button>
+        </div>
+      </div>
+    );
   return (
     <div className={DECISION}>
       <h3>

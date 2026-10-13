@@ -10,6 +10,7 @@ import {
   questionsOf,
   type RunWithRequests,
 } from "../../client/attention.js";
+import { type TestsFirstBody, TestsFirstReview } from "../../components/TestsFirst.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
@@ -78,6 +79,46 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
         const body = parseBody<ApprovalBody>(request);
         const writes = body.writes ?? [];
         const inScope = body.worktree?.userChangesInScope ?? [];
+        const tests = parseBody<TestsFirstBody>(request).testsFirst;
+        if (tests)
+          return (
+            <>
+              <DetailHeader item={item} />
+              <p className={LEDE}>
+                These tests were written before the code and fail on it now. Approving makes them
+                read-only and lets the agents write the code until they pass; rejecting writes them
+                again with your note.
+              </p>
+              <TestsFirstReview tests={tests} />
+              <ActionError error={action.error} />
+              <div className={ACTIONS}>
+                <Button
+                  variant="primary"
+                  size="md"
+                  className={BTN}
+                  disabled={action.busy}
+                  onClick={() =>
+                    void action.run(async () => {
+                      await attentionApi.approve(item.projectKey, runIdOf(item), request);
+                      onDone(`Approved the tests of ${item.featureId}. The code is next.`);
+                    })
+                  }
+                >
+                  Approve the tests
+                </Button>
+                <RejectForm
+                  busy={action.busy}
+                  onReject={(reason) =>
+                    void action.run(async () => {
+                      await attentionApi.reject(item.projectKey, runIdOf(item), request.id, reason);
+                      onDone(`Sent the tests of ${item.featureId} back with your note.`);
+                    })
+                  }
+                />
+                <OpenRun item={item} />
+              </div>
+            </>
+          );
         return (
           <>
             <DetailHeader

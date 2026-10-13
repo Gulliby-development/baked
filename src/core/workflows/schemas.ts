@@ -212,6 +212,13 @@ export const PolicySchema = z
      */
     testIntegrity: z.enum(["block", "warn"]).optional(),
     /**
+     * Tests first (tests-first.ts): `criteria` writes a failing test task for every automated
+     * criterion before any code, `all` for every criterion; a person approves the tests and the
+     * code is implemented until they pass. Absent means `off`, so stored policies keep their hash;
+     * a definition's `testsFirst` (the `tdd` and `full` presets) overrides it at start.
+     */
+    testsFirst: z.enum(["off", "criteria", "all"]).optional(),
+    /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
      */

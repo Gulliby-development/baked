@@ -400,6 +400,7 @@ export const PRESETS = [
   "spike",
   "review-only",
   "fix-ci",
+  "tdd",
 ] as const;
 export const WorkflowV2Schema = z
   .object({
@@ -425,6 +426,11 @@ export const WorkflowV2Schema = z
      * Absent means yes; with false they stay run artifacts only.
      */
     publish: z.boolean().optional(),
+    /**
+     * Tests first for runs of this definition (`criteria` or `all`); it overrides the policy's
+     * `testsFirst` at start. Absent leaves it to the policy.
+     */
+    testsFirst: z.enum(["off", "criteria", "all"]).optional(),
   })
   .strict();
 export type WorkflowV2 = z.infer<typeof WorkflowV2Schema>;

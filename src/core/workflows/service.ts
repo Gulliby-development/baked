@@ -93,6 +93,7 @@ import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { newId, WorkflowStore } from "./store.js";
 import { reusableImplementations } from "./task-graph.js";
+import { isTestTask } from "./tests-first.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
 import { blocksRun, isAcceptanceRequest } from "./v2/acceptance.js";
 import { decideAcceptance } from "./v2/acceptance-gate.js";
@@ -317,6 +318,7 @@ export class NativeWorkflowService implements WorkflowService {
       gateResults: {},
       acceptance: {},
       issue: request.issue ?? null,
+      testsFirst: null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -663,7 +665,29 @@ export class NativeWorkflowService implements WorkflowService {
       const state = this.store.state(runId);
       const body = JSON.parse(request.body_json) as Record<string, unknown>;
       let accepted = true;
-      if (decision.kind === "approve") {
+      const testsFirst = request.kind === "approval" && "testsFirst" in body;
+      if (testsFirst && (decision.kind === "approve" || decision.kind === "reject")) {
+        if (state.testsFirst?.digest !== request.digest)
+          throw new WorkflowFault("STALE_DECISION", "The tests changed since this request");
+        if (decision.kind === "approve") {
+          if (decision.digest !== request.digest)
+            throw new WorkflowFault("STALE_DECISION", "Approval digest does not match the tests");
+          state.testsFirst = { ...state.testsFirst, approved: true };
+        } else {
+          // The tests are written again with the person's note; the code still waits for them.
+          accepted = false;
+          state.prompt += `\nUser rejected the tests written first: ${decision.explanation}`;
+          state.testsFirst = null;
+          const tests = new Set(
+            (state.graph?.tasks ?? []).filter(isTestTask).map((task) => task.id),
+          );
+          for (const row of this.store.tasks(runId))
+            if (tests.has(row.id) && ["implemented", "verified"].includes(row.status)) {
+              delete state.taskGates[row.id];
+              this.store.taskStatus(runId, row.id, "invalidated");
+            }
+        }
+      } else if (decision.kind === "approve") {
         assertFrozenInputs(state);
         if (
           request.kind !== "approval" ||

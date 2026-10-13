@@ -174,6 +174,7 @@ export async function prepareStart(
     executionMode: _previous,
     clarification: _clarification,
     testIntegrity: _testIntegrity,
+    testsFirst: _testsFirst,
     allowOverlappingWrites,
     ...rest
   } = policy;
@@ -181,6 +182,11 @@ export async function prepareStart(
   const clarification = request.clarification ?? clarificationOf(policy);
   // `block` is the default and is left out, so the policy hash of a guarded run is what it was.
   const testIntegrity = request.testIntegrity ?? testIntegrityOf(policy);
+  // The definition (the tdd preset) overrides the policy; `off` is left out of the policy.
+  const testsFirst =
+    (loaded.schemaVersion === 2 ? loaded.definition.testsFirst : undefined) ??
+    policy.testsFirst ??
+    "off";
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -189,6 +195,7 @@ export async function prepareStart(
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
     ...(testIntegrity === "warn" ? { testIntegrity } : {}),
+    ...(testsFirst !== "off" ? { testsFirst } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),
