@@ -289,6 +289,76 @@ describe("request_check with the affected-tests check", () => {
   }, 60000);
 });
 
+describe("request_check of a whole-unit formatter (#842)", () => {
+  async function requestFormatter(origin: Task["origin"]): Promise<string> {
+    // The ID names rustfmt, so it is a whole-unit formatter; the command itself passes.
+    const policy: RunPolicy = {
+      ...fixturePolicy,
+      checks: [check("rustfmt", "bun", ["-e", "process.exit(0)"], { timeoutMs: 30000 })],
+    };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const { store } = fixture.service;
+    const run = await fixture.start();
+    store.transaction(() => store.transition(run.runId, "running"));
+    const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
+    const implementer = profiles.find((p) => p.role === "implementer");
+    if (!implementer) throw new Error("implementer profile missing");
+    const profile: AgentProfile = { ...implementer, model: "openai/fixture-model" };
+    const task: Task = {
+      id: "T001",
+      title: "Add parser",
+      description: "Add parser",
+      requirementIds: ["FR-001"],
+      criterionIds: ["AC-001"],
+      dependsOn: [],
+      profileId: profile.id,
+      writes: [{ path: "src/parse.rs", action: "create" }],
+      readHints: [],
+      checkIds: ["rustfmt"],
+      origin,
+      findingIds: [],
+      rationale: "Parser",
+    };
+    const seen = scriptModel([
+      step({ name: "request_check", input: { checkId: "rustfmt" } }),
+      () => {
+        throw new Error("stop after the check");
+      },
+    ]);
+    const stepId = store.beginStep(run.runId, "fixture");
+    const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, policy);
+    const leases = new WorkspaceLeases(store);
+    leases.acquire("mutation", run.runId);
+    cleanups.push(() => leases.release());
+    const executor = new NativeAgentExecutor(store, leases, { ...fixture.config, repoMap: false });
+    cleanups.push(() => executor.dispose());
+    await expect(
+      executor.execute({
+        runId: run.runId,
+        attemptId,
+        profile,
+        task,
+        prompt: "Add the parser",
+        signal: new AbortController().signal,
+        maxSteps: 10,
+      }),
+    ).rejects.toThrow("stop after the check");
+    return JSON.stringify(seen[0]);
+  }
+
+  test("a planned task gets it deferred to the checks stage without running it", async () => {
+    const result = await requestFormatter("planned");
+    expect(result).toContain('"status":"deferred"');
+    expect(result).toContain("checks stage");
+    expect(result).not.toContain("evidenceId");
+  }, 60000);
+
+  test("a corrective task, after integration, runs it", async () => {
+    expect(await requestFormatter("repair")).toContain('"status":"passed"');
+  }, 60000);
+});
+
 describe("the affected-test regression gate", () => {
   type Checked = { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string };
   const plannedTask = (id: string, path: string, extra: Partial<Task> = {}): Task => ({

@@ -119,6 +119,7 @@ import {
   fixerTiers,
   isCodePath,
   isWholeUnitCheck,
+  isWholeUnitFormatter,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -2143,7 +2144,10 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     task: Task,
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
-    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    // A formatter reports no type errors to keep, so it would only cost a run (#842).
+    const checks = policy.checks.filter(
+      (c) => c.scope === "feature" && isWholeUnitCheck(c) && !isWholeUnitFormatter(c),
+    );
     const written = writtenCodePaths(task);
     if (!checks.length || !written.length) return undefined;
     return async (root, signal) => {
