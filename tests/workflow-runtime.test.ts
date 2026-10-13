@@ -392,6 +392,26 @@ describe("durable SDD runtime", () => {
     const scope = new ProcessScope();
     try { const checked = await new CheckRunner(service.store, scope).run(run.runId, attempt, { ...policy.checks[0]!, executable: "baked-fixture-command-does-not-exist" }, new AbortController().signal); expect(checked.status).toBe("inconclusive"); } finally { await scope.stop(); }
   });
+  test("a custom gate's JSON report, not its exit code, decides the check", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    const step = service.store.beginStep(run.runId, "fixture"); const attempt = service.store.reserve(run.runId, step, null, 0, policy);
+    const scope = new ProcessScope();
+    const runner = new CheckRunner(service.store, scope);
+    const custom = (code: string) => ({ ...policy.checks[0]!, args: ["-e", code], report: "json" as const });
+    try {
+      const failed = await runner.run(run.runId, attempt, custom(`console.log('log line'); console.log(JSON.stringify({ status: 'failed', summary: 'two leaks', findings: [{ severity: 'high', message: 'leaked key', path: 'src/a.ts', line: 3 }] }))`), new AbortController().signal);
+      expect(failed.status).toBe("failed");
+      expect(failed.output).toContain("- [high] src/a.ts:3 leaked key");
+      const passed = await runner.run(run.runId, attempt, custom(`console.log(JSON.stringify({ status: 'passed' }))`), new AbortController().signal);
+      expect(passed.status).toBe("passed");
+      const contradicting = await runner.run(run.runId, attempt, custom(`console.log(JSON.stringify({ status: 'passed' })); process.exit(2)`), new AbortController().signal);
+      expect(contradicting.status).toBe("inconclusive");
+      const silent = await runner.run(run.runId, attempt, custom("console.log('no report')"), new AbortController().signal);
+      expect(silent.status).toBe("inconclusive");
+      expect(silent.output).toContain("Gate report: missing");
+      expect(service.store.checkDetails(run.runId).slice(-4).map((r) => r.reason)).toEqual(["report", "report", "report_exit_mismatch", "no_report"]);
+    } finally { await scope.stop(); }
+  });
   test("evidence IDs cannot be borrowed from another run", async () => {
     const { service } = setup(); const first = await start(service); const second = await start(service);
     const snapshot = service.store.putSnapshot(first.run.runId, {});
@@ -623,7 +643,7 @@ describe("durable SDD runtime", () => {
     const satisfied = async (outcome = result) => {
       const child = service.store.beginStep(run.runId, "implement-rerun");
       return (service.scheduler as unknown as { correctionSatisfied: (...args: unknown[]) => Promise<boolean> })
-        .correctionSatisfied(run.runId, child, taskPolicy, task, outcome, new AbortController().signal, root);
+        .correctionSatisfied(run.runId, service.store.state(run.runId), child, taskPolicy, task, outcome, new AbortController().signal, root);
     };
     // The first run of a planned task that changed nothing did not do its work.
     expect(await satisfied()).toBe(false);

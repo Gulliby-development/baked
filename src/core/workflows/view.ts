@@ -55,6 +55,8 @@ export interface StartRunInput {
   maxConcurrentWriters?: number;
   /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
   clarification?: ClarificationMode;
+  /** The run model overrides the configured routes, as `--model-strict`. */
+  modelStrict?: boolean;
 }
 
 /** The execution controls of the new-run form. */

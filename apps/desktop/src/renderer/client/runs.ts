@@ -29,6 +29,19 @@ export interface RunDetailStatus extends Omit<RunStatus, "requests"> {
    * delivery or a discard removed it. Null for runs in the working copy; absent from older backends.
    */
   worktree?: RunWorktree | null;
+  /**
+   * The effective models of the run by role and stage (`routingSummary` in
+   * src/core/workflows/routing.ts). Null before routing was recorded; absent from older backends.
+   */
+  routing?: RunRouting | null;
+}
+
+export interface RunRouting {
+  runModel: string;
+  /** The run model overrode the configured routes (`--model-strict`). */
+  strict: boolean;
+  warnings: string[];
+  effective: { target: string; model: string; source: string; fallback?: string[] }[];
 }
 
 export interface RunWorktree {
@@ -77,6 +90,12 @@ export interface EventPayloads {
     usageComplete: boolean;
     usedTokens: number | null;
   };
+  "attempt.advisory": {
+    attemptId: string;
+    signal: "repeated-reads" | "no-edits" | "same-failure";
+    action: "steered" | "stopped";
+    detail: string;
+  };
   "task.state_changed": { taskId: string; from: string; to: string; generation: number };
   "artifact.committed": { artifactId: string; kind: string; hash: string };
   "check.finished": { checkId: string; evidenceId: string; status: string };
@@ -107,6 +126,13 @@ export interface EventPayloads {
     evidenceId: string | null;
   };
   "acceptance.phase": { gateId: string; phase: string; detail: string | null };
+  "wait.progress": {
+    stageId: string;
+    deadline: string;
+    intervalSeconds: number;
+    pending: string[];
+    polls: number;
+  };
   "tool.started": { attemptId: string; tool: string };
   "tool.finished": {
     attemptId: string;

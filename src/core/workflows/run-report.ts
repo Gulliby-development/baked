@@ -5,6 +5,11 @@
  */
 
 import type { z } from "zod";
+import {
+  type DuplicationResult,
+  metricDeltas,
+  QUALITY_DUPLICATION,
+} from "./quality/duplication.js";
 import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage } from "./usage.js";
@@ -147,6 +152,16 @@ function stagesInRunOrder(store: WorkflowStore, usage: RunUsageReport): RunUsage
 }
 
 /** Facts read once from the store; rendering at several row caps reuses them. */
+/**
+ * The repro cell of a finding: what its repro showed, or for a correctness finding without one,
+ * why none was given or that the claim is unverified.
+ */
+function reproColumn(body: Partial<Finding>, outcomes: Map<string, string>): string | null {
+  if (body.repro) return (body.id && outcomes.get(body.id)) || "attached";
+  if (body.kind !== "correctness") return null;
+  return body.noRepro ? `none: ${body.noRepro}` : "unverified";
+}
+
 function collect(store: WorkflowStore, runId: string) {
   return store.readTransaction(() => {
     const run = store.run(runId);
@@ -164,10 +179,26 @@ function collect(store: WorkflowStore, runId: string) {
     })();
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
+    // What the host's run of each finding's repro showed, by finding id.
+    const reproOutcomes = new Map<string, string>();
     for (const artifact of store.artifacts(runId)) {
       latestArtifacts.set(artifact.logical_path, artifact);
       if (/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path))
         taskDiffs.set(artifact.logical_path, artifact);
+      if (artifact.logical_path.startsWith("reviews/repro-")) {
+        const record = parse<{ outcomes?: Record<string, { status?: unknown }> }>(
+          (() => {
+            try {
+              return store.readArtifact(runId, artifact.id);
+            } catch {
+              return null;
+            }
+          })(),
+          {},
+        );
+        for (const [id, outcome] of Object.entries(record.outcomes ?? {}))
+          if (typeof outcome?.status === "string") reproOutcomes.set(id, outcome.status);
+      }
     }
     const checks = new Map<
       string,
@@ -182,9 +213,22 @@ function collect(store: WorkflowStore, runId: string) {
         ms: (known?.ms ?? 0) + row.duration_ms,
       });
     }
+    const quality = latestArtifacts.get(QUALITY_DUPLICATION);
     return {
       run,
       state,
+      duplication: quality
+        ? parse<DuplicationResult | null>(
+            (() => {
+              try {
+                return store.readArtifact(runId, quality.id);
+              } catch {
+                return null;
+              }
+            })(),
+            null,
+          )
+        : null,
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
       report,
@@ -214,11 +258,10 @@ function collect(store: WorkflowStore, runId: string) {
           ),
         ),
       ),
-      findings: store.findings(runId).map((row) => ({
-        id: row.id,
-        status: row.status,
-        body: parse<Partial<Finding>>(row.body_json, {}),
-      })),
+      findings: store.findings(runId).map((row) => {
+        const body = parse<Partial<Finding>>(row.body_json, {});
+        return { id: row.id, status: row.status, body, repro: reproColumn(body, reproOutcomes) };
+      }),
       requests: store.requests(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
@@ -229,6 +272,37 @@ function collect(store: WorkflowStore, runId: string) {
   });
 }
 type Facts = ReturnType<typeof collect>;
+
+/** The duplication ratchet's deltas and what it found (#638). */
+function duplicationSection(result: DuplicationResult, cap: number): string[] {
+  const out = ["## Code quality", ""];
+  if (result.skipped) return [...out, `Duplication ratchet skipped: ${result.skipped}.`, ""];
+  const verdict = result.blocking
+    ? "blocking"
+    : result.clones.length || result.unused.length
+      ? "noted"
+      : "clean";
+  out.push(`Duplication ratchet (\`${result.mode}\`): ${verdict}.`, "");
+  out.push(...metricDeltas(result).map((line) => `- ${line}`), "");
+  const span = (s: { file: string; startLine: number; endLine: number }) =>
+    code(`${s.file}:${s.startLine}-${s.endLine}`);
+  out.push(
+    ...table(
+      ["Added", "Where", "Detail"],
+      [
+        ...result.clones.map((c) => ["copy", span(c), `copies ${span(c.original)}`]),
+        ...result.unused.map((u) => [
+          "unused code",
+          code(`${u.file}:${u.line}`),
+          `${code(u.name)} is used nowhere`,
+        ]),
+      ],
+      cap,
+    ),
+  );
+  if (result.clones.length || result.unused.length) out.push("");
+  return out;
+}
 
 function render(facts: Facts, cap: number): string {
   const { run, state, report } = facts;
@@ -313,6 +387,8 @@ function render(facts: Facts, cap: number): string {
     );
   else out.push("No checks ran.", "");
 
+  if (facts.duplication) out.push(...duplicationSection(facts.duplication, cap));
+
   if (spec?.criteria.length) {
     out.push("## Acceptance criteria", "");
     out.push(
@@ -338,12 +414,13 @@ function render(facts: Facts, cap: number): string {
     out.push(`${open.length} open of ${facts.findings.length} recorded.`, "");
     out.push(
       ...table(
-        ["Finding", "Status", "Severity", "Kind", "Where", "Claim"],
+        ["Finding", "Status", "Severity", "Kind", "Repro", "Where", "Claim"],
         facts.findings.map((f) => [
           f.id,
           f.status,
           f.body.severity ?? null,
           f.body.kind ?? null,
+          f.repro,
           f.body.file ? code(f.body.file) : null,
           f.body.claim ?? null,
         ]),

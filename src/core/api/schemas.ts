@@ -35,6 +35,8 @@ export const StartBody = z
     writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
+    /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
+    duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
   })
@@ -240,6 +242,8 @@ export const EditorOpBody = z.discriminatedUnion("op", [
     loop: z.number().int().min(1).max(5).nullable(),
   }),
   z.strictObject({ op: z.literal("removeTransition"), id: z.string().min(1).max(200) }),
+  z.strictObject({ op: z.literal("addWaitStage"), after: SafeId }),
+  z.strictObject({ op: z.literal("removeWaitStage"), stageId: SafeId }),
   z.strictObject({
     op: z.literal("changeField"),
     stageId: SafeId,
