@@ -11,7 +11,7 @@ delete scope.window;
 describe("chat memory client", () => {
   test("lists, pins, edits, hides and restores memories", async () => {
     const view = await setup.chatMemory("baked");
-    expect(view.settings).toEqual({ writeScope: "project", readScope: "all", settingsScope: "project" });
+    expect(view.settings).toEqual({ writeScope: "project", readScope: "all", shareWithRuns: false, settingsScope: "project" });
     const first = view.entries.find((e) => !e.pinned);
     if (!first) throw new Error("No unpinned memory in the mock");
     const target = { scope: first.scope, id: first.id };
@@ -29,6 +29,8 @@ describe("chat memory client", () => {
   test("changes settings, cleans up and purges", async () => {
     const off = await setup.chatMemorySettings("baked", { writeScope: "none", readScope: "none" });
     expect(off.settings).toMatchObject({ writeScope: "none", readScope: "none" });
+    const shared = await setup.chatMemorySettings("baked", { shareWithRuns: true });
+    expect(shared.settings.shareWithRuns).toBe(true);
     const { candidates } = await setup.chatMemoryCleanup("baked");
     const candidate = candidates[0];
     if (!candidate) throw new Error("No cleanup candidate in the mock");

@@ -61,6 +61,12 @@ export interface BudgetLimits {
   maxAgentCalls: number;
   maxActiveMs: number;
 }
+/** How an extension error names each limit. */
+export const LIMIT_NAMES: Record<keyof BudgetLimits, string> = {
+  maxTotalTokens: "tokens",
+  maxAgentCalls: "calls",
+  maxActiveMs: "active ms",
+};
 export const limitsOf = (policy: RunPolicy): BudgetLimits => ({
   maxTotalTokens: policy.maxTotalTokens,
   maxAgentCalls: policy.maxAgentCalls,

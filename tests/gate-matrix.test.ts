@@ -25,6 +25,12 @@ import {
   propertyLibraries,
   propertyTestKind,
 } from "../src/core/workflows/quality/properties.js";
+import {
+  checkBuiltinRules,
+  ruleClaimKey,
+  ruleClaimText,
+  ruleFindingKey,
+} from "../src/core/workflows/quality/rules.js";
 import type { RuntimeState } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
 import {
@@ -55,7 +61,9 @@ type Stack = "bun" | "npm" | "python" | "go" | "rust" | "maven" | "dotnet";
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
 
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
-const KNOWN: Record<string, string> = {};
+const KNOWN: Record<string, string> = {
+  "python:rule-pack: placeholder-body": "#937",
+};
 
 interface Fixture {
   /** Files that make the gate detector see the stack, as the bench loop's scaffolds write them. */
@@ -348,6 +356,83 @@ for (const stack of STACKS) {
       );
       // Without the tool the built-in engine runs: detection never invents one.
       expect(detectMutationTool([source], shell(project(fixture.files), []))).toBeNull();
+    });
+  });
+}
+
+// --- Rule pack -------------------------------------------------------------------------------
+
+/**
+ * A placeholder body in each stack's language, and an ordinary error whose message mentions a
+ * todo, which a todo app writes on purpose (#845).
+ */
+const STUBS: Record<Stack, { path: string; placeholder: string; ordinary: string }> = {
+  bun: {
+    path: "src/sum.ts",
+    placeholder: '  throw new Error("not implemented");',
+    ordinary: '  throw new Error("Todo with id 3 does not exist");',
+  },
+  npm: {
+    path: "src/sum.js",
+    placeholder: '  throw new Error("TODO");',
+    ordinary: '  throw new Error("Todo 3 not found");',
+  },
+  python: {
+    path: "fixture/sum.py",
+    placeholder: "    raise NotImplementedError",
+    ordinary: '    raise KeyError("Todo 3 does not exist")',
+  },
+  go: {
+    path: "sum.go",
+    placeholder: '\tpanic("not implemented")',
+    ordinary: '\tpanic("todo list is empty")',
+  },
+  rust: {
+    path: "src/lib.rs",
+    placeholder: "    todo!()",
+    ordinary: '    panic!("todo {} not found: {}", id, reason)',
+  },
+  maven: {
+    path: "src/main/java/fixture/Sum.java",
+    placeholder: "        throw new UnsupportedOperationException();",
+    ordinary: '        throw new IllegalStateException("Todo 3 does not exist");',
+  },
+  dotnet: {
+    path: "src/Sum.cs",
+    placeholder: "        throw new NotImplementedException();",
+    ordinary: '        throw new KeyNotFoundException("Todo 3 does not exist");',
+  },
+};
+
+for (const stack of STACKS) {
+  const stub = STUBS[stack];
+  const placeholders = (line: string) =>
+    checkBuiltinRules([{ path: stub.path, content: `${line}\n`, before: null }], {}).filter(
+      (f) => f.rule === "placeholder-body",
+    );
+  describe(`gate matrix: ${stack} rule pack`, () => {
+    cell(stack, "rule-pack: placeholder-body", () => {
+      expect(placeholders(stub.placeholder).map((f) => f.blocking)).toEqual([true]);
+      expect(placeholders(stub.ordinary)).toEqual([]);
+    });
+
+    // A correction that leaves the same match is kept as a limitation instead of asking again;
+    // the earlier round's claim must read back to the same key, wherever the line moved (#845).
+    cell(stack, "rule-pack: same match after a correction", () => {
+      const [found] = checkBuiltinRules(
+        [{ path: stub.path, content: `${stub.ordinary}\n${stub.placeholder}\n`, before: null }],
+        {},
+      ).filter((f) => f.rule === "placeholder-body");
+      const finding = found ?? {
+        rule: "placeholder-body",
+        message: "The body is a placeholder, not an implementation",
+        file: stub.path,
+        line: 2,
+        text: stub.placeholder.trim(),
+      };
+      const key = ruleFindingKey(finding);
+      expect(ruleClaimKey(ruleClaimText(finding))).toBe(key);
+      expect(ruleClaimKey(ruleClaimText({ ...finding, line: finding.line + 7 }))).toBe(key);
     });
   });
 }

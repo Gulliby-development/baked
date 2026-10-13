@@ -26,6 +26,20 @@ export function coordinatorFor(workspace: string, model: () => string): Promise<
   return pending;
 }
 
+/** Set by `/coordinator summary`: the view asks for a summary the next time it opens. */
+let summaryOnOpen = false;
+
+export function requestSummaryOnOpen(): void {
+  summaryOnOpen = true;
+}
+
+/** Whether a summary was requested for this opening; clears the request. */
+export function takeSummaryOnOpen(): boolean {
+  const requested = summaryOnOpen;
+  summaryOnOpen = false;
+  return requested;
+}
+
 /** Interrupts and closes every open coordinator; called on exit. */
 export async function stopCoordinators(): Promise<void> {
   const all = [...opened.values()];

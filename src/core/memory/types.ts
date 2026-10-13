@@ -4,10 +4,13 @@ export type MemoryScope = "global" | "project";
  * Memory scope configuration.
  * - writeScope: where new memories are saved. Default 'project' (safer than global).
  * - readScope:  which memories are visible to recall.
+ * - shareWithRuns: opt-in exchange with workflow run memory (#818). Chat recall then also shows
+ *   what runs learned, and new runs read this project's pinned and decision/pref/gotcha memories.
  */
 export interface MemoryScopeConfig {
   writeScope: MemoryScope | "none";
   readScope: MemoryScope | "all" | "none";
+  shareWithRuns?: boolean;
 }
 
 export type MemoryCategory = "pref" | "decision" | "gotcha" | "context";
