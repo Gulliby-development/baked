@@ -372,6 +372,7 @@ export async function executeWorkflowCommand(
         routing: readRoutingSummary(service.store, runId),
         preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
+        forkStages: service.forkStages(runId),
         stopDetail:
           snapshot.status === "blocked" || snapshot.status === "failed"
             ? stopDetail(service.store, runId)
@@ -393,8 +394,10 @@ export async function executeWorkflowCommand(
       return service.pause(runId, identity());
     case "cancel":
       return service.cancel(runId, identity());
-    case "fork":
-      return service.fork(runId, identity());
+    case "fork": {
+      const fromStage = args.flags["from-stage"];
+      return service.fork(runId, identity(), typeof fromStage === "string" ? { fromStage } : {});
+    }
     case "continue": {
       // One more convergence round is a decision like accept: the run goes on unless `--no-resume`.
       // A token checkpoint keeps the old behavior and resumes only with `--resume`.

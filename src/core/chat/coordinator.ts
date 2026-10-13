@@ -27,10 +27,14 @@ const Line = z.string().trim().min(1).max(1000);
 export const LaunchedEntrySchema = z.strictObject({
   kind: z.enum(["session", "run", "initiative"]),
   id: z.string().trim().min(1).max(200),
+  /** A name a person reads instead of the id: the session's title, the run's request. */
+  title: z.string().trim().min(1).max(200).optional(),
   why: Line,
   status: z.string().trim().min(1).max(200),
   /** For a feature of the initiative `id`: the feature, tracked on its own task. */
   feature: z.string().trim().min(1).max(200).optional(),
+  /** For a session: how many of its answers the coordinator was told about. */
+  answers: z.number().int().min(0).optional(),
   /** The task the item belongs to: an issue (`owner/name#N`) or a local task without GitHub. */
   task: z
     .strictObject({
@@ -41,6 +45,33 @@ export const LaunchedEntrySchema = z.strictObject({
     .optional(),
 });
 export type LaunchedEntry = z.infer<typeof LaunchedEntrySchema>;
+
+/** One launched item is one entry: a session, run or initiative, or one feature of an initiative. */
+export const launchedKey = (entry: Pick<LaunchedEntry, "kind" | "id" | "feature">): string =>
+  `${entry.kind}:${entry.id}:${entry.feature ?? ""}`;
+
+/**
+ * Folds entries for the same item into the first one: the launch tools record what they start,
+ * and the model may record it again. The later entry adds a title or task the first one lacks.
+ */
+export function dedupeLaunched(entries: readonly LaunchedEntry[]): LaunchedEntry[] {
+  const byKey = new Map<string, LaunchedEntry>();
+  for (const entry of entries) {
+    const key = launchedKey(entry);
+    const first = byKey.get(key);
+    byKey.set(
+      key,
+      first
+        ? {
+            ...first,
+            ...(!first.title && entry.title ? { title: entry.title } : {}),
+            ...(!first.task && entry.task ? { task: entry.task } : {}),
+          }
+        : entry,
+    );
+  }
+  return [...byKey.values()];
+}
 
 export const BriefContentSchema = z.strictObject({
   decisions: z.array(Line).max(100),
@@ -88,7 +119,7 @@ export function renderBrief(brief: BriefContent): string {
           "### Launched work",
           ...brief.launched.map(
             (l, i) =>
-              `${i}. ${l.kind} ${l.id}${l.task ? ` (task ${l.task.ref}, ${l.task.state})` : ""} [${l.status}]: ${l.why.replace(/\s+/g, " ")}`,
+              `${i}. ${l.kind} ${l.id}${l.title ? ` "${l.title}"` : ""}${l.task ? ` (task ${l.task.ref}, ${l.task.state})` : ""} [${l.status}]: ${l.why.replace(/\s+/g, " ")}`,
           ),
           "",
         ]
@@ -114,7 +145,7 @@ export class BriefStore {
         decisions: raw.decisions ?? [],
         conventions: raw.conventions ?? [],
         openQuestions: raw.openQuestions ?? [],
-        launched: raw.launched ?? [],
+        launched: dedupeLaunched(raw.launched ?? []),
       });
       return {
         revision: typeof raw.revision === "number" ? raw.revision : 0,
@@ -134,7 +165,7 @@ export class BriefStore {
       decisions,
       conventions,
       openQuestions,
-      launched,
+      launched: dedupeLaunched(launched),
     });
     if (!parsed.success)
       throw new BriefError("INVALID_REQUEST", parsed.error.issues[0]?.message ?? "Invalid brief");
@@ -169,9 +200,9 @@ export class BriefStore {
 export function coordinatorInstructions(brief: ProjectBrief): string {
   return [
     "## Project coordinator",
-    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: start them with launch_session, start_run or start_initiative, one line of why each. When a request is large, propose_split it into flows with clear boundaries and let the user approve the split as one card instead of starting the pieces one by one. Every flow belongs to a task: give a flow the GitHub issue it does, or leave it out and approving the split creates one; when the user names issues to run, start_run with that issue or propose_split flows that name them; you cannot edit files or run commands here, and you never answer the approvals of what you launched. Answer questions about what is running or waiting with the project_state tool (start with its overview) rather than from memory.",
+    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: start them with launch_session, start_run or start_initiative, one line of why each. To add to or correct a session you launched, use message_session rather than launching another; its answer comes back to you in the launch note. When a request is large, propose_split it into flows with clear boundaries and let the user approve the split as one card instead of starting the pieces one by one. Every flow belongs to a task: give a flow the GitHub issue it does, or leave it out and approving the split creates one; when the user names issues to run, start_run with that issue or propose_split flows that name them; you cannot edit files or run commands here, and you never answer the approvals of what you launched. Answer questions about what is running or waiting with the project_state tool (start with its overview) rather than from memory.",
     "You can read everything in the project: project_state for runs, initiatives, sessions, what waits for a person and token usage; the code graph through bake_find, bake_grep, bake_analyze and bake_impact; git history, status and diffs through git's read actions; saved artifacts through artifact list and read; memory, skills and any project file through read. Look things up before you answer. Changing anything (editing files, committing, saving or deploying an artifact) is not yours: launch the work, and what you launch asks the user before it acts.",
-    `Keep the project brief current with the ${BRIEF_TOOL} tool: record decisions the user makes, project conventions, work you or the user launched with its id and status, and open questions. Keep each entry to one line, remove entries that no longer hold, and never repeat what the brief already says. The brief survives compaction and restarts; the conversation does not.`,
+    `Keep the project brief current with the ${BRIEF_TOOL} tool: record decisions the user makes, project conventions, work the user launched elsewhere with its id and status, and open questions. Your launch tools record what they start themselves, so do not add it again. Keep each entry to one line, remove entries that no longer hold, and never repeat what the brief already says. The brief survives compaction and restarts; the conversation does not.`,
     `### Project brief (revision ${brief.revision})`,
     renderBrief(brief),
   ].join("\n\n");
@@ -218,6 +249,8 @@ export function applyBriefEdit(content: BriefContent, args: BriefToolArgs): Brie
   }
   if (action === "add") items.push(entry);
   else items[index ?? 0] = entry;
+  // Adding an item that is already launched updates its entry instead of listing it twice.
+  if (section === "launched") next.launched = dedupeLaunched(next.launched);
   return next;
 }
 

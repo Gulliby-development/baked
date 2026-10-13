@@ -9,6 +9,7 @@ import {
   handoff,
   loopGates,
   loopText,
+  revealLeft,
   STATE_ICON,
   type Station,
   type StationGate,
@@ -166,9 +167,19 @@ export function Conveyor({
   }, [stations, loops]);
   const strip = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    strip.current
-      ?.querySelector(`[data-station="${CSS.escape(selected)}"]`)
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    // Only the strip scrolls sideways: scrollIntoView would also scroll the page to the belt.
+    const box = strip.current;
+    const station = box?.querySelector(`[data-station="${CSS.escape(selected)}"]`);
+    if (!box || !station) return;
+    const view = box.getBoundingClientRect();
+    const item = station.getBoundingClientRect();
+    const next = revealLeft(
+      box.scrollLeft,
+      box.clientWidth,
+      item.left - view.left + box.scrollLeft,
+      item.width,
+    );
+    if (next !== box.scrollLeft) box.scrollLeft = next;
   }, [selected]);
   const trayKey = tray?.key;
   const trayKind = tray?.kind;

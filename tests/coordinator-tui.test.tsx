@@ -205,9 +205,91 @@ describe("terminal coordinator view model", () => {
       200,
     );
     expect(line).toEqual({
-      text: "● run run-1: running · 12k tokens · acme/app#12 · Ship it",
+      text: "● Run run-1: running · 12k tokens · acme/app#12 · Ship it",
       tone: "accent",
     });
+  });
+
+  test("launched lines name a session by its title and colour a wait", () => {
+    const [line] = launchedLines(
+      [
+        {
+          kind: "session",
+          id: "e372f9bc-ae25-4098-96b0-3c7188fb7fd3",
+          title: "Deploy to Vercel",
+          why: "Publish the page",
+          status: "waiting for you",
+          active: true,
+          tokens: 900,
+        },
+      ],
+      200,
+    );
+    expect(line).toEqual({
+      text: '● Session "Deploy to Vercel": waiting for you · 900 tokens · Publish the page',
+      tone: "warning",
+    });
+  });
+
+  test("a launch notice is a marked headline with its why, not a raw id", () => {
+    const lines = messageLines(
+      [
+        {
+          id: "n",
+          role: "system",
+          content: "fallback",
+          timestamp: 0,
+          showInChat: true,
+          launch: {
+            kind: "session",
+            id: "e372f9bc-ae25-4098-96b0-3c7188fb7fd3",
+            status: "waiting for you",
+            why: "Publish the page",
+            event: "status",
+          },
+        },
+      ],
+      "",
+      80,
+    );
+    expect(lines.slice(0, 2)).toEqual([
+      { text: "  ◆ Session e372f9bc: waiting for you", tone: "warning" },
+      { text: "    Publish the page", tone: "muted" },
+    ]);
+  });
+
+  test("a launched session's answer shows under its note, cut to a few lines", () => {
+    const lines = messageLines(
+      [
+        {
+          id: "n",
+          role: "system",
+          content: "fallback",
+          timestamp: 0,
+          launch: {
+            kind: "session",
+            id: "s1",
+            title: "Survey",
+            status: "done",
+            why: "Survey",
+            result: Array.from({ length: 9 }, (_, i) => `line ${i + 1}`).join("\n"),
+            event: "status",
+          },
+        },
+      ],
+      "",
+      80,
+    ).map((l) => l.text);
+    expect(lines.slice(0, 8)).toEqual([
+      '  ◆ Session "Survey": done',
+      "    │ line 1",
+      "    │ line 2",
+      "    │ line 3",
+      "    │ line 4",
+      "    │ line 5",
+      "    │ line 6",
+      "    │ … 3 more lines",
+    ]);
   });
 
   test("messages label the speaker and list tool calls", () => {

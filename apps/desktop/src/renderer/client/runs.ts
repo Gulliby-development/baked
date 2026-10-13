@@ -71,6 +71,11 @@ export interface RunDetailStatus extends Omit<RunStatus, "requests"> {
    * src/core/workflows/routing.ts). Null before routing was recorded; absent from older backends.
    */
   routing?: RunRouting | null;
+  /**
+   * The stages after the implementation a fork can start at (`forkStages` in
+   * src/core/workflows/fork-stage.ts); absent from older backends.
+   */
+  forkStages?: string[];
 }
 
 export interface RunRouting {
@@ -282,11 +287,15 @@ export const runs = {
       expectedRevision: run.revision,
       ...decision,
     }),
-  /** A new run from this one's spec and plan; it waits for a new approval. Returns the new run. */
-  fork: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>
+  /**
+   * A new run from this one's spec and plan; it waits for a new approval. With `fromStage` it
+   * starts at that stage with this run's approval and changes instead. Returns the new run.
+   */
+  fork: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, fromStage?: string) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "fork"), {
       commandId: crypto.randomUUID(),
       expectedRevision: run.revision,
+      ...(fromStage ? { fromStage } : {}),
     }),
   /** Removes an ended run's worktree and deletes its branch. */
   discardWorktree: (key: string, run: Pick<RunSnapshot, "runId" | "revision">) =>

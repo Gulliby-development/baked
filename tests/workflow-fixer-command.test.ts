@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fixerCommand } from "../src/core/workflows/check-policy.js";
+import { fixerCommand, isWholeUnitFixer, wholeUnitFixerCommand } from "../src/core/workflows/check-policy.js";
 import { detectGates } from "../src/core/workflows/gates.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 
@@ -100,5 +100,24 @@ describe("the fixer command formats a file with the real tool", () => {
     const command = fixerCommand({ executable: "go", args: ["fmt", "./..."] }, "a.go");
     expect(Bun.spawnSync([command.executable, ...command.args], { cwd: root }).exitCode).toBe(0);
     expect(readFileSync(join(root, "a.go"), "utf8").replace(/\r\n/g, "\n")).toBe("package m\n\nfunc A() {}\n");
+  });
+});
+
+// Bench round 13, mdrefs T010: apply_fix ran `cargo fmt` of the whole crate once per README,
+// LICENSE and test file.
+describe("a fixer that formats its whole package", () => {
+  test("cargo fmt is one, and runs once for all the task's files", () => {
+    const fix = { executable: "cargo", args: ["fmt"] };
+    expect(isWholeUnitFixer(fix)).toBe(true);
+    expect(isWholeUnitFixer({ executable: "C:\\cargo\\bin\\cargo.exe", args: ["fmt"] })).toBe(true);
+    expect(wholeUnitFixerCommand(fix, ["src/a.rs", "tests/b.rs"])).toEqual({
+      executable: "cargo",
+      args: ["fmt", "--", "src/a.rs", "tests/b.rs"],
+    });
+  });
+  test("file formatters and a cargo fmt with its own file list are not", () => {
+    expect(isWholeUnitFixer({ executable: "ruff", args: ["format"] })).toBe(false);
+    expect(isWholeUnitFixer({ executable: "cargo", args: ["clippy", "--fix"] })).toBe(false);
+    expect(isWholeUnitFixer({ executable: "cargo", args: ["fmt", "--", "src/lib.rs"] })).toBe(false);
   });
 });
