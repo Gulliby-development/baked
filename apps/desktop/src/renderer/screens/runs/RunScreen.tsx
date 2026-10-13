@@ -410,6 +410,28 @@ function Models({
   );
 }
 
+/** The advisory checks that could not start when the run began; a required one refuses the start. */
+function StartChecks({ data }: { data: RunData }) {
+  const failed = (data.artifacts.preflight ?? []).filter(
+    (c) => c.status === "not_found" || c.status === "cannot_start",
+  );
+  if (!failed.length) return null;
+  return (
+    <Panel title="Checks at start">
+      <ul className={SMALL_SUB}>
+        {failed.map((c) => (
+          <li key={c.checkId}>
+            <span className="font-mono">{c.checkId}</span>: {c.executable}{" "}
+            {c.status === "not_found"
+              ? "was not found on the PATH"
+              : `cannot start (${c.detail ?? "spawn failed"})`}
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
 function Activity({ trace }: { trace: RunTrace }) {
   const lines = trace.activity.slice(-12).reverse();
   return (
@@ -574,6 +596,7 @@ function RunMeter({
         >
           <Budget projectKey={projectKey} data={data} onDone={refresh} />
           <Models projectKey={projectKey} data={data} onDone={refresh} />
+          <StartChecks data={data} />
           <Activity trace={trace} />
         </div>
       )}
