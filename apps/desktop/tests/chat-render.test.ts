@@ -195,6 +195,18 @@ describe("undo and redo reports", () => {
     ]);
   });
 
+  test("files inside the project are named from the project folder", () => {
+    const skipped = (path: string) => ({ ...report, skipped: [{ path, reason: "kept" }] });
+    expect(rewindReportLines("undo", skipped("C:\\Users\\me\\second proj\\d-b.txt"), "C:\\Users\\me\\second proj")[1]).toBe(
+      "Left d-b.txt as it is: kept.",
+    );
+    expect(rewindReportLines("undo", skipped("c:/users/me/second proj/src/x.ts"), "C:\\Users\\me\\second proj\\")[1]).toBe(
+      "Left src/x.ts as it is: kept.",
+    );
+    expect(rewindReportLines("undo", skipped("/w/sub/local.env"), "/w")[1]).toBe("Left sub/local.env as it is: kept.");
+    expect(rewindReportLines("undo", skipped("/other/a/b.txt"), "/w")[1]).toBe("Left a/b.txt as it is: kept.");
+  });
+
   test("the rewind event is parsed", () => {
     expect(
       parseChatEvent({

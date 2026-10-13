@@ -487,10 +487,15 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
             ...(worktree ? { worktree: true } : {}),
           }),
         ),
-      startInitiative: async ({ initiativeId, prompt, plan, approveSplit }) => {
+      startInitiative: async ({ initiativeId, prompt, plan, approveSplit, featureIssues }) => {
         let view = await initiatives.start(
           initiativeStartRequest(
-            { initiativeId, prompt, ...(plan ? { plan } : {}) },
+            {
+              initiativeId,
+              prompt,
+              ...(plan ? { plan } : {}),
+              ...(featureIssues ? { featureIssues } : {}),
+            },
             service.config,
             {
               commandId: crypto.randomUUID(),

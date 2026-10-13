@@ -324,6 +324,57 @@ describe("coordinator tasks", () => {
     expect(features).toEqual(["issue-120-task-120", "issue-201-task-201"]);
   }, 60000);
 
+  test("an approved dependent split gives each feature its issue and tracks each task", async () => {
+    const tasks = new FakeTasks();
+    const { chat, coordinator, tool, server } = await setup(5, tasks);
+    const request = split([flow("api", ["src/api/**"]), flow("ui", ["src/ui/**"], ["api"]), flow("docs", ["docs/**"])]);
+    const pending = tool("propose_split").execute({
+      ...request,
+      flows: [{ ...request.flows[0], issue: "#120" }, request.flows[1], request.flows[2]],
+    } as unknown as Record<string, unknown>);
+    await Bun.sleep(10);
+    const card = coordinator.pendingPrompts[0];
+    if (!card || card.kind !== "split") throw new Error("no split card");
+    coordinator.answer(card.id, { approve: true, digest: card.digest });
+    expect(await pending).toMatchObject({ success: true });
+
+    const launched = new BriefStore(chat.workspace, coordinator.id).read().launched;
+    expect(launched.map((l) => [l.kind, l.id, l.feature ?? null, l.task?.ref ?? null])).toEqual([
+      ["initiative", "checkout", null, null],
+      ["initiative", "checkout", "api", "acme/widget#120"],
+      ["initiative", "checkout", "ui", "acme/widget#201"],
+      ["initiative", "checkout", "docs", "acme/widget#202"],
+    ]);
+    const view = (await (
+      await fetch(`${server.url}/v1/initiatives/checkout`, { headers: { Authorization: `Bearer ${server.token}` } })
+    ).json()) as { features: { id: string; issue: { repository: string; number: number } | null }[] };
+    expect(view.features.map((f) => [f.id, f.issue?.number ?? null])).toEqual([
+      ["api", 120],
+      ["ui", 201],
+      ["docs", 202],
+    ]);
+  }, 60000);
+
+  test("an accepted feature's issue closed by its merge is reported like a run's", async () => {
+    const fixture = workflowFixture();
+    cleanups.push(() => fixture.dispose());
+    const chat = new ChatService({ workspace: fixture.root, config: { ...fixture.service.config, defaultModel: "openai/gpt-test" }, host: new RecordingHost(), homeDir: fixture.root });
+    const coordinator = await chat.coordinator(true);
+    if (!coordinator) throw new Error("no coordinator");
+    const store = new BriefStore(chat.workspace, coordinator.id);
+    const task: FlowTask = { ref: "acme/widget#120", state: "open" };
+    store.write({ ...store.read(), launched: [{ kind: "initiative", id: "checkout", feature: "api", why: "Build api", status: "started", task }] }, 0);
+    const state = {
+      initiative: () => ({ features: [{ id: "api", state: "accepted", pendingRequests: [], usage: { tokens: 9 } }] }),
+    } as unknown as ProjectStateSource;
+    const tasks = new FakeTasks();
+    tasks.closedRefs.add("acme/widget#120");
+    expect(await syncLaunched(chat, coordinator, state, tasks)).toEqual([
+      "feature api of initiative checkout (acme/widget#120): completed (Build api)",
+      "task acme/widget#120 closed: the pull request of feature api of initiative checkout (acme/widget#120) merged",
+    ]);
+  });
+
   test("without a token every flow gets a local task; a closed issue cannot be linked", async () => {
     const tasks = new FakeTasks(null);
     tasks.closedRefs.add("acme/widget#7");

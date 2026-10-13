@@ -424,6 +424,21 @@ describe("initiative runtime", () => {
     expect(t.featureOf(view, "core").state).toBe("needs_decision");
   });
 
+  test("a feature with an issue starts its run from it, so delivery closes it; the plan digest stays the same", async () => {
+    const issue = { repository: "acme/widget", number: 7, url: "https://github.com/acme/widget/issues/7", title: "Core values" };
+    const plain = setup();
+    const without = await plain.start({ plan: threeFeatures });
+    const t = setup();
+    const view0 = await t.start({ plan: threeFeatures, featureIssues: { core: issue } });
+    expect(view0.planDigest).toBe(without.planDigest);
+    await t.approveSplit();
+    const view = await t.drive();
+    const runId = t.featureOf(view, "core").runId ?? "";
+    expect(t.workflows.store.state(runId).issue).toEqual(issue);
+    await expect(t.start({ initiativeId: "other", plan: threeFeatures, featureIssues: { nope: issue } })).rejects.toThrow("nope");
+    await expect(t.start({ initiativeId: "third", featureIssues: { core: issue } })).rejects.toThrow("plan");
+  });
+
   test("re-planning the split after approval keeps unchanged finished features", async () => {
     const t = setup();
     await t.start({ plan: plan([feature("core"), feature("api", ["core"]), feature("docs"), feature("extra")]) });

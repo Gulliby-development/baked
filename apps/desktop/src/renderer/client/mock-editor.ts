@@ -27,6 +27,8 @@ interface MockStage {
   profileId?: string;
   decision?: "human" | "auto";
   gates?: Binding[];
+  intervalSeconds?: number;
+  timeoutMinutes?: number;
 }
 interface MockTransition {
   id: string;
@@ -56,6 +58,7 @@ const OUTCOMES: Record<StageType, Outcome[]> = {
   approval: ["passed"],
   learn: ["passed"],
   check: ["passed", "failed"],
+  wait: ["passed", "failed"],
   review: ["passed", "changes_requested"],
   reflection: ["passed", "changes_requested"],
 };
@@ -141,8 +144,7 @@ const summary = (gateId: string) => {
 };
 
 function targetsOf(d: MockDefinition, stage: MockStage): GateTarget[] {
-  const own: GateTarget[] =
-    stage.type === "check" || stage.type === "review" ? [{ kind: "stage", stageId: stage.id }] : [];
+  const own: GateTarget[] = stage.gates ? [{ kind: "stage", stageId: stage.id }] : [];
   return [
     ...own,
     ...d.transitions
@@ -163,6 +165,8 @@ function restriction(d: MockDefinition, target: GateTarget, gateId: string): str
     const stage = d.stages.find((s) => s.id === target.stageId);
     if (stage?.type === "check" && gate.type !== "command")
       return "a check stage runs command gates only";
+    if (stage?.type === "wait" && gate.type !== "command")
+      return "a wait stage polls command gates only";
     if (stage?.type === "review" && gate.type !== "ai-review")
       return "a review stage runs AI review gates only";
     if (gate.scope === "task") return "a task gate runs after each task, not in a stage";
@@ -178,7 +182,7 @@ function restriction(d: MockDefinition, target: GateTarget, gateId: string): str
 function problems(d: MockDefinition): ProblemGroup[] {
   const groups: ProblemGroup[] = [];
   for (const s of d.stages)
-    if ((s.type === "check" || s.type === "review") && !s.gates?.length)
+    if (s.gates && !s.gates.length)
       groups.push({ owner: `stage ${s.id}`, messages: ["needs at least one gate"] });
   for (const s of d.stages)
     if (!d.transitions.some((t) => t.from === s.id && t.on === "passed"))
@@ -217,6 +221,22 @@ function view(d: MockDefinition, from: string, copy: boolean, readOnly: string |
                 label: "Decision",
                 value: stage.decision,
                 hint: "human, or auto within limits",
+              },
+            ]
+          : []),
+        ...(stage.type === "wait"
+          ? [
+              {
+                key: "interval",
+                label: "Interval",
+                value: `${stage.intervalSeconds ?? 30}s`,
+                hint: "how often its gates run, 5 s to 1 h",
+              },
+              {
+                key: "timeout",
+                label: "Timeout",
+                value: `${stage.timeoutMinutes ?? 30} min`,
+                hint: "then it ends failed, 1 min to 24 h",
               },
             ]
           : []),
@@ -329,6 +349,37 @@ function apply(d: MockDefinition, op: EditorOp): string | null {
     case "removeTransition":
       d.transitions = d.transitions.filter((t) => t.id !== op.id);
       return null;
+    case "addWaitStage": {
+      const out = d.transitions.filter((t) => t.from === op.after && t.on === "passed" && !t.loop);
+      const edge = out[0];
+      if (!edge || out.length > 1)
+        return `${op.after} needs exactly one passed transition to insert a wait stage after it`;
+      let id = "wait";
+      for (let n = 2; d.stages.some((s) => s.id === id); n++) id = `wait-${n}`;
+      const at = d.stages.findIndex((s) => s.id === op.after) + 1;
+      d.stages.splice(at, 0, {
+        id,
+        type: "wait",
+        produces: "gates",
+        gates: [],
+        intervalSeconds: 30,
+        timeoutMinutes: 30,
+      });
+      d.transitions.push({ id: `${id}-passed`, from: id, to: edge.to, on: "passed", gates: [] });
+      edge.to = id;
+      return null;
+    }
+    case "removeWaitStage": {
+      const stage = d.stages.find((s) => s.id === op.stageId);
+      if (stage?.type !== "wait") return "Only a wait stage can be removed here";
+      const onward = d.transitions.find((t) => t.from === op.stageId && t.on === "passed");
+      if (!onward) return `${op.stageId} has no passed transition to reconnect`;
+      d.stages = d.stages.filter((s) => s.id !== op.stageId);
+      d.transitions = d.transitions
+        .filter((t) => t.from !== op.stageId)
+        .map((t) => (t.to === op.stageId ? { ...t, to: onward.to } : t));
+      return null;
+    }
     case "changeField": {
       const stage = d.stages.find((s) => s.id === op.stageId);
       if (op.key === "decision" && stage?.decision) {
@@ -336,6 +387,16 @@ function apply(d: MockDefinition, op: EditorOp): string | null {
         d.autoApproval = d.stages.some((s) => s.decision === "auto")
           ? { enabled: true, maxTasks: 3 }
           : null;
+        return null;
+      }
+      if (stage?.type === "wait" && (op.key === "interval" || op.key === "timeout")) {
+        const steps =
+          op.key === "interval"
+            ? [5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
+            : [1, 5, 10, 15, 30, 60, 120, 240, 480, 720, 1440];
+        const field = op.key === "interval" ? "intervalSeconds" : "timeoutMinutes";
+        const index = Math.max(0, steps.indexOf(stage[field] ?? 30));
+        stage[field] = steps[(index + op.delta + steps.length) % steps.length];
         return null;
       }
       if (op.key.startsWith("loop:")) {
