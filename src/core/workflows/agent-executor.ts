@@ -17,6 +17,7 @@ import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { hasToolHooks } from "../hooks/index.js";
+import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
 import { resolveModel } from "../llm/provider.js";
 import {
   buildProviderOptions,
@@ -123,6 +124,8 @@ export const outputSchemas: Record<string, z.ZodType> = {
   distinction: DistinctionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+/** Submissions refused because a written file does not parse; the next one is accepted (#977). */
+const MAX_SYNTAX_REFUSALS = 2;
 
 /** Workspace paths an attempt's applied file edits wrote, in first-write order. */
 export function appliedPaths(effects: readonly EffectRow[], attemptId: string): string[] {
@@ -134,6 +137,26 @@ export function appliedPaths(effects: readonly EffectRow[], attemptId: string): 
     if (typeof path === "string" && !paths.includes(path)) paths.push(path);
   }
   return paths;
+}
+/** Appends the syntax errors an edit left in its file to the edit tool's output (#977). */
+async function withSyntaxNote(
+  result: unknown,
+  regressions: () => Promise<string[]>,
+): Promise<unknown> {
+  const edited = result as { success?: unknown; output?: unknown } | null;
+  if (!edited || typeof edited !== "object" || edited.success !== true) return result;
+  if (typeof edited.output !== "string") return result;
+  let errors: string[];
+  try {
+    errors = await regressions();
+  } catch {
+    return result;
+  }
+  if (!errors.length) return result;
+  return {
+    ...edited,
+    output: `${edited.output}\n\nSyntax check: the file does not parse after this edit:\n${errors.join("\n")}\nFix it before submit_result, which refuses a written file that does not parse.`,
+  };
 }
 /** Read-only steps in a row before an implementer is told to edit. */
 const EDIT_NUDGE_AFTER_READS = 4;
@@ -317,6 +340,45 @@ export class NativeAgentExecutor implements AgentExecutor {
         },
       );
       const available: ToolSet = {};
+      // Syntax error count of each file before this attempt's first edit of it (#977): an edit is
+      // blamed only for errors the file did not already have, such as syntax the grammar predates.
+      const syntaxBefore = new Map<string, Promise<number>>();
+      const noteSyntaxBaseline = (name: string, args: Record<string, unknown>) => {
+        if (!["edit_file", "multi_edit"].includes(name) || typeof args.path !== "string") return;
+        let path: string;
+        try {
+          path = guard.path(args.path);
+        } catch {
+          return;
+        }
+        if (syntaxBefore.has(path) || !syntaxCheckable(path)) return;
+        let content: string | null = null;
+        try {
+          content = readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          // A new file has no errors of its own yet.
+        }
+        syntaxBefore.set(
+          path,
+          content === null
+            ? Promise.resolve(0)
+            : syntaxErrors(path, content).then((errors) => errors.length),
+        );
+      };
+      /** `path:line:column: message` for each syntax error the attempt's edits left in `path`. */
+      const syntaxRegressions = async (path: string): Promise<string[]> => {
+        if (!syntaxCheckable(path)) return [];
+        let content: string;
+        try {
+          content = readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          return [];
+        }
+        const errors = await syntaxErrors(path, content);
+        if (!errors.length) return [];
+        const before = await (syntaxBefore.get(path) ?? Promise.resolve(0));
+        return errors.length > before ? formatSyntaxErrors(path, errors) : [];
+      };
       // Which code intelligence backend (and language server) answered each tool, for usage.
       const backends = new Map<string, ToolBackendCount>();
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
@@ -362,6 +424,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                       : f,
                 );
               const editMode = policy.editDiagnostics ?? "feedback";
+              noteSyntaxBaseline(name, args);
               let result = await withEditDiagnosticsMode(editMode, () =>
                 guard.execute(name, args, async () => {
                   if (name !== "read" || !Array.isArray(normalized.files))
@@ -403,6 +466,10 @@ export class NativeAgentExecutor implements AgentExecutor {
                 count.calls++;
                 backends.set(key, count);
               }
+              if (["edit_file", "multi_edit"].includes(name) && typeof args.path === "string")
+                result = await withSyntaxNote(result, () =>
+                  syntaxRegressions(guard.path(args.path as string)),
+                );
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {
@@ -689,6 +756,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       let rejected = 0;
       let taskEndChecked = false;
       let editsNoted = false;
+      let syntaxRefusals = 0;
+      let lastSyntaxRefusal = "";
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -737,6 +806,36 @@ export class NativeAgentExecutor implements AgentExecutor {
                 instruction:
                   "Check the files as they are now. If the task is done, submit outcome implemented; if something is still missing, finish it with BAKED's edit tools or submit blocked naming what remains, not that no changes were made. The next submission is accepted.",
               };
+          }
+          // A file this attempt wrote that does not parse is refused here, in the attempt that
+          // broke it, not found by a whole-unit check after another task (#977). The same errors
+          // submitted again pass: the grammar may predate valid syntax the file uses.
+          if (!errors.length && request.task && outcome === "implemented") {
+            const written = appliedPaths(this.store.effects(request.runId), request.attemptId);
+            const broken = (await Promise.all(written.map(syntaxRegressions))).flat();
+            const key = broken.join("\n");
+            if (broken.length) {
+              const refuse = syntaxRefusals < MAX_SYNTAX_REFUSALS && key !== lastSyntaxRefusal;
+              if (refuse) {
+                syntaxRefusals++;
+                lastSyntaxRefusal = key;
+              }
+              this.store.transaction(() =>
+                this.store.artifact(
+                  request.runId,
+                  "diagnostic",
+                  `attempts/${request.attemptId}/syntax-${crypto.randomUUID()}.json`,
+                  canonical({ accepted: !refuse, errors: broken }),
+                ),
+              );
+              if (refuse)
+                return {
+                  accepted: false,
+                  errors: broken.map((line) => `Syntax error: ${line}`),
+                  instruction:
+                    "These files written by this task do not parse. Fix each listed line, then call submit_result again with the complete result. If the code is valid and only newer than the syntax checker, submit again unchanged: the same errors are not refused twice.",
+                };
+            }
           }
           if (
             !errors.length &&
