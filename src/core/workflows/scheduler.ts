@@ -246,6 +246,8 @@ import {
   QUALITY_RULES,
   type RuleFinding,
   ruleClaim,
+  ruleClaimKey,
+  ruleFindingKey,
 } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
@@ -7484,6 +7486,33 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const root = runRoot(this.store.workspace, state);
     const changed = await this.changedFiles(runId, state, isCodePath);
     const result = checkQualityRules(root, changed, policy.qualityRules ?? {});
+    // A deterministic rule that still matches the same text after its correction would only ask
+    // again: it stays in the report and becomes a known limitation (#845).
+    const earlier = new Map<string, ReturnType<WorkflowStore["findings"]>[number]>();
+    for (const finding of this.store.findings(runId)) {
+      const key = ruleClaimKey(JSON.parse(finding.body_json).claim);
+      if (key && !earlier.has(key)) earlier.set(key, finding);
+    }
+    for (const match of result.findings) {
+      const before = match.blocking ? earlier.get(ruleFindingKey(match)) : undefined;
+      if (!before) continue;
+      match.blocking = false;
+      match.kept = true;
+      if (state.limitations.some((l) => l.findingId === before.id)) continue;
+      const body = JSON.parse(before.body_json) as Review["findings"][number];
+      state.limitations.push({
+        findingId: before.id,
+        severity: body.severity,
+        kind: body.kind,
+        criterionIds: body.criterionIds,
+        file: body.file,
+        symbol: body.symbol,
+        claim: body.claim,
+        impact: "The rule still matched the same text after its correction",
+        decidedBy: "rule",
+        round: this.store.run(runId).convergence_rounds,
+      });
+    }
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(runId, "quality", QUALITY_RULES, canonical(result));
       return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
