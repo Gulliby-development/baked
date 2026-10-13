@@ -58,6 +58,7 @@ import {
   runRepro,
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
+import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { outputSchemas } from "./agent-executor.js";
@@ -1417,16 +1418,25 @@ export class WorkflowScheduler {
               }
               // Below the severity floor a finding still repairs when it is why a criterion fails:
               // acceptance needs every automated criterion to pass.
-              const findings = this.recordFindings(
-                runId,
-                review,
-                review.findings.filter(
-                  (f) =>
-                    !notes.has(f.id) &&
-                    ((severities.includes(f.severity) &&
-                      findingBlocks(f, policy.reviewMinConfidence)) ||
-                      f.criterionIds.some((id) => failing.has(id))),
-                ),
+              const repair = review.findings.filter(
+                (f) =>
+                  !notes.has(f.id) &&
+                  ((severities.includes(f.severity) &&
+                    findingBlocks(f, policy.reviewMinConfidence)) ||
+                    f.criterionIds.some((id) => failing.has(id))),
+              );
+              const findings = this.recordFindings(runId, review, repair);
+              const kept = new Set([...repair, ...noted].map((f) => f.id));
+              addReviewNotes(
+                state.reviewNotes,
+                "convergence",
+                state.snapshotId,
+                review.findings
+                  .filter((f) => !kept.has(f.id))
+                  .map((finding) => ({
+                    finding,
+                    reason: noteReason(finding, severities, policy.reviewMinConfidence),
+                  })),
               );
               if (findings.length) {
                 repairFindings = { findings, kind: "convergence" };
@@ -5962,6 +5972,24 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           );
         const blocking = candidates.filter((f) =>
           reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0),
+        );
+        const repaired = new Set(blocking.map((f) => f.id));
+        addReviewNotes(
+          state.reviewNotes,
+          reviewer.dimension,
+          reviewSnapshotId,
+          result.findings
+            .filter((f) => !repaired.has(f.id))
+            .map((finding) => ({
+              finding,
+              reason: reviewer.required
+                ? noteReason(
+                    finding,
+                    severities.filter((s) => reviewer.blocking.includes(s)),
+                    policy.reviewMinConfidence,
+                  )
+                : "advisory",
+            })),
         );
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);
