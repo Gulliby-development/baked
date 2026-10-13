@@ -416,7 +416,8 @@ export async function executeWorkflowCommand(
         ...(number("tokens") !== undefined ? { maxTotalTokens: number("tokens") } : {}),
         ...(number("calls") !== undefined ? { maxAgentCalls: number("calls") } : {}),
         ...(number("time-ms") !== undefined ? { maxActiveMs: number("time-ms") } : {}),
-      } as Partial<BudgetLimits>);
+        ...(number("cost-usd") !== undefined ? { maxCostUsd: number("cost-usd") } : {}),
+      } as Partial<BudgetLimits> & { maxCostUsd?: number });
       if (args.flags.resume !== true) return extended;
       await service.resume(runId, { commandId: newId(), expectedRevision: extended.revision });
       onDrive?.(runId);

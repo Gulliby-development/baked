@@ -34,6 +34,8 @@ import {
   toggleMode,
   validateEditor,
   writeDefinitionFile,
+  insertStage,
+  removeStage,
   setLoopRounds,
 } from "../src/core/workflows/v2/editor.js";
 import { WorkflowV2Schema } from "../src/core/workflows/v2/definition.js";
@@ -318,6 +320,36 @@ describe("workflow editor", () => {
     state = ok(removeWaitStage(state, "wait"));
     expect(state.definition.stages.some((s) => s.type === "wait")).toBe(false);
     expect(state.definition.transitions).toEqual(source.definition.transitions);
+  });
+
+  test("a check, review or approval station goes into a forward arrow and comes out again", () => {
+    const { open } = setup();
+    const source = duplicateAsCustom(open("standard"));
+    let state = ok(insertStage(source, "checks-review", "check"));
+    const ids = state.definition.stages.map((s) => s.id);
+    expect(ids.indexOf("check")).toBe(ids.indexOf("checks") + 1);
+    expect(state.definition.transitions.find((t) => t.id === "checks-review")?.to).toBe("check");
+    expect(state.definition.transitions.find((t) => t.id === "check-passed")).toMatchObject({ from: "check", to: "review", on: "passed", carries: "gates" });
+    expect(validateEditor(state).flatMap((g) => g.messages)).toContain("needs at least one gate");
+    state = ok(addGate(state, stageTarget("check"), "tests"));
+    expect(validateEditor(state)).toEqual([]);
+
+    state = ok(insertStage(state, "check-passed", "review"));
+    expect(state.definition.stages.find((s) => s.id === "review-2")).toMatchObject({ type: "review", produces: "review", gates: [] });
+    expect(state.definition.transitions.find((t) => t.id === "review-2-passed")).toMatchObject({ to: "review", carries: "review" });
+
+    state = ok(insertStage(state, "plan-analyze", "approval"));
+    expect(state.definition.stages.find((s) => s.id === "approve-2")).toMatchObject({ type: "approval", decision: "human", consumes: ["plan"], covers: ["implement"] });
+
+    expect(insertStage(state, "checks-repair", "check").error).toBe("A station goes on a forward arrow, not on a loop");
+    expect(insertStage(state, "nope", "check").error).toBe("Unknown transition nope");
+
+    state = ok(removeStage(state, "approve-2"));
+    state = ok(removeStage(state, "review-2"));
+    state = ok(removeStage(state, "check"));
+    expect(state.definition.stages).toEqual(source.definition.stages);
+    expect(state.definition.transitions).toEqual(source.definition.transitions);
+    expect(removeStage(state, "review").error).toBeUndefined();
   });
 
   test("the cursor moves per pane and a new stage resets the panes to its right", () => {

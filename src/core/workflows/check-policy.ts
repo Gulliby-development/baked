@@ -4,11 +4,6 @@ import type { RunPolicy, TaskGraph } from "./schemas.js";
 import type { Check, Task } from "./types.js";
 
 export function validateChecks(workspace: string, policy: RunPolicy, graph?: TaskGraph): void {
-  if (policy.maxCostUsd !== null)
-    throw new WorkflowFault(
-      "INVALID_DEFINITION",
-      "A dollar cap requires verified model pricing; maxCostUsd must be null",
-    );
   const ids = new Set<string>();
   for (const check of policy.checks) {
     if (ids.has(check.id))

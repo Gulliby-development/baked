@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ApprovalRulesContentSchema } from "../chat/approval-rules.js";
 import { BriefContentSchema } from "../chat/coordinator.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
@@ -8,6 +9,7 @@ import { MAX_CANDIDATES } from "../workflows/candidates.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 import { MAX_LOOP_ROUNDS } from "../workflows/v2/definition.js";
+import { INSERTABLE_STAGES } from "../workflows/v2/editor.js";
 
 /** Every mutation names a client-chosen command ID; a retry with the same ID returns the first result. */
 const Command = z.object({
@@ -86,6 +88,8 @@ export const ExtendBody = Command.extend({
   tokens: PositiveInt.optional(),
   calls: PositiveInt.optional(),
   timeMs: PositiveInt.optional(),
+  /** A new cost cap in USD, for a run started with one. */
+  costUsd: z.number().positive().optional(),
 }).strict();
 
 /** A new run model and/or stage routes (stage ID to model or `$class`), as `workflow reroute`. */
@@ -159,6 +163,9 @@ export const CreateSessionBody = z.strictObject({
 });
 export const CoordinatorBody = z.strictObject({ model: ModelId.optional() });
 export const BriefBody = BriefContentSchema.extend({
+  expectedRevision: z.number().int().min(0),
+});
+export const ApprovalRulesBody = ApprovalRulesContentSchema.extend({
   expectedRevision: z.number().int().min(0),
 });
 export const UpdateSessionBody = z
@@ -277,6 +284,12 @@ export const EditorOpBody = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("removeTransition"), id: z.string().min(1).max(200) }),
   z.strictObject({ op: z.literal("addWaitStage"), after: SafeId }),
   z.strictObject({ op: z.literal("removeWaitStage"), stageId: SafeId }),
+  z.strictObject({
+    op: z.literal("addStage"),
+    stageType: z.enum(INSERTABLE_STAGES),
+    transition: z.string().min(1).max(200),
+  }),
+  z.strictObject({ op: z.literal("removeStage"), stageId: SafeId }),
   z.strictObject({
     op: z.literal("changeField"),
     stageId: SafeId,

@@ -30,10 +30,27 @@ export function presetPropertyTests(preset: string): PropertyTestsMode {
     ? "auto"
     : "off";
 }
+/**
+ * Whether the request forbids property-based or generated tests ("plain example tests only", "no
+ * property-based tests"). The request is authoritative: such a run has the mode `off`, so no
+ * criterion is marked and no task is asked for one (envguard 8b8b7022, bench round 15: the spec
+ * marked criteria `property`, the worker met the brief's ban and stopped with spec_conflict).
+ */
+export function bansPropertyTests(request: string): boolean {
+  return (
+    /\b(?:no|not|never|without|avoid|don't|do not|forbid\w*|ban\w*)\b[^.\n]{0,60}\b(?:property[- ]based|property tests?|generative|generated tests?|fuzz(?:ing|ed)? tests?|hypothesis|fast-check|quickcheck|proptest)\b/i.test(
+      request,
+    ) ||
+    /\b(?:only|plain|just)\s+(?:\w+\s+){0,2}example(?:[- ]based)?\s+tests?\b/i.test(request) ||
+    /\bexample(?:[- ]based)?\s+tests?\s+only\b/i.test(request)
+  );
+}
 export const propertyTestsOf = (
   policy: { propertyTests?: PropertyTestsMode | undefined },
   preset: string,
-): PropertyTestsMode => policy.propertyTests ?? presetPropertyTests(preset);
+  request = "",
+): PropertyTestsMode =>
+  bansPropertyTests(request) ? "off" : (policy.propertyTests ?? presetPropertyTests(preset));
 
 /** The property library of each language, as the instructions name it and the host finds it. */
 const LIBRARIES: readonly {
