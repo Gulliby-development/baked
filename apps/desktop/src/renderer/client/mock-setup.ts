@@ -1621,6 +1621,26 @@ export const setupRoutes: MockRoute = (request) => {
     }
     case "GET /v1/projects/current/instructions":
       return response(200, instructionList(s));
+    case "GET /v1/projects/current/context": {
+      const read = instructionList(s).files.filter((f) => f.enabled);
+      const rules = read.map((f) => `[${f.path}]\n${f.content}`).join("\n\n");
+      const ws = s.summary.workingSet;
+      const files = ws.files.length
+        ? [
+            `<working_set project="${s.summary.id}">`,
+            ...ws.files.map((f) => `<file path="${f.path}">\n…\n</file>`),
+            "</working_set>",
+          ].join("\n")
+        : null;
+      const part = (text: string) => ({ text, bytes: new TextEncoder().encode(text).length });
+      const instructions = part(rules);
+      const workingSet = files === null ? null : part(files);
+      return response(200, {
+        instructions,
+        workingSet,
+        bytes: instructions.bytes + (workingSet?.bytes ?? 0),
+      });
+    }
     case "PUT /v1/projects/current/instructions/sources": {
       const put = body<{ source: string; enabled: boolean }>(request);
       const id = put.source ?? "";

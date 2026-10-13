@@ -20,8 +20,6 @@ import {
   LINE,
   LIST,
   LoadState,
-  NOTE,
-  ROW,
   SETUP,
   STACK,
   Tag,
@@ -35,7 +33,8 @@ const FIT_LABEL = {
   "over-budget": "over budget: listed by name",
 } as const;
 
-export function WorkingSetSection({ project }: SectionProps) {
+/** The Files tab of the Agent context screen: the working set's entries and the files they match. */
+export function WorkingSetPane({ project }: Pick<SectionProps, "project">) {
   const [summary, , setSummary] = useLoad(
     () => setup.project(project.key),
     [project.key, "project"],
@@ -66,33 +65,15 @@ export function WorkingSetSection({ project }: SectionProps) {
   if (summary.state !== "ready") return <LoadState value={summary} what="the working set" />;
   const set = summary.data.workingSet;
   const budget = workingSetBudget(set.files);
-  const percent = Math.min(100, Math.round((budget.used / WORKING_SET_MAX_BYTES) * 100));
 
   return (
     <div className={SETUP}>
       <p className={LEDE}>
-        Files every chat and workflow agent of this project gets with its contents, stored in{" "}
-        <span className="font-mono">baked/project.json</span>. A run captures them when it starts.
+        Files agents get with their contents, stored in{" "}
+        <span className="font-mono">baked/project.json</span>. Files over{" "}
+        {kb(WORKING_SET_FILE_MAX_BYTES)}, and files past the {kb(WORKING_SET_MAX_BYTES)} budget,
+        reach agents by name only.
       </p>
-
-      <section className={cn(PANEL, "flex flex-col gap-2")} aria-label="Budget">
-        <div className={ROW}>
-          <span>
-            <span className="font-mono">{set.files.length}</span> files ·{" "}
-            <span className="font-mono">{kb(budget.total)}</span>
-          </span>
-          <span className="font-mono text-dim-foreground">
-            {kb(budget.used)} of {kb(WORKING_SET_MAX_BYTES)} sent with contents
-          </span>
-        </div>
-        <div className="h-[6px] overflow-hidden rounded-[3px] bg-hover" aria-hidden="true">
-          <span className="block h-full bg-[var(--accent)]" style={{ width: `${percent}%` }} />
-        </div>
-        <span className={`text-dim-foreground ${NOTE}`}>
-          Files over {kb(WORKING_SET_FILE_MAX_BYTES)}, and files past the budget, reach agents by
-          name only.
-        </span>
-      </section>
 
       <form className={ADD} onSubmit={(e) => void add(e)}>
         <label htmlFor="ws-entry" className="sr-only">
@@ -138,7 +119,9 @@ export function WorkingSetSection({ project }: SectionProps) {
 
       {set.files.length > 0 && (
         <section aria-label="Files" className={STACK}>
-          <h2 className={LABEL}>Files</h2>
+          <h2 className={LABEL}>
+            Files · {set.files.length} · {kb(budget.total)}
+          </h2>
           <div className={cn(PANEL, FLUSH)}>
             <table className={TABLE}>
               <thead>

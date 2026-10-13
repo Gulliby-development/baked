@@ -46,8 +46,7 @@ const SETUP: [ProjectSection, string, IconName][] = [
   ["workflows", "Workflows", "workflows"],
   // Listed only while the project has agents from other tools (#832).
   ["agents", "Agents", "agents"],
-  ["instructions", "Instructions", "instructions"],
-  ["working-set", "Working set", "working-set"],
+  ["context", "Agent context", "instructions"],
   ["memory", "Memory", "run-memory"],
   ["skills", "Skills", "skills"],
   ["packages", "Packages", "packages"],

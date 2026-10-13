@@ -100,7 +100,8 @@ Project instructions are loaded into the system prompt from the files of the ena
 Each source is switched on and off, and each file viewed and edited, in both front ends:
 
 - TUI: `/instructions` switches sources (the picker shows the file each one found). `/instructions files` lists every file on disk in prompt order, including those of switched-off sources; Enter opens one in `$EDITOR` (`$VISUAL`, then `$EDITOR`, then `nano`/`vim`/`vi`, or Notepad on Windows). `/instructions show PATH` shows a file's content and `/instructions edit PATH` edits it directly, or creates it when `PATH` is a file name a source reads, such as `AGENTS.md`.
-- Desktop: the Instructions screen under Setup lists the files with a switch per source and an editor, and creates `AGENTS.md` or `baked.md` when the project has none ([desktop app](desktop/app.md)).
+- TUI: `/agent-context` shows the instruction files and the working set together, with their size, and `/agent-context preview` shows what an agent's prompt carries.
+- Desktop: the Rules tab of the Agent context screen under Setup lists the files with a switch per source and an editor, and creates `AGENTS.md` or `baked.md` when the project has none ([desktop app](desktop/app.md)).
 
 A save is checked against the version that was read: when the file changed in the meantime (another editor, Git, the other front end), the save is refused and, in the TUI, the edit is kept in a temporary file. Workflow runs freeze these files when they start, so a save lists the active runs that froze the earlier version; such a run stops at its next step until its plan is revised.
 

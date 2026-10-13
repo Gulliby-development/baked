@@ -138,7 +138,7 @@ The agent stores preferences, decisions and pitfalls in SQLite: `<project>/.bake
 
 Skills are folders with a `SKILL.md`. `Ctrl+S` or `/skills` searches the [skills.sh](https://skills.sh) catalog, lists installed skills and toggles them for the session. See [extensions](extensions.md#skills).
 
-Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instructions.md`). `/instructions` can also load the files of other tools: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.clinerules`, `.windsurfrules` and others (see [configuration](configuration.md#instruction-files)).
+Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instructions.md`). `/instructions` can also load the files of other tools: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.clinerules`, `.windsurfrules` and others (see [configuration](configuration.md#instruction-files)). `/agent-context` shows the instruction files and the working set together, with how much of every agent's prompt they take, and `/agent-context preview` shows the text itself.
 
 ## Custom commands
 
