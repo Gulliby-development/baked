@@ -119,6 +119,12 @@ export const CheckSchema = z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()
       .optional(),
+    /**
+     * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
+     * line and that report decides the result; without one the check is inconclusive. Absent means
+     * the exit code decides.
+     */
+    report: z.enum(["exit", "json"]).optional(),
   })
   .strict();
 
@@ -672,6 +678,7 @@ export const EventType = z.enum([
   "snapshot.invalidated",
   "transition.taken",
   "gate.finished",
+  "wait.progress",
   "acceptance.phase",
   "tool.started",
   "tool.finished",
@@ -919,6 +926,23 @@ export const EventSchema = z.discriminatedUnion("type", [
           attempts: z.number().int().nonnegative(),
           flaky: z.boolean(),
           evidenceId: SafeId.nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A wait stage polls its gates: emitted when it starts or resumes and when the gates it still
+  // waits for change, not on every poll.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("wait.progress"),
+      payload: z
+        .object({
+          stageId: SafeId,
+          deadline: z.iso.datetime(),
+          intervalSeconds: z.number().int().positive(),
+          pending: z.array(SafeId),
+          polls: z.number().int().nonnegative(),
         })
         .strict(),
     })
