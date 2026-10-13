@@ -237,7 +237,13 @@ function collect(store: WorkflowStore, runId: string) {
           id: row.id,
           status: row.status,
           title: task.success ? task.data.title : null,
-          origin: task.success ? task.data.origin : null,
+          // A correction that started from a clean context after repeated failures.
+          origin:
+            task.success && state?.freshTasks?.[row.id]
+              ? `${task.data.origin}, fresh context`
+              : task.success
+                ? task.data.origin
+                : null,
           writes: task.success ? task.data.writes.map((w) => w.path) : [],
         };
       }),

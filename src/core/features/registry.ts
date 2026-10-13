@@ -751,7 +751,7 @@ export const FEATURES: readonly Feature[] = [
     id: "gate-drafts",
     group: "Workflow runs",
     title: "Gates from a plain-language sentence",
-    tui: gap(372, "create a gate from text in the workflow editor"),
+    tui: ["/workflow: editor, G new gate from a sentence"],
     cli: ["baked workflow gate"],
     api: [
       "/v1/workflow/gates/draft",
