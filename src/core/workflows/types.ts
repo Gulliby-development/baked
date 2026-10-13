@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RouteEffort } from "../llm/model-routing.js";
+import { PresetChoiceSchema } from "./preset-router.js";
 import {
   type AgentProfile,
   Hash,
@@ -80,6 +81,17 @@ export const RuntimeStateSchema = z
     expectedFiles: z.record(z.string(), z.string()).nullable(),
     reviews: z.record(z.string(), ReviewSchema),
     /**
+     * The reviews of the round before the last correction, by reviewer key, with the source
+     * manifest they reviewed: a later round skips a dimension that passed and whose files did not
+     * change, and tells a rerun reviewer what it found and what changed since.
+     */
+    priorReviews: z
+      .record(
+        z.string(),
+        z.object({ review: ReviewSchema, files: z.record(z.string(), z.string()) }),
+      )
+      .default({}),
+    /**
      * Criteria a required reviewer could not establish after its one re-prompt, by reviewer key:
      * the converge stage gets them as evidence gaps and settles them with a test or a check.
      */
@@ -116,6 +128,11 @@ export const RuntimeStateSchema = z
      * the correction of that finding may also write them, through the tasks that own them.
      */
     repairScope: z.record(z.string(), z.array(z.string())).default({}),
+    /**
+     * Corrective tasks that start from a clean context after repeated identical failures, by task
+     * ID: the artifact with the host's account of the earlier attempts.
+     */
+    freshTasks: z.record(z.string(), z.string()).default({}),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
@@ -161,6 +178,8 @@ export const RuntimeStateSchema = z
         ),
       )
       .default({}),
+    /** Rejected approval requests whose explanation already sent the run back to revise. */
+    revisedRejections: z.array(z.string()).default([]),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
@@ -244,6 +263,15 @@ export const RuntimeStateSchema = z
       .nullable()
       .default(null),
     /**
+     * Active learned code rules captured at run creation (artifact `project/learned-rules.json`),
+     * given to implementers for the paths of their task and to reviewers (#643). Null when none.
+     */
+    learnedRules: z
+      .object({ artifactId: z.string(), hash: z.string() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
      * The run's own Git worktree once it exists (worktree execution mode). From then on the run
      * reads, edits, checks and snapshots there; the project working copy is never written.
      */
@@ -295,6 +323,8 @@ export const RuntimeStateSchema = z
       )
       .default({}),
     issue: IssueSourceSchema.nullable().default(null),
+    /** Set on a run started with `--auto-preset`: what was proposed, why, and what ran. */
+    presetChoice: PresetChoiceSchema.nullable().default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
@@ -345,6 +375,11 @@ export interface ExecutionResponse {
   output: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * False when the provider reported no tokens for model steps that ran, so the spend is
+   * unknown: the attempt keeps its reservation instead of being counted as free.
+   */
+  usageComplete?: boolean;
 }
 export interface AgentExecutor {
   execute(request: ExecutionRequest): Promise<ExecutionResponse>;

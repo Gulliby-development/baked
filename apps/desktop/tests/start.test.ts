@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { mockProposal } from "../src/renderer/client/mock-start.ts";
 import type { RunPolicy } from "../src/renderer/client/start.ts";
 import {
   doctorLine,
@@ -9,7 +10,9 @@ import {
   preRunQuery,
   presetText,
   presetTokens,
+  proposalText,
   quickBlocker,
+  startRefusal,
   rangeText,
   uniqueFeatureId,
   usdRange,
@@ -41,6 +44,22 @@ describe("quick task", () => {
     expect(quickBlocker({ ...ok, feature: "-bad" })).toMatch(/^Fix the feature ID/);
     expect(quickBlocker({ ...ok, hasWorkflow: false })).toBe("This project has no quick workflow.");
     expect(quickBlocker({ ...ok, hasWorkflow: null })).toBeNull();
+    expect(quickBlocker({ ...ok, refusal: "Workflow quick needs at least one feature check" })).toBe(
+      "Workflow quick needs at least one feature check",
+    );
+  });
+
+  test("the doctor's start refusal blocks the start", () => {
+    const report = (status: "ok" | "fail") =>
+      ({
+        schemaVersion: 1,
+        workflowId: "quick",
+        ready: status === "ok",
+        checks: [{ id: "start", status, title: "Workflow quick would not start", detail: "No checks" }],
+      }) as unknown as Parameters<typeof startRefusal>[0];
+    expect(startRefusal(null)).toBeNull();
+    expect(startRefusal(report("ok"))).toBeNull();
+    expect(startRefusal(report("fail"))).toBe("No checks");
   });
 });
 
@@ -108,5 +127,18 @@ describe("doctor", () => {
     expect(doctorLine({ ...report, ready: true, checks: checks.slice(0, 2) })).toBe(
       "Doctor: ready, 1 warning",
     );
+  });
+});
+
+describe("workflow proposal", () => {
+  test("the hint says what was proposed and keeps a different pick", () => {
+    const docs = mockProposal("Fix the typo in the README");
+    expect(docs).toMatchObject({ workflowId: "quick", budget: "quick" });
+    expect(proposalText(docs, "quick")).toBe(
+      "Proposed from your request: a docs-only change: the quick preset (quick budget). Pick another recipe to change it.",
+    );
+    expect(proposalText(docs, "sdd")).toContain("Your pick, sdd, is kept");
+    expect(mockProposal("CI is red on main").workflowId).toBe("fix-ci");
+    expect(mockProposal("Add a settings page").workflowId).toBe("sdd");
   });
 });

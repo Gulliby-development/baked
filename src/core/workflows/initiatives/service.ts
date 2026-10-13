@@ -20,6 +20,7 @@ import {
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
 import { newId } from "../store.js";
+import type { IssueSource } from "../types.js";
 import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
@@ -65,6 +66,8 @@ export interface InitiativeStartRequest {
   autoApprovalConfirmation?: string | null;
   model?: string;
   ownerLabel: string;
+  /** The GitHub issue of each feature of `plan`; its runs start from it and delivery closes it. */
+  featureIssues?: Record<string, IssueSource>;
 }
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
@@ -113,6 +116,8 @@ export interface FeatureView {
   contract: string;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
+  /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
+  issue: IssueSource | null;
   state: FeatureState;
   runId: string | null;
   runStatus: string | null;
@@ -271,8 +276,21 @@ export class InitiativeService {
       autoApprovalConfirmation: request.autoApprovalConfirmation ?? null,
       model: request.model ?? null,
       ownerLabel: request.ownerLabel,
+      featureIssues: request.featureIssues ?? {},
     };
     this.checkWorkflow(settings);
+    const issued = Object.keys(settings.featureIssues);
+    if (issued.length && !request.plan)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "Feature issues need the split they belong to; give the plan with them",
+      );
+    const unknown = issued.filter((key) => !request.plan?.features.some((f) => f.id === key));
+    if (unknown.length)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Feature issues name features the split does not have: ${unknown.join(", ")}`,
+      );
     if (request.plan) {
       const plan = InitiativePlanSchema.parse(request.plan);
       const problems = validateInitiativePlan(plan);
@@ -706,6 +724,7 @@ export class InitiativeService {
       ...(settings.autoApprovalConfirmation
         ? { autoApprovalConfirmation: settings.autoApprovalConfirmation }
         : {}),
+      ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
     });
     this.store.transaction(() => {
       if (this.store.links(id).some((l) => l.run_id === snapshot.runId)) return;
@@ -1001,6 +1020,7 @@ export class InitiativeService {
 
   private featureViews(row: InitiativeRow, plan: InitiativePlan, approved: boolean): FeatureView[] {
     const views = new Map<string, FeatureView>();
+    const issues = this.store.settings(row).featureIssues;
     for (const feature of topologicalOrder(plan)) {
       const runFeature = runFeatureId(row.id, feature.id);
       const runs = this.store.links(row.id).filter((l) => l.feature_id === feature.id);
@@ -1012,6 +1032,7 @@ export class InitiativeService {
         boundary: feature.boundary,
         contract: feature.contract,
         runFeatureId: runFeature,
+        issue: issues[feature.id] ?? null,
         state: "proposed",
         runId: null,
         runStatus: null,

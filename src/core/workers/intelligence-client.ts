@@ -22,7 +22,7 @@ import type {
 import { workerPath } from "./path.js";
 import { WorkerClient, type WorkerLike } from "./rpc.js";
 
-export type TrackedResult<T> = { value: T; backend: string } | null;
+export type TrackedResult<T> = { value: T; backend: string; server?: string } | null;
 
 type SummaryGenerator = (
   batch: SymbolForSummary[],

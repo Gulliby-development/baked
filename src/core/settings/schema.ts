@@ -49,8 +49,8 @@ export type SettingDefinition = SettingBase &
       }
     /** A model ID such as `anthropic/claude-sonnet-4-6`; null means unset. */
     | { type: "model"; default: string | null }
-    /** Names chosen from a catalog the server lists, e.g. the tool catalog. */
-    | { type: "string-list"; default: readonly string[]; catalog: "tools" }
+    /** Names turned off in a catalog the server lists: the tool catalog or the quality rules. */
+    | { type: "string-list"; default: readonly string[]; catalog: SettingCatalog }
     /** Model ID → ordered fallback model IDs. */
     | { type: "model-list-map"; default: Record<string, string[]> }
     /** Model ID → positive integer, e.g. a context-window override. */
@@ -59,6 +59,8 @@ export type SettingDefinition = SettingBase &
   );
 
 export type SettingType = SettingDefinition["type"];
+/** The catalogs `string-list` settings choose from (`SettingsView.catalogs`). */
+export type SettingCatalog = "tools" | "quality-rules";
 
 export type SettingPageId =
   | "chat-model"
@@ -68,7 +70,8 @@ export type SettingPageId =
   | "agent-features"
   | "baked-map"
   | "compaction"
-  | "limits";
+  | "limits"
+  | "code-quality";
 
 export interface SettingPage {
   id: SettingPageId;
@@ -126,6 +129,13 @@ export const SETTING_PAGES: readonly SettingPage[] = [
     title: "Timeouts and limits",
     description: "Tool and stream timeouts, and context-window overrides per model.",
     command: "/timeouts",
+  },
+  {
+    id: "code-quality",
+    title: "Code quality",
+    description:
+      "Quality gates of workflow runs. New runs take these defaults and keep them until they finish.",
+    command: "/code-quality",
   },
 ];
 
@@ -477,6 +487,27 @@ export const SETTINGS: readonly SettingDefinition[] = [
     default: null,
     envVar: "JINA_API_KEY",
   },
+  {
+    id: "artifactDeploy",
+    page: "tools",
+    section: "Artifacts",
+    label: "Deploy artifacts to Vercel",
+    help: "Let any chat publish a saved artifact to your own Vercel account. Each deploy asks first and is scanned for secrets.",
+    scopes: GLOBAL,
+    type: "boolean",
+    default: false,
+  },
+  {
+    id: "vercel-token",
+    page: "tools",
+    section: "Artifacts",
+    label: "Vercel token",
+    help: "A token from Vercel > Account Settings > Tokens, best limited to one team and with an expiry.",
+    scopes: GLOBAL,
+    type: "secret",
+    default: null,
+    envVar: "VERCEL_TOKEN",
+  },
 
   // Agent features
   {
@@ -750,6 +781,34 @@ export const SETTINGS: readonly SettingDefinition[] = [
     default: {},
     min: 1000,
     max: 10_000_000,
+  },
+
+  // Code quality
+  {
+    id: "quality.duplication",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Duplication ratchet",
+    help: "Code a run copies, and code it adds that nothing uses. warn reports them in the run report; ratchet makes them blocking findings the run must fix; off skips the measurement.",
+    scopes: BOTH,
+    type: "enum",
+    default: "warn",
+    options: [
+      { value: "off", label: "off", help: "Do not measure." },
+      { value: "warn", label: "warn", help: "Report in the run report." },
+      { value: "ratchet", label: "ratchet", help: "Block until the run reuses the code." },
+    ],
+  },
+  {
+    id: "quality.disabledRules",
+    page: "code-quality",
+    section: "Anti-slop rules",
+    label: "Rules",
+    help: "Patterns checked on the lines a run adds: empty catch blocks, silent fallbacks, new suppressions, placeholders. An error rule blocks the run until it is fixed; a warning is noted in the run report. Turn off a rule the project does not want.",
+    scopes: BOTH,
+    type: "string-list",
+    default: [],
+    catalog: "quality-rules",
   },
 ];
 

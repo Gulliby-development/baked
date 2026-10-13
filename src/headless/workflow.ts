@@ -6,6 +6,7 @@ import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { type BudgetLimits, type BudgetPresetId, presetPolicy } from "../core/workflows/budget.js";
+import { compareRuns, comparisonMarkdown } from "../core/workflows/compare.js";
 import {
   type CriticOutcomes,
   criticOutcomesView,
@@ -19,6 +20,7 @@ import { preRunEstimate, runDoctor } from "../core/workflows/doctor.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { uniqueFeatureId } from "../core/workflows/feature-id.js";
 import { issueStart } from "../core/workflows/issue-source.js";
+import { describeProposal, presetChoice } from "../core/workflows/preset-router.js";
 import {
   editProjectMemory,
   type MemoryEdit,
@@ -35,12 +37,14 @@ import {
   type RunState,
 } from "../core/workflows/schemas.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
+import { stopDetail } from "../core/workflows/stop-detail.js";
 import { newId } from "../core/workflows/store.js";
 import { runUsage } from "../core/workflows/usage.js";
 import { runUsageMarkdown } from "../core/workflows/usage-markdown.js";
 import { recordedSteps } from "../core/workflows/v2/acceptance-gate.js";
 import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
-import { readRoutingSummary } from "../core/workflows/view.js";
+import { proposeForWorkspace } from "../core/workflows/v2/propose.js";
+import { readCheckPreflight, readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
 import type { AppConfig } from "../types/index.js";
 import { followProgress } from "./progress.js";
@@ -145,14 +149,22 @@ export function formatRoute(route: RouteExplanation): string {
 }
 /** Project memory as `baked workflow memory` prints it: one entry per line with its ID. */
 export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): string {
-  const KIND = { note: "note", answer: "answer", assumption: "assume", check: "check" } as const;
+  const KIND = {
+    note: "note",
+    answer: "answer",
+    assumption: "assume",
+    check: "check",
+    rule: "rule",
+  } as const;
   const line = (e: ProjectMemoryView["hidden"][number], extra = ""): string => {
     const source = e.runId ? ` (run ${e.runId.slice(0, 8)})` : "";
     const head = `${e.id}  ${KIND[e.kind].padEnd(6)}  `;
     const body =
       e.kind === "answer"
         ? `Q: ${e.question ?? ""}\n${" ".repeat(head.length)}A: ${e.text}`
-        : e.text;
+        : e.kind === "rule"
+          ? `${e.text} [${e.status ?? "proposed"}, ${e.scope ?? "**"}, ${String(e.runs ?? 0)} runs]`
+          : e.text;
     return `${head}${body}${source}${e.recorded ? " [edited]" : ""}${extra}`;
   };
   const out: string[] = [];
@@ -163,7 +175,16 @@ export function formatProjectMemory(view: ProjectMemoryView & { id?: string }): 
     view.entries.length
       ? `Project memory new runs read (${String(view.entries.length)}):`
       : "Project memory is empty: earlier runs recorded nothing and there are no notes.",
-    ...view.entries.map((e) => line(e, e.sent ? "" : " [not sent: the policy's own check]")),
+    ...view.entries.map((e) =>
+      line(
+        e,
+        e.sent
+          ? ""
+          : e.kind === "rule"
+            ? " [not sent: proposed; accept it to activate]"
+            : " [not sent: the policy's own check]",
+      ),
+    ),
   );
   if (view.hidden.length)
     out.push("", `Forgotten (${String(view.hidden.length)}):`, ...view.hidden.map((e) => line(e)));
@@ -227,17 +248,10 @@ export async function executeWorkflowCommand(
     );
   switch (args.command) {
     case "quick": {
-      const run = quickRunArgs(service, args);
-      const policy = startPolicy(run);
-      if (!policy.checks.some((c) => c.scope === "feature"))
-        throw new WorkflowFault(
-          "INVALID_DEFINITION",
-          "A quick task needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them",
-        );
-      return executeWorkflowCommand(service, run, signal, onDrive, options);
+      // The start refuses a quick task without feature checks, as it does over the local API.
+      return executeWorkflowCommand(service, quickRunArgs(service, args), signal, onDrive, options);
     }
     case "run": {
-      const policy = startPolicy(args);
       const typed = args.flags["prompt-file"]
         ? readFlagFile("prompt-file")
         : typeof args.flags.prompt === "string"
@@ -251,16 +265,33 @@ export async function executeWorkflowCommand(
               ...(typeof args.flags.feature === "string" ? { featureId: args.flags.feature } : {}),
             })
           : null;
+      const prompt = fromIssue?.prompt ?? typed ?? stringFlag(args, "prompt");
+      const defaultWorkflow = service.config.workflows?.defaultWorkflow ?? "sdd";
+      const named =
+        typeof args.flags.workflow === "string" ? args.flags.workflow : args.positional[0];
+      const proposal =
+        args.flags["auto-preset"] === true
+          ? proposeForWorkspace(service.store.workspace, service.config, prompt)
+          : null;
+      const workflowId = named ?? proposal?.workflowId ?? defaultWorkflow;
+      const choice = proposal ? presetChoice(proposal, workflowId) : null;
+      // The proposed budget applies to the proposed workflow unless --budget names one.
+      const policy = startPolicy(
+        choice && !choice.overridden && typeof args.flags.budget !== "string"
+          ? { ...args, flags: { ...args.flags, budget: choice.budget } }
+          : args,
+      );
+      if (proposal)
+        process.stderr.write(
+          `preset: ${describeProposal(proposal)}${choice?.overridden ? `; running ${workflowId} as asked` : ""}\n`,
+        );
       const run = await service.start({
         commandId: stringFlag(args, "command-id", newId()),
-        workflowId: stringFlag(
-          args,
-          "workflow",
-          args.positional[0] ?? service.config.workflows?.defaultWorkflow ?? "sdd",
-        ),
+        workflowId,
         featureId: fromIssue?.featureId ?? stringFlag(args, "feature"),
-        prompt: fromIssue?.prompt ?? typed ?? stringFlag(args, "prompt"),
+        prompt,
         ...(fromIssue ? { issue: fromIssue.issue } : {}),
+        ...(choice ? { presetChoice: choice } : {}),
         policy,
         ownerLabel: stringFlag(args, "owner", "CLI"),
         ...(typeof args.flags.model === "string" ? { model: args.flags.model } : {}),
@@ -278,6 +309,11 @@ export async function executeWorkflowCommand(
         ...(args.flags.clarification === "ask" || args.flags.clarification === "assume"
           ? { clarification: args.flags.clarification }
           : {}),
+        ...(args.flags.duplication === "off" ||
+        args.flags.duplication === "warn" ||
+        args.flags.duplication === "ratchet"
+          ? { duplication: args.flags.duplication }
+          : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
       for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])
@@ -286,14 +322,23 @@ export async function executeWorkflowCommand(
       onDrive?.(run.runId);
       return service.drive(run.runId, signal);
     }
-    case "status":
+    case "propose":
+      return proposeForWorkspace(service.store.workspace, service.config, proposeText(args));
+    case "status": {
+      const snapshot = await service.get(runId);
       return {
-        ...(await service.get(runId)),
+        ...snapshot,
         requests: service.store.requests(runId),
         worktree: worktreeView(service.workspace, service.store.state(runId)),
         routing: readRoutingSummary(service.store, runId),
+        preflight: readCheckPreflight(service.store, runId),
         acceptance: walkThroughs(service.store, runId),
+        stopDetail:
+          snapshot.status === "blocked" || snapshot.status === "failed"
+            ? stopDetail(service.store, runId)
+            : null,
       };
+    }
     case "list":
       return service.list({
         featureId: typeof args.flags.feature === "string" ? args.flags.feature : undefined,
@@ -524,6 +569,17 @@ export async function executeWorkflowCommand(
       if (args.flags.refresh === true) await refreshCriticOutcomes(service.store);
       return criticOutcomesView(service.store, runId || undefined);
     }
+    case "compare": {
+      const [a, b] = args.positional;
+      if (!a || !b) throw new WorkflowFault("INVALID_DEFINITION", "compare needs two run IDs");
+      const comparison = compareRuns(service.store, a, b);
+      const markdown = comparisonMarkdown(comparison);
+      if (typeof args.flags.output !== "string") return { ...comparison, markdown };
+      const path = resolve(service.store.workspace, args.flags.output);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, markdown);
+      return { a: a, b: b, path, bytes: Buffer.byteLength(markdown) };
+    }
     case "memory": {
       const [action = "list", id = ""] = args.positional;
       const policy = PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy);
@@ -557,6 +613,8 @@ export async function executeWorkflowCommand(
         ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
         draft: args.flags.draft === true,
         pullRequest: args.flags["no-pr"] !== true,
+        ...(args.flags["with-specs"] ? { specs: true } : {}),
+        ...(args.flags["no-specs"] ? { specs: false } : {}),
         ...provider,
       });
       return {
@@ -608,6 +666,14 @@ export async function executeWorkflowCommand(
       );
   }
 }
+/** The request `propose` reads: its words, `--prompt`, or the file `--prompt-file` names. */
+function proposeText(args: WorkflowArgs): string {
+  const inline = args.inline?.["prompt-file"];
+  if (typeof inline === "string") return inline;
+  if (typeof args.flags["prompt-file"] === "string")
+    return readFileSync(resolve(getCwd(), args.flags["prompt-file"]), "utf8");
+  return typeof args.flags.prompt === "string" ? args.flags.prompt : args.positional.join(" ");
+}
 export async function runWorkflowCli(argv: string[]): Promise<number> {
   if (
     argv.length === 0 ||
@@ -653,6 +719,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       "usage",
       "report",
       "outcomes",
+      "compare",
     ].includes(args.command);
     if (args.command === "profiles") {
       process.stdout.write(
@@ -669,6 +736,15 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       const view = workflowModels(config, catalog, model && model !== "none" ? model : null);
       process.stdout.write(
         args.flags.json ? `${JSON.stringify(view, null, 2)}\n` : formatWorkflowModels(view),
+      );
+      return 0;
+    }
+    if (args.command === "propose") {
+      const proposal = proposeForWorkspace(cwd, config, proposeText(args));
+      process.stdout.write(
+        args.flags.json
+          ? `${JSON.stringify(proposal, null, 2)}\n`
+          : `${describeProposal(proposal)}\n`,
       );
       return 0;
     }
@@ -745,7 +821,9 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     await Promise.all(streams);
     // The report prints as Markdown so it can be piped into a file or a pull request.
     if (
-      (args.command === "report" || (args.command === "usage" && args.flags.format === "md")) &&
+      (args.command === "report" ||
+        args.command === "compare" ||
+        (args.command === "usage" && args.flags.format === "md")) &&
       !args.flags.json &&
       !args.flags.output
     ) {

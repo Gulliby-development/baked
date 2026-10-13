@@ -89,7 +89,7 @@ export class ProfileRegistry {
     if (resolved.role === "acceptance-writer") available.add("write_test");
     // Reviewers try a finding's repro with the runtime's own runner (#155).
     if (resolved.role === "reviewer") available.add("run_repro");
-    // Repair tasks isolate a failing check with a probe before they edit again.
+    // Repair tasks isolate a failing check with a probe; documentation tasks capture real output.
     if (resolved.role === "implementer") available.add("run_probe");
     // MCP grants (#133) are open to agent roles; the acceptance roles run on host tools only.
     const mcpAllowed =

@@ -29,6 +29,19 @@ export interface RunDetailStatus extends Omit<RunStatus, "requests"> {
    * delivery or a discard removed it. Null for runs in the working copy; absent from older backends.
    */
   worktree?: RunWorktree | null;
+  /**
+   * The effective models of the run by role and stage (`routingSummary` in
+   * src/core/workflows/routing.ts). Null before routing was recorded; absent from older backends.
+   */
+  routing?: RunRouting | null;
+}
+
+export interface RunRouting {
+  runModel: string;
+  /** The run model overrode the configured routes (`--model-strict`). */
+  strict: boolean;
+  warnings: string[];
+  effective: { target: string; model: string; source: string; fallback?: string[] }[];
 }
 
 export interface RunWorktree {
@@ -76,6 +89,12 @@ export interface EventPayloads {
     status: string;
     usageComplete: boolean;
     usedTokens: number | null;
+  };
+  "attempt.advisory": {
+    attemptId: string;
+    signal: "repeated-reads" | "no-edits" | "same-failure";
+    action: "steered" | "stopped";
+    detail: string;
   };
   "task.state_changed": { taskId: string; from: string; to: string; generation: number };
   "artifact.committed": { artifactId: string; kind: string; hash: string };
@@ -331,3 +350,50 @@ export async function undoRun(
   if (!after) return null;
   return JSON.parse(await runs.readArtifact(key, run.runId, after)) as RollbackReport;
 }
+
+/** `GET /v1/workflow/compare` (`run-compare` capability). */
+export const RUN_COMPARE_CAPABILITY = "run-compare";
+
+/** One side of `RunComparison` (src/core/workflows/compare.ts). */
+export interface ComparedRun {
+  runId: string;
+  featureId: string;
+  workflowId: string | null;
+  status: string;
+  reason: string;
+  routes: { target: string; model: string }[];
+  tokens: number;
+  costUsd: number | null;
+  activeMs: number;
+  agentCalls: number;
+  repairRounds: number;
+  correctiveTasks: number;
+  stages: { stage: string; attempts: number; tokens: number }[];
+  models: { model: string; tokens: number }[];
+  checks: { passed: number; failed: number };
+  findings: { critical: number; high: number; medium: number; low: number };
+  openFindings: number;
+  limitations: number;
+}
+
+/** Two runs side by side, an A/B of one feature with two routing maps. */
+export interface RunComparison {
+  a: ComparedRun;
+  b: ComparedRun;
+  sameFeature: boolean;
+  sameWorkflow: boolean;
+  routeDifferences: { target: string; a: string | null; b: string | null }[];
+  stages: { stage: string; a: number | null; b: number | null }[];
+  delta: { tokens: number; costUsd: number | null; activeMs: number };
+  /** The same comparison as Markdown, for copying. */
+  markdown: string;
+}
+
+export const runCompare = {
+  compare: (key: string, a: string, b: string) =>
+    call<RunComparison>(
+      key,
+      "GET",
+      `/v1/workflow/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
+    ),
+};

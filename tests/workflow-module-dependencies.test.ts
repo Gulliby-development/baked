@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { withModuleDependencies } from "../src/core/workflows/plan-consistency.js";
+import { withImplementationProfiles, withModuleDependencies, withReadDependencies } from "../src/core/workflows/plan-consistency.js";
 import type { TaskGraph } from "../src/core/workflows/schemas.js";
 import type { Task } from "../src/core/workflows/types.js";
 
@@ -65,5 +65,55 @@ describe("module index tasks wait for the tasks that create their modules", () =
       graphOf(task("T001", ["crates/a/src/lib.rs"]), task("T002", ["crates/b/src/parse.rs"]), task("T003", ["README.md"])),
     );
     expect(deps(out)).toEqual([[], [], []]);
+  });
+});
+
+// zoneslot-update c941a83a: T002 (App.tsx) read overlap.ts, which T001 wrote, with no dependency;
+// both ran in one wave and T002's typecheck failed before overlap.ts had its new export.
+describe("a task waits for the tasks that write the files it reads", () => {
+  const reading = (id: string, paths: string[], readHints: string[], dependsOn: string[] = []): Task => ({
+    ...task(id, paths, dependsOn),
+    readHints,
+  });
+  test("a read hint another task writes becomes a dependency", () => {
+    const out = withReadDependencies(
+      graphOf(task("T001", ["src/overlap.ts"]), reading("T002", ["src/App.tsx"], ["src/overlap.ts", "src/other.ts"])),
+    );
+    expect(deps(out)).toEqual([[], ["T001"]]);
+  });
+  test("its own files, deletions, existing edges and cycles add nothing", () => {
+    const deleting: Task = { ...task("T001", []), writes: [{ path: "src/old.ts", action: "delete" }] };
+    const out = withReadDependencies(
+      graphOf(
+        deleting,
+        reading("T002", ["src/a.ts"], ["src/a.ts", "src/old.ts"]),
+        reading("T003", ["src/b.ts"], ["src/c.ts"]),
+        reading("T004", ["src/c.ts"], ["src/b.ts"]),
+        reading("T005", ["src/d.ts"], ["src/c.ts"], ["T004"]),
+      ),
+    );
+    // T003 and T004 read each other's files: the first waits, the second does not close a cycle.
+    expect(deps(out)).toEqual([[], [], ["T004"], [], ["T004"]]);
+  });
+});
+
+// Bench round 09, commitbump dde8747e: the planner wrote "planner" as profileId on all 7 tasks and
+// the host rejected the whole plan.
+describe("tasks get an implementation profile", () => {
+  const profiles = [
+    { id: "planner", output: "plan" },
+    { id: "implementer", output: "implementation" },
+    { id: "writer", output: "implementation" },
+  ] as const;
+  const named = (id: string, profileId: string): Task => ({ ...task(id, [`src/${id}.ts`]), profileId });
+  test("a task naming a non-implementation or unknown profile gets the default implementer", () => {
+    const out = withImplementationProfiles(graphOf(named("T001", "planner"), named("T002", "writer"), named("T003", "coder")), profiles);
+    expect(out.tasks.map((t) => t.profileId)).toEqual(["implementer", "writer", "implementer"]);
+  });
+  test("without an implementer profile the first implementation profile is used; without any the graph is kept", () => {
+    const writerOnly = [{ id: "planner", output: "plan" }, { id: "writer", output: "implementation" }] as const;
+    expect(withImplementationProfiles(graphOf(named("T001", "planner")), writerOnly).tasks[0]?.profileId).toBe("writer");
+    const graph = graphOf(named("T001", "planner"));
+    expect(withImplementationProfiles(graph, [{ id: "planner", output: "plan" }])).toBe(graph);
   });
 });

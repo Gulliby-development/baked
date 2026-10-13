@@ -30,6 +30,7 @@ const KIND: Record<MemoryEntryKind, string> = {
   answer: "answer",
   assumption: "assume",
   check: "check",
+  rule: "rule",
 };
 
 /** Visible entries first, then forgotten ones, filtered by the query. */
@@ -40,10 +41,20 @@ export function runMemoryRows(view: ProjectMemoryView | null, query: string): Ru
     kind: KIND[entry.kind],
     text: (entry.kind === "answer"
       ? `${entry.question ?? ""} → ${entry.text}`
-      : entry.text
+      : entry.kind === "rule"
+        ? `${entry.text} (${entry.scope ?? "**"}, ${String(entry.runs ?? 0)} runs)`
+        : entry.text
     ).replace(/[\n\r]+/g, " "),
     run: entry.runId ? entry.runId.slice(0, 8) : "you",
-    state: forgotten ? "forgot" : !sent ? "policy" : entry.recorded ? "edited" : "",
+    state: forgotten
+      ? "forgot"
+      : entry.kind === "rule" && entry.status !== "active"
+        ? "propos"
+        : !sent
+          ? "policy"
+          : entry.recorded
+            ? "edited"
+            : "",
     entry,
     forgotten,
   });
@@ -163,6 +174,12 @@ export function useRunMemory({ cwd, active, flash }: Options) {
         void run(["forget", row.id]).then(
           (ok) => ok && flash("ok", row.entry.kind === "note" ? "Note deleted" : "Forgotten"),
         );
+    } else if (evt.ctrl && evt.name === "a") {
+      if (row?.entry.kind === "rule" && row.entry.status !== "active" && !row.forgotten)
+        void run(["accept", row.id]).then(
+          (ok) => ok && flash("ok", "Rule active; new runs follow it"),
+        );
+      else flash("info", "Only a proposed rule can be accepted");
     } else if (evt.ctrl && evt.name === "r") {
       if (row && (row.forgotten || row.entry.recorded))
         void run(["restore", row.id]).then((ok) => ok && flash("ok", "Restored"));
@@ -186,6 +203,7 @@ export function useRunMemory({ cwd, active, flash }: Options) {
         { key: "↑↓", label: "nav" },
         { key: "Enter", label: "edit" },
         { key: "^N", label: "note" },
+        { key: "^A", label: "accept rule" },
         { key: "^D", label: "forget" },
         { key: "^R", label: "restore" },
         { key: "Tab", label: "panel" },
