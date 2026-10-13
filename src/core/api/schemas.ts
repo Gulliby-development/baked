@@ -39,6 +39,8 @@ export const StartBody = z
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** Semgrep on the run's diff, as `--sast`; omitted, the policy decides. */
     sast: z.enum(["auto", "off"]).optional(),
+    /** The mutation gate of the run, as `--mutation`; omitted, the policy or preset decides. */
+    mutation: z.enum(["off", "advisory", "required"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
     /**

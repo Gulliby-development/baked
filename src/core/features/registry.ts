@@ -766,6 +766,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "mutation-gate",
+    group: "Workflow runs",
+    title: "Mutation gate on the lines a run added",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --mutation off|advisory|required", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "custom-gates",
     group: "Workflow runs",
     title:

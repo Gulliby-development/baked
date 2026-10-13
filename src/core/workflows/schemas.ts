@@ -268,11 +268,6 @@ export const PolicySchema = z
      */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /**
-     * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
-     * rules turned off, severities changed and ast-grep rule files added. Absent means the
-     * built-in pack as shipped, so stored policies keep their hash.
-     */
-    /**
      * Semgrep on the run's diff (quality/sast.ts). Absent means `auto`: it runs when Semgrep is
      * installed, so stored policies keep their hash. `sastConfig` is the Semgrep `--config`
      * (absent: `p/default`).
@@ -284,6 +279,23 @@ export const PolicySchema = z
      * their registries; every new dependency is then inconclusive. Absent means lookups.
      */
     registryLookups: z.literal(false).optional(),
+    /**
+     * The mutation gate (quality/mutation.ts): `advisory` notes the mutants the run's tests do
+     * not kill, `required` makes them blocking findings, `off` skips the gate. Absent means the
+     * default of the workflow's preset (`advisory` for `full`, `off` for the others), so stored
+     * policies keep their hash. `mutationThresholds` lowers the killed share a file needs under
+     * `required` (path or glob to percent, default 100); `mutationBudgetMs` caps the gate's time.
+     */
+    mutation: z.enum(["off", "advisory", "required"]).optional(),
+    mutationThresholds: z
+      .record(z.string().min(1).max(512), z.number().int().min(0).max(100))
+      .optional(),
+    mutationBudgetMs: z.number().int().min(10_000).max(3_600_000).optional(),
+    /**
+     * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
+     * rules turned off, severities changed and ast-grep rule files added. Absent means the
+     * built-in pack as shipped, so stored policies keep their hash.
+     */
     qualityRules: z
       .object({
         disabled: z.array(z.string().min(1).max(128)).max(200).optional(),
@@ -1221,6 +1233,8 @@ export interface StartRequest {
   duplication?: "off" | "warn" | "ratchet";
   /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */
   sast?: "auto" | "off";
+  /** The mutation gate of this run (CLI `--mutation MODE`); it overrides the policy. */
+  mutation?: "off" | "advisory" | "required";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.

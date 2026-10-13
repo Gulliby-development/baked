@@ -12,6 +12,7 @@ import {
   metricDeltas,
   QUALITY_DUPLICATION,
 } from "./quality/duplication.js";
+import { type MutationResult, QUALITY_MUTATION } from "./quality/mutation.js";
 import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
 import { QUALITY_SAST, type SastResult } from "./quality/sast.js";
 import {
@@ -254,6 +255,7 @@ function collect(store: WorkflowStore, runId: string) {
         rules: readJson<RulesResult>(QUALITY_RULES),
         dependencies: readJson<DependencyResult>(QUALITY_DEPENDENCIES),
         sast: readJson<SastResult>(QUALITY_SAST),
+        mutation: readJson<MutationResult>(QUALITY_MUTATION),
       },
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
@@ -333,11 +335,12 @@ interface QualityFacts {
   rules: RulesResult | null;
   dependencies: DependencyResult | null;
   sast: SastResult | null;
+  mutation: MutationResult | null;
 }
 
 /**
  * The code quality gates: the duplication ratchet (#638), the anti-slop rules (#639), and the
- * dependency check and SAST (#640).
+ * dependency check and SAST (#640), and the mutation gate (#636).
  */
 function qualitySection(quality: QualityFacts, cap: number): string[] {
   return [
@@ -345,6 +348,7 @@ function qualitySection(quality: QualityFacts, cap: number): string[] {
     ...(quality.rules ? rulesSection(quality.rules, cap) : []),
     ...(quality.dependencies ? dependenciesSection(quality.dependencies, cap) : []),
     ...(quality.sast ? sastSection(quality.sast, cap) : []),
+    ...(quality.mutation ? mutationSection(quality.mutation, cap) : []),
   ];
 }
 
@@ -370,6 +374,38 @@ function dependenciesSection(result: DependencyResult, cap: number): string[] {
     ),
     "",
   );
+  return out;
+}
+
+function mutationSection(result: MutationResult, cap: number): string[] {
+  const count = (status: string) => result.mutants.filter((m) => m.status === status).length;
+  const killed = count("killed");
+  const ran = killed + count("survived");
+  const blocking = result.mutants.filter((m) => m.blocking).length;
+  const extra = [
+    ...(count("timeout") ? [`${count("timeout")} timed out`] : []),
+    ...(count("not-run") ? [`${count("not-run")} not run`] : []),
+  ];
+  const score = result.score === null ? "no score" : `score ${result.score}%`;
+  const out = [
+    `Mutation gate (\`${result.mode}\`): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
+    "",
+  ];
+  const survivors = result.mutants.filter((m) => m.status === "survived");
+  if (survivors.length)
+    out.push(
+      ...table(
+        ["Mutant", "Where", "Mutated line", "Status"],
+        survivors.map((m) => [
+          m.id,
+          code(`${m.file}:${m.line}`),
+          code(m.mutated.trim()),
+          m.blocking ? "survived, blocking" : "survived",
+        ]),
+        cap,
+      ),
+      "",
+    );
   return out;
 }
 
