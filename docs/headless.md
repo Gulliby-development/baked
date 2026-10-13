@@ -147,7 +147,7 @@ baked packages remove acme-review  # delete the package's unchanged files
 
 ## Approvals
 
-There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands) are not prompted. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.
+There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands, edits of sensitive files) are denied unless `--mode auto` allows everything. `--approval-review` (or `agentFeatures.approvalReview` in config) lets the [approval reviewer](tools.md#approval-reviewer) allow the low-risk ones it may decide, such as removing a build directory; the rest stay denied. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.
 
 ## Custom commands and workflows
 

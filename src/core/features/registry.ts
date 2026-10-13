@@ -490,6 +490,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Agent features page"],
   },
   {
+    id: "chat-approval-review",
+    group: "Tools and code intelligence",
+    title: "Approval reviewer for chat tool approvals: a model decides low-risk cleanup first",
+    tui: ["/agent-features: Approval reviewer; the approval prompt shows its verdict"],
+    cli: ["--approval-review"],
+    api: ["/v1/settings: agent-features page"],
+    desktop: [
+      "settings/chat: Agent features page",
+      "project/chat: approval card shows the verdict",
+    ],
+  },
+  {
     id: "hooks",
     group: "Tools and code intelligence",
     title: "Hooks: view and switch off",

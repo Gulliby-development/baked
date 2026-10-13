@@ -22,6 +22,7 @@ ${BOLD}Usage:${RST}
   baked --headless --image <file> <prompt>           Attach an image (PNG, JPEG, GIF, WebP)
   baked --headless --no-repomap <prompt>             Skip repo map scan
   baked --headless --diff <prompt>                   Show files changed after run
+  baked --headless --approval-review <prompt>        Let the approval reviewer allow low-risk cleanup
   baked --headless --session <id> <prompt>           Resume a previous session
   baked --headless --save-session <prompt>           Save session after completion
   baked --headless --chat                            Interactive multi-turn chat
@@ -113,6 +114,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
   let system: string | undefined;
   let noRepomap = false;
   let diff = false;
+  let approvalReview = false;
   let render = process.stdout.isTTY ?? false;
   const include: string[] = [];
   const images: string[] = [];
@@ -172,6 +174,8 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       images.push(argv[++i] as string);
     } else if (arg === "--diff") {
       diff = true;
+    } else if (arg === "--approval-review") {
+      approvalReview = true;
     } else if (arg === "--render") {
       render = true;
     } else if (arg === "--no-render") {
@@ -207,6 +211,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
         system,
         noRepomap,
         ...(watch ? { watch, watchPoll } : {}),
+        ...(approvalReview ? { approvalReview } : {}),
       },
     };
   }
@@ -244,6 +249,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       images: images.length > 0 ? images : undefined,
       diff,
       render,
+      ...(approvalReview ? { approvalReview } : {}),
     },
   };
 }

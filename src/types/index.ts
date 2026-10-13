@@ -284,6 +284,8 @@ export interface AgentFeatures {
   agentSkills?: boolean;
   /** Only expose core tools initially; deferred tools loaded via request_tools. Default: false — all tools active to avoid roundtrips. */
   onDemandTools?: boolean;
+  /** Let the approval reviewer (the chat model) decide low-risk chat approvals before asking. Default: false */
+  approvalReview?: boolean;
 }
 
 /** Doppelganger (spark) = inherits parent conversation, same model, cache hits. Diverge (ember) = fresh context, can use cheaper model. */

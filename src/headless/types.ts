@@ -27,6 +27,8 @@ export interface HeadlessRunOptions {
   images?: string[];
   diff?: boolean;
   render?: boolean;
+  /** `--approval-review`: the approval reviewer decides low-risk approvals; the rest are denied. */
+  approvalReview?: boolean;
 }
 
 export interface TokenUsage {
@@ -132,6 +134,8 @@ export interface HeadlessChatOptions {
   watch?: boolean;
   /** Watch by polling file times instead of file events. */
   watchPoll?: boolean;
+  /** `--approval-review`: the approval reviewer decides low-risk approvals; the rest are denied. */
+  approvalReview?: boolean;
 
   /** Prompt source. Default: line-buffered stdin reader. */
   readPrompt?: () => Promise<string | null>;
