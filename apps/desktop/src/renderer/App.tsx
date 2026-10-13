@@ -1,7 +1,10 @@
+import { useEffect } from "react";
 import { isMock } from "./client/bridge.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TitleBar } from "./components/TitleBar.js";
 import { Alert } from "./components/ui/alert.js";
+import { TitleTooltips } from "./components/ui/title-tooltips.js";
+import { prefetchModels } from "./lib/models.js";
 import { useRoute } from "./router.js";
 import { AttentionScreen } from "./screens/AttentionScreen.js";
 import { ProjectScreen } from "./screens/ProjectScreen.js";
@@ -11,7 +14,16 @@ import { useDesktop } from "./store.js";
 
 export function App() {
   const route = useRoute();
-  const { error } = useDesktop();
+  const { error, projects } = useDesktop();
+  // Each project's model list is read once its backend runs, so the composer's model and effort
+  // menus open on it at once instead of asking the backend on every click.
+  const running = projects
+    .filter((p) => p.backend.kind === "running")
+    .map((p) => p.key)
+    .join("\n");
+  useEffect(() => {
+    for (const key of running.split("\n")) if (key) prefetchModels(key);
+  }, [running]);
   return (
     <div className="m-0 flex h-full flex-col overflow-hidden rounded-[var(--radius-lg)] border-2 border-border bg-background shadow-shadow">
       <TitleBar />
@@ -40,6 +52,7 @@ export function App() {
           )}
         </main>
       </div>
+      <TitleTooltips />
     </div>
   );
 }

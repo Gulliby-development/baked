@@ -1415,6 +1415,22 @@ export class WorkflowStore {
     ]);
     this.emit(runId, { type: "check.finished", payload: { checkId, evidenceId, status } });
   }
+  /**
+   * Copies the check results recorded on one run's evidence to another run's copy of it: a stage
+   * fork whose sources are its parent's snapshot keeps the checks that passed on them (#855).
+   */
+  copyCheckResults(fromRun: string, fromEvidence: string, toRun: string, toEvidence: string): void {
+    const rows = this.db
+      .query<{ id: string }, [string, string]>(
+        "SELECT id FROM check_results WHERE run_id=? AND evidence_id=? ORDER BY rowid",
+      )
+      .all(fromRun, fromEvidence);
+    for (const row of rows)
+      this.db.run(
+        "INSERT INTO check_results SELECT ?,?,check_id,?,status,exit_code,reason,duration_ms FROM check_results WHERE run_id=? AND id=?",
+        [toRun, newId(), toEvidence, fromRun, row.id],
+      );
+  }
   checks(runId: string): {
     check_id: string;
     evidence_id: string;
