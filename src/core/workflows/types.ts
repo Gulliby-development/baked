@@ -192,6 +192,16 @@ export const RuntimeStateSchema = z
         /** Findings of the decided outcome; they become corrective tasks when the target writes. */
         findings: z.array(z.string()),
         repairKind: z.enum(["repair", "convergence"]).nullable(),
+        /** The deadline of the current wait stage visit (epoch ms); a resumed visit keeps it. */
+        wait: z
+          .object({
+            stageId: z.string(),
+            visit: z.number().int().nonnegative(),
+            startedAt: z.number().int(),
+            deadlineAt: z.number().int(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .nullable()
@@ -335,6 +345,11 @@ export interface ExecutionResponse {
   output: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * False when the provider reported no tokens for model steps that ran, so the spend is
+   * unknown: the attempt keeps its reservation instead of being counted as free.
+   */
+  usageComplete?: boolean;
 }
 export interface AgentExecutor {
   execute(request: ExecutionRequest): Promise<ExecutionResponse>;

@@ -151,6 +151,18 @@ export function reproAllows(
   return exempt || finding.kind !== "correctness";
 }
 
+/**
+ * Advice for a review whose correctness findings have neither a repro nor `noRepro`: a claim about
+ * how runnable code behaves should come with the command that shows it, or say why none can.
+ */
+export function missingReproAdvice(review: Review): string[] {
+  const missing = review.findings.filter((f) => f.kind === "correctness" && !f.repro && !f.noRepro);
+  if (!missing.length) return [];
+  return [
+    `Correctness finding(s) ${missing.map((f) => f.id).join(", ")} have no repro. For each, try a command with run_repro that prints the actual value where the spec requires the expected one, and attach it as repro; when no command can show the claim, set noRepro to say why. A finding without either is reported as unverified. Then call submit_result again with the complete review.`,
+  ];
+}
+
 /** The host tool a reviewer tries a repro with before it attaches the repro to a finding. */
 export function reproTool(
   executables: readonly string[],

@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { resolveProfileModel } from "../src/core/llm/model-routing.js";
 import { scopedPlanBudget } from "../src/core/workflows/clarification.js";
+import { runDoctor } from "../src/core/workflows/doctor.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { uniqueFeatureId } from "../src/core/workflows/feature-id.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -143,8 +144,25 @@ describe("baked quick", () => {
     disposals.push(async () => service.close());
     await expect(
       executeWorkflowCommand(service, parseWorkflowArgs(["quick", "fix"]), new AbortController().signal),
-    ).rejects.toThrow("A quick task needs at least one feature check");
+    ).rejects.toThrow("Workflow quick needs at least one feature check in the workflow policy");
+    // The local API starts a quick task as a run of the quick workflow; it refuses the same way.
+    await expect(
+      executeWorkflowCommand(
+        service,
+        parseWorkflowArgs(["run", "--workflow", "quick", "--feature", "f", "--prompt", "fix"]),
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("Workflow quick needs at least one feature check in the workflow policy");
     expect(service.store.list(10).items).toEqual([]);
+    const report = await runDoctor(root, config, { workflowId: "quick" }, {
+      providerReady: async () => ({ known: true, ready: true }),
+      which: (command) => `/usr/bin/${command}`,
+      git: async () => ({ code: 0, stdout: "" }),
+    });
+    expect(report.ready).toBe(false);
+    const start = report.checks.find((c) => c.id === "start");
+    expect(start?.status).toBe("fail");
+    expect(start?.fix).toContain("/workflow gates");
   });
 
   test("feature IDs get a numeric suffix while taken", () => {

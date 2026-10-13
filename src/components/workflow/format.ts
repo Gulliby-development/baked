@@ -1,6 +1,7 @@
 import { type BudgetLimits, proposeExtension } from "../../core/workflows/budget.js";
 import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js";
 import { detectGates } from "../../core/workflows/gates.js";
+import { reasonText } from "../../core/workflows/reasons.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { Check } from "../../core/workflows/types.js";
 import type {
@@ -64,6 +65,7 @@ const STAGE_LABELS: Record<string, string> = {
   converge: "Converge",
   learn: "Learn",
   report: "Report",
+  wait: "Wait",
 };
 export const stageLabel = (kind: string): string => STAGE_LABELS[kind] ?? kind;
 /**
@@ -90,30 +92,7 @@ export function stageGlyph(
   return "·";
 }
 
-const REASONS: Record<string, string> = {
-  clarification: "the agents need answers to open questions",
-  approval: "the spec, plan and tasks wait for your approval",
-  manual_evidence: "a criterion needs a manual observation from you",
-  user_pause: "paused by you",
-  owner_lost: "the process that ran it stopped",
-  step_stalled: "an agent call made no progress and was stopped",
-  input_changed: "instructions or configuration changed since approval",
-  workspace_busy: "another run or edit holds the workspace",
-  budget_exhausted: "the token, call or time budget is used up",
-  checkpoint: "the run reached a token checkpoint and waits for you to continue",
-  no_progress: "repairs stopped making progress",
-  verification_failed: "checks or reviews did not pass",
-  provider_unavailable: "the model provider is unavailable",
-  provider_account:
-    "the model provider refused the account: add credits, fix the API key or switch the run to another model",
-  tool_denied: "a tool call was denied by policy",
-  storage_failure: "workflow storage failed",
-  invalid_output: "a model returned output that failed validation",
-  host_state: "the host's own state was stale or incomplete (not a model's output)",
-  interrupted_effect: "an interrupted command needs recovery",
-  dependency_failed: "a dependency did not complete",
-};
-export const reasonText = (reason: string): string => REASONS[reason] ?? reason;
+export { reasonText };
 
 /** One sentence for "what is happening" and an optional one for "what you can do". */
 export function headline(
@@ -129,7 +108,13 @@ export function headline(
       return { now: "Created, not started yet.", next: "Press R to start." };
     case "running":
       return driving
-        ? { now: `Working on ${at}.`, next: null }
+        ? {
+            now:
+              stage?.kind === "wait"
+                ? `Waiting at ${at}: polling its gates, no model calls.`
+                : `Working on ${at}.`,
+            next: null,
+          }
         : {
             now: `Marked running at ${at}, but this window is not executing it.`,
             next: "If no other BAKED window runs it, press P: pausing releases the workspace.",
@@ -363,6 +348,8 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.modelId ? `Agent call on ${event.payload.modelId}` : null;
     case "attempt.finished":
       return event.payload.status === "completed" ? null : `Agent call ${event.payload.status}`;
+    case "attempt.advisory":
+      return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":
       return `Task ${event.payload.taskId}: ${event.payload.from} → ${event.payload.to}`;
     case "check.finished":
@@ -387,6 +374,10 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.status === "passed"
         ? null
         : `Gate ${event.payload.gateId} ${event.payload.status}${event.payload.mode === "advisory" ? " (advisory)" : ""}${event.payload.flaky ? " (flaky)" : ""}`;
+    case "wait.progress":
+      return event.payload.pending.length
+        ? `Waiting for ${event.payload.pending.join(", ")} until ${clockTime(event.payload.deadline)} (every ${event.payload.intervalSeconds}s)`
+        : "Wait gates pass";
     case "acceptance.phase":
       return `AI walk-through ${event.payload.gateId}: ${event.payload.phase.replace("_", " ")}${event.payload.detail ? ` (${event.payload.detail.slice(0, 120)})` : ""}`;
     case "artifact.committed":
@@ -395,8 +386,11 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return null;
     case "tool.finished":
       // Only a call that hit its deadline is worth a line; the rest is evidence for attribution.
-      return event.payload.status === "deadline"
-        ? `Tool ${event.payload.tool} did not return in time and was abandoned`
+      if (event.payload.status === "deadline")
+        return `Tool ${event.payload.tool} did not return in time and was abandoned`;
+      // A repair probe is worth a line: it shows how a repair task isolated its failure.
+      return event.payload.tool === "run_probe"
+        ? `Probe ran (${formatDuration(event.payload.durationMs)})`
         : null;
   }
 }

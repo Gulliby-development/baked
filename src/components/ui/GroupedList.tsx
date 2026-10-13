@@ -206,6 +206,15 @@ function statusColor(
 //  ▸   Google                                                 2
 //  ▾   Vercel Gateway                                        12
 
+/**
+ * Columns for a row's meta: 42% of the list, so metas line up, and a longer meta whole while
+ * the label keeps 16 columns (it truncates itself). The row's other parts take ~10.
+ */
+export function metaWidth(meta: string, label: string, width: number): number {
+  const column = Math.max(8, Math.floor(width * 0.42));
+  return Math.max(column, Math.min(meta.length + 2, width - Math.min(label.length, 16) - 10));
+}
+
 function GroupedListImpl<Item extends GroupedItem>({
   groups,
   expanded,
@@ -383,7 +392,7 @@ function GroupedListImpl<Item extends GroupedItem>({
                 <text
                   bg={rowBg}
                   fg={t.textMuted}
-                  width={Math.max(8, Math.floor(width * 0.42))}
+                  width={metaWidth(it.meta, it.label, width)}
                   flexShrink={0}
                   wrapMode="none"
                   truncate

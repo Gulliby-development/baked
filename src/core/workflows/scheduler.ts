@@ -9,7 +9,11 @@ import {
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
-import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
+import {
+  assertAcceptance,
+  assertAcceptanceV2,
+  v1ReviewDimensions,
+} from "../verification/acceptance.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
@@ -37,6 +41,7 @@ import {
 } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
+  missingReproAdvice,
   type ReproOutcome,
   reproAllows,
   reproExecutables,
@@ -67,6 +72,7 @@ import {
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   fixerCommand,
+  fixerTiers,
   isCodePath,
   taskCheckList,
   validateChecks,
@@ -276,6 +282,19 @@ interface QueuedRequest {
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
+/**
+ * The planned files a failed check of a corrective task names, when the task may write none of
+ * them; empty when the output names no planned file or one the task writes.
+ */
+export function outOfScopeFailure(
+  task: Pick<Task, "origin" | "writes">,
+  checked: { status: string; output?: string },
+  tasks: Task[],
+): string[] {
+  if (task.origin === "planned" || checked.status !== "failed" || !checked.output) return [];
+  const named = pathsInOutput(checked.output, tasks);
+  return named.some((path) => task.writes.some((w) => w.path === path)) ? [] : named;
+}
 /** A SQLite failure is a host fault, never a model's invalid output. */
 function isStoreError(error: unknown): boolean {
   if (!(error instanceof Error) || error instanceof WorkflowFault) return false;
@@ -338,6 +357,13 @@ export class WorkflowScheduler {
   maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
+  /** The clock of wait stages: wall time and an abortable sleep. Tests inject a fake one. */
+  waitClock: { now: () => number; sleep: (ms: number, signal: AbortSignal) => Promise<void> } = {
+    now: () => Date.now(),
+    sleep: abortableDelay,
+  };
+  /** Runs a sleep that does not count as active time; set while a run is driven. */
+  private idle: <T>(sleep: () => Promise<T>) => Promise<T> = (sleep) => sleep();
   /**
    * Requests for a person raised by the current step. They become durable only together with the
    * state they were raised on (see `flushWaits`), so a decision never sees a request whose state
@@ -382,10 +408,25 @@ export class WorkflowScheduler {
     if (outerSignal.aborted) abort();
     const signal = controller.signal;
     const started = performance.now();
-    const timeout = setTimeout(
-      () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
-      Math.max(1, policy.maxActiveMs - this.store.run(runId).active_ms),
-    );
+    const activeBefore = this.store.run(runId).active_ms;
+    let idleMs = 0;
+    const arm = () =>
+      setTimeout(
+        () => controller.abort(new WorkflowFault("BUDGET_EXHAUSTED", "Active deadline exhausted")),
+        Math.max(1, policy.maxActiveMs - activeBefore - (performance.now() - started - idleMs)),
+      );
+    let timeout = arm();
+    // A wait stage sleeps between polls; that time is not active time.
+    this.idle = async <T>(sleep: () => Promise<T>): Promise<T> => {
+      clearTimeout(timeout);
+      const from = performance.now();
+      try {
+        return await sleep();
+      } finally {
+        idleMs += performance.now() - from;
+        timeout = arm();
+      }
+    };
     // Management commands from another process must stop this owner before the next effect.
     const poll = setInterval(() => {
       if (["paused", "cancelled"].includes(this.store.run(runId).status))
@@ -576,6 +617,7 @@ export class WorkflowScheduler {
                           sizing: plannerSizing(
                             policy,
                             sizingHistory(this.store.workspace, policy),
+                            this.sizingModel(runId, null),
                           ),
                         }
                       : {}),
@@ -978,6 +1020,16 @@ export class WorkflowScheduler {
               if (policy.maxConcurrentWriters > 1 && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
+              break;
+            }
+            case "wait": {
+              const failed = v2
+                ? await this.runWaitStage(runId, stepId, state, policy, v2, signal)
+                : null;
+              if (failed) {
+                repairFindings = { findings: failed, kind: "repair" };
+                advance = false;
+              }
               break;
             }
             case "checks": {
@@ -1407,11 +1459,14 @@ export class WorkflowScheduler {
       forgetProgress(runId);
       clearInterval(poll);
       clearTimeout(timeout);
+      this.idle = (sleep) => sleep();
       outerSignal.removeEventListener("abort", abort);
       leaseSignal.removeEventListener("abort", leaseLost);
       await this.processes.stop();
       try {
-        this.store.transaction(() => this.store.addActiveTime(runId, performance.now() - started));
+        this.store.transaction(() =>
+          this.store.addActiveTime(runId, performance.now() - started - idleMs),
+        );
       } finally {
         this.leases.release();
       }
@@ -1425,7 +1480,8 @@ export class WorkflowScheduler {
   private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
     if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
     const record = this.lastAttemptUsage(runId, stepId);
-    if (!record || record.finalizedBy === null) return false;
+    // An attempt the progress watcher stopped was stuck, not short of room.
+    if (!record || record.finalizedBy === null || record.finalizedBy === "watcher") return false;
     state.taskContinuations[task.id] = 1;
     state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
     state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
@@ -1586,6 +1642,7 @@ export class WorkflowScheduler {
       policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
+      model: this.sizingModel(runId, graph),
     });
     const split = splitTestTasks(graph, report);
     if (!split) return graph;
@@ -1684,6 +1741,13 @@ export class WorkflowScheduler {
     stepId: string,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    return this.stageRoute(runId, this.store.rootStage(runId, stepId), profile);
+  }
+  private stageRoute(
+    runId: string,
+    stage: string | null | undefined,
+    profile: AgentProfile,
+  ): { models: string[]; effort?: RouteEffort } {
     let routing = this.routing.get(runId);
     if (routing === undefined) {
       const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
@@ -1693,7 +1757,6 @@ export class WorkflowScheduler {
       this.routing.set(runId, routing);
     }
     if (!routing) return { models: [profile.model] };
-    const stage = this.store.rootStage(runId, stepId);
     const staged = stage ? routing.stages[stage] : undefined;
     const own = routing.profiles[profile.id];
     const entry = staged ?? own;
@@ -1707,6 +1770,29 @@ export class WorkflowScheduler {
   private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
     const model = this.route(runId, stepId, profile).models[index] ?? profile.model;
     return model === profile.model ? profile : { ...profile, model };
+  }
+  /**
+   * The model the plan's tasks will run on, as routing sends the profile most of them name to the
+   * task-graph stage; sizing prices them from that model's history. Null when it is not known.
+   */
+  private sizingModel(runId: string, graph: TaskGraph | null): string | null {
+    try {
+      const run = this.store.run(runId);
+      const profiles = ProfileSchema.array().parse(JSON.parse(run.profiles_json));
+      const counts = new Map<string, number>();
+      for (const task of graph?.tasks ?? [])
+        counts.set(task.profileId, (counts.get(task.profileId) ?? 0) + 1);
+      const named = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const profile =
+        profiles.find((p) => p.id === named) ?? profiles.find((p) => p.id === "implementer");
+      if (!profile) return null;
+      const stage = WorkflowSchema.parse(JSON.parse(run.definition_json)).stages.find(
+        (s) => s.kind === "task-graph",
+      )?.id;
+      return this.stageRoute(runId, stage, profile).models[0] ?? profile.model;
+    } catch {
+      return null;
+    }
   }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
@@ -1842,9 +1928,11 @@ export class WorkflowScheduler {
           runId,
           attempt,
           "completed",
-          result.inputTokens === null || result.outputTokens === null
-            ? this.store.recordedUsage(runId, attempt)
-            : result.inputTokens + result.outputTokens,
+          result.usageComplete === false
+            ? null
+            : result.inputTokens === null || result.outputTokens === null
+              ? this.store.recordedUsage(runId, attempt)
+              : result.inputTokens + result.outputTokens,
         );
         this.store.artifact(
           runId,
@@ -2111,11 +2199,13 @@ export class WorkflowScheduler {
     const graph = state.graph;
     if (!graph) return "continue";
     const samples = sizingHistory(this.store.workspace, policy);
+    const model = this.sizingModel(runId, graph);
     const report = sizePlan({
       graph,
       policy,
       samples,
       spent: this.store.run(runId).token_usage,
+      model,
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -2133,7 +2223,7 @@ export class WorkflowScheduler {
         this.raiseBudget(runId, state, policy, report);
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
+${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
@@ -2674,14 +2764,19 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           "INPUT_CHANGED",
           `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
+      const correction =
+        result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0
+          ? await this.correctionSatisfied(runId, state, child, policy, task, result, signal, root)
+          : true;
+      if (correction instanceof WorkflowFault) {
+        this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        throw correction;
+      }
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" &&
-          changed.length === 0 &&
-          task.writes.length > 0 &&
-          !(await this.correctionSatisfied(runId, child, policy, task, result, signal, root)))
+        !correction
       ) {
         const restartReason = this.blockedRestartReason(
           runId,
@@ -3154,13 +3249,26 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (restartReason && changed.length === 0)
         return { kind: "interrupted", entry, leaseLost: false, reason: restartReason, account };
       const refused = takeHashRefusals(root);
+      const correction =
+        result.outcome === "implemented" && changed.length === 0
+          ? await this.correctionSatisfied(
+              runId,
+              state,
+              entry.child,
+              policy,
+              task,
+              result,
+              signal,
+              root,
+            )
+          : true;
+      if (correction instanceof WorkflowFault)
+        return { kind: "rejected", entry, error: correction };
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" &&
-          changed.length === 0 &&
-          !(await this.correctionSatisfied(runId, entry.child, policy, task, result, signal, root)))
+        !correction
       )
         return {
           kind: "rejected",
@@ -3720,13 +3828,14 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
    */
   private async correctionSatisfied(
     runId: string,
+    state: RuntimeState,
     child: string,
     policy: RunPolicy,
     task: Task,
     result: { taskId: string; outcome: string; unresolved: string[] },
     signal: AbortSignal,
     root: string,
-  ): Promise<boolean> {
+  ): Promise<boolean | WorkflowFault> {
     const rerun = (this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0) > 0;
     if (
       (task.origin === "planned" && !rerun) ||
@@ -3748,7 +3857,18 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     if (!checks.length) return false;
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
-      if (checked.status !== "passed") return false;
+      if (checked.status === "passed") continue;
+      const outside = outOfScopeFailure(task, checked, state.graph?.tasks ?? []);
+      // A correction that changed nothing while its check still fails only on files it may not
+      // write would change nothing on a second attempt or a resume either (commitbump cd842f0f:
+      // T008, three attempts and 689k with no edit).
+      if (outside.length)
+        return new WorkflowFault(
+          "RECOVERY_REQUIRED",
+          `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
+          { reason: "no_progress", paths: outside },
+        );
+      return false;
     }
     return true;
   }
@@ -4155,51 +4275,50 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     let changed = false;
     try {
       for (const check of fixable) {
-        const fix = check.fix;
-        if (!fix) continue;
-        for (const path of paths) {
-          signal.throwIfAborted();
-          this.leases.assert(lease);
-          const target = workspacePath(root, path);
-          const preImage = capturePreImage(this.store, runId, target);
-          const effectId = this.store.transaction(() =>
-            this.store.prepareEffect(
-              runId,
-              attempt,
-              "file_patch",
-              {
-                path,
-                tool: "apply_fix",
-                checkId: check.id,
-                taskId: owners.get(path),
-                ...rootField(this.store.workspace, root),
-              },
-              preImage,
-              null,
-            ),
-          );
-          try {
-            // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-            const command = fixerCommand(fix, path);
-            await executeCheckCommand(
-              scope,
-              command.executable === "bun" ? process.execPath : command.executable,
-              command.args,
-              {
-                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                env: buildCheckEnv(check),
-                timeoutMs: check.timeoutMs,
-                signal,
-              },
+        for (const fix of fixerTiers(check))
+          for (const path of paths) {
+            signal.throwIfAborted();
+            this.leases.assert(lease);
+            const target = workspacePath(root, path);
+            const preImage = capturePreImage(this.store, runId, target);
+            const effectId = this.store.transaction(() =>
+              this.store.prepareEffect(
+                runId,
+                attempt,
+                "file_patch",
+                {
+                  path,
+                  tool: "apply_fix",
+                  checkId: check.id,
+                  taskId: owners.get(path),
+                  ...rootField(this.store.workspace, root),
+                },
+                preImage,
+                null,
+              ),
             );
-            const after = fileHash(target);
-            this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-            if (after !== preImage) changed = true;
-          } catch (error) {
-            this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
-            throw error;
+            try {
+              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+              const command = fixerCommand(fix, path);
+              await executeCheckCommand(
+                scope,
+                command.executable === "bun" ? process.execPath : command.executable,
+                command.args,
+                {
+                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                  env: buildCheckEnv(check),
+                  timeoutMs: check.timeoutMs,
+                  signal,
+                },
+              );
+              const after = fileHash(target);
+              this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+              if (after !== preImage) changed = true;
+            } catch (error) {
+              this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+              throw error;
+            }
           }
-        }
       }
       const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
         (path) => !owners.has(path),
@@ -4444,16 +4563,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   }
   /** The v1 review stage: correctness, security when triggered and language, each blocking. */
   private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
-    const dimensions = [
-      "correctness",
-      ...(requiresSecurityReview(
-        state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? [],
-        policy.forceSecurityReview,
-      )
-        ? ["security"]
-        : []),
-      ...(policy.reviewProfiles.language ? ["language"] : []),
-    ] as (keyof RunPolicy["reviewProfiles"])[];
+    const dimensions = v1ReviewDimensions(state, policy);
     return dimensions.map((dimension) => ({
       key: dimension,
       dimension,
@@ -4525,6 +4635,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
       const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
+      const canRepro = executables.length > 0 && profile.allowedTools.includes("run_repro");
+      let reproAdvised = false;
       const ask = async (extra: Record<string, unknown>): Promise<Review> => {
         const answer = ReviewSchema.parse(
           await this.call(
@@ -4541,21 +4653,24 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             signal,
             undefined,
             0,
-            (output) =>
-              ReviewSchema.safeParse(output).success
-                ? reviewProblems(
-                    this.store,
-                    runId,
-                    reviewSnapshotId,
-                    reviewSnapshotHash,
-                    reviewSpec,
-                    output as Review,
-                  )
-                : [],
+            (output) => {
+              if (!ReviewSchema.safeParse(output).success) return [];
+              const problems = reviewProblems(
+                this.store,
+                runId,
+                reviewSnapshotId,
+                reviewSnapshotHash,
+                reviewSpec,
+                output as Review,
+              );
+              // Asked once: a reviewer that still has no repro after the advice is not blocked.
+              if (problems.length || reproAdvised || !canRepro) return problems;
+              const advice = missingReproAdvice(output as Review);
+              if (advice.length) reproAdvised = true;
+              return advice;
+            },
             undefined,
-            executables.length && profile.allowedTools.includes("run_repro")
-              ? () => ({ run_repro: reproTool(executables, repro) })
-              : undefined,
+            canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
@@ -4732,7 +4847,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   }
   private outcomeOf(stage: Stage, repair: boolean): Outcome {
     if (!repair) return "passed";
-    return stage.type === "check" ? "failed" : "changes_requested";
+    return stage.type === "check" || stage.type === "wait" ? "failed" : "changes_requested";
   }
   /** Keeps the latest result of a gate in the state and writes `gate.finished`. */
   private recordGate(
@@ -4926,6 +5041,103 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       coverage: [],
       findings: failures,
     });
+  }
+  /**
+   * A wait stage: polls its command gates by host code, without a model call, every interval until
+   * every required gate passes or the deadline passes. Polls record nothing; the run that decides
+   * the stage records each gate once. The deadline is saved with the position, so a resumed visit
+   * keeps it. Returns null when the gates pass, and an empty list (outcome failed, no corrective
+   * work) when the wait timed out.
+   */
+  private async runWaitStage(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    v2: { stage: Stage; gates: Gate[] },
+    signal: AbortSignal,
+  ): Promise<Review["findings"] | null> {
+    const stage = v2.stage;
+    const position = state.position;
+    if (stage.type !== "wait" || !position) return null;
+    const bound = stage.gates.map((binding) => {
+      const gate = v2.gates.find((g) => g.id === binding.gateId);
+      if (gate?.type !== "command")
+        throw new WorkflowFault("INVALID_REFERENCE", `Wait gate ${binding.gateId} is missing`);
+      return { gate, check: gateToCheck(gate, binding) };
+    });
+    const required = bound.filter((b) => b.check.required);
+    const clock = this.waitClock;
+    const visit = position.visits[stage.id] ?? 1;
+    let wait = position.wait;
+    if (wait?.stageId !== stage.id || wait.visit !== visit) {
+      const now = clock.now();
+      wait = {
+        stageId: stage.id,
+        visit,
+        startedAt: now,
+        deadlineAt: now + stage.timeoutMinutes * 60_000,
+      };
+      position.wait = wait;
+      this.store.transaction(() => this.store.saveState(runId, state));
+    }
+    const { deadlineAt } = wait;
+    const progress = (pending: readonly string[], polls: number) =>
+      this.store.transaction(() =>
+        this.store.emit(runId, {
+          type: "wait.progress",
+          payload: {
+            stageId: stage.id,
+            deadline: new Date(deadlineAt).toISOString(),
+            intervalSeconds: stage.intervalSeconds,
+            pending: [...pending],
+            polls,
+          },
+        }),
+      );
+    progress(
+      required.map((b) => b.gate.id),
+      0,
+    );
+    let reported = required.map((b) => b.gate.id).join(",");
+    const root = this.rootOf(runId);
+    for (let polls = 1; ; polls++) {
+      signal.throwIfAborted();
+      const pending: string[] = [];
+      for (const { gate, check } of required) {
+        const left = Math.max(1000, deadlineAt - clock.now());
+        if ((await this.checks.probe(check, signal, root, left)) !== "passed")
+          pending.push(gate.id);
+      }
+      const key = pending.join(",");
+      if (key !== reported) {
+        reported = key;
+        progress(pending, polls);
+      }
+      const timedOut = clock.now() >= deadlineAt;
+      if (!pending.length || timedOut) {
+        const ordered = [...required, ...bound.filter((b) => !b.check.required)];
+        let failing = false;
+        for (const { gate, check } of ordered) {
+          const result = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+          this.recordGate(runId, state, gate.id, null, {
+            status: result.status,
+            mode: check.required ? "required" : "advisory",
+            evidenceId: result.evidenceId,
+            attempts: result.attempts,
+            flaky: result.flaky,
+          });
+          if (check.required && result.status !== "passed") failing = true;
+        }
+        if (!failing) return null;
+        if (timedOut) return [];
+        // The gate changed between the poll and the recorded run: keep waiting.
+      }
+      const left = deadlineAt - clock.now();
+      await this.idle(() =>
+        clock.sleep(Math.max(0, Math.min(stage.intervalSeconds * 1000, left)), signal),
+      );
+    }
   }
   /**
    * Takes the transition that answers the decided outcome of the current stage: its gates in

@@ -747,6 +747,8 @@ export function createBakeAgent({
     onApproveFetchPage: effectiveApproveFetchPage,
     onApproveOutsideCwd: effectiveApproveOutsideCwd,
     onApproveDestructive: effectiveApproveDestructive,
+    // A deploy sends a page off the machine, so it asks even in auto mode.
+    ...(onApproveDestructive ? { onApproveArtifactDeploy: onApproveDestructive } : {}),
     tabId: tabId ?? contextManager.getTabId() ?? undefined,
     tabLabel: tabLabel ?? contextManager.getTabLabel() ?? undefined,
     activeDeferredTools,
@@ -798,6 +800,7 @@ export function createBakeAgent({
     "memory",
     "skills",
     "baked_help",
+    "artifact",
     // Tool management
     "request_tools",
     "release_tools",
@@ -938,9 +941,20 @@ export function createBakeAgent({
     if (planExecution) return planExecSet.has(name);
     return true;
   };
+  // Some models keep retrying other write tools after a denial, so the refusal
+  // says the whole class stays denied for the turn and escalates on repeats.
+  let modeDenials = 0;
   const modeDenyReason = (name: string): string => {
     if (isRestricted) {
-      return `Tool "${name}" is disabled in ${bakeMode} mode (read-only/analysis only). Use read/navigate/bake_* to investigate, or plan to propose changes. To make edits, the user must switch out of ${bakeMode} mode.`;
+      modeDenials++;
+      const next =
+        bakeMode === "plan"
+          ? "call plan with the changes you intended"
+          : "give the design as your answer";
+      if (modeDenials > 1) {
+        return `Tool "${name}" refused again (${modeDenials} refusals this turn). No edit, write, shell or git tool runs in ${bakeMode} mode, so stop calling them and ${next} now.`;
+      }
+      return `Tool "${name}" is disabled in ${bakeMode} mode (read-only/analysis only). Every edit, write, shell and git tool is refused for this whole turn, so do not try another one. Use read/navigate/bake_* to investigate, then ${next}. To make edits, the user must switch out of ${bakeMode} mode.`;
     }
     return `Tool "${name}" is not available during plan execution. The plan already contains the intended changes — use edit_file/multi_edit/shell/project and update_plan_step to execute them.`;
   };

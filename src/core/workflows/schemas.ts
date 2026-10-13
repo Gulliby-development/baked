@@ -119,6 +119,20 @@ export const CheckSchema = z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()
       .optional(),
+    /**
+     * A second fixer tier run after `fix` on the same files, for fixes the tool marks unsafe
+     * (`biome check --write --unsafe`), limited to what the project allows. Used only with `fix`.
+     */
+    fixUnsafe: z
+      .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+      .strict()
+      .optional(),
+    /**
+     * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
+     * line and that report decides the result; without one the check is inconclusive. Absent means
+     * the exit code decides.
+     */
+    report: z.enum(["exit", "json"]).optional(),
   })
   .strict();
 
@@ -474,6 +488,12 @@ export const ReviewSchema = z
              */
             repro: ReproSchema.optional(),
             /**
+             * Why no command can show a correctness finding (for example it is about concurrency,
+             * a platform the workspace cannot run, or wording). A correctness finding without a
+             * repro and without this reason is unverified.
+             */
+            noRepro: Text.optional(),
+            /**
              * The id of an earlier finding of the run that this one repeats (the same defect, even
              * when the file, symbol or wording changed), or null for a new defect. Absent means the
              * reviewer did not say, and the host compares locations instead.
@@ -665,6 +685,7 @@ export const EventType = z.enum([
   "stage.finished",
   "attempt.started",
   "attempt.finished",
+  "attempt.advisory",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -677,6 +698,7 @@ export const EventType = z.enum([
   "snapshot.invalidated",
   "transition.taken",
   "gate.finished",
+  "wait.progress",
   "acceptance.phase",
   "tool.started",
   "tool.finished",
@@ -765,6 +787,21 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // The progress watcher noticed a stuck loop: it steered the attempt once, then stopped it.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.advisory"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          signal: z.enum(["repeated-reads", "no-edits", "same-failure"]),
+          action: z.enum(["steered", "stopped"]),
+          detail: z.string().max(500),
         })
         .strict(),
     })
@@ -924,6 +961,23 @@ export const EventSchema = z.discriminatedUnion("type", [
           attempts: z.number().int().nonnegative(),
           flaky: z.boolean(),
           evidenceId: SafeId.nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A wait stage polls its gates: emitted when it starts or resumes and when the gates it still
+  // waits for change, not on every poll.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("wait.progress"),
+      payload: z
+        .object({
+          stageId: SafeId,
+          deadline: z.iso.datetime(),
+          intervalSeconds: z.number().int().positive(),
+          pending: z.array(SafeId),
+          polls: z.number().int().nonnegative(),
         })
         .strict(),
     })
