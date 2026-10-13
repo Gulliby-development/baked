@@ -234,6 +234,10 @@ export const DeliverBody = z.strictObject({
   branch: z.string().min(1).optional(),
   /** A delivered run whose branch and pull request receive this run's commit (`--follow-up`). */
   followUp: SafeId.optional(),
+  /** Review threads of the followed pull request answered after the push (`--answer-threads`). */
+  answerThreads: z.array(SafeId).min(1).max(100).optional(),
+  /** Also resolve the answered threads (`--resolve`). */
+  resolve: z.boolean().optional(),
   draft: z.boolean().optional(),
   pullRequest: z.boolean().optional(),
 });

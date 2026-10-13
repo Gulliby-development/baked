@@ -998,6 +998,8 @@ Preparation refuses, with `details.reason` in the error:
 | `nothing_to_deliver` | Every changed file was excluded |
 | `worktree_missing`, `branch_moved` | A worktree run's worktree was removed, or its run branch no longer points at the accepted commit |
 | `invalid_follow_up`, `not_delivered` | `--follow-up` names the run itself, or a run with no pushed delivery |
+| `answer_without_follow_up`, `no_pull_request`, `thread_not_open` | `--answer-threads` without `--follow-up`, a followed delivery that opened no pull request, or a thread that is not an unresolved review thread of that pull request |
+| `review_replies_failed` | GitHub refused a reply or a resolution of an approved thread; the commit is pushed, and the next execute answers the threads not yet answered |
 | `branch_missing`, `fetch_required`, `branch_checked_out` | The followed branch is gone from the remote, its tip is not in the local repository (`git fetch` it), or it is checked out in the working copy or a worktree |
 
 A HEAD that moved since the run's baseline is accepted when the new commits do not touch the delivered files; the plan records `headMoved`.
@@ -1029,7 +1031,7 @@ The plan takes the branch and remote of the followed run's latest pushed deliver
 ### Following a delivered pull request's checks
 
 ```sh
-baked workflow follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix]
+baked workflow follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix] [--reviews]
 ```
 
 `follow` reads the checks GitHub reports on the commit the run's latest delivery pushed: check runs (a completed run passes with `success`, `neutral` or `skipped`) and commit statuses. It is host code, with no model call and no tokens. It reads every `--interval` seconds (5 to 3600, default 60) and ends at the first failed check, when every check passed, or after `--timeout` minutes (1 to 1440, default 60), with `outcome` `failed`, `passed` or `timeout`; no check reported yet counts as still running. `--once` reads once. It needs a GitHub remote and the delivery token (`workflows.delivery.tokenEnv`); a run without a pushed delivery is refused as `not_delivered`.
@@ -1037,6 +1039,19 @@ baked workflow follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix]
 With a failed check the answer has `fix`: a `fix-ci` run for the failed checks, with the feature `FEATURE-ci` (`-2`, `-3` when taken) and a request that names the pull request, the commit and each failed check with GitHub's summary and link. `--fix` starts that run as `baked workflow run --workflow fix-ci` would; it reproduces the failure with the project's checks, plans, asks for approval and fixes. Its answer names the next step, `baked workflow deliver FIX_RUN_ID --follow-up RUN_ID`, which puts the fix on the same pull request ([follow-up commits](#follow-up-commits-to-a-delivered-pull-request)). Follow the fix run the same way until the checks pass. Every commit and push still waits for a person's approval of its plan.
 
 The TUI run view offers K (PR checks) on a completed run: it reads the checks once and, when one failed, asks whether to start the fix run (Y). The desktop run screen shows a Pull request panel on a completed, delivered run with the checks, Check again, and Fix failed checks, which starts the fix run and opens it. `GET /v1/workflow/runs/RUN_ID/checks` is the same read over the [local API](../desktop/api.md).
+
+### Repairing from review comments
+
+```sh
+baked workflow follow RUN_ID --once --reviews [--fix]
+baked workflow deliver FIX_RUN_ID --follow-up RUN_ID --answer-threads THREAD_ID,THREAD_ID [--resolve]
+```
+
+Review comments are read only with `--reviews`. Once no check failed (a failed check is fixed first, as above), `follow` also reads the pull request's review threads and the latest review of each reviewer over GitHub's GraphQL API, again host code with no model call. The answer's `reviews` has `state` `changes` or `clear`, the unresolved `threads` (`id`, `path`, `line`, `outdated` and the comments with author, body and link) and `changesRequested`, the reviews whose latest state requests changes. Resolved threads are left out; comments from review bots count like any other thread. With changes asked for, `repair` is a `quick-fix` run with the feature `FEATURE-review` (`-2` and onward when taken) and a request that quotes each thread and review as data, with `threads`, the IDs its delivery answers. `--fix` starts that run, and the answer's `next` is the follow-up delivery that answers those threads.
+
+`--answer-threads` adds the operation `review_replies` to a follow-up plan, after `commit` and `push`. When the plan is made, each thread must be an unresolved review thread of the followed run's pull request (`thread_not_open` otherwise). The plan lists the threads and the reply, `Addressed in {commit}.`, where `{commit}` is the pushed commit. `--resolve` also resolves them. The person who approves the plan's digest therefore approves the replies too, and nothing is posted before that approval. Each reply carries the plan's marker (`<!-- baked-delivery:PLAN_ID -->`), so a retry after a lost response finds the reply already there and does not post it again. The token needs permission to write pull request comments.
+
+The TUI run view offers V (PR reviews) on a completed run: it reads the checks and reviews once and asks whether to start the repair run (Y), naming the delivery flags. The desktop Pull request panel has Read review comments, which lists the unresolved threads, and Fix review comments, which starts the repair run and shows the delivery command. The approval view of a follow-up plan lists the threads it answers. `GET /v1/workflow/runs/RUN_ID/checks?reviews=true` is the same read over the API, and `POST .../deliver` takes `answerThreads` and `resolve`.
 
 ## Initiatives
 

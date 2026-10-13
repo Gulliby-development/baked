@@ -13,10 +13,17 @@ import {
   PullRequestError,
   type PullRequestDraft,
   type PullRequestProvider,
+  type PullRequestReviews,
   repositoryOnHost,
 } from "../src/core/workflows/delivery-provider.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import { fixChecksRequest, followPullRequest, pullRequestChecks } from "../src/core/workflows/follow.js";
+import {
+  fixChecksRequest,
+  followPullRequest,
+  pullRequestChecks,
+  pullRequestReviews,
+  repairReviewsRequest,
+} from "../src/core/workflows/follow.js";
 import { migration001 } from "../src/core/workflows/migrations/001.js";
 import { migration002 } from "../src/core/workflows/migrations/002.js";
 import { newId, WorkflowStore } from "../src/core/workflows/store.js";
@@ -73,6 +80,24 @@ class FakePullRequests implements PullRequestProvider {
   async checks(_repository: string, commit: string): Promise<CommitCheck[]> {
     this.checkedCommits.push(commit);
     return (this.checkReads.length > 1 ? this.checkReads.shift() : this.checkReads[0]) ?? [];
+  }
+  review: PullRequestReviews = { threads: [], reviews: [] };
+  answers: { threadId: string; body: string | null; resolve: boolean }[] = [];
+  /** Fails the next answer after it took effect, as a lost response would. */
+  loseNextAnswer = false;
+  async reviews(): Promise<PullRequestReviews> {
+    return structuredClone(this.review);
+  }
+  async answerThread(threadId: string, body: string | null, resolve: boolean): Promise<void> {
+    this.answers.push({ threadId, body, resolve });
+    const thread = this.review.threads.find((t) => t.id === threadId);
+    if (!thread) throw new PullRequestError("rejected", "GitHub answered: Could not resolve to a node");
+    if (body !== null) thread.comments.push({ author: "baked", body, url: `${thread.comments[0]?.url}-reply` });
+    if (resolve) thread.resolved = true;
+    if (this.loseNextAnswer) {
+      this.loseNextAnswer = false;
+      throw new PullRequestError("unknown", "socket hang up");
+    }
   }
 }
 
@@ -719,6 +744,78 @@ describe("Following a delivered pull request", () => {
     expect(() => parseWorkflowArgs(["follow", first.runId, "--once", "--timeout", "5"])).toThrow("--once");
     expect(workflowHelp).toContain("follow RUN_ID [--interval 60]");
   }, TWO_EXECUTES_TIMEOUT);
+
+  const thread = (id: string, body: string, resolved = false) => ({
+    id,
+    resolved,
+    outdated: false,
+    path: "value.txt",
+    line: 1,
+    comments: [{ author: "reviewer", body, url: `https://example.test/acme/widget/pull/1#${id}` }],
+  });
+
+  test("reads unresolved review threads and proposes a quick-fix run that answers them", async () => {
+    const { first, second } = await followUpScenario();
+    const store = first.fx.service.store;
+    first.provider.review = { threads: [], reviews: [{ author: "lead", state: "APPROVED", body: "", url: "u" }] };
+    expect((await pullRequestReviews(store, first.fx.config, first.runId, first.provider)).state).toBe("clear");
+    first.provider.review = {
+      threads: [thread("T1", "Say  \n fixed"), thread("T2", "done already", true)],
+      reviews: [{ author: "lead", state: "CHANGES_REQUESTED", body: "Please also update docs", url: "u" }],
+    };
+    const reviews = await pullRequestReviews(store, first.fx.config, first.runId, first.provider);
+    expect(reviews).toMatchObject({ state: "changes", pullRequest: { number: 1 } });
+    expect(reviews.threads.map((t) => t.id)).toEqual(["T1"]);
+    const repair = repairReviewsRequest(store, reviews);
+    expect(repair).toMatchObject({ workflowId: "quick-fix", featureId: "fixture-review", followUp: first.runId, threads: ["T1"] });
+    expect(repair.prompt).toContain('- value.txt:1: reviewer: "Say fixed"');
+    expect(repair.prompt).toContain('- Review by lead: "Please also update docs"');
+    expect(repair.prompt).not.toContain("done already");
+    expect((await refusal(pullRequestReviews(store, first.fx.config, second.runId, first.provider))).details.reason).toBe("not_delivered");
+    // The CLI reads reviews only when asked, and only once no check failed.
+    first.provider.checkReads = [[{ name: "lint", state: "passed", detail: "", url: null }]];
+    const cli = (argv: string[]) => executeWorkflowCommand(first.fx.service, parseWorkflowArgs(argv), new AbortController().signal, undefined, { pullRequests: first.provider });
+    expect(await cli(["follow", first.runId, "--once"])).not.toHaveProperty("reviews");
+    const read = (await cli(["follow", first.runId, "--once", "--reviews"])) as { reviews: { state: string }; repair: { threads: string[] } };
+    expect(read.reviews.state).toBe("changes");
+    expect(read.repair.threads).toEqual(["T1"]);
+    first.provider.checkReads = [[fail]];
+    const failing = (await cli(["follow", first.runId, "--once", "--reviews"])) as Record<string, unknown>;
+    expect(failing.fix).toBeDefined();
+    expect(failing.reviews).toBeUndefined();
+    expect(workflowHelp).toContain("[--reviews]");
+  }, TWO_EXECUTES_TIMEOUT);
+
+  test("a follow-up delivery answers and resolves the approved review threads once", async () => {
+    const { first, second } = await followUpScenario();
+    const provider = first.provider;
+    provider.review = { threads: [thread("T1", "Say fixed"), thread("T2", "Rename it")], reviews: [] };
+    expect((await refusal(prepare(second, { answer: { threads: ["T1"] } }))).details.reason).toBe("answer_without_follow_up");
+    expect((await refusal(prepare(second, { followUp: first.runId, answer: { threads: ["T9"] } }))).details.reason).toBe("thread_not_open");
+    expect(() => parseWorkflowArgs(["deliver", second.runId, "--answer-threads", "T1"])).toThrow("add --follow-up");
+    expect(() => parseWorkflowArgs(["deliver", second.runId, "--follow-up", first.runId, "--resolve"])).toThrow("--resolve resolves");
+    const prepared = await prepare(second, { followUp: first.runId, answer: { threads: ["T1", "T1"], resolve: true } });
+    expect(prepared.plan.operations).toEqual(["commit", "push", "review_replies"]);
+    expect(prepared.plan.reviewReplies).toMatchObject({
+      pullRequest: 1,
+      resolve: true,
+      threads: [{ id: "T1", path: "value.txt", url: "https://example.test/acme/widget/pull/1#T1" }],
+    });
+    const body = JSON.parse(second.fx.service.store.requests(second.runId).find((r) => r.id === prepared.requestId)?.body_json ?? "{}");
+    expect(body.reviewReplies.threads).toHaveLength(1);
+    await approve(second, prepared);
+    // The reply is posted but its response is lost: the retry sees the plan's marker and does not post again.
+    provider.loseNextAnswer = true;
+    const result = await execute(second);
+    expect(result.operations.at(-1)).toMatchObject({ operation: "review_replies", status: "reconciled" });
+    const replies = provider.review.threads[0]?.comments.slice(1) ?? [];
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.body).toContain(`Addressed in ${result.commit}.`);
+    expect(replies[0]?.body).toContain(`<!-- baked-delivery:${prepared.planId} -->`);
+    expect(provider.review.threads.map((t) => t.resolved)).toEqual([true, false]);
+    expect(await execute(second)).toEqual(result);
+    expect(provider.answers).toHaveLength(1);
+  }, TWO_EXECUTES_TIMEOUT);
 });
 
 describe("delivery building blocks", () => {
@@ -774,6 +871,40 @@ describe("delivery building blocks", () => {
       { name: "build", state: "pending", detail: "", url: null },
       { name: "deploy", state: "passed", detail: "ok", url: null },
     ]);
+  });
+
+  test("GitHub provider reads review threads over GraphQL and answers them", async () => {
+    const calls: { url: string; body: { query: string; variables: Record<string, unknown> } }[] = [];
+    const answers: unknown[] = [
+      { data: { repository: { pullRequest: {
+        reviewThreads: { nodes: [{ id: "PRRT_1", isResolved: false, isOutdated: true, path: "a.ts", line: 3, comments: { nodes: [{ author: { login: "amy" }, body: "Rename", url: "https://c/1" }] } }] },
+        latestReviews: { nodes: [{ author: null, state: "CHANGES_REQUESTED", body: "More", url: "https://r/1" }] },
+      } } } },
+      { data: {} },
+      { data: {} },
+      { errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }] },
+    ];
+    const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify(answers.shift()), { status: 200 });
+    }) as typeof fetch;
+    const provider = githubPullRequests({ token: "t0k", tokenEnv: "GITHUB_TOKEN", apiUrl: "https://api.github.com", fetch: fetcher });
+    expect(await provider.reviews?.("acme/widget", 7)).toEqual({
+      threads: [{ id: "PRRT_1", resolved: false, outdated: true, path: "a.ts", line: 3, comments: [{ author: "amy", body: "Rename", url: "https://c/1" }] }],
+      reviews: [{ author: "ghost", state: "CHANGES_REQUESTED", body: "More", url: "https://r/1" }],
+    });
+    expect(calls[0]?.url).toBe("https://api.github.com/graphql");
+    expect(calls[0]?.body.variables).toEqual({ owner: "acme", name: "widget", number: 7 });
+    await provider.answerThread?.("PRRT_1", "Addressed", true);
+    expect(calls[1]?.body.query).toContain("addPullRequestReviewThreadReply");
+    expect(calls[1]?.body.variables).toEqual({ thread: "PRRT_1", body: "Addressed" });
+    expect(calls[2]?.body.query).toContain("resolveReviewThread");
+    await expect(provider.answerThread?.("PRRT_1", null, true)).rejects.toMatchObject({ failure: "auth" });
+    expect(calls[3]?.body.query).toContain("resolveReviewThread");
+    const enterprise = githubPullRequests({ token: "t", tokenEnv: "GITHUB_TOKEN", apiUrl: "https://ghe.example.test/api/v3", fetch: fetcher });
+    answers.push({ data: {} });
+    await enterprise.answerThread?.("PRRT_1", null, true);
+    expect(calls[4]?.url).toBe("https://ghe.example.test/api/graphql");
   });
 
   test("remote failures are classified from Git's messages", () => {
