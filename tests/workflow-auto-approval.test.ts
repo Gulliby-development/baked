@@ -9,6 +9,7 @@ import {
   planScopeAdvice,
   plannerApprovalLimits,
   policyDecisions,
+  withoutApprovalRemarks,
 } from "../src/core/workflows/auto-approval.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
@@ -360,7 +361,36 @@ describe("planner scope advice", () => {
     expect(advice).toContain("docs/a.md is outside the allowed paths");
     expect(advice).toContain("package.json always needs a person");
     expect(advice).toContain("src/c.ts would be deleted");
-    expect(advice).toContain("submit the same plan again");
+    expect(advice).toContain("submit the plan again unchanged");
+    expect(advice).toContain("authorizes every write it lists");
+    expect(advice).toContain("Do not mention approval in task descriptions or rationales");
+  });
+});
+
+describe("approval remarks in tasks", () => {
+  // R12 url-shortener c86f72da: the planner copied the gate text into the rationale and the
+  // implementer refused the approved write (#797).
+  test("sentences that make a task wait for approval are removed from description and rationale", () => {
+    const base = graph([{ path: ".github/workflows/ci.yml", action: "create" }]);
+    const [task] = base.tasks;
+    const remarked = {
+      ...base,
+      tasks: [
+        {
+          ...task!,
+          description: "Add the CI workflow. Human approval is required before writing it.",
+          rationale: "NFR-001 asks for CI on every OS. This workflow path requires human approval; wait for it.",
+        },
+      ],
+    };
+    const [clean] = withoutApprovalRemarks(remarked).tasks;
+    expect(clean?.description).toBe("Add the CI workflow.");
+    expect(clean?.rationale).toBe("NFR-001 asks for CI on every OS.");
+    const only = withoutApprovalRemarks({ ...remarked, tasks: [{ ...task!, rationale: "Needs human approval." }] }).tasks[0];
+    expect(only?.rationale).toBe("Required by the approved plan");
+    // Approval as the subject of the feature stays.
+    const feature = withoutApprovalRemarks({ ...remarked, tasks: [{ ...task!, rationale: "FR-002: approved orders are shipped." }] }).tasks[0];
+    expect(feature?.rationale).toBe("FR-002: approved orders are shipped.");
   });
 });
 
@@ -381,7 +411,7 @@ describe("planner scope advice in a run", () => {
       if (request.profile.output !== "plan") return result;
       const plan = result.output as { taskGraph: TaskGraph };
       const [task] = plan.taskGraph.tasks;
-      const wide = { ...plan, taskGraph: { ...plan.taskGraph, tasks: [{ ...task!, writes: [...task!.writes, { path: "store.ts", action: "modify" as const }] }] } };
+      const wide = { ...plan, taskGraph: { ...plan.taskGraph, tasks: [{ ...task!, rationale: `${task!.rationale} store.ts requires human approval.`, writes: [...task!.writes, { path: "store.ts", action: "modify" as const }] }] } };
       this.advice.push(request.validate?.(wide) ?? []);
       this.advice.push(request.validate?.(wide) ?? []);
       return this.keep ? { ...result, output: wide } : result;
@@ -415,6 +445,10 @@ describe("planner scope advice in a run", () => {
     expect((await fixture.service.get(runId)).status).toBe("waiting");
     const pending = fixture.service.store.requests(runId).find((r) => r.status === "pending");
     expect(JSON.parse(pending!.body_json).autoApproval.declined).toContain("Limits: store.ts is outside the allowed paths");
+    // The planner's approval remark does not reach the stored task the implementer is given (#797).
+    const rationale = fixture.service.store.state(runId).graph?.tasks[0]?.rationale ?? "";
+    expect(rationale).not.toContain("approval");
+    expect(rationale.length).toBeGreaterThan(0);
   });
 });
 
