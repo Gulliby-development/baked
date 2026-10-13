@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendCorrections, correctionAuthorized } from "../src/core/verification/convergence.js";
+import { appendCorrections, correctionAuthorized, isTestOf } from "../src/core/verification/convergence.js";
 import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import type { Review, RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
@@ -174,5 +174,73 @@ describe("a correction that changes nothing on a failure outside its files", () 
     expect(await satisfied("Diff in tests/docs.rs\nDiff in src/lib.rs")).toBe(false);
     expect(await satisfied("error: could not compile")).toBe(false);
     expect(await satisfied("", "passed")).toBe(true);
+  });
+});
+
+// Bench round 10: corrections that needed a planned file outside their write list ended
+// "unresolved" (junitdigest 3e5be74b T014 and internal/cli/cli_test.go, expenses-py 1363445a and
+// tests/test_cli.py) and then blocked as invalid output.
+describe("a correction gets the planned files its fix needs", () => {
+  const finding = (id: string, file: string, suggestedFix: string) =>
+    ({
+      id,
+      kind: "correctness",
+      severity: "high",
+      requirementIds: ["FR-001"],
+      criterionIds: ["AC-001"],
+      file,
+      symbol: null,
+      evidenceIds: [],
+      claim: "The parser drops the last value",
+      impact: "Wrong report",
+      suggestedFix,
+    }) as Review["findings"][number];
+
+  test("a planned file the finding's fix names joins the scope with its owner", () => {
+    const state = stateOf();
+    state.repairPredecessors.R1 = "T001";
+    appendCorrections(store, "run", state, policy, [finding("R1", "src/lib.rs", "Keep the last value and update tests/docs.rs to expect it")], "repair");
+    const added = (state.graph?.tasks ?? []).at(-1) as Task;
+    expect(added.writes.map((w) => w.path)).toContain("tests/docs.rs");
+    expect(added.writes.map((w) => w.path)).not.toContain("docs/guide.md");
+    expect(correctionAuthorized(added, root)).toBe(true);
+  });
+
+  test("the planned tests of the files the correction writes join the scope", () => {
+    const graph: TaskGraph = {
+      ...root,
+      tasks: [
+        task("T001", "internal/cli/cli.go"),
+        task("T002", "internal/cli/cli_test.go", "implementer", { criterionIds: ["AC-002"] }),
+        task("T003", "internal/report/report_test.go", "implementer", { criterionIds: ["AC-003"] }),
+      ],
+    };
+    // T003 covers its own criterion, so only the test of the corrected file joins.
+    const withAc3 = {
+      ...spec,
+      criteria: [...spec.criteria, { ...(spec.criteria[0] as (typeof spec.criteria)[number]), id: "AC-003" }],
+    };
+    const state = {
+      ...stateOf(),
+      spec: withAc3,
+      graph: structuredClone(graph),
+      rootGraph: structuredClone(graph),
+    } as RuntimeState;
+    state.repairPredecessors.R1 = "T001";
+    appendCorrections(store, "run", state, policy, [finding("R1", "internal/cli/cli.go", "Add a CLI regression assertion")], "repair");
+    const added = (state.graph?.tasks ?? []).at(-1) as Task;
+    expect(added.writes.map((w) => w.path).sort()).toEqual(["internal/cli/cli.go", "internal/cli/cli_test.go"]);
+    expect(correctionAuthorized(added, graph)).toBe(true);
+  });
+
+  test("test files are matched to their source by name", () => {
+    expect(isTestOf("internal/cli/cli_test.go", "internal/cli/cli.go")).toBe(true);
+    expect(isTestOf("tests/test_cli.py", "src/app/cli.py")).toBe(true);
+    expect(isTestOf("src/cli.test.ts", "src/cli.ts")).toBe(true);
+    expect(isTestOf("src/test/java/CliTest.java", "src/main/java/Cli.java")).toBe(true);
+    expect(isTestOf("tests/cli.rs", "src/cli.rs")).toBe(true);
+    expect(isTestOf("tests/report.rs", "src/cli.rs")).toBe(false);
+    expect(isTestOf("src/cli.ts", "src/cli.ts")).toBe(false);
+    expect(isTestOf("tests/cli.test.ts", "tests/cli.test.ts")).toBe(false);
   });
 });
