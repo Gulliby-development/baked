@@ -59,6 +59,7 @@ import {
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
+import { baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   assumable,
@@ -88,6 +89,7 @@ import {
   fixerCommand,
   fixerTiers,
   isCodePath,
+  isWholeUnitCheck,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -255,7 +257,7 @@ import {
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
-import { hasTaskGate, pendingOwners, readyTasks } from "./task-graph.js";
+import { hasTaskGate, pendingCodePaths, pendingOwners, readyTasks } from "./task-graph.js";
 import { takeHashRefusals } from "./tool-policy.js";
 import type { AgentExecutor, Check, HostTool, RuntimeState, Task } from "./types.js";
 import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
@@ -430,6 +432,8 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
  * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
  */
 const DIFF_REVIEW = "diffReview";
+/** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
+const TASK_END_ERRORS = 20;
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -1858,13 +1862,14 @@ export class WorkflowScheduler {
     if (!feature.length || this.baselineScaffold(runId, state)) return;
     const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
     const counts: Record<string, BaselineCount[]> = {};
+    // The errors a whole-unit check already reports, so the task-end check does not feed them back.
+    const diagnostics: Record<string, string[]> = {};
     if (fresh)
       for (const check of feature) {
-        const result = await this.checks.measure(
-          check,
-          signal,
-          runRoot(this.store.workspace, state),
-        );
+        const root = runRoot(this.store.workspace, state);
+        const result = await this.checks.measure(check, signal, root);
+        if (result.status === "failed" && isWholeUnitCheck(check))
+          diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
         const found = outputCounts(result.output, result.status === "passed");
         if (found.length) counts[commandKey(check)] = found;
@@ -1874,9 +1879,65 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts }),
+        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics }),
       ),
     );
+  }
+  /**
+   * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
+   * checks, run once in the task's directory, keeping the errors in the task's own files that
+   * neither the baseline nor a pending sibling task explains. Advisory: the checks stage still
+   * runs these checks on the integrated change.
+   */
+  private taskEndCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
+    const checks = policy.checks.filter((c) => c.scope === "feature" && isWholeUnitCheck(c));
+    const written = writtenCodePaths(task);
+    if (!checks.length || !written.length) return undefined;
+    return async (root, signal) => {
+      const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+      const baseline = artifact
+        ? ((
+            JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+              diagnostics?: Record<string, string[]>;
+            }
+          ).diagnostics ?? {})
+        : {};
+      const pending = pendingCodePaths(
+        state.rootGraph ?? state.graph,
+        this.store.tasks(runId),
+        state.taskGates,
+        task,
+      );
+      const errors: string[] = [];
+      const results: { checkId: string; status: string; errors: string[] }[] = [];
+      for (const check of checks) {
+        const result = await this.checks.measure(check, signal, root);
+        const found =
+          result.status === "failed"
+            ? taskErrors(result.output, {
+                written,
+                pending,
+                baseline: baseline[commandKey(check)] ?? [],
+              })
+            : [];
+        results.push({ checkId: check.id, status: result.status, errors: found });
+        errors.push(...found.map((line) => `${check.id}: ${line}`));
+      }
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/${task.id}/task-end-check-${newId()}.json`,
+          canonical({ taskId: task.id, pending, results }),
+        ),
+      );
+      return errors.slice(0, TASK_END_ERRORS);
+    };
   }
   /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
   private checkRegression(
@@ -2143,6 +2204,10 @@ export class WorkflowScheduler {
         reserveTokens(prompt, profile, policy),
         policy,
       );
+    const taskEndCheck =
+      task && profile.output === "implementation"
+        ? this.taskEndCheck(runId, state, policy, task)
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2161,6 +2226,7 @@ export class WorkflowScheduler {
           ? { attemptTokens: taskSize(state, task, "taskBudgets") }
           : {}),
         ...(validate ? { validate } : {}),
+        ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
