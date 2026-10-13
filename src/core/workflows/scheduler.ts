@@ -1,7 +1,6 @@
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -9,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   ROUTING_ARTIFACT,
   type RouteEffort,
@@ -21,7 +20,7 @@ import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
-import { readablePath, validatePackage, workspacePath } from "../specs/validate.js";
+import { validatePackage, workspacePath } from "../specs/validate.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -61,6 +60,7 @@ import {
   baselineRegression,
   CHECK_BASELINE_PATH,
   commandKey,
+  failureSignature,
   outputCounts,
   TEST_FILE,
 } from "../verification/output-counts.js";
@@ -235,9 +235,15 @@ import {
   runMutants,
   scoreMutants,
 } from "./quality/mutation.js";
-import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
+import {
+  detectMutationTool,
+  runMutationTool,
+  type ToolShell,
+  toolShellFiles,
+} from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
+  libraryFiles,
   propertyClaim,
   propertyLibraries,
   propertyTestsNote,
@@ -254,6 +260,7 @@ import {
   type RuleFinding,
   ruleClaim,
   ruleClaimKey,
+  ruleClaimText,
   ruleFindingKey,
 } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
@@ -347,6 +354,7 @@ import {
   pendingCodePaths,
   pendingOwners,
   readyTasks,
+  testUpdateOwners,
 } from "./task-graph.js";
 import {
   integrityFix,
@@ -417,8 +425,14 @@ const SERIOUS: readonly Severity[] = ["critical", "high"];
  * low findings are recorded in the review artifact but no longer start another round: runs
  * de6cf1ab and 2fa658c0 spent their rounds on ever deeper medium findings while every check passed.
  */
-const repairSeverities = (run: { repair_rounds: number; convergence_rounds: number }) =>
-  run.repair_rounds + run.convergence_rounds > 0 ? SERIOUS : ALL_SEVERITIES;
+const repairSeverities = (run: {
+  repair_rounds: number;
+  review_rounds?: number;
+  convergence_rounds: number;
+}) =>
+  run.repair_rounds + (run.review_rounds ?? 0) + run.convergence_rounds > 0
+    ? SERIOUS
+    : ALL_SEVERITIES;
 
 /**
  * A finding the severity floor does not demote once the host reproduces it: it is based on the
@@ -1119,8 +1133,9 @@ export class WorkflowScheduler {
               // text and a note that it is a defect to fix, not a decision to assume.
               const defectRound =
                 state.analysisReplans === 2 && findings.some((f) => persistentDefect(f));
-              // A scope finding that adds a restriction absent from the request gets the same extra
-              // return with the instruction that the request is authoritative; a survivor is assumed.
+              // A scope finding that adds a restriction or a requirement absent from the request gets
+              // the same extra return with the instruction that the request is authoritative; a
+              // survivor is assumed.
               const restrictsRound =
                 !defectRound &&
                 state.analysisReplans === 2 &&
@@ -1742,7 +1757,14 @@ export class WorkflowScheduler {
                 ? this.haltConvergence(runId, state, policy, repairFindings.findings)
                 : "go";
             if (halt === "go")
-              this.repair(runId, state, policy, repairFindings.findings, repairFindings.kind);
+              this.repair(
+                runId,
+                state,
+                policy,
+                repairFindings.findings,
+                repairFindings.kind,
+                stage.kind === "review" ? "review" : "round",
+              );
             else if (halt === "accepted") {
               advance = true;
               repairFindings = null;
@@ -2093,12 +2115,18 @@ export class WorkflowScheduler {
     signal: AbortSignal,
   ): Promise<void> {
     if (this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
-    const feature = policy.checks.filter((check) => check.scope === "feature");
-    if (!feature.length || this.baselineScaffold(runId, state)) return;
+    const scaffold = this.baselineScaffold(runId, state);
+    // On a scaffold only the required checks run, to learn which already fail (#934).
+    const feature = policy.checks.filter(
+      (check) => check.scope === "feature" && (!scaffold || check.required),
+    );
+    if (!feature.length) return;
     const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
     const counts: Record<string, BaselineCount[]> = {};
     // The errors a whole-unit check already reports, so the task-end check does not feed them back.
     const diagnostics: Record<string, string[]> = {};
+    // The output of each required check that fails before any change, by command key.
+    const failures: Record<string, string> = {};
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
@@ -2108,6 +2136,9 @@ export class WorkflowScheduler {
           root,
           runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
         );
+        if (result.status === "failed" && check.required && !result.truncated)
+          failures[commandKey(check)] = failureSignature(result.output, root);
+        if (scaffold) continue;
         if (result.status === "failed" && isWholeUnitCheck(check))
           diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
@@ -2119,8 +2150,36 @@ export class WorkflowScheduler {
         runId,
         "facts",
         CHECK_BASELINE_PATH,
-        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics }),
+        canonical({ schemaVersion: 1, measured: fresh, counts, diagnostics, failures }),
       ),
+    );
+  }
+  /**
+   * Stops the run when a required check fails exactly as it did before any change (#934): the
+   * plan changes nothing the failure depends on (md-site 00ae0ac0: `vite build` of a Bun CLI
+   * with no index.html), so a corrective task could only spend attempts on it.
+   */
+  private assertNotBaselineFailure(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): void {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return;
+    const before = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        failures?: Record<string, string>;
+      }
+    ).failures?.[commandKey(check)];
+    const root = runRoot(this.store.workspace, state);
+    // A failure without output tells nothing about its cause, so it is never matched.
+    if (!before || before !== failureSignature(output, root)) return;
+    throw new WorkflowFault(
+      "RECOVERY_REQUIRED",
+      `baseline_failure: required check ${check.id} failed before any change and fails the same way now (evidence ${evidenceId}); nothing the run changed affects it. Fix the check or the project setup, or revise the plan, then resume.`,
+      { reason: "no_progress", checkId: check.id },
     );
   }
   /** The diagnostics each whole-unit check reported before the run, by command key. */
@@ -5975,6 +6034,34 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       );
       return undefined;
     }
+    const updaters =
+      checked.status === "failed" && checked.output
+        ? testUpdateOwners(
+            state.rootGraph ?? state.graph,
+            this.store.tasks(runId),
+            state.taskGates,
+            task,
+            checked.output,
+          )
+        : [];
+    if (updaters.length) {
+      // mdtoc-update (bench round 14): the change breaks expectations a later task of the plan
+      // updates; a corrective task rewrote that task's tests. That task's own checks run them.
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/handoffs/${task.id}.json`,
+          canonical({
+            taskId: task.id,
+            checkId: check.id,
+            evidenceId: checked.evidenceId,
+            owners: updaters,
+          }),
+        ),
+      );
+      return undefined;
+    }
     this.store.transaction(() =>
       this.store.taskStatus(runId, task.id, "blocked", state.snapshotId),
     );
@@ -6509,6 +6596,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
       if ((result.status === "failed" || regression) && check.required) {
+        if (!regression)
+          this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
         failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -6789,29 +6878,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (kept) return JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, boolean>;
     const root = runRoot(this.store.workspace, state);
     const libraries = propertyLibraries({
-      read: (path) => {
-        try {
-          return readFileSync(readablePath(root, path), "utf8");
-        } catch {
-          return null;
-        }
-      },
-      exists: (path) => {
-        try {
-          return existsSync(readablePath(root, path));
-        } catch {
-          return false;
-        }
-      },
-      list: (directory) => {
-        try {
-          return readdirSync(directory ? readablePath(root, directory) : root).map((name) =>
-            directory ? `${directory}/${name}` : name,
-          );
-        } catch {
-          return [];
-        }
-      },
+      ...libraryFiles(root),
       pythonImports: (module) => {
         const python =
           process.platform === "win32"
@@ -7137,7 +7204,6 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const scratch = join(tmpdir(), "baked-mutation", runId);
     mkdirSync(scratch, { recursive: true });
     const sandbox = runSandbox(policy, root);
-    const absolute = (path: string) => (isAbsolute(path) ? path : readablePath(root, path));
     return {
       root,
       scratch: scratch.replaceAll("\\", "/"),
@@ -7153,14 +7219,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         });
         return { exitCode: outcome.exitCode, output: outcome.output, timedOut: outcome.timedOut };
       },
-      read: (path) => {
-        try {
-          return readFileSync(absolute(path), "utf8");
-        } catch {
-          return null;
-        }
-      },
-      exists: (path) => existsSync(absolute(path)),
+      ...toolShellFiles(root),
       remove: (path) => rmSync(workspacePath(root, path), { recursive: true, force: true }),
       which: (command) => Bun.which(command),
       now: () => Date.now(),
@@ -7697,7 +7756,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         file: match.file,
         symbol: null,
         evidenceIds: [evidenceId],
-        claim: `Rule ${match.rule}: ${match.message} (${match.file}:${match.line}: ${match.text})`,
+        claim: ruleClaimText(match),
         impact: "The anti-slop rule pack of this run blocks this pattern.",
         suggestedFix: match.fix,
       };
@@ -8458,6 +8517,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         inconclusive ??= check.id;
         continue;
       }
+      if (!result.reason && !regression)
+        this.assertNotBaselineFailure(runId, state, check, result.output ?? "", result.evidenceId);
       if (!result.reason) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -8799,6 +8860,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           policy,
           findings,
           position.repairKind ?? "repair",
+          // A review's corrections count review rounds, not the checks stage's repair rounds.
+          stageKind(v2.stage) === "review" ? "review" : "round",
         );
       else if (findings.length) {
         // A loop to a stage that does not write hands the findings to that stage as input; a
@@ -9064,7 +9127,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     findings: Review["findings"],
     kind: "repair" | "convergence",
-    scope: "round" | "task" = "round",
+    scope: "round" | "task" | "review" = "round",
   ): void {
     this.store.transaction(() => {
       appendCorrections(this.store, runId, state, policy, findings, kind, scope);

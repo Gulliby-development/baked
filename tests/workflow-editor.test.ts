@@ -34,7 +34,9 @@ import {
   toggleMode,
   validateEditor,
   writeDefinitionFile,
+  setLoopRounds,
 } from "../src/core/workflows/v2/editor.js";
+import { WorkflowV2Schema } from "../src/core/workflows/v2/definition.js";
 import { autoApprovalHash } from "../src/core/workflows/v2/runtime.js";
 
 const cleanups: (() => void)[] = [];
@@ -279,6 +281,18 @@ describe("workflow editor", () => {
     expect(stageFields(state, "checks").map((f) => f.key)).toEqual(["loop:checks-repair"]);
     state = ok(changeStageField(state, "approve", "covers:implement", 1));
     expect(validateEditor(state).flatMap((g) => g.messages)).toContain("implement has no approval stage");
+  });
+
+  test("a loop runs 1 to 50 rounds, set directly or stepped without wrapping", () => {
+    const { open } = setup();
+    let state = ok(setLoopRounds(duplicateAsCustom(open("standard")), "checks-repair", 12));
+    expect(state.definition.transitions.find((t) => t.id === "checks-repair")?.loop).toEqual({ maxIterations: 12 });
+    expect(stageFields(state, "checks")[0]?.hint).toBe("1 to 50 rounds, 5 or fewer recommended");
+    expect(WorkflowV2Schema.safeParse(state.definition).success).toBe(true);
+    state = ok(setLoopRounds(state, "checks-repair", 50));
+    expect(changeStageField(state, "checks", "loop:checks-repair", 1).error).toBe("A loop runs 1 to 50 rounds");
+    expect(setLoopRounds(state, "checks-repair", 0).error).toBe("A loop runs 1 to 50 rounds");
+    expect(setLoopRounds(state, "checks-review", 3).error).toBe("checks-review is not a loop");
   });
 
   test("W inserts a wait stage on a passed edge; E changes its interval and timeout; D removes it", () => {

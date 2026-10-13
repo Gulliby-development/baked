@@ -662,6 +662,7 @@ export const ReasonCode = z.enum([
   "input_changed",
   "workspace_busy",
   "budget_exhausted",
+  "attempt_cap",
   "checkpoint",
   "no_progress",
   "verification_failed",
@@ -900,7 +901,7 @@ export const CorrectionSchema = z
     newGraphHash: Hash,
     findingIds: z.array(SafeId).min(1),
     taskIds: z.array(TaskId).min(1),
-    roundKind: z.enum(["repair", "convergence"]),
+    roundKind: z.enum(["repair", "review", "convergence"]),
     round: z.number().int().positive(),
   })
   .strict();

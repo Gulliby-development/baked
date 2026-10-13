@@ -1,14 +1,43 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
-import { detectMutationTool, type ToolShell } from "../src/core/workflows/quality/mutation-tools.js";
+import {
+  detectMutationTool,
+  type ToolShell,
+  toolShellFiles,
+} from "../src/core/workflows/quality/mutation-tools.js";
 import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
-import { propertyTestKind } from "../src/core/workflows/quality/properties.js";
+import {
+  libraryFiles,
+  propertyLibraries,
+  propertyTestKind,
+} from "../src/core/workflows/quality/properties.js";
+import {
+  checkBuiltinRules,
+  ruleClaimKey,
+  ruleClaimText,
+  ruleFindingKey,
+} from "../src/core/workflows/quality/rules.js";
+import type { RuntimeState } from "../src/core/workflows/schemas.js";
+import type { WorkflowStore } from "../src/core/workflows/store.js";
+import {
+  createTaskWorktree,
+  ensureRunWorktree,
+  runContentCommit,
+} from "../src/core/workflows/worktree.js";
 
 /**
  * The gate matrix (#854): every supported stack against every quality gate's decision, without a
@@ -18,6 +47,10 @@ import { propertyTestKind } from "../src/core/workflows/quality/properties.js";
  * A cell that is known to be wrong names its issue in `KNOWN` and is skipped; the PR that fixes the
  * issue removes the entry, so the cell runs from then on. A fix PR for a gate finding adds its
  * failing cell first.
+ *
+ * Worktree mode repeats the decisions in the run and task worktrees the loop runs in, created by
+ * the scheduler's own worktree helpers with the working copy's `node_modules` linked (#835), and
+ * reads them through the scheduler's tool shell and property-library probe.
  *
  * The toolchain tier at the end runs each stack's detected gates on a minimal valid project with
  * the real tools. It needs the toolchains, so it runs only with BAKED_GATE_MATRIX_TOOLCHAINS=1 (the
@@ -29,7 +62,7 @@ const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"
 
 /** Cells known to be wrong today: `<stack>:<cell>` -> issue. */
 const KNOWN: Record<string, string> = {
-  "maven:test-check": "#844",
+  "python:rule-pack: placeholder-body": "#937",
 };
 
 interface Fixture {
@@ -323,6 +356,224 @@ for (const stack of STACKS) {
       );
       // Without the tool the built-in engine runs: detection never invents one.
       expect(detectMutationTool([source], shell(project(fixture.files), []))).toBeNull();
+    });
+  });
+}
+
+// --- Rule pack -------------------------------------------------------------------------------
+
+/**
+ * A placeholder body in each stack's language, and an ordinary error whose message mentions a
+ * todo, which a todo app writes on purpose (#845).
+ */
+const STUBS: Record<Stack, { path: string; placeholder: string; ordinary: string }> = {
+  bun: {
+    path: "src/sum.ts",
+    placeholder: '  throw new Error("not implemented");',
+    ordinary: '  throw new Error("Todo with id 3 does not exist");',
+  },
+  npm: {
+    path: "src/sum.js",
+    placeholder: '  throw new Error("TODO");',
+    ordinary: '  throw new Error("Todo 3 not found");',
+  },
+  python: {
+    path: "fixture/sum.py",
+    placeholder: "    raise NotImplementedError",
+    ordinary: '    raise KeyError("Todo 3 does not exist")',
+  },
+  go: {
+    path: "sum.go",
+    placeholder: '\tpanic("not implemented")',
+    ordinary: '\tpanic("todo list is empty")',
+  },
+  rust: {
+    path: "src/lib.rs",
+    placeholder: "    todo!()",
+    ordinary: '    panic!("todo {} not found: {}", id, reason)',
+  },
+  maven: {
+    path: "src/main/java/fixture/Sum.java",
+    placeholder: "        throw new UnsupportedOperationException();",
+    ordinary: '        throw new IllegalStateException("Todo 3 does not exist");',
+  },
+  dotnet: {
+    path: "src/Sum.cs",
+    placeholder: "        throw new NotImplementedException();",
+    ordinary: '        throw new KeyNotFoundException("Todo 3 does not exist");',
+  },
+};
+
+for (const stack of STACKS) {
+  const stub = STUBS[stack];
+  const placeholders = (line: string) =>
+    checkBuiltinRules([{ path: stub.path, content: `${line}\n`, before: null }], {}).filter(
+      (f) => f.rule === "placeholder-body",
+    );
+  describe(`gate matrix: ${stack} rule pack`, () => {
+    cell(stack, "rule-pack: placeholder-body", () => {
+      expect(placeholders(stub.placeholder).map((f) => f.blocking)).toEqual([true]);
+      expect(placeholders(stub.ordinary)).toEqual([]);
+    });
+
+    // A correction that leaves the same match is kept as a limitation instead of asking again;
+    // the earlier round's claim must read back to the same key, wherever the line moved (#845).
+    cell(stack, "rule-pack: same match after a correction", () => {
+      const [found] = checkBuiltinRules(
+        [{ path: stub.path, content: `${stub.ordinary}\n${stub.placeholder}\n`, before: null }],
+        {},
+      ).filter((f) => f.rule === "placeholder-body");
+      const finding = found ?? {
+        rule: "placeholder-body",
+        message: "The body is a placeholder, not an implementation",
+        file: stub.path,
+        line: 2,
+        text: stub.placeholder.trim(),
+      };
+      const key = ruleFindingKey(finding);
+      expect(ruleClaimKey(ruleClaimText(finding))).toBe(key);
+      expect(ruleClaimKey(ruleClaimText({ ...finding, line: finding.line + 7 }))).toBe(key);
+    });
+  });
+}
+
+// --- Worktree mode ---------------------------------------------------------------------------
+
+/** Dependencies installed in the working copy only, as `bun install` or `npm install` leaves them. */
+const INSTALLED: Partial<Record<Stack, Record<string, string>>> = {
+  bun: { "node_modules/fast-check/package.json": '{"name":"fast-check"}' },
+  npm: { "node_modules/fast-check/package.json": '{"name":"fast-check"}' },
+};
+
+function git(cwd: string, ...args: string[]): string {
+  const result = spawnSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "", GIT_CONFIG_SYSTEM: "", GIT_CONFIG_NOSYSTEM: "1" },
+  });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+interface Worktrees {
+  /** The working copy, where the user installed the dependencies. */
+  workspace: string;
+  /** The run worktree (mutation and property gates) and a task worktree (per-task checks). */
+  roots: { name: "run" | "task"; root: string }[];
+}
+
+/**
+ * The fixture committed in a repository, its dependencies installed but ignored, then the run
+ * worktree and a task worktree created as the scheduler creates them.
+ */
+async function worktrees(files: Record<string, string>, installed: Record<string, string>): Promise<Worktrees> {
+  const workspace = project({ ...files, ...installed, ".gitignore": ".baked/\nnode_modules/\n" });
+  git(workspace, "init", "-q", "-b", "main");
+  git(workspace, "config", "user.name", "Matrix");
+  git(workspace, "config", "user.email", "matrix@example.test");
+  git(workspace, "config", "commit.gpgsign", "false");
+  git(workspace, "add", "-A");
+  git(workspace, "commit", "-q", "-m", "Scaffold");
+  const runId = "gate-matrix";
+  const state = {} as RuntimeState;
+  const store = {
+    workspace,
+    run: () => ({ created_at: 1_700_000_000_000 }),
+    state: () => state,
+    saveState: (_id: string, next: RuntimeState) => Object.assign(state, next),
+    transaction: <T>(action: () => T): T => action(),
+    artifact: () => ({}),
+  } as unknown as WorkflowStore;
+  const run = await ensureRunWorktree(store, runId);
+  const base = await runContentCommit(store, runId, run);
+  const task = await createTaskWorktree(store, runId, "T001", base);
+  return {
+    workspace,
+    roots: [
+      { name: "run", root: join(workspace, run.path) },
+      { name: "task", root: join(workspace, task) },
+    ],
+  };
+}
+
+for (const stack of STACKS) {
+  const fixture = FIXTURES[stack];
+  const installed = { ...INSTALLED[stack] };
+  for (const [path, content] of Object.entries(fixture.mutation?.files ?? {}))
+    if (path.startsWith("node_modules/")) installed[path] = content;
+  const committed = Object.fromEntries(
+    Object.entries({ ...fixture.files, ...fixture.mutation?.files }).filter(
+      ([path]) => !path.startsWith("node_modules/"),
+    ),
+  );
+  describe(`gate matrix: ${stack} in worktree mode`, () => {
+    let setup: Worktrees;
+    beforeAll(async () => {
+      setup = await worktrees(committed, installed);
+    });
+    const preselected = (root: string) =>
+      detectGates(root)
+        .filter((s) => s.preselected)
+        .map((s) => s.check);
+
+    cell(stack, "worktree: dependencies linked", () => {
+      for (const { root } of setup.roots) {
+        expect(existsSync(join(root, ".git"))).toBe(true);
+        expect(existsSync(join(root, "node_modules"))).toBe(Object.keys(installed).length > 0);
+        if (Object.keys(installed).length)
+          expect(lstatSync(join(root, "node_modules")).isSymbolicLink()).toBe(true);
+      }
+    });
+
+    cell(stack, "worktree: detection", () => {
+      const plain = preselected(setup.workspace);
+      for (const { root } of setup.roots) {
+        const checks = preselected(root);
+        expect(checks.map((c) => c.id)).toEqual(fixture.gates);
+        expect(checks).toEqual(plain);
+      }
+    });
+
+    cell(stack, "worktree: test-check and per-task-or-integration", () => {
+      for (const { root } of setup.roots) {
+        const checks = preselected(root);
+        expect(checks.some((c) => c.required && isTestCheck(c))).toBe(true);
+        expect(checks.filter(isWholeUnitCheck).map((c) => c.id)).toEqual(fixture.wholeUnit);
+        for (const check of checks.filter((c) => isTestCheck(c))) expect(isStaticCheck(check)).toBe(false);
+      }
+    });
+
+    // The task adds a dependency to the manifest it checked out; the baseline is the scaffold's.
+    cell(stack, "worktree: dependency-check", () => {
+      const task = setup.roots.find((r) => r.name === "task")?.root ?? "";
+      const path = fixture.manifest.path;
+      const before = readFileSync(join(task, path), "utf8");
+      expect(git(task, "status", "--porcelain", "--", path)).toBe("");
+      writeFileSync(join(task, path), fixture.manifest.after);
+      const { declared } = addedDependencies([
+        { path, before, content: readFileSync(join(task, path), "utf8") },
+      ]);
+      writeFileSync(join(task, path), before);
+      expect(declared.map((d) => d.name)).toContain(fixture.manifest.added);
+    });
+
+    // The scheduler's tool shell reads the run root; Stryker sits in the linked node_modules,
+    // which used to throw "Path escapes workspace" (#835).
+    cell(stack, "worktree: mutation-tool", () => {
+      const mutation = fixture.mutation;
+      const source = { path: mutation?.source ?? "src/Sum.cs", content: "x\n", before: null };
+      for (const { root } of setup.roots) {
+        const tools = { ...shell(root, mutation?.on ?? []), ...toolShellFiles(root) };
+        const found = detectMutationTool([source], tools)?.tool ?? null;
+        expect(found).toBe((mutation?.tool ?? null) as never);
+      }
+    });
+
+    // The property-library probe reads the same linked node_modules (#796, #835).
+    cell(stack, "worktree: property-libraries", () => {
+      const probe = (root: string) => propertyLibraries({ ...libraryFiles(root), pythonImports: () => null });
+      const plain = probe(setup.workspace);
+      expect(plain["JS/TS"]).toBe(Boolean(INSTALLED[stack]));
+      for (const { root } of setup.roots) expect(probe(root)).toEqual(plain);
     });
   });
 }
