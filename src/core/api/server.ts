@@ -99,6 +99,7 @@ import { initiativeRoute } from "./initiative-routes.js";
 import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
 import { memoryRoute } from "./memory-routes.js";
+import { packageRoute } from "./package-routes.js";
 import { progressRoute } from "./progress-routes.js";
 import type { RouteContext } from "./route-context.js";
 import {
@@ -180,6 +181,7 @@ export const CAPABILITIES = [
   "artifacts",
   "run-compare",
   "preset-proposal",
+  "packages",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -904,6 +906,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         config: () => service.config,
         ...(options.vercel ? { vercel: options.vercel } : {}),
         ...(options.openArtifact ? { open: options.openArtifact } : {}),
+      })) ??
+      (await packageRoute({
+        ...ctx,
+        workspace: service.workspace,
+        config: service.config,
+        ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
       (await gateRoute({
         ...ctx,

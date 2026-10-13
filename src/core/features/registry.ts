@@ -508,6 +508,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/skills"],
   },
   {
+    id: "packages",
+    group: "Tools and code intelligence",
+    title:
+      "Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes",
+    tui: ["/packages", "/packages add: asks before it installs", "/packages remove"],
+    cli: ["baked add: --yes or a prompt", "baked packages"],
+    api: ["/v1/packages", "/v1/packages/inspect", "/v1/packages/install", "/v1/packages/:id"],
+    desktop: ["project/packages"],
+  },
+  {
     id: "baked-help",
     group: "Tools and code intelligence",
     title: "Ask the agent about BAKED itself (bundled docs, baked_help tool)",

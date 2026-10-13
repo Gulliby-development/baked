@@ -84,3 +84,6 @@ export const LSP_DIAGNOSE_CAPABILITY = "lsp-diagnose";
 
 /** `/v1/artifacts*` (the Artifacts section: HTML pages shared by every project, Vercel deploys). */
 export const ARTIFACTS_CAPABILITY = "artifacts";
+
+/** `/v1/packages*` (the Packages section: install local packages into the project's baked/ folders). */
+export const PACKAGES_CAPABILITY = "packages";
