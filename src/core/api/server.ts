@@ -98,7 +98,7 @@ import { hooksRoute } from "./hooks-routes.js";
 import { initiativeRoute } from "./initiative-routes.js";
 import { type LspRouteContext, lspRoute } from "./lsp-routes.js";
 import { mcpRoute } from "./mcp-routes.js";
-import { memoryRoute } from "./memory-routes.js";
+import { criticOutcomesRoute, memoryRoute } from "./memory-routes.js";
 import { packageRoute } from "./package-routes.js";
 import { progressRoute } from "./progress-routes.js";
 import type { RouteContext } from "./route-context.js";
@@ -157,6 +157,7 @@ export const CAPABILITIES = [
   "chat-undo",
   "checkpoints",
   "run-memory",
+  "critic-outcomes",
   "chat-memory",
   "images",
   "code-graph",
@@ -887,6 +888,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       (await chatRoute({ ...ctx, chat })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
+      criticOutcomesRoute({ ...ctx, config: service.config, store: service.store }) ??
       (await mcpRoute({
         ...ctx,
         workspace: service.workspace,

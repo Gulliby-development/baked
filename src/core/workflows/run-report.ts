@@ -711,7 +711,9 @@ function render(facts: Facts, cap: number): string {
             ? "assume rule (checks passed)"
             : l.decidedBy === "notes"
               ? "notes rule (behavior verified)"
-              : "user",
+              : l.decidedBy === "critic"
+                ? "critic early stop (calibrated score, checks passed)"
+                : "user",
         ]),
         cap,
       ),
