@@ -29,6 +29,8 @@ export const LaunchedEntrySchema = z.strictObject({
   id: z.string().trim().min(1).max(200),
   why: Line,
   status: z.string().trim().min(1).max(200),
+  /** For a feature of the initiative `id`: the feature, tracked on its own task. */
+  feature: z.string().trim().min(1).max(200).optional(),
   /** The task the item belongs to: an issue (`owner/name#N`) or a local task without GitHub. */
   task: z
     .strictObject({

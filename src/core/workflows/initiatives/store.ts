@@ -4,7 +4,8 @@ import { canonical, hashJson } from "../../specs/hash.js";
 import { WorkflowFault } from "../errors.js";
 import { PolicySchema, SafeId } from "../schemas.js";
 import { newId, type WorkflowStore } from "../store.js";
-import { InitiativeId, type InitiativePlan, InitiativePlanSchema } from "./plan.js";
+import { IssueSourceSchema } from "../types.js";
+import { FeatureKey, InitiativeId, type InitiativePlan, InitiativePlanSchema } from "./plan.js";
 
 /** The workflow schema version that adds initiatives (migration 004). */
 export const INITIATIVES_SCHEMA_VERSION = 4;
@@ -55,6 +56,11 @@ export const InitiativeSettingsSchema = z
     autoApprovalConfirmation: z.string().length(64).nullable().default(null),
     model: z.string().min(1).nullable(),
     ownerLabel: z.string().min(1).max(200),
+    /**
+     * The GitHub issue of each feature, by feature ID: its runs start from it and their delivery
+     * closes it. Kept beside the plan, so the plan and its digest stay the decomposer's.
+     */
+    featureIssues: z.record(FeatureKey, IssueSourceSchema).default({}),
   })
   .strict();
 export type InitiativeSettings = z.infer<typeof InitiativeSettingsSchema>;
