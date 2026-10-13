@@ -5,11 +5,11 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { posix } from "node:path";
 import { loadConfig, loadProjectConfig } from "../../config/index.js";
 import {
   currentSandboxHost,
   detectSandbox,
+  pathsFor,
   SANDBOX_UNSET_ENV,
   type SandboxApplied,
   type SandboxDetection,
@@ -18,6 +18,7 @@ import {
   type SandboxRequest,
   type SandboxSurface,
   sandboxArgv,
+  sandboxGap,
   sandboxProfile,
   workspaceGit,
 } from "../platform/sandbox.js";
@@ -202,7 +203,8 @@ export function sandboxNotice(
 
 /**
  * Wraps one launch for the request. "auto" with no backend runs the command as it is and records
- * why; "required" with no backend throws SandboxUnavailableError.
+ * why; "required" with no backend throws SandboxUnavailableError. `verbatim` marks args that are a
+ * ready Windows command line (`bunShellArgs`), which the Windows launcher joins without quoting.
  */
 export function sandboxLaunch(
   executable: string,
@@ -211,6 +213,7 @@ export function sandboxLaunch(
   cwd: string,
   detection: SandboxDetection = detectSandbox(),
   host: SandboxHost = currentSandboxHost(),
+  options: { verbatim?: boolean; launcher?: string[] } = {},
 ): SandboxLaunch {
   if (!detection.available) {
     if (request.mode === "required") throw new SandboxUnavailableError(detection, host.platform);
@@ -229,13 +232,20 @@ export function sandboxLaunch(
   }
   if (host.platform !== "darwin") ensureHooksDirs(request, host);
   const profile = sandboxProfile(request, cwd, host);
-  const argv = sandboxArgv(detection, profile, executable, args);
+  const argv = sandboxArgv(detection, profile, executable, args, options);
+  const gap = sandboxGap(detection, request);
   return {
     executable: argv[0] ?? executable,
     args: argv.slice(1),
     unsetEnv: SANDBOX_UNSET_ENV,
     setEnv: host.platform === "linux" ? { TMPDIR: "/tmp" } : {},
-    applied: { backend: detection.backend, mode: request.mode, network: request.network },
+    applied: {
+      backend: detection.backend,
+      mode: request.mode,
+      // The record says what held: a backend that cannot deny the network reports it open.
+      network: request.network || gap !== null,
+      ...(gap ? { reason: gap } : {}),
+    },
   };
 }
 
@@ -253,7 +263,7 @@ function ensureHooksDirs(request: SandboxRequest, host: SandboxHost): void {
       continue;
     }
     for (const dir of gitDirs) {
-      const hooks = posix.join(dir, "hooks");
+      const hooks = pathsFor(host.platform).join(dir, "hooks");
       if (!host.isDirectory(dir) || host.exists(hooks)) continue;
       try {
         mkdirSync(hooks);
@@ -326,8 +336,11 @@ export function formatSandboxStatus(status: SandboxStatus): string[] {
   ];
   if (status.effectiveMode === "off")
     lines.push("Shell, project and check commands run without OS sandbox.");
-  else if (status.active) lines.push("Shell, project and check commands run in the OS sandbox.");
-  else if (status.effectiveMode === "auto")
+  else if (status.active) {
+    lines.push("Shell, project and check commands run in the OS sandbox.");
+    if (status.backend === "restricted-token")
+      lines.push("Windows: writes and credential reads are isolated; the network is not.");
+  } else if (status.effectiveMode === "auto")
     lines.push("No backend: commands run without OS sandbox.");
   else lines.push("No backend: sandboxed commands are refused.");
   return lines;

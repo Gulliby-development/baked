@@ -211,6 +211,20 @@ export function runUsageMarkdown(report: RunUsageReport): string {
       ...section("By stage", "Stage", byStage, false),
       ...section("By model", "Model", byModel, true),
     );
+  const tools = report.tools ?? [];
+  if (tools.length)
+    out.push(
+      "## By tool",
+      "",
+      "Tokens of the model steps that called each tool, split evenly between a step's calls.",
+      "",
+      ...table(
+        ["Tool", "Calls", "Step tokens"],
+        tools.map((t) => [t.tool, count(t.calls), count(t.tokens)]),
+        2,
+      ),
+      "",
+    );
   out.push(PRICE_NOTE);
   return `${out.join("\n")}\n`;
 }

@@ -24,6 +24,7 @@ import { Label } from "../../components/ui/label.js";
 import { ModelListPicker, ModelPicker, useModelCatalog } from "../../components/ui/model-picker.js";
 import { Switch } from "../../components/ui/switch.js";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs.js";
+import { Textarea } from "../../components/ui/textarea.js";
 import { Hint } from "../../components/ui/tooltip.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
@@ -32,9 +33,13 @@ import {
   dependencyNote,
   displayNumber,
   isActive,
+  type LibraryDocsDraft,
+  libraryDocsDraft,
+  libraryDocsSummary,
   lockedReason,
   numberDraft,
   pageSections,
+  parseLibraryDocs,
   parseNumber,
   scopeValue,
   setInScope,
@@ -241,6 +246,7 @@ function SettingRow({
   const locked = lockedReason(setting, scope);
   const active = isActive(setting, view.values);
   const note = active ? null : dependencyNote(setting, view);
+  const check = view.checks?.[setting.id];
   const disabled = busy || locked !== null;
   const wide = setting.type === "string-list" || setting.type.endsWith("-map");
   return (
@@ -255,6 +261,18 @@ function SettingRow({
           {locked && <Tag tone="warn">{locked}</Tag>}
           {note && <span className={cn("text-dim-foreground", NOTE)}>{note}</span>}
         </span>
+        {check && (
+          <span
+            className={cn(
+              check.status === "ok" ? "text-dim-foreground" : "text-[var(--warn)]",
+              NOTE,
+            )}
+          >
+            {check.title}
+            {check.detail ? `: ${check.detail}` : ""}
+            {check.fix ? `. ${check.fix}` : ""}
+          </span>
+        )}
       </div>
       <div className={cn(CONTROL, wide && "w-full")}>
         <SettingControl
@@ -369,6 +387,15 @@ function SettingControl({
         <SecretEditor
           setting={setting}
           isSet={current === true}
+          disabled={disabled}
+          change={change}
+        />
+      );
+    case "library-docs":
+      return (
+        <LibraryDocsEditor
+          setting={setting}
+          current={current}
           disabled={disabled}
           change={change}
         />
@@ -742,6 +769,130 @@ function MapEditor({
         </form>
       </EditDialog>
     </div>
+  );
+}
+
+function LibraryDocsEditor({
+  setting,
+  current,
+  disabled,
+  change,
+}: {
+  setting: SettingDefinition;
+  current: unknown;
+  disabled: boolean;
+  change: Change;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<LibraryDocsDraft>(libraryDocsDraft(null));
+  const parsed = parseLibraryDocs(draft);
+  const id = `setting-${setting.id}`;
+  const edit = (field: keyof LibraryDocsDraft) => (e: { target: { value: string } }) =>
+    setDraft((prev) => ({ ...prev, [field]: e.target.value }));
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if ("error" in parsed) return;
+    void change({ set: { [setting.id]: parsed.value } }, `Saved ${setting.label}`).then(
+      (ok) => ok && setOpen(false),
+    );
+  };
+  return (
+    <>
+      <span
+        className={cn("font-mono text-[13px]", current ? "text-foreground" : "text-dim-foreground")}
+      >
+        {libraryDocsSummary(current)}
+      </span>
+      <Button
+        variant="secondary"
+        size="md"
+        disabled={disabled}
+        onClick={() => {
+          setDraft(libraryDocsDraft(current));
+          setOpen(true);
+        }}
+      >
+        Edit
+      </Button>
+      <EditDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={setting.label}
+        description={setting.help}
+      >
+        <form className="flex flex-col gap-4" onSubmit={submit}>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={`${id}-kind`}>Source</Label>
+            <select id={`${id}-kind`} value={draft.kind} onChange={edit("kind")}>
+              <option value="none">None</option>
+              <option value="dir">Directory of Markdown files</option>
+              <option value="mcp">MCP tool</option>
+            </select>
+          </div>
+          {draft.kind === "dir" && (
+            <div className="flex flex-col gap-1">
+              <Label htmlFor={`${id}-dir`}>Directory</Label>
+              <Input
+                id={`${id}-dir`}
+                value={draft.dir}
+                placeholder="docs/libraries"
+                onChange={edit("dir")}
+              />
+              <span className={cn("text-dim-foreground", NOTE)}>
+                Absolute, relative to the project, or starting with ~.
+              </span>
+            </div>
+          )}
+          {draft.kind === "mcp" && (
+            <>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor={`${id}-server`}>Server</Label>
+                <Input
+                  id={`${id}-server`}
+                  value={draft.server}
+                  placeholder="context7"
+                  onChange={edit("server")}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor={`${id}-tool`}>Tool</Label>
+                <Input id={`${id}-tool`} value={draft.tool} onChange={edit("tool")} />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor={`${id}-args`}>Arguments</Label>
+                <Textarea
+                  id={`${id}-args`}
+                  rows={3}
+                  value={draft.args}
+                  placeholder={"libraryName={name}\nversion={version}"}
+                  onChange={edit("args")}
+                />
+                <span className={cn("text-dim-foreground", NOTE)}>
+                  One key=value per line; {"{name}"}, {"{version}"} and {"{ecosystem}"} are
+                  replaced.
+                </span>
+              </div>
+            </>
+          )}
+          {draft.kind !== "none" && (
+            <div className="flex flex-col gap-1">
+              <Label htmlFor={`${id}-max`}>Max characters per library</Label>
+              <Input
+                id={`${id}-max`}
+                inputMode="numeric"
+                value={draft.maxChars}
+                placeholder="8000"
+                onChange={edit("maxChars")}
+              />
+            </div>
+          )}
+          {"error" in parsed && (
+            <span className={cn("text-[var(--warn)]", NOTE)}>{parsed.error}</span>
+          )}
+          <DialogActions disabled={disabled || "error" in parsed} onCancel={() => setOpen(false)} />
+        </form>
+      </EditDialog>
+    </>
   );
 }
 

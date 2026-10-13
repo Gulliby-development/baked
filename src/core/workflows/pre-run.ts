@@ -1,4 +1,5 @@
 import { findPricing } from "../llm/pricing.js";
+import { candidateModel } from "./candidates.js";
 import type { PastRun } from "./estimate.js";
 import {
   estimatePreRun,
@@ -63,7 +64,21 @@ export function plannedStages(prepared: PreparedStart): PlannedStage[] {
           ),
         ];
     const candidates = stage.type === "tasks" ? (prepared.policy.candidates ?? 1) : 1;
-    return { id: stage.id, type: stage.type, models, ...(candidates > 1 ? { candidates } : {}) };
+    // Candidates on their own models (#769): one entry per candidate, so each model's share is
+    // its number of candidates.
+    const perCandidate =
+      candidates > 1
+        ? Array.from({ length: candidates }, (_, k) => candidateModel(prepared.policy, k + 1))
+        : [];
+    return {
+      id: stage.id,
+      type: stage.type,
+      models:
+        perCandidate.every((m): m is string => m !== null) && perCandidate.length
+          ? (perCandidate as string[])
+          : models,
+      ...(candidates > 1 ? { candidates } : {}),
+    };
   });
 }
 

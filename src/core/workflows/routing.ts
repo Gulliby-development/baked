@@ -563,6 +563,9 @@ export function reachableModels(
   }
   for (const [id, entry] of Object.entries(record.profiles))
     if (!bound.has(id) && !required.has(entry.model)) add(optional, entry.model, `profile ${id}`);
+  // Best-of-N candidates on their own models (#769) need each of those models.
+  if ((policy.candidates ?? 1) > 1)
+    for (const model of policy.candidateModels ?? []) add(required, model, "candidateModels");
   for (const model of required.keys()) optional.delete(model);
   return { required, optional };
 }

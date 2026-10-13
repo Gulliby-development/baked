@@ -27,6 +27,14 @@ export class PullRequestError extends Error {
     this.name = "PullRequestError";
   }
 }
+/** One check the host reports on a commit: a check run or a commit status. */
+export interface CommitCheck {
+  name: string;
+  state: "pending" | "passed" | "failed";
+  /** The host's own words on the result (a check run's title and summary, a status's description). */
+  detail: string;
+  url: string | null;
+}
 export interface PullRequestProvider {
   readonly name: string;
   /** The `owner/name` repository a remote URL points at, or null when this host does not serve it. */
@@ -36,6 +44,15 @@ export interface PullRequestProvider {
   /** The pull request whose head is this branch of the repository, in any state, or null. */
   findByHead(repository: string, branch: string): Promise<PullRequest | null>;
   create(repository: string, draft: PullRequestDraft): Promise<PullRequest>;
+  /** The checks reported on a commit. Absent for a provider that cannot read them. */
+  checks?(repository: string, commit: string): Promise<CommitCheck[]>;
+}
+
+const PASSED_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+/** A GitHub check run as a check: only a completed run passes or fails. */
+export function checkRunState(status: string, conclusion: string | null): CommitCheck["state"] {
+  if (status !== "completed") return "pending";
+  return conclusion && PASSED_CONCLUSIONS.has(conclusion) ? "passed" : "failed";
 }
 
 /** Repository slug from an HTTPS, SSH or scp-style remote URL on the given host. */
@@ -153,6 +170,56 @@ export function githubPullRequests(options: {
           },
         }),
       );
+    },
+    async checks(repository, commit) {
+      const runs = (await request(
+        `/repos/${repository}/commits/${commit}/check-runs?per_page=100`,
+        {
+          method: "GET",
+        },
+      )) as {
+        check_runs?: {
+          name?: string;
+          status?: string;
+          conclusion?: string | null;
+          html_url?: string | null;
+          output?: { title?: string | null; summary?: string | null };
+        }[];
+      };
+      const statuses = (await request(`/repos/${repository}/commits/${commit}/status`, {
+        method: "GET",
+      })) as {
+        statuses?: {
+          context?: string;
+          state?: string;
+          description?: string | null;
+          target_url?: string | null;
+        }[];
+      };
+      if (!Array.isArray(runs.check_runs) || !Array.isArray(statuses.statuses))
+        throw new PullRequestError("unknown", "GitHub returned unexpected checks");
+      return [
+        ...runs.check_runs.map((run) => ({
+          name: run.name ?? "check",
+          state: checkRunState(run.status ?? "", run.conclusion ?? null),
+          detail: [run.output?.title, run.output?.summary]
+            .filter(Boolean)
+            .join(": ")
+            .slice(0, 2000),
+          url: run.html_url ?? null,
+        })),
+        ...statuses.statuses.map((status) => ({
+          name: status.context ?? "status",
+          state:
+            status.state === "success"
+              ? ("passed" as const)
+              : status.state === "pending"
+                ? ("pending" as const)
+                : ("failed" as const),
+          detail: (status.description ?? "").slice(0, 2000),
+          url: status.target_url ?? null,
+        })),
+      ];
     },
   };
 }

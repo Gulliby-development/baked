@@ -43,6 +43,7 @@ const commands = [
   "gates",
   "gate",
   "deliver",
+  "follow",
   "discard-worktree",
   "worktrees",
   "route",
@@ -91,6 +92,8 @@ const booleanFlags = new Set([
   "with-specs",
   "no-specs",
   "execute",
+  "once",
+  "fix",
   "worktree",
   "exclude-user-changes",
   "resume",
@@ -215,6 +218,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   define: ["from"],
   gates: ["all"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
+  follow: ["interval", "timeout", "once", "fix"],
   deliver: [
     "remote",
     "branch",
@@ -365,6 +369,23 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     ("events" in result.flags || "after" in result.flags)
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
+  if (!result.flags.help && result.command === "follow") {
+    for (const [flag, min, max] of [
+      ["interval", 5, 3600],
+      ["timeout", 1, 1440],
+    ] as const) {
+      const value = result.flags[flag];
+      if (value === undefined) continue;
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < min || n > max)
+        throw new WorkflowFault("INVALID_DEFINITION", `--${flag} accepts ${min} to ${max}`);
+    }
+    if (result.flags.once && ("interval" in result.flags || "timeout" in result.flags))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--once reads the checks once; it does not wait",
+      );
+  }
   if (!result.flags.help && result.command === "deliver") {
     const planning = [
       "remote",
@@ -656,6 +677,11 @@ deliver RUN_ID --follow-up DELIVERED_RUN_ID [--remote origin] [--with-specs|--no
   Plan one commit of this run's files on top of the branch DELIVERED_RUN_ID pushed, fast-forward
   only, and no new pull request: a fix for that pull request's checks or review. The local copy of
   that branch must match the remote and not be checked out.
+follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix]
+  Wait for the checks GitHub reports on the commit the run's latest delivery pushed, reading them
+  every --interval seconds (5..3600) for up to --timeout minutes (1..1440); no model runs. Ends at
+  the first failed check, when all pass, or at the timeout. --once reads them once. --fix starts a
+  fix-ci run for the failed checks; deliver it with deliver FIX_RUN_ID --follow-up RUN_ID.
 discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 worktrees [--clean [--dry-run]]

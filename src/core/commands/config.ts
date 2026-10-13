@@ -19,12 +19,20 @@ import {
   type SandboxMode,
   sandboxStatus,
 } from "../security/sandbox.js";
-import { readSettingPath, SETTINGS, settingById, writeSettingPath } from "../settings/schema.js";
+import {
+  readSettingPath,
+  SETTINGS,
+  type SettingDefinition,
+  settingById,
+  writeSettingPath,
+} from "../settings/schema.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
 import { diagnosticsTimeoutMs } from "../tools/edit-diagnostics.js";
 import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
+import { type LibraryDocsSource, libraryDocsCheck } from "../workflows/library-docs.js";
 import { qualityRuleCatalog } from "../workflows/quality/builtin-rules.js";
+import { describeLibraryDocs, editLibraryDocs } from "./library-docs-editor.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -596,8 +604,9 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
 
 /**
  * The Code quality page of the shared settings schema, as on the desktop: a choice setting moves
- * to its next value on Enter, and each rule of the anti-slop pack is a row that turns it on or
- * off. New workflow runs freeze these defaults in their policy.
+ * to its next value on Enter, each rule of the anti-slop pack is a row that turns it on or off,
+ * and the library docs source opens its own dialogs. New workflow runs freeze these defaults in
+ * their policy.
  */
 function handleCodeQuality(_input: string, ctx: CommandContext): void {
   const settings = SETTINGS.filter((setting) => setting.page === "code-quality");
@@ -613,22 +622,39 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
     const value = currentValue(id);
     return Array.isArray(value) ? value.map(String) : [];
   };
+  const servers = () =>
+    ((effective.mcpServers as { name: string; disabled?: boolean }[] | undefined) ?? []).filter(
+      (server) => !server.disabled,
+    );
+  const docsRow = (setting: SettingDefinition) => {
+    const source = currentValue(setting.id) as LibraryDocsSource | null;
+    const check = source ? libraryDocsCheck(process.cwd(), source, servers()) : null;
+    return {
+      value: setting.id,
+      label: `${setting.label}: ${describeLibraryDocs(source)}`,
+      description: check
+        ? `${check.title}${check.detail ? `: ${check.detail}` : ""}${check.fix ? `. ${check.fix}` : ""}`
+        : setting.help,
+    };
+  };
   // A rule row is `SETTING_ID|RULE_ID`; other rows are the setting ID.
   const buildOptions = () =>
     settings.flatMap((setting) =>
-      setting.type === "string-list" && setting.catalog === "quality-rules"
-        ? qualityRuleCatalog().map((rule) => ({
-            value: `${setting.id}|${rule.name}`,
-            label: `Rule ${rule.name}: ${offList(setting.id).includes(rule.name) ? "off" : "on"}`,
-            description: rule.description,
-          }))
-        : [
-            {
-              value: setting.id,
-              label: `${setting.label}: ${String(currentValue(setting.id) ?? "")}`,
-              description: setting.help,
-            },
-          ],
+      setting.type === "library-docs"
+        ? [docsRow(setting)]
+        : setting.type === "string-list" && setting.catalog === "quality-rules"
+          ? qualityRuleCatalog().map((rule) => ({
+              value: `${setting.id}|${rule.name}`,
+              label: `Rule ${rule.name}: ${offList(setting.id).includes(rule.name) ? "off" : "on"}`,
+              description: rule.description,
+            }))
+          : [
+              {
+                value: setting.id,
+                label: `${setting.label}: ${String(currentValue(setting.id) ?? "")}`,
+                description: setting.help,
+              },
+            ],
     );
   const next = (row: string): { id: string; value: unknown } | null => {
     const [id = "", rule] = row.split("|");
@@ -659,6 +685,25 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
     scopeEnabled: true,
     initialScope: ctx.detectScope("quality"),
     onSelect: (row, scope) => {
+      if (settingById(row)?.type === "library-docs") {
+        void (async () => {
+          const current = currentValue(row) as LibraryDocsSource | null;
+          const value = await editLibraryDocs(
+            current,
+            servers().map((server) => server.name),
+          );
+          if (value === undefined) return;
+          // Leaving the key out of the scope removes the source there.
+          ctx.saveToScope({ libraryDocs: value ?? undefined }, scope ?? "project");
+          effective = writeSettingPath(effective, row, value ?? undefined);
+          sysMsg(
+            ctx,
+            `${row} ${describeLibraryDocs(value)} (${scope ?? "project"}); new workflow runs use it`,
+          );
+          useUIStore.getState().updatePickerOptions(buildOptions());
+        })();
+        return;
+      }
       const change = next(row);
       if (!change) return;
       ctx.saveToScope(patch(change.id, change.value), scope ?? "project");

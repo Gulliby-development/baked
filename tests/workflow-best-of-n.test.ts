@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import {
   type CandidateResult,
+  candidateModel,
   candidatesToJudge,
   changedLineCount,
   normalizedFingerprint,
@@ -68,6 +69,31 @@ describe("best-of-N selection", () => {
     expect(decided).toMatchObject({ winner: 3, method: "critic" });
   });
 
+  // #769: a test the spec decides tells finalists of a tied vote apart before the critic.
+  test("a distinguishing test narrows a tie before the critic and the smallest change", () => {
+    const tied = [result(1, { changedLines: 1 }), result(2, { changedLines: 5 }), result(3, { changedLines: 3 })];
+    expect(selectCandidate(tied, false, [2])).toMatchObject({
+      winner: 2,
+      method: "distinguishing-test",
+      finalists: [1, 3, 2],
+    });
+    const two = selectCandidate(tied, false, [2, 3]);
+    expect(two).toMatchObject({ winner: 3, method: "smallest" });
+    expect(two.reason).toContain("candidates 3, 2 passed the distinguishing test");
+    // A test every finalist passes, or none does, decides nothing.
+    expect(selectCandidate(tied, false, [1, 2, 3])).toMatchObject({ winner: 1, method: "smallest" });
+    expect(selectCandidate(tied, false, [])).toMatchObject({ winner: 1, method: "smallest" });
+    // It never overrides the vote.
+    const voted = [result(1, { fingerprint: "x" }), result(2, { fingerprint: "x" }), result(3)];
+    expect(selectCandidate(voted, false, [3])).toMatchObject({ winner: 1, method: "vote" });
+  });
+
+  test("candidate k runs on candidateModels[k mod n]", () => {
+    const policy = { candidateModels: ["a/one", "b/two"] };
+    expect([1, 2, 3, 4].map((k) => candidateModel(policy, k))).toEqual(["a/one", "b/two", "a/one", "b/two"]);
+    expect(candidateModel({}, 1)).toBeNull();
+  });
+
   test("with no passing candidate the fewest failures go on to repair", () => {
     expect(
       selectCandidate([
@@ -94,6 +120,20 @@ describe("best-of-N selection", () => {
     const three = estimatePreRun({ history: [], workflowId: "w", stages: stages(3), maxTotalTokens: 1e9, price });
     expect(three.tokens.high).toBe(one.tokens.high * 3);
     expect(three.notes.join(" ")).toContain("3 candidates");
+  });
+
+  test("the estimate gives each candidate model its share of the tasks stage", () => {
+    const estimate = estimatePreRun({
+      history: [],
+      workflowId: "best-of-n",
+      stages: [{ id: "implement", type: "tasks", models: ["a/one", "b/two", "a/one"], candidates: 3 }],
+      maxTotalTokens: 100_000_000,
+      price: () => null,
+    });
+    const one = estimate.models.find((m) => m.model === "a/one");
+    const two = estimate.models.find((m) => m.model === "b/two");
+    expect(one?.stages).toEqual(["implement"]);
+    expect(one?.tokens.high).toBe((two?.tokens.high ?? 0) * 2);
   });
 
   test("the CLI takes --candidates from 1 to 8", () => {
@@ -129,6 +169,9 @@ class CandidateExecutor implements AgentExecutor {
   service: NativeWorkflowService | undefined;
   roots: string[] = [];
   critiques = 0;
+  /** The distinguishing test this executor writes; none makes the profile fail. */
+  distinction: { expected: string } | null = null;
+  models: string[] = [];
   constructor(
     private workspace: string,
     private variants: string[],
@@ -145,6 +188,18 @@ class CandidateExecutor implements AgentExecutor {
       };
       const taskGraph = { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(fixtureSpec), planHash: hashBytes(MARKDOWN), tasks: [task] };
       return { output: { schemaVersion: 1, markdown: MARKDOWN, taskGraph }, inputTokens: 25, outputTokens: 25 };
+    }
+    if (request.profile.output === "distinction") {
+      if (!this.distinction) return { output: { invalid: true }, inputTokens: 10, outputTokens: 10 };
+      return {
+        output: {
+          schemaVersion: 1, taskId: request.task?.id ?? "T001", executable: "bun",
+          args: ["-e", "console.log((await Bun.file('value.txt').text()).trim())"],
+          expected: this.distinction.expected, criterionIds: ["AC-001"], rationale: "fixture",
+        },
+        inputTokens: 10,
+        outputTokens: 10,
+      };
     }
     if (request.profile.output === "critique") {
       this.critiques++;
@@ -164,6 +219,7 @@ class CandidateExecutor implements AgentExecutor {
       return new FixtureExecutor(root).execute(request);
     const task = request.task;
     this.roots.push(root);
+    this.models.push(`${basename(root)}=${request.profile.model}`);
     const index = Number(/-c(\d+)$/.exec(basename(root))?.[1] ?? "1");
     const guard = new WorkflowToolPolicy(
       service.store, service.leases, request.runId, request.attemptId, request.profile,
@@ -258,6 +314,32 @@ describe("best-of-N runs", () => {
     expect(selection.finalists.sort()).toEqual([1, 2, 3]);
     expect(fx.json<{ score: number }>(runId, "tasks/T001/candidates/2.json").score).toBe(0.9);
     expect(readFileSync(join(fx.root, `.baked/worktrees/${runId}/main/value.txt`), "utf8")).toBe("good");
+  }, 120000);
+
+  test("a distinguishing test picks the finalist that prints what the spec requires", async () => {
+    const fx = setup(["alpha", "good", "beta"], "good", { critic: "off" });
+    fx.executor.distinction = { expected: "good" };
+    const { runId, final } = await fx.run(3);
+    expect(final.status).toBe("completed");
+    const selection = fx.json<{
+      winner: number;
+      method: string;
+      distinction: { test: { expected: string }; matching: number[]; runs: { candidate: number; shows: boolean }[] };
+    }>(runId, "tasks/T001/selection.json");
+    expect(selection).toMatchObject({ winner: 2, method: "distinguishing-test" });
+    expect(selection.distinction.test.expected).toBe("good");
+    expect(selection.distinction.matching).toEqual([2]);
+    expect(selection.distinction.runs.map((r) => r.shows)).toEqual([false, true, false]);
+    expect(readFileSync(join(fx.root, `.baked/worktrees/${runId}/main/value.txt`), "utf8")).toBe("good");
+  }, 120000);
+
+  test("candidates run on the models candidateModels names", async () => {
+    const fx = setup(["A", "A", "A"], "A", { candidateModels: ["fixture/one", "fixture/two"] });
+    const { runId, final } = await fx.run(3);
+    expect(final.status).toBe("completed");
+    expect(fx.executor.models.sort()).toEqual(["T001-c1=fixture/one", "T001-c2=fixture/two", "T001-c3=fixture/one"]);
+    const models = [1, 2, 3].map((n) => fx.json<{ model: string }>(runId, `tasks/T001/candidates/${String(n)}.json`).model);
+    expect(models).toEqual(["fixture/one", "fixture/two", "fixture/one"]);
   }, 120000);
 
   test("a run asks for candidates only in a worktree and within maxCandidates", async () => {

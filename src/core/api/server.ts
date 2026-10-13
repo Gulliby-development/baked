@@ -1345,6 +1345,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         origin,
       );
     }
+    if (action === "checks") {
+      only("GET");
+      return json(
+        200,
+        await execute({ command: "follow", positional: [runId], flags: { once: true } }),
+        origin,
+      );
+    }
     if (action === "usage" || action === "artifacts" || action === "report") {
       only("GET");
       const file = action === "artifacts" ? url.searchParams.get("file") : null;

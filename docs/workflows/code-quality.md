@@ -97,6 +97,7 @@ Each new package is looked up in its public registry (npm with its weekly downlo
 | `missing` | the registry does not know the name; it may be made up | yes |
 | `typosquat` | one or two edits from a popular package and rarely downloaded (under 10,000 a week) or less than a year old | yes |
 | `new-package` | first published less than 14 days ago | yes |
+| `unrequested` | added to a manifest that existed before the run, and neither the request nor the spec names it | yes |
 | `undeclared` | imported but not declared in `package.json` | no |
 | `rare` | under 100 downloads a week | no |
 | `unknown` | the lookup failed (offline, registry down) or lookups are off | no |
@@ -105,6 +106,8 @@ Each new package is looked up in its public registry (npm with its weekly downlo
 A blocking verdict is a `security` finding (`Dependency left-padx: npm package left-padx does not exist in the registry; the name may be made up (src/pad.ts:1)`), and the stage stops before its commands run. The run corrects it like a failed check; the finding closes when a later check finds nothing blocking. The result is kept as `quality/dependencies.json`.
 
 Every new dependency, blocking or not, is listed in the run report under **Code quality** with its ecosystem, verdict and place. The report is the delivery pull request's body, so whoever approves the pull request approves each new dependency there. `quality.registryLookups: false` (or `registryLookups: false` in the policy) stops the lookups, for example on a machine without network access; new dependencies are then listed as `unknown` and nothing blocks. The lookups do not depend on the run's `network` policy, which governs the commands the run executes.
+
+Run policies forbid new dependencies (`allowNewDependencies` is always `false`), so a package added to a manifest that existed before the run is `unrequested` unless the request or the approved spec names it (as a whole name: `FsCheck` does not name `FsCheck.Xunit`). A spec that marks a [property criterion](#property-based-tests) names the property-test libraries. A manifest the run creates, and any manifest of a run that started on a workspace without source files, sets a project up and is not judged this way. The verdict needs no registry, so it blocks with lookups off too; the correction removes the package and the code that uses it.
 
 The implementer is told to add a dependency only when the task needs one and only under a well-known name it is sure of.
 

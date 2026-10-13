@@ -42,6 +42,7 @@ import { assertAttemptFits } from "./budget.js";
 import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { keepOutside, restoreOutside } from "./fixer-scope.js";
 import { withHostConstants } from "./host-constants.js";
 import {
   accountIdentityMessage,
@@ -59,6 +60,7 @@ import {
   AnalysisSchema,
   ApprovalReviewSchema,
   CritiqueSchema,
+  DistinctionSchema,
   generatedPaths,
   ImplementationSchema,
   MutantProposalSchema,
@@ -102,6 +104,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   "approval-review": ApprovalReviewSchema,
   critique: CritiqueSchema,
   mutants: MutantProposalSchema,
+  distinction: DistinctionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Read-only steps in a row before an implementer is told to edit. */
@@ -454,13 +457,23 @@ export class NativeAgentExecutor implements AgentExecutor {
               throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
             const scope = new ProcessScope();
             try {
-              return await new CheckRunner(this.store, scope).run(
+              const result = await new CheckRunner(this.store, scope).run(
                 request.runId,
                 request.attemptId,
                 check,
                 request.signal,
                 root,
               );
+              const own =
+                result.status === "failed"
+                  ? (request.attributeCheck?.(check, result.output) ?? null)
+                  : null;
+              if (!own) return result;
+              return {
+                ...result,
+                taskErrors: own,
+                note: `${check.id} analyzes the whole project and runs in the checks stage after the tasks are integrated; in this task's directory it also fails on files other tasks have not written yet. ${own.length ? "Only the errors in taskErrors are in this task's files: fix those and ignore the rest." : "None of its errors is in this task's files, so there is nothing to fix for it here."}`,
+              };
             } finally {
               await scope.stop();
             }
@@ -541,6 +554,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               .map((w) => w.path);
             const generated = generatedPaths(policy);
             const before = await sourceManifest(root, generated, request.signal);
+            const kept = keepOutside(root, before, new Set(paths));
             const scope = new ProcessScope();
             try {
               const outputs: string[] = [];
@@ -562,8 +576,13 @@ export class NativeAgentExecutor implements AgentExecutor {
                     });
                     outputs.push(`${path}: exit ${String(result.exitCode)}`);
                   });
-              const after = await sourceManifest(root, generated, request.signal);
-              const outside = changedPaths(before, after).filter((p) => !paths.includes(p));
+              const changedOutside = async () =>
+                changedPaths(before, await sourceManifest(root, generated, request.signal)).filter(
+                  (p) => !paths.includes(p),
+                );
+              const reverted = await changedOutside();
+              restoreOutside(root, kept, reverted);
+              const outside = await changedOutside();
               if (outside.length)
                 throw new WorkflowFault(
                   "CAPABILITY_DENIED",
@@ -576,7 +595,16 @@ export class NativeAgentExecutor implements AgentExecutor {
                 request.signal,
                 root,
               );
-              return { fixed: outputs, check: checked };
+              return {
+                fixed: outputs,
+                check: checked,
+                ...(reverted.length
+                  ? {
+                      reverted,
+                      note: "The fixer also rewrote these files of other tasks; they were put back as they were.",
+                    }
+                  : {}),
+              };
             } finally {
               await scope.stop();
             }

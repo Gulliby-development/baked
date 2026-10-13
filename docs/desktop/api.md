@@ -279,6 +279,7 @@ B adds the remaining `baked workflow` commands the screens need. Each takes `com
 | `POST /v1/workflow/runs/RUN_ID/discard-worktree` | | `discard-worktree` |
 | `POST /v1/workflow/runs/RUN_ID/deliver` | `remote?`, `branch?`, `draft?`, `pullRequest?` (default true), `followUp?` (a delivered run whose branch and pull request get this run's commit, as `--follow-up`; not with `branch`, `draft` or `pullRequest`); no revision | `deliver` (prepares the plan and its approval request; a follow-up plan's request body has `followUp: {runId, pullRequest}`) |
 | `POST /v1/workflow/runs/RUN_ID/deliver/execute` | `expectedRevision`, `requestId?`; no `commandId` | `deliver --execute`, after the plan was approved |
+| `GET /v1/workflow/runs/RUN_ID/checks` | | `follow --once`: the checks GitHub reports on the commit the run's latest delivery pushed (`{runId, repository, branch, commit, pullRequest, state, checks[], checkedAt}`, `state` `none`, `pending`, `passed` or `failed`; each check `{name, state, detail, url}`), and with a failed check `fix: {workflowId, featureId, prompt, followUp}`, the fix-ci run to start with `POST /v1/workflow/runs`. 404 for a run without a pushed delivery |
 | `GET /v1/workflow/runs/RUN_ID/progress` | | `export-progress` |
 | `POST /v1/workflow/runs/RUN_ID/export` | `destination?` (a new directory, relative to the workspace); no `commandId` | `export`: writes `manifest.json` and returns `{path, manifestHash}`. Without `destination` it is `.baked/exports/RUN_ID-STAMP`; a directory outside the workspace is refused with 403 `CAPABILITY_DENIED`, one that exists with 409 |
 | `POST /v1/workflow/runs/RUN_ID/redact` | `artifactId`, `reason` (required); no `commandId` | `redact`: `{redacted: true}` |
@@ -474,13 +475,14 @@ interface SettingsView {
   settings: SettingDefinition[];                           // in display order
   values: { [id]: { id; value; source: "project" | "global" | "default" | "env" | "keychain" | "file"; global?; project? } };
   catalogs: { tools: { name; description }[]; "quality-rules": { name; description }[] }; // choices of string-list settings: the tool catalog, the anti-slop rules
+  checks?: { [id]: { status: "ok" | "warn" | "fail" | "skip"; title; detail?; fix? } }; // what the server found checking a value in use, as workflow doctor reports it
 }
 interface SettingDefinition {
   id: string;            // dotted config path, e.g. "performance.effort"; a secret's store key, e.g. "brave-api-key"
   page; section; label; help: string;
   scopes: ("global" | "project")[];
   enabledWhen?: { id; values: (string | boolean)[] };   // only meaningful while that setting has one of these values
-  type: "boolean" | "enum" | "number" | "model" | "string-list" | "model-list-map" | "model-number-map" | "secret";
+  type: "boolean" | "enum" | "number" | "model" | "string-list" | "model-list-map" | "model-number-map" | "secret" | "library-docs";
   default: unknown;
   options?: { value; label; help? }[];                     // enum
   min?; max?; step?; integer?; nullable?;                  // number; model-number-map has min and max
@@ -490,7 +492,7 @@ interface SettingDefinition {
 }
 ```
 
-A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
+A `library-docs` setting (`libraryDocs`) takes the whole [library docs source](../workflows/runtime.md#library-docs) as its value, `{dir, maxChars?}` or `{mcp: {server, tool, args?}, maxChars?}`, and `null` removes it; `checks.libraryDocs` says whether the directory exists or the MCP server is configured and enabled. A secret's `value` is only whether a key is set; the key itself is never returned. Provider API keys stay under `/v1/providers`. Chat sessions of the server apply these settings on their next turn as the terminal UI does: disabled tools, code execution, computer use and the text editor tool, the task router, the Baked map and summary settings, and the cache lifetime.
 
 ## Code graph
 
@@ -595,7 +597,7 @@ interface SandboxStatus {
   project: "off" | "auto" | "required" | null; // the project config's value; it can only raise the mode
   effectiveMode: "off" | "auto" | "required";
   source: "config" | "override" | "project";
-  backend: "bwrap" | "seatbelt" | "none";
+  backend: "bwrap" | "seatbelt" | "restricted-token" | "none";
   available: boolean; path: string | null; reason: string | null; // why the backend is unavailable
   network: "allow" | "deny";                  // sandboxNetwork: network of sandboxed chat commands
   active: boolean;                            // chat commands run isolated now
@@ -659,6 +661,7 @@ The [artifacts](../artifacts.md) of the user, the same for every project's serve
 | Initiatives | `/v1/initiatives/*` |
 | Usage | `GET /v1/workflow/runs/RUN_ID/usage`, `GET /v1/usage` |
 | Run report tab | `GET /v1/workflow/runs/RUN_ID/report` |
+| Workflow run: Pull request (completed runs) | `GET /v1/workflow/runs/RUN_ID/checks`; Fix failed checks starts its `fix` with `POST /v1/workflow/runs` |
 | Run list: Compare | `GET /v1/workflow/compare` |
 | Settings: chat settings pages | `GET|PATCH /v1/settings`, `GET /v1/models` |
 | Settings: model routing, providers | `GET|PATCH /v1/config`, `GET|PATCH /v1/workflow/routing`, `GET /v1/workflow/critic`, `GET /v1/providers`, `PUT|DELETE /v1/providers/ID/key`, `GET|POST|DELETE /v1/providers/ID/login`, `POST /v1/providers/ID/logout`, `POST /v1/providers/ID/switch`, `GET /v1/models` |

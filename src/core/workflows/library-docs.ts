@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
+import type { DoctorCheck } from "./doctor.js";
 import type { Task } from "./types.js";
 
 /**
@@ -231,4 +232,48 @@ export async function configuredMcpCall(
   const manager = getMCPManager();
   await manager.ensureConnected(servers);
   return manager.callTool(server, tool, args);
+}
+
+/**
+ * Whether the configured library docs source can be reached: its directory exists, or its MCP
+ * server is configured and enabled. A run without it continues without docs, so this only warns.
+ */
+export function libraryDocsCheck(
+  workspace: string,
+  source: LibraryDocsSource,
+  servers: readonly { name: string; disabled?: boolean }[],
+): DoctorCheck {
+  if ("dir" in source) {
+    const dir = docsDirectory(workspace, source.dir);
+    return existsSync(dir)
+      ? {
+          id: "libraryDocs.source",
+          status: "ok",
+          title: "Library docs directory found",
+          detail: dir,
+        }
+      : {
+          id: "libraryDocs.source",
+          status: "warn",
+          title: "Library docs directory does not exist",
+          detail: `${dir}; implementers get no library docs`,
+          fix: "Create the directory or change libraryDocs.dir",
+          subject: source.dir,
+        };
+  }
+  const server = servers.find((s) => s.name === source.mcp.server);
+  return server && !server.disabled
+    ? {
+        id: "libraryDocs.source",
+        status: "ok",
+        title: `Library docs come from ${source.mcp.server}/${source.mcp.tool}`,
+      }
+    : {
+        id: "libraryDocs.source",
+        status: "warn",
+        title: `Library docs server ${source.mcp.server} is ${server ? "disabled" : "not configured"}`,
+        detail: "Implementers get no library docs",
+        fix: "Add or enable the server in mcpServers, or change libraryDocs.mcp.server",
+        subject: source.mcp.server,
+      };
 }

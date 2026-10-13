@@ -63,10 +63,12 @@ import {
 } from "../verification/output-counts.js";
 import {
   missingReproAdvice,
+  outputShows,
   type ReproOutcome,
   reproAllows,
   reproExecutables,
   reproTool,
+  runProbe,
   runRepro,
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
@@ -98,12 +100,14 @@ import {
   plannerApprovalLimits,
   planScopeAdvice,
   policyDecisions,
+  withoutApprovalRemarks,
 } from "./auto-approval.js";
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   type CandidateResult,
   type CandidateSelection,
   candidateCount,
+  candidateModel,
   candidatesToJudge,
   changedLineCount,
   normalizedFingerprint,
@@ -138,6 +142,7 @@ import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { keepOutside, restoreOutside } from "./fixer-scope.js";
 import { outputTail } from "./gates.js";
 import {
   InitiativePlanSchema,
@@ -175,6 +180,7 @@ import { type LearnedRule, rulesFor } from "./project-memory.js";
 import {
   checkDependencies,
   dependencyClaim,
+  PROPERTY_LIBRARY_PACKAGES,
   QUALITY_DEPENDENCIES,
 } from "./quality/dependencies.js";
 import {
@@ -267,6 +273,8 @@ import {
   type Critique,
   CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
+  type Distinction,
+  DistinctionSchema,
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
@@ -385,6 +393,14 @@ const SERIOUS: readonly Severity[] = ["critical", "high"];
 const repairSeverities = (run: { repair_rounds: number; convergence_rounds: number }) =>
   run.repair_rounds + run.convergence_rounds > 0 ? SERIOUS : ALL_SEVERITIES;
 
+/**
+ * A finding the severity floor does not demote once the host reproduces it: it is based on the
+ * spec and carries a repro. dirdrift-update 6b57dc61 completed with AC-005 failing because its
+ * confirmed medium finding arrived after the first repair round (#801).
+ */
+const confirmableSpecFinding = (f: Review["findings"][number]): boolean =>
+  (f.basis ?? "spec") === "spec" && f.repro !== undefined;
+
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(
   spec: Spec,
@@ -395,7 +411,7 @@ function planGraph(
   const graph = withReadDependencies(
     withModuleDependencies(
       withDerivedRequirements(spec, {
-        ...withImplementationProfiles(plan.taskGraph, profiles),
+        ...withImplementationProfiles(withoutApprovalRemarks(plan.taskGraph), profiles),
         specHash: hashJson(spec),
         planHash: hashBytes(plan.markdown),
       }),
@@ -548,6 +564,8 @@ export class WorkflowScheduler {
   /** How a `libraryDocs` MCP source is called; tests replace it. */
   mcpCall: McpCall = (server, tool, args) =>
     configuredMcpCall(this.store.workspace, server, tool, args);
+  /** Best-of-N candidate steps that run on a model of `candidateModels` instead of their route. */
+  private stepModels = new Map<string, string>();
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -2064,6 +2082,45 @@ export class WorkflowScheduler {
       ),
     );
   }
+  /** The diagnostics each whole-unit check reported before the run, by command key. */
+  private baselineDiagnostics(runId: string): Record<string, string[]> {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    return artifact
+      ? ((
+          JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+            diagnostics?: Record<string, string[]>;
+          }
+        ).diagnostics ?? {})
+      : {};
+  }
+  /**
+   * Attribution of a `request_check` run of a whole-unit check the task names but that runs in
+   * the checks stage (#799): the planner lists `cargo fmt` or clippy on the tasks of a
+   * skeleton-first Rust plan, and in the task's directory they fail on the modules that later
+   * tasks write (bench round 12, mdrefs: T004 spent 1.87M against checks that could not pass).
+   * The implementer gets the errors in its own files, as for the task-end check.
+   */
+  private attributeCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): (check: Check, output: string) => string[] | null {
+    const perTask = new Set(taskChecks(policy, task).map((c) => c.id));
+    return (check, output) => {
+      if (perTask.has(check.id) || !isWholeUnitCheck(check)) return null;
+      return taskErrors(output, {
+        written: writtenCodePaths(task),
+        pending: pendingCodePaths(
+          state.rootGraph ?? state.graph,
+          this.store.tasks(runId),
+          state.taskGates,
+          task,
+        ),
+        baseline: this.baselineDiagnostics(runId)[commandKey(check)] ?? [],
+      });
+    };
+  }
   /**
    * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
    * checks, run once in the task's directory, keeping the errors in the task's own files that
@@ -2080,14 +2137,7 @@ export class WorkflowScheduler {
     const written = writtenCodePaths(task);
     if (!checks.length || !written.length) return undefined;
     return async (root, signal) => {
-      const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
-      const baseline = artifact
-        ? ((
-            JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
-              diagnostics?: Record<string, string[]>;
-            }
-          ).diagnostics ?? {})
-        : {};
+      const baseline = this.baselineDiagnostics(runId);
       const pending = pendingCodePaths(
         state.rootGraph ?? state.graph,
         this.store.tasks(runId),
@@ -2235,6 +2285,8 @@ export class WorkflowScheduler {
     stepId: string,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    const candidate = this.stepModels.get(stepId);
+    if (candidate) return { models: [candidate] };
     return this.stageRoute(runId, this.store.rootStage(runId, stepId), profile);
   }
   private stageRoute(
@@ -2396,6 +2448,10 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.taskEndCheck(runId, state, policy, task)
         : undefined;
+    const attributeCheck =
+      task && profile.output === "implementation"
+        ? this.attributeCheck(runId, state, policy, task)
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2415,6 +2471,7 @@ export class WorkflowScheduler {
           : {}),
         ...(validate ? { validate } : {}),
         ...(taskEndCheck ? { taskEndCheck } : {}),
+        ...(attributeCheck ? { attributeCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
@@ -3715,6 +3772,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       profiles,
       Array.from({ length: candidateCount(policy) }, () => task),
     );
+    for (const [i, entry] of batch.entries()) {
+      const model = candidateModel(policy, i + 1);
+      if (!model) continue;
+      entry.profile = { ...entry.profile, model };
+      this.stepModels.set(entry.child, model);
+    }
     const base = await runContentCommit(this.store, runId, worktree);
     this.store.transaction(() =>
       this.store.artifact(
@@ -3753,12 +3816,25 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
         const criticDecides =
           policy.critic === "select" && this.criticCalibration(runId).calibrated;
+        const distinction = criticDecides
+          ? null
+          : await this.distinguishFinalists(runId, stepId, state, policy, profiles, task, {
+              batch,
+              results,
+              signal,
+            });
+        const narrowed =
+          distinction &&
+          distinction.matching.length > 0 &&
+          distinction.matching.length < distinction.finalists.length
+            ? distinction.matching
+            : null;
         const critic = this.criticOf(runId, policy, profiles);
         if (critic)
           for (const index of candidatesToJudge(
             results.map((r) => r.result),
             criticDecides,
-          )) {
+          ).filter((i) => !narrowed || (narrowed.length > 1 && narrowed.includes(i)))) {
             const candidate = results[index - 1];
             const entry = batch[index - 1];
             if (!candidate || !entry) continue;
@@ -3776,8 +3852,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const selection = selectCandidate(
           results.map((r) => r.result),
           criticDecides,
+          distinction?.matching ?? null,
         );
-        this.recordSelection(runId, task, batch, results, selection);
+        this.recordSelection(runId, task, batch, results, selection, distinction);
         const chosen =
           selection.winner !== null
             ? outcomes[selection.winner - 1]
@@ -3812,9 +3889,105 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         }
       }
     } finally {
-      for (const entry of batch) await this.releaseTaskWorktree(runId, entry);
+      for (const entry of batch) {
+        this.stepModels.delete(entry.child);
+        await this.releaseTaskWorktree(runId, entry);
+      }
     }
     if (failure) throw failure;
+  }
+  /**
+   * The distinguishing test of a tied vote (#769, after S*): the `distinction` profile reads the
+   * finalists' patches and the task's criteria and writes one command with the line the spec
+   * requires; the host runs it in each finalist's worktree as a probe (programs the checks start,
+   * no file changes) and keeps those whose output shows that line. Null when the vote decided, no
+   * profile or program is available, or the profile failed.
+   */
+  private async distinguishFinalists(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    task: Task,
+    candidates: {
+      batch: BatchEntry[];
+      results: { result: CandidateResult; patch: string }[];
+      signal: AbortSignal;
+    },
+  ): Promise<DistinctionRecord | null> {
+    const { batch, results, signal } = candidates;
+    const finalists = candidatesToJudge(
+      results.map((r) => r.result),
+      false,
+    );
+    const profile = profiles.find((p) => p.output === "distinction");
+    const executables = reproExecutables(policy.checks);
+    if (finalists.length < 2 || !profile || !executables.length) return null;
+    const child = this.store.transaction(() => this.store.beginStep(runId, "distinguish", stepId));
+    let test: Distinction;
+    try {
+      test = DistinctionSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          profile,
+          {
+            task,
+            criteria: (state.spec?.criteria ?? []).filter((c) => task.criterionIds.includes(c.id)),
+            executables,
+            finalists: finalists.map((index) => ({
+              candidate: index,
+              patch: results[index - 1]?.patch ?? "",
+            })),
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
+      return null;
+    }
+    const runs: DistinctionRecord["runs"] = [];
+    for (const index of finalists) {
+      const entry = batch[index - 1];
+      if (!entry) continue;
+      const root = join(this.store.workspace, entry.path);
+      const outcome = await runProbe(
+        this.processes,
+        { executable: test.executable, args: test.args },
+        {
+          root,
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+          sandbox: runSandbox(policy, root),
+        },
+      );
+      runs.push({
+        candidate: index,
+        status: outcome.status,
+        shows: outcome.status === "ran" && outputShows(outcome.output, test.expected),
+        exitCode: outcome.exitCode ?? null,
+        output: outcome.output.slice(-2000),
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+      });
+    }
+    return {
+      test,
+      finalists,
+      runs,
+      matching: runs.filter((r) => r.shows).map((r) => r.candidate),
+    };
   }
   /** What the selection sees of one candidate, with its patch against the run worktree. */
   private async candidateResult(
@@ -3922,6 +4095,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     batch: BatchEntry[],
     results: { result: CandidateResult; patch: string; changed: string[] }[],
     selection: CandidateSelection,
+    distinction: DistinctionRecord | null = null,
   ): void {
     this.store.transaction(() => {
       for (const { result, patch, changed } of results)
@@ -3949,6 +4123,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           // The oracle rate's numerator: some candidate passed; the selected rate's: the winner did.
           oracle: selection.passing.length > 0,
           selectedPassed: selection.winner !== null && selection.passing.includes(selection.winner),
+          ...(distinction ? { distinction } : {}),
         }),
       );
     });
@@ -6009,6 +6184,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const lease = mutationLeaseFor(this.store.workspace, root);
     const generated = generatedPaths(policy);
     const before = await sourceManifest(root, generated, signal);
+    const kept = keepOutside(root, before, new Set(owners.keys()));
     const attempt = this.store.beginHostAttempt(runId, stepId);
     const scope = new ProcessScope();
     let changed = false;
@@ -6060,9 +6236,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             }
           }
       }
-      const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
-        (path) => !owners.has(path),
-      );
+      const changedOutside = async () =>
+        changedPaths(before, await sourceManifest(root, generated, signal)).filter(
+          (path) => !owners.has(path),
+        );
+      restoreOutside(root, kept, await changedOutside());
+      const outside = await changedOutside();
       if (outside.length)
         throw new WorkflowFault(
           "CAPABILITY_DENIED",
@@ -6914,10 +7093,21 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         for (const m of text.matchAll(/"([^"*]+?)\/?\*"\s*:\s*\[/g))
           if (m[1] && m[1] !== "paths") aliases.push(m[1]);
     }
+    // `allowNewDependencies` is always false: a package added to an existing manifest needs the
+    // request or the approved spec to name it (#802). A scaffold baseline is still being set up.
+    // A property criterion asks for the ecosystem's property-test library.
+    const requested = this.baselineScaffold(runId, state)
+      ? undefined
+      : [
+          state.requestText,
+          state.spec ? canonical(state.spec) : "",
+          ...(state.spec?.criteria.some((c) => c.property) ? PROPERTY_LIBRARY_PACKAGES : []),
+        ].join("\n");
     const result = await checkDependencies(changed, known, {
       lookups: policy.registryLookups !== false,
       ...(this.registryFetch ? { fetcher: this.registryFetch } : {}),
       aliases,
+      ...(requested !== undefined ? { requested } : {}),
     });
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
@@ -6941,11 +7131,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         evidenceId,
         claim: `Dependency ${d.name}: ${d.detail} (${d.file}:${d.line})`,
         impact:
-          "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
+          d.verdict === "unrequested"
+            ? "The run adds a dependency nobody asked for to an existing project; the policy forbids new dependencies."
+            : "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
         suggestedFix:
-          d.verdict === "missing"
-            ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
-            : `Replace ${d.name} with the package it imitates, or remove it.`,
+          d.verdict === "unrequested"
+            ? `Remove ${d.name} from ${d.file} and the code that uses it; implement the behavior with the dependencies the project already has.`
+            : d.verdict === "missing"
+              ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
+              : `Replace ${d.name} with the package it imitates, or remove it.`,
       }),
     );
   }
@@ -7389,11 +7583,13 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         state.reviews[reviewer.key] = result;
         // Advisory reviewers, findings below the blocking severities and inferred notes are
         // recorded, not repaired.
+        // Below the severity floor, a spec-based finding with a repro still competes: it repairs
+        // when the host reproduces it (#801).
         const candidates = reviewer.required
           ? result.findings.filter(
               (f) =>
                 reviewer.blocking.includes(f.severity) &&
-                severities.includes(f.severity) &&
+                (severities.includes(f.severity) || confirmableSpecFinding(f)) &&
                 findingBlocks(f, policy.reviewMinConfidence),
             )
           : [];
@@ -7412,7 +7608,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             ),
           );
         const blocking = candidates.filter((f) =>
-          reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0),
+          severities.includes(f.severity)
+            ? reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0)
+            : outcomes.get(f.id)?.status === "reproduced",
         );
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(
@@ -8462,6 +8660,23 @@ const gateToRequired = (binding: { gateId: string; mode?: "required" | "advisory
  */
 const UNRESOLVED_MEANING =
   "unresolved lists only parts of THIS task that you could not finish. Work that belongs to other tasks of the plan, to checks run later, or to documentation tasks is not unresolved: leave it out. A defect you found in a file outside your write scope is not unresolved either: finish your own files (a test that exposes the defect stays as written), name the file and the defect in summary, and report implemented; the failing check becomes a corrective task that may edit that file. Any entry blocks this task.";
+
+/** The distinguishing test of a best-of-N tie and how each finalist ran it (#769). */
+interface DistinctionRecord {
+  test: Distinction;
+  finalists: number[];
+  runs: {
+    candidate: number;
+    status: "ran" | "refused";
+    /** The output shows the line the spec requires. */
+    shows: boolean;
+    exitCode: number | null;
+    output: string;
+    reason?: string;
+  }[];
+  /** Finalists whose output showed it. */
+  matching: number[];
+}
 
 /** One task of a batch: its reserved attempt and, once created, its worktree. */
 interface BatchEntry {

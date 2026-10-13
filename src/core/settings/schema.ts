@@ -56,6 +56,11 @@ export type SettingDefinition = SettingBase &
     /** Model ID → positive integer, e.g. a context-window override. */
     | { type: "model-number-map"; default: Record<string, number>; min: number; max: number }
     | { type: "secret"; default: null; envVar: string }
+    /**
+     * Where workflow implementers get library docs: `{ dir }` or `{ mcp: { server, tool, args? } }`,
+     * each with an optional `maxChars`; null means none. The whole source is one value.
+     */
+    | { type: "library-docs"; default: null }
   );
 
 export type SettingType = SettingDefinition["type"];
@@ -492,7 +497,7 @@ export const SETTINGS: readonly SettingDefinition[] = [
     page: "tools",
     section: "Sandbox",
     label: "OS sandbox",
-    help: "Run shell, project and check commands in an OS sandbox (bubblewrap on Linux, seatbelt on macOS): writes stay in the project, credential files are hidden. A project config can only raise it.",
+    help: "Run shell, project and check commands in an OS sandbox (bubblewrap on Linux, seatbelt on macOS, a low-integrity restricted token on Windows): writes stay in the project, credential files are hidden. A project config can only raise it.",
     scopes: GLOBAL,
     type: "enum",
     default: "off",
@@ -967,6 +972,16 @@ export const SETTINGS: readonly SettingDefinition[] = [
       },
       { value: "off", label: "off", help: "No property tests." },
     ],
+  },
+  {
+    id: "libraryDocs",
+    page: "code-quality",
+    section: "Library docs",
+    label: "Library docs source",
+    help: "Docs for the library versions the project's lockfiles pin, given to each implementer task for up to three libraries its files use. A directory holds <name>@<version>.md (or <name>/<version>.md) files; an MCP tool of a server in mcpServers gets {name}, {version} and {ecosystem} in its arguments. maxChars caps each library's docs (default 8000). Not set, implementers get no docs.",
+    scopes: BOTH,
+    type: "library-docs",
+    default: null,
   },
 ];
 

@@ -62,7 +62,7 @@ The checkout predates `.gitattributes` and has CRLF line endings; see [CONTRIBUT
 
 ## Sandbox: bwrap missing or user namespaces blocked
 
-`baked sandbox status` (or `/sandbox status`) names the problem. `bwrap is not installed`: install bubblewrap (`sudo apt install bubblewrap`). `user namespaces are blocked (container or AppArmor)`: on Ubuntu 24.04 run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` or give `bwrap` an AppArmor profile; inside a container allow user namespaces. Until then set `sandbox` to `auto` (commands run unsandboxed with a note) or `off`; `required` refuses them. Windows has no backend yet. See [OS sandbox](sandbox.md#troubleshooting).
+`baked sandbox status` (or `/sandbox status`) names the problem. `bwrap is not installed`: install bubblewrap (`sudo apt install bubblewrap`). `user namespaces are blocked (container or AppArmor)`: on Ubuntu 24.04 run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` or give `bwrap` an AppArmor profile; inside a container allow user namespaces. Until then set `sandbox` to `auto` (commands run unsandboxed with a note) or `off`; `required` refuses them. On Windows, `the sandbox launcher does not start` names the Windows call that failed and its error code. See [OS sandbox](sandbox.md#troubleshooting).
 
 ## The .baked folder is large
 

@@ -4,7 +4,9 @@
  * run's checks install or run anything. A package that does not exist, looks like a typosquat
  * of a popular one or was published days ago blocks the run with a finding; every other new
  * dependency is listed in the run report, which is the delivery's pull request body. A lookup
- * that fails (offline, registry down) is inconclusive and never blocks.
+ * that fails (offline, registry down) is inconclusive and never blocks. Since policies forbid new
+ * dependencies, a package added to an existing manifest that the request and spec do not name
+ * blocks too (#802).
  */
 
 import {
@@ -33,7 +35,15 @@ const RARE_DOWNLOADS = 100;
 
 export interface DependencyVerdict extends Dependency {
   kind: "declared" | "imported";
-  verdict: "ok" | "missing" | "typosquat" | "new-package" | "rare" | "undeclared" | "unknown";
+  verdict:
+    | "ok"
+    | "missing"
+    | "typosquat"
+    | "new-package"
+    | "rare"
+    | "undeclared"
+    | "unknown"
+    | "unrequested";
   blocking: boolean;
   detail: string;
   facts: PackageFacts;
@@ -50,18 +60,19 @@ const key = (d: { ecosystem: Ecosystem; name: string }) => `${d.ecosystem}:${d.n
 
 /** The dependencies the run added: declared in changed manifests, or imported on added lines. */
 export function addedDependencies(files: ChangedFile[]): {
-  declared: Dependency[];
+  declared: (Dependency & { existingManifest: boolean })[];
   imported: Dependency[];
 } {
   const declaredBefore = new Set<string>();
-  const declaredAfter = new Map<string, Dependency>();
+  const declaredAfter = new Map<string, Dependency & { existingManifest: boolean }>();
   for (const file of files) {
     if (!isManifestPath(file.path)) continue;
     // A manifest whose baseline is unknown declares nothing new: no verdict on old entries.
     if (file.before === undefined) continue;
     for (const d of file.before === null ? [] : manifestDependencies(file.path, file.before))
       declaredBefore.add(key(d));
-    for (const d of manifestDependencies(file.path, file.content)) declaredAfter.set(key(d), d);
+    for (const d of manifestDependencies(file.path, file.content))
+      declaredAfter.set(key(d), { ...d, existingManifest: file.before !== null });
   }
   const declared = [...declaredAfter.values()].filter((d) => !declaredBefore.has(key(d)));
   return {
@@ -77,6 +88,7 @@ function judge(
   kind: DependencyVerdict["kind"],
   facts: PackageFacts,
   now: number,
+  unrequested = false,
 ): DependencyVerdict {
   const verdict = (
     v: DependencyVerdict["verdict"],
@@ -97,12 +109,20 @@ function judge(
       true,
       `${where} does not exist in the registry; the name may be made up`,
     );
-  if (facts.status === "unknown")
-    return verdict(
-      "unknown",
-      false,
-      `${where} could not be checked: ${facts.reason ?? "lookup failed"}`,
+  const forbidden = (): DependencyVerdict =>
+    verdict(
+      "unrequested",
+      true,
+      `${where} was added to ${dependency.file}, which already existed, and neither the request nor the spec names it; the run may not add dependencies (allowNewDependencies is false)`,
     );
+  if (facts.status === "unknown")
+    return unrequested
+      ? forbidden()
+      : verdict(
+          "unknown",
+          false,
+          `${where} could not be checked: ${facts.reason ?? "lookup failed"}`,
+        );
   const ageDays = facts.created ? (now - Date.parse(facts.created)) / 86_400_000 : null;
   const popular = typosquatOf(dependency.ecosystem, dependency.name);
   if (
@@ -118,11 +138,37 @@ function judge(
       true,
       `${where} was first published ${Math.max(0, Math.floor(ageDays))} days ago`,
     );
+  if (unrequested) return forbidden();
   if (kind === "imported")
     return verdict("undeclared", false, `${where} is imported but not declared in package.json`);
   if (facts.downloads !== undefined && facts.downloads < RARE_DOWNLOADS)
     return verdict("rare", false, `${where} has ${facts.downloads} downloads a week`);
   return verdict("ok", false, `new ${where}`);
+}
+
+/**
+ * The packages of the property-test libraries (see properties.ts). A spec that marks a property
+ * criterion asks for one of them, so adding it to a manifest is requested.
+ */
+export const PROPERTY_LIBRARY_PACKAGES = [
+  "fast-check",
+  "@fast-check/vitest",
+  "@fast-check/jest",
+  "hypothesis",
+  "proptest",
+  "quickcheck",
+  "net.jqwik:jqwik",
+  "pgregory.net/rapid",
+  "github.com/leanovate/gopter",
+  "FsCheck",
+  "FsCheck.Xunit",
+  "FsCheck.NUnit",
+];
+
+/** Whether `text` names a package, as a whole word or path segment, ignoring case. */
+function named(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\w.@/-])${escaped}(?![\\w-])`, "i").test(text);
 }
 
 /**
@@ -132,7 +178,18 @@ function judge(
 export async function checkDependencies(
   files: ChangedFile[],
   declaredNow: Set<string>,
-  options: { lookups: boolean; fetcher?: RegistryFetch; now?: number; aliases?: string[] },
+  options: {
+    lookups: boolean;
+    fetcher?: RegistryFetch;
+    now?: number;
+    aliases?: string[];
+    /**
+     * The policy forbids new dependencies (`allowNewDependencies: false`): a package added to a
+     * manifest that existed before the run blocks unless this text (the request and the
+     * approved spec) names it. A manifest the run creates starts a project and is not judged.
+     */
+    requested?: string;
+  },
 ): Promise<DependencyResult> {
   const { declared, imported } = addedDependencies(files);
   const seen = new Set(declared.map(key));
@@ -153,7 +210,15 @@ export async function checkDependencies(
           reason: "registry lookups are off (quality.registryLookups)",
         });
   const dependencies = await Promise.all([
-    ...declared.map(async (d) => judge(d, "declared", await lookup(d), now)),
+    ...declared.map(async ({ existingManifest, ...d }) =>
+      judge(
+        d,
+        "declared",
+        await lookup(d),
+        now,
+        options.requested !== undefined && existingManifest && !named(options.requested, d.name),
+      ),
+    ),
     ...undeclared.map(async (d) => judge(d, "imported", await lookup(d), now)),
   ]);
   return { schemaVersion: 1, lookups: options.lookups, dependencies };

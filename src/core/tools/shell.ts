@@ -3,7 +3,7 @@ import stripAnsi from "strip-ansi";
 import type { ToolResult } from "../../types";
 import { getCwd } from "../cwd.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
-import { killTree, spawnShell } from "../platform/index.js";
+import { IS_WIN, killTree, spawnShell } from "../platform/index.js";
 import { isForbidden } from "../security/forbidden.js";
 import {
   chatSandbox,
@@ -48,7 +48,10 @@ function startShell(
   cwd: string,
 ): { proc: ReturnType<typeof spawnShell>; launch: SandboxLaunch | null } {
   const request = chatSandbox(getCwd(), [cwd]);
-  const launch = request ? sandboxLaunch("sh", ["-c", command], request, cwd) : null;
+  const shell = IS_WIN
+    ? { executable: process.env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", command] }
+    : { executable: "sh", args: ["-c", command] };
+  const launch = request ? sandboxLaunch(shell.executable, shell.args, request, cwd) : null;
   if (launch && launch.applied.backend !== "none") {
     const proc = spawn(launch.executable, launch.args, {
       cwd,
