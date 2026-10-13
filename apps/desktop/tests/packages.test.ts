@@ -9,7 +9,9 @@ const { ApiError } = await import("../src/renderer/client/api.ts");
 const { offers, PACKAGES_CAPABILITY } = await import("../src/renderer/client/capabilities.ts");
 const { MOCK_PACKAGE_PATH } = await import("../src/renderer/client/mock-packages.ts");
 const { installAction, packages, packSummary } = await import("../src/renderer/client/packages.ts");
-const { installSummary, ManifestWriter } = await import("../src/renderer/screens/setup/PackagesSection.tsx");
+const { installSummary, PackageActions } = await import("../src/renderer/screens/setup/PackagesSection.tsx");
+const { PackageBox } = await import("../src/renderer/screens/setup/PackageBox.tsx");
+const { boxItems, contentsLine, packingMs, BOX_SLOTS, DROP_MS } = await import("../src/renderer/screens/setup/packages-model.ts");
 const { parseRoute, projectHref } = await import("../src/renderer/router.ts");
 delete scope.window;
 
@@ -85,10 +87,37 @@ describe("packages client", () => {
     expect(packSummary(refused, false)).toBe("baked-package.json not written for x 1.0.0: 1 problem.");
   });
 
-  test("the Write manifest form has its fields and both buttons", () => {
-    const html = renderToStaticMarkup(createElement(ManifestWriter, { projectKey: "site" }));
-    expect(html).toContain('aria-label="Write manifest"');
-    expect(html).toContain('aria-label="Package folder to write"');
-    for (const label of ["Name", "Version", "Description (optional)", "Check", "Write"]) expect(html).toContain(`>${label}<`);
+  test("the screen offers Install package and Create package", () => {
+    const html = renderToStaticMarkup(createElement(PackageActions, { onInstall: () => {}, onCreate: () => {} }));
+    for (const label of ["Install package", "Create package"]) expect(html).toContain(`>${label}<`);
+  });
+
+  test("a package's contents become box tiles, in kind order", async () => {
+    const plan = await packages.inspect("site", MOCK_PACKAGE_PATH);
+    expect(boxItems(plan.contents).map((i) => i.key)).toEqual([
+      "agents/acme-reviewer",
+      "skills/review-notes",
+      "workflows/acme-quick",
+      "gates/lint",
+    ]);
+    expect(contentsLine(plan.contents)).toBe("1 agent profile · 1 skill · 1 workflow · 1 gate");
+    expect(contentsLine({ agents: [], skills: ["a", "b"], workflows: [], gates: [] })).toBe("2 skills");
+  });
+
+  test("the box shows at most its slots and counts the rest", () => {
+    const items = Array.from({ length: 9 }, (_, i) => ({ key: `skills/s${i}`, kind: "skills" as const, name: `s${i}` }));
+    const open = renderToStaticMarkup(createElement(PackageBox, { items, phase: "open" }));
+    expect(open.match(/data-tile=/g)).toHaveLength(BOX_SLOTS);
+    expect(open).toContain("+4 more");
+    const closed = renderToStaticMarkup(createElement(PackageBox, { items, phase: "closed", label: "acme 1.0.0" }));
+    expect(closed).not.toContain("data-tile=");
+    expect(closed).toContain("Packed: acme 1.0.0");
+  });
+
+  test("the packing animation waits for its tiles, and not at all under reduced motion", () => {
+    expect(packingMs(1, false)).toBeGreaterThanOrEqual(DROP_MS);
+    expect(packingMs(20, false)).toBe(packingMs(BOX_SLOTS, false));
+    expect(packingMs(4, true)).toBe(0);
+    expect(packingMs(0, false)).toBe(0);
   });
 });

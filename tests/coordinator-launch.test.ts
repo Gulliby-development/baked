@@ -89,6 +89,39 @@ async function noticeFor(chat: ChatService, pattern: RegExp): Promise<string> {
 }
 
 describe("coordinator launches", () => {
+  test("message_session sends a launched session a follow-up and its answer comes back", async () => {
+    const { chat, coordinator, tool } = await setup();
+    const launched = await tool("launch_session").execute({
+      title: "Survey the auth code",
+      brief: "List every place that checks a token.",
+      mode: "architect",
+      why: "Find the token checks",
+    });
+    const sessionId = /session ([0-9a-f-]{36})/.exec(launched.output)?.[1] ?? "";
+    await chat.get(sessionId).settled();
+    expect(await noticeFor(chat, /^Session/)).toBe('Session "Survey the auth code": done');
+
+    const stranger = await chat.create({ title: "Someone else's chat" });
+    expect(await tool("message_session").execute({ id: stranger.id, text: "Hi" })).toMatchObject({
+      success: false,
+      error: expect.stringContaining("not one you launched"),
+    });
+
+    const sent = await tool("message_session").execute({ id: sessionId, text: "Also check the CLI." });
+    expect(sent).toMatchObject({ success: true });
+    const session = chat.get(sessionId);
+    await session.settled();
+    expect(session.messages.filter((m) => m.role === "user").at(-1)?.content).toBe(
+      "Message from the project coordinator:\n\nAlso check the CLI.",
+    );
+    // Even when the follow-up's turn ends between two checks, its new answer is reported.
+    expect(await noticeFor(chat, /^Session/)).toBe('Session "Survey the auth code": done');
+    const notes = coordinator.messages.filter((m) => m.launch?.id === sessionId);
+    expect(notes).toHaveLength(2);
+    expect(notes.at(-1)?.launch).toMatchObject({ status: "done", result: "done" });
+    expect(await chat.syncLaunched()).toEqual([]);
+  }, 60000);
+
   test("a background session and a run show in their lists and report back", async () => {
     const { fixture, chat, coordinator, tool, server } = await setup();
 

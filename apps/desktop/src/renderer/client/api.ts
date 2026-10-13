@@ -1,7 +1,7 @@
 import type { ApiErrorBody, ApiResponse, RunList } from "../../shared/api.js";
 import type { HttpMethod } from "../../shared/bridge.js";
 import { bridge } from "./bridge.js";
-import { invalidateProject } from "./cache.js";
+import { invalidateProject, invalidateRead } from "./cache.js";
 
 export class ApiError extends Error {
   constructor(
@@ -43,8 +43,13 @@ export async function call<T>(
     return unwrap<T>(await bridge.request(key, method, path, body));
   } finally {
     invalidateProject(key);
+    // Keys and sign-ins are the user's, not the project's: every project's model list changes.
+    if (path.startsWith("/v1/providers/")) invalidateRead(MODELS_READ);
   }
 }
+
+/** The query name of `GET /v1/models`, shared by every model picker of a project. */
+export const MODELS_READ = "models";
 
 /** POST endpoints that only read: they leave the query cache alone. */
 const READS = new Set(["/v1/graph"]);

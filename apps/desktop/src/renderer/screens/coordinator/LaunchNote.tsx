@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { LaunchNote } from "../../client/chat.js";
 import { Icon, type IconName } from "../../components/Icon.js";
 import { Badge } from "../../components/ui/badge.js";
@@ -33,6 +34,34 @@ const FILL: Record<LaunchTone, string> = {
   busy: "bg-fill-info",
   "": "bg-background",
 };
+
+/** What a launched session answered last: a few lines, expandable to the whole text. */
+function LaunchResult({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 280 || text.split("\n").length > 4;
+  return (
+    <div className="mt-1 flex flex-col gap-1 border-l-[3px] border-l-border pl-3">
+      <p
+        className={cn(
+          "m-0 whitespace-pre-wrap wrap-anywhere text-[13px] leading-[1.5] text-foreground",
+          !open && "line-clamp-4",
+        )}
+      >
+        {text}
+      </p>
+      {long && (
+        <button
+          type="button"
+          className="w-fit cursor-pointer border-0 bg-transparent p-0 font-mono text-[12px] text-dim-foreground underline hover:text-foreground"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? "Show less" : "Show the whole answer"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 /**
  * A coordinator's news about work it launched, as a card in its conversation: what the item is,
@@ -99,6 +128,7 @@ export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string
             </p>
           )
         )}
+        {note.result && <LaunchResult text={note.result} />}
       </div>
       {href && (
         <a
