@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ApprovalRulesContentSchema } from "../chat/approval-rules.js";
 import { BriefContentSchema } from "../chat/coordinator.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
@@ -158,6 +159,9 @@ export const CreateSessionBody = z.strictObject({
 });
 export const CoordinatorBody = z.strictObject({ model: ModelId.optional() });
 export const BriefBody = BriefContentSchema.extend({
+  expectedRevision: z.number().int().min(0),
+});
+export const ApprovalRulesBody = ApprovalRulesContentSchema.extend({
   expectedRevision: z.number().int().min(0),
 });
 export const UpdateSessionBody = z

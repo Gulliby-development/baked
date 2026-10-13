@@ -82,6 +82,7 @@ import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
+import { answerByRules } from "./approval-rules.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
 import {
   coordinatorLimits,
@@ -1652,6 +1653,8 @@ export class ChatService {
   private launcher: ProjectLauncher | null = null;
   private watch: ReturnType<typeof setInterval> | null = null;
   private syncing = false;
+  /** Run requests the approval rules already tried to answer. */
+  private readonly ruleTried = new Set<string>();
 
   /**
    * Where the coordinator reads runs, initiatives and attention from and starts runs and
@@ -1679,6 +1682,9 @@ export class ChatService {
     if (!coordinator) return [];
     this.syncing = true;
     try {
+      // Approvals a rule covers are answered first, so they never read as waiting for a person.
+      const approver = this.launcher?.approveRun ? { approveRun: this.launcher.approveRun } : null;
+      await answerByRules(this, coordinator, this.projectState, approver, this.ruleTried);
       return await syncLaunched(this, coordinator, this.projectState, this.launcher?.tasks ?? null);
     } catch (err) {
       logBackgroundError("chat:coordinator-sync", errorText(err));
