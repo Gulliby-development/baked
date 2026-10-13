@@ -12,6 +12,7 @@ import {
   loopGates,
   lineOf,
   loopText,
+  revealLeft,
   type Station,
   sectionsOf,
   stageIcon,
@@ -195,5 +196,20 @@ describe("gates on the line", () => {
       "When it fails, before going back to Implement",
     ]);
     expect(review?.gates.map((g) => gatePlace(g, ids, "review"))).toEqual(["Before the run finishes"]);
+  });
+});
+
+describe("revealLeft", () => {
+  test("keeps the offset when the station is already in view", () => {
+    expect(revealLeft(100, 400, 200, 120)).toBe(100);
+  });
+  test("scrolls right just enough to show a station past the right edge", () => {
+    expect(revealLeft(0, 400, 380, 120)).toBe(100);
+  });
+  test("scrolls left to a station before the left edge", () => {
+    expect(revealLeft(300, 400, 120, 120)).toBe(120);
+  });
+  test("shows the start of a station wider than the strip", () => {
+    expect(revealLeft(0, 100, 200, 160)).toBe(200);
   });
 });
