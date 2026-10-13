@@ -17,6 +17,8 @@ interface ApprovalBody {
   assumptions?: string[];
   executionMode?: "inline" | "worktree";
   worktree?: { path: string; branch: string; baseHead: string; userChangesInScope: string[] };
+  /** Why auto approval left this plan to a person. */
+  autoApproval?: { declined?: string[] };
 }
 interface ClarificationBody {
   questions?: { id?: string; question: string; blocking?: boolean }[];
@@ -451,6 +453,19 @@ export function DecisionPrompt({
                 // biome-ignore lint/suspicious/noArrayIndexKey: assumptions may repeat
                 <text key={i} fg={t.textMuted}>
                   {`  • ${flatten(a)}`}
+                </text>
+              ))}
+            </>
+          ) : null}
+          {body.autoApproval?.declined?.length ? (
+            <>
+              <text fg={t.textSecondary} attributes={1}>
+                Why this waits for you
+              </text>
+              {body.autoApproval.declined.map((reason, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: reasons may repeat
+                <text key={i} fg={t.textMuted}>
+                  {`  • ${flatten(reason)}`}
                 </text>
               ))}
             </>
