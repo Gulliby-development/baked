@@ -4803,7 +4803,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       const pending: string[] = [];
       for (const { gate, check } of required) {
         const left = Math.max(1000, deadlineAt - clock.now());
-        if ((await this.checks.probe(check, signal, root, left)) !== "passed")
+        if ((await this.checks.probe(runId, check, signal, root, left)) !== "passed")
           pending.push(gate.id);
       }
       const key = pending.join(",");

@@ -100,11 +100,13 @@ export class CheckRunner {
    * decides the stage goes through `run`, so hours of polling leave one evidence per gate.
    */
   async probe(
+    runId: string,
     check: Check,
     signal: AbortSignal,
     root: string,
     timeoutMs: number,
   ): Promise<"passed" | "failed" | "inconclusive"> {
+    const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       const result = await executeCheckCommand(this.processes, executable, check.args, {
@@ -112,6 +114,7 @@ export class CheckRunner {
         env: buildCheckEnv(check),
         timeoutMs: Math.min(check.timeoutMs, timeoutMs),
         signal,
+        sandbox: runSandbox(policy, root),
       });
       if (result.timedOut || result.cancelled || result.exitCode === null) return "inconclusive";
       return result.exitCode === 0 ? "passed" : "failed";
