@@ -323,6 +323,7 @@ type EditorOp =
   | {op: "addWaitStage"; after: string}      // a wait stage on the one passed edge out of `after`
   | {op: "removeWaitStage"; stageId: string}
   | {op: "changeField"; stageId: string; key: string; delta: -1 | 1}  // key from stage fields
+  | {op: "setLoop"; id: string; rounds: number}  // a loop transition's bound, 1 to 50
   | {op: "duplicate"};
 ```
 
