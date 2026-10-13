@@ -53,6 +53,19 @@ describe("anti-slop rule pack", () => {
     expect(rulesOf([created("src/lib.rs", "fn parse() { todo!() }\n")])).toEqual(["placeholder-body:1:block"]);
   });
 
+  test("a todo app's error messages are not placeholders (#845)", () => {
+    const store = "if (!this.todoExists(id)) {\n  throw new Error(`Todo with id ${id} does not exist`);\n}\nthrow new Error('Todo not found');\n";
+    expect(rulesOf([created("src/store.ts", store)])).toEqual([]);
+    const placeholders = 'throw new Error("TODO");\nthrow new Error("todo: parse the date");\nthrow new Error(`Todo!`);\nthrow new Error("not yet implemented");\n';
+    expect(rulesOf([created("src/x.ts", placeholders)])).toEqual([
+      "placeholder-body:1:block",
+      "placeholder-body:2:block",
+      "placeholder-body:3:block",
+      "placeholder-body:4:block",
+    ]);
+    expect(rulesOf([created("main.go", 'panic("todo")\npanic("Todo list is empty")\n')])).toEqual(["placeholder-body:1:block"]);
+  });
+
   test("only the lines the run added count", () => {
     const before = "try { go(); } catch {}\nexport const a = 1;\n";
     const after = `${before}export const b = 2;\n`;
@@ -137,6 +150,72 @@ describe("anti-slop rules in a run", () => {
       expect(claims.some((f) => f.claim.includes("lint-suppression"))).toBe(false);
       expect(fixture.executor.implementations).toBe(2);
       expect(runReport(service.store, run.runId)).toContain("Anti-slop rules: 0 blocking, 0 noted");
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  /** The todo-cli situation of #845: each correction only moves the line the rule matches. */
+  class StubbornExecutor extends FixtureExecutor {
+    implementations = 0;
+    constructor(
+      private readonly dir: string,
+      private readonly line: string,
+    ) {
+      super(dir);
+    }
+    override async execute(request: ExecutionRequest) {
+      if (request.profile.output === "plan") {
+        const result = await super.execute(request);
+        const plan = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        plan.taskGraph.tasks[0]?.writes.push({ path: "src/store.ts", action: "create" });
+        return result;
+      }
+      if (request.profile.output === "implementation") {
+        const padding = "\n".repeat(this.implementations++);
+        mkdirSync(join(this.dir, "src"), { recursive: true });
+        writeFileSync(join(this.dir, "src/store.ts"), `${padding}export function remove(id: number) {\n  ${this.line}\n}\n`);
+      }
+      return super.execute(request);
+    }
+  }
+
+  const runWith = async (line: string) => {
+    const fixture = workflowFixture({ executor: (root) => new StubbornExecutor(root, line) });
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    await fixture.approve(run.runId);
+    const done = await fixture.service.drive(run.runId, new AbortController().signal);
+    return { fixture, run, done };
+  };
+
+  test("a todo app's error message never blocks the run (#845)", async () => {
+    const { fixture, run, done } = await runWith("throw new Error(`Todo with id ${id} does not exist`);");
+    try {
+      expect(done.status).toBe("completed");
+      expect(fixture.executor.implementations).toBe(1);
+      const claims = fixture.service.store.findings(run.runId).map((f) => String(JSON.parse(f.body_json).claim));
+      expect(claims.some((c) => c.startsWith("Rule placeholder-body: "))).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test("a rule match the correction leaves in place becomes a known limitation instead of another correction (#845)", async () => {
+    const { fixture, run, done } = await runWith('throw new Error("TODO");');
+    try {
+      expect(done.status).toBe("completed");
+      // One correction for the finding, then no more: the second match only moved a line.
+      expect(fixture.executor.implementations).toBe(2);
+      const claims = fixture.service.store.findings(run.runId).map((f) => String(JSON.parse(f.body_json).claim));
+      expect(claims.filter((c) => c.startsWith("Rule placeholder-body: "))).toHaveLength(1);
+      const state = fixture.service.store.state(run.runId);
+      expect(state.limitations.map((l) => [l.decidedBy, l.claim.split(" (")[0]])).toEqual([
+        ["rule", "Rule placeholder-body: The body is a placeholder, not an implementation"],
+      ]);
+      const report = runReport(fixture.service.store, run.runId);
+      expect(report).toContain("error, kept after its correction");
+      expect(report).toContain("rule pack (same match after its correction)");
     } finally {
       await fixture.dispose();
     }
