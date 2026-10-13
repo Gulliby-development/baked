@@ -185,6 +185,16 @@ const SETTLES =
 /** Whether a conflict report names what the request itself states as one of its sides. */
 export const namesRequestSide = (text: string): boolean => SETTLES.test(text);
 
+/**
+ * A documentation task's report that the rule for examples (run the command, never invent its
+ * output) stands against a worked example the request gives (#992, dirdrift 120a6a97: "FR-001 needs
+ * the five-line worked example in the README, but the implementer instruction forbids writing
+ * example output from the spec").
+ */
+const EXAMPLE_RULE =
+  /\b(?:example|sample)[- ]output\b|\bworked\s+example\b|\b(?:request|brief|spec)'s\b[^.]*\bexamples?\b|\boutput\s+(?:block|example)\b|\bexample\b[^.]*\b(?:from the (?:spec|request|brief)|run_probe|probe)\b/i;
+export const namesExampleRule = (text: string): boolean => EXAMPLE_RULE.test(text);
+
 export function requestSettles(finding: {
   id?: string;
   kind: string;

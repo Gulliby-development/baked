@@ -92,6 +92,7 @@ import {
   isHostEdgeNit,
   isHostSplitNit,
   knownRisks,
+  namesExampleRule,
   namesRequestSide,
   persistentDefect,
   REQUEST_NOTE,
@@ -189,6 +190,7 @@ import {
   withImplementationProfiles,
   withModuleDependencies,
   withReadDependencies,
+  writesOnlyDocs,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { type LearnedRule, rulesFor } from "./project-memory.js";
@@ -6071,7 +6073,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * When the other side is a test an implemented test task of the plan wrote, the approved spec
    * wins over that test, also once per task: the task may then write the test file and runs
    * again (#967, cfgtrace 49dbf63b: correctives that could only change the source asked a person
-   * three times about tests that contradicted the spec).
+   * three times about tests that contradicted the spec). A documentation task whose report sets
+   * the rule for examples against the request's worked example copies that example (#992).
    */
   private specConflict(
     runId: string,
@@ -6086,7 +6089,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
     const first =
       policy.clarification === "assume" && !this.store.latestArtifact(runId, assumedPath);
-    const assume = first && namesRequestSide(report);
+    // A documentation task torn between the rule for examples and the request's worked example
+    // copies the request's example (#992).
+    const example = first && writesOnlyDocs(task) && namesExampleRule(report);
+    const assume = first && (example || namesRequestSide(report));
     const tests = first && !assume ? this.conflictingTests(runId, state, task, report) : [];
     this.store.transaction(() => {
       this.store.artifact(
@@ -6100,11 +6106,20 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           runId,
           "assumption",
           assumedPath,
-          canonical({ ...account, assumed: "The request is authoritative" }),
+          canonical({
+            ...account,
+            assumed: example
+              ? "The request's worked example is authoritative: copy it verbatim"
+              : "The request is authoritative",
+          }),
         );
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
+    if (example) {
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.`;
+      return;
+    }
     if (assume) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
       return;
