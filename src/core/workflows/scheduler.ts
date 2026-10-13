@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -227,9 +228,11 @@ import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/m
 import {
   checkPropertyTests,
   propertyClaim,
+  propertyLibraries,
   propertyTestsNote,
   propertyTestsOf,
   QUALITY_PROPERTIES,
+  QUALITY_PROPERTY_LIBRARIES,
 } from "./quality/properties.js";
 import type { RegistryFetch } from "./quality/registry.js";
 import {
@@ -2759,7 +2762,7 @@ export class WorkflowScheduler {
         policy,
         presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
       ) === "auto"
-        ? propertyTestsNote(profile.output)
+        ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
@@ -6439,6 +6442,53 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     return blocking.slice(0, 100);
   }
   /**
+   * The property library of each language the project has, found once per run and kept in
+   * `quality/property-libraries.json`, so every agent and every gate of the run sees the same.
+   */
+  private propertyLibraries(runId: string, state: RuntimeState): Record<string, boolean> {
+    const kept = this.store.latestArtifact(runId, QUALITY_PROPERTY_LIBRARIES);
+    if (kept) return JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, boolean>;
+    const root = runRoot(this.store.workspace, state);
+    const libraries = propertyLibraries({
+      read: (path) => {
+        try {
+          return readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      exists: (path) => existsSync(workspacePath(root, path)),
+      list: (directory) => {
+        try {
+          return readdirSync(directory ? workspacePath(root, directory) : root).map((name) =>
+            directory ? `${directory}/${name}` : name,
+          );
+        } catch {
+          return [];
+        }
+      },
+      pythonImports: (module) => {
+        const python =
+          process.platform === "win32"
+            ? (Bun.which("python") ?? Bun.which("py"))
+            : (Bun.which("python3") ?? Bun.which("python"));
+        if (!python) return null;
+        const probe = Bun.spawnSync([python, "-c", `import ${module}`], {
+          cwd: root,
+          env: buildSafeEnv(),
+          stdout: "ignore",
+          stderr: "ignore",
+          timeout: 5_000,
+        });
+        return probe.exitCode === 0;
+      },
+    });
+    this.store.transaction(() =>
+      this.store.artifact(runId, "quality", QUALITY_PROPERTY_LIBRARIES, canonical(libraries)),
+    );
+    return libraries;
+  }
+  /**
    * Property-based tests (#637): every criterion the spec marks with `property` needs a property
    * test in a test file of a task that covers it. A missing one is a blocking finding on that
    * file, so the correction writes it; the result is kept for the run report.
@@ -6456,13 +6506,19 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (mode === "off" || !state.snapshotId || !criteria.some((c) => c.property)) return [];
     const root = runRoot(this.store.workspace, state);
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
-    const result = checkPropertyTests(mode, criteria, tasks, (path) => {
-      try {
-        return readFileSync(workspacePath(root, path), "utf8");
-      } catch {
-        return null;
-      }
-    });
+    const result = checkPropertyTests(
+      mode,
+      criteria,
+      tasks,
+      (path) => {
+        try {
+          return readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      this.propertyLibraries(runId, state),
+    );
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(runId, "quality", QUALITY_PROPERTIES, canonical(result));
       return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
@@ -6482,7 +6538,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         evidenceId,
         claim: `Property test missing for ${c.id}: the criterion holds over ${c.domain} inputs, and no test file of its tasks has a property-based test`,
         impact: "Example tests miss edge inputs of the domain the criterion covers.",
-        suggestedFix: `Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the ecosystem library (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck) that generates inputs over the whole ${c.domain} domain and asserts the criterion; declare the library as a development dependency if the project lacks it.`,
+        suggestedFix: `${c.note ? `Remove the fallback: ${c.note}. ` : ""}Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the property library the project has (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck), or without one a generator with a fixed seed in the project's test framework, that generates inputs over the whole ${c.domain} domain and asserts the criterion. Do not add a dependency for it.`,
       });
       return {
         ...finding,
