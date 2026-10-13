@@ -117,6 +117,8 @@ export function WorkflowPanel({
   const [confirmReroute, setConfirmReroute] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // The stage a fork starts at; "" starts from the beginning with a new approval.
+  const [forkPick, setForkPick] = useState<{ stages: string[]; index: number } | null>(null);
   /**
    * The fix-ci run the last read of failed pull request checks proposes, or the quick-fix run for
    * its unresolved review comments; Y starts it.
@@ -368,6 +370,20 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setFixChecks(null);
       return;
     }
+    if (forkPick) {
+      event.preventDefault();
+      const count = forkPick.stages.length;
+      if (key === "left" || key === "h")
+        setForkPick({ ...forkPick, index: (forkPick.index + count - 1) % count });
+      else if (key === "right" || key === "l")
+        setForkPick({ ...forkPick, index: (forkPick.index + 1) % count });
+      else if (key === "y" || key === "return") {
+        const stage = forkPick.stages[forkPick.index];
+        setForkPick(null);
+        void act(stage ? { fork: stage } : "fork");
+      } else if (key === "escape" || key === "n") setForkPick(null);
+      return;
+    }
     if (confirmDiscard) {
       event.preventDefault();
       if (key === "y") {
@@ -412,6 +428,8 @@ export function WorkflowPanel({
     else if (action.action === "reroute") setConfirmReroute(true);
     else if (action.action === "cancel") setConfirmCancel(true);
     else if (action.action === "discard-worktree") setConfirmDiscard(true);
+    else if (action.action === "fork" && service?.store.forkStages(snapshot.runId).length)
+      setForkPick({ stages: ["", ...service.store.forkStages(snapshot.runId)], index: 0 });
     else if (action.action === "checks") void readChecks(snapshot.runId);
     else if (action.action === "reviews") void readChecks(snapshot.runId, true);
     else if (action.action === "undo") {
@@ -711,6 +729,11 @@ export function WorkflowPanel({
         {confirmDiscard && worktree ? (
           <text fg={t.warning}>
             {`Remove this run's worktree ${worktree.path} and delete its branch ${worktree.branch}? Work that was not delivered is lost. Y confirms; N keeps them.`}
+          </text>
+        ) : null}
+        {forkPick ? (
+          <text fg={t.warning}>
+            {`Fork from: ${forkPick.stages.map((stage, i) => (i === forkPick.index ? `[${stage || "start"}]` : ` ${stage || "start"} `)).join(" ")}. ${forkPick.stages[forkPick.index] ? `The new run starts at ${forkPick.stages[forkPick.index]} with this run's approval and changes.` : "The new run reuses the spec and plan and needs a new approval."} ←→ picks; Y forks; N keeps this run.`}
           </text>
         ) : null}
         {fixChecks ? (

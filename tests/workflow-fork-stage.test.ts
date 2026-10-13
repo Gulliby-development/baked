@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { FORK_SEEDED_ARTIFACT } from "../src/core/workflows/fork-stage.js";
+import { FORK_SEED_ARTIFACT, FORK_SEEDED_ARTIFACT } from "../src/core/workflows/fork-stage.js";
 import { capturePreImage } from "../src/core/workflows/rollback.js";
 import { newId } from "../src/core/workflows/store.js";
-import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import type { ExecutionRequest, RunSnapshot } from "../src/core/workflows/types.js";
+import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
+import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -90,5 +92,30 @@ describe("fork from a stage (#855)", () => {
       fixture.service.fork(parentId, { commandId: newId(), expectedRevision: parent.revision }, { fromStage: "plan" }),
     ).rejects.toThrow("after the implementation");
     expect(existsSync(join(fixture.root, "value.txt"))).toBe(true);
+  });
+
+  test("the CLI lists the stages and forks from one", async () => {
+    const { fixture, parentId } = await finishedRun();
+    const signal = new AbortController().signal;
+    const status = (await executeWorkflowCommand(
+      fixture.service,
+      parseWorkflowArgs(["status", parentId]),
+      signal,
+    )) as RunSnapshot & { forkStages: string[] };
+    expect(status.forkStages).toContain("review");
+    const fork = (await executeWorkflowCommand(
+      fixture.service,
+      parseWorkflowArgs([
+        "fork",
+        parentId,
+        "--expected-revision",
+        String(status.revision),
+        "--from-stage",
+        "review",
+      ]),
+      signal,
+    )) as RunSnapshot;
+    expect(fork.runId).not.toBe(parentId);
+    expect(fixture.service.store.latestArtifact(fork.runId, FORK_SEED_ARTIFACT)).toBeTruthy();
   });
 });
