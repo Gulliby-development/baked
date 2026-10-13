@@ -23,6 +23,7 @@ import {
   convergenceStop,
   earlierFindings,
   grantRound,
+  noteUnverifiedCriteria,
   passesWithNotes,
   REPEAT_NOTE,
   requiredChecksPass,
@@ -1204,12 +1205,26 @@ export class WorkflowScheduler {
               if (findings.length) {
                 repairFindings = { findings, kind: "convergence" };
                 advance = false;
-              } else if (failing.size)
-                throw new WorkflowFault(
-                  "OUTPUT_INVALID",
-                  "Coverage is incomplete without an actionable finding",
-                );
-              else {
+              } else {
+                if (failing.size) {
+                  // An inconclusive criterion no finding names is a limit of the environment, not
+                  // an output defect: it becomes a known limitation (propdrift eea2e0e9 AC-008).
+                  const failed = [...failing].filter(
+                    (id) =>
+                      review.coverage.find((c) => c.criterionId === id)?.verdict !== "inconclusive",
+                  );
+                  if (failed.length)
+                    throw new WorkflowFault(
+                      "OUTPUT_INVALID",
+                      "Coverage is incomplete without an actionable finding",
+                    );
+                  noteUnverifiedCriteria(
+                    state,
+                    review.coverage,
+                    [...failing],
+                    this.store.run(runId).convergence_rounds,
+                  );
+                }
                 const pending = state.spec.criteria.filter(
                   (c) =>
                     c.method === "manual" &&

@@ -448,3 +448,39 @@ export function passesWithNotes(
 /** Criteria whose failing verdict a known limitation covers. */
 export const limitedCriteria = (state: Pick<RuntimeState, "limitations">): Set<string> =>
   new Set(state.limitations.flatMap((l) => l.criterionIds));
+
+/**
+ * Records criteria that convergence could not verify, and that no finding names, as known
+ * limitations. A criterion only another environment can prove (propdrift eea2e0e9 AC-008, "behavior
+ * is confirmed on Windows, macOS, and Linux", on a single-host runner) comes back `inconclusive`:
+ * the reviewer cannot raise a defect for a limit of the environment, and a repair has nothing to
+ * change. Returns the limitations added.
+ */
+export function noteUnverifiedCriteria(
+  state: Pick<RuntimeState, "limitations">,
+  coverage: Review["coverage"],
+  criterionIds: string[],
+  round: number,
+): Limitation[] {
+  const added: Limitation[] = [];
+  for (const criterionId of criterionIds) {
+    const findingId = `unverified-${criterionId}`;
+    if (state.limitations.some((l) => l.findingId === findingId)) continue;
+    const explanation = coverage.find((c) => c.criterionId === criterionId)?.explanation ?? "";
+    const limitation: Limitation = {
+      findingId,
+      severity: "low",
+      kind: "unverified",
+      criterionIds: [criterionId],
+      file: null,
+      symbol: null,
+      claim: `Criterion ${criterionId} could not be verified on this host${explanation ? `: ${explanation.replace(/\s+/g, " ").slice(0, 400)}` : ""}`,
+      impact: "The evidence needs an environment or device the run does not have",
+      decidedBy: "notes",
+      round,
+    };
+    state.limitations.push(limitation);
+    added.push(limitation);
+  }
+  return added;
+}

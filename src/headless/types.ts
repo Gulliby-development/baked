@@ -1,10 +1,17 @@
 import type { SessionDiffStats } from "../core/chat/diff-stats.js";
-import type { BakeMode, InputContextItem, InteractiveCallbacks } from "../types/index.js";
+import type {
+  BakeMode,
+  ChatEffort,
+  InputContextItem,
+  InteractiveCallbacks,
+} from "../types/index.js";
 
 export interface HeadlessRunOptions {
   prompt: string;
   modelId?: string;
   mode?: BakeMode;
+  /** Reasoning effort of this run; `default` keeps the configured one. */
+  effort?: ChatEffort;
   json?: boolean;
   events?: boolean;
   quiet?: boolean;
@@ -110,6 +117,8 @@ export type HeadlessEvent =
 export interface HeadlessChatOptions {
   modelId?: string;
   mode?: BakeMode;
+  /** Reasoning effort of every turn; `default` keeps the configured one. */
+  effort?: ChatEffort;
   json?: boolean;
   events?: boolean;
   quiet?: boolean;
