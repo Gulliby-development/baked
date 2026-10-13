@@ -43,6 +43,7 @@ const commands = [
   "gate",
   "deliver",
   "discard-worktree",
+  "worktrees",
   "route",
   "models",
   "doctor",
@@ -72,6 +73,7 @@ export interface WorkflowArgs {
 const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
   "refresh",
+  "clean",
   "auto-preset",
   "all",
   "save",
@@ -216,6 +218,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "expected-revision",
   ],
   "discard-worktree": ["expected-revision", "command-id"],
+  worktrees: ["clean", "dry-run"],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
   doctor: preRunFlags,
@@ -332,7 +335,9 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     result.command !== "propose"
   ) {
     const count =
-      ["list", "profiles", "models", "import", "gc", "definitions"].includes(result.command) ||
+      ["list", "profiles", "models", "import", "gc", "definitions", "worktrees"].includes(
+        result.command,
+      ) ||
       (result.command === "validate" && result.flags.file)
         ? 0
         : result.command === "compare"
@@ -591,6 +596,9 @@ deliver RUN_ID --execute --expected-revision N [--request ID]
   A worktree run is delivered from its branch; its worktree is removed afterwards, the branch stays.
 discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
+worktrees [--clean [--dry-run]]
+  Run and task worktrees under .baked/worktrees, largest first, with size and run status.
+  --clean removes those of completed, failed, cancelled and unknown runs (branches stay).
 initiative <command> ...   split a large request into 3..12 features run in dependency order
   start, show, list, events, merge, split, remove, rename, approve, reject, drive, resume, pause,
   replan, extend, reroute; see baked workflow initiative --help

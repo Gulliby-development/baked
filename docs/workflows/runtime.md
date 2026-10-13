@@ -755,6 +755,7 @@ baked workflow import --source ecc --path reviewed-checkout/agents --feature imp
 baked workflow export RUN_ID --destination exports/run-001
 baked workflow export-progress RUN_ID
 baked workflow gc --before 2026-09-01 --dry-run
+baked workflow worktrees --clean --dry-run
 baked workflow redact RUN_ID --file ARTIFACT_ID --reason "Remove sensitive content"
 ```
 
@@ -765,6 +766,10 @@ To accept a schema-compatible imported package, pass its spec/plan/tasks to `can
 For a review by another model, route it with `modelRouting` (see [Model routing](#model-routing)) rather than copying a profile. A copied profile in `baked/agents/ID.json` can still name a specific `provider/model`, but a project file then carries one person's model choice. Reviewer context separation is mandatory regardless of the model choice; a separate profile name alone does not mean a different model. The model ID of every attempt is stored in the journal.
 
 A CLI-backed provider (Claude Code, Codex) can pass the signed-in account to the model through the CLI's own context. The host reads that account's e-mail address from `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) and `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`), and refuses an edit or a submitted result that contains the address or its local part (five characters or longer, as a whole word), telling the agent to take the owner from the project manifest or write `<project name> contributors`. An identity the workspace already names in `package.json`, `pyproject.toml`, `Cargo.toml`, `composer.json`, `LICENSE*` or `AUTHORS` is the project's own and is allowed.
+
+### Worktree disk usage
+
+A worktree run keeps `.baked/worktrees/RUN_ID/main` (and a directory per task with several writers) until delivery or `discard-worktree` removes it, so benchmark rounds and failed runs leave worktrees behind. `baked workflow worktrees` lists each run's directory, largest first, with its size, the size of each worktree in it, the run's status and feature, and whether a cleanup removes it. `baked workflow worktrees --clean --dry-run` shows what a cleanup removes and how many bytes it frees; `--clean` removes the worktrees of completed, failed and cancelled runs and of directories whose run the project no longer has, and empties `.baked/trash` (locked worktree directories moved aside). Running, waiting, paused and blocked runs, and runs with an unsettled delivery step, are kept. Unlike `discard-worktree`, the cleanup keeps the run branch `baked/wf/RUN_ID`, which carries the accepted commit, and records `worktree/cleaned.json` in the run. In the TUI it is the typed command `/workflow worktrees [--clean]`; the desktop run list has **Worktrees…** under the same capability, and the local API answers `GET /v1/workflow/worktrees` and `POST /v1/workflow/worktrees/clean` ([API](../desktop/api.md)).
 
 Export creates a new directory inside the workspace. The host API allows a separate outside-path approval callback; the CLI does not provide one automatically. Raw provider messages and command output are not part of the portable report; known credentials are masked. Redaction removes the selected artifact content, keeps the original hash and a tombstone and invalidates evidence. It does not promise to remove every possible copy of a string from other artifacts.
 

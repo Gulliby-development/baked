@@ -302,6 +302,7 @@ export const RedactBody = z.strictObject({
   artifactId: SafeId,
   reason: z.string().trim().min(1).max(500),
 });
+export const WorktreeCleanBody = z.strictObject({ dryRun: z.boolean().optional() });
 export const GcBody = z.strictObject({
   before: z.string().refine((value) => Number.isFinite(Date.parse(value)), {
     message: "Expected an ISO date",

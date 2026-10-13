@@ -92,6 +92,7 @@ const FULL_CAPABILITIES = [
   "mcp",
   "lsp",
   "run-maintenance",
+  "worktrees",
   "lsp-diagnose",
   "workflow-editor",
   "custom-commands",
