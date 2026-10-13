@@ -12,7 +12,7 @@ import {
 } from "./quality/duplication.js";
 import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
-import { type RunUsageReport, runUsage } from "./usage.js";
+import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange } from "./view.js";
 
@@ -518,6 +518,8 @@ function render(facts: Facts, cap: number): string {
       ),
       "",
     );
+  const backends = toolBackendLine(usage.toolBackends ?? []);
+  if (backends) out.push(`Code intelligence: ${backends}.`, "");
 
   out.push("## Artifacts", "");
   const hidden = facts.internalArtifacts

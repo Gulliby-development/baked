@@ -220,6 +220,16 @@ export interface AttemptUsageRecord {
   finalizedBy: FinalizeReason | null;
   totalTokens: number;
   steps: AttemptStepUsage[];
+  /** Tool calls by the code intelligence backend that answered; absent when none reported one. */
+  toolBackends?: ToolBackendCount[];
+}
+
+/** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */
+export interface ToolBackendCount {
+  tool: string;
+  backend: string;
+  server: string | null;
+  calls: number;
 }
 
 export interface StepLike {
