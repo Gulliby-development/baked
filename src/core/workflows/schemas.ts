@@ -62,6 +62,13 @@ export const SpecSchema = z
             // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
             then: Text,
             method: z.enum(["automated", "manual", "post-release"]),
+            /**
+             * The input domain over which the behavior must hold, for a property-based test
+             * (quality/properties.ts); absent for an example criterion.
+             */
+            property: z
+              .enum(["numbers", "strings", "parsing", "round-trip", "invariant"])
+              .optional(),
           })
           .strict(),
       )
@@ -99,6 +106,11 @@ export const TaskSchema = z
       z.object({ path: RelativePath, action: z.enum(["create", "modify", "delete"]) }).strict(),
     ),
     readHints: z.array(RelativePath),
+    /**
+     * An existing file that shows the pattern the task's code should follow (structure, naming,
+     * error handling, test style). The implementer reads it first; reviewers may cite divergence.
+     */
+    reference: RelativePath.optional(),
     checkIds: z.array(SafeId),
     origin: z.enum(["planned", "repair", "convergence"]),
     findingIds: z.array(SafeId),
@@ -251,10 +263,14 @@ export const PolicySchema = z
     reviewMinConfidence: z.number().min(0).max(1).optional(),
     /**
      * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
-     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
-     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     * and decides nothing, `off` skips it. `select` and `earlyStop` score like `advise` and also
+     * decide once the project's outcome log calibrates the critic (critic-calibration.ts):
+     * `select` keeps the best-scored attempt of a task, `earlyStop` accepts the remaining
+     * convergence findings instead of another repair when every task scores at the threshold and
+     * the checks pass. Absent means `advise` when the critic's model is of another vendor than the
+     * implementation's, else off, so stored policies keep their hash.
      */
-    critic: z.enum(["off", "advise"]).optional(),
+    critic: z.enum(["off", "advise", "select", "earlyStop"]).optional(),
     /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
@@ -294,6 +310,12 @@ export const PolicySchema = z
      * `required` (path or glob to percent, default 100); `mutationBudgetMs` caps the gate's time.
      */
     mutation: z.enum(["off", "advisory", "required"]).optional(),
+    /**
+     * Property-based tests from criteria the spec marks with `property` (quality/properties.ts):
+     * `auto` asks the agents for them and checks each marked criterion has one; `off` does
+     * neither. Absent means the preset's default (`auto` for `standard` and `full`).
+     */
+    propertyTests: z.enum(["auto", "off"]).optional(),
     mutationThresholds: z
       .record(z.string().min(1).max(512), z.number().int().min(0).max(100))
       .optional(),
@@ -341,6 +363,11 @@ export const PolicySchema = z
       .object({
         maxAttemptTokens: z.number().int().min(10_000).optional(),
         maxRunTokens: z.number().int().min(10_000).nullable().optional(),
+        /**
+         * Hard ceiling above `maxRunTokens` that a run under `clarification: "assume"` may grow
+         * to without a person while it still makes progress (see `extendUnderAssume`).
+         */
+        extendToTokens: z.number().int().min(10_000).optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
         testTaskSteps: z.number().int().min(1).max(100).optional(),
       })
@@ -1242,6 +1269,8 @@ export interface StartRequest {
   sast?: "auto" | "off";
   /** The mutation gate of this run (CLI `--mutation MODE`); it overrides the policy. */
   mutation?: "off" | "advisory" | "required";
+  /** Property-based tests of this run (CLI `--property-tests MODE`); it overrides the policy. */
+  propertyTests?: "auto" | "off";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.

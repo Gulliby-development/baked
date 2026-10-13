@@ -322,6 +322,9 @@ export async function executeWorkflowCommand(
         args.flags.mutation === "required"
           ? { mutation: args.flags.mutation }
           : {}),
+        ...(args.flags["property-tests"] === "auto" || args.flags["property-tests"] === "off"
+          ? { propertyTests: args.flags["property-tests"] }
+          : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
       for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])

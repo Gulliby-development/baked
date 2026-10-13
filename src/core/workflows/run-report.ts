@@ -12,7 +12,9 @@ import {
   metricDeltas,
   QUALITY_DUPLICATION,
 } from "./quality/duplication.js";
+import { QUALITY_MUTATION_BASELINE } from "./quality/harden.js";
 import { type MutationResult, QUALITY_MUTATION } from "./quality/mutation.js";
+import { type PropertiesResult, QUALITY_PROPERTIES } from "./quality/properties.js";
 import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
 import { QUALITY_SAST, type SastResult } from "./quality/sast.js";
 import {
@@ -255,7 +257,9 @@ function collect(store: WorkflowStore, runId: string) {
         rules: readJson<RulesResult>(QUALITY_RULES),
         dependencies: readJson<DependencyResult>(QUALITY_DEPENDENCIES),
         sast: readJson<SastResult>(QUALITY_SAST),
+        properties: readJson<PropertiesResult>(QUALITY_PROPERTIES),
         mutation: readJson<MutationResult>(QUALITY_MUTATION),
+        mutationBefore: readJson<MutationResult>(QUALITY_MUTATION_BASELINE),
       },
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
@@ -336,12 +340,15 @@ interface QualityFacts {
   rules: RulesResult | null;
   dependencies: DependencyResult | null;
   sast: SastResult | null;
+  properties: PropertiesResult | null;
   mutation: MutationResult | null;
+  /** A harden run's score of the module's tests at approval. */
+  mutationBefore: MutationResult | null;
 }
 
 /**
  * The code quality gates: the duplication ratchet (#638), the anti-slop rules (#639), and the
- * dependency check and SAST (#640), and the mutation gate (#636).
+ * dependency check and SAST (#640), property-based tests (#637) and the mutation gate (#636).
  */
 function qualitySection(quality: QualityFacts, cap: number): string[] {
   return [
@@ -349,7 +356,8 @@ function qualitySection(quality: QualityFacts, cap: number): string[] {
     ...(quality.rules ? rulesSection(quality.rules, cap) : []),
     ...(quality.dependencies ? dependenciesSection(quality.dependencies, cap) : []),
     ...(quality.sast ? sastSection(quality.sast, cap) : []),
-    ...(quality.mutation ? mutationSection(quality.mutation, cap) : []),
+    ...(quality.properties ? propertiesSection(quality.properties, cap) : []),
+    ...(quality.mutation ? mutationSection(quality.mutation, cap, quality.mutationBefore) : []),
   ];
 }
 
@@ -378,7 +386,33 @@ function dependenciesSection(result: DependencyResult, cap: number): string[] {
   return out;
 }
 
-function mutationSection(result: MutationResult, cap: number): string[] {
+function propertiesSection(result: PropertiesResult, cap: number): string[] {
+  const found = result.criteria.filter((c) => c.status === "found").length;
+  return [
+    `Property-based tests: ${found} of ${result.criteria.length} marked criteria have one.`,
+    "",
+    ...table(
+      ["Criterion", "Domain", "Status", "Property tests"],
+      result.criteria.map((c) => [
+        c.id,
+        c.domain,
+        c.status,
+        c.tests
+          .filter((t) => t.property)
+          .map((t) => code(t.file))
+          .join(", ") || "-",
+      ]),
+      cap,
+    ),
+    "",
+  ];
+}
+
+function mutationSection(
+  result: MutationResult,
+  cap: number,
+  before: MutationResult | null = null,
+): string[] {
   const count = (status: string) => result.mutants.filter((m) => m.status === status).length;
   const killed = count("killed");
   const ran = killed + count("survived");
@@ -392,6 +426,11 @@ function mutationSection(result: MutationResult, cap: number): string[] {
     `Mutation gate (\`${result.mode}\`): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
     "",
   ];
+  if (before)
+    out.push(
+      `Mutation score before the run: ${before.score === null ? "none" : `${before.score}%`} -> after: ${result.score === null ? "none" : `${result.score}%`}.`,
+      "",
+    );
   const survivors = result.mutants.filter((m) => m.status === "survived");
   if (survivors.length)
     out.push(
@@ -685,7 +724,9 @@ function render(facts: Facts, cap: number): string {
             ? "assume rule (checks passed)"
             : l.decidedBy === "notes"
               ? "notes rule (behavior verified)"
-              : "user",
+              : l.decidedBy === "critic"
+                ? "critic early stop (calibrated score, checks passed)"
+                : "user",
         ]),
         cap,
       ),
