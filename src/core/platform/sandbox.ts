@@ -9,8 +9,11 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { posix } from "node:path";
 import { findOnPath, unsupportedOnWindows, userHome } from "./index.js";
+
+// The profiles are built only for Linux and macOS hosts, so paths join with `/` on any build host.
+const { basename, dirname, join } = posix;
 
 export type SandboxMode = "off" | "auto" | "required";
 export type SandboxBackend = "bwrap" | "seatbelt" | "none";
