@@ -269,6 +269,19 @@ A gate is one entry of `workflows.policy.checks` in `.baked/config.json`. `/work
 - A run takes a copy of the policy when it starts. Changing gates affects the runs created afterwards. Changing the gates of a started run still goes through `candidate` and `revise`.
 - Run now goes through the workflow worker, so the interface stays responsive; Esc stops the process tree. It uses the same safe environment and timeout as a run. It records no evidence. It is refused while a run holds the workspace, because the command could change the files that run is checking. It needs workflows to be enabled, so a disabled project starts no worker.
 
+### Custom gates
+
+A gate can be any script or container that reports its result as JSON: set its result to JSON report (`"report": "json"` on a policy check, or on `command` in a gate file under `baked/gates/`; the Result toggle in the TUI form and on the desktop Setup > Gates form). The command prints one JSON object as its last JSON line on stdout or stderr; earlier log lines and other text are ignored:
+
+```json
+{"status": "failed", "summary": "2 leaked keys", "findings": [{"severity": "high", "message": "AWS key in fixture", "path": "tests/fixtures/env.json", "line": 4}]}
+```
+
+- `status` is `passed`, `failed` or `inconclusive`; `summary` (up to 2000 characters) and `findings` (up to 100, each with `severity` `critical|high|medium|low`, `message`, optional `path` and `line`) are optional.
+- The report decides the check. A `passed` report counts only with exit code 0; a pass from a command that exited nonzero, a missing report or a malformed one makes the check inconclusive (reason `report_exit_mismatch` or `no_report`), which blocks a required gate without starting a repair. A `failed` report fails the check like a nonzero exit and starts the repair.
+- The report is appended to the check's output as `Gate report: STATUS. SUMMARY` with one `- [SEVERITY] PATH:LINE MESSAGE` line per finding, so the repair task and the run report see where to look.
+- A container is a command like any other, for example `docker run --rm -v .:/work -w /work IMAGE audit --json`; it runs without a shell, with the gate's timeout and the env names it declares. Run now treats an `inconclusive` report, or a pass that exited nonzero, as an error.
+
 Detection offers gates; nothing is added until the user confirms. It reads the project root only:
 
 | Ecosystem | Found by | Suggested gates |
