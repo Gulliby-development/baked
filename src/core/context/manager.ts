@@ -85,6 +85,8 @@ export class ContextManager {
   private repoMapReady = false;
   private repoMapEnabled = process.env.BAKED_NO_REPOMAP !== "1";
   private repoMapGeneration = 0;
+  /** The scan in flight, initial or background. */
+  private repoMapScan: Promise<void> | null = null;
   private editedFiles = new Set<string>();
   private mentionedFiles = new Set<string>();
   // conversationTerms removed — FTS boosting was noisy, PageRank handles ranking
@@ -361,7 +363,37 @@ export class ContextManager {
   private startRepoMapScan(): void {
     if (!this.ownsIntelligence) return;
     this.syncRepoMapStore("scanning");
-    this.repoMap.scan().catch((err: unknown) => this.handleScanError(err));
+    this.trackScan();
+  }
+
+  private trackScan(): Promise<void> {
+    const scan = this.repoMap
+      .scan()
+      .catch((err: unknown) => this.handleScanError(err))
+      .finally(() => {
+        if (this.repoMapScan === scan) this.repoMapScan = null;
+      });
+    this.repoMapScan = scan;
+    return scan;
+  }
+
+  /** True while this root's index scan runs, the first one or a background update. */
+  isRepoMapScanning(): boolean {
+    if (!this.repoMapEnabled) return false;
+    if (this.isChild) return this.shared?.parent?.isRepoMapScanning() ?? false;
+    return this.repoMapScan !== null;
+  }
+
+  /**
+   * Brings the index up to date without taking it offline: the map stays readable while the
+   * scan re-indexes only files whose time or size changed. Waits for a scan already in flight,
+   * then scans once more so changes made during it are seen.
+   */
+  async updateRepoMapInBackground(): Promise<void> {
+    if (!this.repoMapEnabled || !this.ownsIntelligence || this.isChild) return;
+    if (this.repoMapScan) await this.repoMapScan;
+    if (this.repoMapScan) return this.repoMapScan;
+    await this.trackScan();
   }
 
   /** Tracks readiness of a borrowed worker; its owner scans and generates summaries. */
@@ -1146,7 +1178,7 @@ export class ContextManager {
     this.bakeMapSnapshot = null;
     this.syncRepoMapStore("scanning");
     useRepoMapStore.getState().setScanError("");
-    await this.repoMap.scan().catch((err: unknown) => this.handleScanError(err));
+    await this.trackScan();
   }
 
   async clearRepoMap(): Promise<void> {

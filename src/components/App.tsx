@@ -19,6 +19,7 @@ import { ContextManager } from "../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
 import { providerIcon, UI_ICONS } from "../core/icons.js";
 import { runIntelligenceHealthCheck } from "../core/intelligence/index.js";
+import { IndexRefresher } from "../core/intelligence/index-refresh.js";
 import {
   fetchGroupedModels,
   fetchProviderModels,
@@ -33,6 +34,7 @@ import { initForbidden } from "../core/security/forbidden.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { getMissingRequired } from "../core/setup/prerequisites.js";
 import { useTheme } from "../core/theme/index.js";
+import { onFileEdited } from "../core/tools/file-events.js";
 import { restoreSessionImages } from "../core/tools/show-image.js";
 import {
   artPalette,
@@ -512,6 +514,26 @@ export function App({
     () => preloadedContextManager ?? new ContextManager(cwd),
     [cwd, preloadedContextManager],
   );
+
+  // Keeps the code index current after file changes and git checkouts, so /graph and the map
+  // are fresh; the root's own scan already ran at startup.
+  const backgroundIndex =
+    effectiveConfig.repoMap !== false && effectiveConfig.repoMapBackgroundRefresh !== false;
+  useEffect(() => {
+    if (!backgroundIndex) return;
+    const refresher = new IndexRefresher({
+      workspace: cwd,
+      root: async () => contextManager,
+      onError: (error) =>
+        logBackgroundError("index-refresh", error instanceof Error ? error.message : String(error)),
+    });
+    refresher.start();
+    const stopEdits = onFileEdited(() => refresher.request());
+    return () => {
+      stopEdits();
+      void refresher.stop();
+    };
+  }, [cwd, contextManager, backgroundIndex]);
   const sessionManager = useMemo(() => new SessionManager(cwd), [cwd]);
   sessionManagerRef.current = sessionManager;
 

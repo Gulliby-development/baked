@@ -92,6 +92,7 @@ bun test tests/feature-parity.test.ts
 | Diagnose LSP, tree-sitter and index health | `/diagnose` | `baked diagnose`, `baked lsp check` | `/v1/lsp/diagnose`, `/v1/lsp` | `project/lsp` |
 | Baked map settings: on and off, regenerate, summaries, budget | `/repo-map` | `--no-repomap` | `/v1/settings` | `settings/chat` |
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
+| Background index updates after file changes, edits, runs and Git checkouts | `/graph` | Not needed: a one-shot run indexes once when it starts | `/v1/graph`, `/v1/settings` | `project/graph`, `settings/chat` |
 | Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
 | Agent features: de-sloppify, verify edits, tier routing, edits that add errors | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |

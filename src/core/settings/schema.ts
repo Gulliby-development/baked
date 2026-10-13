@@ -648,6 +648,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
     default: true,
   },
   {
+    id: "repoMapBackgroundRefresh",
+    page: "baked-map",
+    section: "Map",
+    label: "Background updates",
+    help: "Keep the index current while BAKED runs: at startup, after file changes, chat turns, runs and git checkouts or pulls. Off updates it only when the map or code graph is used.",
+    scopes: BOTH,
+    type: "boolean",
+    default: true,
+    enabledWhen: { id: "repoMap", values: [true] },
+  },
+  {
     id: "repoMapTokenBudget",
     page: "baked-map",
     section: "Map",
