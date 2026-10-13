@@ -383,6 +383,12 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
   }
   return { tool, targets, bytes: Buffer.byteLength(content) };
 }
+/**
+ * Marks the input of a review that sees only the diff (the language dimension, #670): its context
+ * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
+ */
+const DIFF_REVIEW = "diffReview";
+
 export class WorkflowScheduler {
   dispose(): void {
     this.executor.dispose?.();
@@ -2370,22 +2376,31 @@ export class WorkflowScheduler {
             profile.context === "implementation" && task ? task.writes.map((w) => w.path) : null,
           )
         : null;
-    return buildWorkflowContext(state, profile, {
-      ...(extra && typeof extra === "object" ? extra : { input: extra }),
-      ...(rules ? { learnedRules: rules } : {}),
-      ...(workingSet ? { projectWorkingSet: workingSet } : {}),
-      ...(memory ? { projectMemory: memory } : {}),
-      ...(risks ? { knownRisks: risks } : {}),
-      executionContract: {
-        checks: policy.checks,
-        // An implementer works alone; the other agents' tools are only resent on every step.
-        profiles: ProfileSchema.array()
-          .parse(JSON.parse(this.store.run(runId).profiles_json))
-          .filter((p) => profile.context !== "implementation" || p.id === profile.id)
-          .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
-        policy: { allowedTools: policy.allowedTools, network: policy.network },
+    const { [DIFF_REVIEW]: diffOnly, ...input } = (
+      extra && typeof extra === "object" ? extra : { input: extra }
+    ) as Record<string, unknown>;
+    return buildWorkflowContext(
+      state,
+      profile,
+      {
+        ...input,
+        ...(rules ? { learnedRules: rules } : {}),
+        ...(workingSet ? { projectWorkingSet: workingSet } : {}),
+        ...(memory ? { projectMemory: memory } : {}),
+        ...(risks && diffOnly !== true ? { knownRisks: risks } : {}),
+        executionContract: {
+          checks: policy.checks,
+          // An implementer works alone; the other agents' tools are only resent on every step.
+          profiles: ProfileSchema.array()
+            .parse(JSON.parse(this.store.run(runId).profiles_json))
+            .filter((p) => profile.context !== "implementation" || p.id === profile.id)
+            .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
+          policy: { allowedTools: policy.allowedTools, network: policy.network },
+        },
       },
-    });
+      undefined,
+      diffOnly === true,
+    );
   }
   /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
@@ -5262,6 +5277,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       );
       const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
       const canRepro = executables.length > 0 && profile.allowedTools.includes("run_repro");
+      // The language dimension reviews idioms in the diff; criterion coverage is not its job.
+      const diffOnly = reviewer.dimension === "language";
       let reproAdvised = false;
       const ask = async (extra: Record<string, unknown>): Promise<Review> => {
         const answer = ReviewSchema.parse(
@@ -5273,7 +5290,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             profile,
             {
               dimension: reviewer.dimension,
-              evidence: this.evidenceContext(runId, state),
+              evidence: diffOnly
+                ? this.evidenceContext(runId, state).filter(
+                    (e) => (e as { kind: string }).kind === "diff",
+                  )
+                : this.evidenceContext(runId, state),
+              ...(diffOnly ? { [DIFF_REVIEW]: true } : {}),
               ...rerun,
               ...(greenfield ? { baseline: { greenfield } } : {}),
               ...extra,
@@ -5290,6 +5312,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                 reviewSnapshotHash,
                 reviewSpec,
                 output as Review,
+                !diffOnly,
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
@@ -5303,7 +5326,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
         // inconclusive, and the converge stage settles coverage.
-        completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, answer);
+        completeReview(
+          this.store,
+          runId,
+          reviewSnapshotId,
+          reviewSnapshotHash,
+          reviewSpec,
+          answer,
+          !diffOnly,
+        );
+        // Without coverage to settle, a diff review is decided by its findings alone.
+        if (diffOnly) answer.verdict = answer.findings.length ? "changes_requested" : "pass";
         return answer;
       };
       let result = await ask({});

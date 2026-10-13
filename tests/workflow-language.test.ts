@@ -70,7 +70,7 @@ describe("language review scope", () => {
     expect(touchesLanguageFiles(["README.md", "scripts/run.sh", "docs/go.md"])).toBe(false);
   });
 
-  async function reviewDimensions(language: string) {
+  async function reviewDimensions(language: string, prompts?: string[]) {
     const policy = { ...fixturePolicy, reviewProfiles: { ...fixturePolicy.reviewProfiles, language } };
     const fixture = workflowFixture({ policy });
     try {
@@ -83,6 +83,7 @@ describe("language review scope", () => {
         await fixture.service.drive(run.runId, new AbortController().signal);
       }
       expect((await fixture.service.get(run.runId)).status).toBe("completed");
+      prompts?.push(...(fixture.executor.prompts.review ?? []));
       return fixture.service.store
         .steps(run.runId)
         .map((step) => step.stage_id)
@@ -99,5 +100,27 @@ describe("language review scope", () => {
 
   test("a language reviewer the policy names always runs", async () => {
     expect(await reviewDimensions("reviewer")).toContain("dimension-language");
+  });
+
+  test("the language review sees the request and the diff, not the spec, plan or check output", async () => {
+    const prompts: string[] = [];
+    await reviewDimensions("reviewer", prompts);
+    const parse = (prompt: string) => {
+      const lines = prompt.split("\n");
+      return {
+        documents: JSON.parse(lines.at(-2) ?? "{}") as Record<string, unknown>,
+        extra: (JSON.parse(lines.at(-1) ?? "{}") as { extra: Record<string, unknown> }).extra,
+      };
+    };
+    const language = prompts.map(parse).find((p) => p.extra.dimension === "language");
+    const correctness = prompts.map(parse).find((p) => p.extra.dimension === "correctness");
+    expect(Object.keys(language?.documents ?? {})).toEqual(["request"]);
+    expect(language?.extra.diffReview).toBeUndefined();
+    const kinds = (language?.extra.evidence as { kind: string }[]).map((e) => e.kind);
+    expect(kinds.length).toBeGreaterThan(0);
+    expect(kinds.every((kind) => kind === "diff")).toBe(true);
+    // The other dimensions keep the full context.
+    expect(correctness?.documents.spec).toBeDefined();
+    expect((correctness?.extra.evidence as { kind: string }[]).some((e) => e.kind === "command")).toBe(true);
   });
 });
