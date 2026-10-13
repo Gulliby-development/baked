@@ -137,6 +137,7 @@ import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { keepOutside, restoreOutside } from "./fixer-scope.js";
 import { outputTail } from "./gates.js";
 import {
   InitiativePlanSchema,
@@ -2061,6 +2062,45 @@ export class WorkflowScheduler {
       ),
     );
   }
+  /** The diagnostics each whole-unit check reported before the run, by command key. */
+  private baselineDiagnostics(runId: string): Record<string, string[]> {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    return artifact
+      ? ((
+          JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+            diagnostics?: Record<string, string[]>;
+          }
+        ).diagnostics ?? {})
+      : {};
+  }
+  /**
+   * Attribution of a `request_check` run of a whole-unit check the task names but that runs in
+   * the checks stage (#799): the planner lists `cargo fmt` or clippy on the tasks of a
+   * skeleton-first Rust plan, and in the task's directory they fail on the modules that later
+   * tasks write (bench round 12, mdrefs: T004 spent 1.87M against checks that could not pass).
+   * The implementer gets the errors in its own files, as for the task-end check.
+   */
+  private attributeCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): (check: Check, output: string) => string[] | null {
+    const perTask = new Set(taskChecks(policy, task).map((c) => c.id));
+    return (check, output) => {
+      if (perTask.has(check.id) || !isWholeUnitCheck(check)) return null;
+      return taskErrors(output, {
+        written: writtenCodePaths(task),
+        pending: pendingCodePaths(
+          state.rootGraph ?? state.graph,
+          this.store.tasks(runId),
+          state.taskGates,
+          task,
+        ),
+        baseline: this.baselineDiagnostics(runId)[commandKey(check)] ?? [],
+      });
+    };
+  }
   /**
    * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
    * checks, run once in the task's directory, keeping the errors in the task's own files that
@@ -2077,14 +2117,7 @@ export class WorkflowScheduler {
     const written = writtenCodePaths(task);
     if (!checks.length || !written.length) return undefined;
     return async (root, signal) => {
-      const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
-      const baseline = artifact
-        ? ((
-            JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
-              diagnostics?: Record<string, string[]>;
-            }
-          ).diagnostics ?? {})
-        : {};
+      const baseline = this.baselineDiagnostics(runId);
       const pending = pendingCodePaths(
         state.rootGraph ?? state.graph,
         this.store.tasks(runId),
@@ -2393,6 +2426,10 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.taskEndCheck(runId, state, policy, task)
         : undefined;
+    const attributeCheck =
+      task && profile.output === "implementation"
+        ? this.attributeCheck(runId, state, policy, task)
+        : undefined;
     try {
       const result = await this.executor.execute({
         runId,
@@ -2412,6 +2449,7 @@ export class WorkflowScheduler {
           : {}),
         ...(validate ? { validate } : {}),
         ...(taskEndCheck ? { taskEndCheck } : {}),
+        ...(attributeCheck ? { attributeCheck } : {}),
         ...(this.formatHints(runId, state, profile.output, task)
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
@@ -6006,6 +6044,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const lease = mutationLeaseFor(this.store.workspace, root);
     const generated = generatedPaths(policy);
     const before = await sourceManifest(root, generated, signal);
+    const kept = keepOutside(root, before, new Set(owners.keys()));
     const attempt = this.store.beginHostAttempt(runId, stepId);
     const scope = new ProcessScope();
     let changed = false;
@@ -6057,9 +6096,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             }
           }
       }
-      const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
-        (path) => !owners.has(path),
-      );
+      const changedOutside = async () =>
+        changedPaths(before, await sourceManifest(root, generated, signal)).filter(
+          (path) => !owners.has(path),
+        );
+      restoreOutside(root, kept, await changedOutside());
+      const outside = await changedOutside();
       if (outside.length)
         throw new WorkflowFault(
           "CAPABILITY_DENIED",
