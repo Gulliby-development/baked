@@ -61,6 +61,7 @@ import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
   evaluateAutoApproval,
+  humanApprovalReason,
   plannerApprovalLimits,
   planScopeAdvice,
   policyDecisions,
@@ -880,9 +881,14 @@ export class WorkflowScheduler {
                 state.manifest.baselineSnapshotId = snapshot.id;
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
-                const human = v2?.stage.type === "approval" && v2.stage.decision === "human";
-                const auto = human
-                  ? { approval: null, reasons: [] }
+                const humanStage =
+                  v2?.stage.type === "approval" && v2.stage.decision === "human" ? v2 : null;
+                const human = humanStage !== null;
+                const auto = humanStage
+                  ? {
+                      approval: null,
+                      reasons: [humanApprovalReason(humanStage.definition.id, humanStage.stage.id)],
+                    }
                   : userChanges.length
                     ? {
                         approval: null,
@@ -934,7 +940,7 @@ export class WorkflowScheduler {
                   ...(v2 && acceptanceGrants(v2.gates).length
                     ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
                     : {}),
-                  ...(policy.autoApproval
+                  ...(policy.autoApproval || human
                     ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
                     : {}),
                 };
