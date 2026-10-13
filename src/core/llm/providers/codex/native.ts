@@ -26,6 +26,8 @@ type PromptMessage = LanguageModelV2Prompt[number];
 
 /** Threads kept per process; the least recently used idle thread is dropped beyond this. */
 const MAX_THREADS = 16;
+/** How long a completed turn waits for a usage report that Codex sends after turn/completed. */
+const LATE_USAGE_WAIT_MS = 500;
 
 const ADAPTER_PREAMBLE = [
   "You are the language model behind baked, a coding agent that runs on the user's machine.",
@@ -147,6 +149,8 @@ interface StepSink {
   lastError: string | null;
   /** Model responses whose usage Codex reported during this step. */
   responses: number;
+  /** Set while a completed turn waits for its late usage report before the step finishes. */
+  usageWait: ReturnType<typeof setTimeout> | null;
 }
 
 interface NativeThread {
@@ -166,6 +170,11 @@ interface NativeThread {
   pending: { callId: string; requestId: string | number } | null;
   sink: StepSink | null;
   totals: TokenTotals;
+  /**
+   * Totals already reported by finished steps. The next step starts from here, so usage that
+   * arrives between steps is reported by the next step instead of being lost.
+   */
+  billed: TokenTotals;
   lastUsed: number;
 }
 
@@ -272,12 +281,13 @@ export class CodexAppServerSessions {
         controller.enqueue({ type: "stream-start", warnings: [] });
         const sink: StepSink = {
           controller,
-          startTotals: thread.totals,
+          startTotals: thread.billed,
           openText: new Map(),
           openReasoning: new Map(),
           streamed: new Set(),
           lastError: null,
           responses: 0,
+          usageWait: null,
         };
         thread.sink = sink;
         stepSink = sink;
@@ -418,6 +428,7 @@ export class CodexAppServerSessions {
       pending: null,
       sink: null,
       totals: { ...ZERO_TOTALS },
+      billed: { ...ZERO_TOTALS },
       lastUsed: Date.now(),
     };
     this.threads.push(thread);
@@ -508,7 +519,10 @@ export class CodexAppServerSessions {
       const usage = params.tokenUsage as { total?: unknown } | undefined;
       const totals = readTotals(usage?.total);
       if (totals) thread.totals = totals;
-      if (thread.sink) thread.sink.responses += 1;
+      if (thread.sink) {
+        thread.sink.responses += 1;
+        if (thread.sink.usageWait) this.finishTurn(thread);
+      }
       return;
     }
 
@@ -524,8 +538,13 @@ export class CodexAppServerSessions {
       }
       if (turn?.status === "completed") {
         this.closeOpenParts(sink);
-        this.finishStep(thread, "stop");
-        thread.state = "idle";
+        // Codex can send the turn's last usage report after turn/completed. A step that has seen
+        // none waits briefly for it, so its response is not recorded as zero tokens (#364).
+        if (sink.responses === 0) {
+          sink.usageWait = setTimeout(() => this.finishTurn(thread), LATE_USAGE_WAIT_MS);
+          return;
+        }
+        this.finishTurn(thread);
         return;
       }
       const message =
@@ -600,10 +619,17 @@ export class CodexAppServerSessions {
     sink.openText.clear();
   }
 
+  private finishTurn(thread: NativeThread): void {
+    this.finishStep(thread, "stop");
+    thread.state = "idle";
+  }
+
   private finishStep(thread: NativeThread, finishReason: LanguageModelV2FinishReason): void {
     const sink = thread.sink;
     if (!sink) return;
     thread.sink = null;
+    if (sink.usageWait) clearTimeout(sink.usageWait);
+    thread.billed = thread.totals;
     sink.controller.enqueue({
       type: "finish",
       finishReason,
@@ -620,6 +646,11 @@ export class CodexAppServerSessions {
   private failStep(thread: NativeThread, error: Error): void {
     const sink = thread.sink;
     if (!sink) return;
+    // The turn already completed and only its usage report is missing: the step still succeeds.
+    if (sink.usageWait) {
+      this.finishTurn(thread);
+      return;
+    }
     thread.sink = null;
     sink.controller.error(error);
   }
