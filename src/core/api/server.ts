@@ -186,6 +186,7 @@ export const CAPABILITIES = [
   "gate-drafts",
   "progress",
   "coordinator",
+  "coordinator-summary",
   "watch",
   "sandbox",
   "artifacts",
