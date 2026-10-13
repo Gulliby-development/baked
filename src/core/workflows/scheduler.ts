@@ -1328,7 +1328,7 @@ export class WorkflowScheduler {
                 return named.length > 0 && named.every((f) => notes.has(f.id));
               };
               const repairing = (f: Review["findings"][number]): boolean =>
-                (severities.includes(f.severity) && findingBlocks(f)) ||
+                (severities.includes(f.severity) && findingBlocks(f, policy.reviewMinConfidence)) ||
                 f.criterionIds.some((id) => failing.has(id));
               const noted = review.findings.filter((f) => notes.has(f.id) && repairing(f));
               for (const id of [...failing]) if (noteOnly(id)) failing.delete(id);
@@ -1346,7 +1346,8 @@ export class WorkflowScheduler {
                 review.findings.filter(
                   (f) =>
                     !notes.has(f.id) &&
-                    ((severities.includes(f.severity) && findingBlocks(f)) ||
+                    ((severities.includes(f.severity) &&
+                      findingBlocks(f, policy.reviewMinConfidence)) ||
                       f.criterionIds.some((id) => failing.has(id))),
                 ),
               );
@@ -5085,7 +5086,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               (f) =>
                 reviewer.blocking.includes(f.severity) &&
                 severities.includes(f.severity) &&
-                findingBlocks(f),
+                findingBlocks(f, policy.reviewMinConfidence),
             )
           : [];
         // A claim starts a correction only when its repro shows it (#155).

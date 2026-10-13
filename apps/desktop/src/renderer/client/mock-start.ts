@@ -14,6 +14,7 @@ import type {
   RunPolicy,
   TokenRange,
   WorkflowLine,
+  WorkflowProposal,
 } from "./start.js";
 
 /** Sample answers for the project home, the new run form and the quick task form. */
@@ -438,8 +439,41 @@ function startRun(key: string, body: unknown): ReturnType<typeof response> {
   return response(202, run);
 }
 
+/** A few of the core's rules (`src/core/workflows/preset-router.ts`), enough to show the hint. */
+export function mockProposal(prompt: string): WorkflowProposal {
+  const text = prompt.toLowerCase();
+  if (/\b(readme|docs?|typo|changelog)\b/.test(text))
+    return {
+      workflowId: "quick",
+      budget: "quick",
+      kind: "docs",
+      confidence: "high",
+      reason: "a docs-only change: the quick preset",
+      signals: [],
+    };
+  if (/\b(ci|tests?|build)\b/.test(text) && /\b(fail\w*|red|broken)\b/.test(text))
+    return {
+      workflowId: "fix-ci",
+      budget: "standard",
+      kind: "ci-fix",
+      confidence: "high",
+      reason: "a failing check: reproduce it, fix and rerun the same checks",
+      signals: [],
+    };
+  return {
+    workflowId: "sdd",
+    budget: "standard",
+    kind: "default",
+    confidence: "low",
+    reason: "no strong signal: the project default",
+    signals: [],
+  };
+}
+
 export const startRoutes: MockRoute = async ({ key, method, path, query, body }) => {
   if (method === "GET" && path === "/v1/workflow/definitions") return response(200, DEFINITIONS);
+  if (method === "POST" && path === "/v1/workflow/propose")
+    return response(200, mockProposal(String((body as { prompt?: string } | null)?.prompt ?? "")));
   if (method === "GET" && path === "/v1/workflow/profiles") return response(200, PROFILES);
   if (method === "GET" && (path === "/v1/workflow/estimate" || path === "/v1/workflow/doctor")) {
     const workflow = query.get("workflow") ?? "sdd";

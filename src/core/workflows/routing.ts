@@ -2,6 +2,7 @@ import type { AppConfig } from "../../types/index.js";
 import { ProfileRegistry, type RegisteredProfile } from "../agents/profiles/registry.js";
 import type { AgentProfile } from "../agents/profiles/schema.js";
 import {
+  type IndependentReview,
   parseModelRouting,
   type RoutingEntry,
   type RoutingInputs,
@@ -9,6 +10,7 @@ import {
   recordEntry,
   resolveStageRoutes,
 } from "../llm/model-routing.js";
+import { modelVendor } from "../llm/model-vendor.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
@@ -171,7 +173,10 @@ export interface RouteExplanation {
     fallback: string[];
   }[];
   profiles: RoutingRecord["profiles"];
-  /** Reviews that would share a model with the implementation (see `independentReview`). */
+  /**
+   * Reviews that would share a model with the implementation, and reviews `independentReview:
+   * provider` moved to another vendor (see `reviewIndependence`).
+   */
   warnings: string[];
 }
 
@@ -179,7 +184,13 @@ export interface RouteExplanation {
 export function explainRoute(
   workspace: string,
   config: AppConfig,
-  request: { workflowId: string; model?: string | undefined; routes?: Record<string, string> },
+  request: {
+    workflowId: string;
+    model?: string | undefined;
+    routes?: Record<string, string>;
+    /** Models of available providers a `provider` review may move to (`availableVendorModels`). */
+    availableModels?: readonly string[];
+  },
 ): RouteExplanation {
   const model = request.model ?? config.defaultModel;
   if (!model?.trim() || model.trim() === "none")
@@ -198,14 +209,25 @@ export function explainRoute(
   }
   const stages = loaded.definition.stages;
   const registry = routedProfiles(workspace, config, model);
-  const record = routingRecord(
+  const profiles = registry.list().map((entry) => entry.profile);
+  const gates = loadGateLibrary(workspace, policy).gates;
+  const checked = reviewIndependence(
     config,
-    registry,
-    model,
-    request.workflowId,
-    stages.map((stage) => stage.id),
-    request.routes,
+    routingRecord(
+      config,
+      registry,
+      model,
+      request.workflowId,
+      stages.map((stage) => stage.id),
+      request.routes,
+    ),
+    loaded.definition,
+    policy,
+    gates,
+    profiles,
+    request.availableModels ?? [],
   );
+  const record = checked.record;
   return {
     workflowId: request.workflowId,
     runModel: model,
@@ -222,17 +244,43 @@ export function explainRoute(
       };
     }),
     profiles: record.profiles,
-    warnings:
-      independentReviewMode(config) === "off"
-        ? []
-        : independenceWarnings(
-            record,
-            loaded.definition,
-            policy,
-            loadGateLibrary(workspace, policy).gates,
-            registry.list().map((entry) => entry.profile),
-          ),
+    warnings: [...checked.moved, ...checked.warnings],
   };
+}
+
+/**
+ * Applies the independent-review mode to a routing record: `provider` moves same-vendor reviews to
+ * another vendor (see `routeReviewToOtherVendor`) and lists the moves; the other modes list the
+ * reviews that share a model. `refuse` is set when `require` should stop the start.
+ */
+export function reviewIndependence(
+  config: AppConfig,
+  record: RoutingRecord,
+  definition: Definition,
+  policy: RunPolicy,
+  gates: ReadonlyMap<string, Gate>,
+  profiles: readonly AgentProfile[],
+  availableModels: readonly string[],
+): { record: RoutingRecord; moved: string[]; warnings: string[]; refuse: boolean } {
+  const mode = independentReviewMode(config);
+  if (mode === "off") return { record, moved: [], warnings: [], refuse: false };
+  if (mode === "provider") {
+    const routed = routeReviewToOtherVendor(
+      record,
+      definition,
+      policy,
+      gates,
+      profiles,
+      reviewCandidates(config, availableModels),
+    );
+    return {
+      ...routed,
+      moved: routed.moved.map((line) => `Cross-provider review: ${line}`),
+      refuse: false,
+    };
+  }
+  const warnings = independenceWarnings(record, definition, policy, gates, profiles);
+  return { record, moved: [], warnings, refuse: mode === "require" && warnings.length > 0 };
 }
 
 type Definition = LoadedDefinition["definition"];
@@ -294,17 +342,14 @@ function boundSides(
   return sides;
 }
 
-/**
- * Reviews that would run on a model the implementation also uses, fallback models included. A
- * stage route replaces the models of every profile in its stage.
- */
-export function independenceWarnings(
+/** Models of each side of a run, each with what uses it: a stage route or a profile. */
+function sideModels(
   record: RoutingRecord,
   definition: Definition,
   policy: RunPolicy,
   gates: ReadonlyMap<string, Gate>,
   profiles: readonly AgentProfile[],
-): string[] {
+): { implementation: Map<string, string>; review: Map<string, string> } {
   const chain = (entry: RoutingEntry | undefined): string[] =>
     entry ? [entry.model, ...(entry.fallback ?? [])] : [];
   const models = { implementation: new Map<string, string>(), review: new Map<string, string>() };
@@ -318,19 +363,142 @@ export function independenceWarnings(
     for (const id of profileIds)
       for (const model of chain(record.profiles[id])) models[side].set(model, `profile ${id}`);
   }
+  return models;
+}
+
+/**
+ * Reviews that would run on a model the implementation also uses, fallback models included. A
+ * stage route replaces the models of every profile in its stage. At the `provider` level a review
+ * on another model of the same vendor (see model-vendor.ts) is not independent either.
+ */
+export function independenceWarnings(
+  record: RoutingRecord,
+  definition: Definition,
+  policy: RunPolicy,
+  gates: ReadonlyMap<string, Gate>,
+  profiles: readonly AgentProfile[],
+  level: "model" | "provider" = "model",
+): string[] {
+  const models = sideModels(record, definition, policy, gates, profiles);
+  if (level === "model")
+    return [...models.review]
+      .filter(([model]) => models.implementation.has(model))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(
+        ([model, reviewer]) =>
+          `Review is not independent: ${reviewer} uses ${model}, which the implementation (${models.implementation.get(model)}) also uses`,
+      );
+  const vendors = new Map<string, string>();
+  for (const [model, user] of models.implementation)
+    vendors.set(modelVendor(model), `${user}: ${model}`);
   return [...models.review]
-    .filter(([model]) => models.implementation.has(model))
+    .filter(([model]) => vendors.has(modelVendor(model)))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(
       ([model, reviewer]) =>
-        `Review is not independent: ${reviewer} uses ${model}, which the implementation (${models.implementation.get(model)}) also uses`,
+        `Review is not cross-provider: ${reviewer} uses ${model}, the same vendor (${modelVendor(model)}) as the implementation (${vendors.get(modelVendor(model))})`,
     );
 }
 
-/** The independent-review mode: configured, else `warn` once routing is configured, else `off`. */
-export function independentReviewMode(config: AppConfig): "off" | "warn" | "require" {
+/**
+ * `independentReview: provider`: review-side routes that share a vendor with the implementation
+ * move to the first candidate model of another vendor, without fallback models (a fallback could
+ * land on the implementation's vendor again). Candidates come from `reviewCandidates`. Returns the
+ * changed record and one line per move, or a warning when no candidate fits.
+ */
+export function routeReviewToOtherVendor(
+  record: RoutingRecord,
+  definition: Definition,
+  policy: RunPolicy,
+  gates: ReadonlyMap<string, Gate>,
+  profiles: readonly AgentProfile[],
+  candidates: readonly string[],
+): { record: RoutingRecord; moved: string[]; warnings: string[] } {
+  const models = sideModels(record, definition, policy, gates, profiles);
+  const used = new Set([...models.implementation.keys()].map(modelVendor));
+  if (![...models.review.keys()].some((model) => used.has(modelVendor(model))))
+    return { record, moved: [], warnings: [] };
+  const target = candidates.find((model) => !used.has(modelVendor(model)));
+  if (!target)
+    return {
+      record,
+      moved: [],
+      warnings: [
+        `Review runs on the implementation's vendor (${[...used].sort().join(", ")}): independentReview is "provider" but no model of another vendor is configured or available`,
+      ],
+    };
+  const next: RoutingRecord = {
+    ...record,
+    profiles: { ...record.profiles },
+    stages: { ...record.stages },
+  };
+  const moved: string[] = [];
+  const shares = (entry: RoutingEntry | undefined): entry is RoutingEntry =>
+    !!entry && [entry.model, ...(entry.fallback ?? [])].some((m) => used.has(modelVendor(m)));
+  const moveTo = (entry: RoutingEntry): RoutingEntry => ({
+    model: target,
+    source: CROSS_PROVIDER_SOURCE,
+    ...(entry.effort ? { effort: entry.effort } : {}),
+  });
+  for (const { stageId, side, profileIds } of boundSides(definition, policy, gates, profiles)) {
+    if (side !== "review") continue;
+    const route = stageId ? next.stages[stageId] : undefined;
+    if (stageId && route) {
+      if (!shares(route)) continue;
+      next.stages[stageId] = moveTo(route);
+      moved.push(`stage ${stageId}: ${route.model} -> ${target}`);
+      continue;
+    }
+    for (const id of profileIds) {
+      const entry = next.profiles[id];
+      if (!shares(entry)) continue;
+      next.profiles[id] = moveTo(entry);
+      moved.push(`profile ${id}: ${entry.model} -> ${target}`);
+    }
+  }
+  return { record: next, moved, warnings: [] };
+}
+
+/** The source of a route `independentReview: provider` moved to another vendor. */
+export const CROSS_PROVIDER_SOURCE = "independentReview: provider";
+
+/**
+ * Models an automatic cross-provider review may use, best first: the `$review` class, then every
+ * other model the configuration names, then `available` (see `availableVendorModels`).
+ */
+export function reviewCandidates(config: AppConfig, available: readonly string[] = []): string[] {
   const routing = parseModelRouting(config.modelRouting);
-  return routing?.independentReview ?? (routing ? "warn" : "off");
+  const named: string[] = [];
+  const add = (value: unknown) => {
+    const model =
+      typeof value === "string" ? value : (value as { model?: unknown } | null | undefined)?.model;
+    if (typeof model === "string" && model.includes("/") && !model.startsWith("$"))
+      named.push(model);
+  };
+  add(routing?.classes?.review);
+  for (const value of Object.values(routing?.classes ?? {})) add(value);
+  for (const value of Object.values(routing?.roles ?? {})) add(value);
+  for (const value of Object.values(routing?.profiles ?? {})) add(value);
+  for (const workflow of Object.values(routing?.workflows ?? {}))
+    for (const value of Object.values(workflow.stages ?? {})) add(value);
+  add(config.taskRouter?.verify);
+  add(config.taskRouter?.ember ?? config.taskRouter?.coding);
+  add(config.defaultModel);
+  named.push(...available);
+  return [...new Set(named)];
+}
+
+/**
+ * The independent-review mode: configured, else `provider` when the configuration names models of
+ * two known vendors (such as a Codex run model and a `claude-code` class), else `warn` once routing
+ * is configured, else `off`.
+ */
+export function independentReviewMode(config: AppConfig): IndependentReview {
+  const routing = parseModelRouting(config.modelRouting);
+  if (routing?.independentReview) return routing.independentReview;
+  const vendors = new Set(reviewCandidates(config).map(modelVendor));
+  if ([...vendors].filter((vendor) => !vendor.includes(":")).length > 1) return "provider";
+  return routing ? "warn" : "off";
 }
 
 /**

@@ -342,6 +342,7 @@ export class NativeWorkflowService implements WorkflowService {
       gateResults: {},
       acceptance: {},
       issue: request.issue ?? null,
+      presetChoice: request.presetChoice ?? null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -1395,6 +1396,8 @@ export class NativeWorkflowService implements WorkflowService {
         policy,
         loadGateLibrary(this.workspace, policy).gates,
         profiles,
+        // A reroute names its models, so `provider` only warns about a shared vendor.
+        independence === "provider" ? "provider" : "model",
       );
       if (found.length && independence === "require")
         throw new WorkflowFault(

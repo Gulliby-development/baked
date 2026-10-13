@@ -69,6 +69,28 @@ baked workflow artifacts RUN_ID
 baked workflow artifacts RUN_ID --file ARTIFACT_ID
 ```
 
+### Proposing the workflow from the request
+
+```sh
+baked workflow propose "Fix the typo in the README install section"
+baked workflow run --auto-preset --feature readme-typo --prompt "Fix the typo in the README install section"
+baked workflow run sdd --auto-preset --feature readme-typo --prompt-file request.txt
+```
+
+`baked workflow propose TEXT` (or `--prompt`, `--prompt-file`; `--json` for the whole proposal) prints the workflow and budget a run would take for the request, with the reason. `run --auto-preset` runs that proposal when no workflow is named, and prints it on stderr. The rules read the request text only, with no model call (`src/core/workflows/preset-router.ts`), in this order:
+
+| Request | Workflow | Budget |
+| --- | --- | --- |
+| A review or audit of existing changes (diff, pull request, branch, commits) and no change verb | `review-only` | standard |
+| Research (investigate, explore, evaluate, compare, "how could we") and no change verb | `spike` | standard |
+| A check, test, build or CI that fails, is red or broken | `fix-ci` | standard |
+| Docs only (README, docs, changelog, typo, comments) that names no code (API, command, flag, screen) and is at most 80 words | `quick` | quick |
+| A small change (rename, bump, tweak, label, message) of at most 30 words | `quick` | quick |
+| A large change (redesign, rewrite, migration, new service or module, several or multiple parts) or 150 words and more | the project default | extended |
+| Anything else | the project default | standard |
+
+Only a workflow that can start in this project is proposed: a preset with validation problems (for example `quick` or `fix-ci` without a feature check) falls back to `workflows.defaultWorkflow` (default `sdd`) with medium confidence and says so. A workflow named on the command line wins over the proposal, and `--budget` wins over the proposed budget; the proposed budget applies only when the proposed workflow runs. The run records the proposal in its state (`presetChoice`: `proposed`, `chosen`, `overridden`, `budget`, `kind`, `confidence`, `reason`), and the [run report](#run-report) says what was proposed and whether the person chose another workflow. The TUI new-run form and the desktop New run screen preselect the proposal while you type the request and show the reason under the workflow; picking another workflow or budget keeps your choice, and the run records both. A request taken from a GitHub issue is not proposed in the forms; `run --issue --auto-preset` reads the issue's text.
+
 ### Starting from a GitHub issue
 
 ```sh
@@ -658,7 +680,7 @@ One Markdown file for a run, at any status, read from the run's database without
 - a summary: the spec's outcome, a report stage's summary and recommendation when the workflow has one, and the request (cut at 2,000 characters);
 - changes: every file the run changed, from the effect journal and the task diffs (published spec files are marked `spec`; a file edited outside the run since is marked `changed since`);
 - tasks with title, status and origin (`repair, fresh context` for a [fresh-context restart](#fresh-context-restart)); checks with their latest result, validity, runs and time; the [code quality](code-quality.md) deltas, what the duplication ratchet found and the anti-slop rule matches; acceptance criteria with verdicts and the final review verdict;
-- findings with status, severity, kind, file and claim; known limitations (findings accepted instead of repaired: at a [stopped convergence](#stopped-convergence), or as notes on a low partial finding behind verified behavior, with who accepted them); decisions (every request with its kind, decision and who made it) and the spec's assumptions;
+- which models (and their vendors) reviewed the change and which implemented it; findings with status, severity, kind, file and claim; known limitations (findings accepted instead of repaired: at a [stopped convergence](#stopped-convergence), or as notes on a low partial finding behind verified behavior, with who accepted them); decisions (every request with its kind, decision and who made it) and the spec's assumptions;
 - usage: tokens against the budget, agent calls, active time, the estimated cost when known, and tokens per stage (in the order stages first ran) and per model;
 - artifacts: the latest revision of each artifact with its ID, read with `baked workflow artifacts RUN_ID --file ID`. Attempt outputs, internal state and baselines are counted, not listed.
 
@@ -754,9 +776,9 @@ A run freezes its routing at start in the `routing.json` artifact (each profile'
 
 ### Routing screen
 
-`/workflow routing`, or R on the run list of `/workflow`, opens the routing screen of the TUI. It lists the model classes (the built-in `$active`, `$fast`, `$coding`, `$review` and every configured one), the routed roles, the stages of one workflow, every profile, and `independentReview`. Each row shows what the selected configuration layer sets, a value only the other layer sets (prefixed with that layer's name), or what the row resolves to without a route of its own (`= model`). The lines under the list name the selected entry's path in `modelRouting`, what each layer sets, and the model, effort and fallback models it resolves to with the source of the choice, as `baked workflow route` would print them with the chat tab's model as the run model. Independence warnings of the shown workflow follow.
+`/workflow routing`, or R on the run list of `/workflow`, opens the routing screen of the TUI. It lists the model classes (the built-in `$active`, `$fast`, `$coding`, `$review` and every configured one), the routed roles, the stages of one workflow, every profile, `independentReview` and `reviewMinConfidence`. Each row shows what the selected configuration layer sets, a value only the other layer sets (prefixed with that layer's name), or what the row resolves to without a route of its own (`= model`). The lines under the list name the selected entry's path in `modelRouting`, what each layer sets, and the model, effort and fallback models it resolves to with the source of the choice, as `baked workflow route` would print them with the chat tab's model as the run model. Independence warnings of the shown workflow follow.
 
-Keys: ↑/↓ select, Tab switches between the global (`~/.baked/config.json`) and project (`.baked/config.json`) layer, W switches the workflow whose stages are listed, Enter edits the selected route, D removes it from the selected layer, ←/→ on `independentReview` cycle unset, `off`, `warn` and `require`, and Esc returns to the run list. "+ new class" adds a class.
+Keys: ↑/↓ select, Tab switches between the global (`~/.baked/config.json`) and project (`.baked/config.json`) layer, W switches the workflow whose stages are listed, Enter edits the selected route, D removes it from the selected layer, ←/→ on `independentReview` cycle unset, `off`, `warn`, `require` and `provider`, ←/→ on `reviewMinConfidence` change it by 0.05 (D clears it), and Esc returns to the run list. "+ new class" adds a class.
 
 The edit form has Model (a `provider/model` ID, or `$class` outside a class), Effort (←/→: unset, `default`, `low`, `medium`, `high`, `xhigh`, `max`) and Fallback (up to three model IDs separated by commas). Enter on Model or Fallback opens the list of available models: the model names (`$active`, `$fast`, ... with the model each resolves to) first, for a route's Model only, then the models of each provider with a key or login, then the providers without one, greyed out with the reason. Typing filters the list, ↑/↓ and Enter choose, Esc returns to the form. A chosen model fills Model, or is added to Fallback (the oldest is dropped past three). When the text matches no listed model, "Use … as typed" puts it in the field as it is, and both fields can also be typed directly. Ctrl+S saves from any field, and Enter saves on Name and Effort; a route without effort or fallback models is written as a plain string. Before writing, the screen checks the route and the whole layer as a run start would: an empty model, a class naming another class, a class reference that neither layer defines (including removing a class that a route still uses), fallback models that are classes, repeat the primary model or exceed three, and anything the `modelRouting` schema rejects. A refused change is not written and the form lists why. Saving writes only the `modelRouting` section of the selected layer, and an emptied section is removed. New runs use the saved routing (an idle workflow worker restarts to read it); started runs keep the routing frozen in their `routing.json` until a [reroute](#switching-a-run-to-another-model).
 
@@ -769,7 +791,8 @@ baked workflow routing set role:reviewer openai/gpt-5 --effort high --fallback a
 baked workflow routing set '$coding' anthropic/claude-sonnet-4-6 --scope global
 baked workflow routing set stage:sdd/plan '$review'
 baked workflow routing clear role:reviewer
-baked workflow routing review require      # independentReview; unset removes it
+baked workflow routing review provider     # independentReview; unset removes it
+baked workflow routing confidence 0.7      # reviewMinConfidence; unset removes it
 baked workflow routing show --json         # modelRouting of both files
 ```
 
@@ -800,7 +823,11 @@ The primary model gets two retries on a transient provider error (timeouts, 408,
 
 Before a run is created, every model it can call is checked the way `baked doctor` checks it, and the start reports the same lines. A model that a bound profile or a stage route uses as its primary, and whose known provider has no credentials, refuses the start with `CAPABILITY_DENIED`. Fallback models, profiles the workflow does not bind, unknown providers and a check that does not answer within 5 seconds only add a warning.
 
-`independentReview` controls whether a reviewer may run on a model the implementation also uses, fallback models included: `warn` records a warning, `require` refuses the start, `off` skips the check. Without the field, `warn` applies once `modelRouting` is configured. Review, converge and reflection stages and review gates count as the review side; task stages as the implementation side.
+`independentReview` controls whether a reviewer may run on a model the implementation also uses, fallback models included: `warn` records a warning, `require` refuses the start, `off` skips the check, and `provider` asks for a reviewer of another vendor (Codex reviews Claude Code output and the other way round). Without the field, `provider` applies when the configuration names models of two known vendors (the run model, classes, roles, profiles, stage routes and the legacy router slots), else `warn` once `modelRouting` is configured. Review, converge and reflection stages and review gates count as the review side; task stages as the implementation side.
+
+With `provider`, vendors are compared rather than models: `claude-code/*`, `anthropic/*` and Copilot or GitHub Models Claude models are `anthropic`, `codex/*`, `openai/*` and GPT models are `openai`. Every review-side route that shares a vendor with the implementation (its fallback models included) moves to the first model of another vendor, in this order: the `$review` class, any other model the configuration names, then the first model of each signed-in single-vendor provider (Claude Code, Codex, Anthropic, OpenAI). A moved route keeps its effort, drops its fallback models and has the source `independentReview: provider`; each move is listed in the run's warnings as `Cross-provider review: ...`. When no model of another vendor exists, the review stays where it is and the start records a warning instead of refusing. A reroute names its models itself, so under `provider` it only warns about a shared vendor. The [run report](#run-report) says which models (and vendors) reviewed the change and which implemented it.
+
+Every review finding carries a `confidence` from 0 to 1 that it is real and caused by the change; reviewers leave out problems the change did not introduce, nits and style, and what the project's formatter or linter reports. A finding below `reviewMinConfidence` (0.8 by default) is a note: it stays in the review artifact and starts no correction, whatever its kind or severity. A finding without a confidence counts as 1. Set the threshold in `modelRouting.reviewMinConfidence` (global or project layer) or directly as `workflows.policy.reviewMinConfidence`; a start copies the routing value into the run's policy, so it is frozen with the approval digest, and a policy without it keeps its hash.
 
 Warnings are stored in `routing.json` under `warnings` and printed by `workflow route` as `warning:` lines.
 
