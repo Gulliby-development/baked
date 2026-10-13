@@ -172,6 +172,21 @@ export class WorkflowToolPolicy {
     args: Record<string, unknown>,
     action: () => Promise<unknown>,
   ): Promise<unknown> {
+    return this.journaled(name, (deadlineHit) => this.guarded(name, args, action, deadlineHit));
+  }
+  /**
+   * Runs a host tool the executor already granted, such as `run_probe`, under its deadline and
+   * journal, without the workspace path checks of a model tool.
+   */
+  async host(name: string, action: () => Promise<unknown>): Promise<unknown> {
+    return this.journaled(name, () =>
+      withDeadline(name, toolDeadlineMs(this.settings, name), action),
+    );
+  }
+  private async journaled(
+    name: string,
+    run: (deadlineHit: (hit: boolean) => void) => Promise<unknown>,
+  ): Promise<unknown> {
     const started = Date.now();
     const journal = (
       type: "tool.started" | "tool.finished",
@@ -202,7 +217,7 @@ export class WorkflowToolPolicy {
     toolStarted(this.runId);
     let status: "ok" | "error" | "deadline" = "ok";
     try {
-      return await this.guarded(name, args, action, (hit) => {
+      return await run((hit) => {
         if (hit) status = "deadline";
       });
     } catch (error) {
