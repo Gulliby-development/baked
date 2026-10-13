@@ -14,7 +14,7 @@ import {
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import type { Review } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
+import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -188,6 +188,44 @@ describe("a correctness finding without a repro", () => {
     expect(checks.length).toBeGreaterThan(0);
     const [first, second] = checks[0] ?? [];
     expect(first?.join("\n")).toContain("have no repro");
+    expect(second).toEqual([]);
+  });
+
+  // Round 11 (#528): reviewers with run_repro offered gave "no execution tool" as noRepro.
+  test("a reviewer that says no tool was available is told run_repro is offered", async () => {
+    class NoToolReviews extends FixtureExecutor {
+      checks: string[][][] = [];
+      tools: unknown[] = [];
+      override async execute(request: ExecutionRequest) {
+        const result = await super.execute(request);
+        if (request.profile.output !== "review" || !request.profile.allowedTools.includes("run_repro"))
+          return result;
+        const extra = (JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { extra: { reproTool?: unknown } }).extra;
+        this.tools.push(extra.reproTool);
+        const output = result.output as Review;
+        output.findings = [
+          finding({
+            severity: "low",
+            evidenceIds: output.coverage[0]?.evidenceIds ?? [],
+            noRepro: "No execution/reproduction tool is available in this session",
+          }),
+        ];
+        if (!output.findings[0]?.evidenceIds.length) output.findings = [];
+        output.verdict = "pass";
+        this.checks.push([request.validate?.(output) ?? [], request.validate?.(output) ?? []]);
+        return result;
+      }
+    }
+    const fixture = workflowFixture({ executor: (root) => new NoToolReviews(root) });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    await fixture.approve(run.runId);
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    const executable = fixturePolicy.checks[0]?.executable;
+    expect(fixture.executor.tools[0]).toEqual({ name: "run_repro", programs: [executable] });
+    const [first, second] = fixture.executor.checks[0] ?? [];
+    expect(first?.join("\n")).toContain(`offers run_repro, which starts ${String(executable)}`);
     expect(second).toEqual([]);
   });
 });
