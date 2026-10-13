@@ -49,8 +49,8 @@ export type SettingDefinition = SettingBase &
       }
     /** A model ID such as `anthropic/claude-sonnet-4-6`; null means unset. */
     | { type: "model"; default: string | null }
-    /** Names chosen from a catalog the server lists, e.g. the tool catalog. */
-    | { type: "string-list"; default: readonly string[]; catalog: "tools" }
+    /** Names turned off in a catalog the server lists: the tool catalog or the quality rules. */
+    | { type: "string-list"; default: readonly string[]; catalog: SettingCatalog }
     /** Model ID → ordered fallback model IDs. */
     | { type: "model-list-map"; default: Record<string, string[]> }
     /** Model ID → positive integer, e.g. a context-window override. */
@@ -59,6 +59,8 @@ export type SettingDefinition = SettingBase &
   );
 
 export type SettingType = SettingDefinition["type"];
+/** The catalogs `string-list` settings choose from (`SettingsView.catalogs`). */
+export type SettingCatalog = "tools" | "quality-rules";
 
 export type SettingPageId =
   | "chat-model"
@@ -796,6 +798,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
       { value: "warn", label: "warn", help: "Report in the run report." },
       { value: "ratchet", label: "ratchet", help: "Block until the run reuses the code." },
     ],
+  },
+  {
+    id: "quality.disabledRules",
+    page: "code-quality",
+    section: "Anti-slop rules",
+    label: "Rules",
+    help: "Patterns checked on the lines a run adds: empty catch blocks, silent fallbacks, new suppressions, placeholders. An error rule blocks the run until it is fixed; a warning is noted in the run report. Turn off a rule the project does not want.",
+    scopes: BOTH,
+    type: "string-list",
+    default: [],
+    catalog: "quality-rules",
   },
 ];
 

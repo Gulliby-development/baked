@@ -11,9 +11,10 @@ import {
   metricDeltas,
   QUALITY_DUPLICATION,
 } from "./quality/duplication.js";
+import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
 import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
-import { type RunUsageReport, runUsage } from "./usage.js";
+import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
@@ -214,22 +215,20 @@ function collect(store: WorkflowStore, runId: string) {
         ms: (known?.ms ?? 0) + row.duration_ms,
       });
     }
-    const quality = latestArtifacts.get(QUALITY_DUPLICATION);
+    const readJson = <T>(path: string): T | null => {
+      const row = latestArtifacts.get(path);
+      if (!row) return null;
+      try {
+        return parse<T | null>(store.readArtifact(runId, row.id), null);
+      } catch {
+        return null;
+      }
+    };
     return {
       run,
       state,
-      duplication: quality
-        ? parse<DuplicationResult | null>(
-            (() => {
-              try {
-                return store.readArtifact(runId, quality.id);
-              } catch {
-                return null;
-              }
-            })(),
-            null,
-          )
-        : null,
+      duplication: readJson<DuplicationResult>(QUALITY_DUPLICATION),
+      rules: readJson<RulesResult>(QUALITY_RULES),
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
       report,
@@ -295,9 +294,50 @@ function reviewModels(routing: Facts["routing"]): string | null {
   return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
 }
 
+/** The code quality gates: the duplication ratchet (#638) and the anti-slop rules (#639). */
+function qualitySection(
+  duplication: DuplicationResult | null,
+  rules: RulesResult | null,
+  cap: number,
+): string[] {
+  return [
+    ...(duplication ? duplicationSection(duplication, cap) : []),
+    ...(rules ? rulesSection(rules, cap) : []),
+  ];
+}
+
+function rulesSection(result: RulesResult, cap: number): string[] {
+  const blocking = result.findings.filter((f) => f.blocking).length;
+  const out = [
+    `Anti-slop rules: ${blocking} blocking, ${result.findings.length - blocking} noted on the lines the run added.`,
+    "",
+  ];
+  if (result.disabled.length)
+    out.push(`Turned off for this project: ${result.disabled.map(code).join(", ")}.`, "");
+  if (result.astGrep)
+    out.push(
+      `Project ast-grep rules (${result.astGrep.files.map(code).join(", ")}): ${result.astGrep.ran ? "ran" : "not run"}${result.astGrep.note ? `; ${result.astGrep.note}` : ""}.`,
+      "",
+    );
+  out.push(
+    ...table(
+      ["Rule", "Severity", "Where", "Line"],
+      result.findings.map((f) => [
+        code(f.rule),
+        f.blocking ? `${f.severity}, blocking` : f.severity,
+        code(`${f.file}:${f.line}`),
+        code(f.text),
+      ]),
+      cap,
+    ),
+  );
+  if (result.findings.length) out.push("");
+  return out;
+}
+
 /** The duplication ratchet's deltas and what it found (#638). */
 function duplicationSection(result: DuplicationResult, cap: number): string[] {
-  const out = ["## Code quality", ""];
+  const out: string[] = [];
   if (result.skipped) return [...out, `Duplication ratchet skipped: ${result.skipped}.`, ""];
   const verdict = result.blocking
     ? "blocking"
@@ -409,7 +449,8 @@ function render(facts: Facts, cap: number): string {
     );
   else out.push("No checks ran.", "");
 
-  if (facts.duplication) out.push(...duplicationSection(facts.duplication, cap));
+  if (facts.duplication || facts.rules)
+    out.push("## Code quality", "", ...qualitySection(facts.duplication, facts.rules, cap));
 
   if (spec?.criteria.length) {
     out.push("## Acceptance criteria", "");
@@ -542,6 +583,8 @@ function render(facts: Facts, cap: number): string {
       ),
       "",
     );
+  const backends = toolBackendLine(usage.toolBackends ?? []);
+  if (backends) out.push(`Code intelligence: ${backends}.`, "");
 
   out.push("## Artifacts", "");
   const hidden = facts.internalArtifacts

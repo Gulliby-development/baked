@@ -166,6 +166,8 @@ export const RuntimeStateSchema = z
         ),
       )
       .default({}),
+    /** Rejected approval requests whose explanation already sent the run back to revise. */
+    revisedRejections: z.array(z.string()).default([]),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
     taskGates: z
@@ -244,6 +246,15 @@ export const RuntimeStateSchema = z
      * of the workspace learned. Research, specification and planning read it. Null when empty.
      */
     projectMemory: z
+      .object({ artifactId: z.string(), hash: z.string() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
+     * Active learned code rules captured at run creation (artifact `project/learned-rules.json`),
+     * given to implementers for the paths of their task and to reviewers (#643). Null when none.
+     */
+    learnedRules: z
       .object({ artifactId: z.string(), hash: z.string() })
       .strict()
       .nullable()
