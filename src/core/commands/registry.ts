@@ -204,6 +204,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["project", "brief", "split", "launch", "runs", "orchestrate"],
   },
   {
+    cmd: "/coordinator rules",
+    ic: "dispatch",
+    desc: "Rules the coordinator answers routine approvals by: on, off, add, remove",
+    category: "Session",
+    tags: ["approvals", "auto", "rules", "allow", "coordinator"],
+  },
+  {
     cmd: "/projects",
     ic: "folder",
     desc: "Switch project: known folders, pin, forget, open folder (Alt+O)",

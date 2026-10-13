@@ -160,6 +160,15 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-approval-rules",
+    group: "Chat and sessions",
+    title: "Coordinator answers routine approvals by rules",
+    tui: ["/coordinator rules"],
+    cli: ["baked session coordinator rules"],
+    api: ["/v1/coordinator/approval-rules"],
+    desktop: ["project/coordinator: Approval rules in the right panel"],
+  },
+  {
     id: "session-diagnostics",
     group: "Chat and sessions",
     title: "Diagnostic export and API request dumps",

@@ -7,6 +7,7 @@ import { useDialogStore } from "../../stores/dialog.js";
 import { getAppSessionId } from "../../stores/session.js";
 import { useUIStore } from "../../stores/ui.js";
 import { useWorkflowStore } from "../../stores/workflow.js";
+import { coordinatorId, runRulesCommand } from "../chat/approval-rules-command.js";
 import { checkNewProject, createProject } from "../projects/create.js";
 import {
   addKnownProject,
@@ -432,6 +433,28 @@ export function renameCurrentProject(input: string, ctx: CommandContext): void {
   }
 }
 
+/**
+ * /coordinator rules [on|off|add ...|remove ID]: the rules the coordinator answers routine
+ * approvals of its launched work by; see `src/core/chat/approval-rules-command.ts`.
+ */
+export function coordinatorRules(input: string, ctx: CommandContext): void {
+  const args = input
+    .replace(/^\s*\/coordinator\s+rules\b/i, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const id = coordinatorId(ctx.cwd);
+  if (!id) {
+    sysMsg(ctx, "This project has no coordinator yet; open it with /coordinator first.");
+    return;
+  }
+  try {
+    sysMsg(ctx, runRulesCommand(ctx.cwd, id, args));
+  } catch (error) {
+    sysMsg(ctx, error instanceof Error ? error.message : String(error));
+  }
+}
+
 export function projectHost(ctx: CommandContext): ProjectHost {
   return {
     cwd: ctx.cwd,
@@ -446,4 +469,5 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/project rename", (input, ctx) => renameCurrentProject(input, ctx));
   map.set("/project waiting", (_input, ctx) => showWaitingAcrossProjects(ctx));
   map.set("/coordinator", () => useUIStore.getState().openModal("coordinator"));
+  map.set("/coordinator rules", (input, ctx) => coordinatorRules(input, ctx));
 }

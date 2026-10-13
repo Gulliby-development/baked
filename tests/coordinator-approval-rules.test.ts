@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
+import { launchedHeading, messageLines } from "../src/components/coordinator/model.js";
 import { startApiServer } from "../src/core/api/server.js";
+import { coordinatorId, runRulesCommand } from "../src/core/chat/approval-rules-command.js";
 import {
   type ApprovalRule,
   ApprovalRulesStore,
@@ -21,6 +23,8 @@ import {
   type ChatSession,
   type TurnAgentRequest,
 } from "../src/core/chat/sessions.js";
+import { getCwd, setCwd } from "../src/core/cwd.js";
+import { runSessionCli } from "../src/headless/session.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -340,4 +344,121 @@ describe("the approval rules API", () => {
     const invalid = await call("PUT", { enabled: true, rules: [{ id: "x", kind: "destructive" }], expectedRevision: 1 });
     expect(invalid.status).toBe(400);
   }, 30000);
+});
+
+describe("rules as text commands (terminal app and CLI)", () => {
+  async function project() {
+    const root = mkdtempSync(join(tmpdir(), "baked-rules-cli-"));
+    const chat = new ChatService({
+      workspace: root,
+      config: { defaultModel: "openai/gpt-test" } as never,
+      host: new DoneHost(),
+      homeDir: root,
+    });
+    cleanups.push(async () => {
+      await chat.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    });
+    return { root, chat };
+  }
+
+  async function cli(dir: string, argv: string[]) {
+    const previous = getCwd();
+    setCwd(dir, { changeProcess: false });
+    const out: string[] = [];
+    const err: string[] = [];
+    const stdout = process.stdout.write.bind(process.stdout);
+    const stderr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((chunk: string) => out.push(String(chunk)) > 0) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string) => err.push(String(chunk)) > 0) as typeof process.stderr.write;
+    try {
+      const code = await runSessionCli(argv);
+      return { code, stdout: out.join(""), stderr: err.join("") };
+    } finally {
+      process.stdout.write = stdout;
+      process.stderr.write = stderr;
+      setCwd(previous, { changeProcess: false });
+    }
+  }
+
+  test("show, switch, add and remove rules; mistakes say what to type", async () => {
+    const { root, chat } = await project();
+    expect(coordinatorId(root)).toBeNull();
+    {
+      const result = await cli(root, ["coordinator", "rules"]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/no coordinator yet/);
+    }
+    const coordinator = (await chat.coordinator(true)) as ChatSession;
+    expect(coordinatorId(root)).toBe(coordinator.id);
+    const run = (...args: string[]) => runRulesCommand(root, coordinator.id, args);
+
+    expect(run()).toContain("Approval rules: off (every approval waits for you)\n  No rules yet.");
+    expect(run("add", "web-search")).toStartWith("Added web-search.");
+    expect(run("add", "pages", "https://docs.github.com/en", "bun.sh")).toContain(
+      "fetch-page: Approve fetching pages from docs.github.com, bun.sh",
+    );
+    expect(run("add", "plans", "3")).toContain("plan-review: Approve plans of up to 3 steps");
+    expect(run("add", "runs", "1.5M", "src/**")).toContain(
+      "run-approval: Approve run plans with a budget up to 1.5M tokens that write only src/**",
+    );
+    expect(run("add", "runs", "500k")).toContain("run-approval-2: Approve run plans with a budget up to 500k tokens");
+    expect(run("on")).toStartWith("The coordinator now answers matching approvals");
+    expect(run("remove", "plan-review")).toStartWith("Removed plan-review.");
+    const rules = new ApprovalRulesStore(root, coordinator.id).read();
+    expect(rules.enabled).toBe(true);
+    expect(rules.rules.map((r) => r.id)).toEqual(["web-search", "fetch-page", "run-approval", "run-approval-2"]);
+
+    expect(() => run("add", "runs", "lots")).toThrow("lots is not a token count such as 2M or 500k");
+    expect(() => run("add", "pages", "not a host")).toThrow(/host/);
+    expect(() => run("add", "deploys")).toThrow("Unknown rule deploys; use web-search, pages, plans or runs");
+    expect(() => run("remove", "nope")).toThrow("No rule nope; the ids are listed by rules");
+    expect(() => run("maybe")).toThrow(/Unknown rules command maybe/);
+
+    const shown = await cli(root, ["coordinator", "rules"]);
+    expect(shown.code).toBe(0);
+    expect(shown.stdout).toStartWith("Approval rules: on\n  web-search: Approve web searches of launched sessions");
+    expect(shown.stdout).toContain("always wait for you");
+    {
+      const result = await cli(root, ["coordinator", "rules", "off"]);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toMatch(/every approval waits for you/);
+    }
+    {
+      const result = await cli(root, ["coordinator", "rules", "add"]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/Unknown rule/);
+    }
+  });
+
+  test("the terminal app shows an answer by rule and the rules that are on", () => {
+    const lines = messageLines(
+      [
+        {
+          id: "n",
+          role: "system",
+          content: "Approved …",
+          timestamp: 0,
+          showInChat: true,
+          launch: {
+            kind: "session",
+            id: "s",
+            title: "Research WAL",
+            status: "approved by rule",
+            why: "Approve web searches of launched sessions",
+            event: "auto-answered",
+            answered: 'web search "bun wal"',
+          },
+        },
+      ],
+      "",
+      100,
+    );
+    expect(lines.slice(0, 2)).toEqual([
+      { text: '  ✓ Approved web search "bun wal" for Session "Research WAL"', tone: "accent" },
+      { text: "    by your rule: Approve web searches of launched sessions", tone: "muted" },
+    ]);
+    expect(launchedHeading(0)).toBe("Launched");
+    expect(launchedHeading(2)).toBe("Launched · 2 approval rules on (/coordinator rules)");
+  });
 });
