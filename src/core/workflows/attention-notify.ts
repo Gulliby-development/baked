@@ -11,7 +11,7 @@
 import { basename } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
-import { runHooks } from "../hooks/index.js";
+import { notificationHooks, runHooks } from "../hooks/index.js";
 import { showSystemNotification } from "../platform/notify.js";
 import type { WorkflowEvent } from "./schemas.js";
 import type { AttentionRow, WorkflowStore } from "./store.js";
@@ -140,7 +140,14 @@ export class AttentionNotifier {
     await Promise.all([this.hook(payload), this.webhook(payload), this.system(payload)]);
   }
   private async hook(payload: RunAttentionPayload): Promise<void> {
-    await runHooks({
+    // A Notification hook brought from Claude Code hears about a waiting run too.
+    const notified = notificationHooks({
+      cwd: this.workspace,
+      type: "run_attention",
+      title: `${payload.project}: ${payload.featureId}`,
+      message: payload.message,
+    });
+    const attention = runHooks({
       event: "RunAttention",
       cwd: this.workspace,
       matchTarget: payload.kind,
@@ -153,6 +160,7 @@ export class AttentionNotifier {
         status: payload.status,
       },
     });
+    await Promise.all([notified, attention]);
   }
   private async webhook(payload: RunAttentionPayload): Promise<void> {
     const webhook = this.config.notifications?.webhook;

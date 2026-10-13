@@ -32,6 +32,7 @@ import {
   isMissingChatApi,
   type LaunchNote,
   type SessionDiffStats,
+  type ToolCall,
   type WatchStatus,
 } from "../../client/chat.js";
 import { chatSessionsChanged } from "../../client/chat-sessions.js";
@@ -47,10 +48,12 @@ import { cn } from "../../lib/cn.js";
 import { useChatModels } from "../../lib/models.js";
 import { projectHref } from "../../router.js";
 import { handOffText, launchedHref, SPLIT_EDIT_PREFIX } from "../coordinator/model.js";
+import { ThreadCard } from "../coordinator/ThreadCard.js";
+import { launchedSessionId } from "../coordinator/thread.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
 import { BASE_MODES, Composer } from "./Composer.js";
-import { Conversation } from "./Conversation.js";
+import { Conversation, ToolRenderer } from "./Conversation.js";
 import { forkReportLines, rememberForkReport, rewindReportLines, takeForkReport } from "./fork.js";
 import {
   ChatHeader,
@@ -189,6 +192,25 @@ export function SessionView({
 }) {
   const key = project.key;
   const draft = sessionId === NEW;
+  // In the coordinator, each launch_session call is drawn as a live card of the session it started.
+  const threadCardFor = useCallback(
+    (call: ToolCall): ReactNode | null => {
+      const id = launchedSessionId(call);
+      if (!id) return null;
+      const title = typeof call.args.title === "string" ? call.args.title : "Session";
+      const why = typeof call.args.why === "string" ? call.args.why : "";
+      return (
+        <ThreadCard
+          projectKey={key}
+          sessionId={id}
+          title={title}
+          why={why}
+          href={launchedHref(key, { kind: "session", id })}
+        />
+      );
+    },
+    [key],
+  );
   const [transcript, dispatch] = useReducer(reduceTranscript, undefined, emptyTranscript);
   const [load, setLoad] = useState<"loading" | "ready" | "missing" | "not-found" | string>(
     draft ? "ready" : "loading",
@@ -546,6 +568,7 @@ export function SessionView({
         title={coordinator ? "Coordinator" : draft ? "New chat" : (session?.title ?? "Chat")}
         sessionId={draft ? null : sessionId}
         coordinator={coordinator}
+        thread={!draft && Boolean(session?.parentId)}
         {...(draft
           ? {}
           : {
@@ -622,28 +645,30 @@ export function SessionView({
               </Button>
             </Alert>
           )}
-          <Conversation
-            transcript={transcript}
-            deciding={deciding}
-            forking={forking}
-            {...(draft || coordinator ? {} : { onFork: fork })}
-            {...(coordinator
-              ? {
-                  onEditSplit: editSplit,
-                  launchHref: (note: LaunchNote) => launchedHref(key, note),
-                }
-              : {})}
-            {...(canRewindTo && !draft && !rewinding
-              ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
-              : {})}
-            onApprove={(id, approve, digest) =>
-              decide(id, () => chat.approve(key, sessionId, id, approve, digest))
-            }
-            onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
-            onReviewPlan={(id, review) =>
-              decide(id, () => chat.reviewPlan(key, sessionId, id, review))
-            }
-          />
+          <ToolRenderer.Provider value={coordinator ? threadCardFor : null}>
+            <Conversation
+              transcript={transcript}
+              deciding={deciding}
+              forking={forking}
+              {...(draft || coordinator ? {} : { onFork: fork })}
+              {...(coordinator
+                ? {
+                    onEditSplit: editSplit,
+                    launchHref: (note: LaunchNote) => launchedHref(key, note),
+                  }
+                : {})}
+              {...(canRewindTo && !draft && !rewinding
+                ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
+                : {})}
+              onApprove={(id, approve, digest) =>
+                decide(id, () => chat.approve(key, sessionId, id, approve, digest))
+              }
+              onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
+              onReviewPlan={(id, review) =>
+                decide(id, () => chat.reviewPlan(key, sessionId, id, review))
+              }
+            />
+          </ToolRenderer.Provider>
           {actionError && (
             <p className="m-0 px-3 py-0 text-[13px] text-[var(--err)]" role="alert">
               {actionError}
