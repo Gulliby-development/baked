@@ -147,7 +147,8 @@ describe("coordinator launches", () => {
     });
     expect(session).toMatchObject({ success: true });
     const sessionId = /session ([0-9a-f-]{36})/.exec(session.output)?.[1] ?? "";
-    expect(chat.list().map((s) => s.id)).toContain(sessionId);
+    // It is the coordinator's thread: listed with its parent, so front ends group it there.
+    expect(chat.list().find((s) => s.id === sessionId)?.parentId).toBe(coordinator.id);
     await chat.get(sessionId).settled();
     expect(await noticeFor(chat, /^Session/)).toBe('Session "Survey the auth code": done');
 

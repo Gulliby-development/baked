@@ -569,6 +569,41 @@ async function workflowScript(session: MockSession, turn: MockTurn, text: string
 async function coordinatorScript(session: MockSession, turn: MockTurn, text: string) {
   if (/\b(fix|bug|broken|failing)\b/i.test(text)) return workflowScript(session, turn, text);
   const entry = coordinators.get(session.key);
+  // "…in a separate chat" starts a background session, drawn as a live thread card.
+  if (/\b(chat|session|thread)\b/i.test(text)) {
+    await say(session, turn, "I'll hand this to its own session and follow it here.\n\n");
+    const title = text.length > 60 ? `${text.slice(0, 57)}…` : text;
+    const child = create(session.key, {
+      title,
+      mode: "architect",
+      text,
+      parentId: session.summary.id,
+    });
+    await runTool(
+      session,
+      turn,
+      "launch_session",
+      { title, brief: text, mode: "architect", why: "Focused work outside the coordinator" },
+      `Started session ${child.summary.id} (working). You will get a note in this chat when it finishes or needs a decision; the user answers its approvals there.`,
+    );
+    if (entry)
+      entry.brief = {
+        ...entry.brief,
+        revision: entry.brief.revision + 1,
+        launched: [
+          ...entry.brief.launched,
+          {
+            kind: "session",
+            id: child.summary.id,
+            title,
+            why: "Focused work outside the coordinator",
+            status: "working",
+          },
+        ],
+      };
+    await say(session, turn, "It's running; its card above shows what it is doing.");
+    return;
+  }
   await say(
     session,
     turn,
@@ -975,6 +1010,7 @@ function create(
     effort?: ChatEffort;
     text?: string;
     images?: ImageUpload[];
+    parentId?: string;
   },
 ) {
   const now = Date.now();
@@ -989,6 +1025,7 @@ function create(
     model: body.model ?? DEFAULT_MODEL,
     mode: body.mode ?? "default",
     effort: body.effort ?? "default",
+    ...(body.parentId ? { parentId: body.parentId } : {}),
   };
   const session: MockSession = {
     key,
