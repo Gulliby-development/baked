@@ -6,6 +6,7 @@ import {
   bwrapArgv,
   bwrapFailureReason,
   probeSandbox,
+  restrictedTokenArgv,
   type SandboxDetection,
   type SandboxHost,
   type SandboxProbeDeps,
@@ -33,6 +34,14 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { windowsBatchInvocation } from "../src/core/workflows/process-scope.js";
 import { PolicySchema } from "../src/core/workflows/schemas.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
+import {
+  batchCommandLine,
+  decodeSpec,
+  environmentBlock,
+  quoteWindowsArg,
+  WINDOWS_NETWORK_GAP,
+  windowsCommandLine,
+} from "../src/core/platform/windows-sandbox.js";
 
 const HOME = "/home/u";
 
@@ -486,7 +495,7 @@ describe("backend detection", () => {
     );
   });
 
-  test("macOS uses sandbox-exec; Windows has no backend", () => {
+  test("macOS uses sandbox-exec; Windows probes its launcher", () => {
     expect(probeSandbox(deps({ platform: "darwin" }))).toEqual({
       backend: "seatbelt",
       available: true,
@@ -494,9 +503,37 @@ describe("backend detection", () => {
       reason: null,
     });
     expect(probeSandbox(deps({ platform: "darwin", exists: () => false })).available).toBe(false);
-    const windows = probeSandbox(deps({ platform: "win32" }));
-    expect(windows).toMatchObject({ backend: "none", available: false, path: null });
-    expect(windows.reason).toContain("[Unavailable on Windows]");
+    let probed: string[] = [];
+    const launcher = ["C:\\b\\baked.exe", "__sandbox-exec"];
+    const windows = probeSandbox(
+      deps({
+        platform: "win32",
+        launcher,
+        run: (command, args) => {
+          probed = [command, ...args];
+          return { status: 0, stderr: "" };
+        },
+      }),
+    );
+    expect(windows).toEqual({
+      backend: "restricted-token",
+      available: true,
+      path: "C:\\b\\baked.exe",
+      reason: null,
+    });
+    expect(probed.slice(0, 2)).toEqual(launcher);
+    expect(decodeSpec(probed[2] ?? "")).toMatchObject({ executable: "cmd.exe", writable: [] });
+    const broken = probeSandbox(
+      deps({
+        platform: "win32",
+        launcher,
+        run: () => ({ status: 125, stderr: "baked sandbox: CreateRestrictedToken failed (Windows error 5)\n" }),
+      }),
+    );
+    expect(broken).toMatchObject({ backend: "restricted-token", available: false });
+    expect(broken.reason).toBe(
+      "the sandbox launcher does not start: baked sandbox: CreateRestrictedToken failed (Windows error 5)",
+    );
   });
 });
 
@@ -589,9 +626,10 @@ describe("mode resolution", () => {
     });
   });
 
-  test("on Windows a batch script is rewritten for cmd.exe and never wrapped", () => {
+  test("on Windows without a working launcher a batch script runs as rewritten for cmd.exe", () => {
     const windows = probeSandbox({
       platform: "win32",
+      launcher: ["C:\\b\\baked.exe", "__sandbox-exec"],
       find: () => null,
       exists: () => false,
       run: () => ({ status: 1, stderr: "" }),
@@ -621,5 +659,113 @@ describe("run policy", () => {
     expect(parseWorkflowArgs([...run, "required"]).flags.sandbox).toBe("required");
     expect(parseWorkflowArgs(["doctor", "--sandbox", "auto"]).flags.sandbox).toBe("auto");
     expect(() => parseWorkflowArgs([...run, "sometimes"])).toThrow("--sandbox accepts off, auto or required");
+  });
+});
+
+describe("Windows restricted-token backend", () => {
+  const winHome = "C:\\Users\\u";
+  const winHost = host(
+    "win32",
+    [
+      "C:\\w",
+      "C:\\w\\.git\\hooks",
+      "C:\\w\\.git\\config",
+      `${winHome}\\.ssh`,
+      `${winHome}\\.npmrc`,
+      `${winHome}\\AppData\\Roaming\\GitHub CLI`,
+      `${winHome}\\AppData\\Local\\npm-cache`,
+      `${winHome}\\.bun\\install\\cache`,
+    ],
+    {},
+    {},
+    winHome,
+  );
+  const windows: SandboxDetection = {
+    backend: "restricted-token",
+    available: true,
+    path: "C:\\b\\baked.exe",
+    reason: null,
+  };
+  const winRequest = request({ writable: ["C:\\w"], workspaces: ["C:\\w"] });
+
+  test("the profile uses Windows paths, caches and credential stores", () => {
+    const profile = sandboxProfile(winRequest, "C:\\w", winHost);
+    expect(profile).toMatchObject({
+      cwd: "C:\\w",
+      writable: ["C:\\w"],
+      protectDirs: ["C:\\w\\.git\\hooks"],
+      protectFiles: ["C:\\w\\.git\\config"],
+      caches: [`${winHome}\\.bun\\install\\cache`, `${winHome}\\AppData\\Local\\npm-cache`],
+      hiddenDirs: [`${winHome}\\.ssh`, `${winHome}\\AppData\\Roaming\\GitHub CLI`],
+      hiddenFiles: [`${winHome}\\.npmrc`],
+    });
+    // Windows paths compare without case: a workspace inside a credential directory keeps it visible.
+    const inSsh = sandboxProfile(
+      request({ writable: [`${winHome.toLowerCase()}\\.SSH`], workspaces: [] }),
+      "C:\\w",
+      host("win32", [`${winHome}\\.ssh`, `${winHome.toLowerCase()}\\.SSH`], {}, {}, winHome),
+    );
+    expect(inSsh.hiddenDirs).toEqual([]);
+  });
+
+  test("a launch runs the launcher with one encoded argument and reports the open network", () => {
+    const launcher = ["C:\\b\\bun.exe", "C:\\b\\windows-sandbox-launcher.ts"];
+    const launch = sandboxLaunch("cmd.exe", ["/d", "/s", "/c", "echo hi"], winRequest, "C:\\w", windows, winHost, {
+      launcher,
+    });
+    expect(launch.executable).toBe(launcher[0]);
+    expect(launch.args).toHaveLength(2);
+    expect(launch.args[0]).toBe(launcher[1]);
+    expect(launch.args[1]).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(decodeSpec(launch.args[1] ?? "")).toEqual({
+      executable: "cmd.exe",
+      args: ["/d", "/s", "/c", "echo hi"],
+      verbatim: false,
+      cwd: "C:\\w",
+      writable: ["C:\\w"],
+      caches: [`${winHome}\\.bun\\install\\cache`, `${winHome}\\AppData\\Local\\npm-cache`],
+      protectDirs: ["C:\\w\\.git\\hooks"],
+      protectFiles: ["C:\\w\\.git\\config"],
+      hiddenDirs: [`${winHome}\\.ssh`, `${winHome}\\AppData\\Roaming\\GitHub CLI`],
+      hiddenFiles: [`${winHome}\\.npmrc`],
+    });
+    expect(launch.setEnv).toEqual({});
+    expect(launch.unsetEnv).toContain("SSH_AUTH_SOCK");
+    expect(launch.applied).toEqual({
+      backend: "restricted-token",
+      mode: "required",
+      network: true,
+      reason: WINDOWS_NETWORK_GAP,
+    });
+    const open = sandboxLaunch("cmd.exe", [], { ...winRequest, network: true }, "C:\\w", windows, winHost, {
+      launcher,
+    });
+    expect(open.applied).toEqual({ backend: "restricted-token", mode: "required", network: true });
+    const verbatim = restrictedTokenArgv(launcher, sandboxProfile(winRequest, "C:\\w", winHost), "cmd.exe", ["/c", '"a b"'], true);
+    expect(decodeSpec(verbatim[2] ?? "").verbatim).toBe(true);
+  });
+
+  test("command lines quote like the MSVC runtime", () => {
+    expect(quoteWindowsArg("plain")).toBe("plain");
+    expect(quoteWindowsArg("")).toBe('""');
+    expect(quoteWindowsArg("a b")).toBe('"a b"');
+    expect(quoteWindowsArg('say "hi"')).toBe('"say \\"hi\\""');
+    expect(quoteWindowsArg("C:\\dir with space\\")).toBe('"C:\\dir with space\\\\"');
+    expect(quoteWindowsArg('a\\"b c')).toBe('"a\\\\\\"b c"');
+    expect(quoteWindowsArg("no\\slash")).toBe("no\\slash");
+    expect(windowsCommandLine("C:\\Program Files\\x.exe", ["-e", "a b"], false)).toBe(
+      '"C:\\Program Files\\x.exe" -e "a b"',
+    );
+    expect(windowsCommandLine("cmd.exe", ["/d", "/s", "/c", '"echo "a b""'], true)).toBe(
+      'cmd.exe /d /s /c "echo "a b""',
+    );
+    expect(batchCommandLine("cmd.exe", "C:\\p\\lint.cmd", ["a b"])).toBe(
+      'cmd.exe /d /s /c "C:\\p\\lint.cmd "a b""',
+    );
+  });
+
+  test("the environment block is sorted without case and ends with two NULs", () => {
+    const block = environmentBlock({ b: "2", A: "1", C: undefined, Path: "x" }).toString("utf16le");
+    expect(block).toBe("A=1\0b=2\0Path=x\0\0");
   });
 });

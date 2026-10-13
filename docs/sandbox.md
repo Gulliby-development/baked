@@ -1,6 +1,6 @@
 # OS sandbox
 
-BAKED can run the commands it starts on the agent's behalf inside an operating-system sandbox. A sandboxed command writes only inside the project (plus temp and package caches), cannot read the usual credential stores, and, when the network is denied, reaches only loopback. The sandbox is off by default; turn it on with the `sandbox` setting.
+BAKED can run the commands it starts on the agent's behalf inside an operating-system sandbox. A sandboxed command writes only inside the project (plus temp and package caches), cannot read the usual credential stores, and, when the network is denied, reaches only loopback (Linux and macOS; Windows does not isolate the network yet). The sandbox is off by default; turn it on with the `sandbox` setting.
 
 ## What runs in it
 
@@ -63,16 +63,29 @@ The whole host is readable, so toolchains, `node_modules`, `~/.bun`, `~/.cargo/b
 
 BAKED uses `/usr/bin/sandbox-exec` with a generated profile: everything is allowed except writes outside the writable paths, `/private/tmp`, `/private/var/folders`, `/dev/null`, `/dev/tty`, `/dev/fd` and the caches; protected paths are denied writes after the allows, credential paths are denied reads and writes, and without network everything but loopback and Unix sockets is denied, together with the keychain daemon (see [Keychain](#macos-keychain)). Paths reach the profile as `-D` parameters and are resolved to their real paths (`/tmp` is `/private/tmp`). Apple marks `sandbox-exec` deprecated; it still ships with macOS.
 
-### Windows
+### Windows: restricted token
 
-No backend yet: Windows reports the sandbox as unavailable, so `auto` runs commands unsandboxed and `required` refuses them. A follow-up issue (#624) tracks a restricted-token and job-object backend.
+Windows has no sandbox program, so BAKED starts its own launcher: the BAKED binary with the hidden subcommand `__sandbox-exec` (from source, Bun runs `src/core/platform/windows-sandbox-launcher.ts`). The command and the paths to prepare travel as one base64 argument. The launcher:
+
+1. labels the file system (see below), skipping paths that already carry the right label;
+2. creates a restricted copy of the user's token: no privileges except bypass traverse checking, the Administrators group deny-only, and the low integrity level;
+3. starts the command with that token (`CreateProcessAsUserW`, suspended) on a window station and desktop of its own, labeled low so the low-integrity process can open them (it cannot reach the user's windows or clipboard), inside a job object that kills every process of the job when the launcher exits and blocks the clipboard, desktop switching, display and system settings and `ExitWindows`;
+4. waits for it and exits with its status. A launcher that cannot start the command exits 125 with `baked sandbox: <reason>` on stderr.
+
+Writes rely on Windows integrity levels: a low-integrity process cannot write an object labeled medium, which is the implicit label of every file. The launcher gives a low label (inherited by everything below) to the writable roots, the package caches and the private temp directory `%TEMP%\baked-sandbox-low`, which becomes the command's `TEMP` and `TMP`. Inside the writable roots, `.git/hooks`, `.git/config`, `.baked` and `baked/` get an explicit medium label back. Credential stores get a medium label with no-read-up, so the command cannot read them while the user's own programs (medium integrity) still can. Labels are stored on disk and stay after the command ends; the first command in a large project takes longer while Windows applies the label to every file below it.
+
+BAKED probes the launcher once per process by running `cmd.exe /d /c exit 0` through it. Stopping a command stops the launcher (`taskkill /T`), and closing its job ends whatever the command left running.
+
+The Windows backend does not isolate the network: a launch whose request denies it records `network: true` with the reason `the Windows backend does not isolate the network`, and `baked sandbox status` says so. Issue #785 tracks network isolation and browser profiles.
 
 ## What is hidden and protected
 
 Credential stores in the home directory are replaced by an empty directory or an empty file when they exist (both the path and its real path, so a symlinked dotfile is covered):
 
-- directories: `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.gnupg`, `~/.config/gh`, `~/.config/github-copilot`, `~/.codex`, `~/.claude`, `~/.docker`, `~/.password-store`, `~/.local/share/keyrings`, `~/.mozilla`, the Chrome, Chromium, Brave and Edge profiles, `$XDG_RUNTIME_DIR` (Linux); on macOS also `~/Library/Keychains`, `~/Library/Cookies` and the Chrome, Firefox and Brave profiles under `~/Library/Application Support`;
+- directories: `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.gnupg`, `~/.config/gh`, `~/.config/github-copilot`, `~/.codex`, `~/.claude`, `~/.docker`, `~/.password-store`, `~/.local/share/keyrings`, `~/.mozilla`, the Chrome, Chromium, Brave and Edge profiles, `$XDG_RUNTIME_DIR` (Linux); on macOS also `~/Library/Keychains`, `~/Library/Cookies` and the Chrome, Firefox and Brave profiles under `~/Library/Application Support`; on Windows also `%USERPROFILE%\AppData\Roaming\GitHub CLI` (browser profiles under `AppData` stay readable there);
 - files: `~/.netrc`, `~/.npmrc`, `~/.yarnrc.yml`, `~/.pypirc`, `~/.git-credentials`, `~/.config/git/credentials`, `~/.docker/config.json`, and BAKED's own `~/.baked/secrets.json` and `~/.baked/secrets.dat`. The rest of `~/.baked` (installed binary, language servers) stays readable.
+
+On Windows the home directory is `%USERPROFILE%`, and the stores are not replaced but labeled no-read-up (see [Windows](#windows-restricted-token)).
 
 `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` and `DBUS_SESSION_BUS_ADDRESS` are removed from the command's environment, so it cannot reach the SSH agent or the keyring over D-Bus.
 
@@ -83,7 +96,7 @@ Inside a writable workspace these stay read-only: the Git state listed below, `.
 | `.git` is a directory | `.git/config`, `.git/hooks`, and `config` and `hooks` of every submodule under `.git/modules` (nested submodules and names with `/` included); `config.worktree` where it exists |
 | `.git` is a file (a worktree or a submodule checkout) | the `.git` file itself, so it cannot point host Git at another repository; `config` and `hooks` of the directory its `gitdir:` names, of the common directory its `commondir` file names, and of their submodules |
 
-Bubblewrap mounts only paths that exist when the command starts; on Linux a missing `hooks` directory of these Git directories is created first (as `git init` would) so it can be mounted read-only. Seatbelt also denies writes to the `config` and `hooks` paths that do not exist yet.
+Bubblewrap mounts and Windows labels only paths that exist when the command starts; on Linux and Windows a missing `hooks` directory of these Git directories is created first (as `git init` would) so it can be made read-only. Seatbelt also denies writes to the `config` and `hooks` paths that do not exist yet.
 
 ### Git writes in a worktree run
 
@@ -93,7 +106,7 @@ A workflow run in worktree mode checks its own worktree (under `.baked/worktrees
 
 Hiding `~/Library/Keychains` is not enough on its own: the `security` tool asks the keychain daemon (`com.apple.SecurityServer`), which reads the keychain files outside the sandbox. When the network is denied, the profile also denies the Mach lookup of `com.apple.SecurityServer`, so `security find-generic-password` and other keychain reads fail. When the network is allowed, the lookup stays allowed: certificate trust evaluation of some TLS stacks (Security.framework clients such as Go programs and Apple's tools) can need the daemon, and denying it could break HTTPS for those tools in ways that CI cannot cover for every tool. With the network allowed, a sandboxed command can therefore still read keychain items whose access control lets it; deny the network (`sandboxNetwork: "deny"`, or a run policy without `network: "allow"`) where that matters.
 
-Package caches stay writable when they exist: `~/.bun/install/cache`, `~/.cache/bun`, `~/.cache/go-build`, `~/.cache/pip`, `~/.npm`, `~/.cargo/registry`, `~/.cargo/git`, `$GOMODCACHE` (or `~/go/pkg/mod`), and on macOS `~/Library/Caches`.
+Package caches stay writable when they exist: `~/.bun/install/cache`, `~/.cache/bun`, `~/.cache/go-build`, `~/.cache/pip`, `~/.npm`, `~/.cargo/registry`, `~/.cargo/git`, `$GOMODCACHE` (or `~/go/pkg/mod`), on macOS `~/Library/Caches`, and on Windows `AppData\Local\npm-cache`, `AppData\Local\pip\Cache` and `AppData\Local\go-build`.
 
 ## Limits
 
@@ -102,6 +115,7 @@ Package caches stay writable when they exist: `~/.bun/install/cache`, `~/.cache/
 - An AI acceptance gate that grants ports or hosts shares the host network: the host browser and the filter proxy must reach the application, so only its file system is isolated.
 - In a worktree run with Git writes, a check can move branch refs of the shared repository (refs and objects live in the common directory); BAKED's own Git state files listed above stay read-only.
 - Only the Git directories that exist when the command starts are protected: a repository the command creates inside the workspace (for example a new nested `.git` directory) is not, and with bubblewrap neither is a `config` or `config.worktree` file that does not exist yet.
+- Windows: the network is not isolated, browser profiles stay readable, and the integrity labels BAKED sets on the project, the caches and the credential stores stay on disk (a low label lets any low-integrity program write there). Issue #785 tracks the network.
 - On macOS the keychain daemon is denied only when the network is denied (see [macOS keychain](#macos-keychain)).
 - Follow-up issue #625 tracks making `auto` the default after a soak.
 
@@ -113,4 +127,5 @@ Package caches stay writable when they exist: `~/.bun/install/cache`, `~/.cache/
 | `user namespaces are blocked (container or AppArmor)` | Ubuntu 24.04 restricts unprivileged user namespaces: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or add an AppArmor profile for `bwrap`. Inside Docker, run the container with user namespaces allowed or use `auto`. |
 | `Sandbox required but unavailable` | The mode is `required` and no backend works here. Fix the backend, or lower the global mode; a project config that sets `required` cannot be lowered from the global config. |
 | A command cannot write a file | It writes outside the project, temp and caches. Run it with the sandbox off, or, in a workflow, declare the path through the check's working directory. |
+| `the sandbox launcher does not start: ...` (Windows) | The launcher could not label a path or create the restricted process; the message names the Windows call and its error code. Error 5 (access denied) on a label means the user cannot change that file's security (for example a file owned by another account); take ownership or use `auto`. |
 | A command cannot reach the network | `sandboxNetwork` is `deny` (chat) or the run policy's `network` is not `allow`. |

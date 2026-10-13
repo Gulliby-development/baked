@@ -327,6 +327,11 @@ export const PolicySchema = z
     /** The most candidates a run may ask for; absent means `DEFAULT_MAX_CANDIDATES` (4). */
     maxCandidates: z.number().int().min(1).max(MAX_CANDIDATES).optional(),
     /**
+     * Best-of-N models (#769): candidate k of a task runs on `candidateModels[k mod n]` instead of
+     * the task stage's route, so candidates come from different models. Absent keeps the route.
+     */
+    candidateModels: z.array(z.string().min(1).max(200)).min(1).max(MAX_CANDIDATES).optional(),
+    /**
      * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
      * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
      * keep their hash.
@@ -536,6 +541,7 @@ export const ProfileSchema = z
       "approval-review",
       "critique",
       "mutants",
+      "distinction",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -739,6 +745,24 @@ const RubricItem = z.object({ score: z.number().min(0).max(1), note: Text }).str
  * A critic's score of one task attempt: advice shown in the run, not a gate. `score` is the
  * critic's estimate that the attempt is correct and will be kept as it is.
  */
+/**
+ * A test that tells best-of-N finalists apart (#769): a program the run's checks start and its
+ * arguments, and the line the spec requires it to print. A finalist whose output shows `expected`
+ * keeps its place.
+ */
+export const DistinctionSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    taskId: TaskId,
+    executable: z.string().min(1).max(512),
+    args: z.array(z.string().max(4096)).max(32),
+    expected: z.string().min(1).max(2000),
+    criterionIds: z.array(CriterionId),
+    rationale: Text,
+  })
+  .strict();
+export type Distinction = z.infer<typeof DistinctionSchema>;
+
 export const CritiqueSchema = z
   .object({
     schemaVersion: z.literal(1),

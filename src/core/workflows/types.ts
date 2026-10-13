@@ -429,6 +429,11 @@ export interface ExecutionRequest {
    * agent once; the next submission is accepted without running it again.
    */
   taskEndCheck?: (root: string, signal: AbortSignal) => Promise<string[]>;
+  /**
+   * The errors of a failed `request_check` run that belong to the task, for a whole-unit check
+   * that runs in the checks stage rather than after the task (#799); null for any other check.
+   */
+  attributeCheck?: (check: Check, output: string) => string[] | null;
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
   root?: string;
   /**

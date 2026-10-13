@@ -799,7 +799,7 @@ const COMMAND_DEFS: CommandDef[] = [
     ic: "lock",
     desc: "OS sandbox for shell, project and check commands",
     category: "Settings",
-    tags: ["security", "isolation", "bubblewrap", "seatbelt", "credentials"],
+    tags: ["security", "isolation", "bubblewrap", "seatbelt", "restricted token", "credentials"],
   },
   {
     cmd: "/telemetry",

@@ -46,14 +46,14 @@ type Write = TaskGraph["tasks"][number]["writes"][number];
 
 /** Paths that always need a person, whatever the limits (design section 5.2). */
 const alwaysHuman =
-  /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
+  /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
 
 /**
  * Project manifests and tool configs. Creating one that does not exist yet is how a scaffold
  * starts and changes nothing a person has reviewed; modifying one stays with a person.
  */
 const manifestFile =
-  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|tsconfig[^/]*|biome[^/]*)$/i;
+  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|tsconfig[^/]*|biome[^/]*)$/i;
 
 /**
  * Whether a write needs a person whatever the limits; `exists` tells which files are already there.
@@ -240,8 +240,39 @@ export function planScopeAdvice(
   const problems = [...new Set([...always, ...scopeProblems(limits, graph).map((p) => p.text)])];
   if (!problems.length) return [];
   return [
-    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks; if every listed write is needed, submit the same plan again and a person approves it.`,
+    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks. If every listed write is needed, submit the plan again unchanged: it is accepted and a person approves it once at approval, which authorizes every write it lists. Do not mention approval in task descriptions or rationales; the tasks run only after the person approved.`,
   ];
+}
+
+const APPROVAL = /\bapprov/i;
+const GATE =
+  /\b(human|person|people|manual(ly)?|requires?|required|needs?|needed|waits?|pending|until|before|without|not (been )?(given|provided|granted))\b/i;
+
+/** A text without the sentences that make a step wait for an approval (#797). */
+function withoutApproval(text: string, fallback: string): string {
+  const kept = text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !(APPROVAL.test(sentence) && GATE.test(sentence)))
+    .join(" ")
+    .trim();
+  return kept || fallback;
+}
+
+/**
+ * Task descriptions and rationales without approval remarks. A planner told that a write needs a
+ * person copied that into the task ("this workflow path requires human approval"), and the
+ * implementer then refused the write after the person had approved the plan (R12 url-shortener
+ * c86f72da). A task only runs after its plan was approved, so such a remark is never true there.
+ */
+export function withoutApprovalRemarks(graph: TaskGraph): TaskGraph {
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => ({
+      ...task,
+      description: withoutApproval(task.description, task.title),
+      rationale: withoutApproval(task.rationale, "Required by the approved plan"),
+    })),
+  };
 }
 
 /**

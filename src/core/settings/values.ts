@@ -4,6 +4,11 @@
  */
 import { z } from "zod";
 import { getToolCatalog } from "../tools/constants.js";
+import {
+  LibraryDocsSchema,
+  type LibraryDocsSource,
+  libraryDocsCheck,
+} from "../workflows/library-docs.js";
 import { qualityRuleCatalog } from "../workflows/quality/builtin-rules.js";
 import {
   readSettingPath,
@@ -47,6 +52,8 @@ export function settingValueSchema(setting: SettingDefinition): z.ZodType {
         .refine((map) => Object.keys(map).length <= 100);
     case "secret":
       return z.string().trim().min(1).max(4096);
+    case "library-docs":
+      return LibraryDocsSchema.nullable();
   }
 }
 
@@ -68,6 +75,16 @@ export interface SettingsView {
   values: Record<string, SettingValue>;
   /** Names and descriptions of the `string-list` catalogs. */
   catalogs: Record<SettingCatalog, Array<{ name: string; description: string }>>;
+  /** What the server found when it checked a setting's value in use, by setting ID. */
+  checks?: Record<string, SettingCheck>;
+}
+
+/** The result of checking a setting's value, as `baked workflow doctor` reports it. */
+export interface SettingCheck {
+  status: "ok" | "warn" | "fail" | "skip";
+  title: string;
+  detail?: string;
+  fix?: string;
 }
 
 export interface SettingsLayers {
@@ -78,6 +95,8 @@ export interface SettingsLayers {
   effective: unknown;
   /** Where a secret setting is stored, if anywhere. */
   secret(id: string): "env" | "keychain" | "file" | "none";
+  /** The project directory; with it, values that name a place in it are checked. */
+  workspace?: string;
 }
 
 /** Values older config files hold for `semanticSummaries`, mapped to the current names. */
@@ -120,11 +139,20 @@ export function settingsView(layers: SettingsLayers): SettingsView {
     name,
     description,
   }));
+  const checks: Record<string, SettingCheck> = {};
+  const docs = values.libraryDocs?.value as LibraryDocsSource | null | undefined;
+  if (docs && layers.workspace) {
+    const servers = (layers.effective as { mcpServers?: { name: string; disabled?: boolean }[] })
+      .mcpServers;
+    const { status, title, detail, fix } = libraryDocsCheck(layers.workspace, docs, servers ?? []);
+    checks.libraryDocs = { status, title, ...(detail ? { detail } : {}), ...(fix ? { fix } : {}) };
+  }
   return {
     pages: SETTING_PAGES,
     settings: SETTINGS,
     values,
     catalogs: { tools, "quality-rules": qualityRuleCatalog() },
+    ...(Object.keys(checks).length ? { checks } : {}),
   };
 }
 

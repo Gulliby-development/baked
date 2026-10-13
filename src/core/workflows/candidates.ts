@@ -16,6 +16,18 @@ export function candidateCount(policy: { candidates?: number | undefined }): num
   return policy.candidates ?? 1;
 }
 
+/**
+ * The model candidate `index` (1-based) runs on: `candidateModels[(index - 1) mod n]`, or null
+ * when the policy names none and the task stage's route applies.
+ */
+export function candidateModel(
+  policy: { candidateModels?: string[] | undefined },
+  index: number,
+): string | null {
+  const models = policy.candidateModels;
+  return models?.length ? (models[(index - 1) % models.length] ?? null) : null;
+}
+
 /** One finished candidate, as the selection sees it. */
 export interface CandidateResult {
   /** 1-based position among the task's candidates. */
@@ -35,7 +47,14 @@ export interface CandidateResult {
 export interface CandidateSelection {
   /** The candidate to integrate, or null when none finished its implementation. */
   winner: number | null;
-  method: "only" | "vote" | "critic" | "smallest" | "fewest-failures" | "none";
+  method:
+    | "only"
+    | "vote"
+    | "distinguishing-test"
+    | "critic"
+    | "smallest"
+    | "fewest-failures"
+    | "none";
   reason: string;
   /** Candidates that finished and passed every required task check. */
   passing: number[];
@@ -118,12 +137,15 @@ export function candidatesToJudge(results: CandidateResult[], criticDecides: boo
  * Picks the candidate to integrate. Candidates that did not finish or failed a required task
  * check drop out; the passing ones vote by identical normalized change. A calibrated critic in
  * `select` mode (`criticDecides`) picks the best-scored passing candidate instead of the vote;
- * otherwise critic scores break a tie between finalists, and the smallest change breaks what
- * is left. When no candidate passes, the one with the fewest failing checks goes on to repair.
+ * otherwise a distinguishing test narrows a tie between finalists (`distinguished`: the finalists
+ * whose output showed what the spec requires, when the test ran), critic scores break what is
+ * left, and the smallest change breaks the rest. When no candidate passes, the one with the
+ * fewest failing checks goes on to repair.
  */
 export function selectCandidate(
   results: CandidateResult[],
   criticDecides = false,
+  distinguished: readonly number[] | null = null,
 ): CandidateSelection {
   const passing = results.filter(passes);
   const clusters = voteClusters(results);
@@ -190,11 +212,28 @@ export function selectCandidate(
       finalists: [winner.index],
     };
   }
-  const finalists = tied.map((c) => c[0] as CandidateResult);
-  const lead =
+  const tiedFinalists = tied.map((c) => c[0] as CandidateResult);
+  let lead =
     size > 1
-      ? `Candidates ${list(finalists.map((r) => r.index))} tied in the vote (${String(size)} each)`
+      ? `Candidates ${list(tiedFinalists.map((r) => r.index))} tied in the vote (${String(size)} each)`
       : `The ${String(passing.length)} candidates that passed their checks all made different changes`;
+  // A distinguishing test that some finalists pass and others fail narrows the tie (#769).
+  const kept = distinguished
+    ? tiedFinalists.filter((r) => distinguished.includes(r.index))
+    : tiedFinalists;
+  const finalists = kept.length && kept.length < tiedFinalists.length ? kept : tiedFinalists;
+  if (finalists !== tiedFinalists) {
+    const only = finalists.length === 1 ? (finalists[0] as CandidateResult) : null;
+    if (only)
+      return {
+        ...base,
+        winner: only.index,
+        method: "distinguishing-test",
+        reason: `${lead}; only candidate ${String(only.index)} printed what the spec requires on the distinguishing test`,
+        finalists: tiedFinalists.map((r) => r.index),
+      };
+    lead = `${lead}; candidates ${list(finalists.map((r) => r.index))} passed the distinguishing test`;
+  }
   const judged = scored(finalists);
   if (judged)
     return {
@@ -202,7 +241,7 @@ export function selectCandidate(
       winner: judged.index,
       method: "critic",
       reason: `${lead}; the critic scored candidate ${String(judged.index)} highest (${(judged.score ?? 0).toFixed(2)})`,
-      finalists: finalists.map((r) => r.index),
+      finalists: tiedFinalists.map((r) => r.index),
     };
   const smallest = best(finalists) as CandidateResult;
   return {
@@ -210,6 +249,6 @@ export function selectCandidate(
     winner: smallest.index,
     method: "smallest",
     reason: `${lead}; candidate ${String(smallest.index)} makes the smallest change (${String(smallest.changedLines)} lines)`,
-    finalists: finalists.map((r) => r.index),
+    finalists: tiedFinalists.map((r) => r.index),
   };
 }

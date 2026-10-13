@@ -439,17 +439,22 @@ export const testOrDocFile = (file: string | null): boolean =>
  * same kind when every criterion it names has evidence. A low `correctness` or `contradicts`
  * finding qualifies too: with every required check passing it is a detail the checks accept
  * (junitdigest 3e5be74b spent about 1.1M each on `time.After` in a test helper and `%q` in an
- * error message, #744), not a reason for another convergence round.
+ * error message, #744), not a reason for another convergence round. A medium finding on a
+ * criterion the review marks `fail` repairs: dirdrift-update 6b57dc61 completed with AC-008 (a
+ * README example the brief ordered) failing (#801).
  */
 export function passesWithNotes(
   finding: Finding,
   coverage: Review["coverage"],
   checksPass: boolean,
 ): boolean {
+  const failing = finding.criterionIds.some(
+    (id) => coverage.find((c) => c.criterionId === id)?.verdict === "fail",
+  );
   return (
     checksPass &&
     (finding.severity === "low" ||
-      (finding.severity === "medium" && testOrDocFile(finding.file))) &&
+      (finding.severity === "medium" && testOrDocFile(finding.file) && !failing)) &&
     (finding.kind === "partial" ||
       (finding.kind === "missing" && testOrDocFile(finding.file)) ||
       (finding.severity === "low" &&

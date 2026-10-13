@@ -113,6 +113,30 @@ describe("dependency check", () => {
     expect(off.urls).toEqual([]);
   });
 
+  // dirdrift-update 6b57dc61: FsCheck.Xunit was added to an existing test project although the
+  // policy forbids new dependencies; the check listed it as ok.
+  test("a package added to an existing manifest that the request and spec do not name blocks", async () => {
+    const csproj = (refs: string[]) =>
+      `<Project>\n  <ItemGroup>\n${refs.map((r) => `    <PackageReference Include="${r}" Version="1" />`).join("\n")}\n  </ItemGroup>\n</Project>\n`;
+    const files = [
+      { path: "tests/App.Tests/App.Tests.csproj", before: csproj(["xunit"]), content: csproj(["xunit", "FsCheck.Xunit", "Serilog"]) },
+      { path: "tools/new/package.json", before: null, content: pkg({ chalk: "^5" }) },
+    ];
+    const lookups = { lookups: false, now: NOW };
+    const forbidden = await checkDependencies(files, new Set(), { ...lookups, requested: "Add a --json flag; log with Serilog." });
+    expect(forbidden.dependencies.map((d) => [d.name, d.verdict, d.blocking])).toEqual([
+      ["FsCheck.Xunit", "unrequested", true],
+      ["Serilog", "unknown", false],
+      ["chalk", "unknown", false],
+    ]);
+    expect(forbidden.dependencies[0]?.detail).toContain("allowNewDependencies is false");
+    // A name that only starts like the package does not request it; without the option nothing is judged.
+    const prefix = await checkDependencies(files, new Set(), { ...lookups, requested: "Use FsCheck for property tests and Serilog" });
+    expect(prefix.dependencies.find((d) => d.name === "FsCheck.Xunit")?.verdict).toBe("unrequested");
+    const open = await checkDependencies(files, new Set(), lookups);
+    expect(open.dependencies.every((d) => !d.blocking)).toBe(true);
+  });
+
   test("dependencies already declared at baseline are not the run's", async () => {
     const result = await checkDependencies(
       [{ path: "package.json", before: pkg({ "made-up": "1" }), content: pkg({ "made-up": "2" }) }],
@@ -201,6 +225,57 @@ describe("dependency check in a run", () => {
       expect(service.store.checkDetails(run.runId).every((c) => c.status === "passed")).toBe(true);
       const report = runReport(service.store, run.runId);
       expect(report).toContain("Semgrep: not run (Semgrep is not installed).");
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+describe("new dependencies in a run on an existing project", () => {
+  const csproj = (refs: string[]) =>
+    `<Project>\n  <ItemGroup>\n${refs.map((r) => `    <PackageReference Include="${r}" Version="1" />`).join("\n")}\n  </ItemGroup>\n</Project>\n`;
+  class AddingExecutor extends FixtureExecutor {
+    implementations = 0;
+    constructor(private readonly dir: string) {
+      super(dir);
+    }
+    override async execute(request: ExecutionRequest) {
+      if (request.profile.output === "plan") {
+        const result = await super.execute(request);
+        const plan = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        plan.taskGraph.tasks[0]?.writes.push({ path: "tests/App.Tests/App.Tests.csproj", action: "modify" });
+        return result;
+      }
+      if (request.profile.output === "implementation")
+        writeFileSync(join(this.dir, "tests/App.Tests/App.Tests.csproj"), csproj(this.implementations++ === 0 ? ["xunit", "FsCheck.Xunit"] : ["xunit"]));
+      return super.execute(request);
+    }
+  }
+
+  test("a package nobody asked for is a blocking finding that the correction removes", async () => {
+    // Lookups off: the verdict needs no registry.
+    const fixture = workflowFixture({
+      policy: { ...fixturePolicy, registryLookups: false },
+      executor: (root) => {
+        mkdirSync(join(root, "src"), { recursive: true });
+        writeFileSync(join(root, "src/existing.ts"), "export const existing = 1;\n");
+        mkdirSync(join(root, "tests/App.Tests"), { recursive: true });
+        writeFileSync(join(root, "tests/App.Tests/App.Tests.csproj"), csproj(["xunit"]));
+        return new AddingExecutor(root);
+      },
+    });
+    fixture.service.scheduler.semgrep = null;
+    try {
+      const { service } = fixture;
+      const run = await fixture.start();
+      await service.drive(run.runId, new AbortController().signal);
+      await fixture.approve(run.runId);
+      const done = await service.drive(run.runId, new AbortController().signal);
+      expect(done.status).toBe("completed");
+      const findings = service.store.findings(run.runId).map((f) => ({ status: f.status, body: JSON.parse(f.body_json) }));
+      const added = findings.find((f) => String(f.body.claim).startsWith("Dependency FsCheck.Xunit: "));
+      expect(added?.body.claim).toContain("allowNewDependencies is false");
+      expect(added?.status).toBe("resolved");
     } finally {
       await fixture.dispose();
     }

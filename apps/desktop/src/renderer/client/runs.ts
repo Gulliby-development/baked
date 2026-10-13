@@ -9,6 +9,23 @@ import { type RunStatus, workflow } from "./workflow.js";
  * `src/headless/workflow.ts`; only the fields the screens read are declared.
  */
 
+/** `GET .../checks` (`src/core/workflows/follow.ts`). */
+export interface PullRequestChecks {
+  runId: string;
+  branch: string;
+  commit: string;
+  pullRequest: { number: number; url: string } | null;
+  state: "none" | "pending" | "passed" | "failed";
+  checks: {
+    name: string;
+    state: "pending" | "passed" | "failed";
+    detail: string;
+    url: string | null;
+  }[];
+  /** With failed checks: the fix-ci run to start; deliver it as a follow-up of this run. */
+  fix?: { workflowId: string; featureId: string; prompt: string; followUp: string };
+}
+
 export interface RunRow extends RunSnapshot {
   reason?: string;
 }
@@ -173,6 +190,9 @@ export const runs = {
     ).content,
   usage: (key: string, runId: string) => call<RunUsage>(key, "GET", runPath(runId, "usage")),
   /** `GET /v1/workflow/runs/:id/report`: the run report in Markdown (src/core/workflows/run-report.ts). */
+  /** One read of the checks on the commit the run's latest delivery pushed (`follow --once`). */
+  checks: (key: string, runId: string) =>
+    call<PullRequestChecks>(key, "GET", runPath(runId, "checks")),
   report: async (key: string, runId: string): Promise<string> =>
     (await call<{ runId: string; markdown: string }>(key, "GET", runPath(runId, "report")))
       .markdown,

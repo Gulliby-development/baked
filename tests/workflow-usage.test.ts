@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ArtifactRow, AttemptRow, StepRow, WorkflowStore } from "../src/core/workflows/store.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import { findPricing } from "../src/core/llm/pricing.js";
-import { runUsage, usageSummary } from "../src/core/workflows/usage.js";
+import { runUsage, toolTokensLine, usageSummary } from "../src/core/workflows/usage.js";
 import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.js";
 
 const runId = "run-1";
@@ -92,6 +92,45 @@ function makeStore(
 }
 
 describe("runUsage totals", () => {
+  test("attributes step tokens to the tools each step called (#750)", () => {
+    const step = (input: number, output: number, tools?: string[]) => ({
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: 0,
+      toolCalls: tools?.length ?? 0,
+      ...(tools ? { tools } : {}),
+      compactedBytes: 0,
+    });
+    const store = makeStore(
+      [makeAttempt("review", 1_000), makeAttempt("older", 500)],
+      new Map([
+        [
+          "review",
+          makeUsage([
+            step(90, 10, ["run_repro"]),
+            step(200, 0, ["read", "run_repro"]),
+            step(300, 0),
+          ]),
+        ],
+        ["older", makeUsage([{ ...step(400, 100), toolCalls: 2 }])],
+      ]),
+    );
+    const report = runUsage(store, runId);
+    expect(report.attempts.find((a) => a.attemptId === "review")?.tools).toEqual([
+      { tool: "run_repro", calls: 2, tokens: 200 },
+      { tool: "read", calls: 1, tokens: 100 },
+    ]);
+    // A record written before tool names has its count only, and attributes nothing.
+    expect(report.attempts.find((a) => a.attemptId === "older")?.tools).toEqual([]);
+    expect(report.tools).toEqual([
+      { tool: "run_repro", calls: 2, tokens: 200 },
+      { tool: "read", calls: 1, tokens: 100 },
+    ]);    expect(toolTokensLine(report.tools)).toBe(
+      "run_repro 2 calls 200 tokens, read 1 call 100 tokens",
+    );
+    expect(toolTokensLine([])).toBeNull();
+  });
+
   test("accepts stage and positive top values for usage arguments", () => {
     expect(
       parseWorkflowArgs([

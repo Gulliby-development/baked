@@ -3,6 +3,7 @@ import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import { useTheme } from "../../core/theme/index.js";
 import type { UndoResult } from "../../core/workers/workflow-client.js";
 import { defaultWorkflowPolicy } from "../../core/workflows/defaults.js";
+import type { PullRequestChecks } from "../../core/workflows/follow.js";
 import { usageFileName, writeUsageMarkdown } from "../../core/workflows/usage-markdown.js";
 import type { StartRunInput } from "../../core/workflows/view.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
@@ -116,6 +117,13 @@ export function WorkflowPanel({
   const [confirmReroute, setConfirmReroute] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  /** The fix-ci run the last read of failed pull request checks proposes; Y starts it. */
+  const [fixChecks, setFixChecks] = useState<{
+    featureId: string;
+    prompt: string;
+    workflowId: string;
+    summary: string;
+  } | null>(null);
   // The last undo of the open run, shown until Esc or another run.
   const [undone, setUndone] = useState<{ runId: string; report: UndoResult["report"] } | null>(
     null,
@@ -189,6 +197,29 @@ export function WorkflowPanel({
     try {
       const { report } = await workflowSession(workspace).undo(id);
       setUndone({ runId: id, report });
+    } catch (err) {
+      setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  /** Reads the delivered pull request's checks once; failed checks offer a fix-ci run. */
+  const readChecks = async (id: string): Promise<void> => {
+    try {
+      const read = (await workflowSession(workspace).command(
+        ["follow", id, "--once"],
+        new AbortController().signal,
+      )) as PullRequestChecks & { fix?: { featureId: string; prompt: string; workflowId: string } };
+      const failed = read.checks.filter((c) => c.state === "failed").map((c) => c.name);
+      const where = read.pullRequest ? `#${read.pullRequest.number}` : read.branch;
+      const summary =
+        read.state === "failed"
+          ? `${where}: failed ${failed.join(", ")}`
+          : read.state === "passed"
+            ? `${where}: all ${read.checks.length} checks passed`
+            : read.state === "pending"
+              ? `${where}: checks still running`
+              : `${where}: no checks reported yet`;
+      if (read.fix) setFixChecks({ ...read.fix, summary });
+      else setFlash({ kind: read.state === "passed" ? "ok" : "info", message: summary });
     } catch (err) {
       setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
     }
@@ -298,6 +329,23 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setConfirmUndo(false);
       return;
     }
+    if (fixChecks) {
+      event.preventDefault();
+      if (key === "y") {
+        const fix = fixChecks;
+        setFixChecks(null);
+        void start({
+          workflowId: fix.workflowId,
+          featureId: fix.featureId,
+          prompt: fix.prompt,
+          model: activeModel && activeModel !== "none" ? activeModel : "",
+          budget: "standard",
+        }).catch((err: unknown) =>
+          setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) }),
+        );
+      } else if (key === "escape" || key === "n") setFixChecks(null);
+      return;
+    }
     if (confirmDiscard) {
       event.preventDefault();
       if (key === "y") {
@@ -342,6 +390,7 @@ export function WorkflowPanel({
     else if (action.action === "reroute") setConfirmReroute(true);
     else if (action.action === "cancel") setConfirmCancel(true);
     else if (action.action === "discard-worktree") setConfirmDiscard(true);
+    else if (action.action === "checks") void readChecks(snapshot.runId);
     else if (action.action === "undo") {
       if (!driving) setConfirmUndo(true);
     } else void act(action.action);
@@ -639,6 +688,11 @@ export function WorkflowPanel({
         {confirmDiscard && worktree ? (
           <text fg={t.warning}>
             {`Remove this run's worktree ${worktree.path} and delete its branch ${worktree.branch}? Work that was not delivered is lost. Y confirms; N keeps them.`}
+          </text>
+        ) : null}
+        {fixChecks ? (
+          <text fg={t.warning}>
+            {`${fixChecks.summary}. Start a fix-ci run (${fixChecks.featureId}) for them? Deliver it afterwards with --follow-up ${runId}. Y starts it; N leaves it.`}
           </text>
         ) : null}
         {confirmCancel ? (

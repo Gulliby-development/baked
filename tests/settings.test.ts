@@ -7,6 +7,7 @@ import type { SettingsSecretStore } from "../src/core/api/settings-routes.js";
 import { mergeConfigs, DEFAULT_CONFIG } from "../src/config/index.js";
 import { SETTING_PAGES, SETTINGS, writeSettingPath } from "../src/core/settings/schema.js";
 import { planSettingsChange, SettingsChangeError, settingValueSchema, settingsView, type SettingsView } from "../src/core/settings/values.js";
+import { describeLibraryDocs, parseToolArgs } from "../src/core/commands/library-docs-editor.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -165,6 +166,32 @@ describe("settings API", () => {
     expect(reset.values["performance.effort"]).toMatchObject({ value: "off", source: "default" });
   });
 
+  test("the library docs source is saved whole, checked like the doctor checks it, and removed with null", async () => {
+    const { fixture, patch, call } = await setup();
+    const set = await patch({ scope: "project", set: { libraryDocs: { dir: "docs/libs", maxChars: 4000 } } });
+    expect(set.status).toBe(200);
+    const view = (await set.json()) as SettingsView;
+    expect(view.values.libraryDocs).toMatchObject({ value: { dir: "docs/libs", maxChars: 4000 }, source: "project" });
+    expect(view.checks?.libraryDocs).toMatchObject({ status: "warn", title: "Library docs directory does not exist" });
+    expect(fixture.service.config.libraryDocs).toEqual({ dir: "docs/libs", maxChars: 4000 });
+    mkdirSync(join(fixture.root, "docs", "libs"), { recursive: true });
+    const found = (await (await call("/v1/settings")).json()) as SettingsView;
+    expect(found.checks?.libraryDocs?.status).toBe("ok");
+
+    const mcp = (await (
+      await patch({ scope: "project", set: { libraryDocs: { mcp: { server: "context7", tool: "docs" } } } })
+    ).json()) as SettingsView;
+    expect(mcp.values.libraryDocs?.value).toEqual({ mcp: { server: "context7", tool: "docs" } });
+    expect(mcp.checks?.libraryDocs?.title).toContain("not configured");
+
+    const both = await patch({ scope: "project", set: { libraryDocs: { dir: "d", mcp: { server: "s", tool: "t" } } } });
+    expect(both.status).toBe(400);
+    const removed = (await (await patch({ scope: "project", set: { libraryDocs: null } })).json()) as SettingsView;
+    expect(removed.values.libraryDocs).toMatchObject({ value: null, source: "default" });
+    expect(removed.checks?.libraryDocs).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(fixture.root, ".baked", "config.json"), "utf8"))).toEqual({});
+  });
+
   test("PATCH refuses invalid values and settings outside their scope", async () => {
     const { patch } = await setup();
     const bad = await patch({ scope: "global", set: { "performance.effort": "huge" } });
@@ -172,5 +199,16 @@ describe("settings API", () => {
     expect(((await bad.json()) as { error: { code: string } }).error.code).toBe("INVALID_SETTING");
     expect((await patch({ scope: "project", set: { toolTimeout: 5 } })).status).toBe(400);
     expect((await patch({ scope: "global" })).status).toBe(400);
+  });
+});
+
+describe("terminal library docs editor", () => {
+  test("tool arguments are key=value pairs separated by ; and the row names the source", () => {
+    expect(parseToolArgs("libraryName={name}; version={version}")).toEqual({ libraryName: "{name}", version: "{version}" });
+    expect(parseToolArgs("")).toEqual({});
+    expect(parseToolArgs("novalue")).toContain("key=value");
+    expect(describeLibraryDocs({ dir: "docs/libs" })).toBe("directory docs/libs");
+    expect(describeLibraryDocs({ mcp: { server: "context7", tool: "docs" } })).toBe("MCP context7 / docs");
+    expect(describeLibraryDocs(null)).toBe("not set");
   });
 });
