@@ -124,6 +124,7 @@ import {
 } from "./leases.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
+  fileReferences,
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
   withDerivedRequirements,
@@ -4901,6 +4902,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       });
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
+    const references = state.graph ? fileReferences(state.graph) : {};
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
       const kept = state.reviews[reviewer.key];
@@ -4955,6 +4957,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               evidence: this.evidenceContext(runId, state),
               ...rerun,
               ...(greenfield ? { baseline: { greenfield } } : {}),
+              ...(reviewer.dimension === "correctness" && Object.keys(references).length
+                ? { references }
+                : {}),
               ...extra,
             },
             signal,
