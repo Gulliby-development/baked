@@ -205,6 +205,8 @@ export interface AttemptUsageRow {
   outputTokens?: number | null;
   /** Estimated cost; 0 for host attempts, null when it cannot be priced, absent on older backends. */
   costUsd?: number | null;
+  /** The reasoning effort the attempt sent; null when none, absent on older backends. */
+  effort?: string | null;
 }
 
 /** `GET /v1/workflow/runs/:id/usage`, as `baked workflow usage RUN_ID` prints it. */
