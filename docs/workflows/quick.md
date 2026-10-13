@@ -75,7 +75,7 @@ The generic `planner` keeps its limits everywhere, so `quick-fix` and custom def
 ### 6. Entry points
 
 - `quick` is added to `PRESETS` and `builtinPresets`, so `workflow definitions`, the editor and the new-run form list it.
-- CLI: `baked quick TEXT... [--feature ID] [--model ID] [--events] [--worktree] [--confirm-auto-approval HASH] [--policy FILE]`, also `--prompt-file FILE` instead of TEXT. `src/boot.tsx` routes `quick` to `runWorkflowCli(["quick", ...])`. In the workflow CLI, `quick` is a command that resolves the feature ID and runs `run` with `--workflow quick` (or the project's `workflows.quickWorkflow`, see below), so exit codes, events and the printed snapshot are those of `run`. It refuses to start when the policy has no feature check, with a message that names `workflows.policy.checks`, instead of the schema error an empty check stage would give.
+- CLI: `baked quick TEXT... [--feature ID] [--model ID] [--events] [--worktree] [--confirm-auto-approval HASH] [--policy FILE]`, also `--prompt-file FILE` instead of TEXT. `src/boot.tsx` routes `quick` to `runWorkflowCli(["quick", ...])`. In the workflow CLI, `quick` is a command that resolves the feature ID and runs `run` with `--workflow quick` (or the project's `workflows.quickWorkflow`, see below), so exit codes, events and the printed snapshot are those of `run`. It refuses to start when the policy has no feature check, with a message that names `workflows.policy.checks`, instead of a run that blocks on the schema error an empty check stage would give. The refusal comes from the run start itself, so `POST /v1/workflow/runs` with `workflow: "quick"` (and any shipped preset with a check stage) answers it as `400 INVALID_DEFINITION`, and `baked workflow doctor --workflow quick` reports the start as failed with the fix `/workflow gates`.
 - `baked workflow quick ...` is the same command.
 - TUI: `/workflow quick [text]` opens the new-run form with the text and the `quick` workflow preselected. The form already lists presets, so `quick` is also selectable there.
 - Config: `workflows.quickWorkflow` (optional, a definition ID) lets a project point `baked quick` at its own copy, for example one with auto approval.
@@ -106,5 +106,5 @@ An independent review of this design against the code found no blockers and conf
 - The scoped plan budget applies only to scoping planners instead of every plan stage without research, so `quick-fix` keeps its planner limits.
 - The step formula adds the submit steps before the cap, the token cap is recomputed from the final step count, and a plan step is budgeted at 20k tokens.
 - `quick-planner` has `maxOutputTokens` 16384, like `planner`.
-- `baked quick` refuses a policy without feature checks with a clear message.
+- `baked quick`, the local API and doctor refuse a policy without feature checks with a clear message.
 - `quick` is registered in `PRESETS`, the new-run form gets an initial-workflow prop for `/workflow quick`, and the docs name the six presets and the clash with the budget preset.

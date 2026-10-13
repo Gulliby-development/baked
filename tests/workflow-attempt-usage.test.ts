@@ -7,7 +7,7 @@ import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema } from "../src/core/workflows/schemas.js";
 import { AttemptStepController, type AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import { runUsage } from "../src/core/workflows/usage.js";
-import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -49,15 +49,15 @@ function scriptModel(script: Array<LanguageModelV3GenerateResult | (() => never)
   });
 }
 
-async function nativeAttempt(policy = fixturePolicy) {
+async function nativeAttempt(policy = fixturePolicy, role: "research" | "implementation" = "research", task?: Task) {
   const fixture = workflowFixture({ policy });
   cleanups.push(fixture.dispose);
   const { store } = fixture.service;
   const run = await fixture.start();
   store.transaction(() => store.transition(run.runId, "running"));
   const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
-  const researcher = profiles.find((p) => p.output === "research");
-  if (!researcher) throw new Error("research profile missing");
+  const researcher = profiles.find((p) => p.output === role);
+  if (!researcher) throw new Error(`${role} profile missing`);
   const profile: AgentProfile = { ...researcher, model: "openai/fixture-model" };
   const stepId = store.beginStep(run.runId, "fixture");
   const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, policy);
@@ -73,6 +73,7 @@ async function nativeAttempt(policy = fixturePolicy) {
     prompt: "Research the fixture",
     signal: new AbortController().signal,
     maxSteps: 10,
+    ...(task ? { task } : {}),
   };
   const usageRecord = (): AttemptUsageRecord | undefined => {
     const row = store.latestArtifact(run.runId, `attempts/${attemptId}/usage.json`);
@@ -199,6 +200,44 @@ describe("attempts whose provider reports no tokens", () => {
     const response = await executor.execute(request);
     expect(response).toMatchObject({ inputTokens: 5_000, outputTokens: 100 });
     expect(response.usageComplete).toBeUndefined();
+  });
+});
+
+describe("repair probes", () => {
+  test("each run_probe call is journaled with the attempt", async () => {
+    scriptModel([
+      step(1000, 50, { name: "run_probe", input: { executable: "bun", args: ["-e", "console.log('probe-ok')"] } }),
+      () => {
+        throw new Error("provider unavailable");
+      },
+    ]);
+    const repair: Task = {
+      id: "T900",
+      title: "Repair",
+      description: "Repair the failing check",
+      requirementIds: ["FR-001"],
+      criterionIds: ["AC-001"],
+      dependsOn: [],
+      profileId: "implementer",
+      writes: [{ path: "value.txt", action: "modify" }],
+      readHints: [],
+      checkIds: ["check"],
+      origin: "repair",
+      findingIds: [],
+      rationale: "check failed",
+    };
+    const { store, run, attemptId, executor, request } = await nativeAttempt(fixturePolicy, "implementation", repair);
+    await expect(executor.execute(request)).rejects.toThrow("provider unavailable");
+    const row = store.latestArtifact(run.runId, `attempts/${attemptId}/probe-1.json`);
+    expect(row?.kind).toBe("probe");
+    const probe = JSON.parse(store.readArtifact(run.runId, row?.id ?? "")) as Record<string, unknown>;
+    expect(probe).toMatchObject({ taskId: "T900", executable: "bun", status: "ran", exitCode: 0 });
+    expect(String(probe.output)).toContain("probe-ok");
+    const tools = store
+      .events(run.runId)
+      .filter((e) => e.type === "tool.finished")
+      .map((e) => e.payload as { tool: string; status: string });
+    expect(tools).toContainEqual(expect.objectContaining({ tool: "run_probe", status: "ok" }));
   });
 });
 
