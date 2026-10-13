@@ -46,7 +46,7 @@ import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
 import { closeAction } from "./tray-model.js";
-import { resolveVoiceDir, VoiceEngine } from "./voice.js";
+import { resolveVoiceDir, VoiceEngine, voiceFix } from "./voice.js";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const settings = new SettingsStore(join(app.getPath("userData"), "settings.json"));
@@ -69,14 +69,16 @@ function backendCommand() {
   });
 }
 
-const voice = new VoiceEngine(
-  resolveVoiceDir({
-    override: process.env.BAKED_VOICE_DIR,
-    packaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    appPath: app.getAppPath(),
-  }),
-);
+const voiceLocation = {
+  override: process.env.BAKED_VOICE_DIR,
+  packaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  appPath: app.getAppPath(),
+};
+const voice = new VoiceEngine(resolveVoiceDir(voiceLocation), voiceFix(voiceLocation));
+
+/** The latest listing of the projects; a failed one fails the window's request for them. */
+let listed: Promise<unknown> = Promise.resolve();
 
 let window: BrowserWindow | null = null;
 let quitting = false;
@@ -204,8 +206,18 @@ function isAppUrl(url: string): boolean {
 }
 
 function registerIpc(): void {
-  handle(IPC.projects, () => supervisor.projects());
-  handle(IPC.refreshProjects, () => supervisor.refresh());
+  handle(IPC.projects, async () => {
+    await listed.catch((error: unknown) => {
+      throw new Error(
+        `BAKED could not list projects: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    return supervisor.projects();
+  });
+  handle(IPC.refreshProjects, () => {
+    listed = supervisor.refresh();
+    return listed;
+  });
   handle(IPC.openProject, async (_e, key: string) => {
     await supervisor.open(key);
     rememberOpen();
@@ -423,14 +435,12 @@ async function boot(): Promise<void> {
     callback(allowPermission(permission, details, isAppUrl)),
   );
   registerIpc();
+  listed = supervisor.refresh();
   createWindow();
   try {
-    await supervisor.refresh();
-  } catch (error) {
-    dialog.showErrorBox(
-      "BAKED could not list projects",
-      error instanceof Error ? error.message : String(error),
-    );
+    await listed;
+  } catch {
+    // The window shows the error: its first request for the projects fails with it.
     return;
   }
   if (!settings.get().openLastProjects) return;

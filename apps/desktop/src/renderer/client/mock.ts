@@ -43,7 +43,8 @@ function project(
  * - `start-failure`: every project is closed and opening one fails; Restart then succeeds;
  * - `older`: the backends are an older BAKED that offers none of the optional capabilities;
  * - `uninitialized`: only `client-api`, open, in a folder without `baked/project.json`;
- * - `mic-denied`: as `default`, but the system refuses the microphone to voice input.
+ * - `mic-denied`: as `default`, but the system refuses the microphone to voice input;
+ * - `no-voice`: as `default`, but the speech engine is not installed.
  */
 export const MOCK_SCENARIOS = [
   "default",
@@ -52,6 +53,7 @@ export const MOCK_SCENARIOS = [
   "older",
   "uninitialized",
   "mic-denied",
+  "no-voice",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 
@@ -300,7 +302,14 @@ export function createMockBridge(scenario: MockScenario = "default"): DesktopBri
     onNavigate: () => () => {},
     windowAction: async () => {},
     onMaximized: () => () => {},
-    voiceStatus: async () => ({ available: true, model: "whistle" }),
+    voiceStatus: async () =>
+      scenario === "no-voice"
+        ? {
+            available: false,
+            reason:
+              'The speech engine is not installed. Run "bun run stage:voice" in apps/desktop ("bun run dev" does it on start), then restart the app.',
+          }
+        : { available: true, model: "whistle" },
     transcribe: async (samples, language) => ({
       text: `mock transcript of ${(samples.length / 16_000).toFixed(1)} s`,
       language: language ?? "en",
