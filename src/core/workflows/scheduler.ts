@@ -84,6 +84,7 @@ import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   fixerCommand,
   fixerTiers,
+  isCodePath,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -126,10 +127,12 @@ import {
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
   withDerivedRequirements,
+  withImplementationProfiles,
   withModuleDependencies,
   withReadDependencies,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
+import { type LearnedRule, rulesFor } from "./project-memory.js";
 import {
   compareWithBaseline,
   duplicationOf,
@@ -140,6 +143,14 @@ import {
   qualityClaim,
   readCodeFiles,
 } from "./quality/duplication.js";
+import {
+  type ChangedFile,
+  checkQualityRules,
+  QUALITY_BASELINE_FILES,
+  QUALITY_RULES,
+  type RuleFinding,
+  ruleClaim,
+} from "./quality/rules.js";
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
@@ -262,13 +273,14 @@ function planGraph(
   spec: Spec,
   plan: { markdown: string; taskGraph: TaskGraph },
   policy: RunPolicy,
+  profiles: AgentProfile[],
 ): TaskGraph {
   return withCoveringChecks(
     withTestDependencies(
       withReadDependencies(
         withModuleDependencies(
           withDerivedRequirements(spec, {
-            ...plan.taskGraph,
+            ...withImplementationProfiles(plan.taskGraph, profiles),
             specHash: hashJson(spec),
             planHash: hashBytes(plan.markdown),
           }),
@@ -669,7 +681,7 @@ export class WorkflowScheduler {
               const problems = this.planProblems(runId, spec, plan, policy, profiles);
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
-              const planned = planGraph(spec, plan, policy);
+              const planned = planGraph(spec, plan, policy, profiles);
               const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
               state.graph = graph;
               state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
@@ -1841,7 +1853,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     profiles: AgentProfile[],
   ): string[] {
-    const graph = planGraph(spec, plan, policy);
+    const graph = planGraph(spec, plan, policy, profiles);
     const problems: string[] = [];
     const root = this.rootOf(runId);
     try {
@@ -2309,8 +2321,24 @@ export class WorkflowScheduler {
         ? this.store.latestArtifact(runId, "assumptions/analysis.json")
         : null;
     const risks = assumed ? knownRisks(this.store.readArtifact(runId, assumed.id)) : null;
+    // Learned rules go to the agents that write and judge code: an implementer gets the rules of
+    // its task's paths, reviewers every rule with its scope (#643).
+    const task = (extra as { task?: Task } | null)?.task;
+    const rules =
+      state.learnedRules &&
+      (profile.context === "implementation" ||
+        profile.context === "review" ||
+        profile.context === "convergence")
+        ? rulesFor(
+            JSON.parse(
+              this.store.readArtifact(runId, state.learnedRules.artifactId),
+            ) as LearnedRule[],
+            profile.context === "implementation" && task ? task.writes.map((w) => w.path) : null,
+          )
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
+      ...(rules ? { learnedRules: rules } : {}),
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       ...(memory ? { projectMemory: memory } : {}),
       ...(risks ? { knownRisks: risks } : {}),
@@ -2844,10 +2872,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
+      const focus = correctionFocus(this.store, runId, state, task);
       const preloaded = await preloadTaskFiles(
         root,
-        task.writes,
-        `${task.title}\n${task.description}`,
+        focus.files.length ? focusFirst(task.writes, focus.files) : task.writes,
+        `${task.title}\n${task.description}\n${focus.symbols.join(" ")}`,
       );
       // The source manifest cannot see git-ignored files (a docs directory in .gitignore), but the
       // effect journal recorded every file this task changed, so it counts as well.
@@ -2900,6 +2929,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
             ...this.previousAttempt(runId, task.id),
+            ...(focus.files.length
+              ? {
+                  correctionFocus: {
+                    files: focus.files,
+                    symbols: focus.symbols,
+                    note: "The findings this task corrects point at these files and symbols; they come first in taskFiles. Start the fix there and read the other written files only when the fix needs them.",
+                  },
+                }
+              : {}),
             ...(inherited.length
               ? {
                   earlierEdits: {
@@ -3374,8 +3412,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           state,
           policy,
           entry.profile,
-          earlierEdits && entry.extra && typeof entry.extra === "object"
-            ? { ...entry.extra, earlierEdits }
+          entry.extra && typeof entry.extra === "object"
+            ? {
+                ...entry.extra,
+                ...(await this.correctionContext(runId, state, root, task)),
+                ...(earlierEdits ? { earlierEdits } : {}),
+              }
             : entry.extra,
           signal,
           task,
@@ -4050,6 +4092,39 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     }
     return true;
   }
+  /**
+   * A corrective task in its own worktree gets the files its findings point at, preloaded in
+   * its worktree, as a single-writer run gives them; planned tasks of a batch are unchanged.
+   */
+  private async correctionContext(
+    runId: string,
+    state: RuntimeState,
+    root: string,
+    task: Task,
+  ): Promise<Record<string, unknown>> {
+    const focus = correctionFocus(this.store, runId, state, task);
+    if (!focus.files.length) return {};
+    const preloaded = await preloadTaskFiles(
+      root,
+      focusFirst(task.writes, focus.files).filter((w) => focus.files.includes(w.path)),
+      `${task.title}\n${task.description}\n${focus.symbols.join(" ")}`,
+    );
+    return {
+      ...(preloaded
+        ? {
+            taskFiles: {
+              content: preloaded,
+              note: "The files the findings this task corrects point at, as the read tool shows them. Edit them directly; read the other written files only when the fix needs them.",
+            },
+          }
+        : {}),
+      correctionFocus: {
+        files: focus.files,
+        symbols: focus.symbols,
+        note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
+      },
+    };
+  }
   private async runTaskCheck(
     runId: string,
     child: string,
@@ -4374,7 +4449,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
-    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
+    if (!failures.length) failures.push(...(await this.qualityFindings(runId, state, policy)));
     if (failures.length)
       return this.recordFindings(runId, {
         schemaVersion: 1,
@@ -4524,8 +4599,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     }
   }
   /**
-   * Measures the code at approval, before any task edits it, as the baseline of the duplication
-   * ratchet (#638). Kept once per run: a revised plan compares with the same code.
+   * Measures the code at approval, before any task edits it: the baseline of the duplication
+   * ratchet (#638), and the planned code files as they are, so the rule pack (#639) checks only
+   * the lines the run adds. Kept once per run: a revised plan compares with the same code.
    */
   private async measureQualityBaseline(
     runId: string,
@@ -4533,17 +4609,113 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
     signal: AbortSignal,
   ): Promise<void> {
+    const root = runRoot(this.store.workspace, state);
+    if (!this.store.latestArtifact(runId, QUALITY_BASELINE_FILES)) {
+      const planned = (state.graph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path));
+      const existing = planned.filter((path) => state.expectedFiles?.[path] !== undefined);
+      const code = await readCodeFiles(root, [...new Set(existing)]);
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "quality",
+          QUALITY_BASELINE_FILES,
+          canonical(Object.fromEntries(code.files)),
+        ),
+      );
+    }
     if (duplicationOf(policy) === "off" || this.store.latestArtifact(runId, QUALITY_BASELINE))
       return;
-    const code = await readCodeFiles(
-      runRoot(this.store.workspace, state),
-      Object.keys(state.expectedFiles ?? {}),
-    );
+    const code = await readCodeFiles(root, Object.keys(state.expectedFiles ?? {}));
     signal.throwIfAborted();
     const baseline = measureBaseline(code.files, code.skipped);
     this.store.transaction(() =>
       this.store.artifact(runId, "quality", QUALITY_BASELINE, canonical(baseline)),
     );
+  }
+  /**
+   * The code quality gates after the command checks pass (#630): the duplication ratchet and
+   * the anti-slop rule pack. Both always record their result for the run report; their blocking
+   * findings are corrected like failed checks.
+   */
+  private async qualityFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    return [
+      ...(await this.duplicationFindings(runId, state, policy)),
+      ...(await this.ruleFindings(runId, state, policy)),
+    ].slice(0, 100);
+  }
+  /**
+   * The anti-slop rule pack on the lines the run added to code files. A file's baseline is the
+   * pre-image the run kept before its first edit; a changed file without one is checked, but its
+   * findings stay notes. Earlier rule findings close once no blocking match remains.
+   */
+  private async ruleFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    if (!state.snapshotId) return [];
+    const files = state.expectedFiles ?? {};
+    const baselineId = state.manifest.baselineSnapshotId;
+    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    const root = runRoot(this.store.workspace, state);
+    const kept = this.store.latestArtifact(runId, QUALITY_BASELINE_FILES);
+    const planned = kept
+      ? (JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, string>)
+      : {};
+    const changed: ChangedFile[] = [];
+    for (const path of changedPaths(before, files)) {
+      if (!isCodePath(path) || files[path] === undefined) continue;
+      const code = await readCodeFiles(root, [path]);
+      const content = code.files.get(path);
+      if (content === undefined) continue;
+      const hash = before[path];
+      changed.push({
+        path,
+        content,
+        before: hash
+          ? (planned[path] ?? readKept(this.store, runId, hash)?.toString("utf8") ?? undefined)
+          : null,
+      });
+    }
+    const result = checkQualityRules(root, changed, policy.qualityRules ?? {});
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_RULES, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.findings.filter((f) => f.blocking);
+    if (!blocking.length) {
+      this.store.transaction(() => {
+        for (const finding of this.store.findings(runId))
+          if (
+            ["open", "confirmed"].includes(finding.status) &&
+            ruleClaim(JSON.parse(finding.body_json).claim)
+          )
+            this.store.findingStatus(runId, finding.id, "resolved");
+      });
+      return [];
+    }
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    return blocking.map((match: RuleFinding) => {
+      const task = [...tasks].reverse().find((t) => t.writes.some((w) => w.path === match.file));
+      return {
+        id: newId(),
+        kind: "correctness" as const,
+        severity: "high" as const,
+        requirementIds:
+          task?.requirementIds ?? state.spec?.requirements.map((r) => r.id).slice(0, 1) ?? [],
+        criterionIds: task?.criterionIds ?? [],
+        file: match.file,
+        symbol: null,
+        evidenceIds: [evidenceId],
+        claim: `Rule ${match.rule}: ${match.message} (${match.file}:${match.line}: ${match.text})`,
+        impact: "The anti-slop rule pack of this run blocks this pattern.",
+        suggestedFix: match.fix,
+      };
+    });
   }
   /**
    * The duplication ratchet after the command checks pass: the run's code against the baseline
@@ -5149,7 +5321,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
-    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
+    if (!failures.length) failures.push(...(await this.qualityFindings(runId, state, policy)));
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.
@@ -5778,6 +5950,49 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       this.store.transition(runId, "completed");
     });
   }
+}
+
+/**
+ * Where a corrective task's findings point (#714): the files they name (the finding's file, the
+ * files a failing check's output names, paths in the claim or fix) and their symbols. A
+ * correction may write every file of the tasks it corrects, and read them all again from
+ * scratch when nothing says which one the finding is about.
+ */
+export function correctionFocus(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  task: Task,
+): { files: string[]; symbols: string[] } {
+  if (task.origin === "planned" || !task.findingIds.length) return { files: [], symbols: [] };
+  const files: string[] = [];
+  const symbols: string[] = [];
+  const add = (list: string[], value: string | null | undefined): void => {
+    if (value && !list.includes(value)) list.push(value);
+  };
+  for (const finding of store.findings(runId)) {
+    if (!task.findingIds.includes(finding.id)) continue;
+    const body = JSON.parse(finding.body_json) as {
+      file?: string | null;
+      symbol?: string | null;
+      claim?: string;
+      suggestedFix?: string;
+    };
+    add(files, body.file);
+    add(symbols, body.symbol);
+    for (const path of state.repairScope?.[finding.id] ?? []) add(files, path);
+    for (const path of pathsInOutput(`${body.claim ?? ""}\n${body.suggestedFix ?? ""}`, [task]))
+      add(files, path);
+  }
+  return { files: files.filter((path) => task.writes.some((w) => w.path === path)), symbols };
+}
+/** The writes with the given paths first, in their order, then the rest in plan order. */
+export function focusFirst<T extends { path: string }>(writes: readonly T[], first: string[]): T[] {
+  const rank = (path: string): number => {
+    const index = first.indexOf(path);
+    return index === -1 ? first.length : index;
+  };
+  return [...writes].sort((a, b) => rank(a.path) - rank(b.path));
 }
 
 /** The sized attempt cap of a task; a correction uses the cap of the task it corrects. */

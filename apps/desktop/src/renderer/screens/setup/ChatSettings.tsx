@@ -580,7 +580,7 @@ function ToolList({
   change: Change;
 }) {
   const disabledSet = new Set(off);
-  const tools = view.catalogs.tools;
+  const tools = setting.type === "string-list" ? (view.catalogs[setting.catalog] ?? []) : [];
   return (
     <ul className="m-0 grid w-full list-none grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-x-4 gap-y-2 p-0">
       {tools.map((tool) => {
