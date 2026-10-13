@@ -216,6 +216,14 @@ export function planConsistencyProblems(
         !earlier.some((t) => t.writes.some((w) => w.path === write.path && w.action === "delete"))
       )
         problems.push(`${task.id} creates ${write.path}, which already exists; use modify`);
+      if (
+        write.action === "modify" &&
+        !exists(write.path) &&
+        !earlier.some((t) => t.writes.some((w) => w.path === write.path && w.action === "create"))
+      )
+        problems.push(
+          `${task.id} modifies ${write.path}, which does not exist and no earlier task creates it; depend on the task that creates it, or use create`,
+        );
     }
     for (const hint of task.readHints) {
       if (

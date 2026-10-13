@@ -101,9 +101,11 @@ describe("whole-unit checks are not covering checks", () => {
     ],
   };
 
-  test("clippy, cargo check, go vet, tsc, mypy and pyright are whole-unit", () => {
+  test("clippy, cargo check, cargo fmt, go vet, tsc, mypy and pyright are whole-unit", () => {
     for (const [executable, args] of [
       ["cargo", ["clippy"]],
+      ["cargo", ["fmt", "--check"]],
+      ["rustfmt", ["--check", "src/lib.rs"]],
       ["cargo", ["check", "--all-targets"]],
       ["go", ["vet", "./..."]],
       ["bun", ["x", "tsc", "--noEmit"]],
@@ -114,24 +116,23 @@ describe("whole-unit checks are not covering checks", () => {
       expect(isWholeUnitCheck({ ...check("c", [...args], "feature"), executable })).toBe(true);
   });
 
-  test("formatters and file-local linters stay per task", () => {
-    expect(isWholeUnitCheck(rust.checks[0] as Check)).toBe(false);
+  test("other formatters and file-local linters stay per task", () => {
+    expect(isWholeUnitCheck(check("gofmt", ["-l", "."], "feature", true))).toBe(false);
     expect(isWholeUnitCheck(check("lint", ["x", "biome", "check", "."], "feature", true))).toBe(false);
     expect(isWholeUnitCheck(check("ruff", ["-m", "ruff", "check", "."], "feature"))).toBe(false);
     expect(isWholeUnitCheck(cargo("cargo-test", ["test"]))).toBe(false);
   });
 
-  test("a Rust code task gets cargo fmt only; clippy and cargo check wait for the checks stage", () => {
+  // Bench round 11, mdrefs: `cargo fmt --check` in the skeleton task's worktree failed on the
+  // `mod check;` whose file a later task writes, and blocked the ten planned tasks behind it.
+  test("a Rust code task runs no cargo check per task; fmt, clippy and cargo check wait for the checks stage", () => {
     const lib = task("T001", ["src/lib.rs"], []);
-    expect(coveringChecks(rust, lib).map((c) => c.id)).toEqual(["cargo-fmt"]);
+    expect(coveringChecks(rust, lib).map((c) => c.id)).toEqual([]);
     const graph = { tasks: [lib, task("T002", ["src/parse.rs"], ["cargo-clippy"])] } as unknown as TaskGraph;
-    expect(withCoveringChecks(graph, rust).tasks.map((t) => t.checkIds)).toEqual([
-      ["cargo-fmt"],
-      ["cargo-clippy", "cargo-fmt"],
-    ]);
+    expect(withCoveringChecks(graph, rust).tasks.map((t) => t.checkIds)).toEqual([[], ["cargo-clippy"]]);
     // A feature check the planner named is still not run per task: only covering ones are.
     expect(
       taskCheckList(rust, task("T002", ["src/parse.rs"], ["cargo-clippy", "cargo-fmt"])).map((c) => c.id),
-    ).toEqual(["cargo-fmt"]);
+    ).toEqual([]);
   });
 });
