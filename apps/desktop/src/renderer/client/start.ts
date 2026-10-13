@@ -174,6 +174,18 @@ export interface StartBody {
   testIntegrity?: "block" | "warn";
   /** The run model overrides every configured route (`--model-strict`). */
   modelStrict?: boolean;
+  /** The run records the proposal of `POST /v1/workflow/propose` and the workflow kept. */
+  autoPreset?: boolean;
+}
+
+/** `POST /v1/workflow/propose` (`WorkflowProposal` in `src/core/workflows/preset-router.ts`). */
+export interface WorkflowProposal {
+  workflowId: string;
+  budget: "quick" | "standard" | "extended" | "checkpoints";
+  kind: "review" | "research" | "ci-fix" | "docs" | "small" | "large" | "default";
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  signals: string[];
 }
 
 /** The most tasks a run may implement at once (`MAX_CONCURRENT_WRITERS` in the core). */
@@ -200,4 +212,7 @@ export const start = {
       (config) => config.effective.workflows?.policy ?? null,
     ),
   run: (key: string, body: StartBody) => call<RunSnapshot>(key, "POST", "/v1/workflow/runs", body),
+  /** The workflow and budget proposed for a request; 404 on a backend without `preset-proposal`. */
+  propose: (key: string, prompt: string) =>
+    call<WorkflowProposal>(key, "POST", "/v1/workflow/propose", { prompt }),
 };

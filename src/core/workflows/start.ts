@@ -11,7 +11,9 @@ import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
 import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
+import { presetMutation, presetOf } from "./quality/mutation.js";
 import { configuredRules } from "./quality/rules.js";
+import { DEFAULT_SAST_CONFIG } from "./quality/sast.js";
 import {
   independentReviewMode,
   reviewIndependence,
@@ -105,6 +107,8 @@ export async function prepareStart(
     | "clarification"
     | "testIntegrity"
     | "duplication"
+    | "sast"
+    | "mutation"
     | "modelStrict"
   >,
   deps: StartDeps = {},
@@ -203,9 +207,18 @@ export async function prepareStart(
     testIntegrity: _testIntegrity,
     duplication: _duplication,
     qualityRules: requestRules,
+    sast: policySast,
+    sastConfig: policySastConfig,
+    registryLookups: policyLookups,
+    mutation: policyMutation,
+    mutationThresholds: policyThresholds,
+    mutationBudgetMs: policyMutationBudget,
     allowOverlappingWrites,
+    editDiagnostics: _editDiagnostics,
     ...rest
   } = policy;
+  // The project's chat setting is the default; `feedback` leaves the field out of the hash.
+  const editDiagnostics = policy.editDiagnostics ?? config.editDiagnostics ?? "feedback";
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
   // `block` is the default and is left out, so the policy hash of a guarded run is what it was.
@@ -217,6 +230,19 @@ export async function prepareStart(
   // The policy's own rule choices win over the configured ones; the built-in pack as shipped
   // leaves the field out.
   const qualityRules = requestRules ?? configuredRules(config.quality);
+  // Defaults (`auto`, `p/default`, lookups on) leave the fields out, so the hash stays.
+  const sast = request.sast ?? policySast ?? config.quality?.sast ?? "auto";
+  const sastConfig = policySastConfig ?? config.quality?.sastConfig ?? DEFAULT_SAST_CONFIG;
+  const registryLookups = policyLookups ?? config.quality?.registryLookups ?? true;
+  // The preset's mutation default leaves the field out; a project or run choice is frozen.
+  const preset = presetOf(loaded);
+  const mutation =
+    request.mutation ??
+    policyMutation ??
+    (config.quality?.mutation === "preset" ? undefined : config.quality?.mutation) ??
+    presetMutation(preset);
+  const mutationThresholds = policyThresholds ?? config.quality?.mutationThresholds;
+  const mutationBudgetMs = policyMutationBudget ?? config.quality?.mutationBudgetMs;
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -225,8 +251,15 @@ export async function prepareStart(
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
     ...(testIntegrity === "warn" ? { testIntegrity } : {}),
+    ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(qualityRules ? { qualityRules } : {}),
+    ...(sast === "off" ? { sast } : {}),
+    ...(sastConfig !== DEFAULT_SAST_CONFIG ? { sastConfig } : {}),
+    ...(registryLookups === false ? { registryLookups } : {}),
+    ...(mutation !== presetMutation(preset) ? { mutation } : {}),
+    ...(mutationThresholds && Object.keys(mutationThresholds).length ? { mutationThresholds } : {}),
+    ...(mutationBudgetMs !== undefined ? { mutationBudgetMs } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),
@@ -265,9 +298,16 @@ export async function prepareStart(
   routing = independence.record;
   const notes = [...independence.moved, ...independence.warnings];
   if (notes.length) routing.warnings = [...(routing.warnings ?? []), ...notes];
-  const minConfidence = parseModelRouting(config.modelRouting)?.reviewMinConfidence;
-  if (minConfidence !== undefined && policy.reviewMinConfidence === undefined)
-    policy = PolicySchema.parse({ ...policy, reviewMinConfidence: minConfidence });
+  // Review settings of modelRouting join the policy, so the approval digest covers them; a
+  // policy that sets one itself keeps it.
+  const reviewSettings = parseModelRouting(config.modelRouting);
+  if (reviewSettings?.reviewMinConfidence !== undefined && policy.reviewMinConfidence === undefined)
+    policy = PolicySchema.parse({
+      ...policy,
+      reviewMinConfidence: reviewSettings.reviewMinConfidence,
+    });
+  if (reviewSettings?.critic && policy.critic === undefined)
+    policy = PolicySchema.parse({ ...policy, critic: reviewSettings.critic });
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};
   for (const profile of profiles)

@@ -1,5 +1,10 @@
 import { getCwd } from "../core/cwd.js";
-import { INDEPENDENT_REVIEW_MODES, ROUTED_ROLES, RouteEffort } from "../core/llm/model-routing.js";
+import {
+  CRITIC_MODES,
+  INDEPENDENT_REVIEW_MODES,
+  ROUTED_ROLES,
+  RouteEffort,
+} from "../core/llm/model-routing.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import {
   readRoutingLayers,
@@ -13,6 +18,7 @@ export const routingHelp = `Usage: baked workflow routing [show] [--json]
        baked workflow routing clear TARGET [--scope project|global]
        baked workflow routing review off|warn|require|provider|unset [--scope project|global]
        baked workflow routing confidence 0..1|unset [--scope project|global]
+       baked workflow routing critic off|advise|unset [--scope project|global]
 
 Changes modelRouting in the project config (.baked/config.json, the default) or the global one
 (--scope global), with the checks of the routing screen and the local API: nothing is written
@@ -23,7 +29,8 @@ TARGET is a class ($coding or class:coding), a role (role:reviewer), a profile
 outside a class. --effort is ${RouteEffort.options.join(", ")}; --fallback names up to three
 models. review sets independentReview (provider moves reviewers to another vendor's model);
 confidence sets reviewMinConfidence, below which review findings stay notes (0.8 by default);
-unset removes either. show prints the modelRouting of both files; "baked workflow route" shows
+critic sets whether a critic scores every task attempt (unset: only on another vendor); unset
+removes any of them. show prints the modelRouting of both files; "baked workflow route" shows
 what each stage resolves to.
 `;
 
@@ -148,6 +155,13 @@ export function runRoutingCli(argv: string[], configDir?: string): number {
         `review takes ${INDEPENDENT_REVIEW_MODES.join(", ")} or unset`,
       );
     change = { independentReview: known ?? null };
+  } else if (command === "critic") {
+    only(flags, ["scope", "json"]);
+    const [mode, ...rest] = args;
+    const known = CRITIC_MODES.find((m) => m === mode);
+    if (rest.length || !mode || (!known && mode !== "unset"))
+      throw new WorkflowFault("INVALID_DEFINITION", "critic takes off, advise or unset");
+    change = { critic: known ?? null };
   } else if (command === "confidence") {
     only(flags, ["scope", "json"]);
     const [value, ...rest] = args;

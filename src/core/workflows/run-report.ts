@@ -6,13 +6,22 @@
 
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
+import { type DependencyResult, QUALITY_DEPENDENCIES } from "./quality/dependencies.js";
 import {
   type DuplicationResult,
   metricDeltas,
   QUALITY_DUPLICATION,
 } from "./quality/duplication.js";
+import { type MutationResult, QUALITY_MUTATION } from "./quality/mutation.js";
 import { QUALITY_RULES, type RulesResult } from "./quality/rules.js";
-import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./schemas.js";
+import { QUALITY_SAST, type SastResult } from "./quality/sast.js";
+import {
+  type Critique,
+  ReportSchema,
+  type ReviewSchema,
+  type RunPolicy,
+  TaskSchema,
+} from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
@@ -181,9 +190,23 @@ function collect(store: WorkflowStore, runId: string) {
     })();
     const latestArtifacts = new Map<string, ArtifactRow>();
     const taskDiffs = new Map<string, ArtifactRow>();
+    const critiques: CritiqueRecord[] = [];
     // What the host's run of each finding's repro showed, by finding id.
     const reproOutcomes = new Map<string, string>();
     for (const artifact of store.artifacts(runId)) {
+      if (/^tasks\/[^/]+\/critique\.json$/.test(artifact.logical_path))
+        critiques.push(
+          parse<CritiqueRecord>(
+            (() => {
+              try {
+                return store.readArtifact(runId, artifact.id);
+              } catch {
+                return null;
+              }
+            })(),
+            { taskId: artifact.logical_path.split("/")[1] ?? "", attempt: 0 },
+          ),
+        );
       latestArtifacts.set(artifact.logical_path, artifact);
       if (/^tasks\/[^/]+\/diff\.json$/.test(artifact.logical_path))
         taskDiffs.set(artifact.logical_path, artifact);
@@ -227,8 +250,13 @@ function collect(store: WorkflowStore, runId: string) {
     return {
       run,
       state,
-      duplication: readJson<DuplicationResult>(QUALITY_DUPLICATION),
-      rules: readJson<RulesResult>(QUALITY_RULES),
+      quality: {
+        duplication: readJson<DuplicationResult>(QUALITY_DUPLICATION),
+        rules: readJson<RulesResult>(QUALITY_RULES),
+        dependencies: readJson<DependencyResult>(QUALITY_DEPENDENCIES),
+        sast: readJson<SastResult>(QUALITY_SAST),
+        mutation: readJson<MutationResult>(QUALITY_MUTATION),
+      },
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
       report,
@@ -270,6 +298,7 @@ function collect(store: WorkflowStore, runId: string) {
       }),
       requests: store.requests(runId),
       routing: readRoutingSummary(store, runId),
+      critiques,
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
       internalArtifacts: [...latestArtifacts.values()].filter((a) =>
@@ -279,6 +308,13 @@ function collect(store: WorkflowStore, runId: string) {
   });
 }
 type Facts = ReturnType<typeof collect>;
+/** A stored `tasks/TASK/critique.json`: a critique, or the error of a critic that failed. */
+interface CritiqueRecord {
+  taskId: string;
+  attempt: number;
+  critique?: Critique;
+  error?: string;
+}
 
 /** Which models and vendors reviewed the change and which implemented it (#635). */
 function reviewModels(routing: Facts["routing"]): string | null {
@@ -294,16 +330,107 @@ function reviewModels(routing: Facts["routing"]): string | null {
   return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
 }
 
-/** The code quality gates: the duplication ratchet (#638) and the anti-slop rules (#639). */
-function qualitySection(
-  duplication: DuplicationResult | null,
-  rules: RulesResult | null,
-  cap: number,
-): string[] {
+interface QualityFacts {
+  duplication: DuplicationResult | null;
+  rules: RulesResult | null;
+  dependencies: DependencyResult | null;
+  sast: SastResult | null;
+  mutation: MutationResult | null;
+}
+
+/**
+ * The code quality gates: the duplication ratchet (#638), the anti-slop rules (#639), and the
+ * dependency check and SAST (#640), and the mutation gate (#636).
+ */
+function qualitySection(quality: QualityFacts, cap: number): string[] {
   return [
-    ...(duplication ? duplicationSection(duplication, cap) : []),
-    ...(rules ? rulesSection(rules, cap) : []),
+    ...(quality.duplication ? duplicationSection(quality.duplication, cap) : []),
+    ...(quality.rules ? rulesSection(quality.rules, cap) : []),
+    ...(quality.dependencies ? dependenciesSection(quality.dependencies, cap) : []),
+    ...(quality.sast ? sastSection(quality.sast, cap) : []),
+    ...(quality.mutation ? mutationSection(quality.mutation, cap) : []),
   ];
+}
+
+/** Every dependency the run added, so the pull request shows each one for approval (#640). */
+function dependenciesSection(result: DependencyResult, cap: number): string[] {
+  if (!result.dependencies.length) return ["New dependencies: none.", ""];
+  const blocking = result.dependencies.filter((d) => d.blocking).length;
+  const out = [
+    `New dependencies: ${result.dependencies.length}${blocking ? `, ${blocking} blocking` : ""}${result.lookups ? "" : " (registry lookups are off)"}.`,
+    "",
+  ];
+  out.push(
+    ...table(
+      ["Package", "Ecosystem", "Verdict", "Where", "Detail"],
+      result.dependencies.map((d) => [
+        code(d.name),
+        d.ecosystem,
+        d.blocking ? `${d.verdict}, blocking` : d.verdict,
+        code(`${d.file}:${d.line}`),
+        d.detail,
+      ]),
+      cap,
+    ),
+    "",
+  );
+  return out;
+}
+
+function mutationSection(result: MutationResult, cap: number): string[] {
+  const count = (status: string) => result.mutants.filter((m) => m.status === status).length;
+  const killed = count("killed");
+  const ran = killed + count("survived");
+  const blocking = result.mutants.filter((m) => m.blocking).length;
+  const extra = [
+    ...(count("timeout") ? [`${count("timeout")} timed out`] : []),
+    ...(count("not-run") ? [`${count("not-run")} not run`] : []),
+  ];
+  const score = result.score === null ? "no score" : `score ${result.score}%`;
+  const out = [
+    `Mutation gate (\`${result.mode}\`): ${score} (${killed} of ${ran} mutants killed${extra.length ? `, ${extra.join(", ")}` : ""})${blocking ? `, ${blocking} blocking` : ""}${result.tests.length ? `; tests: ${result.tests.map(code).join(", ")}` : ""}${result.note ? `; ${result.note}` : ""}.`,
+    "",
+  ];
+  const survivors = result.mutants.filter((m) => m.status === "survived");
+  if (survivors.length)
+    out.push(
+      ...table(
+        ["Mutant", "Where", "Mutated line", "Status"],
+        survivors.map((m) => [
+          m.id,
+          code(`${m.file}:${m.line}`),
+          code(m.mutated.trim()),
+          m.blocking ? "survived, blocking" : "survived",
+        ]),
+        cap,
+      ),
+      "",
+    );
+  return out;
+}
+
+function sastSection(result: SastResult, cap: number): string[] {
+  if (!result.ran) return [`Semgrep: not run (${result.note ?? "unknown reason"}).`, ""];
+  const blocking = result.findings.filter((f) => f.blocking).length;
+  const out = [
+    `Semgrep (${code(result.config)}): ${blocking} blocking, ${result.findings.length - blocking} noted on the lines the run added${result.note ? `; ${result.note}` : ""}.`,
+    "",
+  ];
+  if (result.findings.length)
+    out.push(
+      ...table(
+        ["Rule", "Severity", "Where", "Message"],
+        result.findings.map((f) => [
+          code(f.rule),
+          f.blocking ? `${f.severity}, blocking` : f.severity,
+          code(`${f.file}:${f.line}`),
+          f.message,
+        ]),
+        cap,
+      ),
+      "",
+    );
+  return out;
 }
 
 function rulesSection(result: RulesResult, cap: number): string[] {
@@ -385,6 +512,12 @@ function render(facts: Facts, cap: number): string {
     "",
   );
 
+  const choice = state.presetChoice;
+  if (choice)
+    out.push(
+      `Workflow proposed from the request: ${code(choice.proposed)}, ${choice.reason} (budget ${choice.budget}, ${choice.confidence} confidence)${choice.overridden ? `; the person chose ${code(choice.chosen)}` : ""}.`,
+      "",
+    );
   out.push("## Summary", "");
   if (spec) out.push(spec.outcome, "");
   if (report) {
@@ -449,8 +582,8 @@ function render(facts: Facts, cap: number): string {
     );
   else out.push("No checks ran.", "");
 
-  if (facts.duplication || facts.rules)
-    out.push("## Code quality", "", ...qualitySection(facts.duplication, facts.rules, cap));
+  if (Object.values(facts.quality).some(Boolean))
+    out.push("## Code quality", "", ...qualitySection(facts.quality, cap));
 
   if (spec?.criteria.length) {
     out.push("## Acceptance criteria", "");
@@ -494,6 +627,34 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   } else out.push("No findings recorded.", "");
+
+  if (facts.critiques.length) {
+    out.push(
+      "## Critic",
+      "",
+      "Advice only: each task attempt scored from 0 to 1 by a second model; the lowest rubric item is named.",
+      "",
+      ...table(
+        ["Task", "Attempt", "Score", "Lowest", "Summary"],
+        facts.critiques.map((c) => {
+          if (!c.critique)
+            return [c.taskId, c.attempt, null, null, `critic failed: ${c.error ?? "unknown"}`];
+          const lowest = Object.entries(c.critique.rubric).sort(
+            ([, a], [, b]) => a.score - b.score,
+          )[0];
+          return [
+            c.taskId,
+            c.attempt,
+            c.critique.score.toFixed(2),
+            lowest ? `${lowest[0]} ${lowest[1].score.toFixed(2)}: ${lowest[1].note}` : null,
+            c.critique.summary,
+          ];
+        }),
+        cap,
+      ),
+      "",
+    );
+  }
 
   if (state.limitations.length) {
     out.push(
