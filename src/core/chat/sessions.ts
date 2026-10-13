@@ -96,6 +96,7 @@ import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
 import { hasInputReferences } from "./input-parse.js";
 import type { MentionSuggestion } from "./mention-suggest.js";
+import { PEER_TOOL, peerInstructions, peerTool } from "./peer-messages.js";
 import {
   type ProjectStateSource,
   type SessionSource,
@@ -299,6 +300,8 @@ export interface TurnAgentRequest {
   coordinator?: boolean;
   /** Tools the service adds for this session's kind (the coordinator's project state tool). */
   tools?: Record<string, unknown>;
+  /** Instructions the service adds for this session's kind, such as a coordinator thread's. */
+  instructions?: string;
   callbacks: InteractiveCallbacks;
   onApproveOutsideCwd: (toolName: string, path: string) => Promise<boolean>;
   onApproveDestructive: (description: string) => Promise<boolean>;
@@ -725,6 +728,11 @@ export class ChatSession {
   /** Starts a watch mode turn, or queues it as a turn of its own behind the running one. */
   sendWatch(turn: WatchTurn): { turnId: string; queued: boolean } {
     return this.submit({ text: turn.prompt, display: watchTurnDisplay(turn), verbatim: true });
+  }
+
+  /** Sends a prompt the app wrote, shown as `display`, as a turn of its own behind the running one. */
+  sendRequest(text: string, display: string): { turnId: string; queued: boolean } {
+    return this.submit({ text, display, verbatim: true });
   }
 
   emitWatch(watch: WatchStatus): void {
@@ -1283,7 +1291,7 @@ export class ChatSession {
         planExecution,
         ...(this.isCoordinator
           ? { coordinator: true, tools: this.owner.coordinatorTools(this) }
-          : {}),
+          : this.owner.threadExtras(this)),
         ...this.approvalCallbacks(),
       });
       stepStartedAt = Date.now();
@@ -1709,6 +1717,13 @@ export class ChatService {
         coordinatorLimits(this.options.config),
       ),
     };
+  }
+
+  /** A coordinator thread's message tool and what it is told about its peers; none otherwise. */
+  threadExtras(session: ChatSession): { tools?: Record<string, unknown>; instructions?: string } {
+    const instructions = peerInstructions(this, session);
+    if (!instructions) return {};
+    return { tools: { [PEER_TOOL]: peerTool(this, session) }, instructions };
   }
 
   /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */
