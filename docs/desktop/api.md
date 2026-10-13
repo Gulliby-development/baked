@@ -335,7 +335,7 @@ The `baked workflow initiative` commands over HTTP. Mutations take `commandId` a
 | --- | --- | --- |
 | `GET /v1/initiatives` | | `list` |
 | `POST /v1/initiatives` | `commandId`, `initiativeId`, `prompt`, `plan?`, `workflow?`, `policy?`, `model?`, `owner?`, `budget?: {tokens, calls, timeMs}`, `tieredApproval?: {maxTasks, maxFiles}`, `confirmAutoApproval?`, `featureIssues?: {FEATURE: {repository, number, url, title}}` (needs `plan`; each feature's runs start from its issue and their delivery closes it; the feature view's `issue` shows it) | `start`; 202 with the view, planning is driven in the background like a run |
-| `GET /v1/initiatives/ID` | | `show` |
+| `GET /v1/initiatives/ID` | | `show`; the view's `parallelRuns` is how many feature runs execute at once (1 inline) |
 | `GET /v1/initiatives/ID/events` | `?after=` | `events` as SSE, or JSON with `Accept: application/json` |
 | `POST /v1/initiatives/ID/merge` | `features`, `id?`, `title?` | `merge` |
 | `POST /v1/initiatives/ID/split` | `feature`, `parts` | `split` |

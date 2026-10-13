@@ -1,7 +1,8 @@
 /**
  * Initiatives (docs/workflows/runtime.md, "Initiatives"): a large request split
  * into 3..12 features with contracts and a dependency DAG, one approval of the split, and feature
- * runs executed one at a time in dependency order on the existing workflow runtime. The
+ * runs executed in dependency order on the existing workflow runtime: one at a time inline, and
+ * independent features side by side when the feature workflow runs in worktrees. The
  * initiative owns no execution of its own: it starts, rebases and drives ordinary runs, and its
  * readiness rules are the existing `contractHash` dependency mechanism.
  */
@@ -12,6 +13,8 @@ import { type AcceptedContract, acceptedContract } from "../dependencies.js";
 import { WorkflowFault } from "../errors.js";
 import {
   type CommandIdentity,
+  DEFAULT_MAX_PARALLEL_RUNS,
+  executionModeOf,
   PolicySchema,
   type RunPolicy,
   type RunSnapshot,
@@ -24,6 +27,7 @@ import type { IssueSource } from "../types.js";
 import { DefinitionAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
+import { mergedBase } from "../worktree.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
   applySplitEdit,
@@ -170,6 +174,11 @@ export interface InitiativeView {
   /** The model feature runs start with; null uses the configured default model. */
   model: string | null;
   featureAutoApproval: InitiativeSettings["featureAutoApproval"];
+  /**
+   * Feature runs that execute at once: 1 when the feature workflow runs inline, up to
+   * `workflows.maxParallelRuns` when it runs in worktrees.
+   */
+  parallelRuns: number;
   decompose: { runId: string; status: string; reason: string } | null;
   features: FeatureView[];
   pendingDecisions: PendingDecision[];
@@ -185,6 +194,16 @@ export interface InitiativeView {
     rule: string;
   };
   next: NextAction;
+}
+
+/** True when a feature would start with less than the smallest share a run can work with. */
+function shareTooSmall(share: UsageView | null): boolean {
+  return (
+    !share ||
+    share.tokens < MIN_SHARE.maxTotalTokens ||
+    share.calls < MIN_SHARE.maxAgentCalls ||
+    share.activeMs < MIN_SHARE.maxActiveMs
+  );
 }
 
 /** The workflow feature ID of an initiative feature's runs. `_` never occurs in either part. */
@@ -611,8 +630,9 @@ export class InitiativeService {
   // --- Execution ---------------------------------------------------------------------------
 
   /**
-   * Advances the initiative until it needs a person, is blocked, is paused or completes. Feature
-   * runs execute one at a time in dependency order, so the workspace keeps one writer.
+   * Advances the initiative until it needs a person, is blocked, is paused or completes. Inline,
+   * feature runs execute one at a time in dependency order, so the workspace keeps one writer; in
+   * worktrees, features without a dependency path between them execute side by side.
    */
   async drive(id: string, signal: AbortSignal): Promise<InitiativeView> {
     if (this.active.has(id))
@@ -625,7 +645,12 @@ export class InitiativeService {
     try {
       await this.settleSuperseded(id);
       for (let step = 0; step < 500 && !controller.signal.aborted; step++) {
-        const next = this.view(id).next;
+        const view = this.view(id);
+        const next = view.next;
+        if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
+          if (!(await this.driveFeatures(id, controller.signal))) return this.view(id);
+          continue;
+        }
         switch (next.kind) {
           case "decompose":
           case "drive": {
@@ -669,6 +694,99 @@ export class InitiativeService {
     }
   }
 
+  /**
+   * One round of an initiative whose features run in worktrees: starts ready features while fewer
+   * than `parallelRuns` feature runs can execute, then drives those runs at the same time until
+   * each stops. False when nothing started and no run moved.
+   */
+  private async driveFeatures(id: string, signal: AbortSignal): Promise<boolean> {
+    const runnable = (view: InitiativeView): FeatureView[] =>
+      view.features.filter((f) => f.state === "in_progress" || f.state === "paused");
+    let view = this.view(id);
+    let started = false;
+    for (;;) {
+      const ready = view.features.find((f) => f.state === "ready");
+      if (
+        !ready ||
+        runnable(view).length >= view.parallelRuns ||
+        shareTooSmall(view.budget.nextShare)
+      )
+        break;
+      await this.startFeature(id, ready.id);
+      started = true;
+      view = this.view(id);
+    }
+    const runs = runnable(view)
+      .slice(0, view.parallelRuns)
+      .map((f) => f.runId ?? "");
+    const before = runs.map((runId) => this.workflows.store.run(runId).revision);
+    const results = await Promise.allSettled(runs.map((runId) => this.driveRun(runId, signal)));
+    const failed = results.find((r) => r.status === "rejected");
+    if (failed) throw failed.reason;
+    return (
+      started || runs.some((runId, i) => this.workflows.store.run(runId).revision !== before[i])
+    );
+  }
+
+  /** 1 when the feature workflow runs inline; the workspace's parallel run cap in worktrees. */
+  private parallelRuns(settings: InitiativeSettings): number {
+    return this.executionMode(settings) === "worktree"
+      ? (this.workflows.config.workflows?.maxParallelRuns ?? DEFAULT_MAX_PARALLEL_RUNS)
+      : 1;
+  }
+
+  /** The feature runs' execution mode, as `start` resolves it: the definition, then the policy. */
+  private executionMode(settings: InitiativeSettings): "inline" | "worktree" {
+    try {
+      const loaded = loadDefinition(
+        this.workflows.workspace,
+        settings.workflowId,
+        settings.basePolicy,
+      );
+      return (
+        (loaded.schemaVersion === 2 ? loaded.definition.execution : undefined) ??
+        executionModeOf(settings.basePolicy)
+      );
+    } catch {
+      return executionModeOf(settings.basePolicy);
+    }
+  }
+
+  /**
+   * Where a feature's worktree starts: HEAD merged with the accepted result of each upstream
+   * feature, so the run sees the code it builds on. Undefined inline (the working copy already
+   * holds the upstream results) and for a feature without upstream features.
+   */
+  private async featureBase(
+    id: string,
+    feature: InitiativeFeature,
+    settings: InitiativeSettings,
+  ): Promise<string | undefined> {
+    if (this.executionMode(settings) !== "worktree" || !feature.dependsOn.length) return undefined;
+    const commits = feature.dependsOn.map((upstream) => {
+      const link = this.store.current(id, upstream);
+      const commit = link ? this.workflows.store.state(link.run_id).worktree?.commit : null;
+      if (!commit)
+        throw new WorkflowFault(
+          "ARTIFACT_MISSING",
+          `Feature ${feature.id} builds on ${upstream}, whose run has no committed result`,
+        );
+      return commit;
+    });
+    const merged = await mergedBase(
+      this.workflows.workspace,
+      commits,
+      Math.floor(this.store.get(id).created_at / 1000),
+    );
+    if ("conflicts" in merged)
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        `The results of ${feature.dependsOn.join(", ")}, which ${feature.id} builds on, conflict in ${merged.conflicts.join(", ") || "their files"}; re-plan one of them so their files do not overlap`,
+        { reason: "upstream_conflict" },
+      );
+    return merged.commit;
+  }
+
   private async driveRun(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
     const run = this.workflows.store.run(runId);
     if (run.status === "paused")
@@ -708,6 +826,7 @@ export class InitiativeService {
     if (!share) throw new WorkflowFault("BUDGET_EXHAUSTED", "No budget share is available");
     const previous = this.store.links(id).filter((l) => l.feature_id === featureId).length;
     const runFeature = runFeatureId(id, featureId);
+    const baseCommit = await this.featureBase(id, feature, settings);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
       commandId: `i-${hashJson({ id, featureId, previous, revision: row.approved_plan_revision }).slice(0, 48)}`,
@@ -725,6 +844,7 @@ export class InitiativeService {
         ? { autoApprovalConfirmation: settings.autoApprovalConfirmation }
         : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
+      ...(baseCommit ? { baseCommit } : {}),
     });
     this.store.transaction(() => {
       if (this.store.links(id).some((l) => l.run_id === snapshot.runId)) return;
@@ -781,6 +901,7 @@ export class InitiativeService {
       featureId: u.contract.featureId,
       contractHash: u.contract.contractHash,
     }));
+    const baseCommit = await this.featureBase(id, feature, settings);
     const current = this.workflows.store.run(link.run_id);
     const snapshot = await this.workflows.rebase(
       link.run_id,
@@ -788,7 +909,11 @@ export class InitiativeService {
         commandId: `r-${hashJson({ runId: link.run_id, dependencies }).slice(0, 48)}`,
         expectedRevision: current.revision,
       },
-      { dependencies, policy: featurePolicy(settings, rebaseShare, feature, true) },
+      {
+        dependencies,
+        policy: featurePolicy(settings, rebaseShare, feature, true),
+        ...(baseCommit ? { baseCommit } : {}),
+      },
     );
     this.store.transaction(() => {
       this.store.emit(id, "feature.invalidated", {
@@ -904,6 +1029,7 @@ export class InitiativeService {
       workflowId: settings.workflowId,
       model: settings.model,
       featureAutoApproval: settings.featureAutoApproval,
+      parallelRuns: this.parallelRuns(settings),
       decompose: decompose
         ? { runId: decompose.id, status: decompose.status, reason: decompose.reason }
         : null,
@@ -975,33 +1101,45 @@ export class InitiativeService {
       case "active":
         break;
     }
-    // One feature run is open at a time: the runtime guards each run's source snapshot, so a
-    // second open run's edits would block the first. An open run that waits for a person stops the
-    // drive until the decision is made.
+    // Inline, one feature run is open at a time: the runtime guards each run's source snapshot, so
+    // a second open run's edits would block the first. An open run that waits for a person stops
+    // the drive until the decision is made. In worktrees independent features run side by side, and
+    // a run that waits for a person stops the drive only when no other feature can move.
     const open = view.features.filter(
       (f) => f.runStatus !== null && !terminalStates.includes(f.runStatus as RunSnapshot["status"]),
     );
+    const parallel = view.parallelRuns > 1;
+    const running = open.filter((f) => f.state === "in_progress" || f.state === "paused");
+    const waits: NextAction[] = [];
     for (const feature of open) {
       if (feature.state === "waiting") continue;
       if (feature.state === "stale")
         return action("rebase", `Rebase ${feature.id} on the changed upstream contract`, feature);
-      if (feature.state === "needs_decision")
-        return action("decide", `Feature ${feature.id} waits for a decision`, feature);
-      if (feature.state === "blocked")
-        return action("blocked", `Feature ${feature.id}: ${feature.blockers.join("; ")}`, feature);
-      return action("drive", `Continue feature ${feature.id}`, feature);
+      const wait =
+        feature.state === "needs_decision"
+          ? action("decide", `Feature ${feature.id} waits for a decision`, feature)
+          : feature.state === "blocked"
+            ? action("blocked", `Feature ${feature.id}: ${feature.blockers.join("; ")}`, feature)
+            : null;
+      if (wait && !parallel) return wait;
+      if (wait) {
+        waits.push(wait);
+        continue;
+      }
+      return action(
+        "drive",
+        parallel && running.length > 1
+          ? `Continue features ${running.map((f) => f.id).join(", ")}`
+          : `Continue feature ${feature.id}`,
+        feature,
+      );
     }
     for (const feature of view.features) {
       if (feature.state === "stale")
         return action("rebase", `Rebase ${feature.id} on the changed upstream contract`, feature);
       if (feature.state !== "ready") continue;
       const share = view.budget.nextShare;
-      if (
-        !share ||
-        share.tokens < MIN_SHARE.maxTotalTokens ||
-        share.calls < MIN_SHARE.maxAgentCalls ||
-        share.activeMs < MIN_SHARE.maxActiveMs
-      )
+      if (shareTooSmall(share))
         return action(
           "blocked",
           `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`,
@@ -1009,6 +1147,7 @@ export class InitiativeService {
         );
       return action("start", `Start feature ${feature.id}`, feature);
     }
+    if (waits[0]) return waits[0];
     const missing = view.features.filter((f) => f.mandatory && f.state !== "accepted");
     if (missing.length === 0)
       return action("complete", "Every mandatory feature has an accepted result.");

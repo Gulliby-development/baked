@@ -369,6 +369,15 @@ export const RuntimeStateSchema = z
       .default({}),
     issue: IssueSourceSchema.nullable().default(null),
     /**
+     * The commit a worktree run's branch starts from instead of HEAD: for an initiative feature,
+     * HEAD merged with the accepted results of its upstream features.
+     */
+    worktreeBase: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/)
+      .nullable()
+      .default(null),
+    /**
      * Tests first: the test files the tests-first tasks wrote, once they all failed for the right
      * reason, the digest a person approves, and whether they did. Null until then.
      */

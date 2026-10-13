@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
@@ -31,6 +31,7 @@ import {
   parseInitiativeArgs,
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
+import { mergedBase } from "../src/core/workflows/worktree.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -74,9 +75,33 @@ class InitiativeExecutor implements AgentExecutor {
   writes: Record<string, number> = {};
   /** Models whose implementation calls fail as an account without credits. */
   refused = new Set<string>();
+  /** The files in each feature's root when it was implemented. */
+  seen: Record<string, string[]> = {};
+  /** Implementation calls in flight, and the most at once. */
+  active = 0;
+  maxActive = 0;
+  /** An implementation waits (up to `rendezvousMs`) until this many implementations have begun. */
+  rendezvous = 0;
+  rendezvousMs = 5000;
+  private arrived = 0;
   constructor(private root: string, public split: unknown = threeFeatures, private tokens = 100) {}
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
+    const implementing = request.profile.output === "implementation";
+    if (implementing) {
+      this.maxActive = Math.max(this.maxActive, ++this.active);
+      this.arrived++;
+    }
+    try {
+      const deadline = Date.now() + this.rendezvousMs;
+      while (implementing && this.arrived < this.rendezvous && Date.now() < deadline) await Bun.sleep(5);
+      return this.respond(request);
+    } finally {
+      if (implementing) this.active--;
+    }
+  }
+  private respond(request: ExecutionRequest) {
+    const root = request.root ?? this.root;
     if (this.refused.has(request.profile.model) && request.profile.output === "implementation")
       throw Object.assign(new Error("You have no credits remaining. Add credits to continue."), { statusCode: 429 });
     const [documents, attempt] = request.prompt.split("\n").slice(-2);
@@ -112,9 +137,9 @@ class InitiativeExecutor implements AgentExecutor {
         const name = key(spec.featureId);
         const path = `${name}.txt`;
         const markdown = `# Plan\n## Context\nCreate ${path}.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\n${path}\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture`;
-        const writes = [{ path, action: existsSync(join(this.root, path)) ? "modify" : "create" }];
+        const writes = [{ path, action: existsSync(join(root, path)) ? "modify" : "create" }];
         const extra = this.extraWrites[name];
-        if (extra) writes.push({ path: extra, action: existsSync(join(this.root, extra)) ? "modify" : "create" });
+        if (extra) writes.push({ path: extra, action: existsSync(join(root, extra)) ? "modify" : "create" });
         output = {
           schemaVersion: 1, markdown,
           taskGraph: {
@@ -128,11 +153,13 @@ class InitiativeExecutor implements AgentExecutor {
         output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] };
         break;
       case "implementation": {
+        const name = request.task?.writes[0]?.path.replace(".txt", "") ?? "";
+        this.seen[name] = readdirSync(root).filter((f) => f.endsWith(".txt")).sort();
         for (const write of request.task?.writes ?? []) {
           // Each write changes the file, as a rebased feature adapts its result to the new contract.
           const count = (this.writes[write.path] = (this.writes[write.path] ?? 0) + 1);
           const version = this.contracts[write.path.replace(".txt", "")] ?? "v1";
-          writeFileSync(join(this.root, write.path), `ready ${version}${count > 1 ? ` (write ${count})` : ""}`);
+          writeFileSync(join(root, write.path), `ready ${version}${count > 1 ? ` (write ${count})` : ""}`);
         }
         output = { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] };
         break;
@@ -146,6 +173,24 @@ class InitiativeExecutor implements AgentExecutor {
     }
     return { output, inputTokens: this.tokens / 2, outputTokens: this.tokens / 2 };
   }
+}
+
+function git(cwd: string, ...args: string[]): string {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+  return result.stdout.toString().trim();
+}
+
+/** A Git repository with one commit, for features that run in worktrees. */
+function repository(root: string): void {
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.name", "Test User");
+  git(root, "config", "user.email", "test@example.test");
+  git(root, "config", "commit.gpgsign", "false");
+  writeFileSync(join(root, ".gitignore"), ".baked/\n");
+  writeFileSync(join(root, "README.md"), "# Values\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "Initial");
 }
 
 function setup(split: unknown = threeFeatures, tokens = 100) {
@@ -406,6 +451,73 @@ describe("initiative runtime", () => {
     await t.approveFeature("api");
     view = await t.drive();
     expect(view.status).toBe("completed");
+  }, 30000);
+
+  test("in worktrees, independent features run side by side and a dependent one starts from their merged results", async () => {
+    const joined = plan([feature("a"), feature("b"), feature("c", ["a", "b"])]);
+    const t = setup(joined);
+    repository(t.root);
+    t.executor.rendezvous = 2;
+    const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+    await t.start({ plan: joined, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    let view = await t.approveSplit();
+    expect(view.parallelRuns).toBe(2);
+    expect(view.next.kind).toBe("start");
+
+    view = await t.drive();
+    expect(view.status).toBe("completed");
+    // a and b were implemented at the same time; c waited for both.
+    expect(t.executor.maxActive).toBe(2);
+    expect(t.executor.seen.a).toEqual([]);
+    expect(t.executor.seen.b).toEqual([]);
+    // c's worktree started from HEAD merged with a's and b's accepted results.
+    expect(t.executor.seen.c).toEqual(["a.txt", "b.txt"]);
+    const cRun = t.featureOf(view, "c").runId ?? "";
+    const base = t.workflows.store.state(cRun).worktree?.baseHead ?? "";
+    expect(git(t.root, "show", `${base}:a.txt`)).toStartWith("ready");
+    expect(git(t.root, "show", `${base}:b.txt`)).toStartWith("ready");
+    expect(git(t.root, "show", `baked/wf/${cRun}:c.txt`)).toStartWith("ready");
+    // The working copy is never written.
+    expect(existsSync(join(t.root, "a.txt"))).toBe(false);
+    expect(git(t.root, "status", "--porcelain")).toBe("");
+  }, 30000);
+
+  test("upstream results merge onto HEAD the same way every time, and conflicting ones are named", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-merged-base-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    repository(root);
+    const head = git(root, "rev-parse", "HEAD");
+    const commit = (branch: string, file: string, text: string) => {
+      git(root, "checkout", "-q", "-b", branch, head);
+      writeFileSync(join(root, file), text);
+      git(root, "add", ".");
+      git(root, "commit", "-q", "-m", branch);
+      return git(root, "rev-parse", "HEAD");
+    };
+    const a = commit("a", "a.txt", "a");
+    const b = commit("b", "b.txt", "b");
+    const x = commit("x", "README.md", "x");
+    const y = commit("y", "README.md", "y");
+    git(root, "checkout", "-q", "main");
+    expect(await mergedBase(root, [a], 1700000000)).toEqual({ commit: a });
+    const merged = await mergedBase(root, [a, b], 1700000000);
+    if (!("commit" in merged)) throw new Error("expected a merge");
+    expect(git(root, "show", `${merged.commit}:a.txt`)).toBe("a");
+    expect(git(root, "show", `${merged.commit}:b.txt`)).toBe("b");
+    expect(await mergedBase(root, [a, b], 1700000000)).toEqual(merged);
+    expect(await mergedBase(root, [x, y], 1700000000)).toEqual({ conflicts: ["README.md"], between: [x, y] });
+  });
+
+  test("inline, feature runs stay one at a time", async () => {
+    const t = setup();
+    // A second implementation would begin while the first waits; inline, none does.
+    t.executor.rendezvous = 2;
+    t.executor.rendezvousMs = 300;
+    await t.start({ plan: threeFeatures, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    const view = await t.approveSplit();
+    expect(view.parallelRuns).toBe(1);
+    expect((await t.drive()).status).toBe("completed");
+    expect(t.executor.maxActive).toBe(1);
   }, 30000);
 
   test("tiered approval is refused for a v2 feature workflow, whose auto approval is its own", async () => {

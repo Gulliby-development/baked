@@ -94,6 +94,61 @@ export async function worktreeBase(workspace: string): Promise<string> {
   return head;
 }
 
+/** The result of merging commits onto HEAD: the merged commit, or the files that conflict. */
+export type MergedBase = { commit: string } | { conflicts: string[]; between: [string, string] };
+
+/**
+ * HEAD merged with each of `commits` in order, without a worktree or a ref: `git merge-tree`
+ * merges the trees and `git commit-tree` records the merge. A commit already contained in the
+ * result is skipped and one that contains it is taken as it is, so one upstream result gives its
+ * own commit. Fixed author and dates (`date`, seconds) make the same inputs give the same commit.
+ */
+export async function mergedBase(
+  workspace: string,
+  commits: string[],
+  date: number,
+): Promise<MergedBase> {
+  let base = await worktreeBase(workspace);
+  const env = {
+    GIT_AUTHOR_NAME: FALLBACK_IDENTITY.name,
+    GIT_AUTHOR_EMAIL: FALLBACK_IDENTITY.email,
+    GIT_AUTHOR_DATE: `@${date} +0000`,
+    GIT_COMMITTER_NAME: FALLBACK_IDENTITY.name,
+    GIT_COMMITTER_EMAIL: FALLBACK_IDENTITY.email,
+    GIT_COMMITTER_DATE: `@${date} +0000`,
+  };
+  const ancestor = async (a: string, b: string): Promise<boolean> =>
+    (await git(workspace, ["merge-base", "--is-ancestor", a, b])).code === 0;
+  for (const commit of commits) {
+    if (await ancestor(commit, base)) continue;
+    if (await ancestor(base, commit)) {
+      base = commit;
+      continue;
+    }
+    const merged = await git(workspace, [
+      "merge-tree",
+      "--write-tree",
+      "--name-only",
+      "--no-messages",
+      base,
+      commit,
+    ]);
+    const [tree = "", ...files] = merged.stdout.trim().split("\n");
+    if (merged.code === 1)
+      return { conflicts: files.filter((f) => f.length > 0), between: [base, commit] };
+    if (merged.code !== 0)
+      throw new WorkflowFault("INPUT_CHANGED", `git merge-tree failed: ${merged.stderr.trim()}`, {
+        reason: "worktree_failed",
+      });
+    base = await required(
+      workspace,
+      ["commit-tree", tree, "-p", base, "-p", commit, "-m", `Merge ${commit} for a dependent run`],
+      { env },
+    );
+  }
+  return { commit: base };
+}
+
 /** Shares the project's top-level `node_modules` with the worktree so checks can run there. */
 function linkDependencies(workspace: string, root: string): void {
   const source = join(workspace, "node_modules");
@@ -107,9 +162,9 @@ function linkDependencies(workspace: string, root: string): void {
 }
 
 /**
- * Creates the run's worktree and branch from the current HEAD, or adopts them after a crash
- * between their creation and the state save. The baseline HEAD is recorded in the run state and
- * as the `worktree/created.json` artifact. Hooks do not run: a post-checkout hook could write
+ * Creates the run's worktree and branch from the current HEAD, or from the run's `worktreeBase`
+ * when it has one, or adopts them after a crash between their creation and the state save. The
+ * baseline is recorded in the run state and as the `worktree/created.json` artifact. Hooks do not run: a post-checkout hook could write
  * outside the worktree.
  */
 export async function ensureRunWorktree(
@@ -128,6 +183,7 @@ export async function ensureRunWorktree(
     return recorded;
   }
   const head = await worktreeBase(workspace);
+  const start = store.state(runId).worktreeBase ?? head;
   const path = worktreePath(runId);
   const branch = runBranch(runId);
   const absolute = join(workspace, path);
@@ -135,7 +191,7 @@ export async function ensureRunWorktree(
     await git(workspace, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])
   ).stdout.trim();
   // A branch from an interrupted creation has no commit of its own yet: its tip is the baseline.
-  const baseHead = existing || head;
+  const baseHead = existing || start;
   if (!existsSync(join(absolute, ".git"))) {
     await git(workspace, ["worktree", "prune"]);
     mkdirSync(dirname(absolute), { recursive: true });
