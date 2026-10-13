@@ -40,6 +40,7 @@ import {
 } from "./check-preflight.js";
 import { answerInvalidatesAnalysis, clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
+import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import {
   checkLine,
@@ -201,6 +202,17 @@ export class NativeWorkflowService implements WorkflowService {
         "Workflows are turned off by workflows.enabled: false in the configuration.",
       );
   }
+  private outcomesRefreshedAt = 0;
+  /**
+   * Updates the late labels of the critic outcome log (delivery, line survival) at most once a
+   * day per process, before a run starts. Collection only: a failure is ignored.
+   */
+  private async refreshOutcomes(): Promise<void> {
+    const now = Date.now();
+    if (now - this.outcomesRefreshedAt < 24 * 60 * 60 * 1000) return;
+    this.outcomesRefreshedAt = now;
+    await refreshCriticOutcomes(this.store, now).catch(() => undefined);
+  }
   async start(request: StartRequest): Promise<RunSnapshot> {
     this.enabled();
     SafeId.parse(request.featureId);
@@ -210,6 +222,7 @@ export class NativeWorkflowService implements WorkflowService {
       throw new WorkflowFault("INVALID_DEFINITION", "Workflow prompt is required");
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
+    await this.refreshOutcomes();
     const prepared = await prepareStart(this.workspace, this.config, request);
     const smoke = await this.preflight(prepared);
     const {

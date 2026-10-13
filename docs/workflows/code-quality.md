@@ -8,16 +8,17 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Anti-slop rule pack](#anti-slop-rule-pack) | `qualityRules` | rules turned off, severities, ast-grep rule files | every built-in rule on |
 | [Dependency check](#dependency-check) | `registryLookups` | `false` turns lookups off | on |
 | [Semgrep](#semgrep) | `sast`, `sastConfig` | `auto`, `off`; a Semgrep `--config` | `auto`, `p/default` |
+| [Property-based tests](#property-based-tests) | `propertyTests` | `auto`, `off` | by preset: `auto` for `standard` and `full` (the `sdd` workflow), `off` otherwise |
 | [Mutation gate](#mutation-gate) | `mutation`, `mutationThresholds`, `mutationBudgetMs` | `off`, `advisory`, `required`; percent per path; time | by preset: `advisory` for `full` (the `sdd` workflow), `off` otherwise |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast` and `quality.mutation` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests` and `quality.mutation` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
-A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
+A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
 
 ## Duplication and dead-code ratchet
 
@@ -112,6 +113,17 @@ The implementer is told to add a dependency only when the task needs one and onl
 When [Semgrep](https://semgrep.dev/) is installed, each checks stage, after the command checks pass, runs `semgrep scan --json --metrics=off --quiet --config CONFIG` on the code files the run changed and keeps the matches on lines the run added (`quality/sast.json`). An `ERROR` match is a blocking `security` finding (`SAST RULE: MESSAGE (FILE:LINE)`) when the file's baseline is known; `WARNING` and `INFO` matches are notes. Without Semgrep, or when it fails, the report says `Semgrep: not run (REASON).` and nothing blocks. BAKED does not install Semgrep.
 
 `CONFIG` is `p/default` unless `quality.sastConfig` in the config file (or `sastConfig` in the policy) names another registry ruleset or a local rule file. `quality.sast: off`, `--sast off` or `sast: off` in the start request skips Semgrep.
+
+## Property-based tests
+
+Example tests miss edge inputs such as `-0`, an empty string or the largest value. With `propertyTests: auto`, criteria that must hold over a whole input domain get property-based tests:
+
+1. **Spec.** The spec author is told to mark such criteria with `property`, the input domain: `numbers`, `strings`, `parsing`, `round-trip` or `invariant`. `spec.md` shows the mark (`AC-001 (FR-001; automated; property over numbers)`), so the person approving the plan sees it.
+2. **Plan and tasks.** Once a criterion is marked, the planner gives it a test task that writes a property-based test with the ecosystem's library: fast-check (JS/TS), Hypothesis (Python), proptest (Rust), jqwik (Java/Kotlin), rapid (Go) or FsCheck (C#/F#). A library the project does not declare is added to its manifest as a development dependency, and the [dependency check](#dependency-check) lists it in the run report.
+3. **Check.** In each checks stage, after the command checks pass, the host looks in the test files of the tasks that cover each marked criterion for a use of a property library (`quality/properties.json`). A marked criterion without one is a blocking `missing` finding (`Property test missing for AC-001: ...`) filed on that test file, so the correction writes the property. The finding closes once the property exists.
+4. **Counterexamples.** When a check fails and its output holds a shrunk counterexample (fast-check `Counterexample:`, Hypothesis `Falsifying example:`, proptest `minimal failing input:`, jqwik, rapid, gopter and FsCheck output), the failed check's finding carries it (`Property counterexample: [-0]`). The correction starts from that reproduction and is told to fix the code, not the property, unless the property contradicts the spec. A conflict it cannot settle stops the run for a person, as any repeated finding does.
+
+The run report lists the marked criteria, their domain and the property tests found. The default follows the preset: `auto` for `standard` and `full` (what `sdd` runs), `off` for `quick` and the other presets; `quality.propertyTests: preset` (the setting's default) keeps that.
 
 ## Mutation gate
 

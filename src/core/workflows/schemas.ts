@@ -61,6 +61,13 @@ export const SpecSchema = z
             // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
             then: Text,
             method: z.enum(["automated", "manual", "post-release"]),
+            /**
+             * The input domain over which the behavior must hold, for a property-based test
+             * (quality/properties.ts); absent for an example criterion.
+             */
+            property: z
+              .enum(["numbers", "strings", "parsing", "round-trip", "invariant"])
+              .optional(),
           })
           .strict(),
       )
@@ -287,6 +294,12 @@ export const PolicySchema = z
      * `required` (path or glob to percent, default 100); `mutationBudgetMs` caps the gate's time.
      */
     mutation: z.enum(["off", "advisory", "required"]).optional(),
+    /**
+     * Property-based tests from criteria the spec marks with `property` (quality/properties.ts):
+     * `auto` asks the agents for them and checks each marked criterion has one; `off` does
+     * neither. Absent means the preset's default (`auto` for `standard` and `full`).
+     */
+    propertyTests: z.enum(["auto", "off"]).optional(),
     mutationThresholds: z
       .record(z.string().min(1).max(512), z.number().int().min(0).max(100))
       .optional(),
@@ -334,6 +347,11 @@ export const PolicySchema = z
       .object({
         maxAttemptTokens: z.number().int().min(10_000).optional(),
         maxRunTokens: z.number().int().min(10_000).nullable().optional(),
+        /**
+         * Hard ceiling above `maxRunTokens` that a run under `clarification: "assume"` may grow
+         * to without a person while it still makes progress (see `extendUnderAssume`).
+         */
+        extendToTokens: z.number().int().min(10_000).optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
         testTaskSteps: z.number().int().min(1).max(100).optional(),
       })
@@ -1240,6 +1258,8 @@ export interface StartRequest {
   sast?: "auto" | "off";
   /** The mutation gate of this run (CLI `--mutation MODE`); it overrides the policy. */
   mutation?: "off" | "advisory" | "required";
+  /** Property-based tests of this run (CLI `--property-tests MODE`); it overrides the policy. */
+  propertyTests?: "auto" | "off";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
