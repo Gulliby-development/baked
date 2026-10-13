@@ -24,6 +24,26 @@ export interface PullRequestChecks {
   }[];
   /** With failed checks: the fix-ci run to start; deliver it as a follow-up of this run. */
   fix?: { workflowId: string; featureId: string; prompt: string; followUp: string };
+  /** With `reviews`: the unresolved review threads and requested changes of the pull request. */
+  reviews?: {
+    state: "clear" | "changes";
+    threads: {
+      id: string;
+      outdated: boolean;
+      path: string;
+      line: number | null;
+      comments: { author: string; body: string; url: string }[];
+    }[];
+    changesRequested: { author: string; body: string; url: string }[];
+  };
+  /** With review changes asked for: the quick-fix run to start and the threads its delivery answers. */
+  repair?: {
+    workflowId: string;
+    featureId: string;
+    prompt: string;
+    followUp: string;
+    threads: string[];
+  };
 }
 
 export interface RunRow extends RunSnapshot {
@@ -191,8 +211,12 @@ export const runs = {
   usage: (key: string, runId: string) => call<RunUsage>(key, "GET", runPath(runId, "usage")),
   /** `GET /v1/workflow/runs/:id/report`: the run report in Markdown (src/core/workflows/run-report.ts). */
   /** One read of the checks on the commit the run's latest delivery pushed (`follow --once`). */
-  checks: (key: string, runId: string) =>
-    call<PullRequestChecks>(key, "GET", runPath(runId, "checks")),
+  checks: (key: string, runId: string, reviews = false) =>
+    call<PullRequestChecks>(
+      key,
+      "GET",
+      `${runPath(runId, "checks")}${reviews ? "?reviews=true" : ""}`,
+    ),
   report: async (key: string, runId: string): Promise<string> =>
     (await call<{ runId: string; markdown: string }>(key, "GET", runPath(runId, "report")))
       .markdown,

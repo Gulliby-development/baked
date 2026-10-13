@@ -81,7 +81,7 @@ describe("workflow panel formatting", () => {
       "undo",
       "cancel",
     ]);
-    expect(keys(snapshot({ status: "completed" }))).toEqual(["fork", "checks", "undo"]);
+    expect(keys(snapshot({ status: "completed" }))).toEqual(["fork", "checks", "reviews", "undo"]);
     expect(keys(snapshot({ status: "created" }))).toEqual(["resume", "cancel"]);
   });
   test("an ended run with its worktree on disk offers the discard", () => {

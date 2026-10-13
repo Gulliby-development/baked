@@ -89,6 +89,8 @@ interface DeliveryBody {
   pullRequest?: { title: string; base: string; draft: boolean } | null;
   /** A follow-up: the commit goes onto the branch and pull request of an earlier delivered run. */
   followUp?: { runId: string; pullRequest: { number: number; url: string } | null };
+  /** Review threads of the followed pull request answered after the push. */
+  reviewReplies?: { threads: { id: string; path: string }[]; resolve: boolean; body: string };
 }
 interface AcceptanceBody {
   acceptance?: {
@@ -769,6 +771,11 @@ export function DecisionPrompt({
           </text>
           {follow?.pullRequest ? (
             <text fg={t.textMuted}>{`Pull request: ${follow.pullRequest.url}`}</text>
+          ) : null}
+          {body.reviewReplies ? (
+            <text fg={t.textMuted}>
+              {`Then replies "${body.reviewReplies.body}" to ${body.reviewReplies.threads.length} review thread(s)${body.reviewReplies.resolve ? " and resolves them" : ""}: ${body.reviewReplies.threads.map((r) => r.path || r.id).join(", ")}`}
+            </text>
           ) : null}
           <text fg={t.textSecondary} attributes={1}>{`Files (${body.files?.length ?? 0})`}</text>
           {(body.files ?? []).map((f) => (

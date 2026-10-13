@@ -1277,6 +1277,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         if (body.remote) flags.remote = body.remote;
         if (body.branch) flags.branch = body.branch;
         if (body.followUp) flags["follow-up"] = body.followUp;
+        if (body.answerThreads) flags["answer-threads"] = body.answerThreads.join(",");
+        if (body.resolve) flags.resolve = true;
         if (body.draft) flags.draft = true;
         if (body.pullRequest === false) flags["no-pr"] = true;
       } else {
@@ -1349,7 +1351,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       only("GET");
       return json(
         200,
-        await execute({ command: "follow", positional: [runId], flags: { once: true } }),
+        await execute({
+          command: "follow",
+          positional: [runId],
+          flags: {
+            once: true,
+            ...(url.searchParams.get("reviews") === "true" ? { reviews: true } : {}),
+          },
+        }),
         origin,
       );
     }

@@ -240,8 +240,39 @@ export function planScopeAdvice(
   const problems = [...new Set([...always, ...scopeProblems(limits, graph).map((p) => p.text)])];
   if (!problems.length) return [];
   return [
-    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks; if every listed write is needed, submit the same plan again and a person approves it.`,
+    `This plan needs a person at approval: ${problems.join("; ")}. Automatic approval covers at most ${limits.maxTasks} tasks and ${limits.maxFiles} files under ${limits.allowedPaths.join(", ")}${limits.allowDelete ? "" : " without deletions"}. Drop writes the requirements do not need (an optional refactor, a type or helper that can live in a file already written) and merge small tasks. If every listed write is needed, submit the plan again unchanged: it is accepted and a person approves it once at approval, which authorizes every write it lists. Do not mention approval in task descriptions or rationales; the tasks run only after the person approved.`,
   ];
+}
+
+const APPROVAL = /\bapprov/i;
+const GATE =
+  /\b(human|person|people|manual(ly)?|requires?|required|needs?|needed|waits?|pending|until|before|without|not (been )?(given|provided|granted))\b/i;
+
+/** A text without the sentences that make a step wait for an approval (#797). */
+function withoutApproval(text: string, fallback: string): string {
+  const kept = text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !(APPROVAL.test(sentence) && GATE.test(sentence)))
+    .join(" ")
+    .trim();
+  return kept || fallback;
+}
+
+/**
+ * Task descriptions and rationales without approval remarks. A planner told that a write needs a
+ * person copied that into the task ("this workflow path requires human approval"), and the
+ * implementer then refused the write after the person had approved the plan (R12 url-shortener
+ * c86f72da). A task only runs after its plan was approved, so such a remark is never true there.
+ */
+export function withoutApprovalRemarks(graph: TaskGraph): TaskGraph {
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => ({
+      ...task,
+      description: withoutApproval(task.description, task.title),
+      rationale: withoutApproval(task.rationale, "Required by the approved plan"),
+    })),
+  };
 }
 
 /**

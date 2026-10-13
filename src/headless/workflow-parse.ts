@@ -94,6 +94,8 @@ const booleanFlags = new Set([
   "execute",
   "once",
   "fix",
+  "reviews",
+  "resolve",
   "worktree",
   "exclude-user-changes",
   "resume",
@@ -218,11 +220,13 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   define: ["from"],
   gates: ["all"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
-  follow: ["interval", "timeout", "once", "fix"],
+  follow: ["interval", "timeout", "once", "fix", "reviews"],
   deliver: [
     "remote",
     "branch",
     "follow-up",
+    "answer-threads",
+    "resolve",
     "draft",
     "no-pr",
     "with-specs",
@@ -391,6 +395,8 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       "remote",
       "branch",
       "follow-up",
+      "answer-threads",
+      "resolve",
       "draft",
       "no-pr",
       "with-specs",
@@ -401,6 +407,19 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       throw new WorkflowFault(
         "INVALID_DEFINITION",
         `--${newBranch} plans a new branch; --follow-up adds a commit to the followed run's branch and pull request`,
+      );
+    if (
+      ("answer-threads" in result.flags || "resolve" in result.flags) &&
+      !("follow-up" in result.flags)
+    )
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--answer-threads and --resolve answer review threads of the followed pull request; add --follow-up",
+      );
+    if (result.flags.resolve && !("answer-threads" in result.flags))
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        "--resolve resolves the --answer-threads threads",
       );
     if (result.flags["with-specs"] && result.flags["no-specs"])
       throw new WorkflowFault(
@@ -677,11 +696,16 @@ deliver RUN_ID --follow-up DELIVERED_RUN_ID [--remote origin] [--with-specs|--no
   Plan one commit of this run's files on top of the branch DELIVERED_RUN_ID pushed, fast-forward
   only, and no new pull request: a fix for that pull request's checks or review. The local copy of
   that branch must match the remote and not be checked out.
-follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix]
+  --answer-threads ID,ID replies "Addressed in COMMIT." to those unresolved review threads of the
+  pull request after the push; --resolve also resolves them. Both are part of the approved plan.
+follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix] [--reviews]
   Wait for the checks GitHub reports on the commit the run's latest delivery pushed, reading them
   every --interval seconds (5..3600) for up to --timeout minutes (1..1440); no model runs. Ends at
   the first failed check, when all pass, or at the timeout. --once reads them once. --fix starts a
   fix-ci run for the failed checks; deliver it with deliver FIX_RUN_ID --follow-up RUN_ID.
+  --reviews also reads the pull request's unresolved review threads and requested changes once no
+  check failed; --fix then starts a quick-fix run for them, delivered with
+  deliver FIX_RUN_ID --follow-up RUN_ID --answer-threads THREAD_IDS.
 discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 worktrees [--clean [--dry-run]]

@@ -117,12 +117,17 @@ export function WorkflowPanel({
   const [confirmReroute, setConfirmReroute] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  /** The fix-ci run the last read of failed pull request checks proposes; Y starts it. */
+  /**
+   * The fix-ci run the last read of failed pull request checks proposes, or the quick-fix run for
+   * its unresolved review comments; Y starts it.
+   */
   const [fixChecks, setFixChecks] = useState<{
     featureId: string;
     prompt: string;
     workflowId: string;
     summary: string;
+    /** The follow-up delivery flags beyond --follow-up, such as the threads it answers. */
+    deliver: string;
   } | null>(null);
   // The last undo of the open run, shown until Esc or another run.
   const [undone, setUndone] = useState<{ runId: string; report: UndoResult["report"] } | null>(
@@ -201,13 +206,20 @@ export function WorkflowPanel({
       setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
     }
   };
-  /** Reads the delivered pull request's checks once; failed checks offer a fix-ci run. */
-  const readChecks = async (id: string): Promise<void> => {
+  /**
+   * Reads the delivered pull request's checks once; failed checks offer a fix-ci run. With
+   * `reviews` it also reads the unresolved review threads, which offer a quick-fix run.
+   */
+  const readChecks = async (id: string, reviews = false): Promise<void> => {
     try {
       const read = (await workflowSession(workspace).command(
-        ["follow", id, "--once"],
+        ["follow", id, "--once", ...(reviews ? ["--reviews"] : [])],
         new AbortController().signal,
-      )) as PullRequestChecks & { fix?: { featureId: string; prompt: string; workflowId: string } };
+      )) as PullRequestChecks & {
+        fix?: { featureId: string; prompt: string; workflowId: string };
+        reviews?: { threads: unknown[]; changesRequested: unknown[] };
+        repair?: { featureId: string; prompt: string; workflowId: string; threads: string[] };
+      };
       const failed = read.checks.filter((c) => c.state === "failed").map((c) => c.name);
       const where = read.pullRequest ? `#${read.pullRequest.number}` : read.branch;
       const summary =
@@ -218,7 +230,17 @@ export function WorkflowPanel({
             : read.state === "pending"
               ? `${where}: checks still running`
               : `${where}: no checks reported yet`;
-      if (read.fix) setFixChecks({ ...read.fix, summary });
+      if (read.fix) setFixChecks({ ...read.fix, summary, deliver: "" });
+      else if (read.repair && read.reviews)
+        setFixChecks({
+          ...read.repair,
+          summary: `${where}: ${read.reviews.threads.length} unresolved review thread(s), ${read.reviews.changesRequested.length} review(s) requesting changes`,
+          deliver: read.repair.threads.length
+            ? ` --answer-threads ${read.repair.threads.join(",")}`
+            : "",
+        });
+      else if (read.reviews)
+        setFlash({ kind: "info", message: `${summary}; no unresolved review comments` });
       else setFlash({ kind: read.state === "passed" ? "ok" : "info", message: summary });
     } catch (err) {
       setFlash({ kind: "err", message: err instanceof Error ? err.message : String(err) });
@@ -391,6 +413,7 @@ export function WorkflowPanel({
     else if (action.action === "cancel") setConfirmCancel(true);
     else if (action.action === "discard-worktree") setConfirmDiscard(true);
     else if (action.action === "checks") void readChecks(snapshot.runId);
+    else if (action.action === "reviews") void readChecks(snapshot.runId, true);
     else if (action.action === "undo") {
       if (!driving) setConfirmUndo(true);
     } else void act(action.action);
@@ -692,7 +715,7 @@ export function WorkflowPanel({
         ) : null}
         {fixChecks ? (
           <text fg={t.warning}>
-            {`${fixChecks.summary}. Start a fix-ci run (${fixChecks.featureId}) for them? Deliver it afterwards with --follow-up ${runId}. Y starts it; N leaves it.`}
+            {`${fixChecks.summary}. Start a ${fixChecks.workflowId} run (${fixChecks.featureId}) for them? Deliver it afterwards with --follow-up ${runId}${fixChecks.deliver}. Y starts it; N leaves it.`}
           </text>
         ) : null}
         {confirmCancel ? (

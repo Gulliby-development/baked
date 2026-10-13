@@ -116,7 +116,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/lsp install` | Install & manage LSP servers (Mason registry) |
 | `/lsp restart` | Restart LSP servers (all or specific) |
 | `/lsp status` | LSP status: running servers, and the servers of the project's languages that are not running (not installed, off or failed); `r` restarts the selected one |
-| `/memory` | Manage memory scopes, view & clear; the Runs tab shows and edits what workflow runs remember |
+| `/memory` | Project memory: the Chat tab browses what the chat agent remembers, the Runs tab shows and edits what workflow runs remember, plus Hidden, Cleanup and scope Settings |
 | `/repo-map` | Baked map settings (AST index) |
 | `/skills` | Browse & install skills |
 | `/packages` | [Packages](packages.md) installed in the project; `/packages add PATH` shows a local package's plan and installs it after you pick Install, `/packages remove NAME` deletes its unchanged files (both ask first); `/packages pack PATH [--name NAME] [--version VER] [--description "TEXT"] [--check]` writes the manifest of a package folder you author |

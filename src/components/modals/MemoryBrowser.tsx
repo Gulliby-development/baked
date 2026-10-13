@@ -42,7 +42,7 @@ import {
 } from "../ui/index.js";
 import { RunMemoryPanel, useRunMemory } from "./RunMemoryTab.js";
 
-type Tab = "All" | "Hidden" | "Runs" | "Cleanup" | "Settings";
+type Tab = "Chat" | "Hidden" | "Runs" | "Cleanup" | "Settings";
 
 type SettingsModalKind = "write" | "read" | "settings-storage";
 type SettingsModal = { kind: SettingsModalKind; current: string } | null;
@@ -114,7 +114,7 @@ const KIND_LABEL: Record<CleanupCandidate["kind"], string> = {
   similar: "SIM",
 };
 
-const TABS: Tab[] = ["All", "Hidden", "Runs", "Cleanup", "Settings"];
+const TABS: Tab[] = ["Chat", "Hidden", "Runs", "Cleanup", "Settings"];
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - Date.parse(iso);
@@ -176,7 +176,7 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
   const SIDEBAR_W = 22;
   const contentW = popupContentWidth(popupW, SIDEBAR_W) - 6;
 
-  const [tab, setTab] = useState<Tab>("All");
+  const [tab, setTab] = useState<Tab>("Chat");
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
   const [generation, setGeneration] = useState(0);
@@ -558,7 +558,7 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
       if (row) togglePin(row);
       return;
     }
-    if (evt.ctrl && evt.name === "e" && tab === "All") {
+    if (evt.ctrl && evt.name === "e" && tab === "Chat") {
       if (row) setRewording({ row, text: row.record.summary });
       return;
     }
@@ -598,8 +598,8 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
 
   const sidebarTabs: SidebarTab<Tab>[] = [
     {
-      id: "All",
-      label: "All",
+      id: "Chat",
+      label: "Chat",
       icon: "memory",
       blurb: `${String(totalCount)} active · ${String(pinnedCount)} pinned`,
     },
