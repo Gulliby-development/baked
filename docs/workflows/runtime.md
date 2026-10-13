@@ -540,6 +540,34 @@ Definitions of schema version 2 describe stages, transitions, contracts and gate
 
 The desktop app has the same editor under Setup > Workflows ([desktop app](../desktop/app.md)); it goes through `POST /v1/workflow/editor*` ([API](../desktop/api.md#workflow-editor)), which runs these rules in the project's backend.
 
+### Workflows from a project's agents
+
+BAKED is customized through workflows. A project may already hold custom agents made for other tools; BAKED reads them only to turn them into a workflow, and shows nothing about agents in a project without them.
+
+| Tool | Files |
+| --- | --- |
+| Claude Code | `.claude/agents/*.md` |
+| GitHub Copilot | `.github/agents/*.agent.md`, `.github/chatmodes/*.chatmode.md` |
+| OpenCode | `.opencode/agent/*.md`, `.opencode/agents/*.md` |
+| Roo Code | the `customModes` of `.roomodes` (JSON or YAML) |
+
+Only the project's own folders are read, never the home folder. A Markdown agent's YAML frontmatter gives its name, description, tools and model; the body is its prompt. A file over 64 KB or one that does not parse is reported and skipped.
+
+Each agent gets a suggested stage from the words of its name and description and from its tools: review, research, specify, plan or implement, with implement for an agent that can edit and research for a read-only one. An agent that hands work to other agents (Copilot `handoffs`, an OpenCode `primary` agent, a Roo orchestrator) is not used: the workflow itself does that now.
+
+Converting writes, with nothing written when a check fails:
+
+- for a research, specify, plan or implement agent, a profile `baked/agents/ID.json`: the built-in profile of that stage (`researcher`, `spec-author`, `planner`, `implementer`) with the agent's prompt added after BAKED's instructions as project guidance, so the stage still returns its contract. The research, specify or plan stage of the new workflow names it; for an implement agent the tasks stage names it in `profileId`, and the tasks the plan gives the default `implementer` run on it instead (a task naming another implementation profile keeps it). One agent per stage;
+- for a review agent, an AI review gate `baked/gates/ID.json` (dimension `custom`, the built-in correctness reviewer with the agent's prompt as its focus, blocking on critical and high findings), confirmed at once, since the person converting chose it, and added to every review stage after `correctness-review`;
+- the workflow `baked/workflows/ID.json`, a custom copy of `standard` or another definition with a tasks stage, with human approvals and no auto approval, like `baked workflow define`. Problems of the base itself (a check stage without the project's checks) do not stop the conversion: the result lists them for the editor.
+
+A prompt longer than fits the 16,000-character field is cut, and a model an agent asks for is noted: workflow models come from [model routing](#model-routing). After a conversion the agent files can be removed (a Roo mode is removed by editing `.roomodes`); the workflow keeps working without them.
+
+- TUI: the landing page shows a card for the agents, and `/agents` appears in the palette, both only when the project has some. `/agents` lists them (Enter on one edits it in `$EDITOR` or removes its file) and converts them.
+- Desktop: the Agents section ([desktop app](../desktop/app.md)).
+- CLI: `baked workflow agents` lists them as JSON, `baked workflow agents convert ID [--from PRESET] [--stages NAME=STAGE,...] [--remove]` converts them (`skip` leaves an agent out) and `baked workflow agents remove NAME` deletes one file.
+- API: `/v1/agents*` ([API](../desktop/api.md#project-agents)).
+
 ### Gates from a sentence
 
 `baked workflow gate new "TEXT"` drafts a gate from a plain-language check with the configured model (`--model` picks another, `--kind command|ai-acceptance|human|ai-review` forces the kind, `--id` sets the ID, `--from-criteria` makes an AI check that walks the run's manual acceptance criteria). `human` (a person approves, the sentence is the prompt) and `ai-review` (the sentence is the reviewer's instructions; critical and high findings block) are built without a model. An exact check (an exit code, an exact output) becomes a required `command` gate, often with a small Bun test script under `tests/gates/` that the gate runs with `bun`; a check that needs judgement becomes an advisory `ai-acceptance` gate with the `terminal` driver, its steps and expectations, the program to start and the one-shot `commands`. A check that names the spec's acceptance criteria ("walk the feature's acceptance criteria in the CLI"), or `--from-criteria`, drafts a walk-through with `"fromCriteria": "manual"` ([below](#ai-acceptance-gates)), whose own expectations may be empty. The model fills only that content (`src/core/workflows/v2/gate-draft.ts`): the host sets timeouts, retries, evidence and grants (a walk-through gets `spawnApp`, the ports the model names, no outbound hosts and no write paths), never drafts the browser driver, and refuses shells (`sh`, `bash`, `cmd`, `powershell`, ...) as executables. The draft is validated like a gate file and printed with what it may do; nothing is written until a person saves it with `--save`, or with `baked workflow gate save --file DRAFT.json` after reading the `--json` output. Saving never overwrites a gate file or a script and confirms the gate, since the person just read it. `gate list` and `gate show ID` describe the library in words. The API has the same steps (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, capability `gate-drafts`). `gate places ID [--workflow W]` lists where the gate can go in a workflow (default: the default workflow) in words, with the reason a place is refused, by the editor's own rules (`src/core/workflows/v2/gate-placement.ts`); `gate bind ID --at PLACE` adds it there and saves the workflow. `sdd` and the presets are read only, so binding copies them as `ID-custom` first (start runs with `--workflow ID-custom`); a copy needs at least one policy check in its check stage. `/workflow edit` binds gates by hand as before, and G there drafts, saves and binds a gate in one step.

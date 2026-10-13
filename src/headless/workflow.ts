@@ -753,6 +753,7 @@ export async function executeWorkflowCommand(
     case "validate":
     case "define":
     case "gates":
+    case "agents":
       return executeDefinitionCommand(
         args,
         service.store.workspace,

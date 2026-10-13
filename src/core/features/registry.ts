@@ -977,6 +977,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/workflows: gallery, Flow walkthrough, Graph editor, Stages"],
   },
   {
+    id: "project-agents",
+    group: "Workflow runs",
+    title:
+      "Agents a project brought from other tools: edit them and turn them into a workflow (shown only when the project has some)",
+    tui: ["/agents: the landing page shows a card for them"],
+    cli: ["baked workflow agents"],
+    api: ["/v1/agents", "/v1/agents/convert"],
+    desktop: ["project/agents", "project/workflows: a line points at Agents"],
+  },
+  {
     id: "wait-stage",
     group: "Workflow runs",
     title: "Wait stage: poll command gates until they pass or time out, with no model calls",

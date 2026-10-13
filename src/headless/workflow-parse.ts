@@ -41,6 +41,7 @@ const commands = [
   "validate",
   "define",
   "gates",
+  "agents",
   "gate",
   "deliver",
   "follow",
@@ -97,6 +98,7 @@ const booleanFlags = new Set([
   "reviews",
   "resolve",
   "worktree",
+  "remove",
   "exclude-user-changes",
   "resume",
   "no-resume",
@@ -219,6 +221,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   validate: ["file"],
   define: ["from"],
   gates: ["all"],
+  agents: ["from", "stages", "remove"],
   gate: ["text", "kind", "id", "model", "from-criteria", "save", "file", "json", "workflow", "at"],
   follow: ["interval", "timeout", "once", "fix", "reviews"],
   deliver: [
@@ -338,6 +341,11 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
         "INVALID_DEFINITION",
         rule[1] ? `memory ${action} requires --text` : `--text is not valid for memory ${action}`,
       );
+  } else if (!result.flags.help && result.command === "agents") {
+    const [action = "list", ...rest] = result.positional;
+    const arity: Record<string, number> = { list: 0, convert: 1, remove: 1 };
+    if (arity[action] === undefined || rest.length !== arity[action])
+      throw new WorkflowFault("INVALID_DEFINITION", "agents takes list, convert ID or remove NAME");
   } else if (!result.flags.help && ["route", "doctor", "estimate"].includes(result.command)) {
     if (result.positional.length > 1 || (result.positional.length && result.flags.workflow))
       throw new WorkflowFault(
@@ -644,6 +652,11 @@ recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-a
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
+agents                    list the project's custom agents from other tools (Claude Code, Copilot, OpenCode, Roo)
+agents convert ID [--from PRESET] [--stages NAME=STAGE,...] [--remove]
+  make workflow ID from them: each agent fills a stage (research, specify, plan, implement, review, skip);
+  --remove deletes the converted agent files
+agents remove NAME        delete one agent's file
 gates                     list the gate library with each gate's source and what it shadows
 gates confirm ID... | --all  confirm project gates (baked/gates) before a run may use them
 gate new "TEXT" [--kind command|ai-acceptance|human|ai-review] [--id ID] [--from-criteria] [--model ID] [--save] [--json]
