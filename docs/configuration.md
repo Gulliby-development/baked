@@ -46,6 +46,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `quality` | `duplication: "warn"` | Defaults of the [code quality gates](workflows/code-quality.md) of new workflow runs; `/code-quality` |
 | `disabledTools` | `[]` | Tools turned off with `/tools` |
 | `webSearch` | `true` | Web search tool (asks before each search) |
+| `artifactDeploy` | `false` | Allow deploying [artifacts](artifacts.md) to your Vercel account (asks before each deploy) |
+| `vercelTeamId` | unset | Vercel team artifacts deploy to; unset is the personal account (`VERCEL_TEAM_ID` works too) |
 | `codeExecution`, `computerUse`, `anthropicTextEditor` | `true`, `false`, `false` | Provider-side tools for Claude models |
 | `repoMap` | `true` | Build the repository graph on launch |
 | `semanticSummaries` | `"ast"` | Symbol summaries: `off`, `ast`, `synthetic`, `llm`, `full`; `semanticSummaryLimit` caps LLM summaries (300) |
@@ -119,6 +121,7 @@ The list is `INSTRUCTION_SOURCES` in `src/core/instructions.ts`.
 | `BAKED_DEBUG_API=1` | Dump each API request to `<project>/.baked/api-export/` |
 | `BAKED_TELEMETRY=0`, `DO_NOT_TRACK=1` | Turn off local telemetry |
 | `BAKED_TELEMETRY_URL` | Telemetry receiver; overrides `telemetryUrl` |
+| `VERCEL_TOKEN`, `VERCEL_TEAM_ID` | Vercel token and team for [artifact deploys](artifacts.md#deploying-to-vercel) |
 | `BAKED_BROWSER_EXECUTABLE` | Chromium executable for the AI acceptance gate's browser driver (Playwright) |
 
 Older lower-case `baked_*` names are still read as a fallback (`src/core/legacy-env.ts`).
