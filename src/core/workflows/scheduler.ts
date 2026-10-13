@@ -1,7 +1,6 @@
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -9,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   ROUTING_ARTIFACT,
   type RouteEffort,
@@ -21,7 +20,7 @@ import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
-import { readablePath, validatePackage, workspacePath } from "../specs/validate.js";
+import { validatePackage, workspacePath } from "../specs/validate.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -235,9 +234,15 @@ import {
   runMutants,
   scoreMutants,
 } from "./quality/mutation.js";
-import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
+import {
+  detectMutationTool,
+  runMutationTool,
+  type ToolShell,
+  toolShellFiles,
+} from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
+  libraryFiles,
   propertyClaim,
   propertyLibraries,
   propertyTestsNote,
@@ -6811,29 +6816,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (kept) return JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, boolean>;
     const root = runRoot(this.store.workspace, state);
     const libraries = propertyLibraries({
-      read: (path) => {
-        try {
-          return readFileSync(readablePath(root, path), "utf8");
-        } catch {
-          return null;
-        }
-      },
-      exists: (path) => {
-        try {
-          return existsSync(readablePath(root, path));
-        } catch {
-          return false;
-        }
-      },
-      list: (directory) => {
-        try {
-          return readdirSync(directory ? readablePath(root, directory) : root).map((name) =>
-            directory ? `${directory}/${name}` : name,
-          );
-        } catch {
-          return [];
-        }
-      },
+      ...libraryFiles(root),
       pythonImports: (module) => {
         const python =
           process.platform === "win32"
@@ -7159,7 +7142,6 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const scratch = join(tmpdir(), "baked-mutation", runId);
     mkdirSync(scratch, { recursive: true });
     const sandbox = runSandbox(policy, root);
-    const absolute = (path: string) => (isAbsolute(path) ? path : readablePath(root, path));
     return {
       root,
       scratch: scratch.replaceAll("\\", "/"),
@@ -7175,14 +7157,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         });
         return { exitCode: outcome.exitCode, output: outcome.output, timedOut: outcome.timedOut };
       },
-      read: (path) => {
-        try {
-          return readFileSync(absolute(path), "utf8");
-        } catch {
-          return null;
-        }
-      },
-      exists: (path) => existsSync(absolute(path)),
+      ...toolShellFiles(root),
       remove: (path) => rmSync(workspacePath(root, path), { recursive: true, force: true }),
       which: (command) => Bun.which(command),
       now: () => Date.now(),
