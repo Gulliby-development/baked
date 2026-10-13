@@ -208,6 +208,17 @@ The listing marks a check the workspace policy already lists, and a proposed rul
 
 Implementers get the same [diagnostics after each edit](../tools.md#diagnostics-after-edits) as the chat: new errors in the edited file and in up to 8 files that import it, in the run's worktree when it has one. The policy field `editDiagnostics` sets what an edit that adds errors does during the run: `feedback` returns the errors with the tool result, `reject` also restores the file and fails the edit with the errors and the original lines. A run that starts without the field takes the project's `editDiagnostics` chat setting; only `reject` is stored in the run's policy, so the approval digest covers it and a run under `feedback` keeps the policy hash it had before the field existed. Set it for one run with `workflows.policy.editDiagnostics` in `.baked/config.json` or `--policy FILE`.
 
+### Library docs
+
+When `libraryDocs` is configured (global or project config; a run freezes it into its policy, and a policy that names its own source keeps it), each implementer task gets docs for the versions of the libraries it uses. The versions come from the workspace's lockfiles:
+
+- `package-lock.json` and `bun.lock` (npm);
+- `Cargo.lock`;
+- `uv.lock` and `poetry.lock` (PyPI);
+- the `require` lines of `go.mod`.
+
+A task uses a library when a file it writes or reads already imports it (`import`/`require` in JavaScript, `use` or `crate::` in Rust, `import`/`from` in Python, a quoted module path in Go), or when its title or description names it. Each task gets docs for at most 3 libraries. A `dir` source reads `<name>@<version>.md` or `<name>/<version>.md` below the directory (absolute, relative to the workspace, or under `~`). An `mcp` source calls the tool of a server in `mcpServers` with `args`, replacing `{name}`, `{version}` and `{ecosystem}` (`npm`, `cargo`, `pypi`, `go`); without `args` it sends `{library, version}`. The docs reach the implementer as `libraryDocs` in its input, each cut at `maxChars`. Each lookup, found or not, is journaled as `tasks/TASK/library-docs-ID.json`. A library the source has no docs for is left out. Without a source nothing changes. `workflow doctor` warns when the directory does not exist or the MCP server is not configured or is disabled.
+
 ### The run's own edits and undo
 
 A run keeps the edits it executed. A revision, a failed or interrupted task attempt and a fork leave the files as they are, and the runtime recognises content the run itself wrote by the effect journal:

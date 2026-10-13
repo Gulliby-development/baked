@@ -123,6 +123,14 @@ import {
   type WorkspaceLeases,
   withinWorkflow,
 } from "./leases.js";
+import {
+  configuredMcpCall,
+  fetchLibraryDocs,
+  type LockedLibrary,
+  lockedLibraries,
+  type McpCall,
+  taskLibraries,
+} from "./library-docs.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
   PLAN_CONSISTENCY_CHECKS,
@@ -423,6 +431,9 @@ export class WorkflowScheduler {
   private queued: QueuedRequest[] = [];
   /** Frozen routing records by run; `null` for runs started before routing was recorded. */
   private routing = new Map<string, RoutingRecord | null>();
+  /** How a `libraryDocs` MCP source is called; tests replace it. */
+  mcpCall: McpCall = (server, tool, args) =>
+    configuredMcpCall(this.store.workspace, server, tool, args);
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -2977,6 +2988,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                 }
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
+            ...(await this.libraryDocsContext(runId, policy, root, task)),
             ...this.previousAttempt(runId, task.id),
             ...(focus.files.length
               ? {
@@ -3476,6 +3488,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             ? {
                 ...entry.extra,
                 ...(await this.correctionContext(runId, state, root, task)),
+                ...(await this.libraryDocsContext(runId, policy, root, task)),
                 ...(earlierEdits ? { earlierEdits } : {}),
               }
             : entry.extra,
@@ -4216,6 +4229,49 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
       },
     };
+  }
+  /**
+   * Docs for the locked versions of the libraries a task uses, from the run's `libraryDocs`
+   * source (#741); nothing without a source or when the source has no docs for them. Each lookup
+   * is journaled with the task, found or not.
+   */
+  private async libraryDocsContext(
+    runId: string,
+    policy: RunPolicy,
+    root: string,
+    task: Task,
+  ): Promise<Record<string, unknown>> {
+    const source = policy.libraryDocs;
+    if (!source) return {};
+    const libraries = taskLibraries(root, task, lockedLibraries(root));
+    if (!libraries.length) return {};
+    const docs: (LockedLibrary & { docs: string })[] = [];
+    for (const library of libraries) {
+      const text = await fetchLibraryDocs(this.store.workspace, source, library, this.mcpCall);
+      if (text) docs.push({ ...library, docs: text });
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/library-docs-${newId()}.json`,
+        canonical({
+          taskId: task.id,
+          libraries: libraries.map((library) => ({
+            ...library,
+            found: docs.some((d) => d.ecosystem === library.ecosystem && d.name === library.name),
+          })),
+        }),
+      ),
+    );
+    return docs.length
+      ? {
+          libraryDocs: {
+            libraries: docs,
+            note: "Docs for the library versions the project's lockfile pins. Use the APIs they describe instead of what you remember from other versions.",
+          },
+        }
+      : {};
   }
   private async runTaskCheck(
     runId: string,
