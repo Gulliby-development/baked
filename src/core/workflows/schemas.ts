@@ -294,6 +294,13 @@ export const PolicySchema = z
      */
     testIntegrity: z.enum(["block", "warn"]).optional(),
     /**
+     * Tests first (tests-first.ts): `criteria` writes a failing test task for every automated
+     * criterion before any code, `all` for every criterion; a person approves the tests and the
+     * code is implemented until they pass. Absent means `off`, so stored policies keep their hash;
+     * a definition's `testsFirst` (the `tdd` and `full` presets) overrides it at start.
+     */
+    testsFirst: z.enum(["off", "criteria", "all"]).optional(),
+    /**
      * Review findings whose confidence is below this are notes and start no correction. Absent
      * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
      * copies `modelRouting.reviewMinConfidence` here when it is set.
@@ -1597,8 +1604,33 @@ export function hostBoundCriteria(spec: Spec): string[] {
     .map((c) => c.id);
 }
 
-/** The spec defects as corrections for the spec author, who can add or relink criteria. */
-export function specCoverageProblems(spec: Spec): string[] {
+// A criterion that the project's build succeeds, or a build command named outright.
+const BUILD_CLAIM =
+  /\b(?:production|release|project|package|app(?:lication)?|the) build (?:succeeds|passes|completes|works|runs)\b|\bbuilds? (?:successfully|cleanly|without (?:errors?|warnings?))\b|\b(?:npm|bun|pnpm|yarn) run build\b|\b(?:cargo|go|dotnet|gradlew?) build\b|\bmvn (?:package|install|verify)\b/i;
+/** What a check runs, for the spec checks that compare criteria with the execution contract. */
+type CheckCommand = { id: string; executable: string; args: readonly string[] };
+// A declared check that builds the project.
+const BUILD_CHECK =
+  /\b(?:build|bundle|assemble|compile|package)\b|\bmvn\b.*\b(?:verify|install)\b/i;
+
+/**
+ * Automated criteria that need a build while no declared check builds the project. Convergence
+ * proves a criterion only with the checks of the execution contract, so such a criterion ends
+ * inconclusive however the build goes (zoneslot-update fc3e9c49 AC-010: "production build
+ * succeeds", the contract had typecheck, lint and tests, and the run noted a false alarm).
+ */
+export function uncontractedBuildCriteria(spec: Spec, checks: readonly CheckCommand[]): string[] {
+  if (checks.some((c) => BUILD_CHECK.test([c.id, c.executable, ...c.args].join(" ")))) return [];
+  return spec.criteria
+    .filter((c) => c.method === "automated" && BUILD_CLAIM.test(`${c.given}\n${c.when}\n${c.then}`))
+    .map((c) => c.id);
+}
+
+/**
+ * The spec defects as corrections for the spec author, who can add or relink criteria. With the
+ * run's checks, a criterion that needs a check the execution contract lacks is one too.
+ */
+export function specCoverageProblems(spec: Spec, checks?: readonly CheckCommand[]): string[] {
   return [
     ...validateSpecCoverage(spec).map((error) =>
       /^(requirement without criterion|engineering requirement deferred) /.test(error)
@@ -1612,6 +1644,10 @@ export function specCoverageProblems(spec: Spec): string[] {
     ...hostBoundCriteria(spec).map(
       (id) =>
         `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here). When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file. Use post-release only for a claim that needs a release or a real device.`,
+    ),
+    ...(checks ? uncontractedBuildCriteria(spec, checks) : []).map(
+      (id) =>
+        `criterion ${id} is automated but needs a build, and no check of executionContract.checks (${checks?.map((c) => c.id).join(", ") || "none"}) builds the project, so convergence cannot prove it. Rewrite it as what those checks prove (the tests or the type check pass) or what the reviewer can read in a file, or use method post-release when the request needs the build itself checked outside this run.`,
     ),
   ];
 }

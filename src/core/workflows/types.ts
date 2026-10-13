@@ -368,6 +368,19 @@ export const RuntimeStateSchema = z
       )
       .default({}),
     issue: IssueSourceSchema.nullable().default(null),
+    /**
+     * Tests first: the test files the tests-first tasks wrote, once they all failed for the right
+     * reason, the digest a person approves, and whether they did. Null until then.
+     */
+    testsFirst: z
+      .object({
+        files: z.array(z.string()),
+        digest: z.string(),
+        approved: z.boolean(),
+      })
+      .strict()
+      .nullable()
+      .default(null),
     /** Set on a run started with `--auto-preset`: what was proposed, why, and what ran. */
     presetChoice: PresetChoiceSchema.nullable().default(null),
   })

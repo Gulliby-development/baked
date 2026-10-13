@@ -97,3 +97,27 @@ describe("a task's reference file", () => {
     expect(instructions("reviewer")).toContain("extra.references");
   });
 });
+
+// #778: a modify of a file that neither exists nor is created earlier fails in the tool policy.
+describe("a task's modify targets", () => {
+  test("a modify target must exist or be created by an earlier task", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-modify-"));
+    dirs.push(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/existing.rs"), "fn main() {}\n");
+    const modify = (id: string, path: string, extra: Partial<Task> = {}): Task => ({
+      ...task(id, [], extra),
+      writes: [{ path, action: "modify" }],
+    });
+    const graph = graphOf(
+      task("T001", ["src/scan.rs"]),
+      modify("T002", "src/existing.rs"),
+      modify("T003", "src/scan.rs", { dependsOn: ["T001"] }),
+      modify("T004", "src/missing.rs"),
+    );
+    const problems = planConsistencyProblems(root, spec, "", graph, () => false, true);
+    expect(problems).toEqual([
+      "T004 modifies src/missing.rs, which does not exist and no earlier task creates it; depend on the task that creates it, or use create",
+    ]);
+  });
+});

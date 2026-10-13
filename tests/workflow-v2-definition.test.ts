@@ -83,7 +83,7 @@ describe("v2 definitions and presets (V2-01, V2-04)", () => {
     const types = (id: string) =>
       instantiatePreset(builtinPresets.get(id) as WorkflowV2, policy).stages.map((s) => s.type);
     expect([...builtinPresets.keys()].sort()).toEqual(
-      ["fix-ci", "full", "harden", "quick", "quick-fix", "review-only", "spike", "standard"].sort(),
+      ["fix-ci", "full", "harden", "quick", "quick-fix", "review-only", "spike", "standard", "tdd"].sort(),
     );
     for (const preset of builtinPresets.values())
       expect(validateWorkflowV2(instantiatePreset(preset, policy), library)).toEqual([]);
@@ -107,6 +107,11 @@ describe("v2 definitions and presets (V2-01, V2-04)", () => {
       "review",
     ]);
     expect(types("full").includes("reflection") && types("full").at(-1) === "learn").toBe(true);
+    // TDD is the standard line with the tests written first; full writes them first too.
+    expect(types("tdd")).toEqual(types("standard"));
+    expect(builtinPresets.get("tdd")?.testsFirst).toBe("criteria");
+    expect(builtinPresets.get("full")?.testsFirst).toBe("criteria");
+    expect(builtinPresets.get("standard")?.testsFirst).toBeUndefined();
     for (const id of ["spike", "review-only"])
       expect(builtinPresets.get(id)?.stages.every((s) => s.effects === "none")).toBe(true);
   });
@@ -383,7 +388,7 @@ describe("definitions on disk", () => {
     expect(() => loadDefinition(root, "missing", policy)).toThrow("Unknown workflow");
     const listed = listDefinitions(root, policy);
     expect(listed.map((d) => d.id)).toEqual([
-      "sdd", "quick", "quick-fix", "standard", "full", "spike", "review-only", "fix-ci", "harden", "bad", "legacy", "mine",
+      "sdd", "quick", "quick-fix", "standard", "full", "spike", "review-only", "fix-ci", "harden", "tdd", "bad", "legacy", "mine",
     ]);
     expect(listed.filter((d) => d.problems.length).map((d) => d.id)).toEqual(["bad"]);
     expect(listed.find((d) => d.id === "spike")?.writes).toBe(false);
