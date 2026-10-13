@@ -108,6 +108,9 @@ describe("workflow line", () => {
       contract: "gates",
     });
     expect(handoff(after, after, LINE.loops)).toBeNull();
+    // A stage that failed and stopped hands its contract back when the loop restarts implement.
+    const stopped = stations(pipe(["done", "done", "done", "failed"]), LINE, new Map(), "running");
+    expect(handoff(stopped, repair, LINE.loops)).toMatchObject({ kind: "repair", from: 3, to: 2 });
   });
 });
 
