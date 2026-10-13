@@ -6477,59 +6477,64 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const attempt = this.store.beginHostAttempt(runId, stepId);
     const scope = new ProcessScope();
     let changed = false;
+    // Unsignalled, so the put-back also runs after the pass was aborted.
+    const changedOutside = async () =>
+      changedPaths(before, await sourceManifest(root, generated)).filter(
+        (path) => !owners.has(path),
+      );
     try {
-      for (const check of fixable) {
-        for (const fix of fixerTiers(check))
-          for (const path of paths) {
-            signal.throwIfAborted();
-            this.leases.assert(lease);
-            const target = workspacePath(root, path);
-            const preImage = capturePreImage(this.store, runId, target);
-            const effectId = this.store.transaction(() =>
-              this.store.prepareEffect(
-                runId,
-                attempt,
-                "file_patch",
-                {
-                  path,
-                  tool: "apply_fix",
-                  checkId: check.id,
-                  taskId: owners.get(path),
-                  ...rootField(this.store.workspace, root),
-                },
-                preImage,
-                null,
-              ),
-            );
-            try {
-              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-              const command = fixerCommand(fix, path);
-              await executeCheckCommand(
-                scope,
-                command.executable === "bun" ? process.execPath : command.executable,
-                command.args,
-                {
-                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                  env: buildCheckEnv(check),
-                  timeoutMs: check.timeoutMs,
-                  signal,
-                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-                },
+      try {
+        for (const check of fixable) {
+          for (const fix of fixerTiers(check))
+            for (const path of paths) {
+              signal.throwIfAborted();
+              this.leases.assert(lease);
+              const target = workspacePath(root, path);
+              const preImage = capturePreImage(this.store, runId, target);
+              const effectId = this.store.transaction(() =>
+                this.store.prepareEffect(
+                  runId,
+                  attempt,
+                  "file_patch",
+                  {
+                    path,
+                    tool: "apply_fix",
+                    checkId: check.id,
+                    taskId: owners.get(path),
+                    ...rootField(this.store.workspace, root),
+                  },
+                  preImage,
+                  null,
+                ),
               );
-              const after = fileHash(target);
-              this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-              if (after !== preImage) changed = true;
-            } catch (error) {
-              this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
-              throw error;
+              try {
+                // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+                const command = fixerCommand(fix, path);
+                await executeCheckCommand(
+                  scope,
+                  command.executable === "bun" ? process.execPath : command.executable,
+                  command.args,
+                  {
+                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                    env: buildCheckEnv(check),
+                    timeoutMs: check.timeoutMs,
+                    signal,
+                    sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+                  },
+                );
+                const after = fileHash(target);
+                this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+                if (after !== preImage) changed = true;
+              } catch (error) {
+                this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+                throw error;
+              }
             }
-          }
+        }
+      } finally {
+        // Also when a fixer run throws: a whole-crate formatter may already have rewritten files.
+        restoreOutside(root, kept, await changedOutside());
       }
-      const changedOutside = async () =>
-        changedPaths(before, await sourceManifest(root, generated, signal)).filter(
-          (path) => !owners.has(path),
-        );
-      restoreOutside(root, kept, await changedOutside());
       const outside = await changedOutside();
       if (outside.length)
         throw new WorkflowFault(

@@ -26,6 +26,8 @@ import { isTestTask } from "./tests-first.js";
 import type { Task } from "./types.js";
 
 export const pureWorkflowTools = new Set(["read", "navigate", "bake_find", "bake_impact"]);
+/** Characters of a failed call's error message kept in its `tool.finished` event. */
+const MAX_JOURNALED_ERROR = 1000;
 /**
  * Edits the file-hash check refused, by the root they were attempted in. A refusal is a host
  * fact (the file differs from what the run recorded), not the model's disagreement with its task,
@@ -213,6 +215,7 @@ export class WorkflowToolPolicy {
   ): Promise<unknown> {
     const started = Date.now();
     let resultBytes: number | undefined;
+    let failure: string | undefined;
     const journal = (
       type: "tool.started" | "tool.finished",
       status?: "ok" | "error" | "deadline",
@@ -231,6 +234,7 @@ export class WorkflowToolPolicy {
                     status: status ?? "ok",
                     durationMs: Date.now() - started,
                     ...(resultBytes !== undefined ? { resultBytes } : {}),
+                    ...(failure !== undefined ? { error: failure } : {}),
                   },
                 },
           ),
@@ -250,6 +254,10 @@ export class WorkflowToolPolicy {
       return result;
     } catch (error) {
       status = error instanceof ToolDeadlineError ? "deadline" : "error";
+      failure = (error instanceof Error ? error.message || error.name : String(error)).slice(
+        0,
+        MAX_JOURNALED_ERROR,
+      );
       throw error;
     } finally {
       toolEnded(this.runId);
