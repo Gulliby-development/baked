@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { attemptCapFault } from "../src/core/workflows/agent-executor.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { migration001 } from "../src/core/workflows/migrations/001.js";
 import { migration002 } from "../src/core/workflows/migrations/002.js";
@@ -80,6 +81,8 @@ class ParallelExecutor implements AgentExecutor {
   resolution: Record<string, string> = {};
   /** Tasks whose first attempt writes a partial file and stops at its token cap. */
   capped = new Set<string>();
+  /** Tasks whose first attempt edits its files and is then stopped by its token cap (#935). */
+  capFault = new Set<string>();
   /** Tasks whose first attempt reports its edit tool unavailable and submits no change. */
   lostTool = new Set<string>();
   /** Tasks whose first attempt ends blocked with this summary and no change. */
@@ -151,6 +154,13 @@ class ParallelExecutor implements AgentExecutor {
           inputTokens: 25,
           outputTokens: 25,
         };
+      if (this.capFault.delete(task.id)) {
+        for (const path of Object.keys(plan?.files ?? {})) {
+          await write(path, "partial");
+          await write(path, "partial, edited");
+        }
+        throw attemptCapFault(request.profile.id, 374_264, 374_264);
+      }
       if (this.capped.delete(task.id)) {
         await write(first, "partial");
         service.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, JSON.stringify({ schemaVersion: 1, profileId: request.profile.id, taskId: task.id, maxSteps: request.maxSteps, maxTokens: 1000, stopReason: "submitted", finalizedBy: "tokens", totalTokens: 1000, steps: [] }));
@@ -286,6 +296,27 @@ describe("workflow parallel writers", () => {
     expect(fx.store.state(run.runId).taskContinuations).toEqual({ T001: 1 });
     expect(fx.store.state(run.runId).taskCarry).toEqual({});
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+  });
+
+  test("a plain resume after an attempt-cap stop lets the rebuilt task write its files again", async () => {
+    // Bench R14/R15 (#927, #954): the stopped task is invalidated on resume and rebuilt in a fresh
+    // worktree without its earlier edits, while the journal still carries them.
+    const fx = setup(
+      [{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "shared.txt": "one\ntwo\nthree\n" }, action: "modify" }],
+      { "a.txt": "A", "shared.txt": "one\ntwo\nthree\n" },
+    );
+    fx.executor.capFault.add("T001");
+    fx.executor.capFault.add("T002");
+    const run = await fx.start(2);
+    const blocked = await fx.complete(run.runId);
+    expect(blocked).toMatchObject({ status: "blocked", reason: "attempt_cap" });
+    await fx.service.resume(run.runId, { commandId: newId(), expectedRevision: fx.store.run(run.runId).revision });
+    const done = await fx.drive(run.runId);
+    expect(fx.lastError(run.runId)).not.toContain("File changed outside this attempt");
+    expect(done.status).toBe("completed");
+    expect(fx.store.events(run.runId).filter((e) => JSON.stringify(e).includes("File changed outside this attempt"))).toEqual([]);
+    expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
+    expect(readFileSync(join(fx.tree(run.runId), "shared.txt"), "utf8")).toBe("one\ntwo\nthree\n");
   });
 
   test("tasks that would create the same directory are serialized into batches", async () => {
