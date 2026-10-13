@@ -35,6 +35,8 @@ export const StartBody = z
     writers: z.number().int().min(1).max(MAX_CONCURRENT_WRITERS).optional(),
     /** What blocking spec questions do, as `--clarification`; omitted, the policy decides. */
     clarification: z.enum(["ask", "assume"]).optional(),
+    /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
+    duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
     /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */

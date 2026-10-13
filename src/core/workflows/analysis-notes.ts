@@ -17,6 +17,43 @@ export function hostCounts(graph: TaskGraph): { tasks: number; files: number } {
   };
 }
 
+const SPLIT_PART =
+  /Sizing split this task by file: write only .*? belong to the other parts of (T\d+)\./;
+
+/**
+ * The tasks the host split by file after planning (`splitTestTasks`), keyed by the planned task:
+ * the first part keeps the planned ID, the others are new IDs that plan.md cannot name.
+ */
+export function hostSplitParts(graph: TaskGraph): Record<string, string[]> {
+  const parts: Record<string, string[]> = {};
+  for (const task of graph.tasks) {
+    const original = SPLIT_PART.exec(task.description)?.[1];
+    if (!original) continue;
+    parts[original] = [...(parts[original] ?? []), task.id];
+  }
+  return parts;
+}
+
+/**
+ * A finding about a task the host split: every task it names belongs to one split, and at least
+ * one is a part plan.md cannot list (cronsay 15eb3204: "T009 is not in plan.md" and "T005 and
+ * T009 check the same thing" sent the run back to plan four times).
+ */
+export function isHostSplitNit(
+  finding: { refs: readonly string[]; description: string },
+  parts: Record<string, string[]>,
+): boolean {
+  const named = new Set(
+    [...finding.refs, finding.description].flatMap((text) => text.match(/\bT\d{3,}\b/g) ?? []),
+  );
+  if (!named.size) return false;
+  return Object.entries(parts).some(
+    ([original, ids]) =>
+      ids.some((id) => id !== original && named.has(id)) &&
+      [...named].every((id) => ids.includes(id)),
+  );
+}
+
 const COUNT = /\b\d+\s+(?:distinct\s+|unique\s+|code\s+)?(?:tasks?|files?)\b/gi;
 const COUNT_CONTEXT =
   /\b(says|states|claims|lists|shows|counts|reports|declares|mentions|has|have|contains|totals?)\b/i;

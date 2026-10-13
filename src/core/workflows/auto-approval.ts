@@ -1,6 +1,13 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
-import type { ApprovalReview, InputManifest, RunPolicy, Spec, TaskGraph } from "./schemas.js";
+import {
+  type ApprovalReview,
+  clarificationOf,
+  type InputManifest,
+  type RunPolicy,
+  type Spec,
+  type TaskGraph,
+} from "./schemas.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
 
@@ -115,7 +122,12 @@ export function evaluateAutoApproval(
   for (const write of writes)
     if (needsPerson(write, context.exists, context.scaffold))
       common.push(`${write.path} always needs a person`);
-  if (spec.criteria.some((criterion) => criterion.method === "post-release"))
+  // Under `clarification: assume` the run already decides what it may on its own; the deferral is
+  // recorded in the approval body and the run report, so it is visible without a person.
+  if (
+    clarificationOf(policy) !== "assume" &&
+    spec.criteria.some((criterion) => criterion.method === "post-release")
+  )
     common.push("Deferring post-release criteria needs a person");
   const limitsHash = hashJson({ policy: policyBounds(policy) });
   const reasons: string[] = [...common];
@@ -358,4 +370,13 @@ export function withModelReview(policy: RunPolicy): RunPolicy {
       "--approval-review needs auto approval limits (workflows.policy.autoApproval.limits)",
     );
   return { ...policy, autoApproval: { ...config, modelReview: true } };
+}
+
+/**
+ * Why a v2 approval stage marked human waits for a person, and how to approve automatically: the
+ * project policy's `autoApproval` applies only to schema 1 workflows, so an operator who set it
+ * for `sdd` would otherwise not know why a `quick` run waits.
+ */
+export function humanApprovalReason(workflowId: string, stageId: string): string {
+  return `Stage ${stageId} of workflow ${workflowId} asks a person; the project policy's autoApproval applies only to schema 1 workflows such as sdd. To approve automatically, copy it (baked workflow define ID --from ${workflowId}), set the stage to auto, start the copy with --confirm-auto-approval HASH, and for baked quick set workflows.quickWorkflow to ID.`;
 }

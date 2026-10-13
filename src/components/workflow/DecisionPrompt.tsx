@@ -466,6 +466,19 @@ export function DecisionPrompt({
               ))}
             </>
           ) : null}
+          {body.autoApproval?.declined?.length ? (
+            <>
+              <text fg={t.textSecondary} attributes={1}>
+                Why this waits for you
+              </text>
+              {body.autoApproval.declined.map((reason, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: reasons may repeat
+                <text key={i} fg={t.textMuted}>
+                  {`  • ${flatten(reason)}`}
+                </text>
+              ))}
+            </>
+          ) : null}
           <text
             fg={t.textSecondary}
             attributes={1}
