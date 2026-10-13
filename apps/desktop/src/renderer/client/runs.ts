@@ -133,7 +133,15 @@ export interface EventPayloads {
     action: "steered" | "stopped";
     detail: string;
   };
-  "task.state_changed": { taskId: string; from: string; to: string; generation: number };
+  "task.state_changed": {
+    taskId: string;
+    from: string;
+    to: string;
+    generation: number;
+    /** Why the task was interrupted (restart, continue_at_cap, worker_lost, ...). */
+    cause?: string;
+    detail?: string;
+  };
   "artifact.committed": { artifactId: string; kind: string; hash: string };
   "check.finished": { checkId: string; evidenceId: string; status: string };
   "finding.recorded": { findingId: string; artifactId: string };
