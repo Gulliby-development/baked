@@ -224,7 +224,7 @@ export type Effort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: readonly Effort[] = ["default", "low", "medium", "high", "xhigh", "max"];
 
 export type Route = string | { model: string; effort?: Effort; fallback?: string[] };
-export type IndependentReview = "off" | "warn" | "require";
+export type IndependentReview = "off" | "warn" | "require" | "provider";
 
 export interface ModelRouting {
   classes?: Record<string, Route>;
@@ -232,6 +232,7 @@ export interface ModelRouting {
   profiles?: Record<string, Route>;
   workflows?: Record<string, { stages?: Record<string, Route> }>;
   independentReview?: IndependentReview;
+  reviewMinConfidence?: number;
 }
 
 /** The config keys the setup screens read; the files hold many more, kept as they are. */
@@ -357,6 +358,8 @@ export interface RoutingOverview {
     project: IndependentReview | null;
     effective: IndependentReview;
   };
+  /** Review findings below this confidence are notes; `effective` is 0.8 when no layer sets it. */
+  reviewMinConfidence?: { global: number | null; project: number | null; effective: number };
   warnings: string[];
   error: string | null;
 }
@@ -370,7 +373,8 @@ export interface RouteDraft {
 
 export type RoutingChange =
   | { target: RoutingTarget; route: RouteDraft | null; create?: boolean }
-  | { independentReview: IndependentReview | null };
+  | { independentReview: IndependentReview | null }
+  | { reviewMinConfidence: number | null };
 
 // --- Calls --------------------------------------------------------------------------------------
 

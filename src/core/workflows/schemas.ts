@@ -145,6 +145,9 @@ export const AutoApprovalSchema = z
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits");
 
+/** The review confidence a finding needs to start a correction when the policy does not say. */
+export const DEFAULT_REVIEW_MIN_CONFIDENCE = 0.8;
+
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
 
@@ -194,6 +197,12 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * Review findings whose confidence is below this are notes and start no correction. Absent
+     * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
+     * copies `modelRouting.reviewMinConfidence` here when it is set.
+     */
+    reviewMinConfidence: z.number().min(0).max(1).optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
@@ -448,6 +457,11 @@ export const ReviewSchema = z
              * security findings or critical. A finding without a basis counts as `spec`.
              */
             basis: z.enum(["spec", "inferred"]).optional(),
+            /**
+             * How sure the reviewer is that the finding is real and introduced by this change, 0
+             * to 1. Below the run's `reviewMinConfidence` the finding is a note. Absent counts as 1.
+             */
+            confidence: z.number().min(0).max(1).optional(),
             /**
              * A command that shows the claimed behavior: it prints `actual` on a line of its
              * output where the spec requires `expected`. The runtime runs it before the finding
