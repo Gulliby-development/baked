@@ -66,6 +66,8 @@ Versions follow semantic versioning and are tagged `vX.Y.Z`. From an up-to-date 
 ```sh
 bun run release:dry     # next version and the commits since the last tag
 bun run release:minor   # or release:patch / release:major
+# after the release pull request merged, on an up-to-date main:
+bun run release:tag
 ```
 
-`scripts/release.sh` runs the checks, commits the version bump as "Release X.Y.Z", tags it and pushes `main` and the tag. The tag starts `.github/workflows/release.yml`, which runs the full check suite, builds every archive through the Builds workflow and publishes a GitHub release with `SHA256SUMS.txt` and notes generated from the merged pull requests. Label a pull request `skip-changelog` to leave it out of the notes; Dependabot pull requests are grouped under "Dependencies".
+`main` takes changes only through the merge queue, so a release has two steps. `release:minor` (or `patch`, `major`) runs the checks, commits the version bump of `package.json` and `apps/desktop/package.json` as "Release X.Y.Z" on a `feature/release-X-Y-Z` branch, pushes it and, with the GitHub CLI installed, opens the pull request and adds it to the merge queue. Once it merges, `release:tag` tags the merged `main` commit `vX.Y.Z` from the version in `package.json` and pushes the tag. The tag starts `.github/workflows/release.yml`, which runs the full check suite, builds every archive through the Builds workflow and publishes a GitHub release with `SHA256SUMS.txt` and notes generated from the merged pull requests. Label a pull request `skip-changelog` to leave it out of the notes; Dependabot pull requests are grouped under "Dependencies".

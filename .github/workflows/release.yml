@@ -1,8 +1,9 @@
 name: Release
 
-# Runs when a version tag is pushed (`scripts/release.sh` creates it). It checks
-# that the tag matches package.json, runs the full check suite, builds every
-# distributable through the Builds workflow, and publishes a GitHub release with
+# Runs when a version tag is pushed (`scripts/release.sh tag` creates it after the
+# release pull request merged). It checks that the tag matches package.json, runs
+# the full check suite, builds every distributable through the Builds workflow,
+# and publishes a GitHub release with
 # the archives, the desktop installers, their SHA-256 checksums and notes
 # generated from merged pull requests (categories in .github/release.yml),
 # after a note that the desktop installers are unsigned.
