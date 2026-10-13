@@ -8,7 +8,7 @@ BAKED can run the commands it starts on the agent's behalf inside an operating-s
 | --- | --- | --- | --- |
 | Chat `shell` tool, including the pre-commit lint of `git commit -m` | yes | the project root and an approved outside `cwd` | `sandboxNetwork` (default allow) |
 | Chat `project` tool (test, lint, build, typecheck, run) | yes | the project root | `sandboxNetwork` |
-| Workflow checks, wait-stage polls, the check baseline measurement, the test runs of mutation testing, `request_check`, `apply_fix` and the host fixer pass | yes | the run root (the project or its worktree) | the policy's `network`: only `allow` grants it |
+| Workflow checks, wait-stage polls, the check baseline measurement, the whole-unit checks at the end of a task, the test runs of mutation testing, `request_check`, `apply_fix` and the host fixer pass | yes | the run root (the project or its worktree) | the policy's `network`: only `allow` grants it |
 | Review repros and `run_probe` | yes | the run root | the policy's `network` |
 | AI acceptance applications, declared commands and promoted tests | yes | the gate's `capabilities.writePaths` only; the workspace stays read-only | shared while the gate grants `listenPorts` or `outboundHosts`, else the policy's `network` |
 | `baked workflow gate run` (a gate outside any run) | yes | the project root | denied |

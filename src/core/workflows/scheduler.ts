@@ -1919,7 +1919,7 @@ export class WorkflowScheduler {
       const errors: string[] = [];
       const results: { checkId: string; status: string; errors: string[] }[] = [];
       for (const check of checks) {
-        const result = await this.checks.measure(check, signal, root);
+        const result = await this.checks.measure(check, signal, root, runSandbox(policy, root));
         const found =
           result.status === "failed"
             ? taskErrors(result.output, {
