@@ -10,6 +10,7 @@ import { href, type ProjectSection, projectHref, type Route } from "../router.js
 import { useBriefs } from "../screens/runs/load.js";
 import { STATUS_TEXT } from "../screens/runs/model.js";
 import { recentRunsVersion, runDot, runWait } from "../screens/runs/recent.js";
+import { useProjectAgents } from "../screens/setup/AgentsSection.js";
 import { useDesktop } from "../store.js";
 import { CreateProjectDialog } from "./CreateProjectDialog.js";
 import { Icon, type IconName } from "./Icon.js";
@@ -43,6 +44,8 @@ const WORK: [ProjectSection, string, IconName][] = [
 const SETUP: [ProjectSection, string, IconName][] = [
   ["gates", "Gates and checks", "gates"],
   ["workflows", "Workflows", "workflows"],
+  // Listed only while the project has agents from other tools (#832).
+  ["agents", "Agents", "agents"],
   ["context", "Agent context", "instructions"],
   ["memory", "Memory", "run-memory"],
   ["skills", "Skills", "skills"],
@@ -142,6 +145,8 @@ function SelectedProject({
   const runId = section === "runs" && routeId && !RUN_PAGES.has(routeId) ? routeId : null;
   const { attention } = useDesktop();
   const recentRuns = useRecentRuns(project, runId);
+  const [agents] = useProjectAgents(project.key);
+  const agentCount = agents.state === "ready" ? agents.data.agents.length : 0;
   const briefs = useBriefs(project.key, recentRuns);
   return (
     <div className="flex flex-col gap-0.5 rounded-base border-2 border-border bg-secondary-background p-1.5 shadow-shadow">
@@ -245,7 +250,7 @@ function SelectedProject({
         </Fragment>
       ))}
       <p className={cn(LABEL, "pt-2 pr-2.5 pb-1 pl-5 text-[11px]")}>Setup</p>
-      {SETUP.map(([id, label, icon]) => (
+      {SETUP.filter(([id]) => id !== "agents" || agentCount > 0).map(([id, label, icon]) => (
         <a
           key={id}
           className={cn(NAV, "pl-5")}
@@ -254,6 +259,12 @@ function SelectedProject({
         >
           <Icon name={icon} />
           {label}
+          {id === "agents" && (
+            <span className={cn(COUNT, "flex items-center gap-1.5")} title="Can become a workflow">
+              <span className="size-2 animate-pulse-dot rounded-full bg-main motion-reduce:animate-none" />
+              {agentCount}
+            </span>
+          )}
         </a>
       ))}
     </div>

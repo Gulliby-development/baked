@@ -114,7 +114,11 @@ export async function lspRoute(ctx: LspRouteContext): Promise<Response | null> {
         return ctx.json(200, {
           ...result.status,
           restarted: result.restarted,
-          installed: { server: result.server, package: result.package },
+          installed: {
+            server: result.server,
+            package: result.package,
+            ...(result.warning ? { warning: result.warning } : {}),
+          },
           log,
         });
       } finally {

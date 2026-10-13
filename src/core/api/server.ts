@@ -78,6 +78,7 @@ import {
   saveEditor,
 } from "../workflows/v2/editor-service.js";
 import type { DraftModel } from "../workflows/v2/gate-draft.js";
+import { agentRoute } from "./agent-routes.js";
 import { artifactRoute } from "./artifact-routes.js";
 import {
   bearerMatches,
@@ -186,6 +187,7 @@ export const CAPABILITIES = [
   "run-compare",
   "preset-proposal",
   "packages",
+  "project-agents",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -924,6 +926,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         config: service.config,
         ...(options.configDir ? { configDir: options.configDir } : {}),
       })) ??
+      (await agentRoute({ ...ctx, workspace: service.workspace, config: service.config })) ??
       (await gateRoute({
         ...ctx,
         workspace: service.workspace,

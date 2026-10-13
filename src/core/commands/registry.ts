@@ -1,5 +1,7 @@
 import { getCwd } from "../cwd.js";
+import { hasProjectAgents } from "../workflows/agent-import.js";
 import { register as registerAgentContext } from "./agent-context.js";
+import { register as registerAgents } from "./agents.js";
 import { register as registerArtifacts } from "./artifacts.js";
 import { matchCheckpointPrefix, register as registerCheckpoint } from "./checkpoint.js";
 import { matchClaimsPrefix, register as registerClaims } from "./claims.js";
@@ -43,6 +45,7 @@ registerWatch(commandMap);
 registerArtifacts(commandMap);
 registerPackages(commandMap);
 registerAgentContext(commandMap);
+registerAgents(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -663,6 +666,16 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Browse & install skills",
     category: "Intelligence",
     tags: ["plugins", "extensions"],
+  },
+  {
+    // Only in projects that brought agents from other tools: customization goes through workflows.
+    cmd: "/agents",
+    ic: "skills",
+    desc: "Your project's agents from other tools: turn them into a workflow, edit or remove them",
+    category: "Intelligence",
+    tags: ["agents", "claude", "copilot", "roo", "opencode", "convert", "workflow"],
+    hidden: () => !hasProjectAgents(getCwd()),
+    suggested: () => hasProjectAgents(getCwd()),
   },
   {
     cmd: "/packages",

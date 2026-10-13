@@ -111,6 +111,9 @@ export interface WorkflowInfo {
     string,
     {
       stages: string[];
+      /** The stages with their contracts and repair loops, for the workflows screen. */
+      line?: WorkflowLine;
+      description?: string;
       writes: boolean;
       problems: string[];
       /** The definition's own execution mode, when it sets one. */

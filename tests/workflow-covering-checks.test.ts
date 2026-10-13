@@ -3,6 +3,7 @@ import {
   coveringChecks,
   isStaticCheck,
   isWholeUnitCheck,
+  isWholeUnitFormatter,
   taskCheckList,
   withCoveringChecks,
 } from "../src/core/workflows/check-policy.js";
@@ -114,6 +115,17 @@ describe("whole-unit checks are not covering checks", () => {
       ["pyright", []],
     ] as const)
       expect(isWholeUnitCheck({ ...check("c", [...args], "feature"), executable })).toBe(true);
+  });
+
+  test("cargo fmt and rustfmt are whole-unit formatters; clippy, cargo check and gofmt are not (#842)", () => {
+    const run = (executable: string, args: string[]) =>
+      isWholeUnitFormatter({ ...check("c", args, "feature"), executable });
+    expect(run("cargo", ["fmt", "--check"])).toBe(true);
+    expect(run("rustfmt", ["--check", "src/lib.rs"])).toBe(true);
+    expect(run("cargo", ["clippy"])).toBe(false);
+    expect(run("cargo", ["check"])).toBe(false);
+    expect(run("bun", ["x", "tsc", "--noEmit"])).toBe(false);
+    expect(run("gofmt", ["-l", "."])).toBe(false);
   });
 
   test("other formatters and file-local linters stay per task", () => {

@@ -262,6 +262,27 @@ describe("AttemptStepController", () => {
     expect(record.steps.map((step) => step.tools)).toEqual([["run_repro", "read"], ["unknown"]]);
   });
 
+  test("records responses whose usage a provider never reported (#820)", () => {
+    const controller = new AttemptStepController({
+      maxSteps: 4,
+      maxTokens: 100_000,
+      submitTools: ["submit_result"],
+      fallbackStepTokens: 100,
+    });
+    const record = controller.record(
+      [
+        { ...usage(100, 10), providerMetadata: { codex: { responses: 1, unreportedResponses: 2 } } },
+        { ...usage(100, 10), providerMetadata: { codex: { responses: 1 } } },
+      ],
+      true,
+      { profileId: "implementer", taskId: "T001" },
+    );
+    expect(record.unreportedResponses).toBe(2);
+    expect(record.steps.map((step) => step.unreportedResponses)).toEqual([2, undefined]);
+    const clean = controller.record([usage(100, 10)], true, record);
+    expect(clean.unreportedResponses).toBeUndefined();
+  });
+
   test("records the model requests a provider reports per step and their sum", () => {
     const controller = new AttemptStepController({
       maxSteps: 4,

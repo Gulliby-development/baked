@@ -355,6 +355,33 @@ describe("SessionManager.saveTab", () => {
 		expect(loaded!.tabMessages.get("tab-new")![0]!.content).toBe("NEW");
 	});
 
+	it("keeps the longer saved slice unless the save rewrites the history on purpose", async () => {
+		const msgs = [
+			makeMessage("user", "1"),
+			makeMessage("assistant", "2"),
+			makeMessage("user", "3"),
+			makeMessage("assistant", "4"),
+		];
+		await manager.saveTab(SID, makeTab("tab-a"), msgs, undefined, fallback("tab-a"));
+
+		// A shorter slice is taken for a stale save.
+		await manager.saveTab(SID, makeTab("tab-a"), msgs.slice(0, 2), undefined, fallback("tab-a"));
+		expect(manager.loadSession(SID)!.tabMessages.get("tab-a")).toHaveLength(4);
+
+		// An undo rewrites it, with the undone turn kept in the tab for a redo.
+		const undone = {
+			...makeTab("tab-a"),
+			redoTurns: [{ index: 2, anchorMessageId: msgs[2]!.id, messages: msgs.slice(2) }],
+		};
+		await manager.saveTab(SID, undone, msgs.slice(0, 2), undefined, fallback("tab-a"), {
+			rewrite: true,
+		});
+		const loaded = manager.loadSession(SID)!;
+		expect(loaded.tabMessages.get("tab-a")!.map((m) => m.content)).toEqual(["1", "2"]);
+		expect(loaded.meta.tabs[0]!.messageRange).toEqual({ startLine: 0, endLine: 2 });
+		expect(loaded.meta.tabs[0]!.redoTurns).toHaveLength(1);
+	});
+
 	it("preserves core.json slots for non-target tabs", async () => {
 		const meta = makeMeta(SID, [{ id: "tab-a" }, { id: "tab-b" }]);
 		await manager.saveSession(

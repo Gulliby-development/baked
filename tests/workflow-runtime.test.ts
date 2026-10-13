@@ -326,6 +326,61 @@ describe("durable SDD runtime", () => {
     expect(() => validateEvidence(service.store, run.runId, [a!.id, b!.id], [read])).not.toThrow();
     expect(() => validateEvidence(service.store, run.runId, [a!.id, c!.id], [read])).toThrow("stale");
   });
+  test("a defect a test task names in another task's file goes to the owner before the checks stage", async () => {
+    // cfgtrace 276e4858 (#839): test tasks named env_source.py as defective in their summary and
+    // nothing acted on it until the checks stage, after the repair rounds were spent.
+    const { service, executor, root } = setup(true); const original = executor.execute.bind(executor);
+    const seen: string[] = [];
+    executor.execute = async (request) => {
+      if (request.profile.output === "implementation") seen.push(request.task?.id ?? "");
+      if (request.task?.id === "T002") {
+        writeFileSync(join(root, "value.test.txt"), "expects ready");
+        return { output: { schemaVersion: 1, taskId: "T002", outcome: "implemented", summary: "The test fails: value.txt holds broken instead of ready; value.txt is outside this task's write scope.", evidenceIds: [], unresolved: [] }, inputTokens: 20, outputTokens: 30 };
+      }
+      const result = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = PlanSchema.parse(result.output); const base = plan.taskGraph.tasks[0]!;
+        plan.taskGraph.tasks.push({ ...base, id: "T002", title: "Test value", dependsOn: ["T001"], writes: [{ path: "value.test.txt", action: "create" }] });
+        result.output = plan;
+      }
+      if (request.profile.output === "implementation" && request.task?.origin === "repair") writeFileSync(join(root, "value.txt"), "ready");
+      return result;
+    };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create two dependent tasks", ownerLabel: "test", policy });
+    await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+    // The owner's correction ran right after the test task, before the checks stage repaired anything.
+    expect(seen).toEqual(["T001", "T002", "T003"]);
+    const correction = service.store.tasks(run.runId).find((t) => t.id === "T003");
+    const definition = JSON.parse(correction?.definition_json ?? "{}");
+    expect(definition.origin).toBe("repair");
+    expect(definition.writes.map((w: { path: string }) => w.path)).toContain("value.txt");
+    expect(service.store.run(run.runId).repair_rounds).toBe(0);
+    expect(service.store.latestArtifact(run.runId, "tasks/defects/T002.json")).toBeTruthy();
+  });
+  test("a named file starts no correction when the run's checks pass", async () => {
+    const { service, executor, root } = setup(); const original = executor.execute.bind(executor);
+    executor.execute = async (request) => {
+      if (request.task?.id === "T002") {
+        writeFileSync(join(root, "value.test.txt"), "expects ready");
+        return { output: { schemaVersion: 1, taskId: "T002", outcome: "implemented", summary: "Covered value.txt with a test.", evidenceIds: [], unresolved: [] }, inputTokens: 20, outputTokens: 30 };
+      }
+      const result = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = PlanSchema.parse(result.output); const base = plan.taskGraph.tasks[0]!;
+        plan.taskGraph.tasks.push({ ...base, id: "T002", title: "Test value", dependsOn: ["T001"], writes: [{ path: "value.test.txt", action: "create" }] });
+        result.output = plan;
+      }
+      return result;
+    };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create two dependent tasks", ownerLabel: "test", policy });
+    await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
+    expect(service.store.tasks(run.runId)).toHaveLength(2);
+    const record = service.store.latestArtifact(run.runId, "tasks/defects/T002.json");
+    expect(JSON.parse(service.store.readArtifact(run.runId, record!.id)).findings).toEqual([]);
+  });
   test("a failed task check repairs its predecessor before running descendants", async () => {
     const { service, executor, root } = setup(true); const original = executor.execute.bind(executor);
     executor.execute = async (request) => {

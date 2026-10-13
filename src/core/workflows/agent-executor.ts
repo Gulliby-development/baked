@@ -39,7 +39,7 @@ import {
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { affectedTestsFor } from "./affected-tests.js";
 import { assertAttemptFits } from "./budget.js";
-import { fixerCommand, fixerTiers } from "./check-policy.js";
+import { fixerCommand, fixerTiers, isWholeUnitFormatter } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
@@ -229,6 +229,13 @@ export class NativeAgentExecutor implements AgentExecutor {
     const rootPath = rootField(this.store.workspace, root).root ?? "";
     const parent = await this.rootContext.get();
     const context = new ContextManager(root, parent.getSharedResources());
+    // Model calls end with the attempt. A provider that keeps a conversation open between steps
+    // (Codex app-server threads) releases it when this fires, also after the last step: the
+    // thread that ends at `submit_result` would otherwise go on calling the model (#863).
+    const modelCalls = new AbortController();
+    const stopModelCalls = () => modelCalls.abort(request.signal.reason);
+    request.signal.addEventListener("abort", stopModelCalls, { once: true });
+    if (request.signal.aborted) stopModelCalls();
     try {
       const provider = await buildProviderOptions(
         request.profile.model,
@@ -455,6 +462,14 @@ export class NativeAgentExecutor implements AgentExecutor {
               affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
             if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
               throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
+            // A planned task runs before integration, where a whole-unit formatter only reports the
+            // other tasks' files; the checks stage formats the integrated change (#842).
+            if (task?.origin === "planned" && isWholeUnitFormatter(check))
+              return {
+                checkId: check.id,
+                status: "deferred",
+                note: `${check.id} formats the whole project, so it runs in the checks stage after the tasks are integrated, where the host applies its fixer to the files this run writes. It is not run for a single task and is not a failure: do not run it or reformat files by hand for it.`,
+              };
             const scope = new ProcessScope();
             try {
               const result = await new CheckRunner(this.store, scope).run(
@@ -779,7 +794,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           ],
           maxRetries: 0,
           maxOutputTokens: request.profile.maxOutputTokens,
-          abortSignal: request.signal,
+          abortSignal: modelCalls.signal,
           providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
           headers: provider.headers,
           onStepEnd: (step) => {
@@ -880,7 +895,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             stopWhen: [() => submitted !== undefined, isStepCount(2)],
             maxRetries: 0,
             maxOutputTokens: request.profile.maxOutputTokens,
-            abortSignal: request.signal,
+            abortSignal: modelCalls.signal,
             providerOptions: withAutomaticCache(
               provider.providerOptions,
               this.config.cache?.ttl ?? "5m",
@@ -994,7 +1009,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 stopWhen: isStepCount(1),
                 maxRetries: 0,
                 maxOutputTokens: request.profile.maxOutputTokens,
-                abortSignal: request.signal,
+                abortSignal: modelCalls.signal,
                 providerOptions: provider.providerOptions,
                 headers: provider.headers,
                 // Counted per model call so a response that skips the tool is still charged.
@@ -1040,6 +1055,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         ...(reportedNoTokens(result.steps) ? { usageComplete: false } : {}),
       };
     } finally {
+      request.signal.removeEventListener("abort", stopModelCalls);
+      modelCalls.abort(new DOMException("The workflow attempt ended.", "AbortError"));
       context.dispose({ preserveSharedIO: true });
     }
   }

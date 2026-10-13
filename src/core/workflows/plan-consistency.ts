@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { workspacePath } from "../specs/validate.js";
 import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
+import { fileKind } from "./sizing.js";
 import type { Task } from "./types.js";
 
 /** Cross-artifact checks that analysis would otherwise spend model rounds on. */
@@ -12,6 +13,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "every task reference exists or is created by an earlier task",
   "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
   "code created after a task creates the entry point (main, cli, app, server, program) is wired in by a task that writes the entry point and runs after it",
+  "a documentation task that runs the program to capture its output runs after the tasks that write the program's entry points",
 ];
 
 /** A file that declares or re-exports the modules next to it. */
@@ -133,14 +135,19 @@ export function withReadDependencies(graph: TaskGraph): TaskGraph {
 export function withImplementationProfiles(
   graph: TaskGraph,
   profiles: readonly Pick<AgentProfile, "id" | "output">[],
+  /** The tasks stage's own profile (#832): it replaces the default `implementer`. */
+  stageProfile?: string,
 ): TaskGraph {
   const implementers = profiles.filter((p) => p.output === "implementation").map((p) => p.id);
-  const fallback = implementers.includes("implementer") ? "implementer" : implementers[0];
-  if (!fallback || graph.tasks.every((task) => implementers.includes(task.profileId))) return graph;
+  const preferred = stageProfile && implementers.includes(stageProfile) ? stageProfile : undefined;
+  const fallback =
+    preferred ?? (implementers.includes("implementer") ? "implementer" : implementers[0]);
+  const keeps = (id: string) => implementers.includes(id) && !(preferred && id === "implementer");
+  if (!fallback || graph.tasks.every((task) => keeps(task.profileId))) return graph;
   return {
     ...graph,
     tasks: graph.tasks.map((task) =>
-      implementers.includes(task.profileId) ? task : { ...task, profileId: fallback },
+      keeps(task.profileId) ? task : { ...task, profileId: fallback },
     ),
   };
 }
@@ -237,6 +244,51 @@ export function unwiredEntryPoints(graph: TaskGraph): string[] {
         );
     }
   return problems;
+}
+
+/** A file the program's command starts from: an entry point, a Python `__main__.py`, or a script under `bin/`. */
+const isCommandEntry = (path: string): boolean =>
+  !isTestFile(path) &&
+  (ENTRY_POINT.test(path) ||
+    /(?:^|\/)__main__\.py$/.test(path) ||
+    /(?:^|\/)bin\/[^/]+$/.test(path));
+/** Task text that asks to run the program and show what it prints. */
+const RUNS_PROGRAM =
+  /\b(?:run|runs|running|execute|executing|invoke|invoking|capture|captured|capturing)\b[^.]*\b(?:command|cli|tool|program|binary|output)\b|\b(?:example|sample|captured|actual|real|worked)[- ](?:output|session|run|example)s?\b/i;
+
+/**
+ * A documentation task that runs the program to capture its output waits for the tasks that
+ * write the program's entry points. Planners gave such a README no dependency, so it ran in the
+ * first wave, found no command in its worktree and blocked the run, and the retry wrote the
+ * output without running anything (bench round 12, cfgtrace 4018a791: 0.70M and one resume). A
+ * dependency that would close a cycle is not added.
+ */
+export function withCommandDependencies(graph: TaskGraph): TaskGraph {
+  const deps = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
+  };
+  for (const task of graph.tasks) {
+    const files = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+    if (!files.length || !files.every((path) => fileKind(path) === "docs")) continue;
+    if (!RUNS_PROGRAM.test(`${task.title}\n${task.description}`)) continue;
+    for (const other of graph.tasks) {
+      if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
+        continue;
+      if (other.writes.some((w) => w.action !== "delete" && isCommandEntry(w.path)))
+        deps.get(task.id)?.push(other.id);
+    }
+  }
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => {
+      const next = deps.get(task.id) ?? task.dependsOn;
+      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+    }),
+  };
 }
 
 export function planConsistencyProblems(

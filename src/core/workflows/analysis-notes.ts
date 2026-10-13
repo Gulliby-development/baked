@@ -1,5 +1,9 @@
 import type { z } from "zod";
-import { withModuleDependencies, withReadDependencies } from "./plan-consistency.js";
+import {
+  withCommandDependencies,
+  withModuleDependencies,
+  withReadDependencies,
+} from "./plan-consistency.js";
 import type { ResearchSchema, TaskGraph } from "./schemas.js";
 import { withTestDependencies } from "./sizing.js";
 
@@ -59,12 +63,14 @@ export function isHostSplitNit(
 /**
  * The `dependsOn` edges of the stored graph that the host adds whatever the planner wrote: a
  * module index after the module files, a reader after the writer of its read hint, a test after
- * the code sharing its criterion. The planner cannot remove them, so the analyzer must not ask
+ * the code sharing its criterion, a docs task that runs the program after its entry points. The planner cannot remove them, so the analyzer must not ask
  * for that (bench round 10, dirdrift: one dependency finding came back in 4 of 7 analysis passes).
  */
 export function hostDependencyEdges(graph: TaskGraph): Array<{ task: string; dependsOn: string }> {
   const bare = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, dependsOn: [] })) };
-  const derived = withTestDependencies(withReadDependencies(withModuleDependencies(bare)));
+  const derived = withTestDependencies(
+    withCommandDependencies(withReadDependencies(withModuleDependencies(bare))),
+  );
   return derived.tasks.flatMap((task) => {
     const stored = graph.tasks.find((t) => t.id === task.id)?.dependsOn ?? [];
     return task.dependsOn

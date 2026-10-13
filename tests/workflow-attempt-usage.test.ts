@@ -379,6 +379,56 @@ describe("task-end check", () => {
   });
 });
 
+describe("model calls of an ended attempt (#863)", () => {
+  test("the signal of every model call fires when the attempt ends, after its last step", async () => {
+    const provider = getProvider("openai");
+    if (!provider) throw new Error("openai provider missing");
+    const original = provider.createModel;
+    const signals: AbortSignal[] = [];
+    const submit = {
+      schemaVersion: 1,
+      taskId: "T004",
+      outcome: "implemented",
+      summary: "done",
+      evidenceIds: [],
+      unresolved: [],
+    };
+    const model = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        if (options.abortSignal) signals.push(options.abortSignal);
+        return step(1000, 50, { name: "submit_result", input: submit });
+      },
+    });
+    provider.createModel = () => model as LanguageModelV3;
+    cleanups.push(() => {
+      provider.createModel = original;
+    });
+    const task: Task = {
+      id: "T004",
+      title: "Parse input",
+      description: "Parse the input",
+      requirementIds: ["FR-001"],
+      criterionIds: ["AC-001"],
+      dependsOn: [],
+      profileId: "implementer",
+      writes: [{ path: "value.txt", action: "modify" }],
+      readHints: [],
+      checkIds: ["check"],
+      origin: "planned",
+      findingIds: [],
+      rationale: "parse",
+    };
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", task);
+    // A provider that keeps a thread open at the submit call (Codex app-server) releases it on
+    // this signal; the attempt's own signal never fires on a normal end.
+    const response = await executor.execute(request);
+    expect(response.output).toMatchObject({ outcome: "implemented" });
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(request.signal.aborted).toBe(false);
+  });
+});
+
 describe("code intelligence backends in attempt usage", () => {
   test("each tool call is counted under the backend that answered it", async () => {
     scriptModel([

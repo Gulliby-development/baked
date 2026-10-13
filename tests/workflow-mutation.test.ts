@@ -52,6 +52,14 @@ describe("mutants", () => {
     expect(isTestCheck({ id: "unit", executable: "bun", args: ["test"] })).toBe(true);
     expect(isTestCheck({ id: "py", executable: "python", args: ["-m", "pytest"] })).toBe(true);
     expect(isTestCheck({ id: "lint", executable: "bunx", args: ["biome", "check"] })).toBe(false);
+    // #844: Maven and Gradle run the tests in their verify and check lifecycles.
+    expect(isTestCheck({ id: "build", executable: "mvn", args: ["-q", "verify"] })).toBe(true);
+    expect(isTestCheck({ id: "build", executable: "./mvnw.cmd", args: ["package"] })).toBe(true);
+    expect(isTestCheck({ id: "build", executable: "gradle", args: ["check"] })).toBe(true);
+    expect(isTestCheck({ id: "build", executable: "./gradlew", args: ["build"] })).toBe(true);
+    expect(isTestCheck({ id: "build", executable: "mvn", args: ["verify", "-DskipTests"] })).toBe(false);
+    expect(isTestCheck({ id: "build", executable: "gradlew", args: ["build", "-x", "test"] })).toBe(false);
+    expect(isTestCheck({ id: "build", executable: "mvn", args: ["compile"] })).toBe(false);
     expect(thresholdFor("src/auth/login.ts", { "src/auth/**": 70, "src/**": 50 })).toBe(70);
     expect(thresholdFor("src/util.ts", { "src/auth/**": 70, "src/*.ts": 50 })).toBe(50);
     expect(thresholdFor("lib/x.ts", { "src/**": 50 })).toBe(100);

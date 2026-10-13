@@ -68,6 +68,34 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: bun scripts/check-branch-name.ts "$HEAD_REF"
 
+  # The gate matrix's toolchain tier (#854): every stack's detected gates on a minimal project with
+  # the real tools. The runner image has Go, Rust (rustfmt, clippy), Java with Maven and .NET.
+  gate-matrix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - run: bun install --frozen-lockfile
+
+      - name: Python tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pytest
+          pipx install ruff
+
+      - name: Gate matrix with toolchains
+        env:
+          BAKED_GATE_MATRIX_TOOLCHAINS: "1"
+        run: bun test --timeout 900000 tests/gate-matrix.test.ts
+
   desktop:
     runs-on: ubuntu-latest
     permissions:

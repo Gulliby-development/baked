@@ -92,3 +92,6 @@ export const ARTIFACTS_CAPABILITY = "artifacts";
 
 /** `/v1/packages*` (the Packages section: install local packages into the project's baked/ folders). */
 export const PACKAGES_CAPABILITY = "packages";
+
+/** `/v1/agents*`: a project's custom agents from other tools and their conversion (the Agents section). */
+export const PROJECT_AGENTS_CAPABILITY = "project-agents";

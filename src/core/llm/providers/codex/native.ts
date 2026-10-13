@@ -28,6 +28,8 @@ type PromptMessage = LanguageModelV2Prompt[number];
 const MAX_THREADS = 16;
 /** How long a completed turn waits for a usage report that Codex sends after turn/completed. */
 const LATE_USAGE_WAIT_MS = 500;
+/** How long a dropped thread is listened to when Codex never confirms that its turn ended. */
+const RETIRED_THREAD_MS = 120_000;
 
 const ADAPTER_PREAMBLE = [
   "You are the language model behind baked, a coding agent that runs on the user's machine.",
@@ -72,8 +74,21 @@ export interface CodexNativeRequest {
   effort?: string;
 }
 
-/** A message's identity for matching, without per-step provider options such as cache markers. */
+/**
+ * A message's identity for matching, without per-step provider options such as cache markers.
+ * A tool message is its calls' ids and tool names: the workflow step budget later replaces an old
+ * tool output with a stub, which the thread does not need since Codex already holds the full
+ * output; keyed by content, every compacted step would replay the conversation on a new thread
+ * (#863).
+ */
 function messageKey(message: PromptMessage): string {
+  if (message.role === "tool" && typeof message.content !== "string")
+    return JSON.stringify({
+      role: "tool",
+      results: message.content.map((part) =>
+        part.type === "tool-result" ? [part.toolCallId, part.toolName] : part.type,
+      ),
+    });
   return JSON.stringify(message, (key, value) => (key === "providerOptions" ? undefined : value));
 }
 
@@ -151,6 +166,8 @@ interface StepSink {
   responses: number;
   /** Set while a completed turn waits for its late usage report before the step finishes. */
   usageWait: ReturnType<typeof setTimeout> | null;
+  /** Responses of dropped threads whose usage Codex will never report (see `abandoned`). */
+  unreported: number;
 }
 
 interface NativeThread {
@@ -169,6 +186,8 @@ interface NativeThread {
   turnId: string | null;
   pending: { callId: string; requestId: string | number } | null;
   sink: StepSink | null;
+  /** The step that ended at the pending tool call; its abort signal releases the thread. */
+  suspendedBy: StepSink | null;
   totals: TokenTotals;
   /**
    * Totals already reported by finished steps. The next step starts from here, so usage that
@@ -202,6 +221,18 @@ function usageBetween(before: TokenTotals, after: TokenTotals): LanguageModelV2U
   };
 }
 
+function addUsage(usage: LanguageModelV2Usage, late: TokenTotals): LanguageModelV2Usage {
+  const inputTokens = (usage.inputTokens ?? 0) + late.inputTokens;
+  const outputTokens = (usage.outputTokens ?? 0) + late.outputTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    reasoningTokens: (usage.reasoningTokens ?? 0) + late.reasoningOutputTokens,
+    cachedInputTokens: (usage.cachedInputTokens ?? 0) + late.cachedInputTokens,
+  };
+}
+
 function abortError(signal: AbortSignal | undefined): Error {
   return signal?.reason instanceof Error
     ? signal.reason
@@ -223,8 +254,24 @@ function hasToolCall(message: PromptMessage | undefined, callId: string): boolea
   return calls.length === 1 && calls[0]?.type === "tool-call" && calls[0].toolCallId === callId;
 }
 
+/** Text-only user messages; a message with an image cannot ride in a tool result. */
+function plainUserMessages(messages: PromptMessage[]): boolean {
+  return messages.every(
+    (message) =>
+      message.role === "user" &&
+      (typeof message.content === "string" ||
+        message.content.every((part) => part.type === "text")),
+  );
+}
+
 type Plan =
-  | { kind: "resume"; thread: NativeThread; result: ToolResultPromptPart }
+  | {
+      kind: "resume";
+      thread: NativeThread;
+      result: ToolResultPromptPart;
+      /** User messages BAKED appended after the tool result, such as a step reminder. */
+      appended: PromptMessage[];
+    }
   | { kind: "turn"; thread: NativeThread; fromIndex: number };
 
 /**
@@ -240,6 +287,20 @@ export class CodexAppServerSessions {
   private connection: Promise<CodexAppServerConnection> | null = null;
   private threads: NativeThread[] = [];
   private unavailable = false;
+  /**
+   * Model responses on threads dropped while a tool call waited: Codex reports a response's usage
+   * only once its tool call is answered, so these are never reported. The next step to start
+   * carries the count as `unreportedResponses`, so the usage it misses is visible (#820).
+   */
+  private abandoned = 0;
+  /**
+   * Threads BAKED dropped, until Codex confirms their turn ended. Their late usage reports and
+   * the requests their model still makes are handled here instead of being lost (#863).
+   */
+  private retired = new Map<string, NativeThread>();
+  /** Usage dropped threads reported after BAKED left them; the next step to finish carries it. */
+  private late: TokenTotals = { ...ZERO_TOTALS };
+  private lateReports = 0;
 
   constructor(
     private readonly connect: () => Promise<CodexAppServerConnection> = () =>
@@ -288,13 +349,21 @@ export class CodexAppServerSessions {
           lastError: null,
           responses: 0,
           usageWait: null,
+          unreported: this.abandoned,
         };
+        this.abandoned = 0;
         thread.sink = sink;
         stepSink = sink;
         thread.keys = request.keys;
         abortSignal?.addEventListener(
           "abort",
-          () => this.abort(connection, thread, sink, abortSignal),
+          () => {
+            // After its step finished the signal still releases a thread left waiting at that
+            // step's tool call: the caller is done and nothing will answer it.
+            if (thread.state === "suspended" && thread.suspendedBy === sink)
+              this.dropThread(connection, thread);
+            else this.abort(connection, thread, sink, abortSignal);
+          },
           { once: true },
         );
         if (startedPlan.kind === "resume") {
@@ -302,8 +371,16 @@ export class CodexAppServerSessions {
           thread.pending = null;
           if (!pending) return;
           const output = startedPlan.result.output;
+          // Messages BAKED appended after the result ride along with it; a new turn would need the
+          // pending call dropped, and with it the thread and the response's usage report (#820).
+          const appended = startedPlan.appended.length
+            ? [{ type: "inputText", text: renderCodexNativeInput(startedPlan.appended, "") }]
+            : [];
           connection.respond(pending.requestId, {
-            contentItems: [{ type: "inputText", text: renderToolResult(startedPlan.result) }],
+            contentItems: [
+              { type: "inputText", text: renderToolResult(startedPlan.result) },
+              ...appended,
+            ],
             success: !output.type.startsWith("error"),
           });
           return;
@@ -321,6 +398,7 @@ export class CodexAppServerSessions {
     const pending = this.connection;
     this.connection = null;
     this.threads = [];
+    this.retired.clear();
     void pending?.then((connection) => connection.close()).catch(() => {});
   }
 
@@ -341,14 +419,16 @@ export class CodexAppServerSessions {
         const result = pending
           ? toolResultFor(request.conversation[known + 1], pending.callId)
           : null;
+        const appended = request.conversation.slice(known + 2);
         if (
           pending &&
           result &&
-          request.keys.length === known + 2 &&
+          request.keys.length >= known + 2 &&
+          plainUserMessages(appended) &&
           hasToolCall(request.conversation[known], pending.callId)
         ) {
           thread.state = "running";
-          return { kind: "resume", thread, result };
+          return { kind: "resume", thread, result, appended };
         }
         // The conversation moved past this tool call without answering it here.
         this.dropThread(connection, thread);
@@ -392,6 +472,7 @@ export class CodexAppServerSessions {
         this.connection = null;
         for (const thread of this.threads) this.failStep(thread, error);
         this.threads = [];
+        this.retired.clear();
       });
       return connection;
     } catch (error) {
@@ -427,6 +508,7 @@ export class CodexAppServerSessions {
       turnId: null,
       pending: null,
       sink: null,
+      suspendedBy: null,
       totals: { ...ZERO_TOTALS },
       billed: { ...ZERO_TOTALS },
       lastUsed: Date.now(),
@@ -485,6 +567,18 @@ export class CodexAppServerSessions {
       tool?: unknown;
       arguments?: unknown;
     };
+    const retired = this.retired.get(String(params.threadId));
+    if (retired) {
+      // The model of a dropped thread is still running: stop its turn again rather than answer
+      // with an error it would retry, at the cost of another model request each time.
+      connection.respondError(id, "baked left this thread");
+      const turnId = typeof params.turnId === "string" ? params.turnId : retired.turnId;
+      if (turnId)
+        void connection
+          .request("turn/interrupt", { threadId: retired.threadId, turnId })
+          .catch(() => {});
+      return true;
+    }
     const thread = this.threads.find((candidate) => candidate.threadId === params.threadId);
     if (!thread) return false;
     if (typeof params.turnId === "string") thread.turnId = params.turnId;
@@ -502,6 +596,7 @@ export class CodexAppServerSessions {
       input: JSON.stringify(params.arguments ?? {}),
     });
     thread.pending = { callId: params.callId, requestId: id };
+    thread.suspendedBy = sink;
     this.finishStep(thread, "tool-calls");
     thread.state = "suspended";
     return true;
@@ -509,6 +604,11 @@ export class CodexAppServerSessions {
 
   private onNotification(method: string, rawParams: unknown): void {
     const params = (rawParams ?? {}) as Record<string, unknown>;
+    const retired = this.retired.get(String(params.threadId));
+    if (retired) {
+      this.onRetiredNotification(retired, method, params);
+      return;
+    }
     const thread = this.threads.find((candidate) => candidate.threadId === params.threadId);
     if (!thread) return;
     if (typeof params.turnId === "string" && method !== "turn/completed") {
@@ -610,6 +710,34 @@ export class CodexAppServerSessions {
     }
   }
 
+  private onRetiredNotification(
+    thread: NativeThread,
+    method: string,
+    params: Record<string, unknown>,
+  ): void {
+    if (method === "thread/tokenUsage/updated") {
+      const usage = params.tokenUsage as { total?: unknown } | undefined;
+      const totals = readTotals(usage?.total);
+      if (!totals) return;
+      for (const key of Object.keys(ZERO_TOTALS) as (keyof TokenTotals)[])
+        this.late[key] += Math.max(0, totals[key] - thread.totals[key]);
+      thread.totals = totals;
+      this.lateReports += 1;
+      return;
+    }
+    if (method === "turn/completed") this.forget(thread);
+  }
+
+  /** Stops listening to a dropped thread once its turn has ended. */
+  private forget(thread: NativeThread): void {
+    if (!this.retired.delete(thread.threadId)) return;
+    void this.connection
+      ?.then((connection) =>
+        connection.request("thread/unsubscribe", { threadId: thread.threadId }),
+      )
+      .catch(() => {});
+  }
+
   private closeOpenParts(sink: StepSink): void {
     for (const id of sink.openReasoning.values()) {
       sink.controller.enqueue({ type: "reasoning-end", id });
@@ -630,15 +758,28 @@ export class CodexAppServerSessions {
     thread.sink = null;
     if (sink.usageWait) clearTimeout(sink.usageWait);
     thread.billed = thread.totals;
+    const usage = usageBetween(sink.startTotals, thread.totals);
+    const late = this.late;
+    const lateReports = this.lateReports;
+    this.late = { ...ZERO_TOTALS };
+    this.lateReports = 0;
     sink.controller.enqueue({
       type: "finish",
       finishReason,
-      usage: usageBetween(sink.startTotals, thread.totals),
+      // Usage of threads BAKED already left counts here, so a run's total matches what Codex
+      // reported; the step that happens to finish next carries it.
+      usage: lateReports ? addUsage(usage, late) : usage,
       // Codex reports a response's usage only once the tool call it made has been answered, so a
       // step reports the usage that arrived while it ran: the previous step's response, plus its
       // own when it ends the turn. `responses` counts those reports, so totals over a run show how
       // many model requests it cost.
-      providerMetadata: { codex: { responses: sink.responses } },
+      providerMetadata: {
+        codex: {
+          responses: sink.responses,
+          ...(sink.unreported ? { unreportedResponses: sink.unreported } : {}),
+          ...(lateReports ? { lateResponses: lateReports } : {}),
+        },
+      },
     });
     sink.controller.close();
   }
@@ -670,13 +811,32 @@ export class CodexAppServerSessions {
   private dropThread(connection: CodexAppServerConnection, thread: NativeThread): void {
     this.threads = this.threads.filter((candidate) => candidate !== thread);
     thread.state = "broken";
+    thread.suspendedBy = null;
+    const { threadId, turnId } = thread;
+    if (!turnId) {
+      void connection.request("thread/unsubscribe", { threadId }).catch(() => {});
+      if (thread.pending) {
+        connection.respondError(thread.pending.requestId, "baked abandoned this tool call");
+        thread.pending = null;
+        this.abandoned += 1;
+      }
+      return;
+    }
+    // The turn is interrupted before the pending call is answered, so the model has no answer to
+    // continue from. The thread stays subscribed until Codex reports the turn ended, so a late
+    // usage report is still counted and a further request from its model is stopped (#863).
+    this.retired.set(threadId, thread);
+    setTimeout(() => this.forget(thread), RETIRED_THREAD_MS).unref?.();
+    const interrupt = () => connection.request("turn/interrupt", { threadId, turnId });
+    // A failed interrupt is tried once more; a turn left running keeps calling the model.
+    void interrupt()
+      .catch(() => interrupt())
+      .catch(() => {});
     if (thread.pending) {
       connection.respondError(thread.pending.requestId, "baked abandoned this tool call");
       thread.pending = null;
+      this.abandoned += 1;
     }
-    const { threadId, turnId } = thread;
-    if (turnId) void connection.request("turn/interrupt", { threadId, turnId }).catch(() => {});
-    void connection.request("thread/unsubscribe", { threadId }).catch(() => {});
   }
 
   private evictIdleThreads(connection: CodexAppServerConnection): void {
