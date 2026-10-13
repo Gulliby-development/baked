@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { api } from "../../client/api.js";
 import {
   insights,
@@ -9,13 +9,27 @@ import {
   type UsageSummary,
 } from "../../client/insights.js";
 import { workflow } from "../../client/workflow.js";
+import { Icon, type IconName } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { Empty } from "../../components/ui/empty.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
+import {
+  FILL,
+  GlanceCard,
+  GROW,
+  RISE,
+  riseDelay,
+  Tile,
+  type Tone,
+  TonePanel,
+  useGrown,
+} from "../../components/ui/tone.js";
 import { tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
-import { LABEL, LEDE, PANEL, TABLE } from "../../lib/styles.js";
+import { LEDE, TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
+import { stageIconOf } from "../runs/line-model.js";
 import type { SectionProps } from "../sections.js";
 import { LoadState } from "./LoadState.js";
 import {
@@ -35,14 +49,77 @@ import { useLoad } from "./useLoad.js";
 const RANGES = [7, 30, 90] as const;
 
 /** Numeric table cells. */
-const NUM = "text-right";
-const LEGEND_ITEM = "flex items-center gap-[6px]";
-const SWATCH = "h-[10px] w-[10px] rounded-[2px]";
-const CACHED = "bg-[color-mix(in_srgb,var(--accent)_50%,var(--bg))]";
-const FRESH = "bg-[var(--accent)]";
-const OUTPUT = "bg-[var(--accent-soft)]";
-const UNSPLIT = "bg-[var(--line-strong)]";
+const NUM = "text-right tabular-nums";
 const PARTIAL = "text-[11px] text-[color:var(--warn)] no-underline";
+
+/** The parts tokens split into; each owns a colour block on the bars. */
+type Part = "cached" | "fresh" | "output" | "unsplit";
+const PART_FILL: Record<Part, string> = {
+  cached: FILL.ok,
+  fresh: FILL.accent,
+  output: FILL.info,
+  unsplit: FILL.plain,
+};
+const SEGMENT = "h-full basis-0 border-r-2 border-border last:border-r-0";
+
+const SECTIONS = {
+  stage: { title: "Tokens by stage", icon: "usage", tone: "accent" },
+  model: { title: "By model", icon: "model", tone: "warn" },
+  cross: { title: "By stage and model", icon: "workflows", tone: "info" },
+} as const satisfies Record<string, { title: string; icon: IconName; tone: Tone }>;
+type SectionId = keyof typeof SECTIONS;
+
+/** The icon of a usage stage, after the workflow stage icons of the run conveyor. */
+const STAGE_ICON: Record<string, IconName> = {
+  research: "research",
+  specify: "spec",
+  clarify: "spec",
+  plan: "plan",
+  analyze: "search",
+  approve: "attention",
+  implement: "implement",
+  checks: "checks",
+  review: "review",
+  converge: "review",
+  accept: "accept",
+  deliver: "accept",
+  learn: "run-memory",
+};
+
+function stageIcon(stage: string): IconName {
+  return STAGE_ICON[stage] ?? stageIconOf(stage);
+}
+
+function scrollTo(id: SectionId): void {
+  document.getElementById(`usage-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function Section({
+  id,
+  about,
+  step,
+  children,
+}: {
+  id: SectionId;
+  about: ReactNode;
+  step: number;
+  children: ReactNode;
+}) {
+  const s = SECTIONS[id];
+  return (
+    <TonePanel
+      id={`usage-${id}`}
+      title={s.title}
+      icon={s.icon}
+      tone={s.tone}
+      about={about}
+      step={step}
+    >
+      {children}
+    </TonePanel>
+  );
+}
+
 export type Scope = { kind: "run"; runId: string } | { kind: "days"; days: number };
 
 /** Runs read one by one when the backend has no project usage summary. */
@@ -131,117 +208,198 @@ function Cost({ slice }: { slice: Pick<UsageSlice, "costUsd" | "unpricedTokens" 
   );
 }
 
-function Figure({ label, value, note }: { label: string; value: string; note: string }) {
+function share(part: number, total: number): string {
+  if (total <= 0 || part <= 0) return "0%";
+  const value = (part / total) * 100;
+  return value < 1 ? "<1%" : `${String(Math.round(value))}%`;
+}
+
+/** The parts of a slice in bar order, without the ones it does not have. */
+function partsOf(s: Pick<UsageSlice, "cached" | "fresh" | "output" | "unsplit">) {
   return (
-    <div className={cn(PANEL, "flex flex-col gap-[6px]")}>
-      <span className="text-[12px] text-dim-foreground">{label}</span>
-      <span className="font-mono text-[26px] text-foreground">{value}</span>
-      <span className="text-[12px] text-muted-foreground">{note}</span>
+    [
+      ["cached", s.cached],
+      ["fresh", s.fresh],
+      ["output", s.output ?? 0],
+      ["unsplit", s.unsplit],
+    ] as [Part, number][]
+  ).filter(([, value]) => value > 0);
+}
+
+function partLabels(output: boolean): Record<Part, string> {
+  return {
+    cached: "Cache reads",
+    fresh: output ? "Uncached input" : "Uncached input and output",
+    output: "Output",
+    unsplit: "Not split",
+  };
+}
+
+/** A bar split into the parts of a slice, growing in from zero. */
+function SplitBar({
+  slice,
+  width,
+  grown,
+  tall = false,
+}: {
+  slice: Pick<UsageSlice, "cached" | "fresh" | "output" | "unsplit">;
+  width: number;
+  grown: boolean;
+  tall?: boolean;
+}) {
+  const parts = partsOf(slice);
+  return (
+    <div
+      className={cn(
+        "flex min-w-[6px] overflow-hidden rounded-base border-2 border-border bg-secondary-background",
+        tall ? "h-7" : "h-[18px]",
+        GROW,
+        parts.length === 0 && "border-dashed",
+      )}
+      style={{ width: grown ? `${String(width)}%` : "0%" }}
+    >
+      {parts.map(([part, value]) => (
+        <span key={part} className={cn(SEGMENT, PART_FILL[part])} style={{ flexGrow: value }} />
+      ))}
     </div>
   );
 }
 
-function Legend({ output, unsplit }: { output: boolean; unsplit: boolean }) {
+/** All tokens in the range as one bar, with what each part holds. */
+function Mix({ slices, grown }: { slices: UsageSlice[]; grown: boolean }) {
+  const total = {
+    cached: slices.reduce((n, s) => n + s.cached, 0),
+    fresh: slices.reduce((n, s) => n + s.fresh, 0),
+    output: slices.some((s) => s.output !== null)
+      ? slices.reduce((n, s) => n + (s.output ?? 0), 0)
+      : null,
+    unsplit: slices.reduce((n, s) => n + s.unsplit, 0),
+  };
+  const sum = total.cached + total.fresh + (total.output ?? 0) + total.unsplit;
+  const labels = partLabels(total.output !== null);
+  const parts = partsOf(total);
   return (
-    <ul
-      className="my-0 mr-0 ml-auto flex list-none flex-wrap gap-4 p-0 text-[12px] text-muted-foreground"
-      aria-label="Legend"
-    >
-      <li className={LEGEND_ITEM}>
-        <span className={`${SWATCH} ${CACHED}`} aria-hidden="true" />
-        cache reads
-      </li>
-      <li className={LEGEND_ITEM}>
-        <span className={`${SWATCH} ${FRESH}`} aria-hidden="true" />
-        {output ? "uncached input" : "uncached input and output"}
-      </li>
-      {output && (
-        <li className={LEGEND_ITEM}>
-          <span className={`${SWATCH} ${OUTPUT}`} aria-hidden="true" />
-          output
-        </li>
-      )}
-      {unsplit && (
-        <li className={LEGEND_ITEM}>
-          <span className={`${SWATCH} ${UNSPLIT}`} aria-hidden="true" />
-          not split
-        </li>
-      )}
-    </ul>
+    <div className="flex flex-col gap-3">
+      <div
+        role="img"
+        aria-label={`Token mix: ${parts.map(([p, v]) => `${labels[p]} ${share(v, sum)}`).join(", ") || "empty"}`}
+      >
+        <SplitBar slice={total} width={100} grown={grown} tall />
+      </div>
+      <ul className="m-0 grid list-none grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-2 p-0">
+        {(["cached", "fresh", "output", "unsplit"] as const)
+          .filter((p) =>
+            p === "output" ? total.output !== null : p !== "unsplit" || total.unsplit > 0,
+          )
+          .map((p, i) => {
+            const value = total[p] ?? 0;
+            return (
+              <li
+                key={p}
+                className={cn(
+                  "flex items-center gap-2.5 rounded-base border-2 border-border bg-secondary-background px-3 py-2",
+                  RISE,
+                )}
+                style={riseDelay(i, 45)}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "size-4 shrink-0 rounded-[3px] border-2 border-border",
+                    PART_FILL[p],
+                  )}
+                />
+                <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+                  {labels[p]}
+                </span>
+                <span className="font-mono text-[13px] font-bold tabular-nums">
+                  {tokens(value)}
+                </span>
+                <span className="w-9 text-right font-mono text-[11px] tabular-nums text-dim-foreground">
+                  {share(value, sum)}
+                </span>
+              </li>
+            );
+          })}
+      </ul>
+    </div>
   );
 }
 
-function StageChart({ slices }: { slices: UsageSlice[] }) {
+function StageChart({ slices, step }: { slices: UsageSlice[]; step: number }) {
+  const grown = useGrown();
   const max = Math.max(1, ...slices.map((s) => s.tokens));
+  const total = slices.reduce((n, s) => n + s.tokens, 0);
   const output = slices.some((s) => s.output !== null);
   const unsplit = slices.some((s) => s.unsplit > 0);
   return (
-    <section className={cn(PANEL, "flex flex-col gap-3")} aria-labelledby="use-stage-title">
-      <div className="flex flex-wrap items-center gap-4">
-        <h2 id="use-stage-title" className={LABEL}>
-          Tokens by stage
-        </h2>
-        <Legend output={output} unsplit={unsplit} />
-      </div>
+    <Section
+      id="stage"
+      step={step}
+      about="Where the tokens of agent attempts went. Cache reads are billed at a fraction of the price; uncached input and output at the full price."
+    >
       {slices.length === 0 ? (
-        <p className="text-dim-foreground">No agent attempts match these filters.</p>
+        <Empty>No agent attempts match these filters.</Empty>
       ) : (
-        <div className="grid grid-cols-[110px_minmax(0,1fr)_70px] items-center gap-x-3 gap-y-2 text-[13px]">
-          {slices.map((s) => (
-            <div key={s.key} className="contents">
-              <span className="text-soft-foreground">{stageLabel(s.key)}</span>
-              <div className="min-w-0" aria-hidden="true">
-                <div
-                  className="flex h-[14px] min-w-[2px] gap-px"
-                  style={{ width: `${(s.tokens / max) * 100}%` }}
-                >
-                  <span className={`basis-0 ${CACHED}`} style={{ flexGrow: s.cached }} />
-                  <span className={`basis-0 ${FRESH}`} style={{ flexGrow: s.fresh }} />
-                  {s.output !== null && (
-                    <span className={`basis-0 ${OUTPUT}`} style={{ flexGrow: s.output }} />
-                  )}
-                  {s.unsplit > 0 && (
-                    <span className={`basis-0 ${UNSPLIT}`} style={{ flexGrow: s.unsplit }} />
-                  )}
+        <>
+          <Mix slices={slices} grown={grown} />
+          <ul className="m-0 list-none p-0" aria-label="Stages">
+            {slices.map((s, i) => (
+              <li
+                key={s.key}
+                className={cn(
+                  "grid grid-cols-[28px_110px_minmax(0,1fr)_64px_40px] items-center gap-x-3 border-b border-[var(--line)] py-2 last:border-b-0",
+                  RISE,
+                  s.tokens === 0 && "[&>:first-child]:opacity-60",
+                )}
+                style={riseDelay(i, 40)}
+              >
+                <Tile tone="plain" icon={stageIcon(s.key)} small />
+                <span className="truncate font-semibold">{stageLabel(s.key)}</span>
+                <div className="min-w-0" aria-hidden="true">
+                  <SplitBar slice={s} width={(s.tokens / max) * 100} grown={grown} />
                 </div>
-              </div>
-              <span className="text-right font-mono text-muted-foreground">{tokens(s.tokens)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {slices.length > 0 && (
-        <details>
-          <summary className="cursor-pointer text-[12px] text-muted-foreground">
-            Show as a table
-          </summary>
-          <table className={cn(TABLE, "mt-2")}>
-            <thead>
-              <tr>
-                <th>Stage</th>
-                <th className={NUM}>Cache reads</th>
-                <th className={NUM}>{output ? "Uncached input" : "Uncached input and output"}</th>
-                {output && <th className={NUM}>Output</th>}
-                {unsplit && <th className={NUM}>Not split</th>}
-                <th className={NUM}>Total</th>
-              </tr>
-            </thead>
-            <tbody className="font-mono">
-              {slices.map((s) => (
-                <tr key={s.key}>
-                  <td>{stageLabel(s.key)}</td>
-                  <td className={NUM}>{tokens(s.cached)}</td>
-                  <td className={NUM}>{tokens(s.fresh)}</td>
-                  {output && <td className={NUM}>{s.output === null ? "–" : tokens(s.output)}</td>}
-                  {unsplit && <td className={NUM}>{tokens(s.unsplit)}</td>}
-                  <td className={NUM}>{tokens(s.tokens)}</td>
+                <span className="text-right font-mono tabular-nums">{tokens(s.tokens)}</span>
+                <span className="text-right font-mono text-[11px] tabular-nums text-dim-foreground">
+                  {share(s.tokens, total)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <details>
+            <summary className="cursor-pointer text-[12px] text-muted-foreground">
+              Show as a table
+            </summary>
+            <table className={cn(TABLE, "mt-2")}>
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th className={NUM}>Cache reads</th>
+                  <th className={NUM}>{output ? "Uncached input" : "Uncached input and output"}</th>
+                  {output && <th className={NUM}>Output</th>}
+                  {unsplit && <th className={NUM}>Not split</th>}
+                  <th className={NUM}>Total</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </details>
+              </thead>
+              <tbody className="font-mono">
+                {slices.map((s) => (
+                  <tr key={s.key}>
+                    <td>{stageLabel(s.key)}</td>
+                    <td className={NUM}>{tokens(s.cached)}</td>
+                    <td className={NUM}>{tokens(s.fresh)}</td>
+                    {output && (
+                      <td className={NUM}>{s.output === null ? "–" : tokens(s.output)}</td>
+                    )}
+                    {unsplit && <td className={NUM}>{tokens(s.unsplit)}</td>}
+                    <td className={NUM}>{tokens(s.tokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -257,16 +415,41 @@ function columnsOf(slices: UsageSlice[]) {
 function FigureCells({
   slice,
   columns,
+  max,
+  grown,
+  fill,
 }: {
   slice: UsageSlice;
   columns: ReturnType<typeof columnsOf>;
+  /** The largest token count in the table, for the share bar. */
+  max: number;
+  grown: boolean;
+  /** The colour of the share bar: the colour of its section. */
+  fill: string;
 }) {
   const known = (value: number | null): string => (value === null ? "–" : tokens(value));
   return (
     <>
+      <td>
+        <span className="flex items-center gap-2">
+          <span className="h-3 min-w-[60px] flex-1 overflow-hidden rounded-full border-2 border-border bg-secondary-background">
+            <span
+              className={cn(
+                "block h-full",
+                fill,
+                GROW,
+                slice.tokens > 0 && slice.tokens < max && "border-r-2 border-border",
+              )}
+              style={{
+                width: grown ? `${String((slice.tokens / Math.max(1, max)) * 100)}%` : "0%",
+              }}
+            />
+          </span>
+          <span className="w-12 text-right tabular-nums">{tokens(slice.tokens)}</span>
+        </span>
+      </td>
       <td className={NUM}>{slice.attempts}</td>
       <td className={NUM}>{slice.runs}</td>
-      <td className={NUM}>{tokens(slice.tokens)}</td>
       {columns.input && <td className={NUM}>{known(slice.input)}</td>}
       <td className={NUM}>{tokens(slice.cached)}</td>
       {columns.output && <td className={NUM}>{known(slice.output)}</td>}
@@ -282,9 +465,9 @@ function FigureCells({
 function FigureHeads({ columns }: { columns: ReturnType<typeof columnsOf> }) {
   return (
     <>
+      <th className="w-[26%]">Tokens</th>
       <th className={NUM}>Attempts</th>
       <th className={NUM}>Runs</th>
-      <th className={NUM}>Tokens</th>
       {columns.input && <th className={NUM}>Input</th>}
       <th className={NUM}>Cache reads</th>
       {columns.output && <th className={NUM}>Output</th>}
@@ -293,18 +476,21 @@ function FigureHeads({ columns }: { columns: ReturnType<typeof columnsOf> }) {
   );
 }
 
-function ModelTable({ slices }: { slices: UsageSlice[] }) {
+function ModelTable({ slices, step }: { slices: UsageSlice[]; step: number }) {
+  const grown = useGrown();
   const columns = columnsOf(slices);
+  const max = Math.max(0, ...slices.map((s) => s.tokens));
   return (
-    <section className={cn(PANEL, "flex flex-col gap-3")} aria-labelledby="use-model-title">
-      <h2 id="use-model-title" className={LABEL}>
-        By model
-      </h2>
+    <Section
+      id="model"
+      step={step}
+      about="Tokens and the estimated cost of each model, priced from the price table. Input counts cache reads too."
+    >
       {slices.length === 0 ? (
-        <p className="text-dim-foreground">No agent attempts match these filters.</p>
+        <Empty>No agent attempts match these filters.</Empty>
       ) : (
         <div className="overflow-x-auto">
-          <table className={TABLE}>
+          <table className={TABLE} aria-label="By model">
             <thead>
               <tr>
                 <th>Model</th>
@@ -314,27 +500,41 @@ function ModelTable({ slices }: { slices: UsageSlice[] }) {
             <tbody className="font-mono">
               {slices.map((s) => (
                 <tr key={s.key}>
-                  <td className="text-foreground">{s.key}</td>
-                  <FigureCells slice={s} columns={columns} />
+                  <td className="text-foreground" title={s.key}>
+                    <span className="flex items-center gap-2">
+                      <Icon name="model" size={14} className="shrink-0 text-dim-foreground" />
+                      {s.key}
+                    </span>
+                  </td>
+                  <FigureCells
+                    slice={s}
+                    columns={columns}
+                    max={max}
+                    grown={grown}
+                    fill={FILL.warn}
+                  />
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
-function StageModelTable({ slices }: { slices: StageModelSlice[] }) {
+function StageModelTable({ slices, step }: { slices: StageModelSlice[]; step: number }) {
+  const grown = useGrown();
   const columns = columnsOf(slices);
+  const max = Math.max(0, ...slices.map((s) => s.tokens));
   return (
-    <section className={cn(PANEL, "flex flex-col gap-3")} aria-labelledby="use-cross-title">
-      <h2 id="use-cross-title" className={LABEL}>
-        By stage and model
-      </h2>
+    <Section
+      id="cross"
+      step={step}
+      about="Each stage with the models that worked on it, to see which model a stage's tokens went to."
+    >
       <div className="overflow-x-auto">
-        <table className={TABLE}>
+        <table className={TABLE} aria-label="By stage and model">
           <thead>
             <tr>
               <th>Stage</th>
@@ -346,22 +546,32 @@ function StageModelTable({ slices }: { slices: StageModelSlice[] }) {
             {slices.map((s, i) => (
               <tr key={s.key}>
                 <td className="text-foreground">
-                  {i > 0 && slices[i - 1]?.stage === s.stage ? "" : stageLabel(s.stage)}
+                  {i > 0 && slices[i - 1]?.stage === s.stage ? (
+                    ""
+                  ) : (
+                    <span className="flex items-center gap-2 font-sans font-semibold">
+                      <Icon
+                        name={stageIcon(s.stage)}
+                        size={14}
+                        className="shrink-0 text-dim-foreground"
+                      />
+                      {stageLabel(s.stage)}
+                    </span>
+                  )}
                 </td>
                 <td>{s.model}</td>
-                <FigureCells slice={s} columns={columns} />
+                <FigureCells slice={s} columns={columns} max={max} grown={grown} fill={FILL.info} />
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </section>
+    </Section>
   );
 }
 
 function costNote(report: UsageReport, source: Source): string {
-  if (report.costPartial)
-    return `partial: ${tokens(report.unpricedTokens ?? 0)} tokens could not be priced`;
+  if (report.costPartial) return `partial: ${tokens(report.unpricedTokens ?? 0)} tokens not priced`;
   if (report.costUsd !== null)
     return source.kind === "cross" || report.unpricedTokens !== null
       ? "estimate from the price table"
@@ -372,39 +582,51 @@ function costNote(report: UsageReport, source: Source): string {
 function Figures({ report, source }: { report: UsageReport; source: Source }) {
   const split = report.inputTokens !== null && report.outputTokens !== null;
   return (
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-      <Figure
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3">
+      <GlanceCard
+        tone="accent"
+        icon="usage"
         label="Total tokens"
         value={tokens(report.totalTokens)}
-        note={`${report.attempts} agent attempt${report.attempts === 1 ? "" : "s"}`}
+        note={
+          split
+            ? `${tokens(report.inputTokens ?? 0)} in · ${tokens(report.outputTokens ?? 0)} out`
+            : `${report.attempts} agent attempt${report.attempts === 1 ? "" : "s"}`
+        }
+        step={0}
+        onClick={() => scrollTo("stage")}
       />
-      {split && (
-        <Figure
-          label="Input tokens"
-          value={tokens(report.inputTokens ?? 0)}
-          note={`${tokens(report.outputTokens ?? 0)} output; input includes cache reads`}
-        />
-      )}
-      <Figure
+      <GlanceCard
+        tone="ok"
+        icon="database"
         label="Served from cache"
         value={percent(report.cacheShare)}
         note={`${tokens(report.cachedTokens)} cache-read tokens`}
+        step={1}
+        onClick={() => scrollTo("stage")}
       />
-      <Figure
+      <GlanceCard
+        tone="warn"
+        icon="cost"
         label="Cost"
         value={`${usd(report.costUsd)}${report.costPartial && report.costUsd !== null ? "+" : ""}`}
         note={costNote(report, source)}
+        step={2}
+        onClick={() => scrollTo("model")}
       />
-      <Figure
+      <GlanceCard
+        tone="info"
+        icon="runs"
         label="Runs"
         value={report.runsExact ? String(report.runs) : `≤ ${report.runs}`}
         note={
           source.kind === "runs"
-            ? "read for this report"
+            ? `${report.attempts} attempts, read for this report`
             : report.runsExact
-              ? "with attempts in the range"
+              ? `${report.attempts} agent attempt${report.attempts === 1 ? "" : "s"}`
               : "at most; groups may share runs"
         }
+        step={3}
       />
     </div>
   );
@@ -544,7 +766,12 @@ export function UsageSection({ project, id }: SectionProps) {
     }
   }, [id]);
   return (
-    <div className="flex flex-col gap-[18px]">
+    <div className="flex flex-col gap-4">
+      <p className={LEDE}>
+        Tokens and the estimated cost of the agent attempts in this project's workflow runs. The
+        terminal shows the same with <span className="font-mono">baked usage</span> and{" "}
+        <span className="font-mono">/workflow usage</span>.
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <SegmentGroup>
           <legend className="sr-only">Range</legend>
@@ -637,9 +864,11 @@ export function UsageSection({ project, id }: SectionProps) {
             </Alert>
           )}
           <Figures report={report} source={state.data} />
-          <StageChart slices={report.byStage} />
-          <ModelTable slices={report.byModel} />
-          {report.byStageModel.length > 1 && <StageModelTable slices={report.byStageModel} />}
+          <StageChart slices={report.byStage} step={1} />
+          <ModelTable slices={report.byModel} step={2} />
+          {report.byStageModel.length > 1 && (
+            <StageModelTable slices={report.byStageModel} step={3} />
+          )}
         </>
       )}
     </div>
