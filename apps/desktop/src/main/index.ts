@@ -29,7 +29,7 @@ import {
   type ProjectAction,
   type WindowAction,
 } from "../shared/bridge.js";
-import { APP_USER_MODEL_ID } from "./app-id.js";
+import { appUserModelId } from "./app-id.js";
 import { AttentionHub } from "./attention.js";
 import { Backend } from "./backend.js";
 import { resolveBackendCommand } from "./backend-command.js";
@@ -381,9 +381,7 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: "#191410",
     title: "BAKED",
-    // Windows and Linux take the taskbar icon from the window. Without one, Windows falls back to
-    // the icon of the shortcut registered for the app user model ID, which can be a stale cached
-    // Electron icon, and Linux shows a generic one.
+    // Linux shows a generic window icon without one; on Windows it also covers an unpackaged run.
     ...(process.platform === "darwin" ? {} : { icon: windowIcon() }),
     show: false,
     // The app draws its own title bar: macOS keeps its traffic lights inset in it, Windows and
@@ -462,7 +460,7 @@ async function boot(): Promise<void> {
   }
 }
 
-if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
+if (process.platform === "win32") app.setAppUserModelId(appUserModelId(app.isPackaged));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => showWindow());
