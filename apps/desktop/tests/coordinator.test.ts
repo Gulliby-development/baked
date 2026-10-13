@@ -76,6 +76,18 @@ describe("coordinator client", () => {
       event: "status",
     });
   });
+
+  test("What's happening starts a coordinator turn shown as the short question", async () => {
+    const session = await coordinator.open("docs");
+    expect(await chat.capabilities("docs")).toContain("coordinator-summary");
+    const started = await coordinator.summary("docs");
+    expect(started.queued).toBe(false);
+    const detail = await until(
+      () => chat.get("docs", session.id),
+      (d) => d.messages.some((m) => m.role === "assistant"),
+    );
+    expect(detail.messages.find((m) => m.role === "user")?.content).toBe("What's happening?");
+  });
 });
 
 describe("coordinator screen model", () => {

@@ -193,6 +193,13 @@ const COMMAND_DEFS: CommandDef[] = [
     ],
   },
   {
+    cmd: "/coordinator summary",
+    ic: "dispatch",
+    desc: "Ask the coordinator what is running, what waits for you, what finished and what is open",
+    category: "Session",
+    tags: ["project", "status", "digest", "overview", "happening", "runs"],
+  },
+  {
     cmd: "/project",
     ic: "folder",
     desc: "This project: sessions, workflow runs, what waits for you",

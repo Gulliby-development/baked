@@ -208,6 +208,7 @@ export function keyHints(
       { key: "^N", label: prompt.kind === "plan-review" ? "cancel" : "deny" },
     );
   if (!prompt) hints.push({ key: "Enter", label: "send" });
+  if (!prompt && !working) hints.push({ key: "^S", label: "what's happening" });
   hints.push({ key: "Esc", label: working ? "stop" : "back" });
   return hints;
 }
