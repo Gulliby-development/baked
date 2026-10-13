@@ -211,6 +211,12 @@ export const PolicySchema = z
      */
     projectMemory: z.boolean().optional(),
     /**
+     * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
+     * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
+     * keep their hash.
+     */
+    learnedRules: z.boolean().optional(),
+    /**
      * How many repair rounds in a row may leave the same failures before the next correction
      * starts from a clean context: the spec, the task, the current files and a host-written account
      * of what was tried, without the earlier attempts' evidence. If that attempt fails the same way

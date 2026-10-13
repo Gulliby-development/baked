@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { withModuleDependencies, withReadDependencies } from "../src/core/workflows/plan-consistency.js";
+import { withImplementationProfiles, withModuleDependencies, withReadDependencies } from "../src/core/workflows/plan-consistency.js";
 import type { TaskGraph } from "../src/core/workflows/schemas.js";
 import type { Task } from "../src/core/workflows/types.js";
 
@@ -94,5 +94,26 @@ describe("a task waits for the tasks that write the files it reads", () => {
     );
     // T003 and T004 read each other's files: the first waits, the second does not close a cycle.
     expect(deps(out)).toEqual([[], [], ["T004"], [], ["T004"]]);
+  });
+});
+
+// Bench round 09, commitbump dde8747e: the planner wrote "planner" as profileId on all 7 tasks and
+// the host rejected the whole plan.
+describe("tasks get an implementation profile", () => {
+  const profiles = [
+    { id: "planner", output: "plan" },
+    { id: "implementer", output: "implementation" },
+    { id: "writer", output: "implementation" },
+  ] as const;
+  const named = (id: string, profileId: string): Task => ({ ...task(id, [`src/${id}.ts`]), profileId });
+  test("a task naming a non-implementation or unknown profile gets the default implementer", () => {
+    const out = withImplementationProfiles(graphOf(named("T001", "planner"), named("T002", "writer"), named("T003", "coder")), profiles);
+    expect(out.tasks.map((t) => t.profileId)).toEqual(["implementer", "writer", "implementer"]);
+  });
+  test("without an implementer profile the first implementation profile is used; without any the graph is kept", () => {
+    const writerOnly = [{ id: "planner", output: "plan" }, { id: "writer", output: "implementation" }] as const;
+    expect(withImplementationProfiles(graphOf(named("T001", "planner")), writerOnly).tasks[0]?.profileId).toBe("writer");
+    const graph = graphOf(named("T001", "planner"));
+    expect(withImplementationProfiles(graph, [{ id: "planner", output: "plan" }])).toBe(graph);
   });
 });
