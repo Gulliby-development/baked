@@ -296,6 +296,11 @@ export const StageSchema = z.discriminatedUnion("type", [
       produces: ContractId,
       effects: z.literal("workspace-write"),
       /**
+       * The implementation profile the stage's tasks run on when the plan names the default
+       * `implementer` (#832); a task naming another implementation profile keeps it.
+       */
+      profileId: SafeId.optional(),
+      /**
        * Best-of-N (#642): each planned task is implemented this many times in separate worktrees
        * and one candidate is selected. A run's `--candidates` overrides it; needs worktree execution.
        */

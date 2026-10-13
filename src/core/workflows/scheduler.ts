@@ -411,11 +411,16 @@ function planGraph(
   plan: { markdown: string; taskGraph: TaskGraph },
   policy: RunPolicy,
   profiles: AgentProfile[],
+  stageProfile?: string,
 ): TaskGraph {
   const graph = withReadDependencies(
     withModuleDependencies(
       withDerivedRequirements(spec, {
-        ...withImplementationProfiles(withoutApprovalRemarks(plan.taskGraph), profiles),
+        ...withImplementationProfiles(
+          withoutApprovalRemarks(plan.taskGraph),
+          profiles,
+          stageProfile,
+        ),
         specHash: hashJson(spec),
         planHash: hashBytes(plan.markdown),
       }),
@@ -910,7 +915,7 @@ export class WorkflowScheduler {
               }
               if (problems.length)
                 throw new WorkflowFault("INVALID_REFERENCE", problems.join("\n"));
-              const planned = planGraph(spec, plan, policy, profiles);
+              const planned = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
               const graph = policy.sizing ? this.splitTests(runId, planned, policy) : planned;
               state.graph = graph;
               state.hostSplitTasks = graph.tasks.length - planned.tasks.length;
@@ -2237,6 +2242,13 @@ export class WorkflowScheduler {
     );
     return facts;
   }
+  /** The implementation profile a v2 definition's tasks stage names (#832), if any. */
+  private tasksProfile(runId: string): string | undefined {
+    const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+    if (parsed.schemaVersion !== 2) return undefined;
+    const stage = parsed.definition.stages.find((s) => s.type === "tasks");
+    return stage?.type === "tasks" ? stage.profileId : undefined;
+  }
   /** Every package problem the scheduler would reject, as messages the planner can act on. */
   private planProblems(
     runId: string,
@@ -2245,7 +2257,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     profiles: AgentProfile[],
   ): string[] {
-    const graph = planGraph(spec, plan, policy, profiles);
+    const graph = planGraph(spec, plan, policy, profiles, this.tasksProfile(runId));
     const problems: string[] = [];
     const root = this.rootOf(runId);
     try {

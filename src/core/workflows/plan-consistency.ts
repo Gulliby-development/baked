@@ -133,14 +133,19 @@ export function withReadDependencies(graph: TaskGraph): TaskGraph {
 export function withImplementationProfiles(
   graph: TaskGraph,
   profiles: readonly Pick<AgentProfile, "id" | "output">[],
+  /** The tasks stage's own profile (#832): it replaces the default `implementer`. */
+  stageProfile?: string,
 ): TaskGraph {
   const implementers = profiles.filter((p) => p.output === "implementation").map((p) => p.id);
-  const fallback = implementers.includes("implementer") ? "implementer" : implementers[0];
-  if (!fallback || graph.tasks.every((task) => implementers.includes(task.profileId))) return graph;
+  const preferred = stageProfile && implementers.includes(stageProfile) ? stageProfile : undefined;
+  const fallback =
+    preferred ?? (implementers.includes("implementer") ? "implementer" : implementers[0]);
+  const keeps = (id: string) => implementers.includes(id) && !(preferred && id === "implementer");
+  if (!fallback || graph.tasks.every((task) => keeps(task.profileId))) return graph;
   return {
     ...graph,
     tasks: graph.tasks.map((task) =>
-      implementers.includes(task.profileId) ? task : { ...task, profileId: fallback },
+      keeps(task.profileId) ? task : { ...task, profileId: fallback },
     ),
   };
 }
