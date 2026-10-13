@@ -9,6 +9,7 @@ export const PLAN_CONSISTENCY_CHECKS = [
   "tasks that write the same path are ordered by dependencies",
   "every read hint exists or is created by the task or an earlier task",
   "a task that writes a module index (lib.rs, main.rs, mod.rs, __init__.py, index.ts) runs after the tasks that create the module files beside it",
+  "a task whose read hint another task creates or modifies runs after that task",
 ];
 
 /** A file that declares or re-exports the modules next to it. */
@@ -57,6 +58,39 @@ export function withModuleDependencies(graph: TaskGraph): TaskGraph {
         (w) => w.action === "create" && indexes.some((index) => declaredBy(index.path, w.path)),
       );
       if (declares) deps.get(task.id)?.push(other.id);
+    }
+  }
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) => {
+      const next = deps.get(task.id) ?? task.dependsOn;
+      return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
+    }),
+  };
+}
+
+/**
+ * A task that reads a file another task creates or modifies waits for that task. Planners left
+ * such pairs independent; the reader ran in the same wave, its checks failed on the missing
+ * export, and the repair (208k, 22% of zoneslot-update c941a83a) edited the wrong file. A task
+ * that writes the hinted file itself, and a dependency that would close a cycle, add nothing.
+ */
+export function withReadHintDependencies(graph: TaskGraph): TaskGraph {
+  const deps = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
+  };
+  for (const task of graph.tasks) {
+    const hints = task.readHints.filter((hint) => !task.writes.some((w) => w.path === hint));
+    if (!hints.length) continue;
+    for (const other of graph.tasks) {
+      if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
+        continue;
+      if (other.writes.some((w) => w.action !== "delete" && hints.includes(w.path)))
+        deps.get(task.id)?.push(other.id);
     }
   }
   return {
