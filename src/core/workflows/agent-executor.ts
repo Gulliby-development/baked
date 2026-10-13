@@ -416,16 +416,38 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.task.origin !== "planned" &&
         probeable.length > 0
       ) {
+        let probes = 0;
         const probe = probeTool(probeable, async (input) => {
           const scope = new ProcessScope();
+          const started = Date.now();
           try {
-            return await runProbe(scope, input, {
+            const outcome = await runProbe(scope, input, {
               root,
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
               sandbox: runSandbox(policy, root),
             });
+            // Each probe is evidence of how the repair went, so it is journaled with the attempt (#454).
+            try {
+              this.store.transaction(() =>
+                this.store.artifact(
+                  request.runId,
+                  "probe",
+                  `attempts/${request.attemptId}/probe-${String(++probes)}.json`,
+                  canonical({
+                    taskId: request.task?.id ?? null,
+                    executable: input.executable,
+                    args: input.args,
+                    durationMs: Date.now() - started,
+                    ...outcome,
+                  }),
+                ),
+              );
+            } catch {
+              // The probe's answer matters more to the attempt than its journal entry.
+            }
+            return outcome;
           } finally {
             await scope.stop();
           }
@@ -433,7 +455,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         available.run_probe = tool({
           description: probe.description,
           inputSchema: probe.inputSchema,
-          execute: async (input: unknown) => probe.execute(input),
+          // Under the tool policy, so the call has a deadline and `tool.started`/`tool.finished`.
+          execute: async (input: unknown) => guard.host("run_probe", () => probe.execute(input)),
         });
       }
       const fixable = policy.checks.filter((c) => c.fix);
