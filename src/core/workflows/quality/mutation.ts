@@ -203,9 +203,36 @@ export function applyMutant(content: string, mutant: Mutant): string {
 
 /** Whether a check runs the project's tests rather than a linter, formatter or type checker. */
 export function isTestCheck(check: { id: string; executable: string; args: string[] }): boolean {
+  const build = buildToolRunsTests(check.executable, check.args);
+  if (build !== null) return build;
   const text = [check.id, check.executable, ...check.args].join(" ").toLowerCase();
   return /\b(?:test|tests|pytest|vitest|jest|mocha|ava|tap|phpunit|rspec|ctest|nextest)\b/.test(
     text,
+  );
+}
+
+/**
+ * For a Maven or Gradle invocation, whether it runs a lifecycle phase or task that includes the
+ * tests: `mvn test` or `verify` (also package and install), `gradle test` or `check` (also build),
+ * unless the arguments skip them; null for any other program (#844: the mutation gate found no
+ * test check in a Maven project checked by `mvn verify`).
+ */
+function buildToolRunsTests(executable: string, args: string[]): boolean | null {
+  const tool = (executable.split(/[\\/]/).at(-1) ?? "")
+    .toLowerCase()
+    .replace(/\.(?:cmd|bat|exe)$/, "");
+  const phases =
+    tool === "mvn" || tool === "mvnw"
+      ? ["test", "verify", "package", "install"]
+      : tool === "gradle" || tool === "gradlew"
+        ? ["test", "check", "build"]
+        : null;
+  if (!phases) return null;
+  if (!args.some((arg) => phases.includes(arg.toLowerCase().replace(/^:/, "")))) return false;
+  return !args.some(
+    (arg, i) =>
+      /^-D(?:skipTests|maven\.test\.skip)(?:=true)?$/i.test(arg) ||
+      ((arg === "-x" || arg === "--exclude-task") && /^:?test$/i.test(args[i + 1] ?? "")),
   );
 }
 
