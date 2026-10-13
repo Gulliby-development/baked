@@ -1,6 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { killTree, PROCESS_SCOPE_ENV } from "../platform/index.js";
+import {
+  type SandboxApplied,
+  type SandboxRequest,
+  sandboxEnv,
+  sandboxLaunch,
+} from "../security/sandbox.js";
 
 function stopTree(child: ChildProcess, scope: string, force = false): void {
   if (!child.pid) return;
@@ -28,6 +34,8 @@ export interface ProcessResult {
   cancelled: boolean;
   truncated: boolean;
   durationMs: number;
+  /** The OS sandbox that applied; absent when the caller asked for none. */
+  sandbox?: SandboxApplied;
 }
 /** A Windows batch script: Bun and Node refuse to spawn it directly (EINVAL) and it needs cmd.exe. */
 export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
@@ -66,17 +74,27 @@ export class ProcessScope {
       onSpawn?: (pid: number, scope: string) => void;
       /** The args are a `bunShellArgs` command line, passed to cmd.exe unescaped on Windows. */
       verbatim?: boolean;
+      /**
+       * OS sandbox for this process; null runs it unsandboxed. Required so every caller decides.
+       * "required" with no backend throws SandboxUnavailableError before anything starts.
+       */
+      sandbox: SandboxRequest | null;
     },
   ): Promise<ProcessResult> {
     options.signal.throwIfAborted();
     const started = performance.now();
     const scope = randomUUID();
     const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
-    const launch = batch ? windowsBatchInvocation(executable, args) : { executable, args };
+    const direct = batch ? windowsBatchInvocation(executable, args) : { executable, args };
+    // Wrapping follows the batch rewrite. Both never combine: Windows has no sandbox backend.
+    const launch = options.sandbox
+      ? sandboxLaunch(direct.executable, direct.args, options.sandbox, options.cwd)
+      : null;
+    const env = launch ? sandboxEnv(options.env, launch) : options.env;
     return new Promise((resolve, reject) => {
-      const child = spawn(launch.executable, launch.args, {
+      const child = spawn(launch?.executable ?? direct.executable, launch?.args ?? direct.args, {
         cwd: options.cwd,
-        env: { ...options.env, [PROCESS_SCOPE_ENV]: scope },
+        env: { ...env, [PROCESS_SCOPE_ENV]: scope },
         shell: false,
         windowsHide: true,
         windowsVerbatimArguments:
@@ -152,6 +170,7 @@ export class ProcessScope {
           cancelled,
           truncated,
           durationMs: Math.ceil(performance.now() - started),
+          ...(launch ? { sandbox: launch.applied } : {}),
         });
       });
     });

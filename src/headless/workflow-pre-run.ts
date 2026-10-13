@@ -16,6 +16,7 @@ export function preRunRequest(args: WorkflowArgs, cwd: string): PreRunRequest {
   const candidates = text("candidates");
   const route = text("route");
   const confirmation = text("confirm-auto-approval");
+  const sandbox = text("sandbox");
   return {
     ...(workflowId ? { workflowId } : {}),
     ...(text("model") ? { model: text("model") } : {}),
@@ -25,6 +26,7 @@ export function preRunRequest(args: WorkflowArgs, cwd: string): PreRunRequest {
     ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
     ...(writers ? { writers: Number(writers) } : {}),
     ...(candidates ? { candidates: Number(candidates) } : {}),
+    ...(sandbox === "off" || sandbox === "auto" || sandbox === "required" ? { sandbox } : {}),
     ...(confirmation ? { autoApprovalConfirmation: confirmation } : {}),
   };
 }

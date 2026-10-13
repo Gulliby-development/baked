@@ -1,10 +1,11 @@
 /**
  * Diagnostics of a project's backend (`diagnostics` capability, docs/desktop/api.md): disk use and
  * cleanup of BAKED's data, the model events and the background error log of that `baked serve`
- * process. The terminal UI shows the same through `/storage`, `/model-events` and `/errors`.
+ * process, and its OS sandbox status (`sandbox` capability). The terminal UI shows the same
+ * through `/storage`, `/model-events`, `/errors` and `/sandbox`.
  */
 import { call } from "./api.js";
-import { DIAGNOSTICS_CAPABILITY } from "./capabilities.js";
+import { DIAGNOSTICS_CAPABILITY, SANDBOX_CAPABILITY } from "./capabilities.js";
 import { withCapability } from "./setup.js";
 
 export interface StorageView {
@@ -27,6 +28,24 @@ export interface StorageView {
     binariesBytes: number;
   };
 }
+
+/** `GET /v1/diagnostics/sandbox`: `SandboxStatus` in src/core/security/sandbox.ts. */
+export interface SandboxStatus {
+  /** The global setting, or the backend's command-line override. */
+  mode: SandboxMode;
+  /** The project config's value, which can only raise the mode. */
+  project: SandboxMode | null;
+  effectiveMode: SandboxMode;
+  source: "config" | "override" | "project";
+  backend: "bwrap" | "seatbelt" | "none";
+  available: boolean;
+  path: string | null;
+  reason: string | null;
+  network: "allow" | "deny";
+  /** Whether chat commands run isolated now. */
+  active: boolean;
+}
+export type SandboxMode = "off" | "auto" | "required";
 
 export type CleanupTarget = "repo-map" | "sessions" | "plans" | "history" | "vacuum";
 
@@ -156,5 +175,9 @@ export const diagnostics = {
   errors: (key: string) =>
     withCapability(key, DIAGNOSTICS_CAPABILITY, () =>
       call<{ errors: BackgroundError[] }>(key, "GET", "/v1/diagnostics/errors"),
+    ),
+  sandbox: (key: string) =>
+    withCapability(key, SANDBOX_CAPABILITY, () =>
+      call<SandboxStatus>(key, "GET", "/v1/diagnostics/sandbox"),
     ),
 };

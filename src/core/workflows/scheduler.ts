@@ -7,6 +7,7 @@ import {
   RoutingRecordSchema,
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
+import { runSandbox } from "../security/sandbox.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -1143,6 +1144,7 @@ export class WorkflowScheduler {
                   manifest: state.manifest,
                   writes,
                   executionMode: executionModeOf(policy),
+                  ...(policy.sandbox ? { sandbox: policy.sandbox } : {}),
                   ...(state.worktree
                     ? {
                         worktree: {
@@ -1932,7 +1934,7 @@ export class WorkflowScheduler {
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
-        const result = await this.checks.measure(check, signal, root);
+        const result = await this.checks.measure(check, signal, root, runSandbox(policy, root));
         if (result.status === "failed" && isWholeUnitCheck(check))
           diagnostics[commandKey(check)] = baselineKeys(result.output, root);
         if (result.truncated || result.status === "inconclusive") continue;
@@ -1981,7 +1983,7 @@ export class WorkflowScheduler {
       const errors: string[] = [];
       const results: { checkId: string; status: string; errors: string[] }[] = [];
       for (const check of checks) {
-        const result = await this.checks.measure(check, signal, root);
+        const result = await this.checks.measure(check, signal, root, runSandbox(policy, root));
         const found =
           result.status === "failed"
             ? taskErrors(result.output, {
@@ -5444,6 +5446,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                   env: buildCheckEnv(check),
                   timeoutMs: check.timeoutMs,
                   signal,
+                  sandbox: runSandbox(policy, root),
                 },
               );
               const after = fileHash(target);
@@ -5705,6 +5708,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                       env: buildCheckEnv(check),
                       timeoutMs: Math.max(1000, Math.min(check.timeoutMs, timeLeftMs)),
                       signal,
+                      sandbox: runSandbox(policy, root),
                     },
                   );
                   if (outcome.timedOut) return { status: "timeout" };
@@ -6204,6 +6208,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         executables,
         generated: generatedPaths(policy),
         signal,
+        sandbox: runSandbox(policy, runRoot(this.store.workspace, state)),
       });
     // The workspace the run started from had no source code: the reviewers judge the whole program.
     const greenfield = this.baselineScaffold(runId, state);
@@ -6822,7 +6827,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const pending: string[] = [];
       for (const { gate, check } of required) {
         const left = Math.max(1000, deadlineAt - clock.now());
-        if ((await this.checks.probe(check, signal, root, left)) !== "passed")
+        if ((await this.checks.probe(runId, check, signal, root, left)) !== "passed")
           pending.push(gate.id);
       }
       const key = pending.join(",");

@@ -110,6 +110,8 @@ export async function smokeChecks(
           timeoutMs: 10_000,
           signal: stop.signal,
           onSpawn: () => stop.abort(),
+          // Stopped as soon as it spawns, in an empty scratch directory: only whether it starts counts.
+          sandbox: null,
         });
         results.push({ ...base, status: "started" });
       } catch (error) {

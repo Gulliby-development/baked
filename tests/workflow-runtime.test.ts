@@ -846,7 +846,7 @@ describe("durable SDD runtime", () => {
     const scope = new ProcessScope(); const controller = new AbortController();
     const unrelated = Bun.spawn([process.execPath, "-e", "setTimeout(()=>{},5000)"], { stdout: "ignore", stderr: "ignore" });
     try {
-      const result = scope.execute(process.execPath, ["-e", "setTimeout(()=>{},10000)"], { cwd: tmpdir(), env: process.env, timeoutMs: 15000, signal: controller.signal });
+      const result = scope.execute(process.execPath, ["-e", "setTimeout(()=>{},10000)"], { cwd: tmpdir(), env: process.env, timeoutMs: 15000, signal: controller.signal, sandbox: null });
       setTimeout(() => controller.abort(), 100);
       expect((await result).cancelled).toBe(true); expect(unrelated.exitCode).toBeNull();
     } finally { unrelated.kill("SIGKILL"); await unrelated.exited; await scope.stop(); }
@@ -915,7 +915,7 @@ test("regression: heartbeat failure retains ownership until child stops", async 
   let started!: () => void;
   const spawned = new Promise<void>(resolve => { started = resolve; });
   let ended = false;
-  const processResult = service.scheduler.processes.execute(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: root, env: process.env, timeoutMs: 5000, signal: new AbortController().signal, onSpawn: () => started() }).finally(() => { ended = true; });
+  const processResult = service.scheduler.processes.execute(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: root, env: process.env, timeoutMs: 5000, signal: new AbortController().signal, sandbox: null, onSpawn: () => started() }).finally(() => { ended = true; });
   await spawned;
   const db = new Database(service.store.path);
   const competitor = new NativeWorkflowService(root, config, new FixtureExecutor(root));

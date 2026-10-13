@@ -1,8 +1,18 @@
+import { spawn } from "node:child_process";
 import stripAnsi from "strip-ansi";
 import type { ToolResult } from "../../types";
 import { getCwd } from "../cwd.js";
+import { logBackgroundError } from "../diagnostics/errors.js";
 import { killTree, spawnShell } from "../platform/index.js";
 import { isForbidden } from "../security/forbidden.js";
+import {
+  chatSandbox,
+  type SandboxLaunch,
+  SandboxUnavailableError,
+  sandboxEnv,
+  sandboxLaunch,
+  sandboxNotice,
+} from "../security/sandbox.js";
 // TODO(beta): inline image rendering — disabled until suspend/resume bridge is stable
 // import { canRenderImages, renderImages } from "../terminal/image.js";
 import { buildSafeEnv, SAFE_SPAWN_OPTS } from "../spawn.js";
@@ -28,6 +38,35 @@ const GIT_COMMIT_MSG_RE = /\bgit\s+commit\b.*?\s-m\s+/;
 
 const _preCommitEnabled = true;
 
+/**
+ * Starts a command line the way the chat shell does: in the OS sandbox when the sandbox setting
+ * asks for it (writable: the project and `cwd`), otherwise through the platform shell. Throws
+ * SandboxUnavailableError when the sandbox is required and no backend works.
+ */
+function startShell(
+  command: string,
+  cwd: string,
+): { proc: ReturnType<typeof spawnShell>; launch: SandboxLaunch | null } {
+  const request = chatSandbox(getCwd(), [cwd]);
+  const launch = request ? sandboxLaunch("sh", ["-c", command], request, cwd) : null;
+  if (launch && launch.applied.backend !== "none") {
+    const proc = spawn(launch.executable, launch.args, {
+      cwd,
+      env: sandboxEnv(buildSafeEnv(), launch),
+      ...SAFE_SPAWN_OPTS,
+    });
+    return { proc, launch };
+  }
+  return { proc: spawnShell(command, { cwd, env: buildSafeEnv(), ...SAFE_SPAWN_OPTS }), launch };
+}
+
+/** The one-time note of a chat command that ran without the sandbox it asked for. */
+function fallbackNote(launch: SandboxLaunch | null): string | null {
+  const notice = sandboxNotice(launch?.applied, "chat");
+  if (notice) logBackgroundError("sandbox", notice);
+  return notice;
+}
+
 async function runPreCommitChecks(cwd: string): Promise<string | null> {
   if (!_preCommitEnabled) return null;
 
@@ -51,11 +90,14 @@ async function runPreCommitChecks(cwd: string): Promise<string | null> {
       const errChunks: string[] = [];
       let lintBytes = 0;
       let settled = false;
-      const proc = spawnShell(lintCmd, {
-        cwd,
-        env: buildSafeEnv(),
-        ...SAFE_SPAWN_OPTS,
-      });
+      let proc: ReturnType<typeof spawnShell>;
+      try {
+        proc = startShell(lintCmd, cwd).proc;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        resolve({ exitCode: 1, stdout: "", stderr: message });
+        return;
+      }
       const finish = (result: { exitCode: number | null; stdout: string; stderr: string }) => {
         if (settled) return;
         settled = true;
@@ -342,6 +384,17 @@ export const shellTool = {
     }
     const timeout = args.timeout ?? getToolTimeoutMs();
 
+    let started: ReturnType<typeof startShell>;
+    try {
+      started = startShell(command, cwd);
+    } catch (error) {
+      if (!(error instanceof SandboxUnavailableError)) throw error;
+      return { success: false, output: error.message, error: error.message };
+    }
+    const { proc } = started;
+    const note = fallbackNote(started.launch);
+    const withNote = (text: string): string => (note ? `${text}\n${note}` : text);
+
     return new Promise((resolve) => {
       const chunks: string[] = [];
       const errChunks: string[] = [];
@@ -349,12 +402,6 @@ export const shellTool = {
       let stderrBytes = 0;
       let settled = false;
       let timedOut = false;
-
-      const proc = spawnShell(command, {
-        cwd,
-        env: buildSafeEnv(),
-        ...SAFE_SPAWN_OPTS,
-      });
 
       const killChildTree = (signal: "SIGTERM" | "SIGKILL") => {
         if (typeof proc.pid === "number") {
@@ -445,7 +492,7 @@ export const shellTool = {
         if (timedOut) {
           resolve({
             success: false,
-            output: stdout || stderr,
+            output: withNote(stdout || stderr),
             error: `Command timed out after ${String(timeout / 1000)}s. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
           });
           return;
@@ -454,17 +501,17 @@ export const shellTool = {
         if (code === 0) {
           const hint = detectReadCommand(command) ?? detectProjectCommand(command);
           const output = hint ? `${stdout || stderr}\n\n${hint}` : stdout || stderr;
-          resolve({ success: true, output });
+          resolve({ success: true, output: withNote(output) });
         } else if (code === null) {
           resolve({
             success: false,
-            output: stdout || stderr,
+            output: withNote(stdout || stderr),
             error: `Command terminated by signal after ${String(timeout / 1000)}s`,
           });
         } else {
           resolve({
             success: false,
-            output: stdout,
+            output: withNote(stdout),
             error: stderr || `Exit code: ${code}`,
           });
         }

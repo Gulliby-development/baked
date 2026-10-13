@@ -23,6 +23,7 @@ import {
   withAutomaticCache,
   withRouteEffort,
 } from "../llm/provider-options.js";
+import { runSandbox } from "../security/sandbox.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
@@ -472,6 +473,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
+              sandbox: runSandbox(policy, root),
             });
             // Each probe is evidence of how the repair went, so it is journaled with the attempt (#454).
             try {
@@ -541,6 +543,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                       env: buildCheckEnv(check),
                       timeoutMs: check.timeoutMs,
                       signal: request.signal,
+                      sandbox: runSandbox(policy, root),
                     });
                     outputs.push(`${path}: exit ${String(result.exitCode)}`);
                   });
