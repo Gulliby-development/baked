@@ -213,7 +213,8 @@ export function LspSection({ project }: SectionProps) {
     try {
       const view = await work();
       setList(view satisfies LspView);
-      setNotice({ text: done(view) });
+      const warning = view.installed?.warning;
+      setNotice(warning ? { text: warning, failed: true } : { text: done(view) });
     } catch (e) {
       setNotice({ text: errorText(e), failed: true });
     } finally {
