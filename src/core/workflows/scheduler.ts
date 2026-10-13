@@ -3764,6 +3764,19 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     if (!checks.length) return false;
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status === "failed" && checked.output) {
+        // commitbump cd842f0f: a repair that changed nothing because every file the check still
+        // fails on is outside its writes was attempted again on each resume (689k tokens).
+        const state = this.store.state(runId);
+        const named = pathsInOutput(checked.output, (state.rootGraph ?? state.graph)?.tasks ?? []);
+        const outside = named.filter((path) => !task.writes.some((w) => w.path === path));
+        if (named.length && outside.length === named.length)
+          throw new WorkflowFault(
+            "RECOVERY_REQUIRED",
+            `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which ${task.id} may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
+            { reason: "no_progress", paths: outside },
+          );
+      }
       if (checked.status !== "passed") return false;
     }
     return true;

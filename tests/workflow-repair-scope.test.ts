@@ -128,3 +128,53 @@ describe("the repair scope follows the files a failed check names", () => {
     );
   });
 });
+
+// Bench round 08, commitbump cd842f0f: repair task T008 changed nothing three times because fmt
+// kept failing on files outside its writes, and each resume started it again (689k tokens).
+describe("a repair that changes nothing on an out-of-scope failure", () => {
+  const repair = task("T008", "tests/docs.rs", "implementer", {
+    origin: "repair",
+    findingIds: ["F1"],
+    criterionIds: ["AC-002"],
+  });
+  const satisfied = (output: string) => {
+    const s = Object.create(WorkflowScheduler.prototype) as {
+      store: WorkflowStore;
+      runTaskCheck: () => Promise<{ status: "failed"; evidenceId: string; output: string }>;
+      correctionSatisfied(
+        runId: string,
+        child: string,
+        policy: RunPolicy,
+        task: Task,
+        result: { taskId: string; outcome: string; unresolved: string[] },
+        signal: AbortSignal,
+        root: string,
+      ): Promise<boolean>;
+    };
+    s.store = {
+      tasks: () => [{ id: "T008", generation: 0 }],
+      findings: () => [{ id: "F1", body_json: JSON.stringify({ claim: "Required check fmt failed" }) }],
+      state: () => stateOf(),
+    } as unknown as WorkflowStore;
+    s.runTaskCheck = async () => ({ status: "failed", evidenceId: "E2", output });
+    return s.correctionSatisfied(
+      "run",
+      "step",
+      { checks: [check] } as RunPolicy,
+      repair,
+      { taskId: "T008", outcome: "implemented", unresolved: [] },
+      new AbortController().signal,
+      "/tmp",
+    );
+  };
+
+  test("blocks at once, naming the files it may not write", async () => {
+    await expect(satisfied("Diff in src/lib.rs\nDiff in src/render.rs")).rejects.toThrow(
+      /out_of_scope_failure: T008 changed nothing and check fmt still fails on src\/lib\.rs, src\/render\.rs/,
+    );
+  });
+
+  test("a failure that still names its own file is an ordinary unfinished repair", async () => {
+    expect(await satisfied("Diff in tests/docs.rs\nDiff in src/lib.rs")).toBe(false);
+  });
+});
