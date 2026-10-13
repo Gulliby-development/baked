@@ -517,6 +517,8 @@ export interface ChatMemoryEntry {
 export interface ChatMemorySettings {
   writeScope: ChatMemoryScope | "none";
   readScope: ChatMemoryScope | "all" | "none";
+  /** Chat recall also shows what runs learned, and runs read this project's settled memories. */
+  shareWithRuns: boolean;
   settingsScope: ChatMemoryScope;
 }
 export interface ChatMemoryView {

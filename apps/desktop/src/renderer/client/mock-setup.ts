@@ -1152,7 +1152,12 @@ function chatMemoryState(key: string) {
       ...extra,
     });
     found = {
-      settings: { writeScope: "project", readScope: "all", settingsScope: "project" },
+      settings: {
+        writeScope: "project",
+        readScope: "all",
+        shareWithRuns: false,
+        settingsScope: "project",
+      },
       all: [
         memory(
           "6f2a9c41-0d1e-4b7a-9a55-1c2d3e4f5a60",

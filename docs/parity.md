@@ -53,6 +53,7 @@ bun test tests/feature-parity.test.ts
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
 | Project coordinator chat with a durable project brief | `/coordinator` | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` | `project/coordinator`, `project/chat` |
+| One-click coordinator digest: running, waiting, finished and open questions | `/coordinator summary`, `/coordinator` | Not needed: scripts read the same state with baked session coordinator and --json runs | `/v1/coordinator/summary` | `project/coordinator` |
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
 | Chat modes and plan mode with plan review | `/mode`, `/session plan` | `--mode` | `/v1/sessions/:id`, `/v1/sessions/:id/prompts/:id` | `project/chat` |
 | Images in messages | `key Ctrl+V` | `--image` | `/v1/sessions/:id/messages` | `project/chat` |
@@ -105,7 +106,7 @@ bun test tests/feature-parity.test.ts
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
 | Instruction files: view and edit content | `/instructions show`, `/instructions edit`, `/agent-context` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/context` |
 | Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/context` |
-| Long-term chat memory: browse, pin, reword, hide, cleanup, scopes | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/memory` |
+| Long-term chat memory: browse, pin, reword, hide, cleanup, scopes, sharing with runs | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/memory` |
 | OS sandbox for shell commands, checks and acceptance apps | `/sandbox` | `baked sandbox status`, `--sandbox`, `baked workflow run --sandbox` +1 | `/v1/diagnostics/sandbox`, `/v1/settings`, `/v1/workflow/runs` | `settings/chat`, `project/diagnostics`, `project/overview` |
 | Run memory: view and edit what runs learned | `/memory` | `baked workflow memory` | `/v1/workflow/memory` | `project/memory` |
 
