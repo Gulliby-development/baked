@@ -38,7 +38,12 @@ export const DEFAULT_STAGE_RANGES: Record<string, TokenRange> = {
   review: { low: 20_000, high: 80_000 },
   converge: { low: 15_000, high: 60_000 },
 };
-export const DEFAULT_TASK_RANGE: TokenRange = { low: 15_000, high: 80_000 };
+/**
+ * One task without history: a code file and a test file created, at sizing's default per-file
+ * rates (`DEFAULT_PER_FILE`), so the start estimate prices a task as the plan's sizing would.
+ * R09: the earlier 15k-80k put 7 of 10 fresh-workspace runs 1.4-2.6x above the high end.
+ */
+export const DEFAULT_TASK_RANGE: TokenRange = { low: 90_000, high: 450_000 };
 export const DEFAULT_TASK_COUNT: TokenRange = { low: 2, high: 6 };
 
 const sorted = (values: number[]): number[] => [...values].sort((a, b) => a - b);

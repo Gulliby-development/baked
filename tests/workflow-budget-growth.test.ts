@@ -25,8 +25,10 @@ describe("automatic budget growth", () => {
   // md-site 2707d602 stopped at 2,140,388 of 2,149,014 tokens with work finishing; the only way on
   // was a user extension to the 4M ceiling the policy already declared.
   test("a run with a ceiling grows its budget while tasks finish instead of blocking", async () => {
-    const policy = { ...fixturePolicy, maxTotalTokens: 300000, sizing: { maxRunTokens: 2_000_000 } };
-    const fixture = workflowFixture({ policy, tokensPerCall: heavy });
+    const policy = { ...fixturePolicy, maxTotalTokens: 300000, sizing: { maxRunTokens: 10_000_000 } };
+    // Heavier than the start estimate's high end, which sets the budget before the plan.
+    const heavier = (output: string): number => heavy(output) * 3;
+    const fixture = workflowFixture({ policy, tokensPerCall: heavier });
     cleanups.push(fixture.dispose);
     const run = await fixture.start();
     const last = await drive(fixture, run.runId);
@@ -34,7 +36,7 @@ describe("automatic budget growth", () => {
     const store = fixture.service.store;
     const stored = JSON.parse(store.run(run.runId).policy_json);
     expect(stored.maxTotalTokens).toBeGreaterThan(300000);
-    expect(stored.maxTotalTokens).toBeLessThanOrEqual(2_000_000);
+    expect(stored.maxTotalTokens).toBeLessThanOrEqual(10_000_000);
     const revisions = store
       .artifacts(run.runId)
       .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"));
