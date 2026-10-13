@@ -152,6 +152,9 @@ so doctor and start report the same problem in the same words.
   in `sizing.historyStores` (a `.sqlite` path or a project directory, relative to the workspace), each
   run once. The basis line counts them: `3 earlier runs of sdd, 2 of them from other projects`. The
   start estimate, `baked workflow estimate` and the doctor read the same history.
+- **Keys history by model.** Each past run records the model that spent most of its tokens. When at
+  least 3 runs of the model most planned stages run on exist, only they count; with fewer, all runs
+  count and a note says the history mixes models.
 - **Attaches models.** Each stage gets the models that will run it: the stage route, else the stage
   profile's resolved model; tasks stages use the `implementer` profile; review stages use their bound
   review profiles, and their tokens are split evenly across those models.

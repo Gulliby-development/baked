@@ -27,6 +27,8 @@ export interface PastRun {
   taskTokens: number;
   /** Set to `shared` for a run read from a store the policy names in `sizing.historyStores`. */
   source?: "project" | "shared";
+  /** The model that spent most of the run's tokens, when the store records one. */
+  model?: string;
 }
 
 /** Used when the project has no history for a stage. Deliberately wide: they are not measurements. */
@@ -394,6 +396,18 @@ export interface PreRunEstimate {
 }
 
 const AGENT_TYPES = new Set(["agent", "reflection", "review"]);
+/** Runs of the planned model needed before the estimate reads only them (#936). */
+export const MODEL_HISTORY_MIN = 3;
+
+/** The model most of the planned stages run on, or null when none names one. */
+function plannedModel(stages: PlannedStage[]): string | null {
+  const counts = new Map<string, number>();
+  for (const model of stages.flatMap((s) => s.models))
+    counts.set(model, (counts.get(model) ?? 0) + 1);
+  let best: string | null = null;
+  for (const [model, n] of counts) if (best === null || n > (counts.get(best) ?? 0)) best = model;
+  return best;
+}
 const usd = (n: number): string => (n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`);
 export const usdRangeText = (r: TokenRange): string => `${usd(r.low)}–${usd(r.high)}`;
 
@@ -413,10 +427,17 @@ export function estimatePreRun(input: {
   mix?: TokenMix;
 }): PreRunEstimate {
   const mix = input.mix ?? DEFAULT_MIX;
-  const same = input.history.filter((r) => r.workflowId === input.workflowId);
+  // Providers spend very differently on the same work (bench R14: a claude-code run spent 3.06M
+  // where codex runs of the same briefs spent under 1.4M), so once enough runs of the planned
+  // model exist the estimate reads only those (#936).
+  const model = plannedModel(input.stages);
+  const ofModel = model ? input.history.filter((r) => r.model === model) : [];
+  const keyed = ofModel.length >= MODEL_HISTORY_MIN;
+  const history = keyed ? ofModel : input.history;
+  const same = history.filter((r) => r.workflowId === input.workflowId);
   const pools: [EstimateBasis, PastRun[]][] = [
     ["workflow-history", same],
-    ["history", input.history],
+    ["history", history],
   ];
   const measure = (
     pick: (runs: PastRun[]) => number[],
@@ -524,7 +545,7 @@ export function estimatePreRun(input: {
     basis === "workflow-history"
       ? same
       : basis === "history"
-        ? input.history.filter((r) => Object.keys(r.stageTokens).length > 0)
+        ? history.filter((r) => Object.keys(r.stageTokens).length > 0)
         : [];
   const samples = sampled.length;
   const shared = sampled.filter((r) => r.source === "shared").length;
@@ -533,6 +554,11 @@ export function estimatePreRun(input: {
     tokens: { low: Math.round(m.tokens.low), high: Math.round(m.tokens.high) },
   }));
   const notes: string[] = [];
+  if (keyed && basis !== "defaults") notes.push(`History of ${model} only (${ofModel.length} runs).`);
+  else if (model && input.history.length && basis !== "defaults")
+    notes.push(
+      `Fewer than ${MODEL_HISTORY_MIN} earlier runs of ${model}; the history mixes models, which can spend very differently.`,
+    );
   if (costUsd) {
     notes.push(
       `Cost prices ${Math.round(mix.input * 100)}% uncached input, ${Math.round(mix.cacheRead * 100)}% cache reads and ${Math.round(mix.output * 100)}% output; cache writes are not counted.`,
