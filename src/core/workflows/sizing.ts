@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_STAGE_RANGES, rangeOf, type TokenRange } from "./estimate.js";
+import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { Task } from "./types.js";
@@ -169,9 +169,7 @@ export function samplesFrom(
  */
 export function sizingHistory(workspace: string, policy: RunPolicy): SizingSample[] {
   const own = join(workspace, ".baked", "workflows.sqlite");
-  const shared = (policy.sizing?.historyStores ?? [])
-    .map((path) => (path.endsWith(".sqlite") ? path : join(path, ".baked", "workflows.sqlite")))
-    .filter((path) => path !== own);
+  const shared = historyStorePaths(workspace, policy);
   const seen = new Set<string>();
   return [samplesFrom(own, "project"), ...shared.map((path) => samplesFrom(path, "shared"))]
     .flat()
