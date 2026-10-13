@@ -142,3 +142,25 @@ export function baselineRegression(
     return `tests fell from ${baseline.count} to ${now.count} against the code the run started from (${now.tool}); restore the existing tests the change removed or skipped`;
   return null;
 }
+
+/**
+ * The output of a failing check with what changes between two runs of the same failure left out
+ * (colours, durations, timestamps, the workspace path), so the checks stage can tell a required
+ * check that still fails exactly as it did on the code the run started from (#934).
+ */
+export function failureSignature(output: string, root: string): string {
+  const text = output
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .split(root)
+    .join("<root>")
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
+    .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
+    .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return text;
+}

@@ -37,10 +37,13 @@ export function WorkflowFlow({
   line,
   compact = false,
   scenario: initial,
+  onEditStation,
 }: {
   line: WorkflowLine;
   compact?: boolean;
   scenario?: Scenario;
+  /** Opens a station in the editor; the Now panel offers it for the current station. */
+  onEditStation?: (id: string) => void;
 }) {
   const scenarios = scenariosFor(line);
   const [scenario, setScenario] = useState<Scenario>(
@@ -236,6 +239,14 @@ export function WorkflowFlow({
           <p className="m-0 max-w-[760px] text-[14px] leading-relaxed text-soft-foreground">
             {told.text}
           </p>
+          {onEditStation && station && !station.finish && (
+            <span>
+              <Button variant="secondary" size="sm" onClick={() => onEditStation(station.id)}>
+                <Icon name="edit" size={13} />
+                Set up {station.id}
+              </Button>
+            </span>
+          )}
           {station && !station.finish && (
             <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
               Takes

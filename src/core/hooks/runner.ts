@@ -114,7 +114,15 @@ function getShell(): { cmd: string; args: string[] } {
 }
 
 /** Parse hook JSON output into a HookResult. */
-function parseHookOutput(stdout: string, stderr: string, exitCode: number): HookResult {
+/** Events whose plain (non-JSON) stdout on exit 0 is context for the model, as in Claude Code. */
+const PLAIN_CONTEXT_EVENTS = new Set<string>(["SessionStart", "UserPromptSubmit"]);
+
+function parseHookOutput(
+  stdout: string,
+  stderr: string,
+  exitCode: number,
+  event?: string,
+): HookResult {
   // Exit 2 = blocking error (Claude Code convention)
   if (exitCode === 2) {
     let reason = stderr.trim() || "Hook blocked the action";
@@ -152,6 +160,8 @@ function parseHookOutput(stdout: string, stderr: string, exitCode: number): Hook
       output = JSON.parse(trimmed) as HookOutput;
     } catch {
       // Non-JSON stdout is fine — just means no structured output
+      if (event && PLAIN_CONTEXT_EVENTS.has(event))
+        return { ok: true, blocked: false, additionalContext: trimmed };
     }
   }
 
@@ -288,7 +298,7 @@ function runCommandHook(
     child.on("close", (code) => {
       clearTimeout(timer);
       abortSignal?.removeEventListener("abort", onAbort);
-      settle(parseHookOutput(stdout, stderr, code ?? 1));
+      settle(parseHookOutput(stdout, stderr, code ?? 1, input.hook_event_name));
     });
 
     // Send input via stdin — handle write errors gracefully
@@ -344,7 +354,17 @@ export interface RunHooksOptions {
   /** The fields of a lifecycle event (`source`, `reason`, `prompt`, `message`, ...). */
   fields?: Pick<
     HookInput,
-    "source" | "reason" | "prompt" | "message" | "title" | "notification_type"
+    | "source"
+    | "reason"
+    | "prompt"
+    | "message"
+    | "title"
+    | "notification_type"
+    | "trigger"
+    | "agent_id"
+    | "agent_type"
+    | "stop_hook_active"
+    | "error"
   >;
 }
 
@@ -451,12 +471,13 @@ export async function runHooks(opts: RunHooksOptions): Promise<HookResult> {
 }
 
 /**
- * Quick check: are there any hooks configured for PreToolUse or PostToolUse?
+ * Quick check: are there any hooks configured for PreToolUse, PostToolUse or PostToolUseFailure?
  * Used to skip the hook wrapper entirely when no hooks are configured.
  */
 export function hasToolHooks(cwd?: string): boolean {
   const hooks = getHooks(cwd);
-  const pre = hooks.PreToolUse;
-  const post = hooks.PostToolUse;
-  return (Array.isArray(pre) && pre.length > 0) || (Array.isArray(post) && post.length > 0);
+  return (["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const).some((event) => {
+    const rules = hooks[event];
+    return Array.isArray(rules) && rules.length > 0;
+  });
 }

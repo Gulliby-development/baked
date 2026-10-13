@@ -52,13 +52,17 @@ function SetupFlow({
   projectKey,
   onSaved,
   onDone,
+  kind: initialKind = "command",
+  onCreated,
 }: {
   projectKey: string;
   onSaved: () => void;
   onDone: () => void;
+  kind?: GateDraftKind;
+  onCreated?: (gateId: string) => void;
 }) {
   const [step, setStep] = useState<GateSetupStep>("kind");
-  const [kind, setKind] = useState<GateDraftKind>("command");
+  const [kind, setKind] = useState<GateDraftKind>(initialKind);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState<GateDraft | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -285,11 +289,15 @@ function SetupFlow({
                   const result = await setup.saveGate(projectKey, draft);
                   setSaved(result.id);
                   onSaved();
-                  setStep("place");
+                  // From the workflow editor the gate goes onto the working copy, not into a file.
+                  if (onCreated) {
+                    onCreated(result.id);
+                    onDone();
+                  } else setStep("place");
                 })
               }
             >
-              Save gate
+              {onCreated ? "Save gate and add it" : "Save gate"}
             </Button>
             <Button
               variant="secondary"
@@ -340,17 +348,29 @@ export function GateSetupDialog({
   open,
   onOpenChange,
   onSaved,
+  kind,
+  onCreated,
 }: {
   projectKey: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
+  /** The kind picked first. */
+  kind?: GateDraftKind;
+  /** Called with the saved gate's ID instead of the step that places it in a workflow file. */
+  onCreated?: (gateId: string) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(680px,calc(100vw-48px))]">
         {open && (
-          <SetupFlow projectKey={projectKey} onSaved={onSaved} onDone={() => onOpenChange(false)} />
+          <SetupFlow
+            projectKey={projectKey}
+            onSaved={onSaved}
+            onDone={() => onOpenChange(false)}
+            kind={kind}
+            onCreated={onCreated}
+          />
         )}
       </DialogContent>
     </Dialog>
