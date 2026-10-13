@@ -1,5 +1,6 @@
 import { relative, resolve } from "node:path";
 import { BriefStore, renderBrief } from "../core/chat/coordinator.js";
+import { ScheduleError, ScheduleStore, scheduleLine } from "../core/chat/coordinator-schedules.js";
 import type { RollbackReport } from "../core/checkpoints/fork.js";
 import { RollbackError } from "../core/checkpoints/fork.js";
 import { SavedCheckpointsError, savedSessionCheckpoints } from "../core/checkpoints/list.js";
@@ -18,10 +19,17 @@ const help = `Usage: baked session list [--limit N] [--json]
        baked session undo SESSION [--to N] [--force] [--json]
        baked session redo SESSION [--force] [--json]
        baked session coordinator [--json]
+       baked session coordinator schedules [--json]
+       baked session coordinator schedule add --name NAME --when WHEN --prompt TEXT [--json]
+       baked session coordinator schedule pause|resume|remove ID [--json]
 
 list prints the saved sessions of this project, most recently updated first (default limit 50);
 the project coordinator is not listed.
 coordinator prints the project coordinator's session id and its project brief.
+coordinator schedules lists the coordinator's schedules; schedule adds, pauses, resumes or removes
+one. WHEN is "every 30m", "every 6h", "every 1d", a five-field cron expression in local time such
+as "0 9 * * 1-5", or @hourly, @daily, @weekly, @monthly. Schedules fire while "baked serve" or the
+terminal UI's coordinator runs; one missed meanwhile fires once when it starts.
 delete removes a saved session and the checkpoint tags it made; the files stay as they are.
 export writes the conversation of the session's active tab as Markdown (default) or JSON, to FILE
 or to .baked/exports/, as /session export does in the terminal UI.
@@ -255,10 +263,13 @@ function list(rest: string[]): number {
 }
 
 function coordinator(rest: string[]): number {
-  const unknown = rest.find((a) => a !== "--json");
-  if (unknown) {
-    process.stderr.write(`Unknown argument: ${unknown}\n\n${help}`);
-    return 1;
+  const [sub] = rest;
+  if (sub !== "schedules" && sub !== "schedule") {
+    const unknown = rest.find((a) => a !== "--json");
+    if (unknown) {
+      process.stderr.write(`Unknown argument: ${unknown}\n\n${help}`);
+      return 1;
+    }
   }
   const cwd = getCwd();
   const session = new SessionManager(cwd).listSessions().find((s) => s.kind === "coordinator");
@@ -268,6 +279,8 @@ function coordinator(rest: string[]): number {
     );
     return 1;
   }
+  if (sub === "schedules" || sub === "schedule")
+    return schedules(new ScheduleStore(cwd, session.id), rest.slice(1), sub === "schedules");
   const brief = new BriefStore(cwd, session.id).read();
   if (rest.includes("--json")) {
     process.stdout.write(`${JSON.stringify({ sessionId: session.id, brief }, null, 2)}\n`);
@@ -277,6 +290,47 @@ function coordinator(rest: string[]): number {
     `Coordinator ${session.id} (brief revision ${String(brief.revision)})\n\n${renderBrief(brief)}\n`,
   );
   return 0;
+}
+
+/** `baked session coordinator schedules` and `... schedule add|pause|resume|remove`. */
+function schedules(store: ScheduleStore, args: string[], listing: boolean): number {
+  const json = args.includes("--json");
+  const print = (data: unknown, text: string): number => {
+    process.stdout.write(json ? `${JSON.stringify(data, null, 2)}\n` : `${text}\n`);
+    return 0;
+  };
+  const [action, id] = args.filter((a) => a !== "--json");
+  try {
+    if (listing) {
+      if (action) throw new ScheduleError("INVALID_REQUEST", `Unknown argument: ${action}`);
+      const all = store.list();
+      return print(
+        { schedules: all },
+        all.length ? all.map(scheduleLine).join("\n") : "No schedules.",
+      );
+    }
+    if (action === "add") {
+      const added = store.add({
+        name: value(args, "--name") ?? "",
+        when: value(args, "--when") ?? "",
+        prompt: value(args, "--prompt") ?? "",
+      });
+      return print(added, `Added ${scheduleLine(added)}`);
+    }
+    if ((action === "pause" || action === "resume" || action === "remove") && id) {
+      if (action === "remove") {
+        store.remove(id);
+        return print({ removed: id }, `Removed ${id}`);
+      }
+      const changed = store.setEnabled(id, action === "resume");
+      return print(changed, scheduleLine(changed));
+    }
+    throw new ScheduleError("INVALID_REQUEST", "Give add, pause ID, resume ID or remove ID");
+  } catch (err) {
+    if (!(err instanceof ScheduleError)) throw err;
+    process.stderr.write(`${err.message}\n${err.code === "INVALID_REQUEST" ? `\n${help}` : ""}`);
+    return 1;
+  }
 }
 
 /** The saved session with this id, or the only one it is a prefix of; prints why not otherwise. */
