@@ -10,7 +10,20 @@ import { join } from "node:path";
  */
 export const SOURCE_FILE =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|c|h|cpp|hpp|swift|sql|sh|css|scss|html|vue|svelte)$/i;
-const SKIPPED = new Set([".git", "node_modules", ".baked", "baked", ".venv", "dist", "target"]);
+const SKIPPED = new Set([
+  ".git",
+  "node_modules",
+  ".baked",
+  "baked",
+  ".venv",
+  "dist",
+  "target",
+  "build",
+  "obj",
+  ".gradle",
+  ".idea",
+  "__pycache__",
+]);
 const SCAN_LIMIT = 2000;
 const LISTED_LIMIT = 80;
 const MANIFEST =
@@ -27,7 +40,7 @@ export type WorkspaceKind =
 export interface WorkspaceFacts {
   schemaVersion: 1;
   kind: WorkspaceKind;
-  /** Tracked files (first three directory levels), with sizes in bytes; capped. */
+  /** Files, shallowest first, with sizes in bytes; capped. */
   files: { path: string; bytes: number }[];
   totalFiles: number;
   sourceFiles: number;
@@ -44,20 +57,24 @@ export function workspaceFacts(root: string): WorkspaceFacts {
   let seen = 0;
   let total = 0;
   let sources = 0;
-  const walk = (dir: string, prefix: string, depth: number): void => {
+  // Breadth first with no depth limit: Maven, Gradle and .NET keep their sources four or more
+  // levels down (src/main/java/<package>/...), and a depth cap reported them as scaffold. The
+  // entry limit bounds the scan instead, and shallow files are listed first.
+  const queue: { dir: string; prefix: string }[] = [{ dir: root, prefix: "" }];
+  scan: for (let next = queue.shift(); next; next = queue.shift()) {
     let entries: import("node:fs").Dirent[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+      entries = readdirSync(next.dir, { withFileTypes: true }).sort((a, b) =>
         a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
       );
     } catch {
-      return;
+      continue;
     }
     for (const entry of entries) {
-      if (++seen > SCAN_LIMIT) return;
-      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (++seen > SCAN_LIMIT) break scan;
+      const rel = next.prefix ? `${next.prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        if (!SKIPPED.has(entry.name) && depth < 3) walk(join(dir, entry.name), rel, depth + 1);
+        if (!SKIPPED.has(entry.name)) queue.push({ dir: join(next.dir, entry.name), prefix: rel });
         continue;
       }
       total += 1;
@@ -65,15 +82,14 @@ export function workspaceFacts(root: string): WorkspaceFacts {
       if (files.length < LISTED_LIMIT) {
         let bytes = 0;
         try {
-          bytes = statSync(join(dir, entry.name)).size;
+          bytes = statSync(join(next.dir, entry.name)).size;
         } catch {
           // A file that vanished while scanning is listed with size 0.
         }
         files.push({ path: rel, bytes });
       }
     }
-  };
-  walk(root, "", 0);
+  }
   const manifests = files
     .filter((f) => MANIFEST.test(f.path.split("/").pop() ?? ""))
     .map((f) => f.path);

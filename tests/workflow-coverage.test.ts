@@ -66,6 +66,25 @@ describe("workspace kind", () => {
     writeFileSync(join(root, "src", "lib", "a.py"), "");
     expect(workspaceFacts(root).kind).toBe("source");
   });
+  test("a Maven layout with sources deep under src/main/java is source", () => {
+    const root = temp();
+    const pkg = join(root, "src", "main", "java", "io", "github", "app");
+    mkdirSync(pkg, { recursive: true });
+    mkdirSync(join(root, "target", "classes"), { recursive: true });
+    writeFileSync(join(root, "pom.xml"), "<project/>");
+    writeFileSync(join(pkg, "Main.java"), "class Main {}");
+    writeFileSync(join(pkg, "Cli.java"), "class Cli {}");
+    writeFileSync(join(root, "target", "classes", "Gen.java"), "");
+    const facts = workspaceFacts(root);
+    expect(facts.kind).toBe("source");
+    expect(facts.sourceFiles).toBe(2);
+    expect(facts.manifests).toEqual(["pom.xml"]);
+    expect(facts.files.map((f) => f.path)).toEqual([
+      "pom.xml",
+      "src/main/java/io/github/app/Cli.java",
+      "src/main/java/io/github/app/Main.java",
+    ]);
+  });
 });
 
 describe("request coverage finding", () => {
