@@ -545,6 +545,32 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         return view;
       },
       tasks: options.tasks ?? githubTasks(service.workspace, service.config),
+      // The same commands as POST /v1/workflow/runs/ID/approve|reject|cancel; the coordinator
+      // asked the user on a card first. An approved run goes on in the background.
+      control: async (control) => {
+        const { runId } = control;
+        if (control.action !== "cancel") await settle(runId);
+        const flags = (): WorkflowArgs["flags"] => ({
+          "command-id": crypto.randomUUID(),
+          "expected-revision": String(service.store.snapshot(runId).revision),
+        });
+        const command = (
+          name: "approve" | "reject" | "cancel" | "resume",
+          extra: WorkflowArgs["flags"] = {},
+        ): WorkflowArgs =>
+          validateWorkflowArgs({
+            command: name,
+            positional: [runId],
+            flags: { ...flags(), ...extra },
+          });
+        if (control.action === "cancel") await execute(command("cancel"));
+        else if (control.action === "reject")
+          await execute(command("reject", { request: control.requestId, reason: control.reason }));
+        else {
+          await execute(command("approve", { request: control.requestId, digest: control.digest }));
+          if (service.canResumeAfterDecision(runId)) await launch(command("resume"));
+        }
+      },
     },
   );
   const graphCache = new CodeGraphCache(service.workspace);

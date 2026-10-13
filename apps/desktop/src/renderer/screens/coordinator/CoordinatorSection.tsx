@@ -15,16 +15,28 @@ import { Button } from "../../components/ui/button.js";
 import { Dot } from "../../components/ui/dot.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { Textarea } from "../../components/ui/textarea.js";
+import { StageChips } from "../../components/WorkflowStages.js";
 import { tokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PAGE } from "../../lib/styles.js";
 import { SessionView } from "../chat/ChatSection.js";
 import type { SectionProps } from "../sections.js";
 import { NeedsNewer } from "../setup/shared.js";
-import { BRIEF_TITLES, launchedHref, launchedTone, taskLabel, withList } from "./model.js";
+import {
+  BRIEF_TITLES,
+  launchedHref,
+  launchedTone,
+  stageLine,
+  stageLooks,
+  taskLabel,
+  withList,
+} from "./model.js";
 
-/** How often the panel reads launched work and the brief again. */
-const REFRESH_MS = 5000;
+/**
+ * How often the panel reads the brief and launched work again. Launched work also arrives live as
+ * the coordinator session's `launched` events, so this is only a fallback for older servers.
+ */
+const REFRESH_MS = 30_000;
 
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -32,19 +44,44 @@ const message = (error: unknown): string =>
 const CARD = "flex flex-col gap-1 rounded-base border-2 border-border bg-background px-3 py-2";
 
 function LaunchedCard({ project, item }: { project: DesktopProject; item: LaunchedView }) {
+  const progress = item.progress?.stages.length ? item.progress : null;
+  const done = progress?.stages.filter((s) => s.status === "completed").length ?? 0;
   return (
-    <li className={CARD}>
+    <li className={cn(CARD, "animate-rise motion-reduce:animate-none")}>
       <a
         className="flex items-center gap-2 text-[13px] font-semibold text-foreground no-underline hover:underline"
         href={launchedHref(project.key, item)}
       >
         <Dot tone={launchedTone(item)} />
         <span className="capitalize">{item.feature ? "Feature" : item.kind}</span>
+        {item.workflow && (
+          <span className="flex-none rounded-base border-2 border-border bg-main px-1.5 font-mono text-[11px] text-main-foreground">
+            {item.workflow}
+          </span>
+        )}
         <span className="min-w-0 truncate font-mono text-[12px] text-dim-foreground">
           {item.feature ? `${item.feature} of ${item.id}` : item.id}
         </span>
       </a>
       <p className="m-0 text-[13px] text-soft-foreground">{item.why}</p>
+      {progress && (
+        <div className="flex flex-col gap-1.5 pt-0.5">
+          <div
+            className="h-1.5 overflow-hidden rounded-full border border-border bg-background"
+            aria-hidden="true"
+          >
+            <div
+              className="h-full bg-[var(--ok)] transition-[width] duration-500 ease-out motion-reduce:transition-none"
+              style={{ width: `${(done / progress.stages.length) * 100}%` }}
+            />
+          </div>
+          <StageChips
+            stages={progress.stages.map((s) => s.id)}
+            looks={stageLooks(progress, item.active)}
+          />
+          <p className="m-0 text-[12px] text-dim-foreground">{stageLine(progress)}</p>
+        </div>
+      )}
       <p className="m-0 flex flex-wrap gap-x-3 font-mono text-[12px] text-dim-foreground">
         <span>{item.status}</span>
         {item.tokens > 0 && <span>{tokens(item.tokens)} tokens</span>}
@@ -125,8 +162,8 @@ function BriefSection({
   );
 }
 
-/** Launched work and the brief, read again every few seconds. */
-function CoordinatorPanel({ project }: { project: DesktopProject }) {
+/** Launched work, live from the coordinator's events, and the brief. */
+function CoordinatorPanel({ project, sessionId }: { project: DesktopProject; sessionId: string }) {
   const key = project.key;
   const [brief, setBrief] = useState<ProjectBrief | null>(null);
   const [launched, setLaunched] = useState<LaunchedView[] | null>(null);
@@ -145,6 +182,32 @@ function CoordinatorPanel({ project }: { project: DesktopProject }) {
     const timer = setInterval(reload, REFRESH_MS);
     return () => clearInterval(timer);
   }, [reload]);
+  // Each change of launched work (a status, a run's stage, its tasks) arrives as an event; a
+  // status change may also have changed the brief.
+  useEffect(() => {
+    let live = true;
+    let stop = (): void => {};
+    chat.get(key, sessionId).then(
+      (detail) => {
+        if (!live) return;
+        stop = chat.subscribe(key, sessionId, detail.lastSeq, (event) => {
+          if (!live) return;
+          if (event.type === "launched") {
+            setLaunched(event.launched);
+            coordinator.brief(key).then(
+              (b) => live && setBrief(b),
+              () => {},
+            );
+          } else if (event.type === "reset") reload();
+        });
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+      stop();
+    };
+  }, [key, sessionId, reload]);
 
   const save = async (list: BriefList, lines: string[]): Promise<boolean> => {
     if (!brief) return false;
@@ -248,7 +311,7 @@ export function CoordinatorSection({ project }: SectionProps) {
     // `data-chat` lets the window's main area give the conversation its full height.
     <div data-chat className="flex min-h-0 flex-1">
       <SessionView key={state.id} project={project} sessionId={state.id} coordinator />
-      <CoordinatorPanel project={project} />
+      <CoordinatorPanel project={project} sessionId={state.id} />
     </div>
   );
 }

@@ -35,7 +35,8 @@ export interface RunDetail {
   summary: RunSummary;
   stages: { id: string; status: string }[];
   tasks: { id: string; title: string; status: string }[];
-  pendingRequests: { id: string; kind: string }[];
+  /** `digest` is what approving the request must name. */
+  pendingRequests: { id: string; kind: string; digest?: string }[];
   changedFiles: number;
 }
 
@@ -266,7 +267,7 @@ export function serviceStateSource(
           .map((t) => ({ id: t.id, title: taskTitle(t.definition_json, t.id), status: t.status })),
         pendingRequests: view.requests
           .filter((r) => r.status === "pending")
-          .map((r) => ({ id: r.id, kind: r.kind })),
+          .map((r) => ({ id: r.id, kind: r.kind, digest: r.digest })),
         changedFiles: view.changes.length,
       };
     },

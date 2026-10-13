@@ -1,5 +1,12 @@
 import type { ChatMessage } from "../../client/chat.js";
-import type { BriefList, FlowTask, LaunchedEntry, ProjectBrief } from "../../client/coordinator.js";
+import type {
+  BriefList,
+  FlowTask,
+  LaunchedEntry,
+  ProjectBrief,
+  RunProgress,
+} from "../../client/coordinator.js";
+import type { StageLook } from "../../components/WorkflowStages.js";
 import { projectHref } from "../../router.js";
 
 /** What Edit on a split card puts into the composer: the change goes back to the coordinator. */
@@ -57,4 +64,40 @@ export function launchedTone(view: {
   if (/^(failed|cancelled|deleted|blocked)/.test(view.status)) return "err";
   if (view.active) return "busy";
   return /^(completed|done)/.test(view.status) ? "ok" : "";
+}
+
+/** How each stage of a launched run looks; a run that stopped marks the stage it stopped in. */
+export function stageLooks(progress: RunProgress, active: boolean): StageLook[] {
+  return progress.stages.map((stage) => {
+    switch (stage.status) {
+      case "completed":
+        return "done";
+      case "skipped":
+      case "invalidated":
+        return "skipped";
+      case "failed":
+        return "failed";
+      case "waiting":
+        return "waiting";
+      case "running":
+        return active ? "current" : "failed";
+      case "interrupted":
+        return active && stage.id === progress.stage ? "current" : "failed";
+      default:
+        return active && stage.id === progress.stage ? "current" : "ahead";
+    }
+  });
+}
+
+/** The stage a launched run is at, as one short line: `Stage 2 of 5: plan · tasks 3/7`. */
+export function stageLine(progress: RunProgress): string {
+  const index = progress.stage ? progress.stages.findIndex((s) => s.id === progress.stage) : -1;
+  const done = progress.stages.filter((s) => s.status === "completed").length;
+  const where =
+    index >= 0
+      ? `Stage ${index + 1} of ${progress.stages.length}: ${progress.stage}`
+      : `${done} of ${progress.stages.length} stages done`;
+  return progress.tasks.total
+    ? `${where} · tasks ${progress.tasks.done}/${progress.tasks.total}`
+    : where;
 }

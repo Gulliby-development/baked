@@ -23,14 +23,18 @@ import {
   type IssueSource,
   issueTarget,
 } from "../workflows/issue-source.js";
+import type { WorkflowProposal } from "../workflows/preset-router.js";
 import { terminalStates } from "../workflows/state-machine.js";
+import type { DefinitionSummary } from "../workflows/v2/definitions.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
 import type { ProjectStateSource } from "./project-state.js";
-import type { ChatMode, ChatService, ChatSession } from "./sessions.js";
+import type { ChatMode, ChatPrompt, ChatService, ChatSession } from "./sessions.js";
 
 export const LAUNCH_TOOLS = [
+  "list_workflows",
   "launch_session",
   "start_run",
+  "control_run",
   "start_initiative",
   "propose_split",
 ] as const;
@@ -80,6 +84,24 @@ export interface ProjectLauncher {
   }): Promise<{ initiativeId: string }>;
   /** Issues for flows; without it every flow gets a local task. */
   tasks?: TaskTracker;
+  /**
+   * Answers a pending request of a run or cancels it, as `baked workflow approve|reject|cancel`
+   * does; an approved run goes on in the background. Without it the coordinator cannot control
+   * runs.
+   */
+  control?(input: RunControl): Promise<void>;
+}
+
+/** One control action on a run the coordinator launched; the user approved it first. */
+export type RunControl =
+  | { runId: string; action: "approve"; requestId: string; digest: string }
+  | { runId: string; action: "reject"; requestId: string; reason: string }
+  | { runId: string; action: "cancel" };
+
+/** The workflows a project can run, and the one BAKED proposes for a request. */
+export interface WorkflowCatalog {
+  list(): DefinitionSummary[];
+  propose(request: string): WorkflowProposal;
 }
 
 /** Tasks as GitHub issues, read and created with `workflows.delivery.tokenEnv`. */
@@ -115,11 +137,20 @@ export function coordinatorLimits(config: AppConfig): { maxActive: number; maxTo
   };
 }
 
+/** Where a launched run is: its stages in order and its tasks. */
+export interface RunProgress {
+  /** The stage running or waiting now; null before the first or after the last. */
+  stage: string | null;
+  stages: { id: string; status: string }[];
+  tasks: { done: number; total: number };
+}
+
 /** A launched item as it is now: its status word, whether it still runs, and its tokens. */
 interface LiveState {
   status: string;
   active: boolean;
   tokens: number;
+  progress?: RunProgress;
 }
 
 /** Statuses the coordinator is told about; others only update the brief. */
@@ -149,10 +180,15 @@ function liveState(
   if (!state) return { status: entry.status, active: false, tokens: 0 };
   try {
     if (entry.kind === "run") {
-      const { summary } = state.run(entry.id);
+      const { summary, stages } = state.run(entry.id);
       const status = summary.snapshot.status;
       const active = !terminalStates.includes(status);
       return {
+        progress: {
+          stage: active ? (summary.snapshot.stageId ?? null) : null,
+          stages,
+          tasks: summary.tasks,
+        },
         status: summary.pendingKind
           ? `waiting: ${summary.pendingKind}`
           : summary.snapshot.reason !== "none" && status !== "completed"
@@ -191,8 +227,15 @@ function liveState(
   }
 }
 
-/** A launched entry with its live status, whether it still runs, and the tokens it used. */
-export type LaunchedView = LaunchedEntry & { active: boolean; tokens: number };
+/**
+ * A launched entry with its live status, whether it still runs, the tokens it used and, for a run,
+ * its stage progress.
+ */
+export type LaunchedView = LaunchedEntry & {
+  active: boolean;
+  tokens: number;
+  progress?: RunProgress;
+};
 
 /** What the coordinator launched, as it is now; `GET /v1/coordinator/launched`. */
 export function launchedView(
@@ -247,6 +290,19 @@ export async function syncLaunched(
   }
   for (const notice of notices) await coordinator.addNotice(`Launched ${notice}`);
   return notices;
+}
+
+/**
+ * The message a coordinator wakes with when launched work changed: the notices, then what to do.
+ * The model reads it as a turn of its own; the transcript shows only the notices.
+ */
+export function wakePrompt(notices: string[]): string {
+  return [
+    "[Update on work you launched. BAKED sent this, not the user.]",
+    ...notices.map((n) => `- ${n}`),
+    "",
+    "Take control back. Tell the user in one or two short lines what finished, failed or waits for them (read the run with project_state when you need its result). Then continue: start the next step of the work this was part of, propose what is left, or say it is done. A request the run waits for stays the user's decision: ask them, and use control_run only after they say yes. Do not repeat these lines verbatim.",
+  ].join("\n");
 }
 
 /** Checks the coordinator's limits before one more launch; returns why not, or null. */
@@ -391,6 +447,7 @@ export function launchTools(
   state: ProjectStateSource | null,
   launcher: ProjectLauncher | null,
   limits: { maxActive: number; maxTokens: number },
+  workflows: WorkflowCatalog | null = null,
 ) {
   const store = new BriefStore(chat.workspace, coordinator.id);
   const failed = (error: string) => ({ success: false, output: "", error });
@@ -456,9 +513,30 @@ export function launchTools(
           return { kind: "session", id: session.id, status: "working" };
         }, why),
     }),
+    list_workflows: tool({
+      description:
+        "List the workflows this project can run: id, where it comes from (built in or the project's baked/workflows), what it is for, its stages in order and whether it writes files. With `request`, also the workflow BAKED proposes for that request and why. Read this before suggesting a workflow.",
+      inputSchema: z.strictObject({
+        request: z
+          .string()
+          .trim()
+          .min(1)
+          .max(20_000)
+          .optional()
+          .describe("The work to find a workflow for, in the user's words"),
+      }),
+      execute: async ({ request }) => {
+        if (!workflows) return failed("This server cannot list workflows");
+        try {
+          return { success: true, output: renderWorkflows(workflows, request) };
+        } catch (err) {
+          return failed(err instanceof Error ? err.message : String(err));
+        }
+      },
+    }),
     start_run: tool({
       description:
-        "Start a workflow run, as `baked workflow run` does. It stops at its own approval request with its estimate; the user approves it, not you.",
+        'Ask the user to run a workflow on a request, then start it. The chat shows a card "Run workflow?" with the workflow, its stages and the request; the run starts only when the user approves the card, and its own approvals stay with the user. Without `workflow`, the one BAKED proposes for the prompt (list_workflows). The run shows in Launched work with its live stage, and you get an update turn when it finishes, fails or waits.',
       inputSchema: z.strictObject({
         prompt: z.string().trim().min(1).max(20_000),
         workflow: z.string().trim().min(1).max(100).optional(),
@@ -474,16 +552,70 @@ export function launchTools(
       }),
       execute: async ({ prompt, workflow, feature, issue, why }) => {
         if (!launcher) return failed("This server cannot start workflow runs");
+        const blocked = overLimit(chat, state, store.read().launched, limits);
+        if (blocked) return failed(blocked);
+        const chosen = chooseWorkflow(workflows, prompt, workflow);
+        if ("problem" in chosen) return failed(chosen.problem);
+        // A closed or unknown issue is refused before the user is asked.
+        let task: FlowTask | undefined;
+        try {
+          task = issue ? await linkTask(issue) : undefined;
+        } catch (err) {
+          return failed(err instanceof Error ? err.message : String(err));
+        }
+        const card = workflowCard(chosen, prompt, why, task?.ref);
+        if (!(await coordinator.proposeWorkflow(card)))
+          return failed(
+            `The user did not approve running workflow ${card.workflow}. Ask what to change, or carry on without a run.`,
+          );
         return launch(async () => {
-          const task = issue ? await linkTask(issue) : undefined;
           const { runId } = await launcher.startRun({
             prompt,
-            ...(workflow ? { workflow } : {}),
+            ...(chosen.id ? { workflow: chosen.id } : {}),
             ...(feature ? { feature } : {}),
             ...(task ? { issue: task.ref } : {}),
           });
-          return { kind: "run", id: runId, status: "started", ...(task ? { task } : {}) };
+          return {
+            kind: "run",
+            id: runId,
+            status: "started",
+            ...(chosen.id ? { workflow: chosen.id } : {}),
+            ...(task ? { task } : {}),
+          };
         }, why);
+      },
+    }),
+    control_run: tool({
+      description:
+        "Approve or reject a pending request of a run you launched, or cancel the run. Use it only after the user said so in this chat: it shows them a card first and does nothing unless they approve it. `approve` takes the run's pending approval, answer-free request; `reject` needs a reason the run gets.",
+      inputSchema: z.strictObject({
+        runId: z.string().trim().min(1).max(200),
+        action: z.enum(["approve", "reject", "cancel"]),
+        requestId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("The pending request; the only one pending when left out"),
+        reason: z.string().trim().min(1).max(4000).optional().describe("Why, for reject"),
+      }),
+      execute: async ({ runId, action, requestId, reason }) => {
+        if (!launcher?.control || !state) return failed("This server cannot control workflow runs");
+        if (!store.read().launched.some((l) => l.kind === "run" && l.id === runId))
+          return failed(`Run ${runId} was not launched by you; the user controls it in Runs`);
+        try {
+          const control = resolveControl(state, { runId, action, requestId, reason });
+          if (!(await coordinator.confirm(controlDescription(control))))
+            return failed("The user did not approve it. Nothing changed.");
+          await launcher.control(control.input);
+          return {
+            success: true,
+            output: `${controlDescription(control)}: done. You get an update when the run finishes or waits again.`,
+          };
+        } catch (err) {
+          return failed(err instanceof Error ? err.message : String(err));
+        }
       },
     }),
     start_initiative: tool({
@@ -653,6 +785,128 @@ export function launchTools(
       },
     }),
   };
+}
+
+type WorkflowCardBody = Omit<Extract<ChatPrompt, { kind: "workflow" }>, "id" | "createdAt">;
+
+/** The workflow a run uses: the one named, or the one BAKED proposes for the prompt. */
+export function chooseWorkflow(
+  workflows: WorkflowCatalog | null,
+  prompt: string,
+  named: string | undefined,
+): { id: string | null; summary: DefinitionSummary | null; reason: string } | { problem: string } {
+  if (!workflows)
+    return named
+      ? { id: named, summary: null, reason: "named by the coordinator" }
+      : { id: null, summary: null, reason: "the project default" };
+  const all = workflows.list();
+  const ready = all.filter((d) => !d.problems.length);
+  const known = ready.map((d) => d.id).join(", ");
+  if (named) {
+    const summary = all.find((d) => d.id === named);
+    if (!summary) return { problem: `There is no workflow ${named}; the project has ${known}` };
+    if (summary.problems.length)
+      return {
+        problem: `Workflow ${named} cannot start: ${summary.problems.join("; ")}. Pick one of ${known}`,
+      };
+    return { id: named, summary, reason: "chosen for this request" };
+  }
+  const proposal = workflows.propose(prompt);
+  return {
+    id: proposal.workflowId,
+    summary: all.find((d) => d.id === proposal.workflowId) ?? null,
+    reason: proposal.reason,
+  };
+}
+
+/** The "Run workflow?" card; its digest binds the approval to this workflow and request. */
+export function workflowCard(
+  chosen: { id: string | null; summary: DefinitionSummary | null; reason: string },
+  prompt: string,
+  why: string,
+  issue?: string,
+): WorkflowCardBody {
+  const workflow = chosen.id ?? "default";
+  const body = {
+    kind: "workflow" as const,
+    workflow,
+    description: chosen.summary?.description ?? "",
+    stages: chosen.summary?.stages ?? [],
+    writes: chosen.summary?.writes ?? true,
+    prompt,
+    why,
+    reason: chosen.reason,
+    ...(issue ? { issue } : {}),
+  };
+  return { ...body, digest: hashJson({ workflow, prompt, issue: issue ?? null }) };
+}
+
+/** The workflow list the model reads; with a request, the proposal first. */
+export function renderWorkflows(workflows: WorkflowCatalog, request?: string): string {
+  const all = workflows.list();
+  const lines = all.map((d) => {
+    const flags = [
+      d.source === "project" ? "project" : "built in",
+      d.writes ? "writes files" : "read only",
+    ];
+    const problems = d.problems.length ? ` CANNOT START: ${d.problems.join("; ")}` : "";
+    return `- ${d.id} (${flags.join(", ")}): ${d.description.replace(/\s+/g, " ").trim() || "no description"}. Stages: ${d.stages.join(" > ") || "none"}.${problems}`;
+  });
+  const head: string[] = [];
+  if (request) {
+    const p = workflows.propose(request);
+    head.push(
+      `Proposed for this request: ${p.workflowId} (${p.reason}; ${p.confidence} confidence, budget ${p.budget})`,
+      "",
+    );
+  }
+  return [...head, "## Workflows", ...(lines.length ? lines : ["None."])].join("\n");
+}
+
+type ControlInput = {
+  runId: string;
+  action: RunControl["action"];
+  requestId: string | undefined;
+  reason: string | undefined;
+};
+
+/** The control the tool asks for, with the pending request it acts on; throws when there is none. */
+export function resolveControl(
+  state: ProjectStateSource,
+  { runId, action, requestId, reason }: ControlInput,
+): { input: RunControl; kind: string | null } {
+  if (action === "cancel") return { input: { runId, action }, kind: null };
+  const pending = state.run(runId).pendingRequests;
+  const request = requestId ? pending.find((r) => r.id === requestId) : pending[0];
+  if (!request)
+    throw new Error(
+      requestId
+        ? `Run ${runId} has no pending request ${requestId}`
+        : `Run ${runId} waits for nothing`,
+    );
+  if (!requestId && pending.length > 1)
+    throw new Error(
+      `Run ${runId} has several pending requests (${pending.map((r) => `${r.id}: ${r.kind}`).join(", ")}); name one`,
+    );
+  if (action === "reject") {
+    if (!reason) throw new Error("Give the reason the run gets with the rejection");
+    return { input: { runId, action, requestId: request.id, reason }, kind: request.kind };
+  }
+  if (request.kind !== "approval" || !request.digest)
+    throw new Error(
+      `Request ${request.id} is a ${request.kind}; the user answers it in the run itself`,
+    );
+  return {
+    input: { runId, action, requestId: request.id, digest: request.digest },
+    kind: request.kind,
+  };
+}
+
+/** The card text the user approves before a control runs. */
+function controlDescription({ input, kind }: { input: RunControl; kind: string | null }): string {
+  if (input.action === "cancel") return `Cancel run ${input.runId}`;
+  if (input.action === "approve") return `Approve the ${kind} of run ${input.runId}`;
+  return `Reject the ${kind} of run ${input.runId}: ${input.reason}`;
 }
 
 /** The issue a flow's task names, for a feature run to start from; null for a local task. */

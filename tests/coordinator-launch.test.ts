@@ -12,7 +12,7 @@ import {
   type TaskTracker,
 } from "../src/core/chat/coordinator-launch.js";
 import type { ProjectStateSource } from "../src/core/chat/project-state.js";
-import { type ChatAgentHost, ChatService, type TurnAgentRequest } from "../src/core/chat/sessions.js";
+import { type ChatAgentHost, ChatService, type ChatSession, type TurnAgentRequest } from "../src/core/chat/sessions.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
 class RecordingHost implements ChatAgentHost {
@@ -44,12 +44,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function setup(maxActive = 3, tasks?: TaskTracker) {
+async function setup(maxActive = 3, tasks?: TaskTracker, wake = false) {
   const fixture = workflowFixture();
   const host = new RecordingHost();
   const chat = new ChatService({
     workspace: fixture.root,
-    config: { ...fixture.service.config, defaultModel: "openai/gpt-test", coordinator: { maxActive } },
+    config: { ...fixture.service.config, defaultModel: "openai/gpt-test", coordinator: { maxActive, wake } },
     host,
     homeDir: fixture.root,
   });
@@ -75,6 +75,20 @@ async function setup(maxActive = 3, tasks?: TaskTracker) {
     return found;
   };
   return { fixture, chat, host, coordinator, tool, server };
+}
+
+/** Approves the "Run workflow?" card a pending start_run shows, then waits for the tool. */
+async function approveWorkflow(coordinator: ChatSession, pending: Promise<Result>): Promise<Result> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const card = coordinator.pendingPrompts.find((p) => p.kind === "workflow");
+    if (card?.kind === "workflow") {
+      coordinator.answer(card.id, { approve: true, digest: card.digest });
+      return pending;
+    }
+    if (Date.now() > deadline) throw new Error("no workflow card");
+    await Bun.sleep(10);
+  }
 }
 
 /** Syncs until a notice matching `pattern` arrives. */
@@ -104,7 +118,7 @@ describe("coordinator launches", () => {
     await chat.get(sessionId).settled();
     expect(await noticeFor(chat, /^session/)).toContain(`session ${sessionId}: done (Find the token checks)`);
 
-    const run = await tool("start_run").execute({ prompt: "Create ready value", feature: "fixture", why: "Ship the value" });
+    const run = await approveWorkflow(coordinator, tool("start_run").execute({ prompt: "Create ready value", feature: "fixture", why: "Ship the value" }));
     expect(run).toMatchObject({ success: true });
     const runId = /run ([0-9a-f-]{36})/.exec(run.output)?.[1] ?? "";
     expect((await fixture.service.list({ limit: 10 })).items.map((r) => r.runId)).toContain(runId);

@@ -52,7 +52,25 @@ function tokens(n: number): string {
   return `${n} tokens`;
 }
 
-/** One line per launched item: kind, id, status, tokens, task and why. */
+const STAGE_MARKS: Record<string, string> = {
+  completed: "✓",
+  skipped: "–",
+  running: "▸",
+  waiting: "◆",
+  failed: "✗",
+  interrupted: "✗",
+};
+
+/** A run's stages as one line: `✓ spec  ▸ plan  · tasks`, then its tasks done. */
+export function stageTrack(progress: NonNullable<LaunchedView["progress"]>): string {
+  const stages = progress.stages.map((s) => `${STAGE_MARKS[s.status] ?? "·"} ${s.id}`).join("  ");
+  const tasks = progress.tasks.total
+    ? `  (tasks ${progress.tasks.done}/${progress.tasks.total})`
+    : "";
+  return `${stages}${tasks}`;
+}
+
+/** One line per launched item: kind, id, workflow, status, tokens, task and why; a run's stages. */
 export function launchedLines(launched: LaunchedView[], width: number): ViewLine[] {
   return launched.flatMap((entry) => {
     const task = entry.task
@@ -60,9 +78,12 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
       : "";
     const what = entry.feature
       ? `feature ${entry.feature} of ${entry.id}`
-      : `${entry.kind} ${entry.id}`;
+      : `${entry.workflow ? `${entry.workflow} ` : ""}${entry.kind} ${entry.id.slice(0, 8)}`;
     const head = `${entry.active ? "●" : "○"} ${what}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
-    return labelled("", `${head} · ${entry.why}`, width, entry.active ? "accent" : "muted");
+    const lines = labelled("", `${head} · ${entry.why}`, width, entry.active ? "accent" : "muted");
+    if (entry.progress?.stages.length)
+      lines.push(...labelled("  ", stageTrack(entry.progress), width, "muted"));
+    return lines;
   });
 }
 
@@ -70,6 +91,8 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
 export function messageLines(messages: ChatMessage[], live: string, width: number): ViewLine[] {
   const lines: ViewLine[] = [];
   for (const message of messages) {
+    // A wake-up on launched work: its notices already show.
+    if (message.role === "user" && message.showInChat === false) continue;
     if (message.role === "user") {
       lines.push(...labelled("you  ", message.content, width, "user"));
     } else if (message.role === "assistant") {
@@ -105,6 +128,23 @@ export function promptLines(prompt: ChatPrompt, width: number): ViewLine[] {
         if (flow.dependsOn.length)
           lines.push(...labelled("   ", `After ${flow.dependsOn.join(", ")}`, width, "muted"));
       });
+      return lines;
+    }
+    case "workflow": {
+      const lines = labelled(
+        "Run workflow? ",
+        `${prompt.workflow}${prompt.writes ? "" : " (read only)"}: ${prompt.why}`,
+        width,
+        "warning",
+      );
+      if (prompt.stages.length)
+        lines.push(...labelled("   ", `Stages: ${prompt.stages.join(" > ")}`, width, "accent"));
+      lines.push(
+        ...labelled("   ", `Request: ${prompt.prompt.replace(/\s+/g, " ")}`, width, "muted"),
+      );
+      if (prompt.issue)
+        lines.push(...labelled("   ", `From issue ${prompt.issue}`, width, "muted"));
+      lines.push(...labelled("   ", `Why this workflow: ${prompt.reason}`, width, "muted"));
       return lines;
     }
     case "question":
@@ -149,6 +189,8 @@ export function keyHints(
       { key: "^N", label: "reject" },
       { key: "^E", label: "edit" },
     );
+  else if (prompt?.kind === "workflow")
+    hints.push({ key: "^Y", label: "run it" }, { key: "^N", label: "not now" });
   else if (prompt?.kind === "question")
     hints.push({ key: "Enter", label: "answer (number or text)" });
   else if (prompt)

@@ -22,6 +22,8 @@ export interface LaunchedEntry {
   status: string;
   /** For a feature of the initiative `id`: the feature, tracked on its own task. */
   feature?: string;
+  /** The workflow definition a run follows; missing for older entries. */
+  workflow?: string;
   task?: FlowTask;
 }
 
@@ -38,10 +40,20 @@ export interface ProjectBrief {
   launched: LaunchedEntry[];
 }
 
-/** A launched entry as it is now, with whether it still runs and its tokens. */
+/** Where a launched run is: its stages in order with their status, and its tasks. */
+export interface RunProgress {
+  /** The stage running or waiting now; null before the first or after the last. */
+  stage: string | null;
+  stages: { id: string; status: string }[];
+  tasks: { done: number; total: number };
+}
+
+/** A launched entry as it is now, with whether it still runs, its tokens and a run's stages. */
 export interface LaunchedView extends LaunchedEntry {
   active: boolean;
   tokens: number;
+  /** Missing for sessions and initiatives, and from older servers. */
+  progress?: RunProgress;
 }
 
 export const coordinator = {

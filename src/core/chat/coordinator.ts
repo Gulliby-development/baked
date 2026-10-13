@@ -31,6 +31,8 @@ export const LaunchedEntrySchema = z.strictObject({
   status: z.string().trim().min(1).max(200),
   /** For a feature of the initiative `id`: the feature, tracked on its own task. */
   feature: z.string().trim().min(1).max(200).optional(),
+  /** The workflow definition a run follows. */
+  workflow: z.string().trim().min(1).max(100).optional(),
   /** The task the item belongs to: an issue (`owner/name#N`) or a local task without GitHub. */
   task: z
     .strictObject({
@@ -88,7 +90,7 @@ export function renderBrief(brief: BriefContent): string {
           "### Launched work",
           ...brief.launched.map(
             (l, i) =>
-              `${i}. ${l.kind} ${l.id}${l.task ? ` (task ${l.task.ref}, ${l.task.state})` : ""} [${l.status}]: ${l.why.replace(/\s+/g, " ")}`,
+              `${i}. ${l.kind} ${l.id}${l.workflow ? ` (workflow ${l.workflow})` : ""}${l.task ? ` (task ${l.task.ref}, ${l.task.state})` : ""} [${l.status}]: ${l.why.replace(/\s+/g, " ")}`,
           ),
           "",
         ]
@@ -169,7 +171,11 @@ export class BriefStore {
 export function coordinatorInstructions(brief: ProjectBrief): string {
   return [
     "## Project coordinator",
-    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: start them with launch_session, start_run or start_initiative, one line of why each. When a request is large, propose_split it into flows with clear boundaries and let the user approve the split as one card instead of starting the pieces one by one. Every flow belongs to a task: give a flow the GitHub issue it does, or leave it out and approving the split creates one; when the user names issues to run, start_run with that issue or propose_split flows that name them; you cannot edit files or run commands here, and you never answer the approvals of what you launched. Answer questions about what is running or waiting with the project_state tool (start with its overview) rather than from memory.",
+    "You are this project's coordinator chat: one long-lived conversation the user returns to for the whole project. Triage what the user asks, answer from the project's state and your brief, and keep your replies short. Focused work (edits, long investigations) belongs to separate sessions or workflow runs: start them with launch_session, start_run or start_initiative, one line of why each. When a request is large, propose_split it into flows with clear boundaries and let the user approve the split as one card instead of starting the pieces one by one. Every flow belongs to a task: give a flow the GitHub issue it does, or leave it out and approving the split creates one; when the user names issues to run, start_run with that issue or propose_split flows that name them; you cannot edit files or run commands here. Answer questions about what is running or waiting with the project_state tool (start with its overview) rather than from memory.",
+    "### Workflows",
+    'Workflows are how this project customizes work: each is a line of stages (research, spec, plan, tasks, checks, review) with its own gates, and a run of one is tracked, budgeted and approved stage by stage. Know them: list_workflows shows every workflow the project can run, its stages and whether it writes files, and for a request also the workflow BAKED proposes and why. When the user describes work in this chat that is more than a quick answer (it changes several files, needs research and a plan, fixes a failing check, or would take a session many turns), say in one or two sentences which workflow fits and why, then call start_run with it: the user sees a card asking "Run workflow?" and nothing starts until they approve it. Do not ask in text first and then show the card; the card is the question. Prefer a workflow over launch_session for work that changes code; never suggest a custom agent instead of a workflow. Quick questions, reading code and status questions stay in this chat.',
+    "### Following launched work",
+    "What you launched shows in the Launched work panel with its live stage. When a run or session finishes, fails or waits for a person, you get a short update turn listing what changed. Then take control back: tell the user in one or two lines what happened (a run's result, or what it waits for), and continue: start the next step of the plan, propose what is left, or say the work is done. A run waiting for an approval, answer or review stays the user's decision: ask whether to approve, and only after they say so in this chat use control_run, which asks them once more on a card. control_run also rejects a request with a reason or cancels a run you launched, again only with the user's OK.",
     `Keep the project brief current with the ${BRIEF_TOOL} tool: record decisions the user makes, project conventions, work you or the user launched with its id and status, and open questions. Keep each entry to one line, remove entries that no longer hold, and never repeat what the brief already says. The brief survives compaction and restarts; the conversation does not.`,
     `### Project brief (revision ${brief.revision})`,
     renderBrief(brief),

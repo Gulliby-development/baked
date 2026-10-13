@@ -13,7 +13,7 @@ import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
 import { InitiativeService, type InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction } from "../workflows/initiatives/view-model.js";
 import { NativeWorkflowService } from "../workflows/service.js";
-import { githubTasks, type ProjectLauncher } from "./coordinator-launch.js";
+import { githubTasks, type ProjectLauncher, type RunControl } from "./coordinator-launch.js";
 import { BakeChatHost } from "./host.js";
 import { type ProjectStateSource, serviceStateSource } from "./project-state.js";
 import { type ChatAgentHost, ChatService, type ChatSession } from "./sessions.js";
@@ -97,8 +97,20 @@ export function clientLauncher(
     /** The model a run starts with when the coordinator names none. */
     model: () => string;
     featureTaken: (id: string) => boolean;
+    /** The run's revision now, which a decision or cancel names. */
+    revision?: (runId: string) => number;
   },
 ): ProjectLauncher {
+  /** Runs one workflow command; resolves once it is done or, for a resume, being driven. */
+  const command = (argv: string[]): Promise<void> =>
+    new Promise((resolve, reject) => {
+      client
+        .command(argv, new AbortController().signal, () => resolve())
+        .then(
+          () => resolve(),
+          (error: unknown) => reject(error instanceof Error ? error : new Error(String(error))),
+        );
+    });
   return {
     startRun: ({ prompt, workflow, feature, worktree, issue }) =>
       new Promise((resolve, reject) => {
@@ -150,6 +162,26 @@ export function clientLauncher(
       return { initiativeId: view.initiativeId };
     },
     tasks: githubTasks(options.workspace, options.config),
+    // As /workflow approve, reject and cancel do; an approved run goes on through the worker.
+    ...(options.revision
+      ? {
+          control: async (control: RunControl) => {
+            const revision = String(options.revision?.(control.runId) ?? 0);
+            const head = [control.action, control.runId, "--expected-revision", revision];
+            if (control.action === "cancel") return command(head);
+            if (control.action === "reject")
+              return command([...head, "--request", control.requestId, "--reason", control.reason]);
+            return command([
+              ...head,
+              "--request",
+              control.requestId,
+              "--digest",
+              control.digest,
+              "--resume",
+            ]);
+          },
+        }
+      : {}),
   };
 }
 
@@ -187,6 +219,7 @@ export class LocalCoordinator {
           config,
           model: options.model,
           featureTaken: (id) => state.featureTaken(id),
+          revision: (runId) => state.run(runId).summary.snapshot.revision,
         })
       : null;
     chat.setProjectState(state, launcher, options.watchMs ?? 2000);

@@ -126,12 +126,20 @@ describe("terminal coordinator host", () => {
     local.session.send("plan the week");
     await local.session.settled();
     const tools = (host.requests.at(-1)?.tools ?? {}) as Record<string, Tool>;
-    const result = await tools.start_run?.execute({
+    const pending = tools.start_run?.execute({
       prompt: "Add rate limits",
       feature: "rate-limits",
       why: "Ship rate limits",
     });
-    expect(result).toMatchObject({ success: true });
+    // Nothing starts before the user approves the "Run workflow?" card.
+    await Bun.sleep(10);
+    expect(client.commands).toEqual([]);
+    const card = local.session.pendingPrompts[0];
+    if (!card || card.kind !== "workflow") throw new Error("no workflow card");
+    expect(card).toMatchObject({ workflow: "sdd", prompt: "Add rate limits", why: "Ship rate limits" });
+    expect(card.stages.length).toBeGreaterThan(0);
+    local.session.answer(card.id, { approve: true, digest: card.digest });
+    expect(await pending).toMatchObject({ success: true });
     expect(client.commands[0]).toEqual([
       "run",
       "--prompt",
@@ -142,6 +150,8 @@ describe("terminal coordinator host", () => {
       "Coordinator",
       "--feature",
       "rate-limits",
+      "--workflow",
+      "sdd",
     ]);
     expect(local.chat.launched(local.session.id).map((e) => e.id)).toEqual(["run-1"]);
   });
@@ -240,6 +250,68 @@ describe("terminal coordinator view model", () => {
     ]);
     expect(keyHints(undefined, false).map((h) => h.label)).toEqual(["send", "back"]);
     expect(keyHints(undefined, true).map((h) => h.label)).toEqual(["send", "stop"]);
+  });
+
+  test("a workflow run shows its stages; a wake-up message is not shown", () => {
+    const lines = launchedLines(
+      [
+        {
+          kind: "run",
+          id: "0123456789abcdef",
+          why: "Fix the check",
+          status: "running",
+          workflow: "fix-ci",
+          active: true,
+          tokens: 900,
+          progress: {
+            stage: "tasks",
+            stages: [
+              { id: "reproduce", status: "completed" },
+              { id: "tasks", status: "running" },
+              { id: "check", status: "pending" },
+            ],
+            tasks: { done: 1, total: 3 },
+          },
+        },
+      ],
+      200,
+    ).map((l) => l.text);
+    expect(lines).toEqual([
+      "● fix-ci run 01234567: running · 900 tokens · Fix the check",
+      "  ✓ reproduce  ▸ tasks  · check  (tasks 1/3)",
+    ]);
+    const shown = messageLines(
+      [
+        { id: "1", role: "user", content: "[Update on work you launched.]", timestamp: 0, showInChat: false },
+        { id: "2", role: "assistant", content: "The run finished.", timestamp: 0 },
+      ],
+      "",
+      80,
+    ).map((l) => l.text);
+    expect(shown).toEqual(["     The run finished.", ""]);
+  });
+
+  test("a workflow card shows the workflow, its stages and the request", () => {
+    const card: ChatPrompt = {
+      id: "w",
+      createdAt: 0,
+      kind: "workflow",
+      workflow: "sdd",
+      description: "Spec-driven",
+      stages: ["research", "specify", "plan"],
+      writes: true,
+      prompt: "Add rate limits",
+      why: "Touches the API and the config",
+      reason: "chosen for this request",
+      digest: "d",
+    };
+    expect(promptLines(card, 120).map((l) => l.text)).toEqual([
+      "Run workflow? sdd: Touches the API and the config",
+      "   Stages: research > specify > plan",
+      "   Request: Add rate limits",
+      "   Why this workflow: chosen for this request",
+    ]);
+    expect(keyHints(card, false).map((h) => h.label)).toEqual(["run it", "not now", "back"]);
   });
 
   test("a question takes an option number or free text", () => {
