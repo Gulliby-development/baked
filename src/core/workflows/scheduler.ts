@@ -263,6 +263,19 @@ interface QueuedRequest {
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
+/**
+ * The planned files a failed check of a corrective task names, when the task may write none of
+ * them; empty when the output names no planned file or one the task writes.
+ */
+export function outOfScopeFailure(
+  task: Pick<Task, "origin" | "writes">,
+  checked: { status: string; output?: string },
+  tasks: Task[],
+): string[] {
+  if (task.origin === "planned" || checked.status !== "failed" || !checked.output) return [];
+  const named = pathsInOutput(checked.output, tasks);
+  return named.some((path) => task.writes.some((w) => w.path === path)) ? [] : named;
+}
 /** A SQLite failure is a host fault, never a model's invalid output. */
 function isStoreError(error: unknown): boolean {
   if (!(error instanceof Error) || error instanceof WorkflowFault) return false;
@@ -1895,9 +1908,11 @@ export class WorkflowScheduler {
           runId,
           attempt,
           "completed",
-          result.inputTokens === null || result.outputTokens === null
-            ? this.store.recordedUsage(runId, attempt)
-            : result.inputTokens + result.outputTokens,
+          result.usageComplete === false
+            ? null
+            : result.inputTokens === null || result.outputTokens === null
+              ? this.store.recordedUsage(runId, attempt)
+              : result.inputTokens + result.outputTokens,
         );
         this.store.artifact(
           runId,
@@ -2729,14 +2744,19 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           "INPUT_CHANGED",
           `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
+      const correction =
+        result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0
+          ? await this.correctionSatisfied(runId, state, child, policy, task, result, signal, root)
+          : true;
+      if (correction instanceof WorkflowFault) {
+        this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        throw correction;
+      }
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" &&
-          changed.length === 0 &&
-          task.writes.length > 0 &&
-          !(await this.correctionSatisfied(runId, child, policy, task, result, signal, root)))
+        !correction
       ) {
         const restartReason = this.blockedRestartReason(
           runId,
@@ -3209,13 +3229,26 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (restartReason && changed.length === 0)
         return { kind: "interrupted", entry, leaseLost: false, reason: restartReason, account };
       const refused = takeHashRefusals(root);
+      const correction =
+        result.outcome === "implemented" && changed.length === 0
+          ? await this.correctionSatisfied(
+              runId,
+              state,
+              entry.child,
+              policy,
+              task,
+              result,
+              signal,
+              root,
+            )
+          : true;
+      if (correction instanceof WorkflowFault)
+        return { kind: "rejected", entry, error: correction };
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" &&
-          changed.length === 0 &&
-          !(await this.correctionSatisfied(runId, entry.child, policy, task, result, signal, root)))
+        !correction
       )
         return {
           kind: "rejected",
@@ -3775,13 +3808,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    */
   private async correctionSatisfied(
     runId: string,
+    state: RuntimeState,
     child: string,
     policy: RunPolicy,
     task: Task,
     result: { taskId: string; outcome: string; unresolved: string[] },
     signal: AbortSignal,
     root: string,
-  ): Promise<boolean> {
+  ): Promise<boolean | WorkflowFault> {
     const rerun = (this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0) > 0;
     if (
       (task.origin === "planned" && !rerun) ||
@@ -3803,7 +3837,18 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (!checks.length) return false;
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
-      if (checked.status !== "passed") return false;
+      if (checked.status === "passed") continue;
+      const outside = outOfScopeFailure(task, checked, state.graph?.tasks ?? []);
+      // A correction that changed nothing while its check still fails only on files it may not
+      // write would change nothing on a second attempt or a resume either (commitbump cd842f0f:
+      // T008, three attempts and 689k with no edit).
+      if (outside.length)
+        return new WorkflowFault(
+          "RECOVERY_REQUIRED",
+          `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
+          { reason: "no_progress", paths: outside },
+        );
+      return false;
     }
     return true;
   }
