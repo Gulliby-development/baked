@@ -1,5 +1,6 @@
 /** Workflow v1 contracts. */
 import { z } from "zod";
+import { RouteEffort } from "../llm/model-routing.js";
 import { LibraryDocsSchema } from "./library-docs.js";
 
 export const SafeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
@@ -450,6 +451,23 @@ export function writerPolicyProblem(policy: {
   return null;
 }
 
+/**
+ * Per-profile compaction of replayed tool output. `keepRecent` tool-result messages stay verbatim;
+ * compaction starts once the attempt has spent `startAtTokens`, or `startAtShare` of its token
+ * cap, and stays on for the rest of the attempt. Without a start it runs from the first step.
+ */
+export const ProfileCompactionSchema = z
+  .object({
+    keepRecent: z.number().int().min(1).max(20).optional(),
+    startAtTokens: z.number().int().min(1000).max(10_000_000).optional(),
+    startAtShare: z.number().gt(0).max(1).optional(),
+  })
+  .strict()
+  .refine((value) => value.startAtTokens === undefined || value.startAtShare === undefined, {
+    message: "Set startAtTokens or startAtShare, not both",
+  });
+export type ProfileCompaction = z.infer<typeof ProfileCompactionSchema>;
+
 export const ProfileSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -497,6 +515,10 @@ export const ProfileSchema = z
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
+    /** Reasoning effort when the profile's model route sets none (#334). */
+    effort: RouteEffort.optional(),
+    /** When an attempt starts compacting older tool output (#334); unset keeps the runtime default. */
+    compaction: ProfileCompactionSchema.optional(),
   })
   .strict();
 

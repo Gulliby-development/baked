@@ -61,12 +61,14 @@ export class ProfileRegistry {
     });
     const resolved = { ...profile, model: routed.model };
     assertProfileCapabilities(resolved);
+    const route = recordEntry(routed);
     this.entries.set(profile.id, {
       profile: resolved,
       source,
       hash: hashJson(resolved),
       modelSource: routed.source,
-      route: recordEntry(routed),
+      // A routed effort wins; otherwise the profile's own effort (#334) is the route's.
+      route: route.effort || !profile.effort ? route : { ...route, effort: profile.effort },
     });
   }
   list(): RegisteredProfile[] {

@@ -9,6 +9,9 @@ import {
   RUN_MAINTENANCE_CAPABILITY,
   runMaintenance,
   runs,
+  WORKTREES_CAPABILITY,
+  type WorktreeCleanup,
+  type WorktreeReport,
 } from "../../client/runs.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
@@ -245,7 +248,7 @@ export function RunMaintenance({ projectKey, data }: { projectKey: string; data:
   );
 }
 
-type Open = "gc" | "import" | null;
+type Open = "gc" | "import" | "worktrees" | null;
 const SOURCES: { value: ImportSource; label: string }[] = [
   { value: "spec-kit", label: "Spec Kit (spec.md, spec.json, tasks.json, plan.md)" },
   { value: "ecc", label: "ECC agents" },
@@ -264,6 +267,9 @@ export function RunsMaintenance({
   onChanged: () => void;
 }) {
   const [offered, setOffered] = useState(false);
+  const [worktreesOffered, setWorktreesOffered] = useState(false);
+  const [usage, setUsage] = useState<WorktreeReport | null>(null);
+  const [cleaned, setCleaned] = useState<WorktreeCleanup | null>(null);
   const [open, setOpen] = useState<Open>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -278,7 +284,11 @@ export function RunsMaintenance({
   useEffect(() => {
     let live = true;
     runs.capabilities(projectKey).then(
-      (caps) => live && setOffered(caps.includes(RUN_MAINTENANCE_CAPABILITY)),
+      (caps) => {
+        if (!live) return;
+        setOffered(caps.includes(RUN_MAINTENANCE_CAPABILITY));
+        setWorktreesOffered(caps.includes(WORKTREES_CAPABILITY));
+      },
       () => live && setOffered(false),
     );
     return () => {
@@ -293,7 +303,11 @@ export function RunsMaintenance({
     setPreview(null);
     setRemoved(null);
     setImported(null);
+    setUsage(null);
+    setCleaned(null);
     setOpen(which);
+    if (which === "worktrees")
+      void run(async () => setUsage(await runMaintenance.worktrees(projectKey)));
   };
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -317,6 +331,12 @@ export function RunsMaintenance({
       setPreview(null);
       onChanged();
     });
+  const removable = usage?.worktrees.filter((w) => w.removable) ?? [];
+  const worktreesSubmit = () =>
+    void run(async () => {
+      setCleaned(await runMaintenance.cleanWorktrees(projectKey, false));
+      setUsage(await runMaintenance.worktrees(projectKey));
+    });
   const importSubmit = () =>
     void run(async () => {
       if (!path.trim() || !featureId.trim()) {
@@ -337,9 +357,58 @@ export function RunsMaintenance({
       <Button variant="secondary" size="md" onClick={() => show("import")}>
         Import…
       </Button>
+      {worktreesOffered && (
+        <Button variant="secondary" size="md" onClick={() => show("worktrees")}>
+          Worktrees…
+        </Button>
+      )}
       <Button variant="secondary" size="md" onClick={() => show("gc")}>
         Clean up old runs…
       </Button>
+      <FormDialog
+        open={open === "worktrees"}
+        title="Run worktrees"
+        description="Worktrees under .baked/worktrees with their size and run. Cleanup removes those of completed, failed, cancelled and unknown runs; the run branches stay."
+        error={error}
+        busy={busy}
+        danger
+        submitLabel={
+          removable.length > 0
+            ? `Remove ${removable.length} worktree${removable.length === 1 ? "" : "s"} (${bytes(
+                removable.reduce((sum, w) => sum + w.bytes, 0) + (usage?.trashBytes ?? 0),
+              )})`
+            : null
+        }
+        onSubmit={worktreesSubmit}
+        onClose={() => setOpen(null)}
+      >
+        {usage && usage.worktrees.length === 0 && (
+          <span role="status" className="text-[13px]">
+            No run worktrees on disk.
+          </span>
+        )}
+        {usage && usage.worktrees.length > 0 && (
+          <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto text-[13px]">
+            {usage.worktrees.map((w) => (
+              <li key={w.runId} className="flex justify-between gap-3">
+                <span className="truncate">
+                  {w.featureId ?? w.runId.slice(0, 8)} · {w.status}
+                  {w.worktrees.length > 1 ? ` · ${w.worktrees.length} worktrees` : ""}
+                  {w.kept ? ` · kept: ${w.kept}` : ""}
+                </span>
+                <span className="shrink-0 tabular-nums">{bytes(w.bytes)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {cleaned && (
+          <span role="status" className="text-[13px]">
+            Removed {cleaned.runIds.length} worktree{cleaned.runIds.length === 1 ? "" : "s"} (
+            {bytes(cleaned.bytes)}).
+            {cleaned.warnings.length > 0 ? ` Left on disk: ${cleaned.warnings.join("; ")}` : ""}
+          </span>
+        )}
+      </FormDialog>
       <FormDialog
         open={open === "gc"}
         title="Clean up old runs"
