@@ -72,6 +72,7 @@ function guess(id: string): Omit<LineStage, "id"> {
   const base = { consumes: [], human: false, gates: [] };
   if (/approv/.test(id)) return { ...base, type: "approval", produces: "decision", human: true };
   if (/implement|build|fix/.test(id)) return { ...base, type: "tasks", produces: "implementation" };
+  if (/^wait|until|poll/.test(id)) return { ...base, type: "wait", produces: "gates" };
   if (/check|verify|reproduce/.test(id)) return { ...base, type: "check", produces: "gates" };
   if (/review/.test(id)) return { ...base, type: "review", produces: "review" };
   if (/converge/.test(id)) return { ...base, type: "reflection", produces: "convergence" };
@@ -224,6 +225,7 @@ export function stageIcon(station: Pick<Station, "id" | "type" | "produces">): I
   if (station.type === "finish") return "accept";
   if (station.type === "tasks") return "implement";
   if (station.type === "check") return "checks";
+  if (station.type === "wait") return "waiting";
   if (station.type === "review" || station.type === "reflection") return "review";
   if (station.type === "approval") return "attention";
   if (station.type === "learn") return "run-memory";
@@ -258,6 +260,7 @@ export function sectionsOf(station: Pick<Station, "type" | "produces">): Section
   if (station.type === "tasks") return ["tasks", "changes"];
   if (station.type === "approval") return ["decision", "spec", "plan"];
   if (station.type === "check") return ["checks", "criteria"];
+  if (station.type === "wait") return ["checks"];
   if (station.type === "review") return ["findings", "criteria"];
   if (station.type === "reflection") return ["criteria", "findings"];
   if (station.type === "learn") return ["report"];
@@ -289,6 +292,8 @@ export function describe(station: Station, loops: readonly LineLoop[]): string {
       return `Writers carry out the tasks and change your files.${sendsBack}`;
     case "check":
       return `Runs the project's checks on the result.${sendsBack}`;
+    case "wait":
+      return `Runs its gates again every interval until they pass or its time runs out, with no model calls.${sendsBack}`;
     case "approval":
       return station.human
         ? `Waits for you to approve the ${list(inputs)}. Nothing is written to your files before that.`
@@ -310,6 +315,7 @@ export const TYPE_LABEL: Record<StationType, string> = {
   agent: "agent",
   tasks: "writers",
   check: "checks",
+  wait: "wait",
   approval: "approval",
   review: "review",
   reflection: "reflection",
