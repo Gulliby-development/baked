@@ -5,6 +5,7 @@
  */
 
 import type { z } from "zod";
+import { modelVendor } from "../llm/model-vendor.js";
 import {
   type DuplicationResult,
   metricDeltas,
@@ -15,7 +16,7 @@ import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./s
 import type { ArtifactRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
-import { changesOf, type FileChange } from "./view.js";
+import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
 /** GitHub refuses pull request bodies over 65,536 characters; delivery keeps a margin. */
 export const PULL_REQUEST_BODY_LIMIT = 60_000;
@@ -268,6 +269,7 @@ function collect(store: WorkflowStore, runId: string) {
         return { id: row.id, status: row.status, body, repro: reproColumn(body, reproOutcomes) };
       }),
       requests: store.requests(runId),
+      routing: readRoutingSummary(store, runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
       artifacts: [...latestArtifacts.values()].filter((a) => !internalArtifact(a.logical_path)),
       internalArtifacts: [...latestArtifacts.values()].filter((a) =>
@@ -277,6 +279,20 @@ function collect(store: WorkflowStore, runId: string) {
   });
 }
 type Facts = ReturnType<typeof collect>;
+
+/** Which models and vendors reviewed the change and which implemented it (#635). */
+function reviewModels(routing: Facts["routing"]): string | null {
+  if (!routing) return null;
+  const models = (targets: string[]) => [
+    ...new Set(routing.effective.filter((r) => targets.includes(r.target)).map((r) => r.model)),
+  ];
+  const named = (list: string[]) =>
+    list.map((model) => `${code(model)} (${modelVendor(model)})`).join(", ");
+  const review = models(["reviewer", "spec-auditor"]);
+  const implementation = models(["implementer"]);
+  if (!review.length) return null;
+  return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
+}
 
 /** The code quality gates: the duplication ratchet (#638) and the anti-slop rules (#639). */
 function qualitySection(
@@ -457,6 +473,8 @@ function render(facts: Facts, cap: number): string {
 
   const open = facts.findings.filter((f) => f.status === "open" || f.status === "confirmed");
   out.push("## Findings", "");
+  const reviewedBy = reviewModels(facts.routing);
+  if (reviewedBy) out.push(reviewedBy, "");
   if (facts.findings.length) {
     out.push(`${open.length} open of ${facts.findings.length} recorded.`, "");
     out.push(
