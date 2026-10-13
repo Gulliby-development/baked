@@ -21,7 +21,7 @@ Status of each group: **exists** (on `main`), **A** (sessions and chat), **B** (
 
 ## Health and capabilities (exists, extended by A and B)
 
-`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `critic-outcomes` (`GET /v1/workflow/critic`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `chat-effort` (`effort` on sessions and `efforts` on `GET /v1/models`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `workflow-editor` (`POST /v1/workflow/editor*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `worktrees` (`GET /v1/workflow/worktrees`, `POST /v1/workflow/worktrees/clean`), `diagnostics` (`/v1/diagnostics/*`), `coordinator` (`/v1/coordinator*`), `watch` (`GET|POST /v1/sessions/ID/watch`), `artifacts` (`/v1/artifacts*`), `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`), `run-compare` (`GET /v1/workflow/compare`), `preset-proposal` (`POST /v1/workflow/propose`, `autoPreset` on `POST /v1/workflow/runs`), `packages` (`/v1/packages*`) and `project-agents` (`/v1/agents*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
+`GET /v1/health` returns `{apiVersion: 1, version, workspace, capabilities: string[]}`. `capabilities` names the groups this server supports: `workflow`, `attention`, `projects` (exist), `project-rename` (`POST /v1/projects/rename`), `sessions` (A), `setup`, `initiatives` (B), `checks` (`/v1/workflow/checks*`), `library` (`/v1/commands`, `/v1/skills`), `routing` (`/v1/workflow/routing`), `compaction` (`POST /v1/sessions/ID/compact`), `diff-stats` (`GET /v1/sessions/ID/diff`), `chat-undo` (`POST /v1/sessions/ID/undo` and `/redo`), `checkpoints` (`GET /v1/sessions/ID/checkpoints`), `run-memory` (`/v1/workflow/memory`), `critic-outcomes` (`GET /v1/workflow/critic`), `chat-memory` (`/v1/memory*`), `code-graph` (`/v1/graph*`), `plan-mode` (`mode: "plan"` in sessions and the `plan-review` prompt), `images` (`images` on chat messages), `custom-commands` (chat messages that start with a [custom slash command](../custom-commands.md) are expanded), `chat-export` (`GET /v1/sessions/ID/export`), `chat-effort` (`effort` on sessions and `efforts` on `GET /v1/models`), `skills-install` (`GET /v1/skills/catalog`, `POST /v1/skills`, `GET|DELETE /v1/skills/SCOPE/NAME`), `settings` (`GET|PATCH /v1/settings`), `git` (`GET /v1/git`, `POST /v1/git/actions`), `git-graph` (`GET /v1/git/graph`), `hooks` (`GET /v1/hooks`, `POST /v1/hooks/session`), `provider-switch` (`POST /v1/providers/ID/switch`), `mcp` (`/v1/mcp*`), `lsp` (`/v1/lsp*`), `workflow-editor` (`POST /v1/workflow/editor*`), `lsp-diagnose` (`POST /v1/lsp/diagnose`), `run-maintenance` (`POST /v1/workflow/import`, `POST /v1/workflow/gc`, `POST /v1/workflow/runs/ID/export` and `/redact`), `worktrees` (`GET /v1/workflow/worktrees`, `POST /v1/workflow/worktrees/clean`), `diagnostics` (`/v1/diagnostics/*`), `coordinator` (`/v1/coordinator*`), `watch` (`GET|POST /v1/sessions/ID/watch`), `artifacts` (`/v1/artifacts*`), `gate-drafts` (`POST /v1/workflow/gates/draft`, `POST /v1/workflow/gates`, `GET /v1/workflow/gates/ID`, `GET /v1/workflow/gates/ID/places`, `POST /v1/workflow/gates/ID/bind`), `run-compare` (`GET /v1/workflow/compare`), `preset-proposal` (`POST /v1/workflow/propose`, `autoPreset` on `POST /v1/workflow/runs`), `packages` (`/v1/packages*`) and `project-agents` (`/v1/agents*`). The desktop hides a screen whose capability is missing instead of failing on 404. The API version stays 1 while changes are additive.
 
 The `sandbox` capability covers `GET /v1/diagnostics/sandbox` and the `sandbox` field of `POST /v1/workflow/runs` and of the doctor and estimate queries.
 
@@ -548,6 +548,7 @@ The terminal Git menu (`Ctrl+G`, `/git`) for the project folder, with the `git` 
 | Method and path | Body or query | Result |
 | --- | --- | --- |
 | `GET /v1/git` | | `GitOverview`; `{isRepo: false, ...}` with empty lists outside a repository |
+| `GET /v1/git/graph` | `limit?` (1 to 1000, default 150) | `GitGraph`: the local branches and the `limit` latest commits of all of them, laid out in lanes (src/core/git/graph-layout.ts); `{isRepo: false, ...}` with empty lists outside a repository |
 | `POST /v1/git/actions` | one of the actions below | `{ok, message, output, overview: GitOverview}`. A step Git refuses (no upstream, merge conflict, nothing to commit) answers 200 with `ok: false` and Git's reason in `message`. 400 for an unknown action or field and for a destructive action without `confirm: true`; 409 `NOT_A_REPOSITORY` outside a repository and `WORKSPACE_BUSY` while a workflow run holds the workspace. Actions of one server run one at a time |
 
 | Action | Body | Git |
@@ -568,6 +569,31 @@ interface GitOverview {
   stashes: string[];    // `git stash list` lines, newest first
   log: { hash: string; subject: string; date: string }[]; // the 20 latest commits, relative dates
   busy: boolean;        // a workflow run holds the workspace; actions answer WORKSPACE_BUSY
+}
+```
+
+```ts
+type BranchKind = "main" | "feature" | "bugfix" | "run" | "other"; // base branch, feature/, bugfix/ (fix/, hotfix/), baked/, others
+interface GitGraph {
+  isRepo: boolean;
+  base: string | null;     // origin's HEAD when it is a local branch, else main, master, trunk or develop
+  current: string | null;
+  branches: {              // local, most recently committed first, at most 200
+    name: string; kind: BranchKind; current: boolean; head: string; time: number; // Unix seconds
+    subject: string; upstream: string | null;
+    ahead: number | null; behind: number | null; // against the base branch; null for the base
+  }[];
+  commits: {               // topological order, newest first
+    hash: string; short: string; parents: string[]; author: string; time: number; subject: string;
+    refs: { name: string; kind: "head" | "branch" | "remote" | "tag"; branchKind: BranchKind }[];
+    lane: number;          // the node's column; the base branch keeps lane 0
+    kind: BranchKind;      // the colour of the branch whose first-parent line holds the commit
+    branch: string | null; // that branch; a merged branch is named from the merge message
+    up: { from: number; to: number; kind: BranchKind; branch: string | null }[];   // top of the row to the node
+    down: { from: number; to: number; kind: BranchKind; branch: string | null }[]; // node to the bottom of the row
+  }[];
+  lanes: number;           // the widest row
+  truncated: boolean;      // older commits exist past `limit`
 }
 ```
 
@@ -680,7 +706,7 @@ Agents a project brought from other tools, and their conversion into a workflow 
 | Project setup: hooks | `GET /v1/hooks`, `POST /v1/hooks/session` |
 | Memory: Runs | `GET\|POST /v1/workflow/memory` |
 | Memory: Chat | `GET\|POST /v1/memory`, `PUT /v1/memory/settings`, `GET\|POST /v1/memory/cleanup` |
-| Git | `GET /v1/git`, `POST /v1/git/actions` |
+| Git | `GET /v1/git`, `GET /v1/git/graph`, `POST /v1/git/actions` |
 | Code graph | `POST /v1/graph`, `GET /v1/graph/file`, `GET /v1/graph/link`, `GET /v1/graph/search` |
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |

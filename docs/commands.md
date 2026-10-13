@@ -73,6 +73,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/git co-author` | Toggle co-author trailer |
 | `/git commit` | Git commit with message |
 | `/git diff` | View changes |
+| `/git graph` | Show the commit graph of all branches |
 | `/git init` | Initialize git repo |
 | `/git log` | Show recent commits |
 | `/git pull` | Pull from remote |
