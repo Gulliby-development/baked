@@ -65,6 +65,7 @@ const STAGE_LABELS: Record<string, string> = {
   converge: "Converge",
   learn: "Learn",
   report: "Report",
+  wait: "Wait",
 };
 export const stageLabel = (kind: string): string => STAGE_LABELS[kind] ?? kind;
 /**
@@ -107,7 +108,13 @@ export function headline(
       return { now: "Created, not started yet.", next: "Press R to start." };
     case "running":
       return driving
-        ? { now: `Working on ${at}.`, next: null }
+        ? {
+            now:
+              stage?.kind === "wait"
+                ? `Waiting at ${at}: polling its gates, no model calls.`
+                : `Working on ${at}.`,
+            next: null,
+          }
         : {
             now: `Marked running at ${at}, but this window is not executing it.`,
             next: "If no other BAKED window runs it, press P: pausing releases the workspace.",
@@ -365,6 +372,10 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.status === "passed"
         ? null
         : `Gate ${event.payload.gateId} ${event.payload.status}${event.payload.mode === "advisory" ? " (advisory)" : ""}${event.payload.flaky ? " (flaky)" : ""}`;
+    case "wait.progress":
+      return event.payload.pending.length
+        ? `Waiting for ${event.payload.pending.join(", ")} until ${clockTime(event.payload.deadline)} (every ${event.payload.intervalSeconds}s)`
+        : "Wait gates pass";
     case "acceptance.phase":
       return `AI walk-through ${event.payload.gateId}: ${event.payload.phase.replace("_", " ")}${event.payload.detail ? ` (${event.payload.detail.slice(0, 120)})` : ""}`;
     case "artifact.committed":
