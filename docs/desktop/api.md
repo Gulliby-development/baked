@@ -642,6 +642,8 @@ The [artifacts](../artifacts.md) of the user, the same for every project's serve
 | `POST /v1/packages/install` | `{path, planHash, overwrite?, commandId?}` installs the plan the person approved: the server plans again and answers `409 STALE_PLAN` when its `planHash` differs, `409 CONFLICT` when it would replace different project files without `overwrite: true`, and `400 INVALID_PACKAGE` when the plan has problems. `201 {name, version, written, unchanged, removed, kept, gatesToConfirm}`; installed gates are not confirmed. A retry with the same `commandId` answers the first result |
 | `DELETE /v1/packages/NAME` | Deletes the package's files that still have their installed hash and drops it from the lock file; `{name, version, removed, kept, missing}`, `404 NOT_INSTALLED` for an unknown package |
 
+`POST /v1/packages/pack` with `{path, name?, version?, description?, check?}` writes the `baked-package.json` of a package folder a person authors, the same as `baked packages pack` ([author a package](../packages.md#author-a-package)). It is the one packages request that writes outside the project: only that manifest file, inside the package folder. The server lists every file of the folder except `.git` and the manifest with its SHA-256, checks the paths, the limits and the definitions against the package's own content, and writes the manifest through a temp file; the name, version and description default to the existing manifest's, and an empty `description` removes it. The answer is `{root, manifestPath, name, version, description, files: [{path, kind, sha256, size}], contents: {agents, skills, workflows, gates}, problems, manifest, existing, upToDate, written}`: `201` when the manifest was written, `200` otherwise. A non-empty `problems` means nothing was written and `manifest` is `null`; with `check: true` nothing is written and `upToDate` says whether the manifest on disk already lists the same name, version, description and hashes. A missing name or version (no manifest yet) or an invalid one answers `400 INVALID_ARGUMENT`, a missing folder `404 NOT_FOUND`.
+
 ## Screen map
 
 | Mockup | Endpoints |
@@ -669,7 +671,7 @@ The [artifacts](../artifacts.md) of the user, the same for every project's serve
 | Project setup: gates and checks | `GET\|PUT /v1/workflow/checks`, `GET /v1/workflow/checks/suggestions`, `POST /v1/workflow/checks/ID/run`; gate definition files in `GET /v1/workflow/gates` and `POST /v1/workflow/gates/confirm` |
 | Commands and skills | `GET /v1/commands`, `GET /v1/skills` |
 | Project setup: skills | `GET\|POST /v1/skills`, `GET /v1/skills/catalog`, `GET\|DELETE /v1/skills/SCOPE/NAME` |
-| Project setup: packages | `GET /v1/packages`, `POST /v1/packages/inspect`, `POST /v1/packages/install`, `DELETE /v1/packages/NAME` |
+| Project setup: packages | `GET /v1/packages`, `POST /v1/packages/inspect`, `POST /v1/packages/install`, `DELETE /v1/packages/NAME`, `POST /v1/packages/pack` |
 | Project setup: MCP servers | `GET\|POST /v1/mcp`, `PATCH\|DELETE /v1/mcp/NAME`, `POST /v1/mcp/NAME/reconnect` |
 | Project setup: language servers | `GET /v1/lsp`, `POST /v1/lsp/ID/install\|enable\|disable\|restart`, `POST /v1/lsp/restart`, `POST /v1/lsp/diagnose` |
 | Project setup: instructions | `GET|PUT /v1/projects/current/instructions`, `PUT /v1/projects/current/instructions/sources` |

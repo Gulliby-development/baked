@@ -1,5 +1,7 @@
+import { resolve } from "node:path";
 import { loadConfig } from "../../config/index.js";
 import { PackageError } from "../packages/manifest.js";
+import { describePack, packPackage } from "../packages/pack.js";
 import {
   describeInstall,
   describeInstalled,
@@ -19,10 +21,38 @@ import { sysMsg } from "./utils.js";
 /**
  * `/packages`: BAKED packages of this project (docs/packages.md). `add PATH` shows the plan of a
  * local package and installs it only after the person picks Install; `remove NAME` asks the same
- * way. The work is done by src/core/packages, as `baked add` and `baked packages` do it.
+ * way. `pack PATH` writes the manifest of a package folder the person authors. The work is done
+ * by src/core/packages, as `baked add` and `baked packages` do it.
  */
 
-const usage = "Usage: /packages [list] | /packages add PATH | /packages remove NAME";
+const usage =
+  "Usage: /packages [list] | /packages add PATH | /packages remove NAME | /packages pack PATH [--name NAME] [--version VER] [--description TEXT] [--check]";
+
+/**
+ * `/packages pack PATH [--name NAME] [--version VER] [--description TEXT] [--check]`: writes the
+ * manifest of a package folder. Values with spaces go in double quotes; null for a bad argument.
+ */
+export function parsePackArgs(
+  text: string,
+): { path: string; name?: string; version?: string; description?: string; check: boolean } | null {
+  const tokens = [...text.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2] ?? "");
+  const positional: string[] = [];
+  const result: { name?: string; version?: string; description?: string; check: boolean } = {
+    check: false,
+  };
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] ?? "";
+    if (token === "--check") result.check = true;
+    else if (token === "--name" || token === "--version" || token === "--description") {
+      const value = tokens[++i];
+      if (value === undefined) return null;
+      result[token.slice(2) as "name" | "version" | "description"] = value;
+    } else if (token.startsWith("--")) return null;
+    else positional.push(token);
+  }
+  const path = positional.join(" ");
+  return path ? { path, ...result } : null;
+}
 
 const options = (): InspectOptions => ({
   policy: PolicySchema.parse(loadConfig().workflows?.policy ?? defaultWorkflowPolicy),
@@ -116,6 +146,19 @@ export function handlePackages(
     if (sub === "add" && arg) {
       add(ctx, arg, settings());
       return;
+    }
+    if (sub === "pack") {
+      const parsed = parsePackArgs(arg);
+      if (parsed) {
+        const { path, check, ...fields } = parsed;
+        const result = packPackage(resolve(ctx.cwd, path), {
+          ...fields,
+          check,
+          policy: settings().policy,
+        });
+        sysMsg(ctx, describePack(result, check).join("\n"));
+        return;
+      }
     }
     if (sub === "remove" && words.length === 1 && words[0]) {
       remove(ctx, words[0]);

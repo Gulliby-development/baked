@@ -1,7 +1,9 @@
+import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "../config/index.js";
 import { getCwd } from "../core/cwd.js";
 import { PackageError } from "../core/packages/manifest.js";
+import { describePack, packPackage } from "../core/packages/pack.js";
 import {
   describeInstall,
   describeInstalled,
@@ -18,6 +20,7 @@ import { PolicySchema } from "../core/workflows/schemas.js";
 
 const help = `Usage: baked add PATH [--yes] [--overwrite] [--json]
        baked packages list|remove NAME [--json]
+       baked packages pack PATH [--name NAME] [--version VER] [--description TEXT] [--check] [--json]
 
 A package is a local folder with a baked-package.json that lists its agent profiles, skills,
 workflow definitions and gates with their SHA-256 hashes (docs/packages.md). Installing copies
@@ -32,11 +35,21 @@ Commands:
   packages remove NAME [--json]
                           Delete the package's files that are unchanged since the install;
                           edited files stay
+  packages pack PATH [--name NAME] [--version VER] [--description TEXT] [--check] [--json]
+                          Write the baked-package.json of a package folder you author: every
+                          file with its SHA-256, after the layout and definition checks pass.
+                          The name, version and description default to the existing manifest's.
+                          --check writes nothing and exits 1 when the manifest is out of date
 
 --cwd DIR picks the project. Installed gates still need baked workflow gates confirm before a
 run uses them. Exit codes:
-0 done, 1 refused or not approved, 2 bad arguments, an unknown path or package.
+0 done (pack --check: up to date), 1 refused, not approved or (pack --check) out of date,
+2 bad arguments, an unknown path or package.
 `;
+
+/** Options that take a value, only for `packages pack`. */
+const VALUE_OPTIONS = ["--name", "--version", "--description"] as const;
+type PackValues = { name?: string; version?: string; description?: string };
 
 export interface PackagesCliDeps {
   workspace?: string;
@@ -62,7 +75,10 @@ function configuredOptions(): InspectOptions {
   return { policy: PolicySchema.parse(config.workflows?.policy ?? defaultWorkflowPolicy) };
 }
 
-/** `baked add PATH` (argv starts with `add`) and `baked packages list|remove` (argv starts there). */
+/**
+ * `baked add PATH` (argv starts with `add`) and `baked packages list|remove|pack` (argv starts
+ * there).
+ */
 export async function runPackagesCli(argv: string[], deps: PackagesCliDeps = {}): Promise<number> {
   const workspace = deps.workspace ?? getCwd();
   const out = deps.print ?? ((text: string) => process.stdout.write(text));
@@ -70,12 +86,35 @@ export async function runPackagesCli(argv: string[], deps: PackagesCliDeps = {})
   const args = argv.filter(
     (a, i) => a !== "--cwd" && !a.startsWith("--cwd=") && argv[i - 1] !== "--cwd",
   );
-  const [command = "list", ...rest] = args;
+  const [command = "list", ...words] = args;
+  const values: PackValues = {};
+  const rest: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i] ?? "";
+    const eq = word.indexOf("=");
+    const key = eq > 0 ? word.slice(0, eq) : word;
+    if (!(VALUE_OPTIONS as readonly string[]).includes(key)) {
+      rest.push(word);
+      continue;
+    }
+    const value = eq > 0 ? word.slice(eq + 1) : words[++i];
+    if (value === undefined) {
+      process.stderr.write(`${key} needs a value\n${help}`);
+      return 2;
+    }
+    values[key.slice(2) as keyof PackValues] = value;
+  }
   const json = rest.includes("--json");
   const positional = rest.filter((a) => !a.startsWith("--"));
   const unknown = rest.filter(
-    (a) => a.startsWith("--") && !["--json", "--yes", "--overwrite", "--help"].includes(a),
+    (a) =>
+      a.startsWith("--") && !["--json", "--yes", "--overwrite", "--help", "--check"].includes(a),
   );
+  // --name, --version, --description and --check belong to `packages pack` only.
+  if (command !== "pack" && !unknown.length) {
+    const packOnly = rest.includes("--check") ? "--check" : Object.keys(values)[0];
+    if (packOnly) unknown.push(packOnly.startsWith("--") ? packOnly : `--${packOnly}`);
+  }
   const print = (value: unknown, lines: string[]) =>
     out(json ? `${JSON.stringify(value, null, 2)}\n` : `${lines.join("\n")}\n`);
   if (rest.includes("--help") || rest.includes("-h")) {
@@ -147,6 +186,16 @@ export async function runPackagesCli(argv: string[], deps: PackagesCliDeps = {})
         );
         return 0;
       }
+      case "pack": {
+        const [path] = positional;
+        if (!path || positional.length > 1) break;
+        const check = rest.includes("--check");
+        const policy = (deps.options ?? configuredOptions()).policy;
+        const result = packPackage(resolve(workspace, path), { ...values, check, policy });
+        print(result, describePack(result, check));
+        if (result.problems.length) return 1;
+        return check && !result.upToDate ? 1 : 0;
+      }
       case "remove": {
         const [name] = positional;
         if (!name || positional.length > 1) break;
@@ -160,7 +209,11 @@ export async function runPackagesCli(argv: string[], deps: PackagesCliDeps = {})
   } catch (error) {
     if (error instanceof PackageError) {
       process.stderr.write(`${error.message}\n`);
-      return error.code === "NOT_FOUND" || error.code === "NOT_INSTALLED" ? 2 : 1;
+      return error.code === "NOT_FOUND" ||
+        error.code === "NOT_INSTALLED" ||
+        error.code === "INVALID_ARGUMENT"
+        ? 2
+        : 1;
     }
     throw error;
   }
