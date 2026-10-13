@@ -109,6 +109,8 @@ export interface RunSnapshot {
   reviewNotes?: { count: number; ids: string[] };
   /** Present while a running run has journaled nothing for longer than the stall limit. */
   stalled?: { silentMs: number; lastEventAt: string | null };
+  /** Present while a run blocked by a provider outage waits for its automatic resume. */
+  autoRetry?: { at: string; attempt: number; of: number };
   approvalDigest?: string | null;
   projectId?: string;
 }

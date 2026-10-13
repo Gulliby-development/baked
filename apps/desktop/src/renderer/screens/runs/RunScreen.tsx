@@ -792,6 +792,9 @@ function RunBody({
       ? `${run.reviewNotes.count} review note${run.reviewNotes.count === 1 ? "" : "s"}`
       : null,
     run.stalled ? `stalled: no event for ${Math.round(run.stalled.silentMs / 60_000)} min` : null,
+    run.autoRetry
+      ? `retrying by itself at ${new Date(run.autoRetry.at).toLocaleTimeString()} (${run.autoRetry.attempt} of ${run.autoRetry.of})`
+      : null,
   ].filter(Boolean);
 
   const stages = pipeline(data.stages, trace, run);

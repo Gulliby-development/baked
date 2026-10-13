@@ -6,6 +6,7 @@ import {
   type RoutingRecord,
   RoutingRecordSchema,
 } from "../llm/model-routing.js";
+import { modelVendor } from "../llm/model-vendor.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
@@ -135,6 +136,11 @@ import {
 import { ProcessScope } from "./process-scope.js";
 import { type LearnedRule, rulesFor } from "./project-memory.js";
 import {
+  checkDependencies,
+  dependencyClaim,
+  QUALITY_DEPENDENCIES,
+} from "./quality/dependencies.js";
+import {
   compareWithBaseline,
   duplicationOf,
   measureBaseline,
@@ -144,6 +150,8 @@ import {
   qualityClaim,
   readCodeFiles,
 } from "./quality/duplication.js";
+import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
+import type { RegistryFetch } from "./quality/registry.js";
 import {
   type ChangedFile,
   checkQualityRules,
@@ -152,6 +160,7 @@ import {
   type RuleFinding,
   ruleClaim,
 } from "./quality/rules.js";
+import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
@@ -177,6 +186,8 @@ import {
 import {
   type AgentProfile,
   AnalysisSchema,
+  type Critique,
+  CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
   executionModeOf,
   generatedPaths,
@@ -373,6 +384,12 @@ function readSummary(content: string): { tool: string; targets: string[]; bytes:
   }
   return { tool, targets, bytes: Buffer.byteLength(content) };
 }
+/**
+ * Marks the input of a review that sees only the diff (the language dimension, #670): its context
+ * leaves out the spec, plan and check output, about 15k tokens instead of 45k.
+ */
+const DIFF_REVIEW = "diffReview";
+
 export class WorkflowScheduler {
   dispose(): void {
     this.executor.dispose?.();
@@ -388,6 +405,10 @@ export class WorkflowScheduler {
   maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
+  /** Registry lookups of the dependency check; `fetch` when unset. Tests inject a fake. */
+  registryFetch: RegistryFetch | undefined;
+  /** The Semgrep executable (null: not installed); detected when unset. Tests inject one. */
+  semgrep: string | null | undefined;
   /** The clock of wait stages: wall time and an abortable sleep. Tests inject a fake one. */
   waitClock: { now: () => number; sleep: (ms: number, signal: AbortSignal) => Promise<void> } = {
     now: () => Date.now(),
@@ -1684,8 +1705,8 @@ export class WorkflowScheduler {
     return repairChangedFiles(this.store, runId, done);
   }
   /**
-   * Before the agent runs a planned task again (a repair or correction invalidated it), its task
-   * checks run in the host: when they pass on the current files and the task's earlier
+   * Before the agent runs a planned task again (a repair or correction invalidated it), its declared
+   * checks (any scope) run in the host: when they pass on the current files and the task's earlier
    * implementation, which passed them under the same definition, is in place, the task is implemented by supersession, with an empty diff and
    * no tokens, and the gate check below it runs as for any implemented task. A rerun that ended
    * with an empty diff in round 6 cost 3.08M tokens of 17.5M. Returns whether any task changed.
@@ -1702,7 +1723,7 @@ export class WorkflowScheduler {
     for (const task of ready) {
       const row = this.store.tasks(runId).find((entry) => entry.id === task.id);
       const path = `tasks/${task.id}/host-first-${String(row?.generation ?? 0)}.json`;
-      const checks = taskChecks(policy, task);
+      const checks = declaredChecks(policy, task);
       const root = runRoot(this.store.workspace, state);
       if (
         !row ||
@@ -1924,6 +1945,20 @@ export class WorkflowScheduler {
     stage: string | null | undefined,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    const routing = this.routingRecord(runId);
+    if (!routing) return { models: [profile.model] };
+    // The critic judges the task stage's work, so the stage's route does not apply to it.
+    const staged = stage && profile.output !== "critique" ? routing.stages[stage] : undefined;
+    const own = routing.profiles[profile.id];
+    const entry = staged ?? own;
+    // The frozen profile keeps its start model; a reroute changes only the record.
+    return {
+      models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
+      ...(entry?.effort ? { effort: entry.effort } : {}),
+    };
+  }
+  /** The run's frozen routing record, cached; null for runs started before routing. */
+  private routingRecord(runId: string): RoutingRecord | null {
     let routing = this.routing.get(runId);
     if (routing === undefined) {
       const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
@@ -1932,15 +1967,7 @@ export class WorkflowScheduler {
         : null;
       this.routing.set(runId, routing);
     }
-    if (!routing) return { models: [profile.model] };
-    const staged = stage ? routing.stages[stage] : undefined;
-    const own = routing.profiles[profile.id];
-    const entry = staged ?? own;
-    // The frozen profile keeps its start model; a reroute changes only the record.
-    return {
-      models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
-      ...(entry?.effort ? { effort: entry.effort } : {}),
-    };
+    return routing;
   }
   /** The profile running on the model at `index` of its route's chain. */
   private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
@@ -2359,22 +2386,31 @@ export class WorkflowScheduler {
             profile.context === "implementation" && task ? task.writes.map((w) => w.path) : null,
           )
         : null;
-    return buildWorkflowContext(state, profile, {
-      ...(extra && typeof extra === "object" ? extra : { input: extra }),
-      ...(rules ? { learnedRules: rules } : {}),
-      ...(workingSet ? { projectWorkingSet: workingSet } : {}),
-      ...(memory ? { projectMemory: memory } : {}),
-      ...(risks ? { knownRisks: risks } : {}),
-      executionContract: {
-        checks: policy.checks,
-        // An implementer works alone; the other agents' tools are only resent on every step.
-        profiles: ProfileSchema.array()
-          .parse(JSON.parse(this.store.run(runId).profiles_json))
-          .filter((p) => profile.context !== "implementation" || p.id === profile.id)
-          .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
-        policy: { allowedTools: policy.allowedTools, network: policy.network },
+    const { [DIFF_REVIEW]: diffOnly, ...input } = (
+      extra && typeof extra === "object" ? extra : { input: extra }
+    ) as Record<string, unknown>;
+    return buildWorkflowContext(
+      state,
+      profile,
+      {
+        ...input,
+        ...(rules ? { learnedRules: rules } : {}),
+        ...(workingSet ? { projectWorkingSet: workingSet } : {}),
+        ...(memory ? { projectMemory: memory } : {}),
+        ...(risks && diffOnly !== true ? { knownRisks: risks } : {}),
+        executionContract: {
+          checks: policy.checks,
+          // An implementer works alone; the other agents' tools are only resent on every step.
+          profiles: ProfileSchema.array()
+            .parse(JSON.parse(this.store.run(runId).profiles_json))
+            .filter((p) => profile.context !== "implementation" || p.id === profile.id)
+            .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
+          policy: { allowedTools: policy.allowedTools, network: policy.network },
+        },
       },
-    });
+      undefined,
+      diffOnly === true,
+    );
   }
   /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
@@ -3058,7 +3094,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
       }
       if (result.outcome === "already_satisfied")
-        validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
+        this.validateSatisfiedEvidence(runId, state, after, result);
       await this.snapshot(runId, state, policy, signal);
       const beforeHashes = Object.fromEntries(
         changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
@@ -3110,6 +3146,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         checkEvidence,
       );
     this.inconclusiveTaskCheck(inconclusive, taskFailures);
+    await this.critique(
+      runId,
+      child,
+      state,
+      policy,
+      profiles,
+      task,
+      taskRoot,
+      taskFailures,
+      signal,
+    );
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
   }
   /**
@@ -3524,7 +3571,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ),
         };
       if (result.outcome === "already_satisfied")
-        validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
+        this.validateSatisfiedEvidence(runId, state, after, result);
       const results: WorkerCheck[] = [];
       for (const check of taskChecks(policy, task)) {
         const checked = await checks.run(() =>
@@ -3728,6 +3775,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     ))
       inconclusive ??= this.applyTaskCheck(runId, state, task, check, checked, failures, evidence);
     this.inconclusiveTaskCheck(inconclusive, failures);
+    await this.critique(
+      runId,
+      entry.child,
+      state,
+      policy,
+      profiles,
+      task,
+      mainRoot,
+      failures,
+      signal,
+    );
     this.settleTask(runId, state, policy, task, entry.child, failures, evidence);
   }
   /**
@@ -4061,6 +4119,27 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   }
   /** Runs one task check in `root` under its own host attempt. */
   /**
+   * Evidence for an `already_satisfied` result. A task's reads are recorded against its worktree,
+   * which differs from the run snapshot once an earlier attempt of the task edited files, the
+   * case where `already_satisfied` is the right answer on a retry (junitdigest 3e5be74b T014
+   * blocked twice). So reads of the worktree as it is now count too; a read taken before a
+   * later edit of the attempt names another snapshot and stays stale.
+   */
+  private validateSatisfiedEvidence(
+    runId: string,
+    state: RuntimeState,
+    worktree: Record<string, string>,
+    result: { evidenceIds: string[] },
+  ): void {
+    const run = state.snapshotId ?? "";
+    const current = this.store.transaction(() => this.store.putSnapshot(runId, worktree)).id;
+    result.evidenceIds = resolveEvidenceIds(
+      [...currentEvidence(this.store, runId, run), ...currentEvidence(this.store, runId, current)],
+      result.evidenceIds,
+    );
+    validateEvidence(this.store, runId, [run, current], result.evidenceIds);
+  }
+  /**
    * A task whose attempt changed nothing is satisfied, not blocked, when the checks it was created
    * for pass on the current files: a sibling task or an earlier correction already fixed the
    * cause (zoneslot 51f9d664 T007 and md-site 93fbee70 T010 reported passing tests and stopped the
@@ -4253,6 +4332,103 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       });
   }
   /**
+   * The critic of a run (#646), or null when it does not run: `critic: "off"` turns it off and
+   * `"advise"` on; without the field it runs only on a vendor other than the implementation's
+   * (see model-vendor.ts), so a one-provider setup spends nothing on a judge that shares the
+   * implementer's blind spots.
+   */
+  private criticOf(
+    runId: string,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+  ): AgentProfile | null {
+    if (policy.critic === "off") return null;
+    const critic = profiles.find((p) => p.output === "critique");
+    if (!critic) return null;
+    if (policy.critic === "advise") return critic;
+    const routing = this.routingRecord(runId);
+    const modelOf = (profile: AgentProfile) =>
+      routing?.profiles[profile.id]?.model ?? profile.model;
+    const implementation = profiles
+      .filter((p) => p.output === "implementation")
+      .map((p) => modelVendor(modelOf(p)));
+    return implementation.includes(modelVendor(modelOf(critic))) ? null : critic;
+  }
+  /**
+   * Scores a finished task attempt with the critic and stores the critique as
+   * `tasks/TASK/critique.json`. Advice only: it changes no status, and a critic that fails is
+   * recorded and skipped. An attempt already scored (same diff) is not scored again on resume.
+   * Returns the critique, or null when no critic runs or it failed.
+   */
+  private async critique(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    task: Task,
+    root: string,
+    failures: Review["findings"],
+    signal: AbortSignal,
+  ): Promise<Critique | null> {
+    const critic = this.criticOf(runId, policy, profiles);
+    const diffRow = this.store.latestArtifact(runId, `tasks/${task.id}/diff.json`);
+    if (!critic || !diffRow) return null;
+    const path = `tasks/${task.id}/critique.json`;
+    const kept = this.store.latestArtifact(runId, path);
+    if (kept) {
+      const earlier = JSON.parse(this.store.readArtifact(runId, kept.id)) as { diffId?: string };
+      if (earlier.diffId === diffRow.id) return null;
+    }
+    const diff = JSON.parse(this.store.readArtifact(runId, diffRow.id)) as {
+      patch?: string;
+      before?: Record<string, string | null>;
+    };
+    const patch = diff.patch ?? (await this.taskPatch(runId, root, diff.before ?? {}));
+    const attempt = this.store.artifacts(runId).filter((a) => a.logical_path === path).length + 1;
+    const child = this.store.transaction(() => this.store.beginStep(runId, "critic", stepId));
+    const record = (body: Record<string, unknown>) =>
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "critique",
+          path,
+          canonical({ taskId: task.id, attempt, diffId: diffRow.id, model: critic.model, ...body }),
+        ),
+      );
+    try {
+      const output = CritiqueSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          critic,
+          {
+            task,
+            patch,
+            failedChecks: failures.map((f) => f.claim),
+          },
+          signal,
+        ),
+      );
+      const critique = { ...output, taskId: task.id };
+      record({ critique });
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+      return critique;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      record({ error: error instanceof Error ? error.message : String(error) });
+      this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
+      return null;
+    }
+  }
+  /**
    * Closes a task after its checks: failures become corrective tasks; otherwise the task gets its
    * check gate and the repair chain it closes is restored.
    */
@@ -4363,10 +4539,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             // A task whose every written file a corrective task rewrote is superseded there: its
             // agent would start from its original description and overwrite the correction
             // (md-site a586cde0 T003 ran three times, T006 four). Its checks decide instead.
+            // Any declared check counts: a test task whose only check is a feature-scope build or
+            // test command (Java `verify`) is protected by it too (propdrift 90c09da7 T006, 114k).
             const superseded =
               reach === "named" &&
               rewritten !== null &&
-              taskChecks(policy, candidate).length > 0 &&
+              declaredChecks(policy, candidate).length > 0 &&
               ownsOnly(candidate, rewritten);
             if (
               reach === "none" ||
@@ -4418,6 +4596,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     fixed = false,
   ): Promise<Review["findings"]> {
     await this.snapshot(runId, state, policy, signal);
+    const unsafe = await this.dependencyFindings(runId, state, policy);
+    if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -4636,7 +4816,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     if (!this.store.latestArtifact(runId, QUALITY_BASELINE_FILES)) {
       const planned = (state.graph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path));
       const existing = planned.filter((path) => state.expectedFiles?.[path] !== undefined);
-      const code = await readCodeFiles(root, [...new Set(existing)]);
+      const code = await readCodeFiles(
+        root,
+        [...new Set(existing)],
+        (path) => isCodePath(path) || isManifestPath(path),
+      );
       this.store.transaction(() =>
         this.store.artifact(
           runId,
@@ -4668,7 +4852,186 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     return [
       ...(await this.duplicationFindings(runId, state, policy)),
       ...(await this.ruleFindings(runId, state, policy)),
+      ...(await this.sastFindings(runId, state, policy)),
     ].slice(0, 100);
+  }
+  /**
+   * The files the run changed that `include` selects and that still exist, with their content
+   * now and at baseline: the planned files kept at approval, else the pre-image the run saved
+   * before its first edit; undefined when neither is known, null for a file the run created.
+   */
+  private async changedFiles(
+    runId: string,
+    state: RuntimeState,
+    include: (path: string) => boolean,
+  ): Promise<ChangedFile[]> {
+    const files = state.expectedFiles ?? {};
+    const baselineId = state.manifest.baselineSnapshotId;
+    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    const root = runRoot(this.store.workspace, state);
+    const kept = this.store.latestArtifact(runId, QUALITY_BASELINE_FILES);
+    const planned = kept
+      ? (JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, string>)
+      : {};
+    const changed: ChangedFile[] = [];
+    for (const path of changedPaths(before, files)) {
+      if (!include(path) || files[path] === undefined) continue;
+      const content = (await readCodeFiles(root, [path], include)).files.get(path);
+      if (content === undefined) continue;
+      const hash = before[path];
+      changed.push({
+        path,
+        content,
+        before: hash
+          ? (planned[path] ?? readKept(this.store, runId, hash)?.toString("utf8") ?? undefined)
+          : null,
+      });
+    }
+    return changed;
+  }
+  /** Closes the open findings whose claim `matches`, once their gate passes. */
+  private resolveClaims(runId: string, matches: (claim: unknown) => boolean): void {
+    this.store.transaction(() => {
+      for (const finding of this.store.findings(runId))
+        if (
+          ["open", "confirmed"].includes(finding.status) &&
+          matches(JSON.parse(finding.body_json).claim)
+        )
+          this.store.findingStatus(runId, finding.id, "resolved");
+    });
+  }
+  /** A blocking quality finding on a file, owned by the last task that writes the file. */
+  private qualityFinding(
+    state: RuntimeState,
+    item: {
+      kind: "correctness" | "security";
+      file: string;
+      symbol?: string | null;
+      evidenceId: string;
+      claim: string;
+      impact: string;
+      suggestedFix: string;
+    },
+  ): Review["findings"][number] {
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    const task = [...tasks].reverse().find((t) => t.writes.some((w) => w.path === item.file));
+    return {
+      id: newId(),
+      kind: item.kind,
+      severity: "high",
+      requirementIds:
+        task?.requirementIds ?? state.spec?.requirements.map((r) => r.id).slice(0, 1) ?? [],
+      criterionIds: task?.criterionIds ?? [],
+      file: item.file,
+      symbol: item.symbol ?? null,
+      evidenceIds: [item.evidenceId],
+      claim: item.claim,
+      impact: item.impact,
+      suggestedFix: item.suggestedFix,
+    };
+  }
+  /**
+   * The dependency check (#640) before the run's commands install or run anything: packages
+   * the run declares or imports that do not exist, look like typosquats or are days old block;
+   * the others are listed in `quality/dependencies.json` for the run report.
+   */
+  private async dependencyFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    if (!state.snapshotId) return [];
+    const changed = await this.changedFiles(
+      runId,
+      state,
+      (path) => isManifestPath(path) || isCodePath(path),
+    );
+    if (!changed.length) return [];
+    const root = runRoot(this.store.workspace, state);
+    // Packages that need no registry: declared in any package.json, local workspace packages,
+    // and tsconfig path aliases.
+    const known = new Set<string>();
+    const aliases: string[] = [];
+    const config = await readCodeFiles(root, Object.keys(state.expectedFiles ?? {}), (path) =>
+      /(^|\/)(package\.json|tsconfig[\w.-]*\.json|jsconfig\.json)$/.test(path),
+    );
+    for (const [path, text] of config.files) {
+      if (path.endsWith("package.json")) {
+        for (const d of manifestDependencies(path, text)) known.add(d.name);
+        const name = /"name"\s*:\s*"([^"]+)"/.exec(text)?.[1];
+        if (name) known.add(name);
+      } else
+        for (const m of text.matchAll(/"([^"*]+?)\/?\*"\s*:\s*\[/g))
+          if (m[1] && m[1] !== "paths") aliases.push(m[1]);
+    }
+    const result = await checkDependencies(changed, known, {
+      lookups: policy.registryLookups !== false,
+      ...(this.registryFetch ? { fetcher: this.registryFetch } : {}),
+      aliases,
+    });
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "quality",
+        QUALITY_DEPENDENCIES,
+        canonical(result),
+      );
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.dependencies.filter((d) => d.blocking);
+    if (!blocking.length) {
+      this.resolveClaims(runId, dependencyClaim);
+      return [];
+    }
+    return blocking.map((d) =>
+      this.qualityFinding(state, {
+        kind: "security",
+        file: d.file,
+        symbol: d.name,
+        evidenceId,
+        claim: `Dependency ${d.name}: ${d.detail} (${d.file}:${d.line})`,
+        impact:
+          "Installing a package that does not exist or imitates a popular one can run an attacker's code.",
+        suggestedFix:
+          d.verdict === "missing"
+            ? `Remove ${d.name}, or use the package that really provides it; do not invent package names.`
+            : `Replace ${d.name} with the package it imitates, or remove it.`,
+      }),
+    );
+  }
+  /** Semgrep on the code the run changed (#640); `ERROR` matches on added lines block. */
+  private async sastFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    if (sastOf(policy) === "off" || !state.snapshotId) return [];
+    const changed = await this.changedFiles(runId, state, isCodePath);
+    const result = runSast(
+      runRoot(this.store.workspace, state),
+      changed,
+      policy.sastConfig ?? DEFAULT_SAST_CONFIG,
+      ...(this.semgrep !== undefined ? [this.semgrep] : []),
+    );
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_SAST, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.findings.filter((f) => f.blocking);
+    if (!blocking.length) {
+      this.resolveClaims(runId, sastClaim);
+      return [];
+    }
+    return blocking.map((f) =>
+      this.qualityFinding(state, {
+        kind: "security",
+        file: f.file,
+        evidenceId,
+        claim: `SAST ${f.rule}: ${f.message} (${f.file}:${f.line})`,
+        impact: "Semgrep reports a security flaw on a line the run added.",
+        suggestedFix: "Change the code so the Semgrep rule no longer matches; do not suppress it.",
+      }),
+    );
   }
   /**
    * The anti-slop rule pack on the lines the run added to code files. A file's baseline is the
@@ -4681,29 +5044,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     policy: RunPolicy,
   ): Promise<Review["findings"]> {
     if (!state.snapshotId) return [];
-    const files = state.expectedFiles ?? {};
-    const baselineId = state.manifest.baselineSnapshotId;
-    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
     const root = runRoot(this.store.workspace, state);
-    const kept = this.store.latestArtifact(runId, QUALITY_BASELINE_FILES);
-    const planned = kept
-      ? (JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, string>)
-      : {};
-    const changed: ChangedFile[] = [];
-    for (const path of changedPaths(before, files)) {
-      if (!isCodePath(path) || files[path] === undefined) continue;
-      const code = await readCodeFiles(root, [path]);
-      const content = code.files.get(path);
-      if (content === undefined) continue;
-      const hash = before[path];
-      changed.push({
-        path,
-        content,
-        before: hash
-          ? (planned[path] ?? readKept(this.store, runId, hash)?.toString("utf8") ?? undefined)
-          : null,
-      });
-    }
+    const changed = await this.changedFiles(runId, state, isCodePath);
     const result = checkQualityRules(root, changed, policy.qualityRules ?? {});
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(runId, "quality", QUALITY_RULES, canonical(result));
@@ -4825,6 +5167,20 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         suggestedFix: `Call ${item.name} where the task needs it, or remove it.`,
       })),
     ].slice(0, 100);
+  }
+  /** Records blocking findings of a checks stage as a review that requests changes. */
+  private recordChecks(
+    runId: string,
+    state: RuntimeState,
+    findings: Review["findings"],
+  ): Review["findings"] {
+    return this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
   }
   /** Stores a review and registers the findings that block; the others stay in the artifact. */
   private recordFindings(
@@ -4952,6 +5308,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       );
       const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
       const canRepro = executables.length > 0 && profile.allowedTools.includes("run_repro");
+      // The language dimension reviews idioms in the diff; criterion coverage is not its job.
+      const diffOnly = reviewer.dimension === "language";
       let reproAdvised = false;
       const ask = async (extra: Record<string, unknown>): Promise<Review> => {
         const answer = ReviewSchema.parse(
@@ -4963,7 +5321,12 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             profile,
             {
               dimension: reviewer.dimension,
-              evidence: this.evidenceContext(runId, state),
+              evidence: diffOnly
+                ? this.evidenceContext(runId, state).filter(
+                    (e) => (e as { kind: string }).kind === "diff",
+                  )
+                : this.evidenceContext(runId, state),
+              ...(diffOnly ? { [DIFF_REVIEW]: true } : {}),
               ...rerun,
               ...(greenfield ? { baseline: { greenfield } } : {}),
               ...extra,
@@ -4980,6 +5343,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                 reviewSnapshotHash,
                 reviewSpec,
                 output as Review,
+                !diffOnly,
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
@@ -4993,7 +5357,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as
         // inconclusive, and the converge stage settles coverage.
-        completeReview(this.store, runId, reviewSnapshotId, reviewSnapshotHash, reviewSpec, answer);
+        completeReview(
+          this.store,
+          runId,
+          reviewSnapshotId,
+          reviewSnapshotHash,
+          reviewSpec,
+          answer,
+          !diffOnly,
+        );
+        // Without coverage to settle, a diff review is decided by its findings alone.
+        if (diffOnly) answer.verdict = answer.findings.length ? "changes_requested" : "pass";
         return answer;
       };
       let result = await ask({});
@@ -5294,6 +5668,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   ): Promise<Review["findings"]> {
     if (v2.stage.type !== "check") return [];
     await this.snapshot(runId, state, policy, signal);
+    const unsafe = await this.dependencyFindings(runId, state, policy);
+    if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     const bound = v2.stage.gates.map((binding) => {
       const gate = v2.gates.find((g) => g.id === binding.gateId);
       if (gate?.type !== "command")
@@ -6054,6 +6430,9 @@ function taskSize(
 
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
+/** Every check a task declares, whatever its scope. */
+const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
+  policy.checks.filter((check) => task.checkIds.includes(check.id));
 
 /** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
 export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];

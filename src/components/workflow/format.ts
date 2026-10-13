@@ -134,7 +134,7 @@ export function headline(
         };
       if (snapshot.reason === "provider_account" || snapshot.reason === "provider_unavailable")
         return {
-          now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.`,
+          now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.${snapshot.autoRetry ? ` Retrying by itself at ${new Date(snapshot.autoRetry.at).toLocaleTimeString()} (${snapshot.autoRetry.attempt} of ${snapshot.autoRetry.of}).` : ""}`,
           next: "Press R to retry once the provider works again, or M to continue on this tab's model (Ctrl+L picks another); completed work stays. F forks, C cancels.",
         };
       return {
