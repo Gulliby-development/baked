@@ -104,6 +104,7 @@ const FULL_CAPABILITIES = [
   "diagnostics",
   "gate-drafts",
   "coordinator",
+  "artifacts",
 ];
 /** What a backend from before the optional capability groups answers. */
 const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];

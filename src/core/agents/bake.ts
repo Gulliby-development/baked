@@ -747,6 +747,8 @@ export function createBakeAgent({
     onApproveFetchPage: effectiveApproveFetchPage,
     onApproveOutsideCwd: effectiveApproveOutsideCwd,
     onApproveDestructive: effectiveApproveDestructive,
+    // A deploy sends a page off the machine, so it asks even in auto mode.
+    ...(onApproveDestructive ? { onApproveArtifactDeploy: onApproveDestructive } : {}),
     tabId: tabId ?? contextManager.getTabId() ?? undefined,
     tabLabel: tabLabel ?? contextManager.getTabLabel() ?? undefined,
     activeDeferredTools,
@@ -798,6 +800,7 @@ export function createBakeAgent({
     "memory",
     "skills",
     "baked_help",
+    "artifact",
     // Tool management
     "request_tools",
     "release_tools",

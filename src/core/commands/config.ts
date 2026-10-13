@@ -13,7 +13,7 @@ import {
   parseNotificationsArgs,
   parseOnOff,
 } from "../notification-settings.js";
-import { SETTINGS, settingById } from "../settings/schema.js";
+import { readSettingPath, SETTINGS, settingById, writeSettingPath } from "../settings/schema.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
 import { diagnosticsTimeoutMs } from "../tools/edit-diagnostics.js";
@@ -587,6 +587,58 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
   });
 }
 
+/**
+ * The Code quality page of the shared settings schema, as on the desktop: each choice setting
+ * moves to its next value on Enter. New workflow runs freeze these defaults in their policy.
+ */
+function handleCodeQuality(_input: string, ctx: CommandContext): void {
+  const settings = SETTINGS.filter((setting) => setting.page === "code-quality");
+  let effective: Record<string, unknown> = mergeConfigs(
+    loadConfig(),
+    loadEffectiveProjectConfig(process.cwd()),
+  ) as unknown as Record<string, unknown>;
+  const currentValue = (id: string): string => {
+    const setting = settings.find((s) => s.id === id);
+    const value = readSettingPath(effective, id);
+    return String(value ?? setting?.default ?? "");
+  };
+  const buildOptions = () =>
+    settings.map((setting) => ({
+      value: setting.id,
+      label: `${setting.label}: ${currentValue(setting.id)}`,
+      description: setting.help,
+    }));
+  const next = (id: string): string | boolean | null => {
+    const setting = settings.find((s) => s.id === id);
+    if (setting?.type === "boolean") return currentValue(id) !== "true";
+    if (setting?.type !== "enum") return null;
+    const values = setting.options.map((o) => o.value);
+    return values[(values.indexOf(currentValue(id)) + 1) % values.length] ?? null;
+  };
+  const patch = (id: string, value: unknown) =>
+    writeSettingPath({}, id, value) as Partial<AppConfig>;
+  ctx.openCommandPicker({
+    title: "Code Quality",
+    icon: icon("system"),
+    keepOpen: true,
+    currentValue: "",
+    options: buildOptions(),
+    scopeEnabled: true,
+    initialScope: ctx.detectScope("quality"),
+    onSelect: (id, scope) => {
+      const value = next(id);
+      if (value === null) return;
+      ctx.saveToScope(patch(id, value), scope ?? "project");
+      effective = writeSettingPath(effective, id, value);
+      sysMsg(ctx, `${id}: ${String(value)} (${scope ?? "project"}); new workflow runs use it`);
+      useUIStore.getState().updatePickerOptions(buildOptions());
+    },
+    onScopeMove: (id, from, to) => {
+      ctx.saveToScope(patch(id, readSettingPath(effective, id)), to, from);
+    },
+  });
+}
+
 async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
   const [sub = "", ...rest] = input.trim().split(/\s+/).slice(1);
   const arg = rest.join(" ");
@@ -838,6 +890,7 @@ const settingsHandlers: Record<string, (input: string, ctx: CommandContext) => v
   compaction: handleCompaction,
   "diff-style": handleDiffStyle,
   "agent-features": handleAgentFeatures,
+  "code-quality": handleCodeQuality,
   instructions: handleInstructions as CommandHandler,
   "model-scope": handleModelScope,
   timeouts: handleTimeouts,
@@ -870,6 +923,11 @@ function handleSettingsHub(_input: string, ctx: CommandContext): void {
       { value: "compaction", label: `${icon("compact")} Compaction`, description: compaction },
       { value: "diff-style", label: `${icon("git")} Diff Style`, description: diffStyle },
       { value: "agent-features", label: `${icon("system")} Agent Features`, description: "toggle" },
+      {
+        value: "code-quality",
+        label: `${icon("system")} Code Quality`,
+        description: "workflow gates",
+      },
       {
         value: "instructions",
         label: `${icon("system")} Instructions`,
@@ -1184,6 +1242,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/compact settings", handleCompaction);
   map.set("/compaction", handleCompaction); // legacy alias
   map.set("/agent-features", handleAgentFeatures);
+  map.set("/code-quality", handleCodeQuality);
   map.set("/instructions", handleInstructions);
   map.set("/diff-style", handleDiffStyle); // legacy alias
   map.set("/model-scope", handleModelScope);

@@ -287,7 +287,15 @@ export interface AgentFeatures {
 /** Doppelganger (spark) = inherits parent conversation, same model, cache hits. Diverge (ember) = fresh context, can use cheaper model. */
 export type TaskTier = "spark" | "ember";
 
+/** Defaults of the code quality gates of workflow runs (#630); each run freezes them in its policy. */
+export interface QualityConfig {
+  /** Duplication and dead-code ratchet: `warn` (default) reports, `ratchet` blocks, `off` skips. */
+  duplication?: "off" | "warn" | "ratchet";
+}
+
 export interface AppConfig {
+  /** Code quality gate defaults for new workflow runs. */
+  quality?: QualityConfig;
   workflows?: import("zod").infer<
     typeof import("../core/workflows/schemas.js").WorkflowConfigSchema
   >;
@@ -335,6 +343,10 @@ export interface AppConfig {
   anthropicTextEditor?: boolean;
   /** Enable web search tool for all LLMs. Always prompts for approval before searching. Default: true */
   webSearch?: boolean;
+  /** Allow deploying artifacts to the user's Vercel account. Each deploy still asks. Default: false */
+  artifactDeploy?: boolean;
+  /** The Vercel team artifacts deploy to; unset (or VERCEL_TEAM_ID unset) is the personal account. */
+  vercelTeamId?: string;
   /** Show verbose tool output (plan updates, etc.) in chat. Default: false */
   verbose?: boolean;
   /** Diff display style: "default" | "sidebyside" | "compact". Default: "default" */

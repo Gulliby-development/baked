@@ -58,6 +58,7 @@
     "release:minor": "bash scripts/release.sh minor",
     "release:major": "bash scripts/release.sh major",
     "release:dry": "bash scripts/release.sh patch --dry-run",
+    "release:tag": "bash scripts/release.sh tag",
     "postinstall": "bun scripts/postinstall.mjs"
   },
   "devDependencies": {

@@ -42,6 +42,7 @@ type SecretKey = string;
 const STATIC_SECRETS: Record<string, string> = {
   "brave-api-key": "BRAVE_SEARCH_API_KEY",
   "jina-api-key": "JINA_API_KEY",
+  "vercel-token": "VERCEL_TOKEN",
 };
 
 /** secretKey → envVar mapping. Initialized with static keys, extended by providers at boot. */

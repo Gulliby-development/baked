@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
@@ -77,7 +77,7 @@ interface Scenario {
 
 /** A completed run in a Git repository with a bare remote; optional user changes before the run. */
 async function completedRun(
-  options: { repository?: boolean; userChanges?: boolean } = {},
+  options: { repository?: boolean; userChanges?: boolean; specsTracked?: boolean } = {},
 ): Promise<Scenario> {
   const fx = workflowFixture();
   const remote = mkdtempSync(join(tmpdir(), "baked-delivery-remote-"));
@@ -95,6 +95,10 @@ async function completedRun(
     writeFileSync(join(root, ".gitignore"), ".baked/\n");
     writeFileSync(join(root, "README.md"), "# Project\n");
     writeFileSync(join(root, "user.txt"), "original\n");
+    if (options.specsTracked) {
+      mkdirSync(join(root, "specs"));
+      writeFileSync(join(root, "specs", "README.md"), "# Specs\n");
+    }
     git(root, "add", ".");
     git(root, "commit", "-q", "-m", "Initial");
     git(root, "remote", "add", "origin", remote);
@@ -150,10 +154,32 @@ const remoteHead = (s: Scenario, branch: string) => {
 };
 
 describe("Git delivery", () => {
+  test("leaves the run's specs out when the repository keeps none, unless asked", async () => {
+    const s = await completedRun();
+    const plan = (await prepare(s)).plan;
+    expect(plan.files.map((f) => f.path)).toEqual(["value.txt"]);
+    const specs = plan.excluded.filter((e) => e.reason === "specs").map((e) => e.path);
+    expect(specs.sort()).toEqual(
+      ["plan.md", "spec.json", "spec.md", "tasks.json", "tasks.md"].map((f) => `specs/fixture/${f}`),
+    );
+    expect(plan.userChanges).toEqual([]);
+    const forced = (await prepare(s, { specs: true })).plan;
+    expect(forced.files.map((f) => f.path)).toContain("specs/fixture/spec.json");
+  });
+
+  test("delivers the run's specs when the base commit tracks specs/", async () => {
+    const s = await completedRun({ specsTracked: true });
+    const plan = (await prepare(s)).plan;
+    expect(plan.files.map((f) => f.path)).toContain("specs/fixture/spec.json");
+    expect(plan.excluded.some((e) => e.reason === "specs")).toBe(false);
+    const without = (await prepare(s, { specs: false })).plan;
+    expect(without.files.map((f) => f.path)).toEqual(["value.txt"]);
+  });
+
   test("delivers only the run's files to a branch, a push and a pull request with evidence", async () => {
     const s = await completedRun({ userChanges: true });
     const headBefore = git(s.root, "rev-parse", "HEAD");
-    const prepared = await prepare(s, { draft: true });
+    const prepared = await prepare(s, { draft: true, specs: true });
     const plan = prepared.plan;
     expect(plan.operations).toEqual(["commit", "push", "pull_request"]);
     expect(plan.branch).toBe(`baked/fixture-${s.runId.slice(0, 8)}`);
