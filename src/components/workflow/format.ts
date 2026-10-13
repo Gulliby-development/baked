@@ -384,8 +384,11 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return null;
     case "tool.finished":
       // Only a call that hit its deadline is worth a line; the rest is evidence for attribution.
-      return event.payload.status === "deadline"
-        ? `Tool ${event.payload.tool} did not return in time and was abandoned`
+      if (event.payload.status === "deadline")
+        return `Tool ${event.payload.tool} did not return in time and was abandoned`;
+      // A repair probe is worth a line: it shows how a repair task isolated its failure.
+      return event.payload.tool === "run_probe"
+        ? `Probe ran (${formatDuration(event.payload.durationMs)})`
         : null;
   }
 }

@@ -35,6 +35,7 @@ const FIELDS = [
   "execution",
   "writers",
   "clarification",
+  "strict",
   "start",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
@@ -76,6 +77,8 @@ export function NewRunForm({
   const [writers, setWriters] = useState<number | null>(null);
   // Null follows the policy; a toggle overrides it for this run.
   const [clarificationOverride, setClarification] = useState<ClarificationMode | null>(null);
+  // The run model replaces every configured route for this run (`--model-strict`).
+  const [strict, setStrict] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workflows = info?.workflows ?? ["sdd"];
@@ -127,6 +130,7 @@ export function NewRunForm({
         budget,
         ...executionRequest(execution),
         clarification,
+        ...(strict ? { modelStrict: true } : {}),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -154,7 +158,7 @@ export function NewRunForm({
       move(evt.name === "up" || (evt.name === "tab" && evt.shift) ? -1 : 1);
       return;
     }
-    const toggle = focus === "execution" || focus === "clarification";
+    const toggle = focus === "execution" || focus === "clarification" || focus === "strict";
     const choice = focus === "workflow" || focus === "budget" || toggle;
     if (
       (choice || focus === "writers") &&
@@ -169,6 +173,7 @@ export function NewRunForm({
       else if (focus === "execution") setWorktreeOverride(!execution.worktree);
       else if (focus === "clarification")
         setClarification(clarification === "assume" ? "ask" : "assume");
+      else if (focus === "strict") setStrict(!strict);
       else setWriters(clampWriters(execution.writers + delta));
       return;
     }
@@ -325,6 +330,19 @@ export function NewRunForm({
           labelWidth={10}
           value={modelMissing ? "none selected" : (model ?? "")}
         />
+        <FocusTarget active={focus === "strict"}>
+          <Field
+            label="Routes"
+            labelWidth={10}
+            focused={focus === "strict"}
+            value={
+              strict
+                ? "‹ run model only ›  overrides every configured route"
+                : "‹ configured ›  roles and stages use their routes"
+            }
+            keyHint="←/→"
+          />
+        </FocusTarget>
         <Field
           label="Checks"
           labelWidth={10}
