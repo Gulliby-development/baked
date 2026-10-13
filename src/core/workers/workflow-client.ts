@@ -21,10 +21,12 @@ import { WorkerClient } from "./rpc.js";
 
 /**
  * `reroute` moves a stopped run to another run model and continues it in one decision; `fork`
- * with a stage starts the new run at that stage with this run's approval and changes.
+ * with a stage starts the new run at that stage with this run's approval and changes;
+ * `accept-workspace` keeps the files a person changed outside the run and continues it.
  */
 export type WorkflowAction =
   | "resume"
+  | "accept-workspace"
   | "pause"
   | "cancel"
   | "fork"
@@ -222,6 +224,7 @@ export class WorkflowClient extends WorkerClient {
   async action(runId: string, action: WorkflowAction): Promise<RunSnapshot> {
     const drives =
       action === "resume" ||
+      action === "accept-workspace" ||
       action === "extend" ||
       (typeof action !== "string" && !("fork" in action));
     if (drives) this.driving.add(runId);
@@ -230,6 +233,12 @@ export class WorkflowClient extends WorkerClient {
     } finally {
       if (drives) this.driving.delete(runId);
     }
+  }
+  /** The paths a person changed outside a run blocked on `input_changed`. */
+  outsideChanges(
+    runId: string,
+  ): Promise<{ path: string; before: string | null; after: string | null }[]> {
+    return this.callWithTimeout(null, "outsideChanges", runId);
   }
   /** Undoes the run's uncommitted task edits; the run must not be running. */
   undo(runId: string): Promise<UndoResult> {

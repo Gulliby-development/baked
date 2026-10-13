@@ -466,6 +466,7 @@ function planGraph(
         }),
       ),
     ),
+    spec,
   );
   // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
   return withCoveringChecks(
@@ -475,8 +476,8 @@ function planGraph(
 }
 
 /** What the analyzer is told the host verified, including the dependency edges the host owns. */
-function hostEdgesNote(graph: TaskGraph): string[] {
-  const edges = hostDependencyEdges(graph);
+function hostEdgesNote(graph: TaskGraph, spec?: Spec): string[] {
+  const edges = hostDependencyEdges(graph, spec);
   return edges.length
     ? [
         ...PLAN_CONSISTENCY_CHECKS,
@@ -1024,7 +1025,7 @@ export class WorkflowScheduler {
                   policy,
                   this.requireProfile(profile),
                   {
-                    verifiedByRuntime: hostEdgesNote(graph),
+                    verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
                     ...(Object.keys(hostSplitParts(graph)).length
@@ -1085,7 +1086,7 @@ export class WorkflowScheduler {
               }
               // The host adds some dependsOn edges after planning; plan.md cannot mention them and the
               // planner cannot remove them, so a finding about them is a note.
-              const hostEdges = hostDependencyEdges(graph);
+              const hostEdges = hostDependencyEdges(graph, spec);
               const taskIds = graph.tasks.map((t) => t.id);
               for (const finding of analysis.findings) {
                 if (
@@ -2584,9 +2585,14 @@ export class WorkflowScheduler {
         this.store.transaction(() =>
           this.store.invalidateEvidence(runId, state.snapshotId ?? "", "source_changed"),
         );
+      const outside = differing.filter(
+        (path) => runWrittenHash(this.store, runId, path) !== (files[path] ?? null),
+      );
+      const listed = `${outside.slice(0, 10).join(", ")}${outside.length > 10 ? `, and ${String(outside.length - 10)} more` : ""}`;
       throw new WorkflowFault(
         "INPUT_CHANGED",
-        "Sources changed outside the active task; revise or revalidate before continuing",
+        `Files changed outside the run: ${listed}. Keep the changes with \`baked workflow resume RUN_ID --accept-workspace\` (Accept changes in the terminal UI and the desktop app), or restore them and resume, or fork the run`,
+        { paths: outside },
       );
     }
   }
@@ -6045,6 +6051,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * here would be to fit the tests or to drop a requirement, unless one side of the conflict is what
    * the request states: then the request wins once per task, as a person answered "defer to the
    * brief" in bench round 15 (envguard 8b8b7022, structpad 6c8758ed), and the decision is recorded.
+   * When the other side is a test an implemented test task of the plan wrote, the approved spec
+   * wins over that test, also once per task: the task may then write the test file and runs
+   * again (#967, cfgtrace 49dbf63b: correctives that could only change the source asked a person
+   * three times about tests that contradicted the spec).
    */
   private specConflict(
     runId: string,
@@ -6057,10 +6067,10 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const account = { taskId: task.id, summary: result.summary, unresolved: result.unresolved };
     const report = [result.summary, ...result.unresolved].join(" ");
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
-    const assume =
-      policy.clarification === "assume" &&
-      namesRequestSide(report) &&
-      !this.store.latestArtifact(runId, assumedPath);
+    const first =
+      policy.clarification === "assume" && !this.store.latestArtifact(runId, assumedPath);
+    const assume = first && namesRequestSide(report);
+    const tests = first && !assume ? this.conflictingTests(runId, state, task, report) : [];
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -6082,6 +6092,50 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.`;
       return;
     }
+    if (tests.length) {
+      const paths = tests.map((t) => t.path);
+      const findings = this.recordFindings(runId, {
+        schemaVersion: 1,
+        snapshotHash: state.workspaceHash ?? "",
+        verdict: "changes_requested",
+        coverage: [],
+        findings: tests.map(({ path, owner }) => ({
+          id: newId(),
+          kind: "correctness" as const,
+          severity: "high" as const,
+          requirementIds: owner.requirementIds,
+          criterionIds: owner.criterionIds,
+          file: path,
+          symbol: null,
+          evidenceIds: [],
+          claim: `${path} contradicts the approved spec (reported by ${task.id}): ${report.slice(0, 1200)}`,
+          impact: `${task.id} cannot satisfy both the spec and this test`,
+          suggestedFix: `Change only the assertions in ${path} that contradict the approved spec to what the spec states. Keep every other assertion; weaken or remove none.`,
+        })),
+      });
+      this.store.transaction(() => {
+        this.store.artifact(
+          runId,
+          "assumption",
+          assumedPath,
+          canonical({
+            ...account,
+            assumed: `The approved spec wins over ${tests.map((t) => `${t.path} (written by ${t.owner.id})`).join(", ")}`,
+            tests: paths,
+          }),
+        );
+        const before = new Set(state.graph?.tasks.map((t) => t.id));
+        this.repair(runId, state, policy, findings, "repair", "task");
+        // The task runs again once the tests that contradicted the spec are corrected.
+        const correctives = (state.graph?.tasks ?? []).filter((t) => !before.has(t.id));
+        state.waitingFor[task.id] = [
+          ...(state.waitingFor[task.id] ?? []),
+          ...correctives.map((t) => t.id),
+        ];
+      });
+      state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests contradict the approved spec: ${report.slice(0, 1500)} The approved spec wins over ${paths.join(", ")}: a correction of the test task changes only the assertions that contradict the spec, and ${task.id} runs again after it.`;
+      return;
+    }
     this.wait("clarification", state, {
       questions: [
         {
@@ -6091,6 +6145,37 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         },
       ],
       specConflict: account,
+    });
+  }
+  /**
+   * The test files a conflict report names that the task cannot write and that an implemented test
+   * task of the plan wrote. Tests written first and approved by a person stay a question.
+   */
+  private conflictingTests(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    report: string,
+  ): { path: string; owner: Task }[] {
+    const root = state.rootGraph ?? state.graph;
+    if (!root) return [];
+    const implemented = new Set(
+      this.store
+        .tasks(runId)
+        .filter((t) => t.status === "implemented")
+        .map((t) => t.id),
+    );
+    return pathsInOutput(report, root.tasks).flatMap((path) => {
+      if (task.writes.some((w) => w.path === path) || state.testsFirst?.files.includes(path))
+        return [];
+      const owner = root.tasks.find(
+        (t) =>
+          t.id !== task.id &&
+          implemented.has(t.id) &&
+          isTestTask(t) &&
+          t.writes.some((w) => w.path === path && w.action !== "delete"),
+      );
+      return owner ? [{ path, owner }] : [];
     });
   }
   /**

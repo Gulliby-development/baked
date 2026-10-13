@@ -235,6 +235,8 @@ export interface AttemptUsageRecord {
   steps: AttemptStepUsage[];
   /** Tool calls by the code intelligence backend that answered; absent when none reported one. */
   toolBackends?: ToolBackendCount[];
+  /** The reasoning effort sent to the provider; absent when none was sent (#936). */
+  effort?: string;
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */
