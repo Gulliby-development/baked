@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import {
   ROUTING_ARTIFACT,
   type RouteEffort,
@@ -120,6 +120,7 @@ import {
 import {
   compareWithBaseline,
   duplicationOf,
+  isTestCodePath,
   measureBaseline,
   QUALITY_BASELINE,
   QUALITY_DUPLICATION,
@@ -128,6 +129,17 @@ import {
   readCodeFiles,
 } from "./quality/duplication.js";
 import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
+import {
+  generateMutants,
+  isTestCheck,
+  type MutationResult,
+  mutationClaim,
+  mutationOf,
+  presetOf,
+  QUALITY_MUTATION,
+  QUALITY_MUTATION_PENDING,
+  runMutants,
+} from "./quality/mutation.js";
 import type { RegistryFetch } from "./quality/registry.js";
 import {
   type ChangedFile,
@@ -408,6 +420,7 @@ export class WorkflowScheduler {
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
       if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
+      this.restoreMutatedFiles(runId);
       this.store.transaction(() => this.store.transition(runId, "running"));
       await withinWorkflow(this.leases.owner, async () => {
         while (this.store.run(runId).status === "running") {
@@ -4082,7 +4095,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
-    if (!failures.length) failures.push(...(await this.qualityFindings(runId, state, policy)));
+    if (!failures.length)
+      failures.push(...(await this.qualityFindings(runId, state, policy, signal)));
     if (failures.length)
       return this.recordFindings(runId, {
         schemaVersion: 1,
@@ -4279,12 +4293,169 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     runId: string,
     state: RuntimeState,
     policy: RunPolicy,
+    signal: AbortSignal,
   ): Promise<Review["findings"]> {
-    return [
+    const blocking = [
       ...(await this.duplicationFindings(runId, state, policy)),
       ...(await this.ruleFindings(runId, state, policy)),
       ...(await this.sastFindings(runId, state, policy)),
-    ].slice(0, 100);
+    ];
+    // Mutants run the tests many times; code that is about to change again is not worth it.
+    if (!blocking.length)
+      blocking.push(...(await this.mutationFindings(runId, state, policy, signal)));
+    return blocking.slice(0, 100);
+  }
+  /**
+   * The mutation gate (#636): plants small faults in the lines the run added, one at a time,
+   * and runs the policy's required test checks against each. Surviving mutants are blocking
+   * findings under `required`, owned by the task that writes a related test file so the
+   * correction adds a test that kills them; under `advisory` they are notes in the run report.
+   */
+  private async mutationFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<Review["findings"]> {
+    const mode = mutationOf(
+      policy,
+      presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
+    );
+    if (mode === "off" || !state.snapshotId) return [];
+    const root = runRoot(this.store.workspace, state);
+    const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
+    const changed = await this.changedFiles(runId, state, isCodePath);
+    const mutants = tests.length ? generateMutants(changed) : [];
+    const originals = new Map<string, Buffer>();
+    for (const mutant of mutants)
+      if (!originals.has(mutant.file))
+        originals.set(mutant.file, readFileSync(workspacePath(root, mutant.file)));
+    // Kept until the gate restores the files, so a host that stops mid-mutant restores them on the next drive.
+    const pending = (files: Map<string, Buffer>) =>
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "quality",
+          QUALITY_MUTATION_PENDING,
+          canonical({
+            root: relative(this.store.workspace, root).replaceAll("\\", "/"),
+            files: Object.fromEntries(
+              [...files].map(([path, bytes]) => [path, bytes.toString("base64")]),
+            ),
+          }),
+        ),
+      );
+    const scope = new ProcessScope();
+    let result: MutationResult;
+    if (originals.size) pending(originals);
+    try {
+      result = tests.length
+        ? await runMutants(
+            mode,
+            mutants,
+            changed,
+            tests.map((check) => check.id),
+            {
+              plant: async (path, content) => writeFileSync(workspacePath(root, path), content),
+              restore: async (path) => {
+                const bytes = originals.get(path);
+                if (bytes) writeFileSync(workspacePath(root, path), bytes);
+              },
+              test: async (timeLeftMs) => {
+                for (const check of tests) {
+                  const outcome = await executeCheckCommand(
+                    scope,
+                    check.executable === "bun" ? process.execPath : check.executable,
+                    check.args,
+                    {
+                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                      env: buildCheckEnv(check),
+                      timeoutMs: Math.max(1000, Math.min(check.timeoutMs, timeLeftMs)),
+                      signal,
+                    },
+                  );
+                  if (outcome.timedOut) return { status: "timeout" };
+                  if (outcome.exitCode !== 0) return { status: "failed", check: check.id };
+                }
+                return { status: "passed" };
+              },
+              now: () => Date.now(),
+            },
+            {
+              ...(policy.mutationBudgetMs ? { budgetMs: policy.mutationBudgetMs } : {}),
+              ...(policy.mutationThresholds ? { thresholds: policy.mutationThresholds } : {}),
+              signal,
+            },
+          )
+        : {
+            schemaVersion: 1,
+            mode,
+            tests: [],
+            mutants: [],
+            score: null,
+            note: "no required test check in the policy",
+          };
+    } finally {
+      await scope.stop();
+      if (originals.size) pending(new Map());
+    }
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.mutants.filter((m) => m.blocking);
+    if (!blocking.length) {
+      this.resolveClaims(runId, mutationClaim);
+      return [];
+    }
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    return blocking.map((m) => {
+      const owner = tasks.find((t) => t.writes.some((w) => w.path === m.file));
+      // The test file of a related task, so the correction may write the test that kills it.
+      const testFile = tasks
+        .filter(
+          (t) =>
+            t === owner || (owner && t.criterionIds.some((id) => owner.criterionIds.includes(id))),
+        )
+        .flatMap((t) => t.writes.map((w) => w.path))
+        .find((path) => isTestCodePath(path) && isCodePath(path));
+      return this.qualityFinding(state, {
+        kind: "correctness",
+        file: testFile ?? m.file,
+        evidenceId,
+        claim: `Surviving mutant ${m.id}: ${m.file}:${m.line} changed from \`${m.original.trim().slice(0, 160)}\` to \`${m.mutated.trim().slice(0, 160)}\` and every test check still passed`,
+        impact:
+          "The tests do not check the behavior of this line: a wrong change to it would go unnoticed.",
+        suggestedFix: `Add or strengthen a test${testFile ? ` in ${testFile}` : ""} that passes on the code as it is and fails on the mutant (${m.file}:${m.line}). Do not change ${m.file} to get rid of the mutant.`,
+      });
+    });
+  }
+  /**
+   * Puts back a file a mutant was planted in when the host stopped before the mutation gate
+   * restored it. Only a file that still differs from what the gate saved is written.
+   */
+  private restoreMutatedFiles(runId: string): void {
+    const row = this.store.latestArtifact(runId, QUALITY_MUTATION_PENDING);
+    if (!row) return;
+    const pending = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+      root: string;
+      files: Record<string, string>;
+    };
+    if (!Object.keys(pending.files).length) return;
+    const root = join(this.store.workspace, pending.root);
+    for (const [path, base64] of Object.entries(pending.files)) {
+      const target = workspacePath(root, path);
+      const bytes = Buffer.from(base64, "base64");
+      if (!existsSync(target) || !readFileSync(target).equals(bytes)) writeFileSync(target, bytes);
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "quality",
+        QUALITY_MUTATION_PENDING,
+        canonical({ root: pending.root, files: {} }),
+      ),
+    );
   }
   /**
    * The files the run changed that `include` selects and that still exist, with their content
@@ -5096,7 +5267,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
-    if (!failures.length) failures.push(...(await this.qualityFindings(runId, state, policy)));
+    if (!failures.length)
+      failures.push(...(await this.qualityFindings(runId, state, policy, signal)));
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.

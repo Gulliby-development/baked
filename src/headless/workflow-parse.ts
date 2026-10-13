@@ -124,6 +124,7 @@ const flags = new Set([
   "clarification",
   "duplication",
   "sast",
+  "mutation",
   "issue",
   "output",
   "text",
@@ -186,6 +187,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "clarification",
     "duplication",
     "sast",
+    "mutation",
     "issue",
     "budget",
   ],
@@ -444,6 +446,12 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     !["auto", "off"].includes(String(result.flags.sast))
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--sast accepts auto or off");
+  if (
+    !result.flags.help &&
+    "mutation" in result.flags &&
+    !["off", "advisory", "required"].includes(String(result.flags.mutation))
+  )
+    throw new WorkflowFault("INVALID_DEFINITION", "--mutation accepts off, advisory or required");
   if (!result.flags.help && ["run", "doctor", "estimate"].includes(result.command)) {
     if ("writers" in result.flags) {
       const writers = String(result.flags.writers);
@@ -469,7 +477,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--budget PRESET]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--clarification ask|assume] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--budget PRESET]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -488,6 +496,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   duplication, then the quality.duplication setting, otherwise warn
   --sast off skips Semgrep on the run's diff; auto (the default) runs it when it is installed.
   Default: the policy's sast, then the quality.sast setting, otherwise auto
+  --mutation required makes the mutants of the added lines that the test checks do not kill
+  blocking findings; advisory lists them in the run report; off skips the gate. Default: the
+  policy's mutation, then the quality.mutation setting, then the preset (advisory for sdd/full)
   --budget quick|standard|extended|checkpoints scales the policy (--policy, the config's
   workflows.policy, or the built-in default): quick halves the limits, extended doubles them,
   checkpoints drops the token cap and pauses for your go-ahead. Default: standard

@@ -280,6 +280,11 @@ export async function executeWorkflowCommand(
         ...(args.flags.sast === "auto" || args.flags.sast === "off"
           ? { sast: args.flags.sast }
           : {}),
+        ...(args.flags.mutation === "off" ||
+        args.flags.mutation === "advisory" ||
+        args.flags.mutation === "required"
+          ? { mutation: args.flags.mutation }
+          : {}),
       });
       // The run's record keeps these warnings; the operator sees them before the run goes on.
       for (const warning of readRoutingSummary(service.store, run.runId)?.warnings ?? [])

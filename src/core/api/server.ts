@@ -410,6 +410,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.clarification) flags.clarification = body.clarification;
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
+  if (body.mutation) flags.mutation = body.mutation;
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;
