@@ -87,6 +87,8 @@ interface Behavior {
   analysisFindings?: number;
   findingKind?: string;
   findingRefs?: string[];
+  /** The planned task runs the value check after each attempt, so a broken value fails it. */
+  taskCheck?: boolean;
 }
 
 class V2Executor implements AgentExecutor {
@@ -139,7 +141,7 @@ class V2Executor implements AgentExecutor {
           schemaVersion: 1, markdown,
           taskGraph: {
             schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(this.spec), planHash: hashBytes(markdown),
-            tasks: [{ id: "T001", title: "Create value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: this.spec.criteria.map((c) => c.id), dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+            tasks: [{ id: "T001", title: "Create value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: this.spec.criteria.map((c) => c.id), dependsOn: [], profileId: "implementer", writes: [{ path: "value.txt", action: "create" }], readHints: [], checkIds: this.behavior.taskCheck ? ["task-check"] : [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
           },
         };
         break;
@@ -597,6 +599,22 @@ describe("workflow v2 scheduler", () => {
     expect(taken).toEqual(["plan-approve:passed", "approve-implement:passed", "implement-checks:passed", "checks-repair:failed", "implement-checks:passed", "checks-done:passed"]);
     expect(service.store.state(run.runId).position?.loops).toEqual({ "checks-repair": 1 });
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
+  }, 30000);
+
+  // #853: the repair of a failed task check read the definition with the schema-1 parser, so a
+  // run of any preset blocked with a schema error instead of correcting the task.
+  test("a failed task check in a v2 run starts a corrective task and the run completes", async () => {
+    const checked: RunPolicy = { ...policy, checks: [valueCheck, { ...valueCheck, id: "task-check", scope: "task" }] };
+    const { start, complete, service } = setup({ broken: 1, taskCheck: true }, checked);
+    const run = await start("standard");
+    const final = await complete(run.runId);
+    expect(lastError(service, run.runId)).toBe("");
+    expect(final.status).toBe("completed");
+    const tasks = service.store.tasks(run.runId);
+    expect(tasks.map((t) => t.id)).toEqual(["T001", "T002"]);
+    expect(JSON.parse(tasks[1]?.definition_json ?? "{}").origin).toBe("repair");
+    expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["task-check:failed", "task-check:passed", "check:passed"]);
+    expect(ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId)).not.toContain("checks-repair");
   }, 30000);
 
   // A check whose fixer resolves what it reports passes without a repair task (#235).

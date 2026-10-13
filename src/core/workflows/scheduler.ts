@@ -8695,9 +8695,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   ): void {
     this.store.transaction(() => {
       appendCorrections(this.store, runId, state, policy, findings, kind);
-      state.stageIndex = WorkflowSchema.parse(
-        JSON.parse(this.store.run(runId).definition_json),
-      ).stages.findIndex((s) => s.kind === "task-graph");
+      // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
+      // stage's failure goes back along the definition's repair transition (#853).
+      const parsed = parseRunDefinition(this.store.run(runId).definition_json);
+      if (parsed.schemaVersion === 1)
+        state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
   }
   private async accept(
