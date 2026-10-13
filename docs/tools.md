@@ -62,7 +62,7 @@ The wait is the global `diagnostics.timeoutMs` (2500 ms by default, 250 to 30000
 
 `editDiagnostics` decides what an edit that adds errors does. `feedback` (the default) keeps the edit and returns the errors. `reject` writes the original text back, drops the edit from the undo stack and fails the tool call with the errors and the original lines, so the agent rewrites the edit instead of building on a broken one. A new file created with `ast_edit` is never rejected. It is a chat setting in the Agent features page (`/agent-features`, the desktop settings, `/v1/settings`), per project or global; a workflow run freezes it in its policy ([runtime guide](workflows/runtime.md#diagnostics-after-edits)).
 
-The authoritative whole-project typecheck stays in the workflow checks stage and the `git commit` checks below; the language server is the fast feedback after each edit.
+The authoritative whole-project typecheck stays in the workflow checks stage and the `git commit` checks below; the language server is the fast feedback after each edit. A typecheck at the end of each workflow task is planned in [#673](https://github.com/Gulliby-development/baked/issues/673).
 
 ## Running things
 
