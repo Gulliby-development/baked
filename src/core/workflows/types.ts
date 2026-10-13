@@ -244,6 +244,15 @@ export const RuntimeStateSchema = z
       .nullable()
       .default(null),
     /**
+     * Active learned code rules captured at run creation (artifact `project/learned-rules.json`),
+     * given to implementers for the paths of their task and to reviewers (#643). Null when none.
+     */
+    learnedRules: z
+      .object({ artifactId: z.string(), hash: z.string() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
      * The run's own Git worktree once it exists (worktree execution mode). From then on the run
      * reads, edits, checks and snapshots there; the project working copy is never written.
      */

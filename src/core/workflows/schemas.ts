@@ -201,6 +201,12 @@ export const PolicySchema = z
      */
     projectMemory: z.boolean().optional(),
     /**
+     * `false` leaves out learned code rules (#643): rules proposed from findings that recurred in
+     * earlier runs and activated by recurrence or a person. Absent means on, so stored policies
+     * keep their hash.
+     */
+    learnedRules: z.boolean().optional(),
+    /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
      */

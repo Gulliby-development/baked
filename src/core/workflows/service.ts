@@ -56,6 +56,7 @@ import {
 import { estimatePrepared } from "./pre-run.js";
 import {
   collectProjectMemory,
+  LEARNED_RULES_ARTIFACT,
   PROJECT_MEMORY_ARTIFACT,
   renderProjectMemory,
 } from "./project-memory.js";
@@ -236,12 +237,15 @@ export class NativeWorkflowService implements WorkflowService {
       ? renderWorkingSet(project.id, resolveWorkingSet(project), { cwd: this.workspace })
       : null;
     if (workingSet) instructionHashes.push({ source: WORKING_SET_ARTIFACT, hash: workingSet.hash });
-    const memory =
-      policy.projectMemory === false
-        ? null
-        : renderProjectMemory(collectProjectMemory(this.store), policy);
+    const remembered = collectProjectMemory(this.store, undefined, {
+      rules: policy.learnedRules !== false,
+    });
+    const memory = policy.projectMemory === false ? null : renderProjectMemory(remembered, policy);
     if (memory)
       instructionHashes.push({ source: PROJECT_MEMORY_ARTIFACT, hash: hashBytes(memory) });
+    // Learned rules reach implementers and reviewers even when project memory is off.
+    const rules = remembered.rules?.length ? canonical(remembered.rules) : null;
+    if (rules) instructionHashes.push({ source: LEARNED_RULES_ARTIFACT, hash: hashBytes(rules) });
     const state: RuntimeState = {
       prompt: request.prompt,
       requestText: request.prompt,
@@ -313,6 +317,7 @@ export class NativeWorkflowService implements WorkflowService {
       diff: null,
       workingSet: null,
       projectMemory: null,
+      learnedRules: null,
       worktree: null,
       gateResults: {},
       acceptance: {},
@@ -346,6 +351,11 @@ export class NativeWorkflowService implements WorkflowService {
       if (memory) {
         const artifact = this.store.artifact(id, "context", PROJECT_MEMORY_ARTIFACT, memory);
         state.projectMemory = { artifactId: artifact.id, hash: artifact.content_hash };
+        this.store.saveState(id, state);
+      }
+      if (rules) {
+        const artifact = this.store.artifact(id, "context", LEARNED_RULES_ARTIFACT, rules);
+        state.learnedRules = { artifactId: artifact.id, hash: artifact.content_hash };
         this.store.saveState(id, state);
       }
       if (diff) {
@@ -1492,6 +1502,16 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.readArtifact(runId, state.projectMemory.artifactId),
         );
         state.projectMemory = { ...state.projectMemory, artifactId: copy.id };
+        this.store.saveState(id, state);
+      }
+      if (state.learnedRules) {
+        const copy = this.store.artifact(
+          id,
+          "context",
+          LEARNED_RULES_ARTIFACT,
+          this.store.readArtifact(runId, state.learnedRules.artifactId),
+        );
+        state.learnedRules = { ...state.learnedRules, artifactId: copy.id };
         this.store.saveState(id, state);
       }
       const result = this.store.snapshot(id);

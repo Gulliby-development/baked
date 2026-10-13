@@ -336,6 +336,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       list: [0, false],
       add: [0, true],
       edit: [1, true],
+      accept: [1, false],
       forget: [1, false],
       restore: [1, false],
     } as const;
@@ -343,7 +344,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
     if (!rule)
       throw new WorkflowFault(
         "INVALID_DEFINITION",
-        "memory accepts list, add, edit, forget or restore",
+        "memory accepts list, add, edit, accept, forget or restore",
       );
     if (rest.length !== rule[0])
       throw new WorkflowFault(
@@ -475,10 +476,11 @@ quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MO
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
 status RUN_ID [--json]
-memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory forget|restore ID
-  What earlier runs taught new runs (answers, approved assumptions, passing checks) and your notes.
-  add writes a note; edit rewords a note, answer or assumption; forget deletes a note or hides an
-  entry; restore brings an entry back as runs recorded it. Runs started afterwards read the result
+memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | memory accept|forget|restore ID
+  What earlier runs taught new runs (answers, approved assumptions, passing checks, code rules
+  learned from recurring findings) and your notes. add writes a note; edit rewords a note, answer,
+  assumption or rule; accept activates a proposed rule; forget deletes a note or hides an entry
+  (retires a rule); restore brings an entry back as runs recorded it. Runs started afterwards read the result
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
 resume RUN_ID --expected-revision N [--events]
