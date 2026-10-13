@@ -198,6 +198,8 @@ describe("local API setup and workflow additions", () => {
     expect((await post(`/v1/workflow/runs/${run.runId}/deliver/execute`, {})).status).toBe(400);
     expect((await post(`/v1/workflow/runs/${run.runId}/unknown`, {})).status).toBe(404);
     expect((await call(`/v1/workflow/runs/${run.runId}/deliver`)).status).toBe(405);
+    // A follow-up adds to the followed run's branch, so a new branch name contradicts it.
+    expect((await post(`/v1/workflow/runs/${run.runId}/deliver`, { followUp: "other-run", branch: "x" })).status).toBe(400);
   }, 60000);
 
   test("gates and routes are listed; confirming needs ids or all", async () => {

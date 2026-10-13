@@ -1274,6 +1274,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         const body = DeliverBody.parse(await readJson(req));
         if (body.remote) flags.remote = body.remote;
         if (body.branch) flags.branch = body.branch;
+        if (body.followUp) flags["follow-up"] = body.followUp;
         if (body.draft) flags.draft = true;
         if (body.pullRequest === false) flags["no-pr"] = true;
       } else {

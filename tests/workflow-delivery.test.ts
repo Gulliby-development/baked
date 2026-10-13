@@ -20,7 +20,7 @@ import { migration002 } from "../src/core/workflows/migrations/002.js";
 import { newId, WorkflowStore } from "../src/core/workflows/store.js";
 import { parseWorkflowArgs, workflowHelp } from "../src/headless/workflow-parse.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
-import { workflowFixture } from "./helpers/workflow-fixture.js";
+import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 type Fixture = ReturnType<typeof workflowFixture>;
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -527,6 +527,130 @@ describe("Git delivery", () => {
     expect(s.provider.creates).toBe(1);
     expect(store.run(s.runId).status).toBe("completed");
   });
+});
+
+/** Writes `value` into value.txt instead of "ready", so a second run of the fixture changes it. */
+class ValueExecutor extends FixtureExecutor {
+  value = "ready";
+  constructor(private dir: string) {
+    super(dir);
+  }
+  override async execute(request: Parameters<FixtureExecutor["execute"]>[0]) {
+    const result = await super.execute(request);
+    // The second run modifies the file the first one created.
+    if (request.profile.output === "plan" && existsSync(join(this.dir, "value.txt")))
+      for (const task of (result.output as { taskGraph: { tasks: { writes: { action: string }[] }[] } }).taskGraph.tasks)
+        for (const write of task.writes) write.action = "modify";
+    if (request.profile.output === "implementation") writeFileSync(join(this.dir, "value.txt"), this.value);
+    return result;
+  }
+}
+
+describe("Follow-up delivery", () => {
+  const followPolicy = {
+    ...fixturePolicy,
+    checks: fixturePolicy.checks.map((c) => ({ ...c, args: ["-e", "if (!(await Bun.file('value.txt').text()).startsWith('ready')) process.exit(1)"] })),
+  };
+  /** Run A delivered with a pull request, then run B, which changes value.txt again on top of it. */
+  async function followUpScenario() {
+    const fx = workflowFixture({ policy: followPolicy, executor: (root) => new ValueExecutor(root) });
+    const remote = mkdtempSync(join(tmpdir(), "baked-delivery-remote-"));
+    cleanups.push(async () => {
+      await fx.dispose();
+      rmSync(remote, { recursive: true, force: true });
+    });
+    const root = fx.root;
+    git(remote, "init", "--bare", "-q", "-b", "main");
+    git(root, "init", "-q", "-b", "main");
+    git(root, "config", "user.name", "Test User");
+    git(root, "config", "user.email", "test@example.test");
+    git(root, "config", "commit.gpgsign", "false");
+    writeFileSync(join(root, ".gitignore"), ".baked/\n");
+    writeFileSync(join(root, "README.md"), "# Project\n");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "Initial");
+    git(root, "remote", "add", "origin", remote);
+    git(root, "push", "-q", "origin", "main");
+    const complete = async () => {
+      const run = await fx.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: followPolicy });
+      const planned = await fx.service.drive(run.runId, new AbortController().signal);
+      if (planned.status !== "waiting") throw new Error(`Fixture run stopped ${planned.status} ${JSON.stringify(planned)}`.slice(0, 600));
+      await fx.approve(run.runId);
+      const done = await fx.service.drive(run.runId, new AbortController().signal);
+      if (done.status !== "completed") throw new Error(`Fixture run ended ${done.status}`);
+      return run.runId;
+    };
+    const provider = new FakePullRequests();
+    const first: Scenario = { fx, root, remote, runId: await complete(), provider };
+    const prepared = await prepare(first);
+    await approve(first, prepared);
+    const delivered = await execute(first);
+    fx.executor.value = "ready, fixed";
+    const second: Scenario = { ...first, runId: await complete() };
+    return { first, second, delivered, branch: prepared.plan.branch };
+  }
+
+  test("commits a later run on top of the delivered branch and keeps its pull request", async () => {
+    const { first, second, delivered, branch } = await followUpScenario();
+    // Without --follow-up the second run's change cannot be separated from the first run's.
+    expect((await refusal(prepare(second))).details.reason).toBe("base_mismatch");
+    const prepared = await prepare(second, { followUp: first.runId });
+    const plan = prepared.plan;
+    expect(plan.operations).toEqual(["commit", "push"]);
+    expect(plan.branch).toBe(branch);
+    expect(plan.base).toEqual({ commit: delivered.commit as string, branch: "main" });
+    expect(plan.pullRequest).toBeNull();
+    expect(plan.followUp).toMatchObject({ runId: first.runId, pullRequest: { number: 1 } });
+    expect(plan.files).toEqual([expect.objectContaining({ path: "value.txt", action: "modify", hash: hashBytes("ready, fixed") })]);
+    expect(prepared.diff).toContain("-ready");
+    expect(prepared.diff).toContain("+ready, fixed");
+    const body = JSON.parse(second.fx.service.store.requests(second.runId).find((r) => r.id === prepared.requestId)?.body_json ?? "{}");
+    expect(body.followUp).toEqual({ runId: first.runId, pullRequest: { number: 1, url: "https://example.test/acme/widget/pull/1" } });
+    await approve(second, prepared);
+    const result = await execute(second);
+    expect(result.branch).toBe(branch);
+    expect(result.pullRequest?.url).toBe("https://example.test/acme/widget/pull/1");
+    expect(remoteHead(second, branch)).toBe(result.commit);
+    expect(git(second.root, "rev-parse", `refs/heads/${branch}`)).toBe(result.commit as string);
+    expect(git(second.root, "rev-parse", `${result.commit}^`)).toBe(delivered.commit as string);
+    expect(git(second.root, "show", `${result.commit}:value.txt`)).toBe("ready, fixed");
+    expect(git(second.root, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(first.provider.creates).toBe(1);
+    // A repeated execute finds what it did and does nothing again.
+    expect(await execute(second)).toEqual(result);
+  }, TWO_EXECUTES_TIMEOUT);
+
+  test("refuses an undelivered run, a moved or checked-out branch, and flags for a new branch", async () => {
+    const { first, second, branch } = await followUpScenario();
+    expect((await refusal(prepare(second, { followUp: second.runId }))).details.reason).toBe("invalid_follow_up");
+    expect(() => parseWorkflowArgs(["deliver", second.runId, "--follow-up", first.runId, "--branch", "x"])).toThrow("--follow-up adds a commit");
+    expect(() => parseWorkflowArgs(["deliver", second.runId, "--execute", "--expected-revision", "1", "--follow-up", first.runId])).toThrow("belongs to the plan");
+    expect(workflowHelp).toContain("--follow-up DELIVERED_RUN_ID");
+    const undelivered = await refusal(prepare(first, { followUp: second.runId }));
+    expect(undelivered.details.reason).toBe("not_delivered");
+    const checkout = mkdtempSync(join(tmpdir(), "baked-delivery-checkout-"));
+    rmSync(checkout, { recursive: true, force: true });
+    git(second.root, "worktree", "add", "-q", checkout, branch);
+    expect((await refusal(prepare(second, { followUp: first.runId }))).details.reason).toBe("branch_checked_out");
+    git(second.root, "worktree", "remove", "--force", checkout);
+    const prepared = await prepare(second, { followUp: first.runId });
+    await approve(second, prepared);
+    // The branch moves on the remote after the plan was approved: the push is never forced.
+    const other = mkdtempSync(join(tmpdir(), "baked-delivery-other-"));
+    cleanups.push(() => rmSync(other, { recursive: true, force: true }));
+    git(other, "clone", "-q", "-b", branch, second.remote, ".");
+    git(other, "config", "user.name", "Other");
+    git(other, "config", "user.email", "other@example.test");
+    writeFileSync(join(other, "theirs.txt"), "theirs\n");
+    git(other, "add", ".");
+    git(other, "commit", "-q", "-m", "Theirs");
+    git(other, "push", "-q", "origin", branch);
+    const theirs = remoteHead(second, branch);
+    expect((await refusal(execute(second))).details.reason).toBe("non_fast_forward");
+    expect(remoteHead(second, branch)).toBe(theirs);
+    git(second.root, "fetch", "-q", "origin", branch);
+    expect((await refusal(prepare(second, { followUp: first.runId }))).details.reason).toBe("branch_moved");
+  }, TWO_EXECUTES_TIMEOUT);
 });
 
 describe("delivery building blocks", () => {

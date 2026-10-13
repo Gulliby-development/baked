@@ -228,6 +228,8 @@ export const UndoBody = Command.extend({ path: z.string().min(1).optional() }).s
 export const DeliverBody = z.strictObject({
   remote: z.string().min(1).optional(),
   branch: z.string().min(1).optional(),
+  /** A delivered run whose branch and pull request receive this run's commit (`--follow-up`). */
+  followUp: SafeId.optional(),
   draft: z.boolean().optional(),
   pullRequest: z.boolean().optional(),
 });

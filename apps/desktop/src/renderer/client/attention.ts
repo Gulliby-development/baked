@@ -59,6 +59,8 @@ export interface DeliveryBody {
   userChanges?: string[];
   commitMessage?: string;
   pullRequest?: { repository: string; title: string; base: string; draft: boolean } | null;
+  /** A follow-up: the commit goes onto the branch and pull request of an earlier delivered run. */
+  followUp?: { runId: string; pullRequest: { number: number; url: string } | null };
 }
 
 export interface PreparedDelivery {
@@ -197,7 +199,13 @@ export const attentionApi = {
   prepareDelivery: (
     key: string,
     runId: string,
-    options: { pullRequest?: boolean; draft?: boolean; remote?: string; branch?: string },
+    options: {
+      pullRequest?: boolean;
+      draft?: boolean;
+      remote?: string;
+      branch?: string;
+      followUp?: string;
+    },
   ) => call<PreparedDelivery>(key, "POST", runPath(runId, "deliver"), options),
 
   /** Approves the plan by its digest, then performs it. */

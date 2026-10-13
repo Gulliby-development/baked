@@ -215,6 +215,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   deliver: [
     "remote",
     "branch",
+    "follow-up",
     "draft",
     "no-pr",
     "with-specs",
@@ -362,9 +363,21 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   )
     throw new WorkflowFault("INVALID_DEFINITION", "--events and --after need --resume");
   if (!result.flags.help && result.command === "deliver") {
-    const planning = ["remote", "branch", "draft", "no-pr", "with-specs", "no-specs"].filter(
-      (name) => name in result.flags,
-    );
+    const planning = [
+      "remote",
+      "branch",
+      "follow-up",
+      "draft",
+      "no-pr",
+      "with-specs",
+      "no-specs",
+    ].filter((name) => name in result.flags);
+    const newBranch = ["branch", "draft", "no-pr"].find((name) => name in result.flags);
+    if ("follow-up" in result.flags && newBranch)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `--${newBranch} plans a new branch; --follow-up adds a commit to the followed run's branch and pull request`,
+      );
     if (result.flags["with-specs"] && result.flags["no-specs"])
       throw new WorkflowFault(
         "INVALID_DEFINITION",
@@ -621,6 +634,10 @@ deliver RUN_ID --execute --expected-revision N [--request ID]
   Perform the approved plan. Retries check what already exists; nothing is force-pushed or merged.
   The pull request token is read from workflows.delivery.tokenEnv (default GITHUB_TOKEN).
   A worktree run is delivered from its branch; its worktree is removed afterwards, the branch stays.
+deliver RUN_ID --follow-up DELIVERED_RUN_ID [--remote origin] [--with-specs|--no-specs]
+  Plan one commit of this run's files on top of the branch DELIVERED_RUN_ID pushed, fast-forward
+  only, and no new pull request: a fix for that pull request's checks or review. The local copy of
+  that branch must match the remote and not be checked out.
 discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
 worktrees [--clean [--dry-run]]

@@ -635,6 +635,9 @@ export async function executeWorkflowCommand(
       const prepared = await prepareDelivery(service.store, service.config, runId, {
         ...(typeof args.flags.remote === "string" ? { remote: args.flags.remote } : {}),
         ...(typeof args.flags.branch === "string" ? { branch: args.flags.branch } : {}),
+        ...(typeof args.flags["follow-up"] === "string"
+          ? { followUp: args.flags["follow-up"] }
+          : {}),
         draft: args.flags.draft === true,
         pullRequest: args.flags["no-pr"] !== true,
         ...(args.flags["with-specs"] ? { specs: true } : {}),
