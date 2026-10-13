@@ -136,12 +136,14 @@ describe("IndexRefresher", () => {
     const r = refresher({ workspace: dir, root: fake.root, debounceMs: 20, minIntervalMs: 0 });
     r.start();
     await until(() => fake.state.opens === 1);
-    await Bun.sleep(50);
+    // macOS reports recent events from before the watch started (creating src); let them pass.
+    await Bun.sleep(400);
+    const before = fake.state.updates;
     writeFileSync(join(dir, "node_modules", "dep.ts"), "export {};\n");
-    await Bun.sleep(150);
-    expect(fake.state.updates).toBe(0);
+    await Bun.sleep(300);
+    expect(fake.state.updates).toBe(before);
     writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");
-    await until(() => fake.state.updates === 1);
+    await until(() => fake.state.updates === before + 1);
   });
 
   test("stop ends watching and pending updates", async () => {
