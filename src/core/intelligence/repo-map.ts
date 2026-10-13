@@ -640,10 +640,12 @@ export class RepoMap {
         this.db.query<{ c: number }, []>("SELECT COUNT(*) as c FROM edges").get()?.c ?? 0;
       const fileCount =
         this.db.query<{ c: number }, []>("SELECT COUNT(*) as c FROM files").get()?.c ?? 0;
+      // `dirty`: files re-indexed one by one after edits whose edges are not rebuilt yet.
       const needsPostIndexing =
-        toIndex.length > 0 || stale.length > 0 || (fileCount > 0 && edgeCount === 0);
+        toIndex.length > 0 || stale.length > 0 || this.dirty || (fileCount > 0 && edgeCount === 0);
 
       if (needsPostIndexing) {
+        this.dirty = false;
         this.onProgress?.(-1, -1); // resolving refs
         await tick();
         await this.resolveUnresolvedRefs();

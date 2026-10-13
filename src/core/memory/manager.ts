@@ -30,6 +30,37 @@ type SettingsScope = "project" | "global";
 const CONFIG_FILE = "memory-config.json";
 const DEFAULT_CONFIG: MemoryScopeConfig = { writeScope: "project", readScope: "all" };
 
+/**
+ * The memory settings of a project: the project's `memory-config.json`, else the global one. Read
+ * without opening the memory databases, so workflow runs can check `shareWithRuns` cheaply.
+ */
+export function findMemoryConfig(
+  cwd: string,
+  globalDir: string = configDir(),
+): { config: MemoryScopeConfig; scope: SettingsScope; cleanup?: CleanupTracker } | null {
+  for (const scope of ["project", "global"] as const) {
+    const path =
+      scope === "global" ? join(globalDir, CONFIG_FILE) : join(cwd, ".baked", CONFIG_FILE);
+    if (!existsSync(path)) continue;
+    try {
+      const data = JSON.parse(readFileSync(path, "utf-8")) as MemoryScopeConfig & {
+        cleanup?: CleanupTracker;
+      };
+      if (data.writeScope && data.readScope)
+        return {
+          config: {
+            writeScope: data.writeScope,
+            readScope: data.readScope,
+            ...(data.shareWithRuns ? { shareWithRuns: true } : {}),
+          },
+          scope,
+          ...(data.cleanup ? { cleanup: data.cleanup } : {}),
+        };
+    } catch {}
+  }
+  return null;
+}
+
 export type ScopedMemory = MemoryRecord & { scope: MemoryScope };
 
 export class MemoryManager {
@@ -84,21 +115,11 @@ export class MemoryManager {
   }
 
   private loadConfig(): void {
-    for (const scope of ["project", "global"] as const) {
-      const path = this.configPath(scope);
-      if (!existsSync(path)) continue;
-      try {
-        const data = JSON.parse(readFileSync(path, "utf-8")) as MemoryScopeConfig & {
-          cleanup?: CleanupTracker;
-        };
-        if (data.writeScope && data.readScope) {
-          this._scopeConfig = { writeScope: data.writeScope, readScope: data.readScope };
-          this._settingsScope = scope;
-          if (data.cleanup) this._cleanup = data.cleanup;
-          return;
-        }
-      } catch {}
-    }
+    const found = findMemoryConfig(this.cwd, this._globalDir);
+    if (!found) return;
+    this._scopeConfig = found.config;
+    this._settingsScope = found.scope;
+    if (found.cleanup) this._cleanup = found.cleanup;
   }
 
   saveConfig(to: "project" | "global"): void {

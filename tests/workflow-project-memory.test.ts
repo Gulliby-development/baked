@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { MemoryManager } from "../src/core/memory/manager.js";
+import { setChatMemorySettings } from "../src/core/memory/browse.js";
+import { chatMemoriesForRuns } from "../src/core/memory/sharing.js";
+import { ContextManager } from "../src/core/context/manager.js";
 import { newId } from "../src/core/workflows/store.js";
 import {
   answeredQuestion,
@@ -9,6 +13,7 @@ import {
   PROJECT_MEMORY_ARTIFACT,
   projectMemoryView,
   renderProjectMemory,
+  runMemoryForChat,
 } from "../src/core/workflows/project-memory.js";
 import { executeWorkflowCommand, formatProjectMemory } from "../src/headless/workflow.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
@@ -179,6 +184,60 @@ describe("editing project memory", () => {
     expect(view.entries.find((e) => e.id === answer.id)?.text).toBe("Plain text, no newline");
     expect(collectProjectMemory(store).assumptions.map((a) => a.text)).toEqual([ASSUMPTION]);
     expect(projectMemoryView(store, { ...fixturePolicy, projectMemory: false }).enabled).toBe(false);
+  });
+
+  test("sharing with chat memory is opt-in and moves settled knowledge both ways", async () => {
+    process.env.BAKED_NO_REPOMAP = "1";
+    const fixture = workflowFixture({ executor: (root) => new AskingExecutor(root) });
+    cleanups.push(fixture.dispose);
+    const { service, executor, root } = fixture;
+    await completeRun(fixture, fixturePolicy, "Plain text, no newline");
+    const profile = join(root, ".profile");
+    const chat = new MemoryManager(root, profile);
+    // Saved settings in the project, so the developer's global settings never apply.
+    setChatMemorySettings(chat, { readScope: "all" });
+    const write = (summary: string, category: "pref" | "decision" | "gotcha" | "context", scope: "project" | "global" = "project") =>
+      chat.getDbForScope(scope).write({ summary, details: "", category, source: "agent" }).record;
+    write("Values are written without a trailing newline", "decision");
+    const pinned = write("The fixture app lives in value.txt", "context");
+    chat.getDbForScope("project").pin(pinned.id);
+    write("Scratch: looked at value.txt once", "context");
+    write("Global preference for short commits", "pref", "global");
+    const hidden = write("Hidden decision about values", "decision");
+    chat.getDbForScope("project").softDelete(hidden.id);
+
+    // Off: runs read no chat memory.
+    expect(chatMemoriesForRuns(root)).toEqual([]);
+    expect(collectProjectMemory(service.store).chat).toBeUndefined();
+
+    setChatMemorySettings(chat, { shareWithRuns: true });
+    expect(chatMemoriesForRuns(root).map((m) => m.summary)).toEqual([
+      "The fixture app lives in value.txt",
+      "Values are written without a trailing newline",
+    ]);
+    executor.prompts = {};
+    rmSync(join(root, "value.txt"));
+    const next = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: fixturePolicy });
+    const captured = service.store.readArtifact(next.runId, service.store.state(next.runId).projectMemory?.artifactId ?? "") ?? "";
+    expect(captured).toContain("Memories the chat agent saved for this project");
+    expect(captured).toContain("[decision] Values are written without a trailing newline");
+    expect(captured).not.toContain("Scratch:");
+    expect(captured).not.toContain("Global preference");
+    expect(captured).not.toContain("Hidden decision");
+
+    // Runs to chat: answers and approved assumptions, once per session.
+    const forChat = runMemoryForChat(service.store) ?? "";
+    expect(forChat).toContain(`Answer: ${QUESTION} -> Plain text, no newline`);
+    expect(forChat).toContain(`Approved assumption: ${ASSUMPTION}`);
+    chat.close();
+    const context = new ContextManager(root);
+    cleanups.push(() => context.dispose());
+    context.getMemoryManager().scopeConfig = { writeScope: "project", readScope: "all", shareWithRuns: true };
+    const first = await context.buildMemoryRecallMessages("What format do values use?");
+    expect(first?.[0].content).toContain("<run_memory>");
+    expect(first?.[0].content).toContain("Plain text, no newline");
+    const again = await context.buildMemoryRecallMessages("Anything else about the format?");
+    expect(again?.[0].content ?? "").not.toContain("<run_memory>");
   });
 
   test("baked workflow memory lists and edits from the command line", async () => {

@@ -3,6 +3,7 @@ import { type GraphAnswer, type GraphUnit, type GraphView, graph } from "../../c
 import { isMissingEndpoint } from "../../client/insights.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Busy } from "../../components/ui/busy.js";
+import { Dot } from "../../components/ui/dot.js";
 import { Empty } from "../../components/ui/empty.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
 import { cn } from "../../lib/cn.js";
@@ -22,6 +23,8 @@ const FLOAT =
   "absolute rounded-base border-2 border-border bg-background shadow-sm-hard font-mono text-[12px] text-soft-foreground";
 
 const INDEX_TASKS = ["open", "index"] as const;
+/** How often an idle graph checks for a background index update. */
+const IDLE_POLL_MS = 15_000;
 
 type Loaded =
   | { kind: "loading" }
@@ -103,11 +106,12 @@ export function GraphSection({ project }: SectionProps) {
             setView(next);
           }
         }
-        if (answer.indexing)
-          timer = setTimeout(
-            () => live && setTick((t) => t + 1),
-            answer.state === "ready" ? 5000 : 2000,
-          );
+        // While the index is built or updated, poll for its progress; otherwise check now and
+        // then for a background update, which only redraws when the graph changed.
+        timer = setTimeout(
+          () => live && setTick((t) => t + 1),
+          !answer.indexing ? IDLE_POLL_MS : answer.state === "ready" ? 5000 : 2000,
+        );
       })
       .catch((error: unknown) => {
         if (!live) return;
@@ -367,12 +371,14 @@ export function GraphSection({ project }: SectionProps) {
                 <div
                   className={cn(
                     FLOAT,
-                    "left-3 top-3 bg-fill-warn px-2.5 py-1.5 text-main-foreground",
+                    "left-3 top-3 inline-flex items-center gap-1.5 px-2 py-1 text-xs",
                   )}
+                  role="status"
                 >
+                  <Dot tone="busy" className="motion-safe:animate-pulse" />
                   {current?.task === "index" && current.done !== null && current.total
-                    ? `Refreshing the index · ${formatCount(current.done)} / ${formatCount(current.total)} files`
-                    : "Refreshing the index…"}
+                    ? `Updating · ${formatCount(current.done)} / ${formatCount(current.total)}`
+                    : "Updating"}
                 </div>
               )}
               <div
