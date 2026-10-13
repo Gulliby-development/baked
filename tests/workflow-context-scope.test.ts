@@ -107,3 +107,23 @@ test("the implementer's prompt holds the files it modifies and leaves out resear
   expect(prompt.split("Required behavior").length).toBe(2);
   expect(executor.prompts.spec?.[0]).toContain("A fixture workspace");
 });
+
+test("reviewers are told when the run started from a workspace without source code", async () => {
+  const reviewBaseline = async (source: boolean) => {
+    const fixture = workflowFixture();
+    cleanups.push(fixture.dispose);
+    const { service, executor, root } = fixture;
+    if (source) writeFileSync(join(root, "main.ts"), "export const value = 1;\n");
+    const run = await fixture.start();
+    await service.drive(run.runId, signal());
+    await fixture.approve(run.runId);
+    for (let i = 0; i < 4 && (await service.get(run.runId)).status !== "completed"; i++) {
+      await fixture.resume(run.runId);
+      await service.drive(run.runId, signal());
+    }
+    expect((await service.get(run.runId)).status).toBe("completed");
+    return (extraOf(executor.prompts.review?.[0] ?? "{}") as { baseline?: { greenfield: boolean } }).baseline;
+  };
+  expect(await reviewBaseline(false)).toEqual({ greenfield: true });
+  expect(await reviewBaseline(true)).toBeUndefined();
+});

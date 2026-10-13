@@ -90,6 +90,7 @@ import {
   withCoveringChecks,
   writtenCodePaths,
 } from "./check-policy.js";
+import { failFastUnavailable } from "./check-preflight.js";
 import {
   ASSUME_NOTE,
   assumeProblems,
@@ -286,6 +287,10 @@ interface QueuedRequest {
 }
 
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
+/** How often rejected approvals may send one run back to revise before a rejection only pauses it. */
+const MAX_REJECTION_REVISIONS = 3;
+const REJECTION_NOTE =
+  "A person rejected the approval of the previous spec and plan with this explanation. Revise the spec, the plan and the tasks so they follow it; where it contradicts an assumption, the explanation wins.";
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
 /**
@@ -746,8 +751,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
-              if (analysis.inputHash !== hashJson(state.manifest))
-                throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // The host binds the analysis to the manifest it analyzed; the model's copy of the hash
+              // is not checked (#347: one transposed character blocked d0f55591).
+              analysis.inputHash = hashJson(state.manifest);
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -895,6 +901,11 @@ export class WorkflowScheduler {
               break;
             }
             case "approve": {
+              if (!state.approvalRoot && this.reviseAfterRejection(runId, state, v2)) {
+                advance = false;
+                rerouted = v2 !== null;
+                break;
+              }
               const analyzed =
                 state.analysisPassed || (v2 !== null && !produces(v2.definition, "analysis"));
               if (!analyzed || !state.spec || !state.graph || !state.plan)
@@ -1014,17 +1025,22 @@ export class WorkflowScheduler {
                 }
                 this.store.transaction(() => {
                   const requestId = this.store.request(runId, "approval", digest, body);
-                  // The host signs the same digest a person would; post-release criteria never get here.
+                  // The host signs the same digest a person would. Post-release criteria get here
+                  // only under clarification assume; the record names each one it defers.
                   this.store.decideRequest(
                     runId,
                     requestId,
                     "accepted",
-                    { digest, autoApproval: auto.approval },
+                    {
+                      digest,
+                      autoApproval: auto.approval,
+                      deferredCriteria: body.deferredCriteria,
+                    },
                     true,
                   );
                   this.store.setApproval(runId, digest);
                   state.approvalRoot = digest;
-                  state.deferredCriteria = [];
+                  state.deferredCriteria = body.deferredCriteria;
                 });
               }
               break;
@@ -1479,7 +1495,12 @@ export class WorkflowScheduler {
           runId,
           "diagnostic",
           `errors/${newId()}.txt`,
-          fault instanceof Error ? fault.message : String(fault),
+          // A schema rejection keeps what the schema said, so a resume can tell the agent.
+          fault instanceof WorkflowFault && typeof fault.details.validation === "string"
+            ? `${fault.message}\n${fault.details.validation}`
+            : fault instanceof Error
+              ? fault.message
+              : String(fault),
         );
         this.store.transition(
           runId,
@@ -1584,6 +1605,35 @@ export class WorkflowScheduler {
         summary: record.summary ?? "",
         unresolved: record.unresolved ?? [],
         note: "An earlier session of this task ended without a complete implementation, as described here. Start from the current files and finish what it left; do not repeat its failed approach.",
+      },
+    };
+  }
+  /**
+   * The input of a corrective task that starts from a clean context (convergence.ts
+   * `freshRestartAfter`): only the evidence its own findings cite, no earlier attempt's diffs or
+   * logs, and the host's account of what the earlier corrections tried.
+   */
+  private freshStart(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+  ): { only?: ReadonlySet<string>; extra: { freshStart?: { summary: string; note: string } } } {
+    const artifactId = state.freshTasks[task.id];
+    if (!artifactId) return { extra: {} };
+    const record = JSON.parse(this.store.readArtifact(runId, artifactId)) as { summary: string };
+    const cited = this.store
+      .findings(runId)
+      .filter((row) => task.findingIds.includes(row.id))
+      .flatMap(
+        (row) => (JSON.parse(row.body_json) as { evidenceIds?: string[] }).evidenceIds ?? [],
+      );
+    return {
+      only: new Set(cited),
+      extra: {
+        freshStart: {
+          summary: record.summary,
+          note: "Earlier corrections of this failure did not change it. This session starts clean: read the current files and the cited evidence, find the cause yourself, and take a different approach. If the cause lies outside the files you may edit, say so in unresolved.",
+        },
       },
     };
   }
@@ -2319,7 +2369,33 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         return "replan";
       }
     }
-    if (report.decision === "split-feature" && state.sizingReplans < 2) {
+    if (
+      report.decision === "split-feature" &&
+      state.sizingReplans < 2 &&
+      policy.clarification === "assume"
+    ) {
+      // Under assume a person is not asked: the run goes on within the ceiling, and the
+      // assumption is recorded where the approval shows it (cronsay 15eb3204 asked here).
+      const priced = `sizing/plan-${String(state.sizingReplans)}.json`;
+      state.sizingReplans = 2;
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "assumption",
+          "assumptions/sizing.json",
+          canonical({
+            assumed: [
+              {
+                id: "SIZING-1",
+                kind: "scope",
+                refs: ["tasks.json", priced],
+                description: `${report.reasons.join(". ")}. Assumed under clarification assume: the run continues within ${String(report.maxRunTokens)} tokens.`,
+              },
+            ],
+          }),
+        ),
+      );
+    } else if (report.decision === "split-feature" && state.sizingReplans < 2) {
       // Asked once; an answer lets the run go on within the ceiling.
       state.sizingReplans = 2;
       this.wait("clarification", state, {
@@ -2585,13 +2661,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   private evidenceContext(
     runId: string,
     state: RuntimeState,
-    options: { reads: boolean; commands?: boolean } = { reads: true },
+    options: { reads: boolean; commands?: boolean; only?: ReadonlySet<string> } = { reads: true },
   ): unknown[] {
     const current = currentEvidence(this.store, runId, state.snapshotId ?? "");
     // Short handles (E1..En) number every current entry, so an agent can cite them instead of
     // copying a 36-character id; the host resolves them.
     const handles = new Map(current.map((e, index) => [e.id, evidenceHandle(index)]));
     return current
+      .filter((e) => !options.only || options.only.has(e.id))
       .filter((e) => options.reads || e.kind !== "read")
       .filter((e) => options.commands !== false || e.kind !== "command")
       .map((e) => {
@@ -2793,6 +2870,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         };
       };
       let proseEnd = false;
+      const fresh = this.freshStart(runId, state, task);
       const result = ImplementationSchema.parse(
         await this.call(
           runId,
@@ -2807,7 +2885,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             evidence: this.evidenceContext(runId, state, {
               reads: false,
               commands: task.origin !== "planned",
+              ...(fresh.only ? { only: fresh.only } : {}),
             }),
+            ...fresh.extra,
             ...(preloaded
               ? {
                   taskFiles: {
@@ -3201,9 +3281,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         stepId,
         this.requireProfile(profiles.find((p) => p.id === task.profileId)),
       );
+      const fresh = this.freshStart(runId, state, task);
       const extra = {
         task,
-        evidence: this.evidenceContext(runId, state, { reads: false }),
+        evidence: this.evidenceContext(runId, state, {
+          reads: false,
+          ...(fresh.only ? { only: fresh.only } : {}),
+        }),
+        ...fresh.extra,
         unresolvedMeans: UNRESOLVED_MEANING,
         ...this.previousAttempt(runId, task.id),
       };
@@ -3386,7 +3471,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (
         error instanceof WorkflowFault &&
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
-          error.details.reason === "provider_account")
+          error.details.reason === "provider_account" ||
+          error.details.reason === "check_unavailable")
       )
         return { kind: "fatal", entry, error };
       // The task's worker or its worktree lease is gone; the other tasks continue.
@@ -3977,6 +4063,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const attempt = this.store.reserve(runId, child, null, 0, policy);
     const checked = await this.checks.run(runId, attempt, check, signal, root);
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    failFastUnavailable(check, checked);
     return checked;
   }
   /**
@@ -4246,6 +4333,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      failFastUnavailable(check, result);
       const regression =
         result.status === "passed" && check.required
           ? this.checkRegression(runId, state, check, result.output)
@@ -4627,6 +4715,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         signal,
         sandbox: runSandbox(policy, runRoot(this.store.workspace, state)),
       });
+    // The workspace the run started from had no source code: the reviewers judge the whole program.
+    const greenfield = this.baselineScaffold(runId, state);
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
       const kept = state.reviews[reviewer.key];
@@ -4649,6 +4739,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             {
               dimension: reviewer.dimension,
               evidence: this.evidenceContext(runId, state),
+              ...(greenfield ? { baseline: { greenfield } } : {}),
               ...extra,
             },
             signal,
@@ -4925,6 +5016,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const attempt = this.store.reserve(runId, stepId, null, 0, policy);
       const result = await this.checks.run(runId, attempt, check, signal, this.rootOf(runId));
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      failFastUnavailable(check, result);
       if (result.status === "passed")
         return { status: "passed", evidenceId: result.evidenceId, attempts, flaky: unstable };
       unstable = true;
@@ -5423,6 +5515,38 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     return v2
       ? v2.definition.stages.map((s) => ({ id: s.id, kind: stageKind(s) ?? s.type }))
       : WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
+  }
+  /**
+   * A person rejected the last approval with an explanation (envguard 45495079: "implementing the
+   * CLI and its tests is in scope"). Resuming must not request the same package again: the run goes
+   * back to specify, or to plan when the definition has no specify stage, with the explanation as
+   * correction input, and the later stages run again. Each rejection is used once, at most
+   * MAX_REJECTION_REVISIONS times per run; a v2 run also stays within its stage visit limit.
+   */
+  private reviseAfterRejection(
+    runId: string,
+    state: RuntimeState,
+    v2: { definition: WorkflowV2 } | null,
+  ): boolean {
+    const last = this.store
+      .requests(runId)
+      .filter((r) => r.kind === "approval")
+      .at(-1);
+    if (last?.status !== "rejected" || state.revisedRejections.includes(last.id)) return false;
+    if (state.revisedRejections.length >= MAX_REJECTION_REVISIONS) return false;
+    const answer = last.answer_json
+      ? (JSON.parse(last.answer_json) as { explanation?: unknown })
+      : {};
+    const explanation = typeof answer.explanation === "string" ? answer.explanation.trim() : "";
+    if (!explanation) return false;
+    const stages = this.stageKinds(runId, v2);
+    let target = stages.findIndex((s) => s.kind === "specify");
+    if (target < 0) target = stages.findIndex((s) => s.kind === "plan");
+    if (target < 0 || !this.moveTo(state, stages, target, v2)) return false;
+    state.revisedRejections.push(last.id);
+    state.analysisPassed = false;
+    state.prompt += `\n${REJECTION_NOTE}\n${canonical({ explanation })}`;
+    return true;
   }
   /**
    * Sends the run back to an earlier stage outside the definition's transitions. A v2 run counts

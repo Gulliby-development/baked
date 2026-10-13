@@ -149,6 +149,8 @@ export class CheckRunner {
     evidenceId: string;
     snapshotId: string;
     output: string;
+    /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`. */
+    reason: string;
   }> {
     const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
     const generated = generatedPaths(policy);
@@ -264,6 +266,6 @@ export class CheckRunner {
       if (unstable) this.store.invalidateEvidence(runId, snapshot.id, "source_changed");
       return evidence;
     });
-    return { status, evidenceId, snapshotId: snapshot.id, output: result.output };
+    return { status, evidenceId, snapshotId: snapshot.id, output: result.output, reason };
   }
 }

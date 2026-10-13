@@ -1,5 +1,11 @@
 import { canonical, hashJson } from "../specs/hash.js";
-import type { InputManifest, RunPolicy, Spec, TaskGraph } from "./schemas.js";
+import {
+  clarificationOf,
+  type InputManifest,
+  type RunPolicy,
+  type Spec,
+  type TaskGraph,
+} from "./schemas.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
 
@@ -104,7 +110,12 @@ export function evaluateAutoApproval(
   for (const write of writes)
     if (needsPerson(write, context.exists, context.scaffold))
       common.push(`${write.path} always needs a person`);
-  if (spec.criteria.some((criterion) => criterion.method === "post-release"))
+  // Under `clarification: assume` the run already decides what it may on its own; the deferral is
+  // recorded in the approval body and the run report, so it is visible without a person.
+  if (
+    clarificationOf(policy) !== "assume" &&
+    spec.criteria.some((criterion) => criterion.method === "post-release")
+  )
     common.push("Deferring post-release criteria needs a person");
   const limitsHash = hashJson({ policy: policyBounds(policy) });
   const reasons: string[] = [...common];
