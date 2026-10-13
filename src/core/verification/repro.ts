@@ -156,15 +156,38 @@ export function reproAllows(
 }
 
 /**
+ * A `noRepro` reason that says the review had no way to run anything. Round 11 reviewers wrote
+ * "No execution/reproduction tool is available in this session" while run_repro was offered.
+ */
+const NO_TOOL =
+  /\bno\b[^.]*\b(tool|execution|run_repro)\b[^.]*\b(available|offered|provided|given)\b|\b(tool|execution|run_repro)\b[^.]*\bnot\b[^.]*\b(available|offered|provided|given)\b/i;
+
+export function claimsNoReproTool(reason: string): boolean {
+  return NO_TOOL.test(reason);
+}
+
+/**
  * Advice for a review whose correctness findings have neither a repro nor `noRepro`: a claim about
  * how runnable code behaves should come with the command that shows it, or say why none can.
+ * With `programs` (run_repro is offered), a `noRepro` that says no tool was available is advised
+ * too, naming the tool and what it can start (#528).
  */
-export function missingReproAdvice(review: Review): string[] {
-  const missing = review.findings.filter((f) => f.kind === "correctness" && !f.repro && !f.noRepro);
-  if (!missing.length) return [];
-  return [
-    `Correctness finding(s) ${missing.map((f) => f.id).join(", ")} have no repro. For each, try a command with run_repro that prints the actual value where the spec requires the expected one, and attach it as repro; when no command can show the claim, set noRepro to say why. A finding without either is reported as unverified. Then call submit_result again with the complete review.`,
-  ];
+export function missingReproAdvice(review: Review, programs?: readonly string[]): string[] {
+  const correctness = review.findings.filter((f) => f.kind === "correctness" && !f.repro);
+  const missing = correctness.filter((f) => !f.noRepro);
+  const unseen = programs?.length
+    ? correctness.filter((f) => f.noRepro && claimsNoReproTool(f.noRepro))
+    : [];
+  const advice: string[] = [];
+  if (missing.length)
+    advice.push(
+      `Correctness finding(s) ${missing.map((f) => f.id).join(", ")} have no repro. For each, try a command with run_repro that prints the actual value where the spec requires the expected one, and attach it as repro; when no command can show the claim, set noRepro to say why. A finding without either is reported as unverified. Then call submit_result again with the complete review.`,
+    );
+  if (unseen.length && programs)
+    advice.push(
+      `Correctness finding(s) ${unseen.map((f) => f.id).join(", ")} say no tool was available to reproduce them, but this review offers run_repro, which starts ${programs.join(", ")} with your arguments in the workspace root. Try the claim with run_repro and attach the repro; keep noRepro only for a reason a command cannot overcome. Then call submit_result again with the complete review.`,
+    );
+  return advice;
 }
 
 /** The host tool a reviewer tries a repro with before it attaches the repro to a finding. */
