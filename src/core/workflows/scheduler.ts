@@ -128,10 +128,18 @@ import {
   qualityClaim,
   readCodeFiles,
 } from "./quality/duplication.js";
+import {
+  HARDEN_PRESET,
+  hardenNote,
+  hardenPlanProblems,
+  hardenTargets,
+  QUALITY_MUTATION_BASELINE,
+} from "./quality/harden.js";
 import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
 import {
   generateMutants,
   isTestCheck,
+  type MutationMode,
   type MutationResult,
   mutationClaim,
   mutationOf,
@@ -1693,6 +1701,8 @@ export class WorkflowScheduler {
         policy.allowOverlappingWrites === true,
       ),
     );
+    if (presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET)
+      problems.push(...hardenPlanProblems(graph.tasks));
     for (const task of graph.tasks) {
       if (!profiles.some((p) => p.id === task.profileId && p.output === "implementation"))
         problems.push(`Unknown implementation profile ${task.profileId}`);
@@ -2123,9 +2133,14 @@ export class WorkflowScheduler {
       ) === "auto"
         ? propertyTestsNote(profile.output)
         : null;
+    const hardening =
+      presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
+        ? hardenNote(profile.output)
+        : null;
     return buildWorkflowContext(state, profile, {
       ...(extra && typeof extra === "object" ? extra : { input: extra }),
       ...(propertyNote ? { propertyTests: propertyNote } : {}),
+      ...(hardening ? { hardening } : {}),
       ...(workingSet ? { projectWorkingSet: workingSet } : {}),
       ...(memory ? { projectMemory: memory } : {}),
       ...(risks ? { knownRisks: risks } : {}),
@@ -4294,6 +4309,25 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         ),
       );
     }
+    // A harden run's score before: the module's mutants against the tests it starts with.
+    const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
+    if (
+      preset === HARDEN_PRESET &&
+      mutationOf(policy, preset) !== "off" &&
+      !this.store.latestArtifact(runId, QUALITY_MUTATION_BASELINE)
+    ) {
+      const before = await this.mutate(
+        runId,
+        state,
+        policy,
+        "advisory",
+        await this.hardenModule(state),
+        signal,
+      );
+      this.store.transaction(() =>
+        this.store.artifact(runId, "quality", QUALITY_MUTATION_BASELINE, canonical(before)),
+      );
+    }
     if (duplicationOf(policy) === "off" || this.store.latestArtifact(runId, QUALITY_BASELINE))
       return;
     const code = await readCodeFiles(root, Object.keys(state.expectedFiles ?? {}));
@@ -4392,14 +4426,46 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     policy: RunPolicy,
     signal: AbortSignal,
   ): Promise<Review["findings"]> {
-    const mode = mutationOf(
-      policy,
-      presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
-    );
+    const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
+    const mode = mutationOf(policy, preset);
     if (mode === "off" || !state.snapshotId) return [];
+    // A harden run changes no code: its mutants go into the module its tasks test.
+    const files =
+      preset === HARDEN_PRESET
+        ? await this.hardenModule(state)
+        : await this.changedFiles(runId, state, isCodePath);
+    const result = await this.mutate(runId, state, policy, mode, files, signal);
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const blocking = result.mutants.filter((m) => m.blocking);
+    if (!blocking.length) {
+      this.resolveClaims(runId, mutationClaim);
+      return [];
+    }
+    return this.mutantFindings(state, blocking, evidenceId);
+  }
+  /** The module a harden run tests, read whole: every line of it may take a mutant. */
+  private async hardenModule(state: RuntimeState): Promise<ChangedFile[]> {
+    const targets = hardenTargets((state.rootGraph ?? state.graph)?.tasks ?? []);
+    const code = await readCodeFiles(runRoot(this.store.workspace, state), targets);
+    return [...code.files].map(([path, content]) => ({ path, content, before: "" }));
+  }
+  /**
+   * Plants each mutant of `files` in turn, runs the policy's required test checks against it and
+   * restores the file byte for byte, also from `quality/mutation-pending.json` after a crash.
+   */
+  private async mutate(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    mode: MutationMode,
+    changed: ChangedFile[],
+    signal: AbortSignal,
+  ): Promise<MutationResult> {
     const root = runRoot(this.store.workspace, state);
     const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
-    const changed = await this.changedFiles(runId, state, isCodePath);
     const mutants = tests.length ? generateMutants(changed) : [];
     const originals = new Map<string, Buffer>();
     for (const mutant of mutants)
@@ -4474,18 +4540,22 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       await scope.stop();
       if (originals.size) pending(new Map());
     }
-    const evidenceId = this.store.transaction(() => {
-      const artifact = this.store.artifact(runId, "quality", QUALITY_MUTATION, canonical(result));
-      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
-    });
-    const blocking = result.mutants.filter((m) => m.blocking);
-    if (!blocking.length) {
-      this.resolveClaims(runId, mutationClaim);
-      return [];
-    }
+    return result;
+  }
+  /** Blocking findings for surviving mutants, each on a test file the correction may write. */
+  private mutantFindings(
+    state: RuntimeState,
+    blocking: MutationResult["mutants"],
+    evidenceId: string,
+  ): Review["findings"] {
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
     return blocking.map((m) => {
-      const owner = tasks.find((t) => t.writes.some((w) => w.path === m.file));
+      // The task that writes the mutated file, or in a harden run the one that tests it.
+      const owner =
+        tasks.find((t) => t.writes.some((w) => w.path === m.file)) ??
+        tasks.find(
+          (t) => t.readHints.includes(m.file) && t.writes.some((w) => isTestCodePath(w.path)),
+        );
       // The test file of a related task, so the correction may write the test that kills it.
       const testFile = tasks
         .filter(

@@ -735,6 +735,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "harden-preset",
+    group: "Workflow runs",
+    title: "Harden preset: strengthen the tests of existing code",
+    tui: ["/workflow"],
+    cli: ["baked workflow run: --workflow harden"],
+    api: ["/v1/workflow/runs", "/v1/workflow/definitions"],
+    desktop: ["project/overview: New run"],
+  },
+  {
     id: "gate-drafts",
     group: "Workflow runs",
     title: "Gates from a plain-language sentence",
