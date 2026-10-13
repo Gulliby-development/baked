@@ -43,8 +43,7 @@ const WORK: [ProjectSection, string, IconName][] = [
 const SETUP: [ProjectSection, string, IconName][] = [
   ["gates", "Gates and checks", "gates"],
   ["workflows", "Workflows", "workflows"],
-  ["instructions", "Instructions", "instructions"],
-  ["working-set", "Working set", "working-set"],
+  ["context", "Agent context", "instructions"],
   ["run-memory", "Run memory", "run-memory"],
   ["chat-memory", "Chat memory", "chat-memory"],
   ["skills", "Skills", "skills"],

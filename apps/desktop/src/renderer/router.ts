@@ -12,8 +12,7 @@ export const PROJECT_SECTIONS = [
   "artifacts",
   "gates",
   "workflows",
-  "instructions",
-  "working-set",
+  "context",
   "run-memory",
   "chat-memory",
   "skills",
@@ -68,6 +67,9 @@ export function parseRoute(hash: string): Route {
   if (head === "p" && a) {
     // Acceptance was a sidebar section before it moved into the run screen and Needs you.
     if (b === "acceptance") return { name: "project", key: a, section: "runs", id: c ?? null };
+    // Instructions and Working set were two screens before they became the Agent context tabs.
+    if (b === "instructions") return { name: "project", key: a, section: "context", id: "rules" };
+    if (b === "working-set") return { name: "project", key: a, section: "context", id: "files" };
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
       ? (b as ProjectSection)
       : "overview";

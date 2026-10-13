@@ -721,7 +721,7 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
   });
 }
 
-async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
+export async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
   const [sub = "", ...rest] = input.trim().split(/\s+/).slice(1);
   const arg = rest.join(" ");
   if (sub === "files") return openInstructionFiles(ctx);
@@ -866,7 +866,7 @@ async function showInstructionFile(ctx: CommandContext, path: string): Promise<v
   });
 }
 
-async function editInstruction(ctx: CommandContext, path: string): Promise<void> {
+export async function editInstruction(ctx: CommandContext, path: string): Promise<void> {
   const { editInstructionFile } = await import("../instruction-files.js");
   const { buildInstructionPrompt, loadInstructions } = await import("../instructions.js");
   const result = await editInstructionFile(ctx.cwd, ctx.instructionFiles, path);

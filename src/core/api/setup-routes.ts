@@ -12,6 +12,7 @@ import {
   mergeConfigs,
 } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
+import { agentContextPreview } from "../agent-context.js";
 import { listCustomCommands } from "../commands/custom.js";
 import {
   instructionSourceStates,
@@ -320,6 +321,18 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     );
     ctx.config.instructionFiles = effective.instructionFiles;
     return ctx.json(200, instructionList());
+  }
+
+  if (path === "/v1/projects/current/context") {
+    ctx.only("GET");
+    return ctx.json(
+      200,
+      agentContextPreview(
+        workspace,
+        ctx.config.instructionFiles,
+        ctx.homeDir ? { homeDir: ctx.homeDir } : {},
+      ),
+    );
   }
 
   if (path === "/v1/commands") {

@@ -1,4 +1,5 @@
 import { getCwd } from "../cwd.js";
+import { register as registerAgentContext } from "./agent-context.js";
 import { register as registerArtifacts } from "./artifacts.js";
 import { matchCheckpointPrefix, register as registerCheckpoint } from "./checkpoint.js";
 import { matchClaimsPrefix, register as registerClaims } from "./claims.js";
@@ -41,6 +42,7 @@ registerProjects(commandMap);
 registerWatch(commandMap);
 registerArtifacts(commandMap);
 registerPackages(commandMap);
+registerAgentContext(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
 const prefixMatchers = [
@@ -729,6 +731,34 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Change diff display style",
     category: "Settings",
     tags: ["sidebyside", "compact"],
+  },
+  {
+    cmd: "/agent-context",
+    ic: "context",
+    desc: "Agent context: rules (instruction files) and files (working set) every agent gets",
+    category: "Settings",
+    tags: ["instructions", "working set", "prompt", "budget"],
+  },
+  {
+    cmd: "/agent-context preview",
+    ic: "context",
+    desc: "Preview the rules and files an agent's prompt carries",
+    category: "Settings",
+    tags: ["prompt", "view"],
+  },
+  {
+    cmd: "/agent-context add",
+    ic: "context",
+    desc: "Add a path or glob to the working set",
+    category: "Settings",
+    tags: ["working set"],
+  },
+  {
+    cmd: "/agent-context remove",
+    ic: "context",
+    desc: "Remove an entry from the working set",
+    category: "Settings",
+    tags: ["working set"],
   },
   {
     cmd: "/instructions",

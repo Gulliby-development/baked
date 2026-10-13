@@ -272,8 +272,8 @@ function scopeCounts(items: { scope: "project" | "global" }[]): string {
   return `${project} in this project · ${items.length - project} global`;
 }
 
+/** The rest of an agent's project setup; the working set is the Files tab next to this one. */
 function AlsoGiven({ projectKey }: { projectKey: string }) {
-  const [summary] = useLoad(() => setup.project(projectKey), [projectKey, "project"]);
   const [skills] = useLoad(
     () => setup.skills(projectKey).then((d) => scopeCounts(d.skills)),
     [projectKey, "skill-counts"],
@@ -282,25 +282,16 @@ function AlsoGiven({ projectKey }: { projectKey: string }) {
     () => setup.commands(projectKey).then((d) => scopeCounts(d.commands)),
     [projectKey, "command-counts"],
   );
-  const files = summary.state === "ready" ? summary.data.workingSet.files : null;
   return (
     <section className={cn(PANEL, STACK)} aria-label="Also given to agents">
       <h2 className={LABEL}>Also given to agents</h2>
-      <a className={`${LINK} hover:text-foreground`} href={projectHref(projectKey, "working-set")}>
-        <span>Working set</span>
-        <span className="font-mono text-dim-foreground">
-          {files
-            ? `${files.length} files · ${kb(files.reduce((sum, f) => sum + f.bytes, 0))}`
-            : "…"}
-        </span>
-      </a>
-      <div className={LINK}>
+      <a className={`${LINK} hover:text-foreground`} href={projectHref(projectKey, "skills")}>
         <span>
           Skills in <span className="font-mono">.baked</span>,{" "}
           <span className="font-mono">.agents</span>, <span className="font-mono">.claude</span>
         </span>
         <span className="font-mono text-dim-foreground">{countText(skills)}</span>
-      </div>
+      </a>
       <div className={LINK}>
         <span>
           Commands in <span className="font-mono">.baked/commands</span>
@@ -401,7 +392,8 @@ function Sources({
   );
 }
 
-export function InstructionsSection({ project }: SectionProps) {
+/** The Rules tab of the Agent context screen: instruction files, their sources and an editor. */
+export function InstructionsPane({ project }: Pick<SectionProps, "project">) {
   const key = project.key;
   const [list, reloadList, setList] = useLoad(() => setup.instructions(key), [key, "instructions"]);
   const [runs, reloadRuns] = useLoad(() => api.runs(key, 50), [key, "runs", 50]);
@@ -416,8 +408,8 @@ export function InstructionsSection({ project }: SectionProps) {
 
   const intro = (
     <p className={LEDE}>
-      Every chat and every workflow agent in this project reads these, in this order. A run freezes
-      them when it starts; after a change it stops at its next step until its plan is revised.
+      Agents read these files in this order. After a change, a run that froze them stops at its next
+      step until its plan is revised.
     </p>
   );
   if (list.state === "missing")
@@ -531,18 +523,12 @@ export function InstructionsSection({ project }: SectionProps) {
 
   const side = (
     <>
-      <span className={`text-dim-foreground ${NOTE}`}>
-        {kb(list.data.promptBytes)} of instructions in every agent's prompt.
-        {list.data.sources ? (
-          ""
-        ) : (
-          <>
-            {" "}
-            Which file kinds are read (baked.md, AGENTS.md, CLAUDE.md, …) is set with{" "}
-            <span className="font-mono">instructionFiles</span> in config.
-          </>
-        )}
-      </span>
+      {!list.data.sources && (
+        <span className={`text-dim-foreground ${NOTE}`}>
+          Which file kinds are read (baked.md, AGENTS.md, CLAUDE.md, …) is set with{" "}
+          <span className="font-mono">instructionFiles</span> in config.
+        </span>
+      )}
       {switchError && <Alert tone="error">{switchError}</Alert>}
       <Sources list={list.data} busy={switching} onToggle={(s, on) => void toggle(s, on)} />
       <AlsoGiven projectKey={key} />
