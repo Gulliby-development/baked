@@ -19,6 +19,14 @@ import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getCwd } from "../core/cwd.js";
 import { withContextSize } from "../core/llm/context-sizes.js";
+import {
+  endSessionHooks,
+  startSessionHooks,
+  stopHooks,
+  takeHookContext,
+  userPromptHooks,
+  withHookContext,
+} from "../core/hooks/lifecycle.js";
 import { resolveModel } from "../core/llm/provider.js";
 import { buildProviderOptions, withChatEffort } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";
@@ -253,6 +261,38 @@ interface TurnResult {
   filesEdited: string[];
   error?: string;
   exitCode: number;
+}
+
+/**
+ * Runs the UserPromptSubmit hooks of a typed prompt and returns the text to send with the context
+ * the session's hooks returned, or null when a hook blocked it (reported on stderr).
+ */
+async function headlessPromptHooks(
+  sessionId: string,
+  cwd: string,
+  typed: string,
+  text: string,
+  signal: AbortSignal,
+  emit?: (event: HeadlessEvent) => void,
+): Promise<string | null> {
+  const prompted = await userPromptHooks(sessionId, cwd, typed, signal);
+  if (prompted.blocked) {
+    const reason = `A UserPromptSubmit hook blocked the prompt: ${prompted.reason ?? "no reason given"}`;
+    if (emit) emit({ type: "error", error: reason });
+    else stderrError(reason);
+    return null;
+  }
+  return withHookContext(text, takeHookContext(sessionId), prompted.additionalContext);
+}
+
+/** Fires Stop, or StopFailure for a turn that failed; an interrupted turn fires neither. */
+function headlessStopHooks(sessionId: string, cwd: string, turn: TurnResult): void {
+  if (turn.exitCode === EXIT_ABORT) return;
+  void stopHooks(
+    sessionId,
+    cwd,
+    turn.error ? { failed: true, error: turn.error } : { failed: false },
+  ).catch(() => {});
 }
 
 /** Readable text of a stream `error` part, which may carry any value. */
@@ -629,6 +669,23 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
 
   setActiveSessionId(routingSessionId);
 
+  await startSessionHooks(session.id, env.cwd, opts.sessionId ? "resume" : "startup");
+  const hooked = await headlessPromptHooks(
+    session.id,
+    env.cwd,
+    typedPrompt,
+    prompt,
+    abortController.signal,
+    isEvents ? (event) => writeEvent(event as unknown as Record<string, unknown>) : undefined,
+  );
+  if (hooked === null) {
+    await endSessionHooks(session.id, "other");
+    env.contextManager.dispose();
+    await disposeMCPManager();
+    process.exit(EXIT_ERROR);
+  }
+  prompt = hooked;
+
   const messages: ModelMessage[] = [
     ...priorMessages,
     { role: "user" as const, content: userContent(prompt, images) },
@@ -652,6 +709,7 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
     turn.error = `Timeout after ${String(Math.round((opts.timeout ?? 0) / 1000))}s`;
     exitCode = EXIT_TIMEOUT;
   }
+  headlessStopHooks(session.id, env.cwd, turn);
 
   const duration = Date.now() - startTime;
   const diffStats = await sessionDiffStats(env.cwd, [
@@ -742,6 +800,7 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
     }
   }
 
+  await endSessionHooks(session.id, "other");
   env.contextManager.dispose();
   await disposeMCPManager();
   reraiseOrExit(exitCode);
@@ -966,6 +1025,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       }
     }
 
+    await endSessionHooks(session.id, "prompt_input_exit");
     env.contextManager.dispose();
     await disposeMCPManager();
 
@@ -997,6 +1057,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   }
 
   setActiveSessionId(routingSessionId);
+  await startSessionHooks(session.id, env.cwd, opts.sessionId ? "resume" : "startup");
 
   if (isEvents) emit({ type: "ready" });
   if (showProgress) process.stderr.write(`${PURPLE()}▸${RST} `);
@@ -1045,7 +1106,21 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       if (showProgress) process.stderr.write(`${PURPLE()}▸${RST} `);
       continue;
     }
-    const prompt = references.text;
+    // Watch turns are not typed prompts: they get the session's context but no prompt hooks.
+    const prompt = opts.watch
+      ? withHookContext(references.text, takeHookContext(session.id))
+      : await headlessPromptHooks(
+          session.id,
+          env.cwd,
+          typed,
+          references.text,
+          turnAbort.signal,
+          isEvents ? emit : undefined,
+        );
+    if (prompt === null) {
+      if (showProgress) process.stderr.write(`${PURPLE()}▸${RST} `);
+      continue;
+    }
 
     turns++;
     const turnStart = Date.now();
@@ -1081,6 +1156,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       seenWarnings,
     });
 
+    headlessStopHooks(session.id, env.cwd, turn);
     // Even partial output is valuable — save it
     if (turn.output) history.push({ role: "assistant" as const, content: turn.output });
     if (turn.output || turn.calls.length > 0) chatHistory.push(assistantMessage(turn));

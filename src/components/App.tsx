@@ -17,6 +17,7 @@ import { openProjectPicker } from "../core/commands/projects.js";
 import { handleCommand } from "../core/commands/registry.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getWorkspaceCoordinator } from "../core/coordination/WorkspaceCoordinator.js";
+import { endAllSessionHooks, endSessionHooks, startSessionHooks } from "../core/hooks/lifecycle.js";
 import { providerIcon, UI_ICONS } from "../core/icons.js";
 import { runIntelligenceHealthCheck } from "../core/intelligence/index.js";
 import { chatContextTokens } from "../core/llm/context-sizes.js";
@@ -612,6 +613,7 @@ export function App({
         try {
           await stopCoordinators();
           await stopWorkflowSessions();
+          await endAllSessionHooks("prompt_input_exit").catch(() => {});
           const sid = getAppSessionId();
           const liveTabs = tabMgrRef.current.tabs;
           const activeChat = tabMgrRef.current.getActiveChat();
@@ -700,20 +702,28 @@ export function App({
   const hasRestoredRef = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: one-time restore on mount
   useEffect(() => {
-    if (hasRestoredRef.current || !resumeSessionId) return;
+    if (hasRestoredRef.current) return;
     hasRestoredRef.current = true;
+    // SessionStart hooks: `startup` for a new session, `resume` for one this launch continues.
+    if (!resumeSessionId) {
+      void startSessionHooks(getAppSessionId(), cwd, "startup").catch(() => {});
+      return;
+    }
 
     const fullId = sessionManager.findByPrefix(resumeSessionId);
     if (!fullId) {
       addSystemMessage(`Session not found: ${resumeSessionId}`);
+      void startSessionHooks(getAppSessionId(), cwd, "startup").catch(() => {});
       return;
     }
 
     const data = sessionManager.loadSession(fullId);
+    if (!data) void startSessionHooks(getAppSessionId(), cwd, "startup").catch(() => {});
     if (data) {
       // Adopt loaded session id BEFORE restoreFromMeta so freshly mounted
       // TabInstances see the right app session id on first render.
       setAppSessionId(data.meta.id);
+      void startSessionHooks(data.meta.id, cwd, "resume").catch(() => {});
       tabMgr.restoreFromMeta(
         data.meta.tabs,
         data.meta.activeTabId,
@@ -904,6 +914,12 @@ export function App({
         //    mounted TabInstances see the right app session id on first
         //    render. Avoids the multi-tab loop where each tab tries to
         //    claim its own initialState.sessionId during mount.
+        const previous = getAppSessionId();
+        if (previous !== data.meta.id) {
+          void endSessionHooks(previous, "other")
+            .then(() => startSessionHooks(data.meta.id, cwd, "resume"))
+            .catch(() => {});
+        }
         setAppSessionId(data.meta.id);
         tabMgr.restoreFromMeta(
           data.meta.tabs,
@@ -1013,6 +1029,7 @@ export function App({
         );
       }
     }
+    await endAllSessionHooks("clear").catch(() => {});
     restart();
   }, [cwd, sessionManager]);
 
