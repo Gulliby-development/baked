@@ -25,6 +25,7 @@ import {
   type ResolvedServerCommand,
   resolveServerCommand,
 } from "./backends/lsp/server-registry.js";
+import { probeLspServer } from "./backends/lsp/spawn.js";
 import {
   getDetailedLspServers,
   getLspServerErrors,
@@ -106,6 +107,8 @@ export interface LspServiceDeps {
   restart(filter?: string): Promise<string[]>;
   /** Forgets cached executable lookups after an install or a config change. */
   refresh(): void;
+  /** Starts a server briefly; why it could not run, or null when it kept running. */
+  probe(command: string, args: string[], cwd: string): Promise<string | null>;
 }
 
 export const defaultLspServiceDeps: LspServiceDeps = {
@@ -124,6 +127,7 @@ export const defaultLspServiceDeps: LspServiceDeps = {
     clearProbeCache();
     clearPathCache();
   },
+  probe: (command, args, cwd) => probeLspServer(command, args, cwd),
 };
 
 export interface LspServiceOptions {
@@ -367,6 +371,8 @@ function packageNames(ctx: Context, command: string): string[] {
 export interface LspInstallResult extends LspChangeResult {
   server: string;
   package: string;
+  /** Set when the installed server does not start: why, as a sentence for the user. */
+  warning?: string;
 }
 
 /**
@@ -442,12 +448,23 @@ export async function installLspServer(
       `Failed to install ${pkg.name}: ${result.error ?? "unknown error"}`,
     );
   const restarted = await reload(ctx, server);
+  const warning = server ? await startProblem(ctx, server) : undefined;
+  if (warning) onProgress?.(warning);
   return {
     server: server?.command ?? pkg.name,
     package: pkg.name,
     restarted,
     status: await statusOf(ctx),
+    ...(warning ? { warning } : {}),
   };
+}
+
+/** Why a just-installed server does not start, checked by starting it once. */
+async function startProblem(ctx: Context, server: LspServerCandidate): Promise<string | undefined> {
+  const resolved = ctx.deps.resolve(server.command);
+  if (!resolved) return `${server.command} was installed but is not found where baked looks for it`;
+  const problem = await ctx.deps.probe(resolved.path, server.args, ctx.workspace);
+  return problem ? `${server.command} was installed but does not start: ${problem}` : undefined;
 }
 
 /**
