@@ -229,6 +229,13 @@ export class NativeAgentExecutor implements AgentExecutor {
     const rootPath = rootField(this.store.workspace, root).root ?? "";
     const parent = await this.rootContext.get();
     const context = new ContextManager(root, parent.getSharedResources());
+    // Model calls end with the attempt. A provider that keeps a conversation open between steps
+    // (Codex app-server threads) releases it when this fires, also after the last step: the
+    // thread that ends at `submit_result` would otherwise go on calling the model (#863).
+    const modelCalls = new AbortController();
+    const stopModelCalls = () => modelCalls.abort(request.signal.reason);
+    request.signal.addEventListener("abort", stopModelCalls, { once: true });
+    if (request.signal.aborted) stopModelCalls();
     try {
       const provider = await buildProviderOptions(
         request.profile.model,
@@ -787,7 +794,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           ],
           maxRetries: 0,
           maxOutputTokens: request.profile.maxOutputTokens,
-          abortSignal: request.signal,
+          abortSignal: modelCalls.signal,
           providerOptions: withAutomaticCache(provider.providerOptions, cacheTtl),
           headers: provider.headers,
           onStepEnd: (step) => {
@@ -888,7 +895,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             stopWhen: [() => submitted !== undefined, isStepCount(2)],
             maxRetries: 0,
             maxOutputTokens: request.profile.maxOutputTokens,
-            abortSignal: request.signal,
+            abortSignal: modelCalls.signal,
             providerOptions: withAutomaticCache(
               provider.providerOptions,
               this.config.cache?.ttl ?? "5m",
@@ -1002,7 +1009,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 stopWhen: isStepCount(1),
                 maxRetries: 0,
                 maxOutputTokens: request.profile.maxOutputTokens,
-                abortSignal: request.signal,
+                abortSignal: modelCalls.signal,
                 providerOptions: provider.providerOptions,
                 headers: provider.headers,
                 // Counted per model call so a response that skips the tool is still charged.
@@ -1048,6 +1055,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         ...(reportedNoTokens(result.steps) ? { usageComplete: false } : {}),
       };
     } finally {
+      request.signal.removeEventListener("abort", stopModelCalls);
+      modelCalls.abort(new DOMException("The workflow attempt ended.", "AbortError"));
       context.dispose({ preserveSharedIO: true });
     }
   }
