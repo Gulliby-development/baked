@@ -79,6 +79,7 @@ import {
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
+  APPROVAL_REVIEWER,
   evaluateAutoApproval,
   humanApprovalReason,
   plannerApprovalLimits,
@@ -138,6 +139,14 @@ import {
   type WorkspaceLeases,
   withinWorkflow,
 } from "./leases.js";
+import {
+  configuredMcpCall,
+  fetchLibraryDocs,
+  type LockedLibrary,
+  lockedLibraries,
+  type McpCall,
+  taskLibraries,
+} from "./library-docs.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
   fileReferences,
@@ -228,6 +237,8 @@ import {
 import {
   type AgentProfile,
   AnalysisSchema,
+  type ApprovalReview,
+  ApprovalReviewSchema,
   type Critique,
   CritiqueSchema,
   DEFAULT_MAX_PARALLEL_RUNS,
@@ -480,6 +491,9 @@ export class WorkflowScheduler {
   private queued: QueuedRequest[] = [];
   /** Frozen routing records by run; `null` for runs started before routing was recorded. */
   private routing = new Map<string, RoutingRecord | null>();
+  /** How a `libraryDocs` MCP source is called; tests replace it. */
+  mcpCall: McpCall = (server, tool, args) =>
+    configuredMcpCall(this.store.workspace, server, tool, args);
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -719,7 +733,8 @@ export class WorkflowScheduler {
                   planner,
                   {
                     checks: policy.checks,
-                    profiles,
+                    // The approval reviewer decides approvals; no task can be assigned to it.
+                    profiles: profiles.filter((p) => p.output !== "approval-review"),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
@@ -1099,6 +1114,31 @@ export class WorkflowScheduler {
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
                       );
+                // A package that leaves the limits only by its size or paths may go to the
+                // approval reviewer (`autoApproval.modelReview`). It fails closed: any error or
+                // an answer other than a low-risk approve leaves the request with a person.
+                let review: { review: ApprovalReview } | { reviewError: string } | null = null;
+                if (!auto.approval && auto.reviewable && auto.limitsHash) {
+                  review = await this.reviewApproval(
+                    runId,
+                    stepId,
+                    state,
+                    policy,
+                    profiles,
+                    auto.reasons,
+                    signal,
+                  );
+                  if (
+                    "review" in review &&
+                    review.review.verdict === "approve" &&
+                    review.review.risk === "low"
+                  )
+                    auto.approval = {
+                      mode: "model-review",
+                      limitsHash: auto.limitsHash,
+                      review: review.review,
+                    };
+                }
                 const body = {
                   manifest: state.manifest,
                   writes,
@@ -1131,7 +1171,12 @@ export class WorkflowScheduler {
                     ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
                     : {}),
                   ...(policy.autoApproval || human
-                    ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
+                    ? {
+                        autoApproval: auto.approval ?? {
+                          declined: auto.reasons,
+                          ...(review ?? {}),
+                        },
+                      }
                     : {}),
                 };
                 if (!auto.approval) {
@@ -2556,6 +2601,8 @@ export class WorkflowScheduler {
           profiles: ProfileSchema.array()
             .parse(JSON.parse(this.store.run(runId).profiles_json))
             .filter((p) => profile.context !== "implementation" || p.id === profile.id)
+            // The approval reviewer takes no part in a run's work, only in its approvals.
+            .filter((p) => p.output !== "approval-review" || p.id === profile.id)
             .map((p) => ({ id: p.id, role: p.role, allowedTools: p.allowedTools })),
           policy: { allowedTools: policy.allowedTools, network: policy.network },
         },
@@ -3153,6 +3200,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                 }
               : {}),
             unresolvedMeans: UNRESOLVED_MEANING,
+            ...(await this.libraryDocsContext(runId, policy, root, task)),
             ...this.previousAttempt(runId, task.id),
             ...(focus.files.length
               ? {
@@ -3978,6 +4026,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             ? {
                 ...entry.extra,
                 ...(await this.correctionContext(runId, state, root, task)),
+                ...(await this.libraryDocsContext(runId, policy, root, task)),
                 ...(earlierEdits ? { earlierEdits } : {}),
               }
             : entry.extra,
@@ -4718,6 +4767,49 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
       },
     };
+  }
+  /**
+   * Docs for the locked versions of the libraries a task uses, from the run's `libraryDocs`
+   * source (#741); nothing without a source or when the source has no docs for them. Each lookup
+   * is journaled with the task, found or not.
+   */
+  private async libraryDocsContext(
+    runId: string,
+    policy: RunPolicy,
+    root: string,
+    task: Task,
+  ): Promise<Record<string, unknown>> {
+    const source = policy.libraryDocs;
+    if (!source) return {};
+    const libraries = taskLibraries(root, task, lockedLibraries(root));
+    if (!libraries.length) return {};
+    const docs: (LockedLibrary & { docs: string })[] = [];
+    for (const library of libraries) {
+      const text = await fetchLibraryDocs(this.store.workspace, source, library, this.mcpCall);
+      if (text) docs.push({ ...library, docs: text });
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/library-docs-${newId()}.json`,
+        canonical({
+          taskId: task.id,
+          libraries: libraries.map((library) => ({
+            ...library,
+            found: docs.some((d) => d.ecosystem === library.ecosystem && d.name === library.name),
+          })),
+        }),
+      ),
+    );
+    return docs.length
+      ? {
+          libraryDocs: {
+            libraries: docs,
+            note: "Docs for the library versions the project's lockfile pins. Use the APIs they describe instead of what you remember from other versions.",
+          },
+        }
+      : {};
   }
   private async runTaskCheck(
     runId: string,
@@ -6433,6 +6525,59 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         },
       }),
     );
+  }
+  /**
+   * Asks the `approval-reviewer` profile about a package auto approval declined only for its
+   * size or paths. It sees the request, the spec and the writes; it cannot change any of them.
+   */
+  private async reviewApproval(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    declined: string[],
+    signal: AbortSignal,
+  ): Promise<{ review: ApprovalReview } | { reviewError: string }> {
+    const profile = profiles.find((p) => p.id === APPROVAL_REVIEWER);
+    if (profile?.output !== "approval-review")
+      return { reviewError: `profile ${APPROVAL_REVIEWER} is not available` };
+    const spec = state.spec;
+    try {
+      const output = await this.call(
+        runId,
+        stepId,
+        state,
+        policy,
+        profile,
+        {
+          approval: {
+            request: state.requestText ?? state.prompt,
+            spec: spec
+              ? {
+                  title: spec.title,
+                  outcome: spec.outcome,
+                  inScope: spec.inScope,
+                  outOfScope: spec.outOfScope,
+                  requirements: spec.requirements.map((r) => ({ id: r.id, text: r.text })),
+                }
+              : null,
+            tasks: (state.graph?.tasks ?? []).map((t) => ({
+              id: t.id,
+              title: t.title,
+              writes: t.writes,
+            })),
+            declined,
+            limits: policy.autoApproval?.limits ?? null,
+          },
+        },
+        signal,
+      );
+      return { review: ApprovalReviewSchema.parse(output) };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return { reviewError: error instanceof Error ? error.message : String(error) };
+    }
   }
   /**
    * Runs one command gate with its retries. Every attempt is recorded as a check result; a pass

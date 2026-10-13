@@ -217,8 +217,11 @@ export async function prepareStart(
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
     candidates: policyCandidates,
+    libraryDocs: policyLibraryDocs,
     ...rest
   } = policy;
+  // The policy's own source wins over the configured one; without either the field stays out.
+  const libraryDocs = policyLibraryDocs ?? config.libraryDocs;
   // The project's chat setting is the default; `feedback` leaves the field out of the hash.
   const editDiagnostics = policy.editDiagnostics ?? config.editDiagnostics ?? "feedback";
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
@@ -270,6 +273,7 @@ export async function prepareStart(
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
     ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
+    ...(libraryDocs ? { libraryDocs } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(qualityRules ? { qualityRules } : {}),
     ...(sast === "off" ? { sast } : {}),
