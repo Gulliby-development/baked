@@ -3057,7 +3057,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         );
       }
       if (result.outcome === "already_satisfied")
-        validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
+        this.validateSatisfiedEvidence(runId, state, after, result);
       await this.snapshot(runId, state, policy, signal);
       const beforeHashes = Object.fromEntries(
         changed.map((p) => [p, earlier.has(p) ? (earlier.get(p) ?? null) : (before[p] ?? null)]),
@@ -3534,7 +3534,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ),
         };
       if (result.outcome === "already_satisfied")
-        validateEvidence(this.store, runId, state.snapshotId ?? "", result.evidenceIds);
+        this.validateSatisfiedEvidence(runId, state, after, result);
       const results: WorkerCheck[] = [];
       for (const check of taskChecks(policy, task)) {
         const checked = await checks.run(() =>
@@ -4081,6 +4081,27 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     );
   }
   /** Runs one task check in `root` under its own host attempt. */
+  /**
+   * Evidence for an `already_satisfied` result. A task's reads are recorded against its worktree,
+   * which differs from the run snapshot once an earlier attempt of the task edited files, the
+   * case where `already_satisfied` is the right answer on a retry (junitdigest 3e5be74b T014
+   * blocked twice). So reads of the worktree as it is now count too; a read taken before a
+   * later edit of the attempt names another snapshot and stays stale.
+   */
+  private validateSatisfiedEvidence(
+    runId: string,
+    state: RuntimeState,
+    worktree: Record<string, string>,
+    result: { evidenceIds: string[] },
+  ): void {
+    const run = state.snapshotId ?? "";
+    const current = this.store.transaction(() => this.store.putSnapshot(runId, worktree)).id;
+    result.evidenceIds = resolveEvidenceIds(
+      [...currentEvidence(this.store, runId, run), ...currentEvidence(this.store, runId, current)],
+      result.evidenceIds,
+    );
+    validateEvidence(this.store, runId, [run, current], result.evidenceIds);
+  }
   /**
    * A task whose attempt changed nothing is satisfied, not blocked, when the checks it was created
    * for pass on the current files: a sibling task or an earlier correction already fixed the
