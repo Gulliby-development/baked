@@ -646,7 +646,8 @@ export class WorkflowScheduler {
                   planner,
                   {
                     checks: policy.checks,
-                    profiles,
+                    // The approval reviewer decides approvals; no task can be assigned to it.
+                    profiles: profiles.filter((p) => p.output !== "approval-review"),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     ...(approvalLimits ? { approvalLimits } : {}),
                     ...(policy.sizing
