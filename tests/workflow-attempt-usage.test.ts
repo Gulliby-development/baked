@@ -371,6 +371,37 @@ describe("task-end check", () => {
     expect(response.output).toMatchObject({ summary: "fixed" });
   });
 
+  test("a blocked result after applied edits goes back once with the written files (#846)", async () => {
+    const blocked = {
+      ...implemented("Unable to edit value.txt: blocked by read-only sandbox settings. No changes were made."),
+      outcome: "blocked",
+      unresolved: ["value.txt"],
+    };
+    scriptModel([
+      step(1000, 50, { name: "submit_result", input: blocked }),
+      step(1000, 50, { name: "submit_result", input: implemented("value.txt is parsed") }),
+    ]);
+    const { store, run, attemptId, executor, request } = await nativeAttempt(
+      fixturePolicy,
+      "implementation",
+      codeTask,
+    );
+    store.transaction(() => {
+      const id = store.prepareEffect(run.runId, attemptId, "file_patch", { path: "value.txt", tool: "edit_file" }, null, null);
+      store.finishFileEffect(run.runId, id, "a".repeat(64));
+    });
+    const response = await executor.execute(request);
+    expect(response.output).toMatchObject({ outcome: "implemented", summary: "value.txt is parsed" });
+  });
+
+  test("a blocked result without applied edits is accepted as it is", async () => {
+    const blocked = { ...implemented("The spec is missing a format."), outcome: "blocked", unresolved: ["format"] };
+    scriptModel([step(1000, 50, { name: "submit_result", input: blocked })]);
+    const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
+    const response = await executor.execute(request);
+    expect(response.output).toMatchObject({ outcome: "blocked" });
+  });
+
   test("a clean check accepts the first submission", async () => {
     scriptModel([step(1000, 50, { name: "submit_result", input: implemented("first") })]);
     const { executor, request } = await nativeAttempt(fixturePolicy, "implementation", codeTask);
