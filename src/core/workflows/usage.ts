@@ -29,6 +29,8 @@ export interface AttemptUsageRow {
   toolBackends: ToolBackendCount[];
   /** Model tool calls by tool, from per-step usage; empty in attempts recorded before tool names. */
   tools: ToolStepTokens[];
+  /** Model responses whose usage the provider never reported, so the tokens are low (#820). */
+  unreportedResponses: number;
 }
 
 /**
@@ -111,6 +113,7 @@ export function runUsage(
         finalizedBy: usage?.finalizedBy ?? null,
         toolBackends: usage?.toolBackends ?? [],
         tools: usage ? stepToolTokens(usage.steps) : [],
+        unreportedResponses: usage?.unreportedResponses ?? 0,
       };
     });
   const byStage = new Map<string, RunUsageReport["stages"][number]>();
