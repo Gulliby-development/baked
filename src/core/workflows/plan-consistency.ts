@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { workspacePath } from "../specs/validate.js";
-import type { Spec, TaskGraph } from "./schemas.js";
+import type { AgentProfile, Spec, TaskGraph } from "./schemas.js";
 
 /** Cross-artifact checks that analysis would otherwise spend model rounds on. */
 export const PLAN_CONSISTENCY_CHECKS = [
@@ -99,6 +99,28 @@ export function withReadDependencies(graph: TaskGraph): TaskGraph {
       const next = deps.get(task.id) ?? task.dependsOn;
       return next.length === task.dependsOn.length ? task : { ...task, dependsOn: next };
     }),
+  };
+}
+
+/**
+ * A task names an implementation profile. A planner that wrote its own role or another unknown
+ * profile on its tasks had the whole plan rejected and planned again (bench round 09, commitbump
+ * dde8747e: `"profileId": "planner"` on all 7 tasks, 4 plan attempts); the host now gives such a
+ * task the default implementer: `implementer` when it is an implementation profile, else the
+ * first one. Without any implementation profile the graph is left for validation to reject.
+ */
+export function withImplementationProfiles(
+  graph: TaskGraph,
+  profiles: readonly Pick<AgentProfile, "id" | "output">[],
+): TaskGraph {
+  const implementers = profiles.filter((p) => p.output === "implementation").map((p) => p.id);
+  const fallback = implementers.includes("implementer") ? "implementer" : implementers[0];
+  if (!fallback || graph.tasks.every((task) => implementers.includes(task.profileId))) return graph;
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) =>
+      implementers.includes(task.profileId) ? task : { ...task, profileId: fallback },
+    ),
   };
 }
 
