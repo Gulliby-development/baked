@@ -36,6 +36,7 @@ import {
   writesDocumentation,
 } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
+import { affectedTestsFor } from "./affected-tests.js";
 import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -432,8 +433,15 @@ export class NativeAgentExecutor implements AgentExecutor {
           description: "Run an approved check by ID and return host evidence.",
           inputSchema: z.object({ checkId: z.string() }).strict(),
           execute: async ({ checkId }) => {
-            const check = policy.checks.find((c) => c.id === checkId);
-            if (!check || !request.task?.checkIds.includes(checkId))
+            const task = request.task;
+            // The affected-tests check (#634) runs only the tests that reach the task's files.
+            const affected =
+              task && checkId.endsWith("-affected")
+                ? affectedTestsFor(root, policy.checks, task.writes).check
+                : null;
+            const check =
+              affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
+            if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
               throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
             const scope = new ProcessScope();
             try {

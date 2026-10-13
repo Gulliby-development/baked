@@ -59,6 +59,7 @@ import {
 } from "../verification/repro.js";
 import { completeReview, reviewProblems, validateReview } from "../verification/review.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
+import { affectedTestsFor } from "./affected-tests.js";
 import { outputSchemas } from "./agent-executor.js";
 import {
   assumable,
@@ -2960,6 +2961,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                   },
                 }
               : {}),
+            ...this.affectedTestsContext(root, policy, task),
             ...(inherited.length
               ? {
                   earlierEdits: {
@@ -3450,6 +3452,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                 ...entry.extra,
                 ...(await this.correctionContext(runId, state, root, task)),
                 ...(earlierEdits ? { earlierEdits } : {}),
+                ...this.affectedTestsContext(root, policy, task),
               }
             : entry.extra,
           signal,
@@ -4166,6 +4169,28 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         files: focus.files,
         symbols: focus.symbols,
         note: "The findings this task corrects point at these files and symbols. Start the fix there and read the other written files only when the fix needs them.",
+      },
+    };
+  }
+  /**
+   * The existing tests that reach the task's files (#634), for the implementer's context, with
+   * the check that runs only them when a test check of the policy takes test files.
+   */
+  private affectedTestsContext(
+    root: string,
+    policy: RunPolicy,
+    task: Task,
+  ): { affectedTests?: { paths: string[]; checkId: string | null; note: string } } {
+    if (!task.writes.length) return {};
+    const { tests, check } = affectedTestsFor(root, policy.checks, task.writes);
+    if (!tests.length) return {};
+    return {
+      affectedTests: {
+        paths: tests.map((t) => t.path),
+        checkId: check?.id ?? null,
+        note: check
+          ? `Existing tests that exercise the files this task changes, nearest first. Keep them passing: run them with request_check ${check.id} after your edits and fix what your change broke before submitting.`
+          : "Existing tests that exercise the files this task changes, nearest first. Keep them passing: read the ones that cover the code you change before editing it.",
       },
     };
   }
