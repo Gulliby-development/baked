@@ -1,8 +1,9 @@
 /**
  * Property-based tests from the spec's acceptance criteria (#637). The spec author marks a
  * criterion whose behavior holds over a whole input domain with `property`; the planner gives it
- * a test task that writes a property with the ecosystem's library, and the host checks after the
- * command checks that each marked criterion has one. A failing property's shrunk counterexample
+ * a test task that writes a property with the ecosystem's library the project already has, or a
+ * library-free one with a seeded generator, and the host checks after the command checks that
+ * each marked criterion has one (#796: a run is never asked for a dependency it cannot install). A failing property's shrunk counterexample
  * is put into the failed check's finding, so the correction starts from a reproduction.
  */
 import { isTestCodePath } from "./duplication.js";
@@ -33,73 +34,176 @@ export const propertyTestsOf = (
 ): PropertyTestsMode => policy.propertyTests ?? presetPropertyTests(preset);
 
 /** The property library of each language, as the instructions name it and the host finds it. */
-const LIBRARIES: readonly { language: string; files: RegExp; library: string; uses: RegExp }[] = [
+const LIBRARIES: readonly {
+  language: string;
+  files: RegExp;
+  library: string;
+  uses: RegExp;
+  /** A test that imports the library only behind a fallback, so it runs without it. */
+  shim: RegExp;
+  /** A library-free property test: a seeded generator in the project's own test framework. */
+  seeded: RegExp;
+}[] = [
   {
     language: "JS/TS",
     files: /\.[cm]?[jt]sx?$/,
     library: "fast-check",
     uses: /\bfrom\s+["']fast-check["']|require\(\s*["']fast-check["']\s*\)|\bfc\.(?:assert|property|asyncProperty)\(/,
+    shim: /\btry\s*\{[^}]*(?:require|import)\(\s*["']fast-check["']/,
+    seeded: /\b(?:seed|mulberry32|xorshift\w*|splitmix\w*|lcg|prng)\b[\s\S]*\bfor\s*\(/i,
   },
   {
     language: "Python",
     files: /\.py$/,
     library: "Hypothesis",
     uses: /@given\(|\bfrom\s+hypothesis\b|\bimport\s+hypothesis\b/,
+    shim: /\btry:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+(?:from\s+hypothesis\b|import\s+hypothesis\b)[\s\S]*?\nexcept\b[^\n]*(?:ImportError|ModuleNotFoundError|Exception)/,
+    seeded:
+      /\brandom\.(?:Random\(|seed\()[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\brandom\.(?:Random\(|seed\()/,
   },
   {
     language: "Rust",
     files: /\.rs$/,
     library: "proptest",
     uses: /\bproptest!|\bquickcheck!|#\[quickcheck\]|\bproptest::/,
+    shim: /$^/,
+    seeded:
+      /\b(?:seed_from_u64|from_seed|wrapping_mul)\b[\s\S]*\bfor\s+\w+\s+in\b|\bfor\s+\w+\s+in\b[\s\S]*\b(?:seed_from_u64|from_seed|wrapping_mul)\b/,
   },
   {
     language: "Java/Kotlin",
     files: /\.(?:java|kt)$/,
     library: "jqwik",
     uses: /@Property\b|\bnet\.jqwik\b/,
+    shim: /$^/,
+    seeded: /\bRandom\(\s*\d+L?\s*\)[\s\S]*\b(?:for|repeat)\s*\(/,
   },
   {
     language: "Go",
     files: /\.go$/,
-    library: "rapid",
+    library: "testing/quick",
     uses: /\brapid\.Check\(|\bgopter\b|\bquick\.Check\(/,
+    shim: /$^/,
+    seeded: /\brand\.New\(\s*rand\.NewSource\(|\brand\.NewPCG\(/,
   },
   {
     language: "C#/F#",
     files: /\.(?:cs|fs)$/,
     library: "FsCheck",
     uses: /\bFsCheck\b|\[Property\b|Prop\.ForAll/,
+    shim: /$^/,
+    seeded: /\bRandom\(\s*\d+\s*\)[\s\S]*\b(?:for|foreach)\s*\(/,
   },
 ];
 
-/** Whether a test file holds a property-based test. */
+export type PropertyTestKind = "library" | "seeded" | "shim" | null;
+
+/**
+ * What kind of property test a test file holds: one with the ecosystem library, a library-free
+ * one with a seeded generator, a library import behind a fallback that fakes it (never counted),
+ * or none.
+ */
+export function propertyTestKind(path: string, content: string): PropertyTestKind {
+  const lib = LIBRARIES.find((l) => l.files.test(path));
+  if (!lib) return null;
+  if (lib.shim.test(content)) return "shim";
+  if (lib.uses.test(content)) return "library";
+  return lib.seeded.test(content) ? "seeded" : null;
+}
+
+/** Whether a test file holds a property-based test with the ecosystem library. */
 export function hasPropertyTest(path: string, content: string): boolean {
-  return LIBRARIES.some((lib) => lib.files.test(path) && lib.uses.test(content));
+  return propertyTestKind(path, content) === "library";
+}
+
+/** The language of a path, as the libraries name it. */
+export const propertyLanguage = (path: string): string | null =>
+  LIBRARIES.find((l) => l.files.test(path))?.language ?? null;
+
+/** Artifact with the property libraries the project has, found once per run. */
+export const QUALITY_PROPERTY_LIBRARIES = "quality/property-libraries.json";
+
+/** What the host can see of the project when it looks for property libraries. */
+export interface LibraryProbe {
+  /** A file's text under the project root, or null. */
+  read(path: string): string | null;
+  exists(path: string): boolean;
+  /** Paths of the files directly in a directory of the root, or none. */
+  list(directory: string): string[];
+  /** Whether Python can import a module, or null when there is no Python. */
+  pythonImports(module: string): boolean | null;
+}
+
+/**
+ * The property library of each language the project can use as it is: installed, or declared
+ * where the build fetches it (Cargo, Maven, Gradle, NuGet, Go modules). A declared npm or Python
+ * package that is not installed does not count: the checks run without installing it. Go's
+ * standard `testing/quick` is always there.
+ */
+export function propertyLibraries(probe: LibraryProbe): Record<string, boolean> {
+  const mentions = (paths: string[], pattern: RegExp) =>
+    paths.some((path) => pattern.test(probe.read(path) ?? ""));
+  // Listing a file gives nothing, so each root entry is tried as a project directory.
+  const projects = ["", ...probe.list("").filter((p) => !p.startsWith("."))].flatMap((dir) =>
+    probe.list(dir).filter((p) => /\.(?:cs|fs)proj$/.test(p)),
+  );
+  const venv = [".venv", "venv"].some(
+    (dir) =>
+      probe.exists(`${dir}/Lib/site-packages/hypothesis`) ||
+      probe.list(`${dir}/lib`).some((lib) => probe.exists(`${lib}/site-packages/hypothesis`)),
+  );
+  return {
+    "JS/TS": probe.exists("node_modules/fast-check/package.json"),
+    Python: venv || probe.pythonImports("hypothesis") === true,
+    Rust: mentions(["Cargo.toml"], /^\s*(?:proptest|quickcheck)\s*=/m),
+    "Java/Kotlin": mentions(["pom.xml", "build.gradle", "build.gradle.kts"], /\bjqwik\b/),
+    Go: true,
+    "C#/F#": mentions(projects, /\bFsCheck\b/),
+  };
 }
 
 /** What the agents are told while the mode is `auto`, by the stage they run. */
-export function propertyTestsNote(output: string): string | null {
-  const libraries = LIBRARIES.map((lib) => `${lib.library} (${lib.language})`).join(", ");
+export function propertyTestsNote(
+  output: string,
+  libraries: Record<string, boolean> = {},
+): string | null {
+  const installed = LIBRARIES.filter((lib) => libraries[lib.language]);
+  const missing = LIBRARIES.filter((lib) => !libraries[lib.language]);
+  const use = installed.length
+    ? `Use the property library the project already has: ${installed.map((lib) => `${lib.library} (${lib.language})`).join(", ")}.`
+    : "";
+  const free = missing.length
+    ? ` Where the project has no property library (${missing.map((lib) => lib.language).join(", ")}), write a library-free property test in the project's own test framework: a generator with a fixed seed (for example random.Random(1234) or a small seeded PRNG) that produces at least 100 inputs over the whole domain, edge values included, and checks the criterion for each, printing the failing input. Do not add a dependency for it, and do not import a library behind a fallback.`
+    : "";
+  const how = `${use}${free}`.trim();
   if (output === "spec")
-    return `Property-based tests are on. Mark each criterion whose behavior should hold for every input of a domain with "property": one of ${PROPERTY_DOMAINS.join(", ")}. Typical cases: numeric conversions and arithmetic, string handling, parsers, encode/decode or serialize/parse round trips, and invariants such as sorting keeping every element. Leave property out for criteria about one fixed example, the UI, or external services.`;
+    return `Property-based tests are on. Mark each criterion whose behavior should hold for every input of a domain with "property": one of ${PROPERTY_DOMAINS.join(", ")}. Typical cases: numeric conversions and arithmetic, string handling, parsers, encode/decode or serialize/parse round trips, and invariants such as sorting keeping every element. Leave property out for criteria about one fixed example, the UI, or external services. A marked criterion never needs a new dependency: without a property library its test uses a seeded generator.`;
   if (output === "plan")
-    return `Property-based tests are on. Each criterion with "property" needs a test task that covers it and writes a property-based test file with the ecosystem library: ${libraries}. When the project does not declare that library, the task also adds it to the manifest as a development dependency; it is listed as a new dependency in the run report. The host checks after the checks that each such criterion has a property test.`;
+    return `Property-based tests are on. Each criterion with "property" needs a test task that covers it and writes a property-based test file. ${how} The host checks after the checks that each such criterion has a property test.`;
   if (output === "implementation")
-    return `Property-based tests are on. When this task covers a criterion with "property", write a property-based test for it with ${libraries}: generate inputs over the criterion's whole domain (negative numbers, zero and -0, empty and unicode strings, the largest values), assert the stated behavior for all of them, and keep the example tests too. Declare the library as a development dependency if the project lacks it. A failing property prints a shrunk counterexample: treat it as a reproduction and fix the code, not the property, unless the property contradicts the spec.`;
+    return `Property-based tests are on. When this task covers a criterion with "property", write a property-based test for it: generate inputs over the criterion's whole domain (negative numbers, zero and -0, empty and unicode strings, the largest values), assert the stated behavior for all of them, and keep the example tests too. ${how} A failing property prints a counterexample: treat it as a reproduction and fix the code, not the property, unless the property contradicts the spec.`;
   return null;
 }
 
 export interface PropertyCriterion {
   id: string;
   domain: string;
-  /** The test files of the tasks that cover it, and whether each holds a property. */
-  tests: { file: string; property: boolean }[];
-  status: "found" | "missing";
+  /** The test files of the tasks that cover it, and the property test each holds. */
+  tests: { file: string; property: boolean; kind?: Exclude<PropertyTestKind, null> }[];
+  /**
+   * `waived`: no property test was recognized, but the project has no property library for the
+   * tests' language, so it is a note, not a finding. A fallback shim is always `missing`.
+   */
+  status: "found" | "missing" | "waived";
+  /** Why the criterion is waived or missing, when it is not simply absent. */
+  note?: string;
 }
 
 export interface PropertiesResult {
   schemaVersion: 1;
   mode: PropertyTestsMode;
+  /** The property library of each language the project has; absent in results before #796. */
+  libraries?: Record<string, boolean>;
   criteria: PropertyCriterion[];
 }
 
@@ -109,30 +213,52 @@ export function checkPropertyTests(
   criteria: { id: string; property?: string | undefined }[],
   tasks: { criterionIds: string[]; writes: { path: string; action: string }[] }[],
   read: (path: string) => string | null,
+  libraries?: Record<string, boolean>,
 ): PropertiesResult {
   const out: PropertyCriterion[] = [];
   for (const criterion of criteria) {
     if (!criterion.property) continue;
-    const files = [
-      ...new Set(
-        tasks
-          .filter((t) => t.criterionIds.includes(criterion.id))
-          .flatMap((t) => t.writes.filter((w) => w.action !== "delete").map((w) => w.path))
-          .filter(isTestCodePath),
-      ),
-    ];
+    const writes = tasks
+      .filter((t) => t.criterionIds.includes(criterion.id))
+      .flatMap((t) => t.writes.filter((w) => w.action !== "delete").map((w) => w.path));
+    const files = [...new Set(writes.filter(isTestCodePath))];
     const tests = files.map((file) => {
       const content = read(file);
-      return { file, property: content !== null && hasPropertyTest(file, content) };
+      const kind = content === null ? null : propertyTestKind(file, content);
+      return {
+        file,
+        property: kind === "library" || kind === "seeded",
+        ...(kind ? { kind } : {}),
+      };
     });
+    const shim = tests.find((t) => t.kind === "shim");
+    // Without a library for the tests' language a property cannot be demanded of the run.
+    const languages = new Set(
+      (files.length ? files : writes).map(propertyLanguage).filter((l): l is string => !!l),
+    );
+    const available = !libraries || [...languages].some((language) => libraries[language]);
+    const status = tests.some((t) => t.property)
+      ? "found"
+      : shim || available
+        ? "missing"
+        : "waived";
     out.push({
       id: criterion.id,
       domain: criterion.property,
       tests,
-      status: tests.some((t) => t.property) ? "found" : "missing",
+      status,
+      ...(shim && status === "missing"
+        ? {
+            note: `${shim.file} imports the property library behind a fallback that runs without it`,
+          }
+        : status === "waived"
+          ? {
+              note: `no property library is installed for ${[...languages].join(", ") || "the tests' language"} and no seeded property test was recognized`,
+            }
+          : {}),
     });
   }
-  return { schemaVersion: 1, mode, criteria: out };
+  return { schemaVersion: 1, mode, ...(libraries ? { libraries } : {}), criteria: out };
 }
 
 const COUNTEREXAMPLE: readonly RegExp[] = [

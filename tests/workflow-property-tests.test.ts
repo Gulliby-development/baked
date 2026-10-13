@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { failedCheckFindings } from "../src/core/verification/convergence.js";
 import {
@@ -7,6 +7,9 @@ import {
   counterexampleOf,
   hasPropertyTest,
   presetPropertyTests,
+  propertyLibraries,
+  propertyTestKind,
+  propertyTestsNote,
 } from "../src/core/workflows/quality/properties.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -65,10 +68,68 @@ describe("property tests", () => {
   });
 });
 
+describe("property tests without a library (#796)", () => {
+  const SEEDED_PY = "import random\n\ndef test_round_trip():\n    rng = random.Random(1234)\n    for _ in range(200):\n        n = rng.randint(-10**9, 10**9)\n        assert parse(str(n)) == n\n";
+  const SHIM_PY =
+    "try:\n    from hypothesis import given, strategies as st\nexcept ImportError:\n    class _FallbackStrategies:\n        def integers(self):\n            return [0, 1, -1]\n    st = _FallbackStrategies()\n    def given(*a):\n        return lambda f: f\n\n@given(st.integers())\ndef test_parse(n):\n    assert parse(str(n)) == n\n";
+
+  test("a seeded generator counts, a library behind a fallback never does", () => {
+    expect(propertyTestKind("tests/test_parse.py", SEEDED_PY)).toBe("seeded");
+    expect(propertyTestKind("tests/test_parse.py", SHIM_PY)).toBe("shim");
+    expect(propertyTestKind("tests/test_parse.py", "from hypothesis import given\n@given(st.integers())\ndef test_a(n): ...")).toBe("library");
+    expect(propertyTestKind("tests/a.test.ts", "const rng = mulberry32(42);\nfor (let i = 0; i < 500; i++) expect(f(rng())).toBe(true);")).toBe("seeded");
+    expect(propertyTestKind("tests/a.test.ts", 'let fc; try { fc = require("fast-check"); } catch { fc = null; }')).toBe("shim");
+    expect(propertyTestKind("tests/a.rs", "let mut rng = StdRng::seed_from_u64(7);\nfor _ in 0..200 { assert!(ok(rng.gen())); }")).toBe("seeded");
+    expect(propertyTestKind("tests/a.test.ts", 'expect(parse("1")).toBe(1);')).toBeNull();
+  });
+
+  test("without a library a missing property is waived; a shim is always missing", () => {
+    const tasks = [{ criterionIds: ["AC-001"], writes: [{ path: "src/parse.py", action: "create" }, { path: "tests/test_parse.py", action: "create" }] }];
+    const criteria = [{ id: "AC-001", property: "numbers" }];
+    const none = { "JS/TS": false, Python: false };
+    const check = (content: string, libraries: Record<string, boolean>) =>
+      checkPropertyTests("auto", criteria, tasks, () => content, libraries).criteria[0];
+    expect(check("def test_parse():\n    assert parse('1') == 1\n", none)).toMatchObject({
+      status: "waived",
+      note: "no property library is installed for Python and no seeded property test was recognized",
+    });
+    expect(check(SEEDED_PY, none)).toMatchObject({ status: "found", tests: [{ file: "tests/test_parse.py", property: true, kind: "seeded" }] });
+    expect(check(SHIM_PY, none)?.status).toBe("missing");
+    expect(check(SHIM_PY, none)?.note).toContain("behind a fallback");
+    expect(check("def test_parse():\n    assert parse('1') == 1\n", { Python: true })?.status).toBe("missing");
+  });
+
+  test("only installed or build-fetched libraries count, and the notes never ask for a dependency", () => {
+    const files: Record<string, string> = {
+      "Cargo.toml": '[dev-dependencies]\nproptest = "1"\n',
+      "package.json": '{ "devDependencies": { "fast-check": "^3" } }',
+      "App.Tests/App.Tests.csproj": '<PackageReference Include="FsCheck.Xunit" />',
+    };
+    const libraries = propertyLibraries({
+      read: (path) => files[path] ?? null,
+      exists: (path) => path in files,
+      list: (dir) => (dir === "" ? ["Cargo.toml", "package.json", "App.Tests"] : dir === "App.Tests" ? ["App.Tests/App.Tests.csproj"] : []),
+      pythonImports: () => false,
+    });
+    // fast-check is declared but not installed: the checks would not find it.
+    expect(libraries).toEqual({ "JS/TS": false, Python: false, Rust: true, "Java/Kotlin": false, Go: true, "C#/F#": true });
+    const plan = propertyTestsNote("plan", libraries) ?? "";
+    expect(plan).toContain("proptest (Rust)");
+    expect(plan).toContain("library-free property test");
+    expect(plan).toContain("Do not add a dependency");
+    expect(plan).not.toContain("development dependency");
+    expect(propertyTestsNote("implementation", { "JS/TS": true }) ?? "").toContain("fast-check (JS/TS)");
+  });
+});
+
 describe("property tests in a run", () => {
+  const LIBRARY_TEST = 'import fc from "fast-check";\nimport { test } from "bun:test";\ntest("value", () => fc.assert(fc.property(fc.double(), (n) => Object.is(n, n))));\n';
   class ParsingExecutor extends FixtureExecutor {
     implementations = 0;
-    constructor(private readonly dir: string) {
+    constructor(
+      private readonly dir: string,
+      private readonly corrected = LIBRARY_TEST,
+    ) {
       super(dir);
     }
     override async execute(request: ExecutionRequest) {
@@ -91,7 +152,7 @@ describe("property tests in a run", () => {
           join(this.dir, "tests/value.test.ts"),
           this.implementations++ === 0
             ? 'import { expect, test } from "bun:test";\ntest("value", () => expect(1).toBe(1));\n'
-            : 'import fc from "fast-check";\nimport { test } from "bun:test";\ntest("value", () => fc.assert(fc.property(fc.double(), (n) => Object.is(n, n))));\n',
+            : this.corrected,
         );
       }
       return super.execute(request);
@@ -99,7 +160,14 @@ describe("property tests in a run", () => {
   }
 
   test("a criterion marked as a property gets a property test before the run completes", async () => {
-    const fixture = workflowFixture({ executor: (root) => new ParsingExecutor(root) });
+    const fixture = workflowFixture({
+      executor: (root) => {
+        // The project has fast-check installed, so the property is required.
+        mkdirSync(join(root, "node_modules/fast-check"), { recursive: true });
+        writeFileSync(join(root, "node_modules/fast-check/package.json"), '{ "name": "fast-check" }');
+        return new ParsingExecutor(root);
+      },
+    });
     try {
       const { service, executor } = fixture;
       const run = await fixture.start();
@@ -114,6 +182,26 @@ describe("property tests in a run", () => {
       expect(missing?.body.file).toBe("tests/value.test.ts");
       expect(missing?.status).toBe("resolved");
       expect(runReport(service.store, run.runId)).toContain("Property-based tests: 1 of 1 marked criteria have one.");
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test("without a property library the gate never asks for one and the run completes", async () => {
+    const fixture = workflowFixture({ executor: (root) => new ParsingExecutor(root, 'import { expect, test } from "bun:test";\ntest("value", () => expect(1).toBe(1));\n') });
+    try {
+      const { service, executor } = fixture;
+      const run = await fixture.start();
+      await service.drive(run.runId, new AbortController().signal);
+      await fixture.approve(run.runId);
+      const done = await service.drive(run.runId, new AbortController().signal);
+      expect(done.status).toBe("completed");
+      expect(executor.prompts.plan?.[0]).toContain("library-free property test");
+      expect(executor.prompts.plan?.[0]).not.toContain("development dependency");
+      const claims = service.store.findings(run.runId).map((f) => String(JSON.parse(f.body_json).claim));
+      expect(claims.some((c) => c.startsWith("Property test missing"))).toBe(false);
+      expect(runReport(service.store, run.runId)).toContain("Property-based tests: 0 of 1 marked criteria have one; 1 waived because the project has no property library.");
+      expect(existsSync(join(fixture.root, "node_modules"))).toBe(false);
     } finally {
       await fixture.dispose();
     }
