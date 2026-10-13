@@ -55,6 +55,16 @@ export function assertFrozenInputs(state: RuntimeState): void {
 /** Workflow artifacts are shared engineering records, so their language does not follow the request. */
 export const ARTIFACT_LANGUAGE =
   "Write every artifact in English: research, specification, plan, task titles and descriptions, reviews, findings, questions and summaries. Do this even when the request, project files or user answers use another language; translate their meaning. Keep identifiers, file paths, commands, code and quoted source text unchanged.";
+/**
+ * Splits a workflow context into its run-level part and the attempt's own block. The attempt
+ * block is the last line (canonical JSON holds no raw newline), so everything before it is the
+ * prefix the attempts of a run share; the executor puts a cache breakpoint at its end.
+ */
+export function splitWorkflowContext(text: string): { shared: string; own: string } | null {
+  const end = text.lastIndexOf("\n");
+  if (end <= 0 || end === text.length - 1) return null;
+  return { shared: text.slice(0, end + 1), own: text.slice(end + 1) };
+}
 export function buildWorkflowContext(
   state: RuntimeState,
   profile: AgentProfile,

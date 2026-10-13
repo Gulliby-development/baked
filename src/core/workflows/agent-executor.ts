@@ -21,6 +21,7 @@ import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligen
 import { resolveModel } from "../llm/provider.js";
 import {
   buildProviderOptions,
+  type CacheTTL,
   getEphemeralCache,
   withAutomaticCache,
   withRouteEffort,
@@ -49,6 +50,7 @@ import {
   wholeUnitFixerCommand,
   writtenCodePaths,
 } from "./check-policy.js";
+import { splitWorkflowContext } from "./context.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
@@ -213,6 +215,24 @@ export function deleteHashMatches(path: string, expected: string): boolean {
   if (expected === sha || (expected.length >= 16 && sha.startsWith(expected))) return true;
   return contentHash(readFileSync(path, "utf-8")) === expected;
 }
+
+/**
+ * The attempt's prompt as its opening user message. A workflow context is sent as two text parts
+ * with a cache breakpoint after the run-level part, so the next attempt of the run reads that
+ * part from the prompt cache instead of writing it again (#995).
+ */
+function openingMessage(prompt: string, ttl: CacheTTL): ModelMessage {
+  const split = splitWorkflowContext(prompt);
+  if (!split) return { role: "user", content: prompt };
+  return {
+    role: "user",
+    content: [
+      { type: "text", text: split.shared, providerOptions: getEphemeralCache(ttl) },
+      { type: "text", text: split.own },
+    ],
+  };
+}
+
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
   private readonly ownsRootContext: boolean;
@@ -986,6 +1006,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         });
         stepStartedAt = Date.now();
       };
+      const opening = openingMessage(request.prompt, this.config.cache?.ttl ?? "5m");
       let result: {
         steps: readonly StepLike[];
         text: string;
@@ -1004,7 +1025,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             content: request.profile.instructions,
             providerOptions: getEphemeralCache(cacheTtl),
           },
-          prompt: request.prompt,
+          messages: [opening],
           tools: available,
           stopWhen: [
             () => submitted !== undefined,
@@ -1102,11 +1123,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               content: request.profile.instructions,
               providerOptions: getEphemeralCache(this.config.cache?.ttl ?? "5m"),
             },
-            messages: [
-              { role: "user", content: request.prompt },
-              ...result.messages,
-              { role: "user", content: SUBMIT_NOW_NOTICE },
-            ],
+            messages: [opening, ...result.messages, { role: "user", content: SUBMIT_NOW_NOTICE }],
             tools: available,
             activeTools: submitTools,
             toolChoice: "required",
