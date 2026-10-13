@@ -558,7 +558,7 @@ export const FEATURES: readonly Feature[] = [
     group: "Tools and code intelligence",
     title: "OS sandbox for shell commands, checks and acceptance apps",
     tui: ["/sandbox"],
-    cli: ["baked sandbox status", "--sandbox", "baked workflow run --sandbox"],
+    cli: ["baked sandbox status", "--sandbox", "baked workflow run --sandbox", "baked self-check"],
     api: [
       "/v1/diagnostics/sandbox",
       "/v1/settings: Tools page",

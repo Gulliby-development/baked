@@ -200,4 +200,4 @@ Markdown files in `<project>/.baked/commands/` and `~/.baked/commands/` become s
 | `baked projects ...`, `baked project ...` | Known projects and the project manifest ([projects](projects.md)) |
 | `baked telemetry [--json]`, `baked telemetry on\|off` | The locally recorded usage events, or turn recording on or off in the global config ([privacy](privacy.md)) |
 | `baked sandbox status [--json]` | OS sandbox mode, its source and the backend of this machine; exit 1 when the sandbox is required but unavailable ([OS sandbox](sandbox.md)) |
-| `baked self-check` | Loads native libraries, bundles and SQLite; non-zero exit on a failure |
+| `baked self-check` | Loads native libraries, bundles and SQLite and starts a command in the OS sandbox when a backend works ([sandbox](sandbox.md)); non-zero exit on a failure |
