@@ -28,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/context-size <size>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow definitions`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/context-size <size>`, `/permissions <manual|auto|full>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow definitions`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -143,6 +143,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/instructions show` | Show an instruction file's content |
 | `/mode` | Switch Baked mode |
 | `/motion` | Full or reduced animation |
+| `/permissions` | Permissions of this chat: manual, auto or full access ([guide](guide.md#permission-modes)) |
 | `/notifications` | System notifications and the webhook for runs that wait for you; `/notifications system on\|off`, `/notifications webhook URL\|off`, `/notifications blocking-only on\|off` ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 | `/reasoning` | Show or hide reasoning content |
 | `/sandbox` | OS sandbox of shell, project and check commands; `/sandbox off\|auto\|required` saves it globally, `/sandbox status` shows mode and backend ([OS sandbox](sandbox.md)) |

@@ -6,6 +6,7 @@ import type {
   ImageUpload,
   MentionSuggestion,
   ModelProvider,
+  PermissionMode,
 } from "../../client/chat.js";
 import type { CommandEntry } from "../../client/setup.js";
 import { Icon } from "../../components/Icon.js";
@@ -14,6 +15,7 @@ import { LABEL } from "../../lib/styles.js";
 import { type ContextSizeControl, ContextSizePicker } from "./ContextSizeMenu.js";
 import { matchCommands, slashAtCaret } from "./commands.js";
 import { type Attachment, dataUrl, MAX_IMAGES, pickImages, readAttachment } from "./images.js";
+import { PermissionChip } from "./PermissionChip.js";
 import { MENU_ITEM, MENU_ITEM_STACKED, MENU_LIST, MENU_NOTE, Popover } from "./Popover.js";
 import {
   clock,
@@ -28,8 +30,8 @@ const ROUND_BUTTON =
 
 export const MODE_LABELS: Record<ChatMode, { name: string; detail: string }> = {
   default: {
-    name: "Ask before risky actions",
-    detail: "Writes outside the project, destructive commands and web access wait for you.",
+    name: "Default",
+    detail: "Reads, edits and runs commands; the permissions chip says what waits for you.",
   },
   architect: {
     name: "Architect",
@@ -42,7 +44,10 @@ export const MODE_LABELS: Record<ChatMode, { name: string; detail: string }> = {
   auto: { name: "Auto-approve", detail: "Runs everything without asking." },
 };
 
-/** The modes every backend with chat offers; `plan` needs the `plan-mode` capability. */
+/**
+ * The modes every backend with chat offers; `plan` needs the `plan-mode` capability. A backend with
+ * `permission-modes` drops `auto`, which is full access on the permissions chip there.
+ */
 export const BASE_MODES: readonly ChatMode[] = ["default", "architect", "auto"];
 
 const MAX_TEXTAREA_PX = 240;
@@ -229,6 +234,8 @@ export function Composer({
   onModel,
   onMode,
   onEffort,
+  permissions = "auto",
+  onPermissions,
   contextSize,
   modes = BASE_MODES,
   models,
@@ -254,6 +261,10 @@ export function Composer({
   onMode: (mode: ChatMode) => void;
   /** Reasoning effort of the chat; without it the composer shows no effort control. */
   onEffort?: (effort: ChatEffort) => void;
+  /** How much the chat runs without asking. */
+  permissions?: PermissionMode;
+  /** Changes the permission mode; without it the composer shows no permissions chip. */
+  onPermissions?: (permissions: PermissionMode) => void;
   /** Context window of the chat; shown only when the model offers more than one. */
   contextSize?: ContextSizeControl;
   /** Read from the window's cache, so the model and effort menus open on it at once. */
@@ -723,12 +734,15 @@ export function Composer({
             )}
           </Popover>
         )}
+        {onPermissions && (
+          <PermissionChip permissions={permissions} onPermissions={onPermissions} />
+        )}
         {contextSize && <ContextSizePicker control={contextSize} />}
         {modes.length > 1 && (
           <Popover
-            label="Approval mode"
+            label="Mode"
             up
-            buttonLabel={`Approval mode: ${MODE_LABELS[mode].name}`}
+            buttonLabel={`Mode: ${MODE_LABELS[mode].name}`}
             button={MODE_LABELS[mode].name}
           >
             {(close) => (

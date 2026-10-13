@@ -25,12 +25,14 @@ test("workflow worker preserves command state while SQLite contention leaves the
 }, 35000);
 
 test("gate runs, saves and policy updates go through the worker without touching started runs", async () => {
-  expect(await fixture("workflow-gates-worker.ts")).toContain('"gatesWorker":"passed"');
-}, 35000);
+  // About 6 s alone; the full Windows suite has pushed it past 30 s.
+  expect(await fixture("workflow-gates-worker.ts", 90000)).toContain('"gatesWorker":"passed"');
+}, 95000);
 
 test("initiative commands and new-run execution options go through the worker to the core", async () => {
-  expect(await fixture("workflow-initiatives-worker.ts")).toContain('"initiativesWorker":"passed"');
-}, 35000);
+  // About 6 s alone; the full Windows suite has pushed it past 30 s.
+  expect(await fixture("workflow-initiatives-worker.ts", 90000)).toContain('"initiativesWorker":"passed"');
+}, 95000);
 
 test("a soft checkpoint stops a read-heavy agent loop between two steps", async () => {
   expect(await fixture("workflow-checkpoint-loop.ts")).toContain('"checkpointLoop":"passed"');

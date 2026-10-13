@@ -16,7 +16,8 @@ baked --headless --watch                          # turns from baked! / baked? c
 | Option | Does |
 | --- | --- |
 | `--model <provider/model>` | Override the model |
-| `--mode <mode>` | `default`, `architect`, `plan` or `auto` |
+| `--mode <mode>` | `default`, `architect` or `plan`; `auto` is `default` with `--permissions full` |
+| `--permissions <mode>` | [Permission mode](guide.md#permission-modes): `manual` denies every edit, command and git change (nobody can allow them), `auto` (default) denies destructive commands and writes outside the project, `full` allows everything |
 | `--effort <level>` | Reasoning effort: `default` (the configured one), `low`, `medium`, `high`, `xhigh` or `max`; see [reasoning effort per chat](providers.md#reasoning-effort-per-chat) |
 | `--context <size>` | Context window when the model offers several: `default`, `max`, or a size such as `200k` or `1m`; see [context size per chat](providers.md#context-size-per-chat) |
 | `--max-steps <n>` | Stop after N agent steps |
@@ -46,7 +47,7 @@ When the session has edited files, the stderr footer ends with the totals (`+52 
 
 ## Mentions and shell commands
 
-Prompts accept the same `@path`, `@path#10-40`, `@Symbol` and leading `!command` as the terminal input ([user guide](guide.md#mentions-and-shell-commands-in-the-input)); each attached item is listed on stderr. `baked --headless '!git diff'` sends the diff to the agent. Destructive commands are denied unless `--mode auto`, and no command runs in `plan` or `architect` mode; a prompt that is only a refused command exits with code 1 in a single run and is skipped in `--chat`.
+Prompts accept the same `@path`, `@path#10-40`, `@Symbol` and leading `!command` as the terminal input ([user guide](guide.md#mentions-and-shell-commands-in-the-input)); each attached item is listed on stderr. `baked --headless '!git diff'` sends the diff to the agent. Destructive commands are denied unless `--permissions full` (or `--mode auto`), and no command runs in `plan` or `architect` mode; a prompt that is only a refused command exits with code 1 in a single run and is skipped in `--chat`.
 
 ## Sessions across runs
 

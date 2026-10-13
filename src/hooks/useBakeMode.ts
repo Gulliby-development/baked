@@ -1,7 +1,8 @@
 import { getThemeTokens } from "../core/theme/index.js";
 import type { BakeMode } from "../types/index.js";
 
-export const MODE_ORDER: BakeMode[] = ["default", "architect", "plan", "auto"];
+/** Shift+Tab cycles these; the legacy `auto` mode is full access now (`/permissions`). */
+export const MODE_ORDER: BakeMode[] = ["default", "architect", "plan"];
 
 export const MODE_LABELS: Record<BakeMode, string> = {
   default: "Default",

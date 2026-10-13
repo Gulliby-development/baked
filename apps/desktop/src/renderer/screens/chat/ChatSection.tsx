@@ -20,10 +20,12 @@ import {
   CUSTOM_COMMANDS_CAPABILITY,
   DIFF_STATS_CAPABILITY,
   IMAGES_CAPABILITY,
+  PERMISSION_MODES_CAPABILITY,
   PLAN_MODE_CAPABILITY,
   WATCH_CAPABILITY,
 } from "../../client/capabilities.js";
 import {
+  AGENT_MODES,
   CHAT_MODES,
   type ChatEffort,
   type ChatMode,
@@ -31,6 +33,7 @@ import {
   type ImageUpload,
   isMissingChatApi,
   type LaunchNote,
+  type PermissionMode,
   type SessionDiffStats,
   type ToolCall,
   type WatchStatus,
@@ -221,6 +224,7 @@ export function SessionView({
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [draftMode, setDraftMode] = useState<ChatMode>("default");
   const [draftEffort, setDraftEffort] = useState<ChatEffort>("default");
+  const [draftPermissions, setDraftPermissions] = useState<PermissionMode | null>(null);
   const [forking, setForking] = useState(false);
   const [forkReport] = useState(() => (draft ? null : takeForkReport(sessionId)));
   const [rewinding, setRewinding] = useState(false);
@@ -308,6 +312,7 @@ export function SessionView({
   const hasDiffStats = capabilities?.includes(DIFF_STATS_CAPABILITY) === true;
   const acceptsImages = capabilities?.includes(IMAGES_CAPABILITY) === true;
   const hasEffort = capabilities?.includes(CHAT_EFFORT_CAPABILITY) === true;
+  const hasPermissions = capabilities?.includes(PERMISSION_MODES_CAPABILITY) === true;
   const canWatch = !coordinator && capabilities?.includes(WATCH_CAPABILITY) === true;
   const canSummarize =
     coordinator && capabilities?.includes(COORDINATOR_SUMMARY_CAPABILITY) === true;
@@ -316,9 +321,11 @@ export function SessionView({
   const expandsCommands = capabilities?.includes(CUSTOM_COMMANDS_CAPABILITY) === true;
   const modes: readonly ChatMode[] = coordinator
     ? COORDINATOR_MODES
-    : capabilities?.includes(PLAN_MODE_CAPABILITY) === true
-      ? CHAT_MODES
-      : BASE_MODES;
+    : hasPermissions
+      ? AGENT_MODES
+      : capabilities?.includes(PLAN_MODE_CAPABILITY) === true
+        ? CHAT_MODES
+        : BASE_MODES;
 
   // Line counts follow the edited files; a turn that ends may also have changed them on disk.
   const [diff, setDiff] = useState<SessionDiffStats | null>(null);
@@ -382,6 +389,7 @@ export function SessionView({
           mode: draftMode,
           ...(draftModel ? { model: draftModel } : {}),
           ...(draftEffort !== "default" ? { effort: draftEffort } : {}),
+          ...(draftPermissions ? { permissions: draftPermissions } : {}),
         });
         chatSessionsChanged();
         window.location.replace(projectHref(key, "chat", created.id));
@@ -452,12 +460,14 @@ export function SessionView({
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    permissions?: PermissionMode;
     contextSize?: number;
   }): void => {
     if (draft) {
       if (changes.model) setDraftModel(changes.model);
       if (changes.mode) setDraftMode(changes.mode);
       if (changes.effort) setDraftEffort(changes.effort);
+      if (changes.permissions) setDraftPermissions(changes.permissions);
       return;
     }
     chat.update(key, sessionId, changes).catch((e: unknown) => setActionError(message(e)));
@@ -696,6 +706,14 @@ export function SessionView({
           onModel={(model) => update({ model })}
           onMode={(mode) => update({ mode })}
           {...(hasEffort ? { onEffort: (effort: ChatEffort) => update({ effort }) } : {})}
+          {...(hasPermissions
+            ? {
+                permissions: draft
+                  ? (draftPermissions ?? "auto")
+                  : (session?.permissions ?? "auto"),
+                onPermissions: (permissions: PermissionMode) => update({ permissions }),
+              }
+            : {})}
           {...(!draft && session?.contextSizes && session.contextSizes.length > 1
             ? {
                 contextSize: {
