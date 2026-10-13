@@ -259,6 +259,7 @@ import {
   type RuleFinding,
   ruleClaim,
   ruleClaimKey,
+  ruleClaimText,
   ruleFindingKey,
 } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
@@ -7665,7 +7666,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         file: match.file,
         symbol: null,
         evidenceIds: [evidenceId],
-        claim: `Rule ${match.rule}: ${match.message} (${match.file}:${match.line}: ${match.text})`,
+        claim: ruleClaimText(match),
         impact: "The anti-slop rule pack of this run blocks this pattern.",
         suggestedFix: match.fix,
       };
