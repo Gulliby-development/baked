@@ -173,12 +173,15 @@ for (const [width, height] of SIZES) {
     text = await frame(view, width, height, `${size} quick`);
     expect(text).toContain("quick");
 
-    // Independent review cycles in the selected scope.
+    // The review confidence steps by 0.05 and independent review cycles, in the selected scope.
     await press(view, "up");
     for (let i = 0; i < 60 && !text.includes("Effective:"); i++) {
       await press(view, "up");
-      text = await frame(view, width, height, `${size} to review`);
+      text = await frame(view, width, height, `${size} to confidence`);
     }
+    await press(view, "right");
+    expect(layers.project?.reviewMinConfidence).toBe(0.85);
+    await press(view, "up");
     await press(view, "right");
     expect(layers.project?.independentReview).toBe("off");
     const saves = state.saves;
