@@ -65,74 +65,8 @@ export interface WorkflowArgs {
    */
   inline?: Record<string, unknown>;
 }
-const flags = new Set([
-  "model-strict",
-  "feature",
-  "workflow",
-  "prompt",
-  "prompt-file",
-  "policy",
-  "owner",
-  "model",
-  "json",
-  "events",
-  "request",
-  "digest",
-  "expected-revision",
-  "command-id",
-  "answers-file",
-  "file",
-  "accept",
-  "reason",
-  "candidate",
-  "source",
-  "path",
-  "destination",
-  "before",
-  "dry-run",
-  "limit",
-  "cursor",
-  "status",
-  "stage",
-  "top",
-  "format",
-  "after",
-  "effect",
-  "resolution",
-  "tokens",
-  "calls",
-  "time-ms",
-  "spec",
-  "plan",
-  "tasks",
-  "cwd",
-  "from",
-  "all",
-  "confirm-auto-approval",
-  "help",
-  "remote",
-  "branch",
-  "draft",
-  "no-pr",
-  "execute",
-  "worktree",
-  "writers",
-  "exclude-user-changes",
-  "route",
-  "resume",
-  "no-resume",
-  "clarification",
-  "issue",
-  "output",
-  "text",
-  "provider",
-  "kind",
-  "id",
-  "save",
-  "from-criteria",
-  "at",
-  "budget",
-]);
+/** Options every workflow command takes. */
+const globalFlags = ["json", "cwd", "help"];
 const booleanFlags = new Set([
   "all",
   "save",
@@ -263,8 +197,10 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   doctor: preRunFlags,
   estimate: preRunFlags,
 };
+/** Every option the parser knows: derived from the command tables, so a flag cannot be missed. */
+const flags = new Set([...globalFlags, ...Object.values(commandFlags).flat()]);
 /** The flag tables the argv parser checks, exposed so tests can assert they agree. */
-export const workflowFlagTables = { flags, booleanFlags, commandFlags };
+export const workflowFlagTables = { flags, booleanFlags, commandFlags, globalFlags };
 export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
   const command = argv[0];
   if (!commands.includes(command as WorkflowCommand))
@@ -302,7 +238,7 @@ export function parseWorkflowArgs(argv: string[]): WorkflowArgs {
 /** Checks option combinations and values of parsed or programmatically built workflow arguments. */
 export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
   for (const name of Object.keys(result.flags)) {
-    if (!["json", "cwd", "help", ...commandFlags[result.command]].includes(name))
+    if (!globalFlags.includes(name) && !commandFlags[result.command].includes(name))
       throw new WorkflowFault("INVALID_DEFINITION", `--${name} is not valid for ${result.command}`);
     if (name === "status" && !RunStatus.safeParse(result.flags[name]).success)
       throw new WorkflowFault(
