@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
-import { COORDINATOR_CAPABILITY } from "../../client/capabilities.js";
+import {
+  COORDINATOR_CAPABILITY,
+  COORDINATOR_SCHEDULES_CAPABILITY,
+} from "../../client/capabilities.js";
 import { chat } from "../../client/chat.js";
 import {
   BRIEF_LISTS,
@@ -22,6 +25,7 @@ import { SessionView } from "../chat/ChatSection.js";
 import type { SectionProps } from "../sections.js";
 import { NeedsNewer } from "../setup/shared.js";
 import { BRIEF_TITLES, launchedHref, launchedTone, taskLabel, withList } from "./model.js";
+import { SchedulesPanel } from "./SchedulesPanel.js";
 
 /** How often the panel reads launched work and the brief again. */
 const REFRESH_MS = 5000;
@@ -126,7 +130,7 @@ function BriefSection({
 }
 
 /** Launched work and the brief, read again every few seconds. */
-function CoordinatorPanel({ project }: { project: DesktopProject }) {
+function CoordinatorPanel({ project, schedules }: { project: DesktopProject; schedules: boolean }) {
   const key = project.key;
   const [brief, setBrief] = useState<ProjectBrief | null>(null);
   const [launched, setLaunched] = useState<LaunchedView[] | null>(null);
@@ -168,6 +172,7 @@ function CoordinatorPanel({ project }: { project: DesktopProject }) {
       className="flex w-[340px] flex-none flex-col gap-5 overflow-y-auto border-l-2 border-border bg-secondary-background px-4 py-4 [@media(max-width:1000px)]:w-[280px]"
       aria-label="Coordinator brief"
     >
+      {schedules && <SchedulesPanel projectKey={key} />}
       <section className="flex flex-col gap-2" aria-label="Launched work">
         <h2 className={LABEL}>Launched work</h2>
         {items.length === 0 ? (
@@ -212,9 +217,9 @@ function CoordinatorPanel({ project }: { project: DesktopProject }) {
  */
 export function CoordinatorSection({ project }: SectionProps) {
   const key = project.key;
-  const [state, setState] = useState<"loading" | "missing" | { id: string } | { error: string }>(
-    "loading",
-  );
+  const [state, setState] = useState<
+    "loading" | "missing" | { id: string; schedules: boolean } | { error: string }
+  >("loading");
   useEffect(() => {
     let live = true;
     (async () => {
@@ -222,7 +227,9 @@ export function CoordinatorSection({ project }: SectionProps) {
       if (capabilities !== null && !capabilities.includes(COORDINATOR_CAPABILITY))
         return live && setState("missing");
       const session = await coordinator.open(key);
-      if (live) setState({ id: session.id });
+      // An older backend without the capability list is assumed to have no schedules.
+      const schedules = capabilities?.includes(COORDINATOR_SCHEDULES_CAPABILITY) ?? false;
+      if (live) setState({ id: session.id, schedules });
     })().catch((e: unknown) => {
       if (!live) return;
       setState(e instanceof ApiError && e.status === 404 ? "missing" : { error: message(e) });
@@ -248,7 +255,7 @@ export function CoordinatorSection({ project }: SectionProps) {
     // `data-chat` lets the window's main area give the conversation its full height.
     <div data-chat className="flex min-h-0 flex-1">
       <SessionView key={state.id} project={project} sessionId={state.id} coordinator />
-      <CoordinatorPanel project={project} />
+      <CoordinatorPanel project={project} schedules={state.schedules} />
     </div>
   );
 }

@@ -160,6 +160,18 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "coordinator-schedules",
+    group: "Chat and sessions",
+    title: "Coordinator schedules: prompts that start a coordinator turn on their own",
+    tui: ["/coordinator: lists the schedules; the coordinator adds and changes them on request"],
+    cli: [
+      "baked session coordinator schedules",
+      "baked session coordinator schedule: add, pause, resume and remove",
+    ],
+    api: ["/v1/coordinator/schedules: also /v1/coordinator/schedules/ID"],
+    desktop: ["project/coordinator: Schedules with add, pause, resume and remove"],
+  },
+  {
     id: "session-diagnostics",
     group: "Chat and sessions",
     title: "Diagnostic export and API request dumps",
