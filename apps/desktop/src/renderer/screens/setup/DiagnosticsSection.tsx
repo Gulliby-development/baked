@@ -5,6 +5,7 @@ import {
   diagnostics,
   formatBytes,
   type ModelEventsView,
+  type SandboxStatus,
   type StorageView,
 } from "../../client/diagnostics.js";
 import { Alert } from "../../components/ui/alert.js";
@@ -364,14 +365,80 @@ function ErrorLogPanel({ projectKey }: { projectKey: string }) {
   );
 }
 
+function sandboxSummary(status: SandboxStatus): string {
+  if (status.effectiveMode === "off")
+    return "Shell, project and check commands run without OS sandbox.";
+  if (status.active) return "Shell, project and check commands run in the OS sandbox.";
+  return status.effectiveMode === "auto"
+    ? "No sandbox backend here, so commands run without OS sandbox."
+    : "No sandbox backend here, so sandboxed commands are refused.";
+}
+
+function SandboxPanel({ projectKey }: { projectKey: string }) {
+  const [status, reload] = useLoad(
+    () => diagnostics.sandbox(projectKey),
+    [projectKey, "diagnostics-sandbox"],
+  );
+  if (status.state !== "ready") return <LoadState value={status} what="the sandbox status" />;
+  const s = status.data;
+  const problem = s.effectiveMode !== "off" && !s.available;
+  return (
+    <section className={SETUP} aria-label="Sandbox">
+      <div className={ROW}>
+        <p className={cn(LEDE, NOTE, "flex-1")}>
+          {sandboxSummary(s)} Change the mode on the Tools page of the chat settings; a project
+          config can only raise it.
+        </p>
+        <Button variant="secondary" size="md" onClick={reload}>
+          Refresh
+        </Button>
+      </div>
+      <Table>
+        <TableBody>
+          <TableRow>
+            <TableCell className="w-[1%] text-dim-foreground">Mode</TableCell>
+            <TableCell>
+              <Badge tone={s.effectiveMode === "off" ? "neutral" : problem ? "warn" : "ok"}>
+                {s.effectiveMode}
+              </Badge>
+              {s.source === "project" ? (
+                <span className="ml-2 text-[12px]">raised by the project config from {s.mode}</span>
+              ) : s.source === "override" ? (
+                <span className="ml-2 text-[12px]">command-line override</span>
+              ) : null}
+            </TableCell>
+          </TableRow>
+          <TableRow>
+            <TableCell className="w-[1%] text-dim-foreground">Backend</TableCell>
+            <TableCell className={cn(WRAP, "font-mono text-[12px]")}>
+              {s.available ? `${s.backend} (${s.path ?? "found"})` : (s.reason ?? "unavailable")}
+            </TableCell>
+          </TableRow>
+          <TableRow>
+            <TableCell className="w-[1%] text-dim-foreground">Chat network</TableCell>
+            <TableCell>{s.network}</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+      {problem && s.effectiveMode === "required" ? (
+        <Alert tone="error">
+          The sandbox is required but this machine has no working backend: shell, project and check
+          commands are refused until it is installed or the mode is lowered.
+        </Alert>
+      ) : null}
+    </section>
+  );
+}
+
 export function DiagnosticsSection({ project }: SectionProps) {
   return (
     <div className={SETUP}>
       <p className={LEDE}>
-        Disk use of BAKED's data, the model calls and the background errors of this project's
-        backend. The terminal UI shows the same with <span className="font-mono">/storage</span>,{" "}
-        <span className="font-mono">/model-events</span> and{" "}
-        <span className="font-mono">/errors</span>.
+        Disk use of BAKED's data, the model calls, the background errors and the OS sandbox of this
+        project's backend. The terminal UI shows the same with{" "}
+        <span className="font-mono">/storage</span>,{" "}
+        <span className="font-mono">/model-events</span>, <span className="font-mono">/errors</span>{" "}
+        and <span className="font-mono">/sandbox</span>.
       </p>
       <h2 className={H2}>Storage</h2>
       <StoragePanel projectKey={project.key} />
@@ -379,6 +446,8 @@ export function DiagnosticsSection({ project }: SectionProps) {
       <ModelEventsPanel projectKey={project.key} />
       <h2 className={H2}>Error log</h2>
       <ErrorLogPanel projectKey={project.key} />
+      <h2 className={H2}>Sandbox</h2>
+      <SandboxPanel projectKey={project.key} />
     </div>
   );
 }

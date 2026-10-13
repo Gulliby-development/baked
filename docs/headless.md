@@ -25,6 +25,7 @@ baked --headless --watch                          # turns from baked! / baked? c
 | `--include <file>` | Load a file into context first (repeatable) |
 | `--image <file>` | Attach a PNG, JPEG, GIF or WebP image to the prompt (repeatable, at most 4); see [Images](#images) |
 | `--no-repomap` | Skip the repository scan |
+| `--sandbox <mode>` | OS sandbox of shell and project commands for this process: `off`, `auto` or `required`; replaces the global setting, a project config can still raise it ([OS sandbox](sandbox.md)) |
 | `--diff` | List the files the session changed, with the lines each adds and removes |
 | `--save-session` | Save the conversation for a later `--session` |
 | `--session <id>` | Resume a saved session (an ID prefix is enough) |
@@ -130,6 +131,16 @@ baked diagnose --json              # probe every code intelligence backend, as /
 
 `baked diagnose` runs the code intelligence health check of `/diagnose` in the terminal UI: it starts the project's servers in this process, then probes every backend (language server, ts-morph, tree-sitter, regex) with the key operations against a file of the project's main language and prints each probe's result and time. `--json` prints the shape of [`POST /v1/lsp/diagnose`](desktop/api.md#language-servers). It exits 1 when a backend that supports the language failed to start or a probe errored or timed out (`failing` names them), and 2 on an unknown argument.
 
+## OS sandbox
+
+```sh
+baked sandbox status               # mode, where it comes from, backend, chat network
+baked sandbox status --json        # the shape of GET /v1/diagnostics/sandbox
+baked --headless --sandbox required "run the tests"
+```
+
+`baked sandbox status` prints the effective [OS sandbox](sandbox.md) mode (the global `sandbox` setting, raised by the project config), the backend of this machine (`bwrap` on Linux, `seatbelt` on macOS, none on Windows) or why it is unavailable, and the network of sandboxed chat commands. It exits 1 when the mode is `required` and no backend works, so CI can check the sandbox before it runs anything. `--sandbox MODE` on a headless run replaces the global mode for that process; with `required` and no backend, shell and project commands are refused.
+
 ## Artifacts
 
 `baked artifacts list|show|save|deploy|remove` manages the [artifacts](artifacts.md) shared by every project: HTML pages kept in the BAKED data folder. `deploy ID` prints what it would send to your Vercel account and deploys only with `--yes` (`--prod` for production).
@@ -147,7 +158,7 @@ baked packages remove acme-review  # delete the package's unchanged files
 
 ## Approvals
 
-There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands, edits of sensitive files) are denied unless `--mode auto` allows everything. `--approval-review` (or `agentFeatures.approvalReview` in config) lets the [approval reviewer](tools.md#approval-reviewer) allow the low-risk ones it may decide, such as removing a build directory; the rest stay denied. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout.
+There is no one to ask in headless mode: actions that would ask for approval in the terminal UI (writes outside the project, destructive shell commands, edits of sensitive files) are denied unless `--mode auto` allows everything. `--approval-review` (or `agentFeatures.approvalReview` in config) lets the [approval reviewer](tools.md#approval-reviewer) allow the low-risk ones it may decide, such as removing a build directory; the rest stay denied. Cap runs with `--max-steps` and `--timeout`, keep API keys in CI secrets, and run untrusted prompts in a disposable checkout or with `--sandbox required`.
 
 ## Custom commands and workflows
 

@@ -255,6 +255,7 @@ test.skipIf(process.platform === "win32")("cancelling a command also stops a des
     env: process.env,
     timeoutMs: 20000,
     signal: controller.signal,
+    sandbox: null,
     onSpawn: (_pid, marker) => { scope = marker; },
   });
   let started: number[] = [];
