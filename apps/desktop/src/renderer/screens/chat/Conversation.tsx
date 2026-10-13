@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { createContext, type ReactNode, useContext, useId, useState } from "react";
 import type {
   ChatMessage,
   ChatPlan,
@@ -162,7 +162,15 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
   );
 }
 
+/**
+ * Lets a screen draw some tool calls its own way, such as the coordinator's launched sessions as
+ * live thread cards; it returns null for the calls it leaves to the ordinary tool line.
+ */
+export const ToolRenderer = createContext<((call: ToolCall) => ReactNode | null) | null>(null);
+
 function Tool({ call }: { call: ToolCall }) {
+  const custom = useContext(ToolRenderer)?.(call);
+  if (custom) return custom;
   if (HIDDEN_TOOLS.has(call.name)) return null;
   const diff = toolDiff(call.name, call.args);
   return diff ? <DiffCard call={call} diff={diff} /> : <ToolLine call={call} />;
