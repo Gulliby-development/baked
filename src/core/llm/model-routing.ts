@@ -38,7 +38,7 @@ const Route = z.union([RouteRef, z.object({ model: RouteRef, ...RouteOptions }).
 export type Route = z.infer<typeof Route>;
 /** What a class names: a model, or a model with effort and fallback models. */
 export const INDEPENDENT_REVIEW_MODES = ["off", "warn", "require", "provider"] as const;
-export const CRITIC_MODES = ["off", "advise"] as const;
+export const CRITIC_MODES = ["off", "advise", "select", "earlyStop"] as const;
 export type CriticMode = (typeof CRITIC_MODES)[number];
 export type IndependentReview = (typeof INDEPENDENT_REVIEW_MODES)[number];
 const ClassRoute = z.union([ModelId, z.object({ model: ModelId, ...RouteOptions }).strict()]);

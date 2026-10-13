@@ -688,7 +688,7 @@ A run freezes its routing at start in the `routing.json` artifact (each profile'
 
 `/workflow routing`, or R on the run list of `/workflow`, opens the routing screen of the TUI. It lists the model classes (the built-in `$active`, `$fast`, `$coding`, `$review` and every configured one), the routed roles, the stages of one workflow, every profile, `independentReview`, `reviewMinConfidence` and `critic`. Each row shows what the selected configuration layer sets, a value only the other layer sets (prefixed with that layer's name), or what the row resolves to without a route of its own (`= model`). The lines under the list name the selected entry's path in `modelRouting`, what each layer sets, and the model, effort and fallback models it resolves to with the source of the choice, as `baked workflow route` would print them with the chat tab's model as the run model. Independence warnings of the shown workflow follow.
 
-Keys: ↑/↓ select, Tab switches between the global (`~/.baked/config.json`) and project (`.baked/config.json`) layer, W switches the workflow whose stages are listed, Enter edits the selected route, D removes it from the selected layer, ←/→ on `independentReview` cycle unset, `off`, `warn`, `require` and `provider`, ←/→ on `reviewMinConfidence` change it by 0.05 (D clears it), ←/→ on `critic` cycle unset, `off` and `advise`, and Esc returns to the run list. "+ new class" adds a class.
+Keys: ↑/↓ select, Tab switches between the global (`~/.baked/config.json`) and project (`.baked/config.json`) layer, W switches the workflow whose stages are listed, Enter edits the selected route, D removes it from the selected layer, ←/→ on `independentReview` cycle unset, `off`, `warn`, `require` and `provider`, ←/→ on `reviewMinConfidence` change it by 0.05 (D clears it), ←/→ on `critic` cycle unset, `off`, `advise`, `select` and `earlyStop`, and Esc returns to the run list. "+ new class" adds a class.
 
 The edit form has Model (a `provider/model` ID, or `$class` outside a class), Effort (←/→: unset, `default`, `low`, `medium`, `high`, `xhigh`, `max`) and Fallback (up to three model IDs separated by commas). Enter on Model or Fallback opens the list of available models: the model names (`$active`, `$fast`, ... with the model each resolves to) first, for a route's Model only, then the models of each provider with a key or login, then the providers without one, greyed out with the reason. Typing filters the list, ↑/↓ and Enter choose, Esc returns to the form. A chosen model fills Model, or is added to Fallback (the oldest is dropped past three). When the text matches no listed model, "Use … as typed" puts it in the field as it is, and both fields can also be typed directly. Ctrl+S saves from any field, and Enter saves on Name and Effort; a route without effort or fallback models is written as a plain string. Before writing, the screen checks the route and the whole layer as a run start would: an empty model, a class naming another class, a class reference that neither layer defines (including removing a class that a route still uses), fallback models that are classes, repeat the primary model or exceed three, and anything the `modelRouting` schema rejects. A refused change is not written and the form lists why. Saving writes only the `modelRouting` section of the selected layer, and an emptied section is removed. New runs use the saved routing (an idle workflow worker restarts to read it); started runs keep the routing frozen in their `routing.json` until a [reroute](#switching-a-run-to-another-model).
 
@@ -744,11 +744,11 @@ Every review finding carries a `confidence` from 0 to 1 that it is real and caus
 
 The critic (`critic` profile, role `reviewer`, model `$review`) scores every task attempt that reaches its checks: it reads the task, the patch of the attempt and the checks that failed, and returns a `score` from 0 to 1 (its estimate that the attempt is correct and will be kept) with five rubric items, each scored with a one-sentence note: `intent`, `instructions`, `scope`, `testIntegrity` and `completeness`. The critique is stored as the artifact `tasks/TASK/critique.json` (one revision per attempt, with the attempt number, the diff it scored and the model) and listed in the run report under "Critic" with the weakest item. It is advice: it changes no status and starts no correction. A critic that fails is recorded with its error and the run goes on; only a spent budget or a checkpoint stops the run as for any agent call. An attempt already scored is not scored again on resume. The critic keeps its own profile route even when the task stage has a stage route, and `independentReview: provider` moves it to another vendor with the reviewers.
 
-`critic` is `advise` (always score) or `off` (never). Without a setting the critic runs only when its model is of another vendor than the implementation's, so a setup with one provider spends nothing on it. Set it in `modelRouting.critic` (global or project layer, on the routing screen, with `baked workflow routing critic advise|off|unset`, `PATCH /v1/workflow/routing` or the desktop's Model routing page) or directly as `workflows.policy.critic`; a start copies the routing value into the run's policy.
+`critic` is `off` (never score), `advise` (always score, decide nothing), `select` or `earlyStop`. `select` and `earlyStop` score like `advise` and also let a [calibrated](#critic-calibration) critic decide: `select` keeps the best-scored attempt when a task has several candidate attempts (a task runs one attempt at a time today, so it acts like `advise`), and `earlyStop` ends a convergence loop as described below. Until the critic is calibrated both act like `advise`. Without a setting the critic runs only when its model is of another vendor than the implementation's, so a setup with one provider spends nothing on it. Set it in `modelRouting.critic` (global or project layer, on the routing screen, with `baked workflow routing critic off|advise|select|earlyStop|unset`, `PATCH /v1/workflow/routing` or the desktop's Model routing page) or directly as `workflows.policy.critic`; a start copies the routing value into the run's policy.
 
 #### Critic outcome log
 
-Every critic score is also kept in the project's `.baked/workflows.sqlite` (table `critic_outcomes`, one row per scored attempt), with the outcomes that later show whether the critic was right. The data stays local, like telemetry, and is what calibration of the critic will learn from.
+Every critic score is also kept in the project's `.baked/workflows.sqlite` (table `critic_outcomes`, one row per scored attempt), with the outcomes that later show whether the critic was right. The data stays local, like telemetry, and is what [calibration](#critic-calibration) learns from.
 
 - `task_result` is `passed` when the attempt's task checks passed, or `repaired` when they failed and a repair task followed.
 - `acceptance` is `accepted` when the run completed, or `rejected` when it failed or was cancelled.
@@ -760,6 +760,24 @@ The delivery and survival labels are refreshed before a run starts, at most once
 - one line per scored attempt.
 
 `--refresh` updates the labels from Git first, and `--json` gives the rows for the bench loop to aggregate across projects. The run report's Critic section adds an Outcome column with the labels of each attempt.
+
+#### Critic calibration
+
+A critic's score only decides something once it has shown, on this project's own history, that it separates attempts that held up from those that did not. An attempt is labelled:
+- **held up** when its task checks passed and nothing later undid it;
+- **did not hold up** when a repair followed, its run failed or was cancelled, its delivery was reverted, or less than half of its added lines survived to the final survival label.
+
+The critic is calibrated when the log has at least 20 labelled attempts, at least 5 of each label, and the scores rank them with an AUC (the chance that an attempt that held up scores above one that did not) of at least 0.65. The threshold is the score with the best Youden index (true positive rate minus false positive rate). `baked workflow outcomes` prints the calibration line, `--json` and `GET /v1/workflow/critic` return it as `calibration` (`{samples, good, bad, auc, threshold, calibrated, reason}`), and the desktop shows it under Critic on the Model routing page.
+
+A run computes its calibration once, from earlier runs only, and freezes it as the artifact `critic/calibration.json`, so a resumed run decides the same way. The same artifact holds up to two recent attempts of each label with their score and weakest rubric item; the critic receives them as `earlierAttempts` to judge what this project keeps.
+
+With `critic: earlyStop`, a convergence round whose findings would start another repair accepts them instead when:
+- the critic is calibrated;
+- every required check passes;
+- no finding is critical, a security finding, or high with a reproduction the host ran;
+- the latest attempt of every scored task scores at or above the threshold.
+
+The findings become known limitations decided by `critic` ("critic early stop" in the run report), the reasons are stored as `critic/early-stop-N.json`, and the run goes on to acceptance. Otherwise the round continues as without the critic.
 
 Warnings are stored in `routing.json` under `warnings` and printed by `workflow route` as `warning:` lines.
 

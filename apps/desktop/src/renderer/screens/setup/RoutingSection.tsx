@@ -71,7 +71,7 @@ const LAYERS: { scope: RoutingScope; label: string }[] = [
 ];
 const REVIEW_MODES: (IndependentReview | null)[] = [null, "off", "warn", "require", "provider"];
 const CONFIDENCE_CHOICES: (number | null)[] = [null, 0.5, 0.6, 0.7, 0.8, 0.9];
-const CRITIC_CHOICES: (CriticMode | null)[] = [null, "off", "advise"];
+const CRITIC_CHOICES: (CriticMode | null)[] = [null, "off", "advise", "select", "earlyStop"];
 
 const LAYER_HINT =
   "All projects writes ~/.baked/config.json and applies everywhere. This project writes the project's own .baked/config.json, which wins over All projects for that project, route by route.";
@@ -206,6 +206,7 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
       {view.state === "ready" ? (
         <RoutingTables
           view={view.data}
+          projectKey={key}
           scope={scope}
           busy={busy}
           models={models}
@@ -229,6 +230,7 @@ export function RoutingSection({ projects }: { projects: RoutingProject[] }) {
 
 function RoutingTables({
   view,
+  projectKey,
   scope,
   busy,
   models,
@@ -238,6 +240,7 @@ function RoutingTables({
   onChange,
 }: {
   view: RoutingOverview;
+  projectKey: string;
   scope: RoutingScope;
   busy: boolean;
   models: Models;
@@ -352,7 +355,13 @@ function RoutingTables({
       ))}
       <IndependentReviewRow view={view} scope={scope} busy={busy} onChange={onChange} />
       <ReviewConfidenceRow view={view} scope={scope} busy={busy} onChange={onChange} />
-      <CriticRow view={view} scope={scope} busy={busy} onChange={onChange} />
+      <CriticRow
+        view={view}
+        scope={scope}
+        busy={busy}
+        onChange={onChange}
+        projectKey={projectKey}
+      />
       {view.warnings.length > 0 && (
         <ul className={cn("m-0 list-none p-0", WARN, NOTE)}>
           {view.warnings.map((w) => (
@@ -735,13 +744,17 @@ function CriticRow({
   scope,
   busy,
   onChange,
+  projectKey,
 }: {
   view: RoutingOverview;
   scope: RoutingScope;
   busy: boolean;
   onChange: (change: RoutingChange, what: string) => Promise<void>;
+  projectKey: string;
 }) {
   const own = view.critic?.[scope] ?? null;
+  const [outcomes] = useLoad(() => setup.criticOutcomes(projectKey), [projectKey, "critic"]);
+  const calibration = outcomes.state === "ready" ? outcomes.data.calibration : null;
   return (
     <div className={cn(PANEL, ROW)}>
       <span className={cn(GROW, COLUMN)}>
@@ -749,15 +762,25 @@ function CriticRow({
           Critic
           <Hint label="critic">
             A second model scores every task attempt on intent, instructions, scope, test integrity
-            and completeness. The score is advice shown in the run and the run report; it decides
-            nothing. Inherit runs it only when the critic's model is from another vendor than the
-            implementation's; advise always runs it, off never.
+            and completeness. Advise shows the score in the run and the run report and decides
+            nothing. Select keeps the best-scored attempt when a task has several; earlyStop ends a
+            correction loop when every task scores above the calibrated threshold and the required
+            checks pass. Both act like advise until the project's outcome log calibrates the critic.
+            Inherit runs it only when the critic's model is from another vendor than the
+            implementation's; off never runs it.
           </Hint>
         </span>
         <span className={cn("text-dim-foreground", NOTE)}>
-          Scores each task attempt as advice. In effect:{" "}
+          Scores each task attempt. In effect:{" "}
           <span className="font-mono">{view.critic?.effective ?? "on another vendor"}</span>.
         </span>
+        {calibration && (
+          <span className={cn("text-dim-foreground", NOTE)}>
+            {calibration.calibrated
+              ? `Calibrated on ${calibration.samples} attempts of this project (AUC ${(calibration.auc ?? 0).toFixed(2)}): select and earlyStop decide at score ${(calibration.threshold ?? 0).toFixed(2)}.`
+              : `Not calibrated yet (${calibration.reason ?? "no outcomes"}): select and earlyStop act like advise.`}
+          </span>
+        )}
       </span>
       <SegmentGroup aria-label="Critic">
         {CRITIC_CHOICES.map((mode) => (

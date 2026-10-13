@@ -83,6 +83,7 @@ const FULL_CAPABILITIES = [
   "chat-undo",
   "checkpoints",
   "run-memory",
+  "critic-outcomes",
   "chat-memory",
   "images",
   "code-graph",

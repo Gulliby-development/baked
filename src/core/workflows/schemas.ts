@@ -211,10 +211,14 @@ export const PolicySchema = z
     reviewMinConfidence: z.number().min(0).max(1).optional(),
     /**
      * The critic that scores every task attempt with a rubric (#646): `advise` shows the score
-     * and decides nothing, `off` skips it. Absent means `advise` when the critic's model is of
-     * another vendor than the implementation's, else off, so stored policies keep their hash.
+     * and decides nothing, `off` skips it. `select` and `earlyStop` score like `advise` and also
+     * decide once the project's outcome log calibrates the critic (critic-calibration.ts):
+     * `select` keeps the best-scored attempt of a task, `earlyStop` accepts the remaining
+     * convergence findings instead of another repair when every task scores at the threshold and
+     * the checks pass. Absent means `advise` when the critic's model is of another vendor than the
+     * implementation's, else off, so stored policies keep their hash.
      */
-    critic: z.enum(["off", "advise"]).optional(),
+    critic: z.enum(["off", "advise", "select", "earlyStop"]).optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.

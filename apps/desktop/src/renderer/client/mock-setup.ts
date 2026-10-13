@@ -1495,6 +1495,20 @@ export const setupRoutes: MockRoute = (request) => {
         s.summary.root,
         body<{ event?: string; enabled?: boolean }>(request),
       );
+    case "GET /v1/workflow/critic":
+      return response(200, {
+        summary: { scored: 12 },
+        calibration: {
+          samples: 12,
+          good: 9,
+          bad: 3,
+          auc: null,
+          threshold: null,
+          calibrated: false,
+          reason: "12 of 20 labelled attempts",
+        },
+        criticOutcomes: [],
+      });
     case "GET /v1/workflow/memory":
       return response(200, memoryState(key));
     case "POST /v1/workflow/memory":

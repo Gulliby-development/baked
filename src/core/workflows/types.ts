@@ -57,7 +57,7 @@ export const LimitationSchema = z
      * Who accepted it: a person, the `assume` rule when the checks passed, or the notes rule (a
      * low `partial` finding behind verified behavior, accepted without a decision).
      */
-    decidedBy: z.enum(["user", "assume", "notes"]),
+    decidedBy: z.enum(["user", "assume", "notes", "critic"]),
     /** Convergence rounds the run had used when the finding was accepted. */
     round: z.number().int().nonnegative(),
   })
