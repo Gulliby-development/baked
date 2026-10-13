@@ -40,6 +40,7 @@ import type { ContextManager } from "../context/manager.js";
 import { storageDirs } from "../diagnostics/storage.js";
 import { runsFreezingFile } from "../instruction-files.js";
 import { CodeGraphCache } from "../intelligence/code-graph.js";
+import { IndexRefresher } from "../intelligence/index-refresh.js";
 import type { LspServiceDeps } from "../intelligence/lsp-service.js";
 import { MemoryManager } from "../memory/manager.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
@@ -49,6 +50,7 @@ import { projectOverview } from "../projects/overview.js";
 import { realPath } from "../projects/paths.js";
 import { ProjectService } from "../projects/service.js";
 import type { SkillCatalog } from "../skills/manager.js";
+import { onFileEdited } from "../tools/file-events.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { CURRENT_VERSION } from "../version.js";
 import { type AttentionItem, attentionItems } from "../workflows/attention.js";
@@ -141,6 +143,8 @@ import { setupRoute } from "./setup-routes.js";
 
 /** How long shutdown waits for the HTTP server to report its connections closed. */
 const STOP_WAIT_MS = 1000;
+/** How long `baked serve` waits after start before it opens the project's index. */
+const BACKGROUND_INDEX_DELAY_MS = 3000;
 export const API_VERSION = 1;
 /** The endpoint groups of `docs/desktop/api.md` this server implements. */
 export const CAPABILITIES = [
@@ -183,6 +187,7 @@ export const CAPABILITIES = [
   "progress",
   "coordinator",
   "coordinator-schedules",
+  "coordinator-summary",
   "watch",
   "sandbox",
   "artifacts",
@@ -233,6 +238,14 @@ export interface ApiServerOptions {
   openArtifact?: (path: string) => boolean;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
+  /**
+   * Keeps the code index current in the background (`baked serve` turns it on): opens the
+   * project shortly after start, then updates after file changes, chat edits, runs and git
+   * checkouts. The `repoMapBackgroundRefresh` setting can still turn it off.
+   */
+  backgroundIndex?: boolean;
+  /** Wait before the background index opens the project; tests shorten it. */
+  backgroundIndexDelayMs?: number;
 }
 
 export interface ApiServer {
@@ -556,9 +569,30 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     },
   );
   const graphCache = new CodeGraphCache(service.workspace);
+  const graphEnabled = service.config.repoMap !== false && process.env.BAKED_NO_REPOMAP !== "1";
   let graphRoot: ContextManager | null = null;
   let graphRootStarted = false;
-  /** Starts the shared repository map on first use; true until its scan is ready. */
+  const indexRefresher =
+    options.backgroundIndex && graphEnabled && service.config.repoMapBackgroundRefresh !== false
+      ? new IndexRefresher({
+          workspace: service.workspace,
+          root: async () => {
+            const root = await service.rootContext.get();
+            graphRootStarted = true;
+            graphRoot = root;
+            return root;
+          },
+          startDelayMs: options.backgroundIndexDelayMs ?? BACKGROUND_INDEX_DELAY_MS,
+          onError: (error) =>
+            log(
+              JSON.stringify({
+                event: "index-refresh-error",
+                message: redactSecrets(error instanceof Error ? error.message : String(error)),
+              }),
+            ),
+        })
+      : null;
+  /** Starts the shared repository map on first use; true while its index is built or updated. */
   const graphIndexing = (): boolean => {
     if (!graphRootStarted) {
       graphRootStarted = true;
@@ -571,7 +605,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         },
       );
     }
-    return !graphRoot?.isRepoMapReady();
+    return !graphRoot?.isRepoMapReady() || graphRoot.isRepoMapScanning();
   };
   /** The latest on-demand result of each check. */
   const checkResults = new Map<string, CheckRunRecord>();
@@ -669,6 +703,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         progress.end(progressId);
         drives.delete(tracked);
         if (driven !== undefined && runDrives.get(driven) === tracked) runDrives.delete(driven);
+        // A run may have changed files in a worktree or by tools the watcher did not see.
+        if (started) indexRefresher?.request();
       });
     drives.add(tracked);
     const runId = await Promise.race([driving, execution.then(() => undefined)]);
@@ -945,7 +981,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         ...ctx,
         workspace: service.workspace,
         cache: graphCache,
-        enabled: service.config.repoMap !== false && process.env.BAKED_NO_REPOMAP !== "1",
+        enabled: graphEnabled,
         indexing: graphIndexing,
       })) ??
       (await checkRoute({
@@ -1457,6 +1493,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     await server.stop(true);
     throw error;
   }
+  const stopEditWatch = indexRefresher ? onFileEdited(() => indexRefresher.request()) : null;
+  indexRefresher?.start();
 
   let stopping: Promise<void> | undefined;
   let ownMemory: MemoryManager | null = null;
@@ -1476,6 +1514,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     stopping ??= (async () => {
       shutdown.abort(new Error("API server shutdown"));
       for (const close of [...streams]) close();
+      stopEditWatch?.();
+      await indexRefresher?.stop();
       try {
         // stop(true) closes every connection at once. On Bun 1.3.13 its promise can stay pending
         // after a client cancelled an event stream, so the wait for it is bounded.

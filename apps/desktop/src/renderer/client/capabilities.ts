@@ -25,6 +25,8 @@ export const CHECKPOINTS_CAPABILITY = "checkpoints";
 export const COORDINATOR_CAPABILITY = "coordinator";
 /** `/v1/coordinator/schedules*` (Schedules in the Coordinator section). */
 export const COORDINATOR_SCHEDULES_CAPABILITY = "coordinator-schedules";
+/** `POST /v1/coordinator/summary` (What's happening in the coordinator header). */
+export const COORDINATOR_SUMMARY_CAPABILITY = "coordinator-summary";
 /** `GET|POST /v1/workflow/memory` (the Runs part of the Memory section). */
 export const RUN_MEMORY_CAPABILITY = "run-memory";
 /** `GET /v1/workflow/critic` (the critic's outcome log and calibration in Model routing). */

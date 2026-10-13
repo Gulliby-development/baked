@@ -1,8 +1,13 @@
 import { useContext, useEffect, useState } from "react";
 import type { LocalCoordinator } from "../../core/chat/coordinator-host.js";
+import { requestSummary } from "../../core/chat/coordinator-summary.js";
 import type { ChatPrompt, PromptAnswer } from "../../core/chat/sessions.js";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
-import { type CoordinatorSnapshot, useCoordinatorSnapshot } from "../../hooks/useCoordinator.js";
+import {
+  type CoordinatorSnapshot,
+  takeSummaryOnOpen,
+  useCoordinatorSnapshot,
+} from "../../hooks/useCoordinator.js";
 import { useKeyboard, useTerminalDimensions } from "../../hooks/useTerminalEvents.js";
 import { handleTextInputKey, PremiumPopup, Search } from "../ui/index.js";
 import { PopupViewport } from "../ui/PopupViewport.js";
@@ -81,6 +86,16 @@ export function CoordinatorView({ visible, open, onClose }: Props) {
   const prompt = view?.prompts[0];
   const working = view?.state === "working";
 
+  // `/coordinator summary` opens the view and asks once the coordinator is ready.
+  useEffect(() => {
+    if (!visible || !local || !takeSummaryOnOpen()) return;
+    try {
+      requestSummary(local.session);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [visible, local]);
+
   const act = (fn: () => void): void => {
     try {
       fn();
@@ -109,6 +124,10 @@ export function CoordinatorView({ visible, open, onClose }: Props) {
       else if (prompt.kind === "plan-review")
         answer(prompt, { action: yes ? "execute" : "cancel" });
       else if (prompt.kind !== "question") answer(prompt, { approve: yes });
+      return;
+    }
+    if (evt.ctrl && evt.name === "s" && !prompt && !working) {
+      act(() => requestSummary(local.session));
       return;
     }
     if (evt.ctrl && evt.name === "e" && prompt?.kind === "split") {

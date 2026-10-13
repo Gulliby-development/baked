@@ -53,7 +53,7 @@ interface SettingsRow {
   meta?: string;
   active?: boolean;
   status?: "online" | "offline" | "warning" | "error" | "idle";
-  kind: "write" | "read" | "settings-storage" | "embedding";
+  kind: "write" | "read" | "share" | "settings-storage" | "embedding";
 }
 
 const SETTINGS_MODAL_TITLE: Record<SettingsModalKind, string> = {
@@ -265,6 +265,7 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
 
   // Settings groups: scope rules.
   const settingsGroups = useMemo<GroupedListGroup<SettingsRow>[]>(() => {
+    void generation;
     const scopeCfg = memMgr.scopeConfig;
     const resolution = contextManager.getEmbedderResolution();
     const embedderMeta = resolution?.modelId
@@ -289,6 +290,12 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
             kind: "read" as const,
           },
           {
+            id: "share",
+            label: "Share with runs",
+            meta: scopeCfg.shareWithRuns ? "on" : "off",
+            kind: "share" as const,
+          },
+          {
             id: "settings-storage",
             label: "Save settings to",
             meta: memMgr.settingsScope,
@@ -304,7 +311,7 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
         ],
       },
     ];
-  }, [memMgr, contextManager]);
+  }, [memMgr, contextManager, generation]);
 
   const settingsRows = useMemo(
     () => buildGroupedRows(settingsGroups, new Set(["scopes"])),
@@ -392,6 +399,11 @@ export function MemoryBrowser({ visible, contextManager, cwd, onClose, onSystemM
       setSettingsModal({ kind: "read", current: memMgr.scopeConfig.readScope });
     } else if (row.kind === "settings-storage") {
       setSettingsModal({ kind: "settings-storage", current: memMgr.settingsScope });
+    } else if (row.kind === "share") {
+      const { shareWithRuns, ...rest } = memMgr.scopeConfig;
+      memMgr.scopeConfig = shareWithRuns ? rest : { ...rest, shareWithRuns: true };
+      popFlash("ok", `Share with runs: ${shareWithRuns ? "off" : "on"}`);
+      bumpGen();
     }
   };
 

@@ -111,6 +111,7 @@ const FULL_CAPABILITIES = [
   "run-compare",
   "coordinator",
   "coordinator-schedules",
+  "coordinator-summary",
   "artifacts",
   "packages",
   "project-agents",

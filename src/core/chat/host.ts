@@ -86,15 +86,14 @@ export class BakeChatHost implements ChatAgentHost {
     // A coordinator turn reads its brief fresh, so edits from the API or a past turn show.
     const brief = request.coordinator ? new BriefStore(this.workspace, request.sessionId) : null;
     context.setProjectInstructions(
-      brief
-        ? [
-            instructions,
-            coordinatorInstructions(brief.read()),
-            scheduleInstructions(new ScheduleStore(this.workspace, request.sessionId)),
-          ]
-            .filter(Boolean)
-            .join("\n\n")
-        : instructions,
+      [
+        instructions,
+        brief ? coordinatorInstructions(brief.read()) : "",
+        brief ? scheduleInstructions(new ScheduleStore(this.workspace, request.sessionId)) : "",
+        request.instructions ?? "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     );
     context.setBakeMode(request.mode);
     this.applyContextSettings(resources);
@@ -117,7 +116,11 @@ export class BakeChatHost implements ChatAgentHost {
       onApproveDestructive: request.onApproveDestructive,
       drainSteering: request.drainSteering,
       sessionId: request.sessionId,
-      ...(brief ? { extraTools: { ...request.tools, [BRIEF_TOOL]: briefTool(brief) } } : {}),
+      ...(brief
+        ? { extraTools: { ...request.tools, [BRIEF_TOOL]: briefTool(brief) } }
+        : request.tools
+          ? { extraTools: request.tools }
+          : {}),
     });
     const turnAgent: TurnAgent = agent;
     return { agent: turnAgent, contextWindow: provider.contextWindow };

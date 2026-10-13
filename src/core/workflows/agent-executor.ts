@@ -1032,10 +1032,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       const usage = budget.record(result.steps, submitted !== undefined, meta);
       writeUsage(usage);
       if (usage.stopReason === "tokens")
-        throw new WorkflowFault(
-          "BUDGET_EXHAUSTED",
-          `Profile ${request.profile.id} used ${String(usage.totalTokens)} tokens without submitting a result (attempt cap ${String(usage.maxTokens)})`,
-        );
+        throw attemptCapFault(request.profile.id, usage.totalTokens, usage.maxTokens);
       if (submitted === undefined) {
         // Nothing to reformat: a correction pass over empty text would invent a result. The
         // scheduler repeats an attempt that ended at its step cap with more steps.
@@ -1191,3 +1188,15 @@ export class NativeAgentExecutor implements AgentExecutor {
     return this.ownsRootContext ? this.rootContext.dispose().catch(() => {}) : Promise.resolve();
   }
 }
+
+/**
+ * An attempt that used its token cap without submitting. It stops the run with its own reason:
+ * the cap is not a run limit, so `workflow extend` cannot help, and a resume continues the task on
+ * the edits already in place (#935).
+ */
+export const attemptCapFault = (profileId: string, tokens: number, cap: number): WorkflowFault =>
+  new WorkflowFault(
+    "BUDGET_EXHAUSTED",
+    `Profile ${profileId} used ${String(tokens)} tokens without submitting a result (attempt cap ${String(cap)})`,
+    { reason: "attempt_cap", tokens, cap },
+  );

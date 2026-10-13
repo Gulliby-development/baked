@@ -1,3 +1,4 @@
+import { chatMemoriesForRuns, type SharedChatMemory } from "../memory/sharing.js";
 import { hashBytes } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import type { RunPolicy } from "./schemas.js";
@@ -39,6 +40,8 @@ export interface ProjectMemory {
   notes?: string[];
   /** Active learned rules; absent when there are none or `learnedRules` is off. */
   rules?: LearnedRule[];
+  /** The project's chat memories, when the memory settings share them with runs (#818). */
+  chat?: SharedChatMemory[];
 }
 
 export type MemoryEntryKind = "note" | "answer" | "assumption" | "check" | "rule";
@@ -330,8 +333,9 @@ function memoryEntries(store: WorkflowStore, limit: number): MemoryEntry[] {
 export function collectProjectMemory(
   store: WorkflowStore,
   limit = MEMORY_RUNS,
-  options: { rules?: boolean } = {},
+  options: { rules?: boolean; chat?: boolean } = {},
 ): ProjectMemory {
+  const chat = options.chat === false ? [] : chatMemoriesForRuns(store.workspace);
   const entries = memoryEntries(store, limit).filter((e) => !e.hidden);
   const notes = entries.filter((e) => e.kind === "note").map((e) => e.text);
   const rules =
@@ -352,7 +356,26 @@ export function collectProjectMemory(
       .map((e) => ({ command: e.text, runs: e.runs ?? 0 })),
     ...(notes.length ? { notes } : {}),
     ...(rules.length ? { rules } : {}),
+    ...(chat.length ? { chat } : {}),
   };
+}
+
+/** Run memory kinds the chat agent recalls when sharing is on; checks and notes stay with runs. */
+const FOR_CHAT = 12;
+
+/**
+ * What workflow runs of a project learned, as the chat agent reads it when the memory settings
+ * share it (#818): accepted answers, approved assumptions and active learned rules, at most
+ * `FOR_CHAT` lines, or null when there are none or the project has no runs.
+ */
+export function runMemoryForChat(store: WorkflowStore): string | null {
+  const memory = collectProjectMemory(store, MEMORY_RUNS, { chat: false });
+  const lines = [
+    ...(memory.rules ?? []).map((r) => `- Rule: ${r.text} (applies to ${r.scope})`),
+    ...memory.answers.map((a) => `- Answer: ${a.question} -> ${a.answer}`),
+    ...memory.assumptions.map((a) => `- Approved assumption: ${a.text}`),
+  ].slice(0, FOR_CHAT);
+  return lines.length ? lines.join("\n") : null;
 }
 
 /** Project memory as a person reviews it before the next run, with what that run would read. */
@@ -447,7 +470,9 @@ export function renderProjectMemory(
   const checks = memory.checks.filter((c) => !own.has(c.command));
   const notes = memory.notes ?? [];
   const rules = memory.rules ?? [];
+  const chat = memory.chat ?? [];
   if (
+    !chat.length &&
     !notes.length &&
     !memory.answers.length &&
     !memory.assumptions.length &&
@@ -480,6 +505,13 @@ export function renderProjectMemory(
           "",
           "Code rules learned from findings that recurred in earlier runs (plan for them):",
           ...rules.map((r) => `- ${r.text} (applies to ${r.scope})`),
+        ]
+      : []),
+    ...(chat.length
+      ? [
+          "",
+          "Memories the chat agent saved for this project (shared by the memory settings):",
+          ...chat.map((c) => `- ${c.category ? `[${c.category}] ` : ""}${c.summary}`),
         ]
       : []),
     ...(checks.length

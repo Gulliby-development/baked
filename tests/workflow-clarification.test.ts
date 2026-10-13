@@ -365,6 +365,22 @@ describe("answering a clarification", () => {
       const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
       expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("clarification");
     });
+    // url-shortener 88548a10 (round 14): the spec author added a three-OS CI requirement the brief
+    // never mentions; under assume the run still asked a person twice.
+    const addition =
+      "AC-009 makes passing CI on Windows, macOS, and Linux an acceptance condition the request does not ask for";
+    test("a scope finding that adds an unrequested requirement is decided for the request, then assumed", async () => {
+      const executor = new ScriptedExecutor({ planFinding: 3, findingKind: "scope", findingRefs: ["spec.json:FR-009", "spec.json:AC-009"], findingText: addition });
+      const service = setup(executor);
+      const run = await startAssume(service);
+      expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
+      expect(executor.requests[7]?.prompt).toContain("requirements, criteria and tasks the request does not ask for");
+      expect(executor.requests[7]?.prompt).toContain(addition);
+      expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
+      const assumed = service.store.latestArtifact(run.runId, "assumptions/analysis.json");
+      if (!assumed) throw new Error("No assumptions artifact");
+      expect(service.store.readArtifact(run.runId, assumed.id)).toContain("AC-009");
+    });
     test("a scope finding that survives still goes to a person", async () => {
       const executor = new ScriptedExecutor({ planFinding: 2, findingKind: "scope", findingRefs: ["spec.json"] });
       const service = setup(executor);
