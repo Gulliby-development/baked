@@ -954,6 +954,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: conveyor gate marks and station gates"],
   },
   {
+    id: "workflow-walkthrough",
+    group: "Workflow runs",
+    title: "Each workflow's family and line, and a step-through of a run along it",
+    tui: ["/workflow: definitions screen (W), a line per workflow; Enter steps through a run"],
+    cli: ["baked workflow definitions"],
+    api: ["/v1/workflow/definitions"],
+    desktop: ["project/workflows"],
+  },
+  {
     id: "run-compare",
     group: "Workflow runs",
     title: "Compare two runs side by side (A/B of routing maps)",
