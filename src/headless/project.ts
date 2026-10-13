@@ -1,3 +1,5 @@
+import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
+import { agentContextPreview, formatAgentContext } from "../core/agent-context.js";
 import { getCwd } from "../core/cwd.js";
 import { readManifest } from "../core/projects/manifest.js";
 import { scaffoldProject } from "../core/projects/scaffold.js";
@@ -10,6 +12,8 @@ Commands:
                      Set up this folder: baked/project.json (registered for
                      you), .baked/ and the workflow store; keeps what exists
   show [--json]      The project, its working set, sessions and runs
+  context [--json]   What every agent's prompt gets from this project: the
+                     instruction files (rules) and the working set (files)
   add <path|glob>... Add entries to the working set
   remove <entry>...  Remove entries from the working set
   register           Trust the secondary roots baked/project.json names now
@@ -90,6 +94,17 @@ export async function runProjectCli(argv: string[]): Promise<number> {
         const summary = service.summary();
         process.stdout.write(
           rest.includes("--json") ? `${JSON.stringify(summary, null, 2)}\n` : render(summary),
+        );
+        return 0;
+      }
+      case "context": {
+        const cwd = getCwd();
+        const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
+        const preview = agentContextPreview(cwd, config.instructionFiles);
+        process.stdout.write(
+          rest.includes("--json")
+            ? `${JSON.stringify(preview, null, 2)}\n`
+            : formatAgentContext(preview),
         );
         return 0;
       }

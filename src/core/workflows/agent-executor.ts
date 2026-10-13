@@ -1,4 +1,4 @@
-import { readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
   generateText,
@@ -17,6 +17,7 @@ import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { hasToolHooks } from "../hooks/index.js";
+import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligence/syntax-check.js";
 import { resolveModel } from "../llm/provider.js";
 import {
   buildProviderOptions,
@@ -29,8 +30,13 @@ import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
-import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
-import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
+import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
+import {
+  buildCheckEnv,
+  CheckRunner,
+  executeCheckCommand,
+  modelCheckOutput,
+} from "../verification/check-runner.js";
 import {
   probeTool,
   reproExecutables,
@@ -123,6 +129,10 @@ export const outputSchemas: Record<string, z.ZodType> = {
   distinction: DistinctionSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
+/** Submissions refused because a written file does not parse; the next one is accepted (#977). */
+const MAX_SYNTAX_REFUSALS = 2;
+/** Refusals of one path by the file-hash check after which an attempt stops (#954). */
+const MAX_HASH_REFUSALS = 3;
 
 /** Workspace paths an attempt's applied file edits wrote, in first-write order. */
 export function appliedPaths(effects: readonly EffectRow[], attemptId: string): string[] {
@@ -134,6 +144,26 @@ export function appliedPaths(effects: readonly EffectRow[], attemptId: string): 
     if (typeof path === "string" && !paths.includes(path)) paths.push(path);
   }
   return paths;
+}
+/** Appends the syntax errors an edit left in its file to the edit tool's output (#977). */
+async function withSyntaxNote(
+  result: unknown,
+  regressions: () => Promise<string[]>,
+): Promise<unknown> {
+  const edited = result as { success?: unknown; output?: unknown } | null;
+  if (!edited || typeof edited !== "object" || edited.success !== true) return result;
+  if (typeof edited.output !== "string") return result;
+  let errors: string[];
+  try {
+    errors = await regressions();
+  } catch {
+    return result;
+  }
+  if (!errors.length) return result;
+  return {
+    ...edited,
+    output: `${edited.output}\n\nSyntax check: the file does not parse after this edit:\n${errors.join("\n")}\nFix it before submit_result, which refuses a written file that does not parse.`,
+  };
 }
 /** Read-only steps in a row before an implementer is told to edit. */
 const EDIT_NUDGE_AFTER_READS = 4;
@@ -177,6 +207,17 @@ interface AttemptWatch {
   abort(error: Error): void;
 }
 
+/**
+ * Whether `expected` names the current content of a file `delete_file` is asked to remove: the
+ * `hash:` footer `read` prints (Bun's content hash, which is not a SHA-256), the file's SHA-256,
+ * or a prefix of that SHA-256 of at least 16 characters (#970).
+ */
+export function deleteHashMatches(path: string, expected: string): boolean {
+  const sha = fileHash(path);
+  if (sha === null) return false;
+  if (expected === sha || (expected.length >= 16 && sha.startsWith(expected))) return true;
+  return contentHash(readFileSync(path, "utf-8")) === expected;
+}
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
   private readonly ownsRootContext: boolean;
@@ -315,8 +356,59 @@ export class NativeAgentExecutor implements AgentExecutor {
               ),
             );
         },
+        (path, count) => {
+          // A file that differs from the run's record stays different however often the agent
+          // reads and retries: stop the attempt rather than spend its cap on refusals (#954).
+          if (count >= MAX_HASH_REFUSALS)
+            watch.abort(
+              new WorkflowFault(
+                "INPUT_CHANGED",
+                `Edits to ${path} were refused ${String(count)} times in attempt ${request.attemptId}: File changed outside this attempt`,
+                { path, refusals: count },
+              ),
+            );
+        },
       );
       const available: ToolSet = {};
+      // Syntax error count of each file before this attempt's first edit of it (#977): an edit is
+      // blamed only for errors the file did not already have, such as syntax the grammar predates.
+      const syntaxBefore = new Map<string, Promise<number>>();
+      const noteSyntaxBaseline = (name: string, args: Record<string, unknown>) => {
+        if (!["edit_file", "multi_edit"].includes(name) || typeof args.path !== "string") return;
+        let path: string;
+        try {
+          path = guard.path(args.path);
+        } catch {
+          return;
+        }
+        if (syntaxBefore.has(path) || !syntaxCheckable(path)) return;
+        let content: string | null = null;
+        try {
+          content = readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          // A new file has no errors of its own yet.
+        }
+        syntaxBefore.set(
+          path,
+          content === null
+            ? Promise.resolve(0)
+            : syntaxErrors(path, content).then((errors) => errors.length),
+        );
+      };
+      /** `path:line:column: message` for each syntax error the attempt's edits left in `path`. */
+      const syntaxRegressions = async (path: string): Promise<string[]> => {
+        if (!syntaxCheckable(path)) return [];
+        let content: string;
+        try {
+          content = readFileSync(workspacePath(root, path), "utf8");
+        } catch {
+          return [];
+        }
+        const errors = await syntaxErrors(path, content);
+        if (!errors.length) return [];
+        const before = await (syntaxBefore.get(path) ?? Promise.resolve(0));
+        return errors.length > before ? formatSyntaxErrors(path, errors) : [];
+      };
       // Which code intelligence backend (and language server) answered each tool, for usage.
       const backends = new Map<string, ToolBackendCount>();
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
@@ -362,6 +454,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                       : f,
                 );
               const editMode = policy.editDiagnostics ?? "feedback";
+              noteSyntaxBaseline(name, args);
               let result = await withEditDiagnosticsMode(editMode, () =>
                 guard.execute(name, args, async () => {
                   if (name !== "read" || !Array.isArray(normalized.files))
@@ -403,6 +496,10 @@ export class NativeAgentExecutor implements AgentExecutor {
                 count.calls++;
                 backends.set(key, count);
               }
+              if (["edit_file", "multi_edit"].includes(name) && typeof args.path === "string")
+                result = await withSyntaxNote(result, () =>
+                  syntaxRegressions(guard.path(args.path as string)),
+                );
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {
@@ -446,15 +543,26 @@ export class NativeAgentExecutor implements AgentExecutor {
       ) {
         available.delete_file = tool({
           description:
-            "Delete a file explicitly declared with action=delete in the approved task. Requires its current SHA-256 hash.",
+            "Delete a file explicitly declared with action=delete in the approved task. expectedHash is optional: pass the `hash:` footer `read` printed for the file (or its SHA-256) to refuse the delete when the file changed since that read. Without it the delete is still refused when the file changed outside this attempt.",
           inputSchema: z
-            .object({ path: z.string(), expectedHash: z.string().regex(/^[a-f0-9]{64}$/) })
+            .object({
+              path: z.string(),
+              expectedHash: z
+                .string()
+                .regex(/^[a-f0-9]{1,64}$/)
+                .optional(),
+            })
             .strict(),
           execute: async (args) =>
             guard.execute("delete_file", args, async () => {
               const path = workspacePath(root, guard.path(args.path));
-              if (fileHash(path) !== args.expectedHash)
-                throw new WorkflowFault("INPUT_CHANGED", "Delete target changed");
+              if (!existsSync(path))
+                throw new WorkflowFault("INPUT_CHANGED", `Delete target is missing: ${args.path}`);
+              if (args.expectedHash !== undefined && !deleteHashMatches(path, args.expectedHash))
+                throw new WorkflowFault(
+                  "INPUT_CHANGED",
+                  `Delete target changed: ${args.path} no longer has hash ${args.expectedHash}. Read it again and pass the new hash.`,
+                );
               const content = canonical({
                 encoding: "base64",
                 content: readFileSync(path).toString("base64"),
@@ -513,9 +621,11 @@ export class NativeAgentExecutor implements AgentExecutor {
                 result.status === "failed"
                   ? (request.attributeCheck?.(check, result.output) ?? null)
                   : null;
-              if (!own) return result;
+              // The full output stays in the evidence; the model gets a bounded view (#993).
+              const shown = { ...result, ...modelCheckOutput(result.output, result.evidenceId) };
+              if (!own) return shown;
               return {
-                ...result,
+                ...shown,
                 taskErrors: own,
                 note: `${check.id} analyzes the whole project and runs in the checks stage after the tasks are integrated; in this task's directory it also fails on files other tasks have not written yet. ${own.length ? "Only the errors in taskErrors are in this task's files: fix those and ignore the rest." : "None of its errors is in this task's files, so there is nothing to fix for it here."}`,
               };
@@ -668,7 +778,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
               return {
                 fixed: outputs,
-                check: checked,
+                check: { ...checked, ...modelCheckOutput(checked.output, checked.evidenceId) },
                 ...(reverted.length
                   ? {
                       reverted,
@@ -689,6 +799,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       let rejected = 0;
       let taskEndChecked = false;
       let editsNoted = false;
+      let syntaxRefusals = 0;
+      let lastSyntaxRefusal = "";
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
@@ -737,6 +849,36 @@ export class NativeAgentExecutor implements AgentExecutor {
                 instruction:
                   "Check the files as they are now. If the task is done, submit outcome implemented; if something is still missing, finish it with BAKED's edit tools or submit blocked naming what remains, not that no changes were made. The next submission is accepted.",
               };
+          }
+          // A file this attempt wrote that does not parse is refused here, in the attempt that
+          // broke it, not found by a whole-unit check after another task (#977). The same errors
+          // submitted again pass: the grammar may predate valid syntax the file uses.
+          if (!errors.length && request.task && outcome === "implemented") {
+            const written = appliedPaths(this.store.effects(request.runId), request.attemptId);
+            const broken = (await Promise.all(written.map(syntaxRegressions))).flat();
+            const key = broken.join("\n");
+            if (broken.length) {
+              const refuse = syntaxRefusals < MAX_SYNTAX_REFUSALS && key !== lastSyntaxRefusal;
+              if (refuse) {
+                syntaxRefusals++;
+                lastSyntaxRefusal = key;
+              }
+              this.store.transaction(() =>
+                this.store.artifact(
+                  request.runId,
+                  "diagnostic",
+                  `attempts/${request.attemptId}/syntax-${crypto.randomUUID()}.json`,
+                  canonical({ accepted: !refuse, errors: broken }),
+                ),
+              );
+              if (refuse)
+                return {
+                  accepted: false,
+                  errors: broken.map((line) => `Syntax error: ${line}`),
+                  instruction:
+                    "These files written by this task do not parse. Fix each listed line, then call submit_result again with the complete result. If the code is valid and only newer than the syntax checker, submit again unchanged: the same errors are not refused twice.",
+                };
+            }
           }
           if (
             !errors.length &&
@@ -807,13 +949,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const model = this.attemptModel(request, policy);
+      const effort = sentEffort(provider.providerOptions);
       const writeUsage = (usage: AttemptUsageRecord) =>
         this.store.transaction(() =>
           this.store.artifact(
             request.runId,
             "usage",
             `attempts/${request.attemptId}/usage.json`,
-            canonical(backends.size ? { ...usage, toolBackends: [...backends.values()] } : usage),
+            canonical({
+              ...usage,
+              ...(backends.size ? { toolBackends: [...backends.values()] } : {}),
+              ...(effort ? { effort } : {}),
+            }),
           ),
         );
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
@@ -1189,6 +1336,20 @@ export class NativeAgentExecutor implements AgentExecutor {
   dispose(): Promise<void> {
     return this.ownsRootContext ? this.rootContext.dispose().catch(() => {}) : Promise.resolve();
   }
+}
+
+/**
+ * The reasoning effort a call sends, whichever provider reads it: `effort` (Anthropic, Claude
+ * Code) or `reasoningEffort` (OpenAI, Codex) in its provider options (#936).
+ */
+export function sentEffort(
+  options: Record<string, Record<string, unknown> | undefined> | undefined,
+): string | undefined {
+  for (const entry of Object.values(options ?? {})) {
+    const effort = entry?.effort ?? entry?.reasoningEffort;
+    if (typeof effort === "string") return effort;
+  }
+  return undefined;
 }
 
 /**

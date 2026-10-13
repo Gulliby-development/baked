@@ -34,11 +34,17 @@ import {
   withApprovalReview,
 } from "../security/approval-review.js";
 import {
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
+  withManualApproval,
+} from "../security/permission-mode.js";
+import {
   buildInteractiveTools,
   buildTools,
   CORE_TOOL_NAMES,
   PLAN_EXECUTION_TOOL_NAMES,
   RESTRICTED_TOOL_ACTIONS,
+  RESTRICTED_TOOL_INPUTS,
   RESTRICTED_TOOL_NAMES,
 } from "../tools/index.js";
 import { renderTaskList } from "../tools/task-list.js";
@@ -645,6 +651,8 @@ interface BakeAgentOptions {
   fullModelId?: string;
   contextManager: ContextManager;
   bakeMode?: BakeMode;
+  /** How much runs without asking (see `security/permission-mode.ts`); `auto` when left out. */
+  permissionMode?: PermissionMode;
   interactive?: InteractiveCallbacks;
   subagentModels?: {
     /** Model for ⚡ spark agents — explore/investigate. */
@@ -684,6 +692,7 @@ export function createBakeAgent({
   fullModelId,
   contextManager,
   bakeMode = "default",
+  permissionMode = DEFAULT_PERMISSION_MODE,
   interactive,
   subagentModels,
   webSearchModel,
@@ -712,30 +721,34 @@ export function createBakeAgent({
   const repoMap = contextManager.isRepoMapReady() ? contextManager.getRepoMap() : undefined;
   const skills = contextManager.getActiveSkillEntries();
 
-  // Auto mode: bypass all permission prompts — fully autonomous execution.
+  // Full access (or the legacy auto mode) bypasses every permission prompt.
+  const fullAccess = bakeMode === "auto" || permissionMode === "full";
+  // Manual mode asks before every edit, command and mutating git or project action.
+  const manualApproval = !fullAccess && permissionMode === "manual";
   const autoApprove = () => Promise.resolve(true);
-  const effectiveApproveWebSearch = bakeMode === "auto" ? autoApprove : onApproveWebSearch;
-  const effectiveApproveFetchPage = bakeMode === "auto" ? autoApprove : onApproveFetchPage;
-  const effectiveApproveOutsideCwd =
-    bakeMode === "auto" ? (autoApprove as typeof onApproveOutsideCwd) : onApproveOutsideCwd;
+  const effectiveApproveWebSearch = fullAccess ? autoApprove : onApproveWebSearch;
+  const effectiveApproveFetchPage = fullAccess ? autoApprove : onApproveFetchPage;
+  const effectiveApproveOutsideCwd = fullAccess
+    ? (autoApprove as typeof onApproveOutsideCwd)
+    : onApproveOutsideCwd;
   // The opt-in approval reviewer (#599) decides the calls the host lets it decide before the
-  // person is asked; it reads the person's recent messages from the conversation.
-  const effectiveApproveDestructive =
-    bakeMode === "auto"
-      ? autoApprove
-      : agentFeatures?.approvalReview && onApproveDestructive
-        ? withApprovalReview(
-            onApproveDestructive,
-            chatReviewModel(model, { providerOptions, headers }),
-            () =>
-              recentUserTexts(
-                (parentMessagesRef.current ?? [])
-                  .filter((message) => message.role === "user")
-                  .map(extractText)
-                  .filter(Boolean),
-              ),
-          )
-        : onApproveDestructive;
+  // person is asked; it reads the person's recent messages from the conversation. In manual
+  // mode the person answers every call themselves.
+  const effectiveApproveDestructive = fullAccess
+    ? autoApprove
+    : agentFeatures?.approvalReview && !manualApproval && onApproveDestructive
+      ? withApprovalReview(
+          onApproveDestructive,
+          chatReviewModel(model, { providerOptions, headers }),
+          () =>
+            recentUserTexts(
+              (parentMessagesRef.current ?? [])
+                .filter((message) => message.role === "user")
+                .map(extractText)
+                .filter(Boolean),
+            ),
+        )
+      : onApproveDestructive;
 
   const modelId =
     typeof model === "object" && model !== null && "modelId" in model
@@ -848,6 +861,11 @@ export function createBakeAgent({
       orderedTools[name] = def;
     }
   }
+  if (manualApproval)
+    Object.assign(
+      orderedTools,
+      withManualApproval(orderedTools, effectiveApproveDestructive, cwd ?? process.cwd()),
+    );
 
   // Spark mode: share Baked system prompt + tool definitions with subagents for prefix cache hits.
   // The Anthropic cache prefix is tools → system → messages. Sharing both tools AND instructions
@@ -868,11 +886,38 @@ export function createBakeAgent({
       ? { ...headers, "x-prompt-cache-key": sessionId }
       : headers;
 
-  const subagentTools = isRestricted
-    ? {
-        dispatch: buildSubagentTools({
+  // Subagents only read in manual mode: their edits would bypass the person's approval.
+  const subagentTools =
+    isRestricted || manualApproval
+      ? {
+          dispatch: buildSubagentTools({
+            defaultModel: model,
+            sparkModel: subagentModels?.spark,
+            webSearchModel,
+            providerOptions,
+            headers: subagentHeaders,
+            onApproveWebSearch: effectiveApproveWebSearch,
+            onApproveFetchPage: effectiveApproveFetchPage,
+            onApproveOutsideCwd: effectiveApproveOutsideCwd,
+            onApproveDestructive: effectiveApproveDestructive,
+            readOnly: true,
+            repoMap,
+            sharedCacheRef,
+            agentFeatures,
+            skills,
+            disablePruning,
+            tabId: tabId ?? contextManager.getTabId() ?? undefined,
+            bakeInstructions,
+            bakeTools,
+            parentMessagesRef,
+          }).dispatch,
+        }
+      : buildSubagentTools({
           defaultModel: model,
           sparkModel: subagentModels?.spark,
+          emberModel: subagentModels?.ember,
+          desloppifyModel: subagentModels?.desloppify,
+          verifyModel: subagentModels?.verify,
           webSearchModel,
           providerOptions,
           headers: subagentHeaders,
@@ -880,7 +925,6 @@ export function createBakeAgent({
           onApproveFetchPage: effectiveApproveFetchPage,
           onApproveOutsideCwd: effectiveApproveOutsideCwd,
           onApproveDestructive: effectiveApproveDestructive,
-          readOnly: true,
           repoMap,
           sharedCacheRef,
           agentFeatures,
@@ -890,31 +934,7 @@ export function createBakeAgent({
           bakeInstructions,
           bakeTools,
           parentMessagesRef,
-        }).dispatch,
-      }
-    : buildSubagentTools({
-        defaultModel: model,
-        sparkModel: subagentModels?.spark,
-        emberModel: subagentModels?.ember,
-        desloppifyModel: subagentModels?.desloppify,
-        verifyModel: subagentModels?.verify,
-        webSearchModel,
-        providerOptions,
-        headers: subagentHeaders,
-        onApproveWebSearch: effectiveApproveWebSearch,
-        onApproveFetchPage: effectiveApproveFetchPage,
-        onApproveOutsideCwd: effectiveApproveOutsideCwd,
-        onApproveDestructive: effectiveApproveDestructive,
-        repoMap,
-        sharedCacheRef,
-        agentFeatures,
-        skills,
-        disablePruning,
-        tabId: tabId ?? contextManager.getTabId() ?? undefined,
-        bakeInstructions,
-        bakeTools,
-        parentMessagesRef,
-      });
+        });
 
   // Plan mode requires `plan`/`update_plan_step` tools; `ask_user` is broadly useful too.
   // When no `interactive` callbacks are provided (headless, edge cases on session resume),
@@ -976,9 +996,9 @@ export function createBakeAgent({
           ? "call plan with the changes you intended"
           : "give the design as your answer";
       if (modeDenials > 1) {
-        return `Tool "${name}" refused again (${modeDenials} refusals this turn). No edit, write, shell or git tool runs in ${bakeMode} mode, so stop calling them and ${next} now.`;
+        return `Tool "${name}" refused again (${modeDenials} refusals this turn). No edit, write, shell or git change runs in ${bakeMode} mode, so stop calling them and ${next} now.`;
       }
-      return `Tool "${name}" is disabled in ${bakeMode} mode (read-only/analysis only). Every edit, write, shell and git tool is refused for this whole turn, so do not try another one. Use read/navigate/bake_* to investigate, then ${next}. To make edits, the user must switch out of ${bakeMode} mode.`;
+      return `Tool "${name}" is disabled in ${bakeMode} mode (read-only/analysis only). Every edit, write, shell and git change is refused for this whole turn, so do not try another one. Use read/navigate/bake_*, git status/diff/log/show/blame and artifact list/read to investigate, then ${next}. To make edits, the user must switch out of ${bakeMode} mode.`;
     }
     return `Tool "${name}" is not available during plan execution. The plan already contains the intended changes — use edit_file/multi_edit/shell/project and update_plan_step to execute them.`;
   };
@@ -989,13 +1009,18 @@ export function createBakeAgent({
       if (typeof tool.execute !== "function") continue;
       const readActions = isRestricted ? RESTRICTED_TOOL_ACTIONS[name] : undefined;
       if (readActions) {
-        // Read-only actions of a tool that can also write (listing artifacts) run as usual.
+        // Read-only actions of a tool that can also write (listing artifacts, git log) run as usual.
         const execute = tool.execute;
+        const inputAllowed = RESTRICTED_TOOL_INPUTS[name];
         (allTools as Record<string, unknown>)[name] = {
           ...(def as Record<string, unknown>),
           execute: (input: unknown, ...rest: unknown[]) => {
             const action = (input as { action?: unknown } | null)?.action;
-            if (typeof action === "string" && readActions.includes(action))
+            if (
+              typeof action === "string" &&
+              readActions.includes(action) &&
+              (inputAllowed?.(input as Record<string, unknown>) ?? true)
+            )
               return execute(input, ...rest);
             return Promise.resolve({
               success: false,

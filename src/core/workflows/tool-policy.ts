@@ -57,7 +57,10 @@ export class WorkflowToolPolicy {
     private settings: StallSettings = DEFAULT_STALL_SETTINGS,
     /** Called for each tool call that hit its deadline, so the attempt can give up on repeats. */
     private onDeadline?: (tool: string) => void,
+    /** Called for each edit the hash check refuses, with the refusals of that path so far (#954). */
+    private onRefusal?: (path: string, count: number) => void,
   ) {}
+  private readonly refusals = new Map<string, number>();
   path(value: string): string {
     const path = (isAbsolute(value) ? relative(this.root, value) : value).replaceAll("\\", "/");
     workspacePath(this.root, path);
@@ -145,13 +148,15 @@ export class WorkflowToolPolicy {
           intentRoot(effect.intent_json) === root,
       );
     const inherited = this.earlierAttemptEffect(writes);
-    // A task restarted after `invalidated` can get a rebuilt worktree without the file its earlier
-    // attempt wrote. When the file is back to how it was before the task first wrote it, the carried
-    // write is gone, so the path counts as untouched by this task (#927).
+    // A task restarted after `invalidated` or a lost worker can get a rebuilt worktree that does
+    // not hold its last write: the file as it was before the task first wrote it (#927), or a state
+    // the task's own writes passed through, such as the integrated file of an earlier attempt or
+    // the first attempt's content (#991). Either way nothing outside the run made it, so the path
+    // counts as untouched by this attempt and the baseline check below is skipped.
     const reverted =
       inherited !== undefined &&
       existing !== inherited.after_hash &&
-      existing === this.beforeLineage(writes, inherited)?.before_hash;
+      this.lineageHashes(writes, inherited).has(existing);
     const ownEffect =
       writes.filter((effect) => effect.attempt_id === this.attemptId).at(-1) ??
       (reverted ? undefined : inherited);
@@ -172,12 +177,16 @@ export class WorkflowToolPolicy {
       )
     ) {
       hashRefusals.set(this.root, [...(hashRefusals.get(this.root) ?? []), path]);
+      const count = (this.refusals.get(path) ?? 0) + 1;
+      this.refusals.set(path, count);
+      this.onRefusal?.(path, count);
       throw new WorkflowFault("INPUT_CHANGED", `File changed outside this attempt: ${path}`);
     }
     if (
       write.action === "create" &&
       existing !== null &&
       !ownEffect &&
+      !reverted &&
       !createdByRunLineage(this.store, this.runId, path, existing)
     )
       throw new WorkflowFault("INPUT_CHANGED", `Create target already exists: ${path}`);
@@ -199,20 +208,24 @@ export class WorkflowToolPolicy {
     );
     return lineage.has(last.id) ? last : undefined;
   }
-  /** The first write of the task's uncommitted lineage that `last` ends: the file before the task. */
-  private beforeLineage(writes: EffectRow[], last: EffectRow): EffectRow | undefined {
-    if (!this.task) return undefined;
+  /**
+   * Every state of the file in the task's uncommitted lineage that `last` ends: the hash before its
+   * first write and the hash before and after each write.
+   */
+  private lineageHashes(writes: EffectRow[], last: EffectRow): Set<string | null> {
+    const hashes = new Set<string | null>();
+    if (!this.task) return hashes;
     const lineage = new Set(
       uncommittedEdits(this.store, this.runId, this.task.id).map((e) => e.id),
     );
     const upTo = writes.slice(0, writes.indexOf(last) + 1);
-    let first = last;
     for (let i = upTo.length - 1; i >= 0; i--) {
       const effect = upTo[i];
       if (!effect || !lineage.has(effect.id)) break;
-      first = effect;
+      hashes.add(effect.before_hash);
+      hashes.add(effect.after_hash);
     }
-    return first;
+    return hashes;
   }
   /**
    * Runs a tool call under its deadline and journals it (`tool.started`, `tool.finished`), so a

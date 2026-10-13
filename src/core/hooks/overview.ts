@@ -1,11 +1,17 @@
 /**
  * A read-only view of the configured hooks, per event and per source file, with the events
  * switched off for this process. The local API (`GET /v1/hooks`) serves it to the desktop app;
- * the terminal UI's `/hooks` picker shows the same events. Hooks are only listed here: they are
- * created and edited in their config files, never through this view.
+ * the terminal UI's `/hooks` picker shows the same events. Hooks in BAKED's own config files carry
+ * an id and a revision for src/core/hooks/edit.ts; Claude Code's files are listed as imported.
  */
 import { redactSecrets } from "../workflows/redaction.js";
-import { type HookSourceScope, readHookSources } from "./loader.js";
+import { hookId, hookRevision } from "./edit.js";
+import {
+  bakedHooksPath,
+  type HookSourceOrigin,
+  type HookSourceScope,
+  readHookSources,
+} from "./loader.js";
 import { disableHookEvent, enableHookEvent, isHookEventDisabled } from "./runner.js";
 import { HOOK_EVENTS, type HookEventName } from "./types.js";
 
@@ -13,6 +19,13 @@ export interface HookCommandView {
   /** The file that defines it. */
   source: string;
   scope: HookSourceScope;
+  /** `baked` hooks can be changed through edit.ts; `claude` ones are read-only imports. */
+  origin: HookSourceOrigin;
+  /** For a BAKED hook: its id and revision for updateHook/removeHook; null for an imported one. */
+  id: string | null;
+  rev: string | null;
+  /** Whether `command` had a secret redacted; an edit that keeps the command sends none. */
+  redacted: boolean;
   matcher: string | null;
   /** The command, with the values of secret environment variables redacted. */
   command: string;
@@ -36,7 +49,15 @@ export interface HookEventView {
 export interface HooksOverview {
   /** The file that sets `disableAllHooks: true`, if any: then no hook runs. */
   disabledBy: string | null;
-  sources: { path: string; scope: HookSourceScope; exists: boolean; hooks: number }[];
+  sources: {
+    path: string;
+    scope: HookSourceScope;
+    origin: HookSourceOrigin;
+    exists: boolean;
+    hooks: number;
+  }[];
+  /** The BAKED files new hooks are saved to. */
+  targets: { project: string; user: string };
   events: HookEventView[];
 }
 
@@ -51,20 +72,28 @@ export function hooksOverview(cwd: string): HooksOverview {
   for (const source of sources) {
     for (const [event, rules] of Object.entries(source.hooks)) {
       const list = byEvent.get(event) ?? [];
-      for (const rule of rules) {
-        for (const hook of rule.hooks) {
+      const writeScope =
+        source.origin === "baked" && source.scope !== "local" ? source.scope : null;
+      rules.forEach((rule, ruleIndex) => {
+        rule.hooks.forEach((hook, hookIndex) => {
+          const raw = typeof hook.command === "string" ? hook.command : "";
+          const command = redactSecrets(raw);
           list.push({
             source: source.path,
             scope: source.scope,
+            origin: source.origin,
+            id: writeScope ? hookId(writeScope, event, ruleIndex, hookIndex) : null,
+            rev: writeScope ? hookRevision(rule.matcher, hook) : null,
+            redacted: command !== raw,
             matcher: typeof rule.matcher === "string" && rule.matcher ? rule.matcher : null,
-            command: redactSecrets(typeof hook.command === "string" ? hook.command : ""),
+            command,
             async: hook.async === true,
             once: hook.once === true,
             timeout: typeof hook.timeout === "number" ? hook.timeout : null,
             if: typeof hook.if === "string" ? hook.if : null,
           });
-        }
-      }
+        });
+      });
       byEvent.set(event, list);
     }
   }
@@ -86,12 +115,14 @@ export function hooksOverview(cwd: string): HooksOverview {
     sources: sources.map((s) => ({
       path: s.path,
       scope: s.scope,
+      origin: s.origin,
       exists: s.exists,
       hooks: Object.values(s.hooks).reduce(
         (sum, rules) => sum + rules.reduce((n, rule) => n + rule.hooks.length, 0),
         0,
       ),
     })),
+    targets: { project: bakedHooksPath(cwd, "project"), user: bakedHooksPath(cwd, "user") },
     events,
   };
 }

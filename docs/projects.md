@@ -158,8 +158,11 @@ The local HTTP API (`baked serve`, `src/core/api/`, built in parallel) will expo
 
 - `init [--name N] [--id ID]`: writes a manifest for the current directory (ID from the directory name) and registers it.
 - `show [--json]`: the summary.
+- `context [--json]`: the project context every agent's prompt carries now: the instruction files (rules) and the rendered working set (files), with their sizes (`agentContextPreview` in `src/core/agent-context.ts`, also `GET /v1/projects/current/context`).
 - `add <path|glob>...` / `remove <path|glob>...`: edit the working set; entries are checked like manifest entries.
 - `register`: trust the manifest's current secondary roots.
+
+In the terminal UI, `/agent-context` lists the instruction files and the working set together, `/agent-context add` and `/agent-context remove` edit the working set, and `/agent-context preview` shows the rendered context. The desktop app has the same on its Agent context screen.
 
 Terminal UI slash commands (`/add`, `/project`) are part of the project screen work, not this change.
 

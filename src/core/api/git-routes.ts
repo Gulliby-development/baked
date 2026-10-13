@@ -1,12 +1,14 @@
 /**
  * The Git menu over the local API (`/v1/git`): the project's status, branches, stashes and recent
- * commits, and the actions of the terminal Git menu. Core logic lives in src/core/git/menu.ts.
+ * commits, the commit graph (`/v1/git/graph`) and the actions of the terminal Git menu. Core
+ * logic lives in src/core/git/menu.ts and src/core/git/graph.ts.
  * Writes wait for each other, are refused while a workflow run holds the workspace, and the
  * destructive ones (force push with lease, hard reset) need `confirm: true`, the API's form of
  * the terminal's confirmation prompt.
  */
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
+import { GRAPH_COMMITS_MAX, readGitGraph } from "../git/graph.js";
 import {
   BRANCH_NAME_MAX,
   COMMIT_MESSAGE_MAX,
@@ -50,6 +52,10 @@ const ActionBody = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("reset-hard"), ...Confirm }),
 ]);
 
+const GraphQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(GRAPH_COMMITS_MAX).optional(),
+});
+
 function workspaceHeld(store: WorkflowStore): boolean {
   return (["execution", "mutation"] as const).some((resource) => {
     const lease = store.lease(resource);
@@ -82,6 +88,11 @@ export async function gitRoute(ctx: GitRouteContext): Promise<Response | null> {
   if (path === "/v1/git") {
     ctx.only("GET");
     return ctx.json(200, { ...(await readGitOverview(workspace)), busy: workspaceHeld(ctx.store) });
+  }
+  if (path === "/v1/git/graph") {
+    ctx.only("GET");
+    const { limit } = ctx.query(GraphQuery);
+    return ctx.json(200, await readGitGraph(workspace, limit));
   }
   if (path !== "/v1/git/actions") return null;
   ctx.only("POST");

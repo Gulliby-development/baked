@@ -1,5 +1,5 @@
 import { call } from "./api.js";
-import type { SessionDetail } from "./chat.js";
+import type { SessionDetail, SessionWorktree } from "./chat.js";
 
 /**
  * The project coordinator over `/v1/coordinator*` (docs/desktop/api.md, "Project coordinator").
@@ -27,7 +27,18 @@ export interface LaunchedEntry {
   /** The workflow definition a run follows; missing for older entries. */
   workflow?: string;
   task?: FlowTask;
+  /** Closed: no longer followed or counted; a closed session is archived out of the chat list. */
+  closed?: true;
 }
+
+/** Which launched item Stop or Close acts on. */
+export type LaunchedRef = Pick<LaunchedEntry, "kind" | "id" | "feature">;
+
+const refOf = (item: LaunchedRef): LaunchedRef => ({
+  kind: item.kind,
+  id: item.id,
+  ...(item.feature ? { feature: item.feature } : {}),
+});
 
 /** The brief's lists a person edits; `launched` comes from launches. */
 export const BRIEF_LISTS = ["decisions", "conventions", "openQuestions"] as const;
@@ -56,7 +67,23 @@ export interface LaunchedView extends LaunchedEntry {
   tokens: number;
   /** Missing for sessions and initiatives, and from older servers. */
   progress?: RunProgress;
+  /** A launched session's own worktree and branch. */
+  worktree?: SessionWorktree;
 }
+
+/** A prompt that starts a coordinator turn on its own; `when` as `src/core/chat/coordinator-schedules.ts`. */
+export interface Schedule {
+  id: string;
+  name: string;
+  prompt: string;
+  when: string;
+  enabled: boolean;
+  createdAt: number;
+  lastRunAt: number | null;
+  nextRunAt: number;
+}
+
+export type ScheduleInput = Pick<Schedule, "name" | "prompt" | "when">;
 
 /** A rule the coordinator answers routine approvals of what it launched by (`approval-rules.ts`). */
 export type ApprovalRule =
@@ -109,6 +136,30 @@ export const coordinator = {
     call<{ turnId: string; queued: boolean }>(key, "POST", "/v1/coordinator/summary", {}),
   launched: (key: string) =>
     call<{ launched: LaunchedView[] }>(key, "GET", "/v1/coordinator/launched"),
+  /** Stops a session's turn, cancels a run or pauses an initiative. */
+  stop: (key: string, item: LaunchedRef) =>
+    call<{ message: string; launched: LaunchedView[] }>(
+      key,
+      "POST",
+      "/v1/coordinator/launched/stop",
+      refOf(item),
+    ),
+  /** Closes a launched item that is no longer active, or with `reopen` brings it back. */
+  close: (key: string, item: LaunchedRef, reopen = false) =>
+    call<{ launched: LaunchedView[] }>(key, "POST", "/v1/coordinator/launched/close", {
+      ...refOf(item),
+      ...(reopen ? { reopen: true } : {}),
+    }),
+  schedules: (key: string) =>
+    call<{ schedules: Schedule[] }>(key, "GET", "/v1/coordinator/schedules"),
+  addSchedule: (key: string, input: ScheduleInput) =>
+    call<Schedule>(key, "POST", "/v1/coordinator/schedules", input),
+  setScheduleEnabled: (key: string, id: string, enabled: boolean) =>
+    call<Schedule>(key, "PATCH", `/v1/coordinator/schedules/${encodeURIComponent(id)}`, {
+      enabled,
+    }),
+  removeSchedule: (key: string, id: string) =>
+    call<null>(key, "DELETE", `/v1/coordinator/schedules/${encodeURIComponent(id)}`),
   approvalRules: (key: string) => call<ApprovalRules>(key, "GET", "/v1/coordinator/approval-rules"),
   /** Saves the switch and the rules; a 409 `STALE_REVISION` means they changed meanwhile. */
   saveApprovalRules: (

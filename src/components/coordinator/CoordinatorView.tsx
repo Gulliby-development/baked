@@ -1,5 +1,7 @@
 import { useContext, useEffect, useState } from "react";
+import { launchControl, stopEffect } from "../../core/chat/coordinator-control.js";
 import type { LocalCoordinator } from "../../core/chat/coordinator-host.js";
+import { launchLabel } from "../../core/chat/coordinator-launch.js";
 import { requestSummary } from "../../core/chat/coordinator-summary.js";
 import type { ChatPrompt, PromptAnswer } from "../../core/chat/sessions.js";
 import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
@@ -17,15 +19,19 @@ import {
   launchedHeading,
   launchedLines,
   messageLines,
+  openLaunched,
   promptLines,
   questionAnswer,
   SPLIT_EDIT_PREFIX,
   type ViewLine,
   wrap,
 } from "./model.js";
+import { scheduleLines } from "./schedules.js";
 
 /** At most this many lines of launched work show above the conversation. */
 const LAUNCHED_ROWS = 4;
+/** At most this many schedules show above the launched work. */
+const SCHEDULE_ROWS = 3;
 
 interface Props {
   visible: boolean;
@@ -66,6 +72,10 @@ export function CoordinatorView({ visible, open, onClose }: Props) {
   const [local, setLocal] = useState<LocalCoordinator | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  // The launched item the stop and close keys act on, and the one a first ^X armed.
+  const [selected, setSelected] = useState(0);
+  const [armed, setArmed] = useState<string | null>(null);
   const view = useCoordinatorSnapshot(visible ? local : null);
 
   useEffect(() => {
@@ -83,6 +93,37 @@ export function CoordinatorView({ visible, open, onClose }: Props) {
 
   const prompt = view?.prompts[0];
   const working = view?.state === "working";
+  const listed = openLaunched(view?.launched ?? []);
+  const item = listed.length ? listed[Math.min(selected, listed.length - 1)] : undefined;
+  const itemKey = item ? `${item.kind}:${item.id}:${item.feature ?? ""}` : null;
+
+  /** Stops or closes the selected item; stopping a run or initiative takes a second ^X. */
+  const control = (action: "stop" | "close"): void => {
+    if (!local || !item || launchControl(item) !== action) return;
+    const ref = {
+      kind: item.kind,
+      id: item.id,
+      ...(item.feature ? { feature: item.feature } : {}),
+    };
+    if (action === "stop" && item.kind !== "session" && armed !== itemKey) {
+      setArmed(itemKey);
+      setNote(`${stopEffect(ref)}. Press ^X again to confirm.`);
+      return;
+    }
+    setArmed(null);
+    setNote(null);
+    const done =
+      action === "stop"
+        ? local.chat.stopLaunched(local.session.id, ref)
+        : local.chat.closeLaunched(local.session.id, ref).then(() => `Closed ${launchLabel(item)}`);
+    done.then(
+      (message) => {
+        setError(null);
+        setNote(message);
+      },
+      (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
+    );
+  };
 
   // `/coordinator summary` opens the view and asks once the coordinator is ready.
   useEffect(() => {
@@ -115,6 +156,19 @@ export function CoordinatorView({ visible, open, onClose }: Props) {
       return;
     }
     if (!local) return;
+    if (!prompt && evt.name === "tab" && listed.length) {
+      setSelected(
+        (i) =>
+          (Math.min(i, listed.length - 1) + (evt.shift ? listed.length - 1 : 1)) % listed.length,
+      );
+      setArmed(null);
+      setNote(null);
+      return;
+    }
+    if (!prompt && evt.ctrl && (evt.name === "x" || evt.name === "r")) {
+      control(evt.name === "x" ? "stop" : "close");
+      return;
+    }
     if (evt.ctrl && prompt && (evt.name === "y" || evt.name === "n")) {
       const yes = evt.name === "y";
       if (prompt.kind === "split" || prompt.kind === "workflow")
@@ -166,10 +220,18 @@ export function CoordinatorView({ visible, open, onClose }: Props) {
             ? "Working…"
             : "Launches runs and sessions for this project and keeps its brief"
       }
-      footerHints={keyHints(prompt, working)}
-      flash={error ? { kind: "err", message: error } : null}
+      footerHints={keyHints(prompt, working, item)}
+      flash={
+        error ? { kind: "err", message: error } : note ? { kind: "info", message: note } : null
+      }
     >
-      <CoordinatorBody view={view} prompt={prompt} input={input} loading={!local && !error} />
+      <CoordinatorBody
+        view={view}
+        prompt={prompt}
+        input={input}
+        loading={!local && !error}
+        selected={prompt || !item ? undefined : Math.min(selected, listed.length - 1)}
+      />
     </PremiumPopup>
   );
 }
@@ -179,16 +241,19 @@ function CoordinatorBody({
   prompt,
   input,
   loading,
+  selected,
 }: {
   view: CoordinatorSnapshot | null;
   prompt: ChatPrompt | undefined;
   input: string;
   loading: boolean;
+  /** The open launched item the stop and close keys act on. */
+  selected: number | undefined;
 }) {
   const t = useTheme();
   const viewport = useContext(PopupViewport) ?? { width: 80, height: 20 };
   const width = Math.max(10, viewport.width - 4);
-  const launched = launchedLines(view?.launched ?? [], width);
+  const launched = launchedLines(view?.launched ?? [], width, selected);
   const shownLaunched =
     launched.length > LAUNCHED_ROWS
       ? [
@@ -196,6 +261,14 @@ function CoordinatorBody({
           { text: `… ${launched.length - LAUNCHED_ROWS + 1} more lines`, tone: "muted" as const },
         ]
       : launched;
+  const schedules = scheduleLines(view?.schedules ?? [], width);
+  const shownSchedules =
+    schedules.length > SCHEDULE_ROWS
+      ? [
+          ...schedules.slice(0, SCHEDULE_ROWS - 1),
+          { text: `… ${schedules.length - SCHEDULE_ROWS + 1} more`, tone: "muted" as const },
+        ]
+      : schedules;
   const card = prompt ? promptLines(prompt, width) : [];
   const conversation: ViewLine[] = loading
     ? [{ text: "Opening the coordinator…", tone: "muted" }]
@@ -211,12 +284,26 @@ function CoordinatorBody({
     viewport.height -
       3 -
       (shownLaunched.length ? shownLaunched.length + 2 : 0) -
+      (shownSchedules.length ? shownSchedules.length + 2 : 0) -
       (card.length ? card.length + 1 : 0),
   );
   const tail = conversation.slice(-room);
 
   return (
     <box flexDirection="column" paddingX={1} height={Math.max(4, viewport.height)}>
+      {shownSchedules.length > 0 && (
+        <box flexDirection="column" flexShrink={0}>
+          <text fg={t.textMuted} attributes={1}>
+            Schedules
+          </text>
+          {keyed(shownSchedules, "s").map((line) => (
+            <text key={line.key} fg={toneColor(t, line.tone)} wrapMode="none" truncate>
+              {line.text}
+            </text>
+          ))}
+          <text> </text>
+        </box>
+      )}
       {shownLaunched.length > 0 && (
         <box flexDirection="column" flexShrink={0}>
           <text fg={t.textMuted} attributes={1}>

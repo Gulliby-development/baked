@@ -13,6 +13,7 @@ import {
 import { type TestsFirstBody, TestsFirstReview } from "../../components/TestsFirst.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button, buttonVariants } from "../../components/ui/button.js";
+import { activeTimeText } from "../../lib/active-time.js";
 import { cn } from "../../lib/cn.js";
 import { CHECK, LABEL, PANEL } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
@@ -176,6 +177,11 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 ))}
               </section>
             ) : null}
+            {body.budgetWarning ? (
+              <p className="m-0 font-semibold text-[var(--warn)]" role="note">
+                {body.budgetWarning}
+              </p>
+            ) : null}
             {body.assumptions?.length ? (
               <section className={LIST} aria-label="Assumptions">
                 <span className={LABEL}>Assumptions the agents made instead of asking</span>
@@ -201,6 +207,11 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
             {body.deferredCriteria?.length ? (
               <p className={NOTE}>
                 Checked after release, not by this run: {body.deferredCriteria.join(", ")}.
+              </p>
+            ) : null}
+            {body.activeTime ? (
+              <p className={NOTE} data-testid="approval-active-time">
+                {activeTimeText(body.activeTime)}.
               </p>
             ) : null}
             {inScope.length > 0 && (

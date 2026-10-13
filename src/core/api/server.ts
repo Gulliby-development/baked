@@ -130,6 +130,7 @@ import {
   RedactBody,
   RejectBody,
   RerouteBody,
+  ResumeBody,
   ReviseBody,
   RouteQuery,
   StartBody,
@@ -178,7 +179,9 @@ export const CAPABILITIES = [
   "custom-commands",
   "settings",
   "git",
+  "git-graph",
   "hooks",
+  "hooks-edit",
   "provider-switch",
   "chat-export",
   "chat-effort",
@@ -186,6 +189,7 @@ export const CAPABILITIES = [
   "gate-drafts",
   "progress",
   "coordinator",
+  "coordinator-schedules",
   "coordinator-summary",
   "watch",
   "sandbox",
@@ -194,6 +198,7 @@ export const CAPABILITIES = [
   "preset-proposal",
   "packages",
   "project-agents",
+  "permission-modes",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -341,8 +346,14 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
       ...(inline ? { inline } : {}),
     });
   switch (action) {
+    case "resume": {
+      const body = ResumeBody.parse(raw);
+      return args({
+        ...identity(body),
+        ...(body.acceptWorkspace ? { "accept-workspace": true } : {}),
+      });
+    }
     case "pause":
-    case "resume":
     case "cancel":
     case "discard-worktree":
       return args(identity(CommandBody.parse(raw)));
@@ -610,6 +621,20 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           await execute(command("approve", { request: control.requestId, digest: control.digest }));
           if (service.canResumeAfterDecision(runId)) await launch(command("resume"));
         }
+      },
+      cancelRun: async (runId) => {
+        await execute(
+          mutationArgs("cancel", runId, {
+            commandId: crypto.randomUUID(),
+            expectedRevision: service.store.run(runId).revision,
+          }),
+        );
+      },
+      pauseInitiative: async (initiativeId) => {
+        await initiatives.pause(initiativeId, {
+          commandId: crypto.randomUUID(),
+          expectedRevision: initiatives.view(initiativeId).revision,
+        });
       },
     },
   );

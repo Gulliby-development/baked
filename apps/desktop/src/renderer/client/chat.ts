@@ -11,8 +11,18 @@ import type { LaunchedView } from "./coordinator.js";
 
 export type ChatMode = "default" | "architect" | "plan" | "auto";
 export const CHAT_MODES: readonly ChatMode[] = ["default", "architect", "plan", "auto"];
+/** What the mode picker offers on a server with `permission-modes`, where `auto` became full access. */
+export const AGENT_MODES: readonly ChatMode[] = ["default", "architect", "plan"];
+/** How much a chat runs without asking (`permission-modes` capability). */
+export type PermissionMode = "manual" | "auto" | "full";
+export const PERMISSION_MODES: readonly PermissionMode[] = ["manual", "auto", "full"];
 /** A chat's reasoning effort; `default` follows the global setting. */
 export type ChatEffort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
+/**
+ * A chat's context window when its model offers several: tokens, `max`, or `default` (the largest
+ * for the coordinator, the model's own size elsewhere).
+ */
+export type ChatContextSize = "default" | "max" | number;
 /** How a plan review is answered; `revise` sends feedback with it. */
 export type PlanAction = "execute" | "clear-execute" | "revise" | "cancel";
 
@@ -39,6 +49,14 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort of the next turn; servers without the `chat-effort` capability leave it out. */
   effort?: ChatEffort;
+  /** Permission mode; servers without the `permission-modes` capability leave it out. */
+  permissions?: PermissionMode;
+  /** The chat's context size; older servers leave it out. */
+  contextSize?: ChatContextSize;
+  /** Context windows in tokens the model offers, smallest first; empty or absent for one. */
+  contextSizes?: number[];
+  /** The window the next turn runs with when the model offers several, else null. */
+  contextTokens?: number | null;
   /** True while a manual compaction runs; older servers leave it out. */
   compacting?: boolean;
   /** The session that launched this one, such as the project coordinator. */
@@ -83,6 +101,12 @@ export interface ChatMessage {
   launch?: LaunchNote;
 }
 
+/** A session's own Git worktree (absolute path) and branch. */
+export interface SessionWorktree {
+  path: string;
+  branch: string;
+}
+
 /** What a coordinator notice says about one item it launched (`src/types/index.ts`). */
 export interface LaunchNote {
   kind: "session" | "run" | "initiative";
@@ -92,6 +116,8 @@ export interface LaunchNote {
   status: string;
   why: string;
   task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** A session's own worktree and branch, when it has one. */
+  worktree?: SessionWorktree;
   /** For a session whose turn ended: its last answer, shortened. */
   result?: string;
   /** For `auto-answered`: what the coordinator approved by one of the person's rules. */
@@ -306,7 +332,14 @@ export interface ModelProvider {
   name: string;
   configured: boolean;
   /** `efforts`: the levels a chat can pick for the model, lowest first; absent when it takes none. */
-  models: { id: string; name: string; contextWindow?: number; efforts?: ChatEffort[] }[];
+  /** `contextSizes`: the windows a chat can pick, smallest first; absent when the model has one. */
+  models: {
+    id: string;
+    name: string;
+    contextWindow?: number;
+    efforts?: ChatEffort[];
+    contextSizes?: number[];
+  }[];
   error?: string;
 }
 
@@ -342,6 +375,8 @@ export const chat = {
       model?: string;
       mode?: ChatMode;
       effort?: ChatEffort;
+      permissions?: PermissionMode;
+      contextSize?: ChatContextSize;
       text?: string;
       images?: ImageUpload[];
     } = {},
@@ -350,7 +385,14 @@ export const chat = {
   update: (
     key: string,
     id: string,
-    body: { title?: string; model?: string; mode?: ChatMode; effort?: ChatEffort },
+    body: {
+      title?: string;
+      model?: string;
+      mode?: ChatMode;
+      effort?: ChatEffort;
+      permissions?: PermissionMode;
+      contextSize?: ChatContextSize;
+    },
   ) => call<SessionSummary>(key, "PATCH", sessionPath(id), body),
   /** Deletes a saved session; the server refuses one with a running turn. */
   remove: (key: string, id: string) => call<null>(key, "DELETE", sessionPath(id)),

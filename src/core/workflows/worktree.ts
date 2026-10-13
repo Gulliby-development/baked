@@ -150,7 +150,7 @@ export async function mergedBase(
 }
 
 /** Shares the project's top-level `node_modules` with the worktree so checks can run there. */
-function linkDependencies(workspace: string, root: string): void {
+export function linkDependencies(workspace: string, root: string): void {
   const source = join(workspace, "node_modules");
   const target = join(root, "node_modules");
   if (!existsSync(source) || existsSync(target)) return;

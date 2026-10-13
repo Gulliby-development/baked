@@ -31,7 +31,12 @@ import type { AgentExecutor } from "../src/core/workflows/types.js";
 
 describe("projectSwitchArgs", () => {
   test("adds --cwd and keeps the other arguments", () => {
-    expect(projectSwitchArgs(["--verbose"], "/work/b")).toEqual(["--verbose", "--cwd", "/work/b"]);
+    expect(projectSwitchArgs(["--verbose"], "/work/b")).toEqual([
+      "--verbose",
+      "--cwd",
+      "/work/b",
+      "--coordinator",
+    ]);
   });
 
   test("replaces --cwd in both forms", () => {
@@ -39,8 +44,13 @@ describe("projectSwitchArgs", () => {
       "-x",
       "--cwd",
       "/work/b",
+      "--coordinator",
     ]);
-    expect(projectSwitchArgs(["--cwd=/work/a"], "/work/b")).toEqual(["--cwd", "/work/b"]);
+    expect(projectSwitchArgs(["--cwd=/work/a"], "/work/b")).toEqual([
+      "--cwd",
+      "/work/b",
+      "--coordinator",
+    ]);
   });
 
   test("drops sessions of the old folder and the one-shot wizard", () => {
@@ -51,11 +61,12 @@ describe("projectSwitchArgs", () => {
       ["--resume=abc"],
       ["--session=abc"],
       ["--wizard"],
+      ["--coordinator"],
     ])
-      expect(projectSwitchArgs(args, "/work/b")).toEqual(["--cwd", "/work/b"]);
+      expect(projectSwitchArgs(args, "/work/b")).toEqual(["--cwd", "/work/b", "--coordinator"]);
   });
 
-  test("resumes a session of the new folder when one was picked", () => {
+  test("a picked session opens instead of the coordinator", () => {
     expect(projectSwitchArgs(["-s", "old", "--cwd", "/a"], "/work/b", "new-id")).toEqual([
       "--cwd",
       "/work/b",
@@ -65,7 +76,7 @@ describe("projectSwitchArgs", () => {
   });
 
   test("a trailing flag without a value is dropped", () => {
-    expect(projectSwitchArgs(["--resume"], "/b")).toEqual(["--cwd", "/b"]);
+    expect(projectSwitchArgs(["--resume"], "/b")).toEqual(["--cwd", "/b", "--coordinator"]);
   });
 
   test("getRestartSpec uses the replacement arguments", () => {

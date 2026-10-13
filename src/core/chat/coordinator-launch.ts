@@ -8,7 +8,7 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-import type { AppConfig, ChatMessage, LaunchNote } from "../../types/index.js";
+import type { AppConfig, ChatMessage, LaunchNote, PermissionMode } from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
 import {
   InitiativeFeatureSchema,
@@ -86,6 +86,10 @@ export interface ProjectLauncher {
   }): Promise<{ initiativeId: string }>;
   /** Issues for flows; without it every flow gets a local task. */
   tasks?: TaskTracker;
+  /** Cancels a run, as `POST /v1/workflow/runs/:id/cancel` does. */
+  cancelRun?(runId: string): Promise<void>;
+  /** Pauses an initiative and its running feature runs; an initiative has no cancel. */
+  pauseInitiative?(initiativeId: string): Promise<void>;
   /** Approves a run's plan and continues it; the approval rules use it (`approval-rules.ts`). */
   approveRun?: RunApprover["approveRun"];
   /**
@@ -150,7 +154,7 @@ export interface RunProgress {
 }
 
 /** A launched item as it is now: its status word, whether it still runs, and its tokens. */
-interface LiveState {
+export interface LiveState {
   status: string;
   active: boolean;
   tokens: number;
@@ -175,7 +179,8 @@ function sessionState(chat: ChatService, id: string): LiveState {
   return { status: messageCount > 1 ? "done" : "idle", active: false, tokens };
 }
 
-function liveState(
+/** The launched item's live status, read from its session, run or initiative. */
+export function liveState(
   chat: ChatService,
   state: ProjectStateSource | null,
   entry: LaunchedEntry,
@@ -233,12 +238,14 @@ function liveState(
 
 /**
  * A launched entry with its live status, whether it still runs and the tokens it used; a working
- * session also says which tool it is in, and a run its stage progress.
+ * session also says which tool it is in, a session with its own worktree names it, and a run
+ * has its stage progress.
  */
 export type LaunchedView = LaunchedEntry & {
   active: boolean;
   tokens: number;
   activity?: string;
+  worktree?: { path: string; branch: string };
   progress?: RunProgress;
 };
 
@@ -259,6 +266,20 @@ function titleOf(chat: ChatService, entry: LaunchedEntry): string | undefined {
     return chat.get(entry.id).summary().title;
   } catch {
     return undefined;
+  }
+}
+
+/** A launched session's own worktree and branch, when it has one. */
+function worktreeOf(
+  chat: ChatService,
+  entry: LaunchedEntry,
+): { worktree?: { path: string; branch: string } } {
+  if (entry.kind !== "session") return {};
+  try {
+    const { worktree } = chat.get(entry.id).summary();
+    return worktree ? { worktree } : {};
+  } catch {
+    return {};
   }
 }
 
@@ -322,6 +343,7 @@ export function launchedView(
     return {
       ...entry,
       ...(title ? { title } : {}),
+      ...worktreeOf(chat, entry),
       ...liveState(chat, state, entry),
       ...(activity ? { activity } : {}),
     };
@@ -346,8 +368,13 @@ export async function syncLaunched(
   let changed = false;
   const launched: LaunchedEntry[] = [];
   for (const entry of brief.launched) {
+    if (entry.closed) {
+      launched.push(entry);
+      continue;
+    }
     const { status } = liveState(chat, state, entry);
     const title = titleOf(chat, entry);
+    const worktree = worktreeOf(chat, entry);
     const note = (next: LaunchedEntry, event: LaunchNote["event"]): LaunchNote => ({
       kind: next.kind,
       id: next.id,
@@ -356,6 +383,7 @@ export async function syncLaunched(
       status: next.status,
       why: next.why,
       ...(next.task ? { task: next.task } : {}),
+      ...worktree,
       event,
     });
     let next = entry;
@@ -422,7 +450,7 @@ function overLimit(
   limits: { maxActive: number; maxTokens: number },
   adding = 1,
 ): string | null {
-  const live = launched.map((entry) => liveState(chat, state, entry));
+  const live = launched.filter((e) => !e.closed).map((entry) => liveState(chat, state, entry));
   const active = live.filter((l) => l.active).length;
   if (adding > 1 && active + adding > limits.maxActive)
     return `${active} launched items are still active and this adds ${adding} (limit ${limits.maxActive}); propose fewer flows or wait`;
@@ -576,14 +604,17 @@ export function launchTools(
   };
   /** Runs `start` when the limits allow, then records the launched entry in the brief. */
   const launch = async (
-    start: () => Promise<Omit<LaunchedEntry, "why">>,
+    start: () => Promise<Omit<LaunchedEntry, "why"> & { detail?: string }>,
     why: string,
   ): Promise<{ success: boolean; output: string; error?: string }> => {
     const blocked = overLimit(chat, state, store.read().launched, limits);
     if (blocked) return failed(blocked);
     let entry: LaunchedEntry;
+    let detail = "";
     try {
-      entry = { ...(await start()), why };
+      const { detail: said, ...started } = await start();
+      entry = { ...started, why };
+      if (said) detail = ` ${said}`;
     } catch (err) {
       return failed(err instanceof Error ? err.message : String(err));
     }
@@ -600,36 +631,47 @@ export function launchTools(
     }
     return {
       success: true,
-      output: `Started ${entry.kind} ${entry.id} (${entry.status}).${note} You will get a note in this chat when it finishes or needs a decision; the user answers its approvals there.`,
+      output: `Started ${entry.kind} ${entry.id} (${entry.status}).${detail}${note} You will get a note in this chat when it finishes or needs a decision; the user answers its approvals there.`,
     };
   };
 
   return {
     launch_session: tool({
       description:
-        "Start a background chat session with a brief. It runs on its own, shows in the session list, and reports back here when its turn ends or it asks something. architect mode only reads; default or auto mode can edit files and needs the user's yes first.",
+        "Start a background chat session with a brief. It runs on its own, shows in the session list, and reports back here when its turn ends or it asks something. architect mode only reads; default or auto mode can edit files and needs the user's yes first unless the user gave this chat full access. The session gets this chat's permission mode; auto mode gives it full access. An editing session works in its own Git worktree and branch, so it does not overwrite the user's or another session's files.",
       inputSchema: z.strictObject({
         title: z.string().trim().min(1).max(200),
         brief: z.string().trim().min(1).max(20_000).describe("The session's first message"),
         mode: z.enum(["architect", "default", "auto"]).default("architect"),
+        worktree: z
+          .boolean()
+          .default(true)
+          .describe(
+            "For default or auto mode: work in an own worktree (true) or in the shared project folder (false)",
+          ),
         why: Why,
       }),
-      execute: async ({ title, brief, mode, why }) =>
+      execute: async ({ title, brief, mode, worktree, why }) =>
         launch(async () => {
+          // A coordinator with full access starts editing sessions without asking.
+          const permissions = coordinator.permissionMode;
           if (
             mode !== "architect" &&
+            permissions !== "full" &&
             !(await coordinator.confirm(
               `Start a ${mode}-mode session that can edit files: "${title}"`,
             ))
           )
             throw new Error("The user declined to start a session that can edit files");
-          const session = await chat.create({
+          const { session, detail } = await createLaunched(chat, {
             title,
             mode: mode as ChatMode,
+            permissions,
             parentId: coordinator.id,
+            worktree: mode !== "architect" && worktree !== false,
           });
           session.send(brief);
-          return { kind: "session", id: session.id, title, status: "working" };
+          return { kind: "session", id: session.id, title, status: "working", detail };
         }, why),
     }),
     list_workflows: tool({
@@ -1072,6 +1114,38 @@ export function issueOf(task: FlowTask | undefined, title: string): IssueSource 
     task?.url && task.state !== "local" ? /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(task.ref) : null;
   if (!task?.url || !match?.[1] || !match[2]) return null;
   return { repository: match[1], number: Number(match[2]), url: task.url, title };
+}
+
+/**
+ * Creates a launched session; an editing one gets its own worktree. When the project cannot have
+ * one (no Git repository, no commit), the session works in the shared folder and the coordinator
+ * is told so.
+ */
+async function createLaunched(
+  chat: ChatService,
+  input: {
+    title: string;
+    mode: ChatMode;
+    permissions: PermissionMode;
+    parentId: string;
+    worktree: boolean;
+  },
+): Promise<{ session: ChatSession; detail: string }> {
+  const { title, mode, permissions, parentId } = input;
+  if (!input.worktree) {
+    const shared = input.mode === "architect" ? "" : "It works in the shared project folder.";
+    return { session: await chat.create({ title, mode, permissions, parentId }), detail: shared };
+  }
+  try {
+    const session = await chat.create({ title, mode, permissions, parentId, worktree: true });
+    const own = session.summary().worktree;
+    return { session, detail: own ? `It works in ${own.path} on branch ${own.branch}.` : "" };
+  } catch (err) {
+    // A ChatError; checked by its code, as this module cannot import sessions.ts at run time.
+    if ((err as { code?: unknown }).code !== "NOT_SUPPORTED") throw err;
+    const session = await chat.create({ title, mode, permissions, parentId });
+    return { session, detail: `${(err as Error).message}; it works in the shared project folder.` };
+  }
 }
 
 /** Applies one change to the brief, retrying once when the model edited it meanwhile. */

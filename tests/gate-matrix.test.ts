@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { addedDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -432,6 +433,69 @@ for (const stack of STACKS) {
       const key = ruleFindingKey(finding);
       expect(ruleClaimKey(ruleClaimText(finding))).toBe(key);
       expect(ruleClaimKey(ruleClaimText({ ...finding, line: finding.line + 7 }))).toBe(key);
+    });
+  });
+}
+
+/**
+ * The task-end syntax gate (#977): a source file of each stack that does not parse, with the line
+ * the gate must name, and the same file fixed, which must pass.
+ */
+const SYNTAX: Record<Stack, { path: string; valid: string; broken: string; line: number }> = {
+  bun: {
+    path: "src/sum.ts",
+    valid: "export const sum = <T extends number>(a: T, b: T): number => a + b;\n",
+    broken: "export const sum = (a: number, b: number): number => {\n  return a + ;\n};\n",
+    line: 2,
+  },
+  npm: {
+    path: "src/sum.js",
+    valid: "export const sum = (a, b) => a + b;\n",
+    broken: "export const sum = (a, b) => {\n  return [a, b;\n};\n",
+    line: 2,
+  },
+  python: {
+    path: "fixture/sum.py",
+    valid: "def total(a: int, b: int) -> int:\n    return a + b\n",
+    broken: "def total(a: int, b: int) -> int:\n    return (a + b\n\nx = 1\n",
+    line: 2,
+  },
+  go: {
+    path: "sum.go",
+    valid: "package fixture\n\nfunc Sum(a, b int) int { return a + b }\n",
+    broken: "package fixture\n\nfunc Sum(a, b int) int {\n\treturn a + b +\n}\n",
+    line: 4,
+  },
+  rust: {
+    path: "src/lib.rs",
+    valid: "pub fn sum(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+    broken: "pub fn sum(a: i32, b: i32) -> i32 {\n    let s = \u201cx\u201d;\n    a + b\n}\n",
+    line: 2,
+  },
+  maven: {
+    path: "src/main/java/fixture/Sum.java",
+    valid: "package fixture;\n\npublic class Sum {\n    int sum(int a, int b) { return a + b; }\n}\n",
+    broken: "package fixture;\n\npublic class Sum {\n    int sum(int a, int b) { return a + b }\n}\n",
+    line: 4,
+  },
+  dotnet: {
+    path: "src/Sum.cs",
+    valid: "namespace Fixture;\n\npublic static class Sum\n{\n    public static int Of(int a, int b) => a + b;\n}\n",
+    broken: "namespace Fixture;\n\npublic static class Sum\n{\n    public static int Of(int a, int b) => a + ;\n}\n",
+    line: 5,
+  },
+};
+
+for (const stack of STACKS) {
+  const sample = SYNTAX[stack];
+  describe(`gate matrix: ${stack} syntax gate`, () => {
+    cell(stack, "syntax gate: valid file passes", async () => {
+      expect(await syntaxErrors(sample.path, sample.valid)).toEqual([]);
+    });
+    cell(stack, "syntax gate: broken file is refused at its line", async () => {
+      const errors = await syntaxErrors(sample.path, sample.broken);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0]?.line).toBe(sample.line);
     });
   });
 }

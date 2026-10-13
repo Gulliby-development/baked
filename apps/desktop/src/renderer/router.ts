@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
 export const PROJECT_SECTIONS = [
+  "coordinator",
   "overview",
   "chat",
-  "coordinator",
   "runs",
   "initiatives",
   "usage",
@@ -13,8 +13,7 @@ export const PROJECT_SECTIONS = [
   "gates",
   "workflows",
   "agents",
-  "instructions",
-  "working-set",
+  "context",
   "memory",
   "skills",
   "packages",
@@ -68,12 +67,16 @@ export function parseRoute(hash: string): Route {
   if (head === "p" && a) {
     // Acceptance was a sidebar section before it moved into the run screen and Needs you.
     if (b === "acceptance") return { name: "project", key: a, section: "runs", id: c ?? null };
+    // Instructions and Working set were two screens before they became the Agent context tabs.
+    if (b === "instructions") return { name: "project", key: a, section: "context", id: "rules" };
+    if (b === "working-set") return { name: "project", key: a, section: "context", id: "files" };
     // Run memory and Chat memory were two sections before they became parts of Memory.
     if (b === "run-memory") return { name: "project", key: a, section: "memory", id: "runs" };
     if (b === "chat-memory") return { name: "project", key: a, section: "memory", id: "chat" };
+    // A project opens on its coordinator.
     const section = (PROJECT_SECTIONS as readonly string[]).includes(b ?? "")
       ? (b as ProjectSection)
-      : "overview";
+      : "coordinator";
     return { name: "project", key: a, section, id: c ?? null };
   }
   return { name: "projects" };
@@ -96,7 +99,7 @@ export function href(route: Route): string {
 
 export function projectHref(
   key: string,
-  section: ProjectSection = "overview",
+  section: ProjectSection = "coordinator",
   id?: string,
 ): string {
   return href({ name: "project", key, section, id: id ?? null });

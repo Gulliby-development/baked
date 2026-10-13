@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { ApprovalRulesContentSchema } from "../chat/approval-rules.js";
 import { BriefContentSchema } from "../chat/coordinator.js";
+import { LaunchedRefSchema } from "../chat/coordinator-control.js";
+import { ScheduleInputSchema } from "../chat/coordinator-schedules.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { CHAT_EFFORTS } from "../llm/provider-options.js";
+import { PERMISSION_MODES } from "../security/permission-mode.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
 import { MAX_CANDIDATES } from "../workflows/candidates.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
@@ -67,6 +70,8 @@ export const StartBody = z
     message: "feature and prompt are required without issue",
   });
 export const CommandBody = Command.strict();
+/** `POST /v1/workflow/runs/RUN_ID/resume`: `acceptWorkspace` keeps a person's file changes (#971). */
+export const ResumeBody = Command.extend({ acceptWorkspace: z.boolean().optional() }).strict();
 /** `POST /v1/workflow/runs/RUN_ID/fork`: `fromStage` starts the fork at that stage (#855). */
 export const ForkBody = Command.extend({ fromStage: SafeId.optional() }).strict();
 /** `POST /v1/workflow/propose`: the request text a run would start with. */
@@ -137,6 +142,12 @@ export const WorkingSetBody = z
 
 const ChatModeSchema = z.enum(CHAT_MODES);
 const ChatEffortSchema = z.enum(CHAT_EFFORTS);
+const PermissionModeSchema = z.enum(PERMISSION_MODES);
+/** `default`, `max`, or a window in tokens; a size the model lacks picks the nearest smaller. */
+const ChatContextSizeSchema = z.union([
+  z.enum(["default", "max"]),
+  z.number().int().min(1_000).max(100_000_000),
+]);
 const ModelId = z
   .string()
   .min(3)
@@ -158,13 +169,19 @@ export const CreateSessionBody = z.strictObject({
   model: ModelId.optional(),
   mode: ChatModeSchema.optional(),
   effort: ChatEffortSchema.optional(),
+  permissions: PermissionModeSchema.optional(),
+  contextSize: ChatContextSizeSchema.optional(),
   text: Text.optional(),
   images: Images.optional(),
 });
 export const CoordinatorBody = z.strictObject({ model: ModelId.optional() });
+export const LaunchedStopBody = LaunchedRefSchema;
+export const LaunchedCloseBody = LaunchedRefSchema.extend({ reopen: z.boolean().optional() });
 export const BriefBody = BriefContentSchema.extend({
   expectedRevision: z.number().int().min(0),
 });
+export const ScheduleBody = ScheduleInputSchema;
+export const UpdateScheduleBody = z.strictObject({ enabled: z.boolean() });
 export const ApprovalRulesBody = ApprovalRulesContentSchema.extend({
   expectedRevision: z.number().int().min(0),
 });
@@ -174,6 +191,8 @@ export const UpdateSessionBody = z
     model: ModelId.optional(),
     mode: ChatModeSchema.optional(),
     effort: ChatEffortSchema.optional(),
+    permissions: PermissionModeSchema.optional(),
+    contextSize: ChatContextSizeSchema.optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: "Name a field to change" });
 export const ForkSessionBody = z.strictObject({

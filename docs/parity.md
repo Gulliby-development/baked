@@ -52,8 +52,10 @@ bun test tests/feature-parity.test.ts
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
-| Project coordinator chat with a durable project brief | `/coordinator` | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` | `project/coordinator`, `project/chat` |
+| Project coordinator chat with a durable project brief and read access to the project | `/coordinator`, `/projects` | `baked session coordinator` | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` +2 | `project/coordinator`, `project/chat` |
 | Coordinator suggests, runs and follows workflows | `/coordinator` | Partial [#890](https://github.com/Gulliby-development/baked/issues/890): the CLI cannot message the coordinator or answer its cards | `/v1/sessions/:id/prompts`, `/v1/sessions/:id/events`, `/v1/coordinator/launched` | `project/coordinator`, `attention` |
+| Editing sessions the coordinator launches work in their own Git worktree and branch | `/coordinator` | Not needed: the headless CLI does not launch coordinator sessions | `/v1/coordinator/launched`, `/v1/sessions` | `project/coordinator` |
+| Coordinator schedules: prompts that start a coordinator turn on their own | `/coordinator` | `baked session coordinator schedules`, `baked session coordinator schedule` | `/v1/coordinator/schedules` | `project/coordinator` |
 | Coordinator answers routine approvals by rules | `/coordinator rules` | `baked session coordinator rules` | `/v1/coordinator/approval-rules` | `project/coordinator` |
 | One-click coordinator digest: running, waiting, finished and open questions | `/coordinator summary`, `/coordinator` | Not needed: scripts read the same state with baked session coordinator and --json runs | `/v1/coordinator/summary` | `project/coordinator` |
 | Diagnostic export and API request dumps | `/session export all`, `/session export api` | `--events` | Not needed: a debugging aid for BAKED itself | Not needed: a debugging aid for BAKED itself |
@@ -69,6 +71,8 @@ bun test tests/feature-parity.test.ts
 | Fork a session | `/checkpoint fork` | `baked session fork` | `/v1/sessions/:id/fork` | `project/chat` |
 | Files changed in a session and diff stats | `/changes` | `--diff` | `/v1/sessions/:id/diff` | `project/chat` |
 | Reasoning effort per chat | `/effort` | `--effort` | `/v1/sessions/:id`, `/v1/models` | `project/chat` |
+| Permission mode per chat: manual, auto or full access | `/permissions` | `--permissions` | `/v1/sessions/:id` | `project/chat`, `project/coordinator` |
+| Context window size per chat; the coordinator defaults to the largest | `/context-size` | `--context` | `/v1/sessions/:id`, `/v1/models` | `project/chat`, `project/coordinator` |
 | Context and cost dashboard for a chat | `/context`, `/context clear`, `/status` | Not needed: --json reports usage of a one-shot run | `/v1/sessions/:id` | `project/chat` |
 
 ### Models and providers
@@ -101,13 +105,13 @@ bun test tests/feature-parity.test.ts
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
 | Agent features: de-sloppify, verify edits, tier routing, edits that add errors | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Approval reviewer for chat tool approvals: a model decides low-risk cleanup first | `/agent-features` | `--approval-review` | `/v1/settings` | `settings/chat`, `project/chat` |
-| Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
+| Hooks: view, add, edit, pause | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
 | Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes | `/packages`, `/packages add`, `/packages remove` | `baked add`, `baked packages` | `/v1/packages`, `/v1/packages/inspect`, `/v1/packages/install` +1 | `project/packages` |
 | Packages: write a package's manifest with every file's hash after the install checks | `/packages pack` | `baked packages pack` | `/v1/packages/pack` | `project/packages` |
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
-| Instruction files: view and edit content | `/instructions show`, `/instructions edit` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/instructions` |
-| Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/instructions` |
+| Instruction files: view and edit content | `/instructions show`, `/instructions edit`, `/agent-context` | Partial [#407](https://github.com/Gulliby-development/baked/issues/407): read-only | `/v1/projects/current/instructions` | `project/context` |
+| Instruction files: switch on or off | `/instructions`, `/instructions files` | Not needed: set instructionFiles in config.json | `/v1/projects/current/instructions/sources` | `project/context` |
 | Long-term chat memory: browse, pin, reword, hide, cleanup, scopes, sharing with runs | `/memory` | Not needed: one-shot runs read memory, people curate it | `/v1/memory`, `/v1/memory/cleanup`, `/v1/memory/settings` | `project/memory` |
 | OS sandbox for shell commands, checks and acceptance apps | `/sandbox` | `baked sandbox status`, `--sandbox`, `baked workflow run --sandbox` +1 | `/v1/diagnostics/sandbox`, `/v1/settings`, `/v1/workflow/runs` | `settings/chat`, `project/diagnostics`, `project/overview` |
 | Run memory: view and edit what runs learned | `/memory` | `baked workflow memory` | `/v1/workflow/memory` | `project/memory` |
@@ -128,7 +132,7 @@ bun test tests/feature-parity.test.ts
 | Approve, reject, answer, give evidence, continue, accept a stopped convergence | `/workflow` | `baked workflow approve`, `baked workflow reject`, `baked workflow answer` +3 | `/v1/workflow/runs/:id/approve`, `/v1/workflow/runs/:id/reject`, `/v1/workflow/runs/:id/answer` +3 | `project/runs`, `attention` |
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
-| Pause, resume, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
+| Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Fork a run | `/workflow` | `baked workflow fork` | `/v1/workflow/runs/:id/fork` | `project/runs` |
 | Discard a run's worktree | `/workflow` | `baked workflow discard-worktree` | `/v1/workflow/runs/:id/discard-worktree` | `project/runs` |
 | Worktree sizes and cleanup | `/workflow` | `baked workflow worktrees` | `/v1/workflow/worktrees`, `/v1/workflow/worktrees/clean` | `project/runs` |
@@ -175,12 +179,13 @@ bun test tests/feature-parity.test.ts
 | Projects: list, add, pin, forget, this project | `/projects`, `/project` | `baked projects`, `baked project` | `/v1/projects`, `/v1/projects/pin`, `/v1/projects/unpin` +2 | `projects`, `project/overview` |
 | Create a project in a new folder with a name | `/projects` | `baked projects create` | Not needed: a new project has no backend yet; the desktop app creates it through baked projects create | `projects` |
 | Rename a project | `/project rename` | `baked projects rename` | `/v1/projects/rename` | `projects` |
-| Working set | `/project` | `baked project` | `/v1/projects/current/working-set` | `project/working-set` |
+| Working set | `/project`, `/agent-context add`, `/agent-context remove` | `baked project` | `/v1/projects/current/working-set` | `project/context` |
+| Agent context: rules and files every agent gets, their prompt budget and a preview | `/agent-context`, `/agent-context preview` | `baked project context` | `/v1/projects/current/context` | `project/context` |
 | What waits for me across projects | `/project waiting`, `/project` | `baked attention` | `/v1/attention` | `attention` |
 | Local API server, health and capabilities | Not needed: the TUI runs the core in process | `baked serve` | `/v1/health` | `projects` |
 | Prerequisite check and first-run wizard | `/setup`, `/wizard` | `baked self-check`, `--wizard` | `/v1/workflow/doctor` | `project/overview` |
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
-| Git menu: status, diff, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +9 | Not needed: scripts call git | `/v1/git`, `/v1/git/actions` | `project/git` |
+| Git menu: status, diff, commit graph, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +10 | Not needed: scripts call git | `/v1/git`, `/v1/git/graph`, `/v1/git/actions` | `project/git` |
 | Storage cleanup, model events and the error log | `/storage`, `/model-events`, `/errors` | Not needed: scripts read the log files | `/v1/diagnostics/storage`, `/v1/diagnostics/storage/cleanup`, `/v1/diagnostics/model-events` +1 | `project/diagnostics` |
 | Tool, edit diagnostics and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
 | Telemetry switch | `/telemetry` | `baked telemetry` | `/v1/config` | `settings/telemetry` |

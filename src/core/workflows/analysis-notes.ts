@@ -4,7 +4,7 @@ import {
   withModuleDependencies,
   withReadDependencies,
 } from "./plan-consistency.js";
-import type { ResearchSchema, TaskGraph } from "./schemas.js";
+import type { ResearchSchema, Spec, TaskGraph } from "./schemas.js";
 import { withTestDependencies } from "./sizing.js";
 
 type Research = z.infer<typeof ResearchSchema>;
@@ -66,10 +66,13 @@ export function isHostSplitNit(
  * the code sharing its criterion, a docs task that runs the program after its entry points. The planner cannot remove them, so the analyzer must not ask
  * for that (bench round 10, dirdrift: one dependency finding came back in 4 of 7 analysis passes).
  */
-export function hostDependencyEdges(graph: TaskGraph): Array<{ task: string; dependsOn: string }> {
+export function hostDependencyEdges(
+  graph: TaskGraph,
+  spec?: Pick<Spec, "requirements" | "criteria">,
+): Array<{ task: string; dependsOn: string }> {
   const bare = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, dependsOn: [] })) };
   const derived = withTestDependencies(
-    withCommandDependencies(withReadDependencies(withModuleDependencies(bare))),
+    withCommandDependencies(withReadDependencies(withModuleDependencies(bare)), spec),
   );
   return derived.tasks.flatMap((task) => {
     const stored = graph.tasks.find((t) => t.id === task.id)?.dependsOn ?? [];
@@ -181,6 +184,16 @@ const SETTLES =
  */
 /** Whether a conflict report names what the request itself states as one of its sides. */
 export const namesRequestSide = (text: string): boolean => SETTLES.test(text);
+
+/**
+ * A documentation task's report that the rule for examples (run the command, never invent its
+ * output) stands against a worked example the request gives (#992, dirdrift 120a6a97: "FR-001 needs
+ * the five-line worked example in the README, but the implementer instruction forbids writing
+ * example output from the spec").
+ */
+const EXAMPLE_RULE =
+  /\b(?:example|sample)[- ]output\b|\bworked\s+example\b|\b(?:request|brief|spec)'s\b[^.]*\bexamples?\b|\boutput\s+(?:block|example)\b|\bexample\b[^.]*\b(?:from the (?:spec|request|brief)|run_probe|probe)\b/i;
+export const namesExampleRule = (text: string): boolean => EXAMPLE_RULE.test(text);
 
 export function requestSettles(finding: {
   id?: string;

@@ -66,11 +66,24 @@ The same picker switches **Edits that add errors** (`editDiagnostics`) between `
 | `default` | Investigates, then implements |
 | `architect` | Design only: outlines and trade-offs, no edits |
 | `plan` | Research and a written plan, no edits until you approve |
-| `auto` | Works with as few interruptions as possible |
+
+`/mode auto`, the old auto mode, now switches to `default` with full access (see [permission modes](#permission-modes)).
 
 `/plan <task>` starts plan mode for one task: the agent researches, writes a structured plan, and asks you to approve, revise or cancel before it executes. The plan sidebar tracks progress.
 
 For durable, resumable work with budgets, checks and review, use [workflows](workflows/README.md) instead (`/workflow`, `baked workflow`).
+
+## Permission modes
+
+Every chat has a permission mode besides its mode. It says which actions wait for your Allow:
+
+| Permission mode | What asks first |
+| --- | --- |
+| `manual` | Every edit, shell command, git change (anything but status, diff, log, show and blame) and project command (test, build, lint, run…). Dispatched subagents only read, so every edit goes through the main chat |
+| `auto` (default) | Destructive commands, sensitive files (`.env`, keys, CI files), writes outside the project, web searches and page fetches; everything else runs |
+| `full` | Nothing |
+
+`/permissions` picks one for the current tab, or `/permissions manual|auto|full`; the header shows a **MANUAL** or **FULL ACCESS** chip when it is not `auto`. Switching to full access asks for a confirmation the first time after BAKED starts. The mode is saved with the session. `defaultPermissionMode` in the [configuration](configuration.md) sets it for new chats. In the desktop app the permissions chip in the composer does the same for each chat and for the coordinator (the first switch to Full access asks in a dialog), and the coordinator's permission mode passes to the sessions it launches: with full access it starts editing sessions without asking.
 
 ## Checkpoints
 
@@ -114,7 +127,7 @@ Tabs coordinate through file claims. The first edit of a file claims it for that
 
 ## Git
 
-`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git branch`, `/git stash`. `/git co-author` toggles the co-author trailer. The menu also offers Force push (`git push --force-with-lease`) and Reset hard, each after a confirmation. The desktop app's Git section runs the same actions through `baked serve` (see [the desktop API](desktop/api.md#git)).
+`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log, `g` graph. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git graph`, `/git branch`, `/git stash`. `/git graph` draws the latest 60 commits of every local branch in lanes (`●` a commit, `│` a branch passing, `╮`/`╯` a merge or fork), with branch and tag names, coloured by kind: the base branch, `feature/`, `bugfix/`, BAKED run branches (`baked/`) and the rest. `/git co-author` toggles the co-author trailer. The menu also offers Force push (`git push --force-with-lease`) and Reset hard, each after a confirmation. The desktop app's Git section runs the same actions through `baked serve` (see [the desktop API](desktop/api.md#git)).
 
 ## Changed files
 
@@ -138,7 +151,7 @@ The agent stores preferences, decisions and pitfalls in SQLite: `<project>/.bake
 
 Skills are folders with a `SKILL.md`. `Ctrl+S` or `/skills` searches the [skills.sh](https://skills.sh) catalog, lists installed skills and toggles them for the session. See [extensions](extensions.md#skills).
 
-Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instructions.md`). `/instructions` can also load the files of other tools: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.clinerules`, `.windsurfrules` and others (see [configuration](configuration.md#instruction-files)).
+Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instructions.md`). `/instructions` can also load the files of other tools: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.clinerules`, `.windsurfrules` and others (see [configuration](configuration.md#instruction-files)). `/agent-context` shows the instruction files and the working set together, with how much of every agent's prompt they take, and `/agent-context preview` shows the text itself.
 
 ## Custom commands
 

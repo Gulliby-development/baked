@@ -3,6 +3,7 @@ import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/
 import { ApprovalRulesStore } from "../core/chat/approval-rules.js";
 import { LocalCoordinator } from "../core/chat/coordinator-host.js";
 import type { LaunchedView } from "../core/chat/coordinator-launch.js";
+import { type Schedule, ScheduleStore } from "../core/chat/coordinator-schedules.js";
 import type { ChatPrompt, ChatSession, SessionState } from "../core/chat/sessions.js";
 import type { ChatMessage } from "../types/index.js";
 import { workflowSession } from "./useWorkflow.js";
@@ -56,6 +57,7 @@ export interface CoordinatorSnapshot {
   state: SessionState;
   prompts: ChatPrompt[];
   launched: LaunchedView[];
+  schedules: Schedule[];
   /** How many approval rules answer approvals; 0 while the rules are off. */
   rulesOn?: number;
 }
@@ -71,6 +73,7 @@ function snapshot(
     state: session.state,
     prompts: session.pendingPrompts,
     launched: local.chat.launched(session.id),
+    schedules: new ScheduleStore(local.chat.workspace, session.id).list(),
     rulesOn: activeRules(local.chat.workspace, session.id),
   };
 }
@@ -99,8 +102,11 @@ export function useCoordinatorSnapshot(local: LocalCoordinator | null): Coordina
       // A `launched` event carries the new view: statuses, a run's stage and its tasks.
       refresh();
     });
+    // Schedules and the approval rules change without a session event; read them again now and then.
+    const timer = setInterval(refresh, 2000);
     return () => {
       stop?.();
+      clearInterval(timer);
     };
   }, [local]);
   return view;

@@ -40,7 +40,7 @@ import {
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type RuntimeState, RuntimeStateSchema, type Snapshot } from "./types.js";
-import { attemptCost } from "./usage.js";
+import { attemptCost, attemptSpend } from "./usage.js";
 import type { WorkflowV2 } from "./v2/definition.js";
 
 export const newId = (): string => randomUUID();
@@ -1088,7 +1088,7 @@ export class WorkflowStore {
     status: TaskRow["status"],
     snapshotId: string | null = null,
     /** Why the task was interrupted, on the `task.state_changed` event (#843). */
-    interrupt?: { cause: InterruptCause; detail?: string },
+    interrupt?: { cause: InterruptCause; detail?: string; stack?: string },
   ): void {
     const row = this.tasks(runId).find((t) => t.id === id);
     if (!row) throw new WorkflowFault("NOT_FOUND", `Task ${id} missing`);
@@ -1108,6 +1108,7 @@ export class WorkflowStore {
           ? {
               cause: interrupt.cause,
               ...(interrupt.detail ? { detail: interrupt.detail.slice(0, 500) } : {}),
+              ...(interrupt.stack ? { stack: interrupt.stack.slice(0, 2000) } : {}),
             }
           : {}),
       },
@@ -1296,10 +1297,20 @@ export class WorkflowStore {
     if (update.changes !== 1)
       throw new WorkflowFault("REVISION_CONFLICT", "Attempt no longer running");
     this.db.run("UPDATE runs SET token_usage=token_usage+? WHERE id=?", [usedTokens ?? 0, runId]);
+    const model = this.attempts(runId).find((a) => a.id === id)?.model_id ?? null;
+    // The split of the attempt's tokens and its priced cost, so a series can compare providers
+    // whose tokens are mostly cache traffic (#936).
+    const spend = model === null ? null : attemptSpend(this, runId, id, model);
     this.addAttemptCost(runId, id);
     this.emit(runId, {
       type: "attempt.finished",
-      payload: { attemptId: id, status, usageComplete: usedTokens !== null, usedTokens },
+      payload: {
+        attemptId: id,
+        status,
+        usageComplete: usedTokens !== null,
+        usedTokens,
+        ...(spend ? { spend } : {}),
+      },
     });
   }
   /**

@@ -1,4 +1,10 @@
-import type { BakeMode, ChatEffort, ChatMessage } from "../../types/index.js";
+import type {
+  BakeMode,
+  ChatContextSize,
+  ChatEffort,
+  ChatMessage,
+  PermissionMode,
+} from "../../types/index.js";
 
 export interface TabMeta {
   workflowRunId?: string;
@@ -12,6 +18,10 @@ export interface TabMeta {
   bakeMode?: BakeMode;
   /** The conversation's reasoning effort; absent or `default` follows the global setting. */
   effort?: ChatEffort;
+  /** How much the conversation runs without asking; absent means `auto`. */
+  permissionMode?: PermissionMode;
+  /** The conversation's context size; absent or `default` follows the chat's kind. */
+  contextSize?: ChatContextSize;
   tokenUsage: {
     prompt: number;
     completion: number;
@@ -47,6 +57,10 @@ export interface SessionMeta {
   projectId?: string;
   /** `coordinator` for the project's coordinator chat; absent for an ordinary session. */
   kind?: "coordinator";
+  /** The session's own Git worktree (absolute path), branch and base commit (#897). */
+  worktree?: { path: string; branch: string; baseHead: string };
+  /** Set when the coordinator's launch of this session is closed; ordinary lists leave it out. */
+  archived?: true;
   /** The session that launched this one, such as the project coordinator. */
   parentId?: string;
 }

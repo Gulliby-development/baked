@@ -20,7 +20,10 @@ import {
   LocalCoordinator,
   ReadonlyProjectState,
 } from "../src/core/chat/coordinator-host";
+import { BriefStore } from "../src/core/chat/coordinator";
+import { ScheduleStore } from "../src/core/chat/coordinator-schedules";
 import type { ChatAgentHost, ChatPrompt, TurnAgentRequest } from "../src/core/chat/sessions";
+import { nextLabel, scheduleLines } from "../src/components/coordinator/schedules";
 import type { InitiativeView } from "../src/core/workflows/initiatives/service";
 import type { AppConfig } from "../src/types/index";
 
@@ -63,6 +66,10 @@ class FakeClient implements CoordinatorWorkflowClient {
   async initiativeAction(initiativeId: string, action: unknown) {
     this.actions.push(action);
     return { initiativeId, revision: 4, pendingDecisions: [] } as unknown as InitiativeView;
+  }
+  async action(runId: string, action: "cancel") {
+    this.actions.push({ runId, action });
+    return null;
   }
 }
 
@@ -171,6 +178,24 @@ describe("terminal coordinator host", () => {
     expect(argv).toContain("--worktree");
   });
 
+  test("runs cancel and initiatives pause through the workflow client", async () => {
+    const client = new FakeClient();
+    const { root, config } = project();
+    const launcher = clientLauncher(client, {
+      workspace: root,
+      config,
+      model: () => "m",
+      featureTaken: () => false,
+      initiativeRevision: () => 7,
+    });
+    await launcher.cancelRun?.("run-1");
+    await launcher.pauseInitiative?.("init-1");
+    expect(client.actions).toEqual([
+      { runId: "run-1", action: "cancel" },
+      { kind: "pause", expectedRevision: 7 },
+    ]);
+  });
+
   test("an approved split approves the initiative's split with its digest", async () => {
     const client = new FakeClient();
     const { root, config } = project();
@@ -218,6 +243,25 @@ describe("terminal coordinator view model", () => {
       text: "● Run run-1: running · 12k tokens · acme/app#12 · Ship it",
       tone: "accent",
     });
+  });
+
+  test("the selected launched item is marked and closed items are counted", () => {
+    const item = (id: string, closed?: true) => ({
+      kind: "run" as const,
+      id,
+      title: id,
+      why: id,
+      status: "completed",
+      active: false,
+      tokens: 0,
+      ...(closed ? { closed } : {}),
+    });
+    const lines = launchedLines([item("a"), item("b"), item("c", true)], 200, 1).map((l) => l.text);
+    expect(lines).toEqual(['  ○ Run "a": completed · 0 tokens', '› ○ Run "b": completed · 0 tokens', "1 closed"]);
+    expect(keyHints(undefined, false, item("a")).map((h) => h.label)).toEqual(["send", "select launched", "close it", "what's happening", "back"]);
+    expect(keyHints(undefined, false, { ...item("a"), status: "running", active: true }).map((h) => h.label)).toContain(
+      "stop it",
+    );
   });
 
   test("launched lines name a session by its title and colour a wait", () => {
@@ -442,6 +486,34 @@ async function until(view: Awaited<ReturnType<typeof testRender>>, text: string)
 }
 
 describe("terminal coordinator view", () => {
+  test("^R closes the selected launched session into the archive", async () => {
+    const { local } = await openLocal();
+    const launched = await local.chat.create({ title: "Survey auth" });
+    const store = new BriefStore(local.chat.workspace, local.session.id);
+    store.write(
+      { ...store.read(), launched: [{ kind: "session", id: launched.id, title: "Survey auth", why: "Look", status: "idle" }] },
+      0,
+    );
+    const view = await testRender(<CoordinatorView visible open={async () => local} onClose={() => {}} />, {
+      width: 100,
+      height: 30,
+    });
+    try {
+      await until(view, 'Session "Survey auth"');
+      expect(view.captureCharFrame()).toContain("close it");
+      await act(async () => {
+        view.mockInput.pressKey("r", { ctrl: true });
+      });
+      await until(view, "1 closed");
+      expect(store.read().launched[0]?.closed).toBe(true);
+      expect(local.chat.list().map((s) => s.id)).not.toContain(launched.id);
+    } finally {
+      await act(async () => {
+        view.renderer.destroy();
+      });
+    }
+  });
+
   for (const [width, height] of [
     [120, 40],
     [80, 24],
@@ -490,4 +562,47 @@ describe("terminal coordinator view", () => {
       }
     });
   }
+});
+
+describe("terminal coordinator schedules", () => {
+  test("schedule lines show name, when and the next firing", () => {
+    const now = new Date(2026, 9, 10, 8, 0).getTime();
+    const base = { prompt: "x", createdAt: now, lastRunAt: null };
+    const lines = scheduleLines(
+      [
+        { ...base, id: "a", name: "Nightly", when: "0 2 * * *", enabled: true, nextRunAt: new Date(2026, 9, 11, 2, 0).getTime() },
+        { ...base, id: "b", name: "Deps", when: "every 1d", enabled: false, nextRunAt: now },
+      ],
+      80,
+      now,
+    );
+    expect(lines).toEqual([
+      { text: "\u25f7 Nightly \u00b7 0 2 * * * \u00b7 next 2026-10-11 02:00", tone: "accent" },
+      { text: "\u2016 Deps \u00b7 every day \u00b7 paused", tone: "muted" },
+    ]);
+    expect(nextLabel(new Date(2026, 9, 10, 9, 30).getTime(), now)).toBe("09:30");
+    const long = { ...base, id: "c", name: "A long name", when: "every 1h", enabled: true, nextRunAt: now };
+    expect(scheduleLines([long], 10, now)[0]?.text).toHaveLength(10);
+  });
+
+  test("the view lists the coordinator's schedules", async () => {
+    const { local } = await openLocal();
+    new ScheduleStore(local.chat.workspace, local.session.id).add({
+      name: "Morning summary",
+      prompt: "Summarize the night",
+      when: "0 9 * * *",
+    });
+    const view = await testRender(<CoordinatorView visible open={async () => local} onClose={() => {}} />, {
+      width: 100,
+      height: 30,
+    });
+    try {
+      await until(view, "Morning summary");
+      expect(view.captureCharFrame()).toContain("Schedules");
+    } finally {
+      await act(async () => {
+        view.renderer.destroy();
+      });
+    }
+  });
 });

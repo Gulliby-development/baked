@@ -31,6 +31,7 @@ import type { ModelMessage } from "ai";
 import type {
   AppConfig,
   BakeMode,
+  ChatContextSize,
   ChatEffort,
   ChatMessage,
   ImageAttachment,
@@ -38,6 +39,7 @@ import type {
   InteractiveCallbacks,
   LaunchNote,
   MessageSegment,
+  PermissionMode,
   Plan,
   PlanReviewAction,
   ToolCall,
@@ -80,6 +82,12 @@ import {
   watchSubagentHooks,
   withHookContext,
 } from "../hooks/lifecycle.js";
+import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
+import {
+  DEFAULT_PERMISSION_MODE,
+  isPermissionMode,
+  splitLegacyMode,
+} from "../security/permission-mode.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
@@ -88,6 +96,12 @@ import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/cont
 import { projectDefinitions, proposeForWorkspace } from "../workflows/v2/propose.js";
 import { answerByRules } from "./approval-rules.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
+import {
+  closeLaunched,
+  controlTools,
+  type LaunchedRef,
+  stopLaunched,
+} from "./coordinator-control.js";
 import {
   coordinatorLimits,
   type LaunchedView,
@@ -99,6 +113,14 @@ import {
   wakeLine,
   wakePrompt,
 } from "./coordinator-launch.js";
+import {
+  SCHEDULE_TICK_MS,
+  SCHEDULE_TOOL,
+  type Schedule,
+  ScheduleStore,
+  scheduledTurnText,
+  scheduleTool,
+} from "./coordinator-schedules.js";
 import { editedFiles, type SessionDiffStats, sessionDiffStats } from "./diff-stats.js";
 import { userContent } from "./images.js";
 import type { ExpandedChatInput } from "./input-expansion.js";
@@ -111,6 +133,7 @@ import {
   STATE_TOOL,
   stateTool,
 } from "./project-state.js";
+import { createSessionWorktree, type SessionWorktree } from "./session-worktree.js";
 import { toolResultOf } from "./tool-result.js";
 
 export const CHAT_MODES = ["default", "architect", "plan", "auto"] as const;
@@ -208,10 +231,25 @@ export interface SessionSummary {
   mode: ChatMode;
   /** Reasoning effort for this chat's turns; `default` follows the global setting. */
   effort: ChatEffort;
+  /** How much the chat runs without asking: manual, auto or full. */
+  permissions: PermissionMode;
+  /**
+   * Context window of this chat's turns when its model offers several: `default` is the largest
+   * for the coordinator and the model's own size elsewhere.
+   */
+  contextSize: ChatContextSize;
+  /** Context windows in tokens the model offers, smallest first; empty when it offers one. */
+  contextSizes: number[];
+  /** The window the chat runs with when the model offers several, else null. */
+  contextTokens: number | null;
   /** True while a manual compaction runs; the state is then `working`. */
   compacting: boolean;
   /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
   kind?: "coordinator";
+  /** The session's own Git worktree and branch, when it has one (#897). */
+  worktree?: { path: string; branch: string };
+  /** The coordinator closed its launch of this session: left out of the list, still openable. */
+  archived?: true;
   /** The session that launched this one: the coordinator for the sessions it starts. */
   parentId?: string;
 }
@@ -321,10 +359,14 @@ export interface TurnAgent {
 
 export interface TurnAgentRequest {
   sessionId: string;
+  /** Where the session's agent works: the project folder, or the session's own worktree. */
+  cwd: string;
   modelId: string;
   mode: ChatMode;
   /** The chat's reasoning effort; `default` keeps the configuration's. */
   effort: ChatEffort;
+  /** How much the turn runs without asking. */
+  permissions: PermissionMode;
   /** The turn carries out an accepted plan: the agent keeps to the plan's tools. */
   planExecution: boolean;
   /** The session is the project's coordinator: its prompt and brief tool apply. */
@@ -341,6 +383,7 @@ export interface TurnAgentRequest {
 
 export interface InputExpansionRequest {
   sessionId: string;
+  cwd: string;
   mode: ChatMode;
   text: string;
   onApproveDestructive: (description: string) => Promise<boolean>;
@@ -547,6 +590,8 @@ export class ChatSession {
   private model: string | null;
   private mode: ChatMode;
   private effort: ChatEffort;
+  private permissions: PermissionMode;
+  private contextSize: ChatContextSize;
   private usage: Usage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
@@ -581,8 +626,14 @@ export class ChatSession {
     this.tabId = tab.id;
     this.model =
       tab.activeModel && tab.activeModel !== "none" ? tab.activeModel : owner.defaultModel;
-    this.mode = toChatMode(tab.bakeMode ?? meta.bakeMode);
+    const modes = splitLegacyMode(
+      toChatMode(tab.bakeMode ?? meta.bakeMode),
+      tab.permissionMode ?? owner.defaultPermissions,
+    );
+    this.mode = modes.mode;
+    this.permissions = modes.permissions;
     this.effort = tab.effort ?? "default";
+    this.contextSize = tab.contextSize ?? "default";
     this.usage = {
       input: tab.tokenUsage.prompt,
       output: tab.tokenUsage.completion,
@@ -672,14 +723,52 @@ export class ChatSession {
       model: this.model,
       mode: this.mode,
       effort: this.effort,
+      permissions: this.permissions,
+      contextSize: this.contextSize,
+      contextSizes: this.model ? getModelContextSizes(this.model) : [],
+      contextTokens: this.model
+        ? chatContextTokens(this.model, this.contextSize, this.sizeOptions)
+        : null,
       compacting: this.compaction !== null,
       ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
+      ...(this.meta.worktree
+        ? { worktree: { path: this.meta.worktree.path, branch: this.meta.worktree.branch } }
+        : {}),
+      ...(this.meta.archived ? { archived: true as const } : {}),
       ...(this.meta.parentId ? { parentId: this.meta.parentId } : {}),
     };
   }
 
+  /** Archives the session or brings it back to the session list. */
+  async setArchived(archived: boolean): Promise<void> {
+    if (archived === (this.meta.archived === true)) return;
+    const { archived: _, ...meta } = this.meta;
+    this.meta = archived ? { ...meta, archived: true } : meta;
+    this.emitSession();
+    await this.owner.persist(this);
+  }
+
+  /** How much the session runs without asking. */
+  get permissionMode(): PermissionMode {
+    return this.permissions;
+  }
+
   get isCoordinator(): boolean {
     return this.meta.kind === "coordinator";
+  }
+
+  private get sizeOptions(): { coordinator: boolean } {
+    return { coordinator: this.isCoordinator };
+  }
+
+  /** The model ID turns and compactions run with: the chosen model at the chat's context size. */
+  private runModel(model: string): string {
+    return withContextSize(model, this.contextSize, this.sizeOptions);
+  }
+
+  /** Where this session's agent reads and writes: its own worktree, or the project folder. */
+  get cwd(): string {
+    return this.meta.worktree?.path ?? this.owner.workspace;
   }
 
   detail(): SessionDetail {
@@ -745,13 +834,21 @@ export class ChatSession {
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    permissions?: PermissionMode;
+    contextSize?: ChatContextSize;
   }): SessionSummary {
     if (changes.title !== undefined) this.meta = { ...this.meta, customTitle: changes.title };
     if (changes.model !== undefined) this.model = changes.model;
     if (changes.mode !== undefined && this.isCoordinator && changes.mode !== COORDINATOR_MODE)
       throw new ChatError("INVALID_REQUEST", "The coordinator always runs in architect mode");
-    if (changes.mode !== undefined) this.mode = changes.mode;
+    if (changes.mode !== undefined) {
+      // The legacy `auto` mode is the default mode with full access.
+      const modes = splitLegacyMode(changes.mode, changes.permissions ?? this.permissions);
+      this.mode = modes.mode;
+      this.permissions = modes.permissions;
+    } else if (changes.permissions !== undefined) this.permissions = changes.permissions;
     if (changes.effort !== undefined) this.effort = changes.effort;
+    if (changes.contextSize !== undefined) this.contextSize = changes.contextSize;
     this.emitSession();
     void this.owner.persist(this);
     return this.summary();
@@ -783,6 +880,15 @@ export class ChatSession {
 
   emitLaunched(launched: LaunchedView[]): void {
     this.emit({ type: "launched", launched });
+  }
+
+  /** Starts the turn a coordinator schedule fires, or queues it behind the running one. */
+  sendScheduled(schedule: Schedule): { turnId: string; queued: boolean } {
+    return this.submit({
+      text: scheduledTurnText(schedule),
+      display: `Scheduled: ${schedule.name}`,
+      verbatim: true,
+    });
   }
 
   /** Sends a prompt the app wrote, shown as `display`, as a turn of its own behind the running one. */
@@ -874,7 +980,7 @@ export class ChatSession {
     this.rewinding = true;
     try {
       const result = await run({
-        cwd: this.owner.workspace,
+        cwd: this.cwd,
         tags: this.checkpointTags,
         backupTag: `baked/${action}-backup-${crypto.randomUUID().slice(0, 8)}`,
       });
@@ -906,7 +1012,7 @@ export class ChatSession {
 
   /** Line counts of the files this session edited, against the repository's last commit. */
   diffStats(): Promise<SessionDiffStats> {
-    return sessionDiffStats(this.owner.workspace, editedFiles(this.messages));
+    return sessionDiffStats(this.cwd, editedFiles(this.messages));
   }
 
   /**
@@ -929,9 +1035,12 @@ export class ChatSession {
     this.compaction = compaction;
     this.emit({ type: "compaction-start", compactionId: compaction.id });
     this.emitSession();
-    this.turnDone = this.runCompaction(compaction, model, host.compact.bind(host), trigger).catch(
-      () => {},
-    );
+    this.turnDone = this.runCompaction(
+      compaction,
+      this.runModel(model),
+      host.compact.bind(host),
+      trigger,
+    ).catch(() => {});
     return { compactionId: compaction.id };
   }
 
@@ -1172,9 +1281,7 @@ export class ChatSession {
       return "cancel";
     }
     // The plan file may have been edited during the review; carry out what it says now.
-    const latest = await readFile(join(this.owner.workspace, planFile), "utf-8").catch(
-      () => content,
-    );
+    const latest = await readFile(join(this.cwd, planFile), "utf-8").catch(() => content);
     this.planFollowUp = { action: value.action, plan, content: latest };
     // The plan runs in a turn of its own, outside plan mode, so this one stops here.
     this.turn?.abort.abort();
@@ -1183,7 +1290,7 @@ export class ChatSession {
 
   private approvalCallbacks(): Omit<
     TurnAgentRequest,
-    "sessionId" | "modelId" | "mode" | "effort" | "planExecution"
+    "sessionId" | "cwd" | "modelId" | "mode" | "effort" | "permissions" | "planExecution"
   > {
     const approve = async (body: PromptBody): Promise<boolean> => (await this.ask(body)) === true;
     const callbacks: InteractiveCallbacks = {
@@ -1253,6 +1360,7 @@ export class ChatSession {
       try {
         const expanded = await host.expandInput({
           sessionId: this.meta.id,
+          cwd: this.cwd,
           mode: this.mode,
           text,
           onApproveDestructive: this.approvalCallbacks().onApproveDestructive,
@@ -1345,25 +1453,22 @@ export class ChatSession {
     try {
       if (staleRedo)
         this.setTab({
-          checkpointTags: await dropRedoTags(this.owner.workspace, before, this.checkpointTags),
+          checkpointTags: await dropRedoTags(this.cwd, before, this.checkpointTags),
         });
-      const base = await ensureBaseSnapshot(
-        this.owner.workspace,
-        this.tagOwner,
-        before,
-        this.checkpointTags,
-      );
+      const base = await ensureBaseSnapshot(this.cwd, this.tagOwner, before, this.checkpointTags);
       if (base) this.addCheckpointTag(base);
-      const model = this.model;
-      if (!model) throw new Error("No model configured");
+      if (!this.model) throw new Error("No model configured");
       if (blockedBy) throw new Error(`A UserPromptSubmit hook blocked the prompt: ${blockedBy}`);
+      const model = this.runModel(this.model);
       // A `!` command that did not run leaves nothing to answer.
       if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
         sessionId: this.meta.id,
+        cwd: this.cwd,
         modelId: model,
         mode: this.mode,
         effort: this.effort,
+        permissions: this.permissions,
         planExecution,
         ...(this.isCoordinator
           ? { coordinator: true, tools: this.owner.coordinatorTools(this) }
@@ -1536,7 +1641,7 @@ export class ChatSession {
         : null;
     if (assistant) this.messages = [...this.messages, assistant];
     if (assistant && extractFilesFromToolCalls(assistant).edited.length > 0) {
-      const tag = await snapshotTurnEnd(this.owner.workspace, this.tagOwner, this.messages, text);
+      const tag = await snapshotTurnEnd(this.cwd, this.tagOwner, this.messages, text);
       if (tag) this.addCheckpointTag(tag);
     }
     this.usage = {
@@ -1655,6 +1760,8 @@ export class ChatSession {
       activeModel: this.model ?? "none",
       bakeMode: this.mode,
       effort: this.effort,
+      permissionMode: this.permissions,
+      contextSize: this.contextSize === "default" ? undefined : this.contextSize,
       planMode: this.mode === "plan",
       tokenUsage: {
         ...this.tab.tokenUsage,
@@ -1733,6 +1840,7 @@ export class ChatService {
   private projectState: ProjectStateSource | null = null;
   private launcher: ProjectLauncher | null = null;
   private watch: ReturnType<typeof setInterval> | null = null;
+  private scheduleTimer: ReturnType<typeof setInterval> | null = null;
   private syncing = false;
   /** Run requests the approval rules already tried to answer. */
   private readonly ruleTried = new Set<string>();
@@ -1749,10 +1857,41 @@ export class ChatService {
     this.projectState = source;
     this.launcher = launcher;
     if (this.watch) clearInterval(this.watch);
+    if (this.scheduleTimer) clearInterval(this.scheduleTimer);
     this.watch = null;
+    this.scheduleTimer = null;
     if (watchMs > 0) {
       this.watch = setInterval(() => void this.syncLaunched(), watchMs);
       this.watch.unref?.();
+      // A schedule missed while nothing ran fires once now.
+      setTimeout(() => void this.fireSchedules(), 0).unref?.();
+      this.scheduleTimer = setInterval(() => void this.fireSchedules(), SCHEDULE_TICK_MS);
+      this.scheduleTimer.unref?.();
+    }
+  }
+
+  /**
+   * Starts a coordinator turn for every schedule due at `now`; returns the schedules fired. A
+   * schedule that cannot start its turn leaves a note in the coordinator's chat.
+   */
+  async fireSchedules(now = Date.now()): Promise<Schedule[]> {
+    if (this.closed) return [];
+    try {
+      const coordinator = await this.coordinator(false);
+      if (!coordinator) return [];
+      const due = new ScheduleStore(this.workspace, coordinator.id).claimDue(now);
+      for (const schedule of due)
+        try {
+          coordinator.sendScheduled(schedule);
+        } catch (err) {
+          await coordinator.addNotice(
+            `Schedule "${schedule.name}" could not start a turn: ${errorText(err)}`,
+          );
+        }
+      return due;
+    } catch (err) {
+      logBackgroundError("chat:coordinator-schedules", errorText(err));
+      return [];
     }
   }
 
@@ -1783,12 +1922,7 @@ export class ChatService {
             coordinator.wake(notes.map(wakeLine));
         },
       );
-      const launched = this.launched(coordinator.id);
-      const sent = JSON.stringify(launched);
-      if (sent !== this.launchedSent) {
-        this.launchedSent = sent;
-        coordinator.emitLaunched(launched);
-      }
+      this.publishLaunched(coordinator);
       return notices;
     } catch (err) {
       logBackgroundError("chat:coordinator-sync", errorText(err));
@@ -1796,6 +1930,15 @@ export class ChatService {
     } finally {
       this.syncing = false;
     }
+  }
+
+  /** Sends the coordinator's launched view as a `launched` event when it changed since the last one. */
+  private publishLaunched(coordinator: ChatSession): void {
+    const launched = this.launched(coordinator.id);
+    const sent = JSON.stringify(launched);
+    if (sent === this.launchedSent) return;
+    this.launchedSent = sent;
+    coordinator.emitLaunched(launched);
   }
 
   /** What the coordinator `coordinatorId` launched, with live status and tokens. */
@@ -1814,6 +1957,9 @@ export class ChatService {
     };
     return {
       [STATE_TOOL]: stateTool(this.projectState, sessions),
+      [SCHEDULE_TOOL]: scheduleTool(new ScheduleStore(this.workspace, coordinator.id), (text) =>
+        coordinator.confirm(text),
+      ),
       ...launchTools(
         this,
         coordinator,
@@ -1822,6 +1968,7 @@ export class ChatService {
         coordinatorLimits(this.options.config),
         this.workflowCatalog(),
       ),
+      ...controlTools(this, coordinator, this.projectState, this.launcher),
     };
   }
 
@@ -1833,6 +1980,19 @@ export class ChatService {
       list: () => projectDefinitions(workspace, config),
       propose: (request) => proposeForWorkspace(workspace, config, request),
     };
+  }
+
+  /** Stops an item the coordinator launched; `POST /v1/coordinator/launched/stop`. */
+  async stopLaunched(coordinatorId: string, ref: LaunchedRef): Promise<string> {
+    const message = await stopLaunched(this, coordinatorId, this.projectState, this.launcher, ref);
+    await this.syncLaunched();
+    return message;
+  }
+
+  /** Closes or reopens an item the coordinator launched; `POST /v1/coordinator/launched/close`. */
+  async closeLaunched(coordinatorId: string, ref: LaunchedRef, reopen = false): Promise<void> {
+    await closeLaunched(this, coordinatorId, this.projectState, ref, reopen);
+    this.publishLaunched(this.get(coordinatorId));
   }
 
   /** A coordinator thread's message tool and what it is told about its peers; none otherwise. */
@@ -1856,6 +2016,12 @@ export class ChatService {
     return this.options.config.compaction?.keepRecent ?? DEFAULT_COMPACTION_CONFIG.keepRecent ?? 4;
   }
 
+  /** The permission mode of new sessions, from `defaultPermissionMode`. */
+  get defaultPermissions(): PermissionMode {
+    const configured = this.options.config.defaultPermissionMode;
+    return isPermissionMode(configured) ? configured : DEFAULT_PERMISSION_MODE;
+  }
+
   get defaultModel(): string | null {
     const model = this.options.config.defaultModel;
     return model && model !== "none" ? model : null;
@@ -1864,7 +2030,7 @@ export class ChatService {
   list(limit = 50): SessionSummary[] {
     const summaries = new Map<string, SessionSummary>();
     for (const entry of this.store.listSessions()) {
-      if (entry.kind === "coordinator") continue;
+      if (entry.kind === "coordinator" || entry.archived) continue;
       summaries.set(entry.id, {
         id: entry.id,
         title: entry.title,
@@ -1877,11 +2043,19 @@ export class ChatService {
         model: null,
         mode: "default",
         effort: "default",
+        permissions: this.defaultPermissions,
+        contextSize: "default",
+        contextSizes: [],
+        contextTokens: null,
         compacting: false,
+        ...(entry.worktree ? { worktree: entry.worktree } : {}),
       });
     }
-    for (const session of this.live.values())
-      if (!session.isCoordinator) summaries.set(session.id, session.summary());
+    for (const session of this.live.values()) {
+      const summary = session.summary();
+      if (session.isCoordinator || summary.archived) summaries.delete(session.id);
+      else summaries.set(session.id, summary);
+    }
     return [...summaries.values()]
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, Math.max(1, limit));
@@ -1910,13 +2084,24 @@ export class ChatService {
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    permissions?: PermissionMode;
+    contextSize?: ChatContextSize;
     messages?: ChatMessage[];
     core?: ModelMessage[];
     kind?: "coordinator";
+    /** Work in a Git worktree of its own; refused with the reason when the project has none. */
+    worktree?: boolean;
     parentId?: string;
   }): Promise<ChatSession> {
     if (this.closed) throw new ChatError("SESSION_BUSY", "The server is shutting down");
     const id = crypto.randomUUID();
+    let worktree: SessionWorktree | null = null;
+    if (input.worktree) {
+      const created = await createSessionWorktree(this.options.workspace, id);
+      if ("unavailable" in created)
+        throw new ChatError("NOT_SUPPORTED", `No worktree for the session: ${created.unavailable}`);
+      worktree = created;
+    }
     const now = Date.now();
     const messages = input.messages ?? [];
     const meta: SessionMeta = {
@@ -1926,6 +2111,7 @@ export class ChatService {
       ...(input.kind ? { kind: input.kind } : {}),
       ...(input.parentId ? { parentId: input.parentId } : {}),
       cwd: this.options.workspace,
+      ...(worktree ? { worktree } : {}),
       startedAt: now,
       updatedAt: now,
       activeTabId: API_TAB,
@@ -1941,6 +2127,10 @@ export class ChatService {
           coAuthorCommits: false,
           bakeMode: input.mode ?? "default",
           ...(input.effort ? { effort: input.effort } : {}),
+          ...(input.permissions ? { permissionMode: input.permissions } : {}),
+          ...(input.contextSize && input.contextSize !== "default"
+            ? { contextSize: input.contextSize }
+            : {}),
           tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
           messageRange: { startLine: 0, endLine: messages.length },
         },
@@ -1996,6 +2186,8 @@ export class ChatService {
       ...(summary.model ? { model: summary.model } : {}),
       mode: summary.mode,
       effort: summary.effort,
+      permissions: summary.permissions,
+      contextSize: summary.contextSize,
       messages: point.messages.map((m) => ({ ...m })),
     });
     session.startSource = "fork";
@@ -2161,7 +2353,9 @@ export class ChatService {
   async shutdown(): Promise<void> {
     this.closed = true;
     if (this.watch) clearInterval(this.watch);
+    if (this.scheduleTimer) clearInterval(this.scheduleTimer);
     this.watch = null;
+    this.scheduleTimer = null;
     this.stopWatch();
     const sessions = [...this.live.values()];
     for (const session of sessions) session.interrupt();

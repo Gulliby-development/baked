@@ -12,6 +12,9 @@ test("opening a project starts its backend and shows the project home", async ({
   await expect(card).toContainText("closed");
   await card.getByRole("button", { name: "Open" }).click();
   // The home loaded through preload IPC, the main process and the backend's bearer token.
+  // A project opens on its coordinator; Overview is the next item.
+  await expect(page.getByRole("heading", { name: "Coordinator", level: 1 })).toBeVisible();
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Overview" }).click();
   await expect(page.getByRole("heading", { name: "alpha", level: 1 })).toBeVisible();
   await expect(page.getByText("running · 9.9.9")).toBeVisible();
 

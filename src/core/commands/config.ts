@@ -2,9 +2,17 @@ import type { ConfigScope } from "../../components/layout/shared.js";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../../config/index.js";
 import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
-import type { AgentFeatures, AppConfig, ChatEffort } from "../../types/index.js";
+import type {
+  AgentFeatures,
+  AppConfig,
+  ChatContextSize,
+  ChatEffort,
+  PermissionMode,
+} from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { icon } from "../icons.js";
+import { chatContextTokens, getModelContextSizes, parseContextSize } from "../llm/context-sizes.js";
+import { formatContext } from "../llm/model-choices.js";
 import { CHAT_EFFORTS, getModelEffortLevels } from "../llm/provider-options.js";
 import {
   applyNotificationsChange,
@@ -13,6 +21,11 @@ import {
   parseNotificationsArgs,
   parseOnOff,
 } from "../notification-settings.js";
+import {
+  isPermissionMode,
+  PERMISSION_LABELS,
+  PERMISSION_MODES,
+} from "../security/permission-mode.js";
 import {
   formatSandboxStatus,
   isSandboxMode,
@@ -113,6 +126,13 @@ function handleMode(input: string, ctx: CommandContext): void {
   const patch = (v: string) => ({ defaultBakeMode: v as Mode });
 
   const applyMode = (mode: Mode, scope?: ConfigScope) => {
+    if (mode === "auto") {
+      // The old auto mode is the default mode with full access; /permissions sets it now.
+      ctx.setBakeMode("default");
+      ctx.setPermissionMode("full");
+      sysMsg(ctx, "Baked mode set to: default with full access (see /permissions)");
+      return;
+    }
     ctx.setBakeMode(mode);
     ctx.saveToScope(patch(mode), scope ?? "project");
     sysMsg(ctx, `Baked mode set to: ${mode} (${scope ?? "project"})`);
@@ -122,7 +142,7 @@ function handleMode(input: string, ctx: CommandContext): void {
   if (matched) {
     applyMode(matched);
   } else if (modeName && !matched) {
-    sysMsg(ctx, `Unknown mode: ${modeName}. Available: default, architect, plan, auto`);
+    sysMsg(ctx, `Unknown mode: ${modeName}. Available: default, architect, plan`);
   } else {
     ctx.openCommandPicker({
       title: "Baked Mode",
@@ -149,12 +169,6 @@ function handleMode(input: string, ctx: CommandContext): void {
           description: "research & plan only — no file edits or shell",
           color: getThemeTokens().info,
         },
-        {
-          value: "auto",
-          label: "Auto",
-          description: "autonomous execution — minimal questions, action over planning",
-          color: getThemeTokens().success,
-        },
       ],
       onSelect: (value, scope) => applyMode(value as Mode, scope),
       onScopeMove: (value, from, to) => {
@@ -163,6 +177,67 @@ function handleMode(input: string, ctx: CommandContext): void {
       },
     });
   }
+}
+
+/** Full access was confirmed once in this process; later switches to it do not ask again. */
+let fullAccessConfirmed = false;
+
+/** `/permissions [manual|auto|full]`: how much this tab's turns run without asking. */
+function handlePermissions(input: string, ctx: CommandContext): void {
+  const arg = input.trim().slice("/permissions".length).trim().toLowerCase();
+  const apply = (mode: PermissionMode) => {
+    ctx.setPermissionMode(mode);
+    sysMsg(
+      ctx,
+      `Permissions for this chat: ${PERMISSION_LABELS[mode].name}. ${PERMISSION_LABELS[mode].detail}`,
+    );
+  };
+  const choose = (mode: PermissionMode) => {
+    if (mode !== "full" || fullAccessConfirmed) {
+      apply(mode);
+      return;
+    }
+    ctx.openCommandPicker({
+      title: "Allow everything without asking?",
+      icon: icon("warning"),
+      options: [
+        {
+          value: "yes",
+          label: "Yes, give full access",
+          description: "edits, commands, git and web run without a prompt, destructive ones too",
+          color: getThemeTokens().error,
+        },
+        { value: "no", label: "Cancel", description: "keep the current permissions" },
+      ],
+      onSelect: (value) => {
+        if (value !== "yes") return;
+        fullAccessConfirmed = true;
+        apply("full");
+      },
+    });
+  };
+  if (arg) {
+    if (isPermissionMode(arg)) choose(arg);
+    else sysMsg(ctx, `Unknown permission mode: ${arg}. Available: ${PERMISSION_MODES.join(", ")}`);
+    return;
+  }
+  const colors: Record<PermissionMode, string> = {
+    manual: getThemeTokens().info,
+    auto: getThemeTokens().textSecondary,
+    full: getThemeTokens().error,
+  };
+  ctx.openCommandPicker({
+    title: "Permissions",
+    icon: icon("lock"),
+    currentValue: ctx.currentPermissionMode,
+    options: PERMISSION_MODES.map((value) => ({
+      value,
+      label: PERMISSION_LABELS[value].name,
+      description: PERMISSION_LABELS[value].detail,
+      color: colors[value],
+    })),
+    onSelect: (value) => choose(value as PermissionMode),
+  });
 }
 
 const EFFORT_DESCRIPTIONS: Record<ChatEffort, string> = {
@@ -209,6 +284,60 @@ function handleEffort(input: string, ctx: CommandContext): void {
       description: EFFORT_DESCRIPTIONS[value],
     })),
     onSelect: (value) => apply(value as ChatEffort),
+  });
+}
+
+/** `/context-size [size]`: the context window of this tab's turns, when the model offers several. */
+function handleContextSize(input: string, ctx: CommandContext): void {
+  const arg = input.trim().slice("/context-size".length).trim();
+  const model = ctx.chat.activeModel;
+  const sizes = getModelContextSizes(model);
+  const label = (size: ChatContextSize): string =>
+    size === "default" || size === "max" ? size : (formatContext(size) ?? String(size));
+  const apply = (size: ChatContextSize) => {
+    ctx.setContextSize(size);
+    const tokens = chatContextTokens(model, size);
+    sysMsg(
+      ctx,
+      tokens === null
+        ? `Context size for this chat: ${label(size)}. ${model} has one context window, so it runs as is`
+        : `Context size for this chat: ${label(size)} (${formatContext(tokens)} with ${model})`,
+    );
+  };
+  if (arg) {
+    const parsed = parseContextSize(arg);
+    if (parsed !== null) apply(parsed);
+    else
+      sysMsg(
+        ctx,
+        `Unknown context size: ${arg}. Use default, max or a size such as ${sizes.map((t) => formatContext(t)).join(", ") || "200k"}`,
+      );
+    return;
+  }
+  const current = ctx.chat.contextSize;
+  if (sizes.length === 0) {
+    sysMsg(ctx, `${model} has one context window; there is no size to pick.`);
+    return;
+  }
+  const currentTokens = chatContextTokens(model, current);
+  ctx.openCommandPicker({
+    title: "Context Size",
+    icon: icon("ai"),
+    currentValue: current === "default" ? "default" : String(currentTokens),
+    options: [
+      {
+        value: "default",
+        label: "Default",
+        description: `the model's own window (${formatContext(chatContextTokens(model, "default") ?? undefined)})`,
+      },
+      ...sizes.map((tokens) => ({
+        value: String(tokens),
+        label: formatContext(tokens) ?? String(tokens),
+        description:
+          tokens === sizes.at(-1) ? "the largest window, more tokens per turn" : "smaller window",
+      })),
+    ],
+    onSelect: (value) => apply(value === "default" ? "default" : Number(value)),
   });
 }
 
@@ -735,7 +864,7 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
   });
 }
 
-async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
+export async function handleInstructions(input: string, ctx: CommandContext): Promise<void> {
   const [sub = "", ...rest] = input.trim().split(/\s+/).slice(1);
   const arg = rest.join(" ");
   if (sub === "files") return openInstructionFiles(ctx);
@@ -880,7 +1009,7 @@ async function showInstructionFile(ctx: CommandContext, path: string): Promise<v
   });
 }
 
-async function editInstruction(ctx: CommandContext, path: string): Promise<void> {
+export async function editInstruction(ctx: CommandContext, path: string): Promise<void> {
   const { editInstructionFile } = await import("../instruction-files.js");
   const { buildInstructionPrompt, loadInstructions } = await import("../instructions.js");
   const result = await editInstructionFile(ctx.cwd, ctx.instructionFiles, path);
@@ -1378,6 +1507,8 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/chat-style", handleChatStyle);
   map.set("/mode", handleMode);
   map.set("/effort", handleEffort);
+  map.set("/permissions", handlePermissions);
+  map.set("/context-size", handleContextSize);
   map.set("/verbose", handleVerbose);
   map.set("/reasoning", handleReasoning);
   map.set("/motion", handleMotion);
@@ -1404,6 +1535,8 @@ export function matchConfigPrefix(cmd: string): CommandHandler | null {
   if (cmd === "/chat-style" || cmd.startsWith("/chat-style ")) return handleChatStyle;
   if (cmd === "/mode" || cmd.startsWith("/mode ")) return handleMode;
   if (cmd.startsWith("/effort ")) return handleEffort;
+  if (cmd.startsWith("/permissions ")) return handlePermissions;
+  if (cmd.startsWith("/context-size ")) return handleContextSize;
   if (cmd === "/theme" || cmd.startsWith("/theme ")) return handleTheme;
   if (cmd.startsWith("/telemetry ")) return handleTelemetry;
   if (cmd.startsWith("/sandbox ")) return handleSandbox;

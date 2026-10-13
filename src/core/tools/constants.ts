@@ -85,6 +85,27 @@ export const RESTRICTED_TOOL_NAMES: string[] = [
  */
 export const RESTRICTED_TOOL_ACTIONS: Readonly<Record<string, readonly string[]>> = {
   artifact: ["list", "read"],
+  git: ["status", "diff", "log", "show", "blame", "branch", "stash"],
+};
+
+/** Git flags that write files or run programs, which a read-only git call must not pass. */
+const GIT_WRITING_FLAG = /^--?(output|ext-diff|textconv|exec|upload-pack)\b|^-o/;
+
+/**
+ * Further checks on the input of an allowed read-only action: git's branch and stash only list or
+ * show, and no git call passes a flag that writes a file or runs a program.
+ */
+export const RESTRICTED_TOOL_INPUTS: Readonly<
+  Record<string, (input: Record<string, unknown>) => boolean>
+> = {
+  git: (input) => {
+    const flags = Array.isArray(input.flags) ? input.flags : [];
+    if (flags.some((flag) => typeof flag !== "string" || GIT_WRITING_FLAG.test(flag))) return false;
+    const sub = input.sub_action;
+    if (input.action === "branch") return sub === undefined || sub === null || sub === "list";
+    if (input.action === "stash") return sub === "list" || sub === "show";
+    return true;
+  },
 };
 
 /** Tools available during plan execution.

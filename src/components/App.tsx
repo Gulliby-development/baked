@@ -21,6 +21,8 @@ import { endAllSessionHooks, endSessionHooks, startSessionHooks } from "../core/
 import { providerIcon, UI_ICONS } from "../core/icons.js";
 import { runIntelligenceHealthCheck } from "../core/intelligence/index.js";
 import { IndexRefresher } from "../core/intelligence/index-refresh.js";
+import { chatContextTokens } from "../core/llm/context-sizes.js";
+import { formatContext } from "../core/llm/model-choices.js";
 import {
   fetchGroupedModels,
   fetchProviderModels,
@@ -32,6 +34,7 @@ import { soleReadyModel } from "../core/llm/ready-model.js";
 import { disposeMCPManager, getMCPManager } from "../core/mcp/index.js";
 import { projectSwitchArgs } from "../core/restart.js";
 import { initForbidden } from "../core/security/forbidden.js";
+import { DEFAULT_PERMISSION_MODE } from "../core/security/permission-mode.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { getMissingRequired } from "../core/setup/prerequisites.js";
 import { useTheme } from "../core/theme/index.js";
@@ -69,7 +72,14 @@ import { startMemoryPoll } from "../stores/statusbar.js";
 import { useToolsStore } from "../stores/tools.js";
 import { type ModalName, selectIsAnyModalOpen, useUIStore } from "../stores/ui.js";
 import { useWatchStore } from "../stores/watch.js";
-import type { AppConfig, ChatEffort, ChatMessage, TaskRouter } from "../types/index.js";
+import type {
+  AppConfig,
+  ChatContextSize,
+  ChatEffort,
+  ChatMessage,
+  PermissionMode,
+  TaskRouter,
+} from "../types/index.js";
 import { copyOsc52, copyToClipboard as nativeCopyToClipboard } from "../utils/clipboard.js";
 import { artText } from "./brand/artText.js";
 import { CoordinatorView } from "./coordinator/CoordinatorView.js";
@@ -227,6 +237,8 @@ interface Props {
   projectConfig?: Partial<AppConfig> | null;
   resumeSessionId?: string;
   forceWizard?: boolean;
+  /** Open the coordinator on start: a project opens on its coordinator. */
+  startOnCoordinator?: boolean;
   bootProviders: ProviderStatus[];
   bootPrereqs: PrerequisiteStatus[];
   preloadedContextManager?: ContextManager;
@@ -268,6 +280,7 @@ export function App({
   projectConfig,
   resumeSessionId,
   forceWizard,
+  startOnCoordinator,
   bootProviders,
   bootPrereqs,
   preloadedContextManager,
@@ -464,8 +477,10 @@ export function App({
       useUIStore.getState().openModal("setup");
     } else if (forceWizard || (!config.onboardingComplete && !resumeSessionId)) {
       useUIStore.getState().openModal("firstRunWizard");
+    } else if (startOnCoordinator) {
+      useUIStore.getState().openModal("coordinator");
     }
-  }, [config.onboardingComplete, forceWizard, resumeSessionId]);
+  }, [config.onboardingComplete, forceWizard, resumeSessionId, startOnCoordinator]);
 
   const cwd = getCwd();
 
@@ -662,6 +677,8 @@ export function App({
                 coAuthorCommits: chat.coAuthorCommits,
                 bakeMode: chat.bakeMode,
                 effort: chat.effort,
+                permissionMode: chat.permissionMode,
+                contextSize: chat.contextSize,
                 tokenUsage: chat.tokenUsage,
                 messages: filtered,
                 coreMessages: chat.coreMessages,
@@ -776,6 +793,13 @@ export function App({
 
   const [activeModelForHeader, setActiveModelForHeader] = useState(effectiveConfig.defaultModel);
   const [effortHeader, setEffortHeader] = useState<ChatEffort>("default");
+  const [permissionHeader, setPermissionHeader] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE);
+  const [contextSizeHeader, setContextSizeHeader] = useState<ChatContextSize>("default");
+  // A chosen context size shows next to the model when the model offers several.
+  const contextSizeLabel =
+    contextSizeHeader === "default"
+      ? undefined
+      : formatContext(chatContextTokens(activeModelForHeader, contextSizeHeader) ?? undefined);
   const activeChatRef = useRef<ChatInstance | null>(null);
   // The coordinator's new runs use the model the current tab uses.
   const coordinatorModelRef = useRef(activeModelForHeader);
@@ -792,6 +816,8 @@ export function App({
       setActiveModelForHeader(chat.activeModel);
       setBakeModeHeader(chat.bakeMode);
       setEffortHeader(chat.effort);
+      setPermissionHeader(chat.permissionMode);
+      setContextSizeHeader(chat.contextSize);
       const hasContent = chat.messages.some(
         (m: ChatMessage) => m.role === "user" || m.role === "assistant",
       );
@@ -889,6 +915,8 @@ export function App({
               coAuthorCommits: chat.coAuthorCommits,
               bakeMode: chat.bakeMode,
               effort: chat.effort,
+              permissionMode: chat.permissionMode,
+              contextSize: chat.contextSize,
               tokenUsage: chat.tokenUsage,
               messages: filtered,
               coreMessages: chat.coreMessages,
@@ -1011,6 +1039,8 @@ export function App({
             coAuthorCommits: chat.coAuthorCommits,
             bakeMode: chat.bakeMode,
             effort: chat.effort,
+            permissionMode: chat.permissionMode,
+            contextSize: chat.contextSize,
             tokenUsage: chat.tokenUsage,
             messages: filtered,
             coreMessages: chat.coreMessages,
@@ -1120,6 +1150,15 @@ export function App({
         setEffort: (effort: ChatEffort) => {
           chat.setEffort(effort);
           setEffortHeader(effort);
+        },
+        setPermissionMode: (mode: PermissionMode) => {
+          chat.setPermissionMode(mode);
+          setPermissionHeader(mode);
+        },
+        currentPermissionMode: chat.permissionMode,
+        setContextSize: (size: ChatContextSize) => {
+          chat.setContextSize(size);
+          setContextSizeHeader(size);
         },
         currentMode: chat.bakeMode,
         currentModeLabel: getModeLabel(chat.bakeMode),
@@ -1270,6 +1309,7 @@ export function App({
             )}
             <span fg={t.textSecondary}>{truncate(displayModel, compactLayout ? 16 : 28)}</span>
             {effortHeader !== "default" && <span fg={t.textMuted}> · {effortHeader}</span>}
+            {contextSizeLabel && <span fg={t.textMuted}> · {contextSizeLabel}</span>}
           </text>
           {!compactLayout && <ProjectIndicator cwd={cwd} compact={termWidth < 120} />}
           {git.isRepo && !compactLayout && (
@@ -1284,6 +1324,14 @@ export function App({
           <text wrapMode="none" flexShrink={0}>
             <Chip label={modeLabel.toUpperCase()} fill={modeColor} />
           </text>
+          {permissionHeader !== "auto" && (
+            <text wrapMode="none" flexShrink={0}>
+              <Chip
+                label={permissionHeader === "full" ? "FULL ACCESS" : "MANUAL"}
+                fill={permissionHeader === "full" ? t.error : t.info}
+              />
+            </text>
+          )}
           {watching && (
             <text wrapMode="none" flexShrink={0}>
               <Chip label="WATCHING" fill={t.info} />

@@ -193,6 +193,41 @@ describe("local API chat sessions", () => {
     expect(plain.effort).toBe("default");
   });
 
+  test("a session's context size picks the model variant; the coordinator takes the largest", async () => {
+    const { host, chat, send, post, detail } = await setup();
+    const created = await post("/v1/sessions", { text: "Hello", model: "claude-code/opus" });
+    const session = (await created.json()) as SessionDetail;
+    expect(session).toMatchObject({
+      contextSize: "default",
+      contextSizes: [200_000, 1_000_000],
+      contextTokens: 200_000,
+    });
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 2);
+    expect(host.seen.at(-1)?.modelId).toBe("claude-code/opus");
+
+    const patched = await send("PATCH", `/v1/sessions/${session.id}`, { contextSize: 1_000_000 });
+    expect(await patched.json()).toMatchObject({ contextSize: 1_000_000, contextTokens: 1_000_000 });
+    expect((await send("PATCH", `/v1/sessions/${session.id}`, { contextSize: "huge" })).status).toBe(400);
+    await post(`/v1/sessions/${session.id}/messages`, { text: "Again" });
+    await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
+    expect(host.seen.at(-1)?.modelId).toBe("claude-code/opus[1m]");
+
+    // A model with one window runs as chosen and shows no sizes.
+    const plain = (await (await post("/v1/sessions", { contextSize: "max" })).json()) as SessionDetail;
+    expect(plain).toMatchObject({ contextSize: "max", contextSizes: [], contextTokens: null });
+
+    const coordinator = await chat.create({ model: "claude-code/sonnet", kind: "coordinator" });
+    expect(coordinator.summary()).toMatchObject({ contextSize: "default", contextTokens: 1_000_000 });
+    coordinator.send("Plan the week");
+    await until(
+      async () => coordinator.detail(),
+      (d) => d.state === "idle" && d.messages.length === 2,
+    );
+    expect(host.seen.at(-1)?.modelId).toBe("claude-code/sonnet[1m]");
+    coordinator.update({ contextSize: 200_000 });
+    expect(coordinator.summary().contextTokens).toBe(200_000);
+  });
+
   test("mentions answers with the host's @ completions", async () => {
     const { host, call } = await setup();
     const asked: string[] = [];
@@ -437,12 +472,18 @@ describe("local API chat sessions", () => {
       model: "anthropic/claude-test",
       mode: "auto",
     });
-    expect(await patched.json()).toMatchObject({ title: "Renamed", model: "anthropic/claude-test", mode: "auto" });
+    // The legacy auto mode is stored as the default mode with full access.
+    expect(await patched.json()).toMatchObject({
+      title: "Renamed",
+      model: "anthropic/claude-test",
+      mode: "default",
+      permissions: "full",
+    });
     expect((await send("PATCH", `/v1/sessions/${session.id}`, { mode: "review" })).status).toBe(400);
     expect((await send("PATCH", `/v1/sessions/${session.id}`, {})).status).toBe(400);
     await post(`/v1/sessions/${session.id}/messages`, { text: "Again" });
     await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
-    expect(host.seen.at(-1)).toMatchObject({ modelId: "anthropic/claude-test", mode: "auto" });
+    expect(host.seen.at(-1)).toMatchObject({ modelId: "anthropic/claude-test", mode: "default" });
 
     const forked = await post(`/v1/sessions/${session.id}/fork`, { atMessageId: first.messages[1]?.id });
     expect(forked.status).toBe(201);
@@ -458,7 +499,12 @@ describe("local API chat sessions", () => {
       (meta) => meta?.customTitle === "Renamed" && meta.tabs.some((tab) => tab.messageRange.endLine === 4),
     );
     const reloaded = new ChatService({ workspace: fixture.root, config: fixture.service.config, host });
-    expect(reloaded.get(session.id).summary()).toMatchObject({ title: "Renamed", model: "anthropic/claude-test", mode: "auto" });
+    expect(reloaded.get(session.id).summary()).toMatchObject({
+      title: "Renamed",
+      model: "anthropic/claude-test",
+      mode: "default",
+      permissions: "full",
+    });
 
     expect((await call(`/v1/sessions/${fork.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await call(`/v1/sessions/${fork.id}`)).status).toBe(404);

@@ -60,5 +60,6 @@ describe("an attempt stopped at its token cap (#935)", () => {
     const done = await driveUntilStopped(fixture, run.runId);
     expect(done.status).toBe("completed");
     expect(fixture.executor.calls.filter((c) => c === "implementation")).toHaveLength(2);
-  });
+    // Two full runs through the fixture's git worktrees: Windows needs well over the 30s default.
+  }, 60000);
 });

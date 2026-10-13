@@ -256,14 +256,49 @@ const isCommandEntry = (path: string): boolean =>
 const RUNS_PROGRAM =
   /\b(?:run|runs|running|execute|executing|invoke|invoking|capture|captured|capturing)\b[^.]*\b(?:command|cli|tool|program|binary|output)\b|\b(?:example|sample|captured|actual|real|worked)[- ](?:output|session|run|example)s?\b/i;
 
+/** Prose files a documentation task writes beside its docs: a licence, a notice, the authors. */
+const PROSE_FILE = /(?:^|\/)(?:LICEN[CS]E|COPYING|NOTICE|AUTHORS)(?:[.-][\w.-]+)?$/i;
+const isProse = (path: string): boolean => fileKind(path) === "docs" || PROSE_FILE.test(path);
+
+/** Whether every file a task writes is documentation (a licence or notice beside it included). */
+export function writesOnlyDocs(task: Pick<Task, "writes">): boolean {
+  const files = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+  return files.length > 0 && files.every(isProse);
+}
+
+/** Criterion or requirement text that asks the documentation to show what the program prints. */
+const SHOWS_OUTPUT =
+  /\b(?:example|sample|worked|expected|actual|real|captured)[- ](?:output|block|session|run|example|invocation)s?\b|\boutput\b[^.]*\b(?:copied|pasted|captured|shown|printed|reproduced)\b|\b(?:copied|pasted|captured|shown|printed|reproduced)\b[^.]*\boutput\b|```/i;
+
+/** What a task asks for: its own text, its read hints, and the requirements and criteria it covers. */
+function taskAsk(task: TaskGraph["tasks"][number], spec?: Pick<Spec, "requirements" | "criteria">) {
+  const criteria = (spec?.criteria ?? [])
+    .filter((c) => task.criterionIds.includes(c.id))
+    .map((c) => `${c.given}. ${c.when}. ${c.then}`);
+  const requirements = (spec?.requirements ?? [])
+    .filter((r) => task.requirementIds.includes(r.id))
+    .map((r) => r.text);
+  return {
+    own: `${task.title}\n${task.description}\n${task.readHints.join("\n")}`,
+    covered: [...criteria, ...requirements].join("\n"),
+  };
+}
+
 /**
  * A documentation task that runs the program to capture its output waits for the tasks that
  * write the program's entry points. Planners gave such a README no dependency, so it ran in the
  * first wave, found no command in its worktree and blocked the run, and the retry wrote the
- * output without running anything (bench round 12, cfgtrace 4018a791: 0.70M and one resume). A
- * dependency that would close a cycle is not added.
+ * output without running anything (bench round 12, cfgtrace 4018a791: 0.70M and one resume). The
+ * ask is read from the task's text and read hints and from the criteria and requirements it
+ * covers, and a licence beside the README keeps it a documentation task: "Write README and MIT
+ * license" whose AC-009 asks for the reference example's output got no edge (round 16, cfgtrace
+ * 49dbf63b and logclump 6d6d1350). A dependency that would close a
+ * cycle is not added.
  */
-export function withCommandDependencies(graph: TaskGraph): TaskGraph {
+export function withCommandDependencies(
+  graph: TaskGraph,
+  spec?: Pick<Spec, "requirements" | "criteria">,
+): TaskGraph {
   const deps = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
   const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
     if (from === to) return true;
@@ -272,9 +307,14 @@ export function withCommandDependencies(graph: TaskGraph): TaskGraph {
     return (deps.get(from) ?? []).some((id) => reaches(id, to, seen));
   };
   for (const task of graph.tasks) {
-    const files = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
-    if (!files.length || !files.every((path) => fileKind(path) === "docs")) continue;
-    if (!RUNS_PROGRAM.test(`${task.title}\n${task.description}`)) continue;
+    if (!writesOnlyDocs(task)) continue;
+    const ask = taskAsk(task, spec);
+    if (
+      !RUNS_PROGRAM.test(ask.own) &&
+      !SHOWS_OUTPUT.test(ask.own) &&
+      !SHOWS_OUTPUT.test(ask.covered)
+    )
+      continue;
     for (const other of graph.tasks) {
       if (other.id === task.id || reaches(task.id, other.id) || reaches(other.id, task.id))
         continue;

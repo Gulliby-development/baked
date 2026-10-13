@@ -49,6 +49,49 @@ export function passedOutputNote(output: string, exitCode: number | null): strin
   return `Note: the command exited with code ${exitCode} although its output reports every test passing. Something the tests ran left a nonzero exit code in the test process, for example code that sets \`process.exitCode\` or calls \`process.exit\` when called in-process. Fix that (run such code in a child process, or restore the exit code in the test) instead of the assertions.`;
 }
 
+/** Characters of a check's output a tool result carries to the model (#993). */
+export const MODEL_OUTPUT_LIMIT = 40_000;
+const OUTPUT_HEAD = 4_000;
+const OUTPUT_TAIL = 32_000;
+const FAILED_TEST_LINE =
+  /^\s*(?:FAILED\b|ERROR\b|\(fail\)|--- FAIL|not ok\b|[✗✕✘×]\s)|\.\.\. FAILED\s*$/;
+const FAILED_TEST_LINES = 40;
+
+/**
+ * The output of a check as a tool result shows it to the model: whole up to `MODEL_OUTPUT_LIMIT`,
+ * otherwise its start, the lines naming failed tests and its end. Bench round 17 (expenses-py
+ * T007): a failing pytest printed a 2 MB diff of a generated CSV, the tool result carried all of
+ * it, and the codex app-server rejected the next call (`input_too_large`) twice. The full output
+ * stays in the check's evidence.
+ */
+export function modelCheckOutput(
+  output: string,
+  evidenceId?: string,
+): { output: string; truncated?: true; outputChars?: number } {
+  if (output.length <= MODEL_OUTPUT_LIMIT) return { output };
+  const middle = output.slice(OUTPUT_HEAD, output.length - OUTPUT_TAIL);
+  const failed = [
+    ...new Set(
+      middle
+        .split("\n")
+        .filter((line) => FAILED_TEST_LINE.test(line))
+        .map((line) => line.trimEnd().slice(0, 300)),
+    ),
+  ].slice(0, FAILED_TEST_LINES);
+  const where = evidenceId ? ` The full output is in evidence ${evidenceId}.` : "";
+  return {
+    output: [
+      output.slice(0, OUTPUT_HEAD),
+      `\n[... ${String(middle.length)} characters of output left out.${where}${failed.length ? " Lines naming failed tests in that part:" : ""}]`,
+      ...failed,
+      "[...]\n",
+      output.slice(output.length - OUTPUT_TAIL),
+    ].join("\n"),
+    truncated: true,
+    outputChars: output.length,
+  };
+}
+
 export class CheckRunner {
   constructor(
     private store: WorkflowStore,
@@ -240,6 +283,9 @@ export class CheckRunner {
         output: `${result.output}\n\n${report ? renderGateReport(report) : MISSING_GATE_REPORT}`,
       };
     }
+    // `output` already holds stdout and stderr interleaved; storing them again tripled a 2 MB
+    // pytest diff in one artifact (#993).
+    const { stdout: _stdout, stderr: _stderr, ...recorded } = result;
     const evidenceId = this.store.transaction(() => {
       this.store.effectStatus(runId, effectId, "reconciled");
       const artifact = this.store.artifact(
@@ -252,7 +298,7 @@ export class CheckRunner {
           beforeHash: snapshot.hash,
           afterHash: hashJson(after),
           reason,
-          ...result,
+          ...recorded,
         }),
       );
       const evidence = this.store.addEvidence(

@@ -100,7 +100,9 @@ const FULL_CAPABILITIES = [
   "custom-commands",
   "settings",
   "git",
+  "git-graph",
   "hooks",
+  "hooks-edit",
   "provider-switch",
   "chat-export",
   "chat-effort",
@@ -110,10 +112,12 @@ const FULL_CAPABILITIES = [
   "gate-drafts",
   "run-compare",
   "coordinator",
+  "coordinator-schedules",
   "coordinator-summary",
   "artifacts",
   "packages",
   "project-agents",
+  "permission-modes",
 ];
 /** What a backend from before the optional capability groups answers. */
 const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];

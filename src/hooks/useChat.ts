@@ -50,6 +50,7 @@ import {
   userPromptHooks,
   withHookContext,
 } from "../core/hooks/index.js";
+import { withContextSize } from "../core/llm/context-sizes.js";
 import {
   getModelContextInfo,
   getModelContextInfoSync,
@@ -67,6 +68,7 @@ import {
 import { resolveTaskModel } from "../core/llm/task-router.js";
 import { onCompaction, writeDiary } from "../core/mcp/mempalace.js";
 import { resolveRetrySettings } from "../core/retry/settings.js";
+import { isPermissionMode, splitLegacyMode } from "../core/security/permission-mode.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { emitCacheReset, onFileEdited, runWithEditOrigin } from "../core/tools/file-events.js";
 import { planFileName } from "../core/tools/index.js";
@@ -92,6 +94,7 @@ import { accumulateModelUsage, useStatusBarStore, ZERO_USAGE } from "../stores/s
 import { useToolsStore } from "../stores/tools.js";
 import type {
   AppConfig,
+  ChatContextSize,
   ChatEffort,
   ChatMessage,
   ImageAttachment,
@@ -99,6 +102,7 @@ import type {
   MessageSegment,
   PendingPlanReview,
   PendingQuestion,
+  PermissionMode,
   Plan,
   PlanReviewAction,
   PlanStepStatus,
@@ -134,6 +138,10 @@ export interface TabState {
   bakeMode: import("../types/index.js").BakeMode;
   /** The tab's reasoning effort; absent means `default` (the global setting). */
   effort?: ChatEffort;
+  /** The tab's permission mode; absent means the configured default. */
+  permissionMode?: PermissionMode;
+  /** The tab's context size; absent means `default` (the model's own size). */
+  contextSize?: ChatContextSize;
 }
 
 interface TokenUsage {
@@ -287,6 +295,12 @@ export interface ChatInstance {
   /** Reasoning effort of this tab's turns; `default` follows the global setting. */
   effort: ChatEffort;
   setEffort: (effort: ChatEffort) => void;
+  /** How much this tab's turns run without asking: manual, auto or full. */
+  permissionMode: PermissionMode;
+  setPermissionMode: (mode: PermissionMode) => void;
+  /** Context window of this tab's turns when the model offers several; `default` keeps the model's. */
+  contextSize: ChatContextSize;
+  setContextSize: (size: ChatContextSize) => void;
   cycleMode: () => import("../types/index.js").BakeMode;
   rotateRoutingSession: () => void;
   /**
@@ -519,14 +533,29 @@ export function useChat({
   );
   const [coAuthorCommits, setCoAuthorCommits] = useState(initialState?.coAuthorCommits ?? true);
 
+  // The legacy `auto` mode opens as the default mode with full access.
+  const [initialModes] = useState(() =>
+    splitLegacyMode(
+      initialState?.bakeMode ?? effectiveConfig.defaultBakeMode ?? "default",
+      initialState?.permissionMode ??
+        (isPermissionMode(effectiveConfig.defaultPermissionMode)
+          ? effectiveConfig.defaultPermissionMode
+          : undefined),
+    ),
+  );
   const [bakeMode, setBakeModeState] = useState<import("../types/index.js").BakeMode>(
-    initialState?.bakeMode ?? effectiveConfig.defaultBakeMode ?? "default",
+    initialModes.mode,
   );
   const bakeModeRef = useRef(bakeMode);
   bakeModeRef.current = bakeMode;
   const [effort, setEffortState] = useState<ChatEffort>(initialState?.effort ?? "default");
   const effortRef = useRef(effort);
   effortRef.current = effort;
+  const [contextSize, setContextSizeState] = useState<ChatContextSize>(
+    initialState?.contextSize ?? "default",
+  );
+  const contextSizeRef = useRef(contextSize);
+  contextSizeRef.current = contextSize;
 
   const setBakeMode = useCallback(
     (mode: import("../types/index.js").BakeMode) => {
@@ -537,9 +566,24 @@ export function useChat({
     [contextManager],
   );
 
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>(
+    initialModes.permissions,
+  );
+  const permissionModeRef = useRef(permissionMode);
+  permissionModeRef.current = permissionMode;
+  const setPermissionMode = useCallback((next: PermissionMode) => {
+    setPermissionModeState(next);
+    permissionModeRef.current = next;
+  }, []);
+
   const setEffort = useCallback((next: ChatEffort) => {
     setEffortState(next);
     effortRef.current = next;
+  }, []);
+
+  const setContextSize = useCallback((next: ChatContextSize) => {
+    setContextSizeState(next);
+    contextSizeRef.current = next;
   }, []);
 
   const cycleModeFn = useCallback((): import("../types/index.js").BakeMode => {
@@ -657,6 +701,8 @@ export function useChat({
           coAuthorCommits,
           bakeMode: bakeModeRef.current,
           effort: effortRef.current,
+          permissionMode: permissionModeRef.current,
+          contextSize: contextSizeRef.current,
           tokenUsage: tokenUsageRef.current,
           messages: filtered,
           coreMessages: cores,
@@ -1963,7 +2009,8 @@ export function useChat({
 
         try {
           setIsLoading(true);
-          const modelId = activeModelRef.current;
+          // The tab's context size picks the model variant with that window (Claude Code `[1m]`).
+          const modelId = withContextSize(activeModelRef.current, contextSizeRef.current);
           // Pin upstream gateway routing to this tab's conversation id
           // (x-session-id / x-session-affinity) for prompt-cache locality.
           setActiveSessionId(routingSessionIdRef.current);
@@ -2245,6 +2292,7 @@ export function useChat({
             fullModelId: modelId,
             contextManager,
             bakeMode: contextManager.getBakeMode(),
+            permissionMode: permissionModeRef.current,
             interactive: interactiveCallbacks,
             subagentModels,
             webSearchModel: effectiveWebSearchModel,
@@ -2287,6 +2335,7 @@ export function useChat({
                         fullModelId: modelId,
                         contextManager,
                         bakeMode: contextManager.getBakeMode(),
+                        permissionMode: permissionModeRef.current,
                         interactive: interactiveCallbacks,
                         subagentModels,
                         webSearchModel: effectiveWebSearchModel,
@@ -3976,6 +4025,8 @@ export function useChat({
       planRequest: planRequestRef.current,
       bakeMode,
       effort,
+      permissionMode,
+      contextSize,
     }),
     [
       messages,
@@ -3987,6 +4038,8 @@ export function useChat({
       coAuthorCommits,
       bakeMode,
       effort,
+      permissionMode,
+      contextSize,
     ],
   );
 
@@ -4048,6 +4101,10 @@ export function useChat({
     cycleMode: cycleModeFn,
     effort,
     setEffort,
+    permissionMode,
+    setPermissionMode,
+    contextSize,
+    setContextSize,
     persist,
   };
 }

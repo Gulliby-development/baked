@@ -1,5 +1,6 @@
 import { applyChatEvent, emptyTranscript, type Transcript } from "../screens/chat/transcript.js";
 import type {
+  ChatContextSize,
   ChatEffort,
   ChatEvent,
   ChatEventBody,
@@ -9,6 +10,7 @@ import type {
   ChatPrompt,
   ImageUpload,
   MessageSegment,
+  PermissionMode,
   PlanAction,
   SessionDetail,
   SessionDiffStats,
@@ -31,6 +33,25 @@ import { type MockRoute, type MockStream, response } from "./mock-routes.js";
 
 const MINUTE = 60_000;
 const DEFAULT_MODEL = "anthropic/claude-sonnet-5-5";
+
+/** The mock's one model with a choice of context window, as Claude Code offers `opus[1m]`. */
+const SIZED_MODEL = "claude-code/opus";
+const SIZED_WINDOWS = [200_000, 1_000_000];
+
+/** The context fields of a mock session summary, as the server computes them. */
+function contextFields(
+  model: string | null,
+  size: ChatContextSize,
+): Pick<SessionSummary, "contextSize" | "contextSizes" | "contextTokens"> {
+  if (model !== SIZED_MODEL) return { contextSize: size, contextSizes: [], contextTokens: null };
+  const tokens =
+    size === "max"
+      ? 1_000_000
+      : size === "default"
+        ? 200_000
+        : ([...SIZED_WINDOWS].reverse().find((t) => t <= size) ?? 200_000);
+  return { contextSize: size, contextSizes: SIZED_WINDOWS, contextTokens: tokens };
+}
 
 interface MockSession {
   key: string;
@@ -193,6 +214,7 @@ function seed(): Map<string, MockSession> {
       state: "idle",
       model: DEFAULT_MODEL,
       mode: "default",
+      permissions: "auto",
     };
     sessions.set(id, {
       key,
@@ -507,7 +529,7 @@ function launchedNow(brief: ProjectBrief): LaunchedView[] {
     if (started === undefined)
       return {
         ...entry,
-        active: !/^(completed|done|failed|cancelled)/.test(entry.status),
+        active: !entry.closed && !/^(completed|done|failed|cancelled|paused)/.test(entry.status),
         tokens: 120_000 * (i + 1),
       };
     const at = Math.min(MOCK_STAGES.length, Math.floor((Date.now() - started) / 4000));
@@ -589,6 +611,47 @@ async function workflowScript(session: MockSession, turn: MockTurn, text: string
     turn,
     "Started the sdd run. I'll follow it on the right and pick up when it finishes.",
   );
+}
+
+/** Stop and Close on a launched item, as `/v1/coordinator/launched/stop` and `/close` do. */
+function controlLaunched(
+  entry: { brief: ProjectBrief },
+  action: "stop" | "close",
+  body: { kind?: string; id?: string; feature?: string; reopen?: boolean },
+) {
+  // Closing an initiative closes its features too; anything else acts on the one entry.
+  const same = (e: ProjectBrief["launched"][number]) =>
+    e.kind === body.kind &&
+    e.id === body.id &&
+    (e.feature === body.feature || (action === "close" && body.feature === undefined));
+  const item = launchedNow(entry.brief).find((e) => same(e) && e.feature === body.feature);
+  if (!item)
+    return response(404, { error: { code: "NOT_FOUND", message: `No launched ${body.id}` } });
+  const refuse = (message: string) =>
+    response(400, { error: { code: "INVALID_REQUEST", message } });
+  let message = "";
+  if (action === "stop") {
+    if (item.closed || !item.active) return refuse(`${item.kind} ${item.id} is not running`);
+    message =
+      item.kind === "session"
+        ? `Stopped the turn of session ${item.id}`
+        : item.kind === "run"
+          ? `Cancelled run ${item.id}`
+          : `Paused initiative ${item.id}`;
+  } else if (!body.reopen && item.active)
+    return refuse(`${item.kind} ${item.id} is still ${item.status}; stop it before closing it`);
+  const status = item.kind === "session" ? "idle" : item.kind === "run" ? "cancelled" : "paused";
+  entry.brief = {
+    ...entry.brief,
+    revision: entry.brief.revision + 1,
+    launched: entry.brief.launched.map((e) => {
+      if (!same(e)) return e;
+      if (action === "stop") return { ...e, status };
+      const { closed: _, ...open } = e;
+      return body.reopen ? open : { ...open, closed: true as const };
+    }),
+  };
+  return response(200, { ...(message ? { message } : {}), launched: launchedNow(entry.brief) });
 }
 
 /** The coordinator's turn: proposes splitting the request and launches it when approved. */
@@ -1051,6 +1114,8 @@ function create(
     model?: string;
     mode?: ChatMode;
     effort?: ChatEffort;
+    permissions?: PermissionMode;
+    contextSize?: ChatContextSize;
     text?: string;
     images?: ImageUpload[];
     parentId?: string;
@@ -1066,8 +1131,10 @@ function create(
     updatedAt: now,
     state: "idle",
     model: body.model ?? DEFAULT_MODEL,
-    mode: body.mode ?? "default",
+    mode: body.mode === "auto" ? "default" : (body.mode ?? "default"),
     effort: body.effort ?? "default",
+    permissions: body.mode === "auto" ? "full" : (body.permissions ?? "auto"),
+    ...contextFields(body.model ?? DEFAULT_MODEL, body.contextSize ?? "default"),
     ...(body.parentId ? { parentId: body.parentId } : {}),
   };
   const session: MockSession = {
@@ -1195,6 +1262,19 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
             { id: "anthropic/claude-haiku-5", name: "Claude Haiku 5", contextWindow: 200_000 },
           ],
         },
+        {
+          id: "claude-code",
+          name: "Claude Code",
+          configured: true,
+          models: [
+            {
+              id: SIZED_MODEL,
+              name: "Opus (latest)",
+              efforts: ["low", "medium", "high", "xhigh", "max"],
+              contextSizes: SIZED_WINDOWS,
+            },
+          ],
+        },
         { id: "openai", name: "OpenAI", configured: false, models: [] },
       ],
     });
@@ -1248,6 +1328,15 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     }
     if (path === "/v1/coordinator/launched" && method === "GET")
       return response(200, { launched: launchedNow(entry.brief) });
+    if (
+      (path === "/v1/coordinator/launched/stop" || path === "/v1/coordinator/launched/close") &&
+      method === "POST"
+    )
+      return controlLaunched(
+        entry,
+        path.endsWith("/stop") ? "stop" : "close",
+        (body ?? {}) as Parameters<typeof controlLaunched>[2],
+      );
     if (path === "/v1/coordinator/approval-rules") {
       entry.rules ??= mockRules();
       if (method === "GET") return response(200, entry.rules);
@@ -1316,13 +1405,18 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       model?: string;
       mode?: ChatMode;
       effort?: ChatEffort;
+      permissions?: PermissionMode;
+      contextSize?: ChatContextSize;
     };
+    const model = changes.model ?? session.summary.model;
     session.summary = {
       ...session.summary,
       ...(changes.title ? { title: changes.title } : {}),
       ...(changes.model ? { model: changes.model } : {}),
       ...(changes.mode ? { mode: changes.mode } : {}),
       ...(changes.effort ? { effort: changes.effort } : {}),
+      ...(changes.permissions ? { permissions: changes.permissions } : {}),
+      ...contextFields(model, changes.contextSize ?? session.summary.contextSize ?? "default"),
     };
     emitSession(session);
     return response(200, session.summary);
@@ -1353,6 +1447,7 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       title: `${session.summary.title} (fork)`,
       mode: session.summary.mode,
       ...(session.summary.effort ? { effort: session.summary.effort } : {}),
+      ...(session.summary.permissions ? { permissions: session.summary.permissions } : {}),
     });
     forked.transcript = { ...forked.transcript, messages: all.slice(0, at + 1) };
     forked.summary = { ...forked.summary, messageCount: at + 1 };

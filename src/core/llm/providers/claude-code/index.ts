@@ -5,8 +5,9 @@ import type {
   LanguageModelV3StreamPart,
   SharedV3Warning,
 } from "@ai-sdk/provider";
+import { parseOpusVersion } from "../../model-id.js";
 import { cliReasoningEffort } from "../cli-effort.js";
-import type { ProviderDefinition, ProviderModelInfo } from "../types.js";
+import type { ContextSizeOption, ProviderDefinition, ProviderModelInfo } from "../types.js";
 import { assertClaudeCodeReady, getClaudeCodeLoginStatus } from "./cli.js";
 import { buildClaudeCodePromptParts, parseClaudeCodeResponse } from "./prompt.js";
 import {
@@ -33,6 +34,30 @@ export const CLAUDE_CODE_CONTEXT_WINDOWS: [pattern: string, tokens: number][] = 
   ["fable", 200_000],
   ["claude", 200_000],
 ];
+
+const ONE_MILLION_SUFFIX = "[1m]";
+
+/** Whether Claude Code offers the `[1m]` window for a model: Opus 4.6+ and Sonnet 4+. */
+function offersOneMillion(base: string): boolean {
+  if (base === "opus" || base === "sonnet") return true;
+  const opus = parseOpusVersion(base);
+  if (opus) return opus.major > 4 || (opus.major === 4 && opus.minor >= 6);
+  const sonnet = base.match(/sonnet-(\d+)/);
+  return sonnet ? Number(sonnet[1]) >= 4 : false;
+}
+
+/** The standard window and the `[1m]` one, for the models Claude Code offers both for. */
+export function claudeCodeContextSizes(modelId: string): ContextSizeOption[] {
+  const lower = modelId.toLowerCase();
+  const base = lower.endsWith(ONE_MILLION_SUFFIX)
+    ? modelId.slice(0, -ONE_MILLION_SUFFIX.length)
+    : modelId;
+  if (!offersOneMillion(base.toLowerCase())) return [];
+  return [
+    { tokens: 200_000, modelId: base },
+    { tokens: 1_000_000, modelId: `${base}${ONE_MILLION_SUFFIX}` },
+  ];
+}
 
 // maxOutputTokens is left out: BAKED sets it on every agent, so the CLI ignoring it is expected.
 const UNSUPPORTED_SETTINGS = [
@@ -140,6 +165,7 @@ export const claudeCode: ProviderDefinition = {
   },
   fallbackModels: CLAUDE_CODE_FALLBACK_MODELS,
   contextWindows: CLAUDE_CODE_CONTEXT_WINDOWS,
+  contextSizes: claudeCodeContextSizes,
   checkAvailability: async () => {
     const status = getClaudeCodeLoginStatus();
     return status.installed && status.loggedIn;

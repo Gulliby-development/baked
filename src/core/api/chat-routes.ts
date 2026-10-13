@@ -6,6 +6,7 @@
 
 import { ApprovalRulesStore } from "../chat/approval-rules.js";
 import { BriefError, BriefStore } from "../chat/coordinator.js";
+import { ScheduleError, ScheduleStore } from "../chat/coordinator-schedules.js";
 import { requestSummary } from "../chat/coordinator-summary.js";
 import {
   acceptImages,
@@ -24,14 +25,18 @@ import {
   CoordinatorBody,
   CreateSessionBody,
   ForkSessionBody,
+  LaunchedCloseBody,
+  LaunchedStopBody,
   MentionsQuery,
   MessageBody,
   ModelsQuery,
   PromptAnswerBody,
   RedoSessionBody,
+  ScheduleBody,
   SessionExportQuery,
   SessionListQuery,
   UndoSessionBody,
+  UpdateScheduleBody,
   UpdateSessionBody,
   WatchBody,
 } from "./schemas.js";
@@ -93,6 +98,19 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
     return ctx.json(200, { launched: chat.launched(session.id) });
   }
+  if (path === "/v1/coordinator/launched/stop" || path === "/v1/coordinator/launched/close") {
+    only("POST");
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    if (path.endsWith("/stop")) {
+      const ref = LaunchedStopBody.parse(await ctx.readJson());
+      const message = await chat.stopLaunched(session.id, ref);
+      return ctx.json(200, { message, launched: chat.launched(session.id) });
+    }
+    const { reopen, ...ref } = LaunchedCloseBody.parse(await ctx.readJson());
+    await chat.closeLaunched(session.id, ref, reopen === true);
+    return ctx.json(200, { launched: chat.launched(session.id) });
+  }
   if (path === "/v1/coordinator/summary") {
     only("POST");
     const session = await chat.coordinator(false);
@@ -111,6 +129,34 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     } catch (err) {
       if (err instanceof BriefError)
         ctx.fail(err.code === "STALE_REVISION" ? 409 : 400, err.code, err.message);
+      throw err;
+    }
+  }
+  if (path === "/v1/coordinator/schedules" || path.startsWith("/v1/coordinator/schedules/")) {
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    const store = new ScheduleStore(chat.workspace, session.id);
+    const id = path.slice("/v1/coordinator/schedules/".length);
+    try {
+      if (path === "/v1/coordinator/schedules") {
+        only("GET", "POST");
+        if (method === "GET") return ctx.json(200, { schedules: store.list() });
+        return ctx.json(201, store.add(ScheduleBody.parse(await ctx.readJson())));
+      }
+      only("PATCH", "DELETE");
+      if (method === "DELETE") {
+        store.remove(decodeURIComponent(id));
+        return new Response(null, { status: 204 });
+      }
+      const { enabled } = UpdateScheduleBody.parse(await ctx.readJson());
+      return ctx.json(200, store.setEnabled(decodeURIComponent(id), enabled));
+    } catch (err) {
+      if (err instanceof ScheduleError)
+        ctx.fail(
+          err.code === "NOT_FOUND" ? 404 : 400,
+          err.code === "LIMIT" ? "INVALID_REQUEST" : err.code,
+          err.message,
+        );
       throw err;
     }
   }
@@ -142,6 +188,8 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
       ...(body.model ? { model: body.model } : {}),
       ...(body.mode ? { mode: body.mode } : {}),
       ...(body.effort ? { effort: body.effort } : {}),
+      ...(body.permissions ? { permissions: body.permissions } : {}),
+      ...(body.contextSize !== undefined ? { contextSize: body.contextSize } : {}),
     });
     if (body.text || images) session.send(body.text ?? "", images);
     return ctx.json(201, session.detail());

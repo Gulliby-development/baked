@@ -195,6 +195,7 @@ function loadWin32() {
     CreateWindowStationW: { args: [T.ptr, T.u32, T.u32, T.ptr], returns: T.u64 },
     SetProcessWindowStation: { args: [T.u64], returns: T.i32 },
     CloseWindowStation: { args: [T.u64], returns: T.i32 },
+    GetUserObjectInformationW: { args: [T.u64, T.i32, T.ptr, T.u32, T.ptr], returns: T.i32 },
     CreateDesktopW: { args: [T.ptr, T.ptr, T.ptr, T.u32, T.u32, T.ptr], returns: T.u64 },
     CloseDesktop: { args: [T.u64], returns: T.i32 },
   });
@@ -359,11 +360,14 @@ function lowDesktop(win: Win32, user: string): { station: bigint; desktop: bigin
     );
     if (status !== 0) fail(win, `Securing the sandbox ${what}`, status);
   };
-  const name = `baked-sandbox-${process.pid}`;
+  // A named window station needs administrator rights (Windows error 5 for a standard user);
+  // without a name Windows creates one for the logon session (`Service-0x0-<luid>$`).
   const original = win.u.GetProcessWindowStation();
-  const station = win.u.CreateWindowStationW(wide(name), 0, GENERIC_ALL, null);
+  const station = win.u.CreateWindowStationW(null, 0, GENERIC_ALL, null);
   if (!station) fail(win, "CreateWindowStation");
   label(station, "window station");
+  const stationName = objectName(win, station);
+  const name = `baked-sandbox-${process.pid}`;
   // A desktop is created in the calling process's window station.
   if (!win.u.SetProcessWindowStation(station)) fail(win, "SetProcessWindowStation");
   const desktop = win.u.CreateDesktopW(wide(name), null, null, 0, GENERIC_ALL, null);
@@ -371,7 +375,17 @@ function lowDesktop(win: Win32, user: string): { station: bigint; desktop: bigin
   win.u.SetProcessWindowStation(original);
   if (!desktop) fail(win, "CreateDesktop", created);
   label(desktop, "desktop");
-  return { station, desktop, name: wide(`${name}\\${name}`) };
+  return { station, desktop, name: wide(`${stationName}\\${name}`) };
+}
+
+/** The name Windows gave a window station. */
+function objectName(win: Win32, handle: bigint): string {
+  const UOI_NAME = 2;
+  const buffer = Buffer.alloc(512);
+  const needed = Buffer.alloc(4);
+  if (!win.u.GetUserObjectInformationW(handle, UOI_NAME, buffer, buffer.length, needed))
+    fail(win, "Reading the window station name");
+  return buffer.toString("utf16le").split("\0")[0] ?? "";
 }
 
 function sidFrom(win: Win32, text: string): bigint {

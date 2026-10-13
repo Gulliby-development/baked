@@ -25,8 +25,10 @@ import type {
   GateDraftKind,
   GateEntry,
   HookCommand,
+  HookDraft,
   HookEvent,
   HooksView,
+  HookWriteScope,
   IndependentReview,
   InstructionFile,
   ModelRouting,
@@ -1298,62 +1300,163 @@ const HOOK_EVENTS = [
   "RunAttention",
 ];
 
-function hooksView(key: string, root: string): HooksView {
-  const off = hooksOff.get(key) ?? new Set<string>();
+interface MockHook {
+  command: string;
+  timeout?: number;
+  async?: boolean;
+  once?: boolean;
+  if?: string;
+}
+interface MockRule {
+  matcher?: string;
+  hooks: MockHook[];
+}
+interface MockHookFile {
+  path: string;
+  scope: HookCommand["scope"];
+  origin: HookCommand["origin"];
+  exists: boolean;
+  rules: Record<string, MockRule[]>;
+}
+
+/** The hooks files of each project, as the preview edits them. */
+const hookFiles = new Map<string, MockHookFile[]>();
+
+function mockHookFiles(key: string, root: string): MockHookFile[] {
+  const known = hookFiles.get(key);
+  if (known) return known;
   const home = "C:\\Users\\dev";
-  const project = `${root}\\.claude\\settings.json`;
-  const user = `${home}\\.baked\\config.json`;
-  const command = (source: string, scope: HookCommand["scope"], text: string) => ({
-    source,
-    scope,
-    matcher: null,
-    command: text,
-    async: false,
-    once: false,
-    timeout: null,
-    if: null,
-  });
-  const events: HookEvent[] = [
+  const files: MockHookFile[] = [
     {
-      event: "PreToolUse",
-      known: true,
-      disabled: off.has("PreToolUse"),
-      blocking: true,
-      hooks: [
-        {
-          ...command(project, "project", "./scripts/check-command.sh"),
-          matcher: "Bash",
-          if: "Bash(rm -rf *)",
-          timeout: 5,
-        },
-      ],
+      path: `${home}\\.claude\\settings.json`,
+      scope: "user",
+      origin: "claude",
+      exists: true,
+      rules: {
+        SessionStart: [
+          {
+            matcher: "^(startup|resume)$",
+            hooks: [
+              {
+                command: "powershell -NoProfile -File .claude\\hooks\\agent-state.ps1",
+                timeout: 10,
+              },
+            ],
+          },
+        ],
+      },
     },
     {
-      event: "PostToolUse",
-      known: true,
-      disabled: off.has("PostToolUse"),
-      blocking: true,
-      hooks: [
-        { ...command(project, "project", "bunx biome format --write"), matcher: "Edit|Write" },
-      ],
+      path: `${root}\\.claude\\settings.json`,
+      scope: "project",
+      origin: "claude",
+      exists: true,
+      rules: {
+        PreToolUse: [
+          {
+            matcher: "Bash",
+            hooks: [{ command: "./scripts/check-command.sh", if: "Bash(git push *)", timeout: 5 }],
+          },
+        ],
+      },
     },
     {
-      event: "Stop",
-      known: true,
-      disabled: off.has("Stop"),
-      blocking: false,
-      hooks: [{ ...command(user, "user", "notify-send 'BAKED finished'"), async: true }],
+      path: `${root}\\.claude\\settings.local.json`,
+      scope: "local",
+      origin: "claude",
+      exists: false,
+      rules: {},
+    },
+    {
+      path: `${home}\\.baked\\config.json`,
+      scope: "user",
+      origin: "baked",
+      exists: true,
+      rules: {
+        Stop: [{ hooks: [{ command: "notify-send BAKED 'The agent finished'", async: true }] }],
+      },
+    },
+    {
+      path: `${root}\\.baked\\config.json`,
+      scope: "project",
+      origin: "baked",
+      exists: true,
+      rules: {
+        PostToolUse: [
+          {
+            matcher: "Edit|Write",
+            hooks: [{ command: "bunx biome format --write .", timeout: 60 }],
+          },
+        ],
+        RunAttention: [
+          {
+            matcher: "approval",
+            hooks: [{ command: "notify-send BAKED 'A run waits for approval'", async: true }],
+          },
+        ],
+      },
     },
   ];
+  hookFiles.set(key, files);
+  return files;
+}
+
+const hookRev = (rule: MockRule, hook: MockHook) => JSON.stringify([rule.matcher ?? null, hook]);
+
+function hooksView(key: string, root: string): HooksView {
+  const off = hooksOff.get(key) ?? new Set<string>();
+  const files = mockHookFiles(key, root);
+  const byEvent = new Map<string, HookCommand[]>();
+  for (const file of files) {
+    const scope = file.origin === "baked" && file.scope !== "local" ? file.scope : null;
+    for (const [event, rules] of Object.entries(file.rules)) {
+      const list = byEvent.get(event) ?? [];
+      rules.forEach((rule, r) => {
+        rule.hooks.forEach((hook, h) => {
+          list.push({
+            source: file.path,
+            scope: file.scope,
+            origin: file.origin,
+            id: scope ? `${scope}:${event}:${r}:${h}` : null,
+            rev: scope ? hookRev(rule, hook) : null,
+            redacted: false,
+            matcher: rule.matcher ?? null,
+            command: hook.command,
+            async: hook.async === true,
+            once: hook.once === true,
+            timeout: hook.timeout ?? null,
+            if: hook.if ?? null,
+          });
+        });
+      });
+      byEvent.set(event, list);
+    }
+  }
+  const events: HookEvent[] = [...byEvent.entries()]
+    .filter(([, hooks]) => hooks.length > 0)
+    .sort(([a], [b]) => HOOK_EVENTS.indexOf(a) - HOOK_EVENTS.indexOf(b))
+    .map(([event, hooks]) => ({
+      event,
+      known: HOOK_EVENTS.includes(event),
+      disabled: off.has(event),
+      blocking: hooks.some((h) => !h.async),
+      hooks,
+    }));
+  const target = (scope: HookWriteScope) =>
+    files.find((f) => f.origin === "baked" && f.scope === scope)?.path ?? "";
   return {
     disabledBy: null,
-    sources: [
-      { path: `${home}\\.claude\\settings.json`, scope: "user", exists: false, hooks: 0 },
-      { path: project, scope: "project", exists: true, hooks: 2 },
-      { path: `${root}\\.claude\\settings.local.json`, scope: "local", exists: false, hooks: 0 },
-      { path: user, scope: "user", exists: true, hooks: 1 },
-      { path: `${root}\\.baked\\config.json`, scope: "project", exists: true, hooks: 0 },
-    ],
+    sources: files.map((f) => ({
+      path: f.path,
+      scope: f.scope,
+      origin: f.origin,
+      exists: f.exists,
+      hooks: Object.values(f.rules).reduce(
+        (sum, rules) => sum + rules.reduce((n, rule) => n + rule.hooks.length, 0),
+        0,
+      ),
+    })),
+    targets: { project: target("project"), user: target("user") },
     events,
   };
 }
@@ -1365,6 +1468,80 @@ function setHookEvent(key: string, root: string, change: { event?: string; enabl
   if (change.enabled) off.delete(change.event);
   else off.add(change.event);
   hooksOff.set(key, off);
+  return response(200, hooksView(key, root));
+}
+
+type HookBody = Partial<HookDraft> & { id?: string; rev?: string };
+
+/** Adds, changes or removes a hook in the preview's BAKED files, as `/v1/hooks` does. */
+function editHook(key: string, root: string, method: string, change: HookBody) {
+  const files = mockHookFiles(key, root);
+  const fileOf = (scope: string | undefined) =>
+    files.find((f) => f.origin === "baked" && f.scope === scope);
+  const handler = (base: MockHook = { command: "" }): MockHook | string => {
+    const command = (change.command ?? base.command).trim();
+    if (!command) return "A hook needs a command";
+    if (change.matcher && /[^\w|*]/.test(change.matcher)) {
+      try {
+        new RegExp(change.matcher);
+      } catch {
+        return `The matcher "${change.matcher}" is not a valid regular expression`;
+      }
+    }
+    return {
+      command,
+      ...(change.timeout ? { timeout: change.timeout } : {}),
+      ...(change.async ? { async: true } : {}),
+      ...(change.once ? { once: true } : {}),
+      ...(change.if?.trim() ? { if: change.if.trim() } : {}),
+    };
+  };
+  const append = (file: MockHookFile, event: string, hook: MockHook) => {
+    const matcher = change.matcher?.trim();
+    file.rules[event] = [
+      ...(file.rules[event] ?? []),
+      { ...(matcher ? { matcher } : {}), hooks: [hook] },
+    ];
+    file.exists = true;
+  };
+  if (method === "POST") {
+    const file = fileOf(change.scope);
+    if (!file || !change.event || !HOOK_EVENTS.includes(change.event))
+      return error(400, "INVALID_REQUEST", "Send a scope, an event BAKED fires and a command");
+    const hook = handler();
+    if (typeof hook === "string") return error(400, "INVALID_REQUEST", hook);
+    append(file, change.event, hook);
+    return response(200, hooksView(key, root));
+  }
+  const [scope, event, r, h] = (change.id ?? "").split(":");
+  const file = fileOf(scope);
+  const rules = file && event ? file.rules[event] : undefined;
+  const rule = rules?.[Number(r)];
+  const old = rule?.hooks[Number(h)];
+  if (!file || !event || !rules || !rule || !old)
+    return error(404, "NOT_FOUND", "The hook is no longer in its file");
+  if (hookRev(rule, old) !== change.rev)
+    return error(409, "CONFLICT", "The hook changed in its file since this view was loaded");
+  let next: MockHook | string | null = null;
+  if (method === "PUT") {
+    if (!change.event || !HOOK_EVENTS.includes(change.event))
+      return error(400, "INVALID_REQUEST", "Send an event BAKED fires");
+    next = handler(old);
+    if (typeof next === "string") return error(400, "INVALID_REQUEST", next);
+    const target = fileOf(change.scope ?? scope);
+    if (
+      target === file &&
+      change.event === event &&
+      (change.matcher?.trim() || undefined) === rule.matcher
+    ) {
+      rule.hooks[Number(h)] = next;
+      return response(200, hooksView(key, root));
+    }
+  }
+  rule.hooks.splice(Number(h), 1);
+  if (rule.hooks.length === 0) rules.splice(Number(r), 1);
+  if (rules.length === 0) delete file.rules[event];
+  if (next && change.event) append(fileOf(change.scope ?? scope) ?? file, change.event, next);
   return response(200, hooksView(key, root));
 }
 
@@ -1511,6 +1688,10 @@ export const setupRoutes: MockRoute = (request) => {
     }
     case "GET /v1/hooks":
       return response(200, hooksView(key, s.summary.root));
+    case "POST /v1/hooks":
+    case "PUT /v1/hooks":
+    case "DELETE /v1/hooks":
+      return editHook(key, s.summary.root, request.method, body<HookBody>(request));
     case "POST /v1/hooks/session":
       return setHookEvent(
         key,
@@ -1621,6 +1802,26 @@ export const setupRoutes: MockRoute = (request) => {
     }
     case "GET /v1/projects/current/instructions":
       return response(200, instructionList(s));
+    case "GET /v1/projects/current/context": {
+      const read = instructionList(s).files.filter((f) => f.enabled);
+      const rules = read.map((f) => `[${f.path}]\n${f.content}`).join("\n\n");
+      const ws = s.summary.workingSet;
+      const files = ws.files.length
+        ? [
+            `<working_set project="${s.summary.id}">`,
+            ...ws.files.map((f) => `<file path="${f.path}">\n…\n</file>`),
+            "</working_set>",
+          ].join("\n")
+        : null;
+      const part = (text: string) => ({ text, bytes: new TextEncoder().encode(text).length });
+      const instructions = part(rules);
+      const workingSet = files === null ? null : part(files);
+      return response(200, {
+        instructions,
+        workingSet,
+        bytes: instructions.bytes + (workingSet?.bytes ?? 0),
+      });
+    }
     case "PUT /v1/projects/current/instructions/sources": {
       const put = body<{ source: string; enabled: boolean }>(request);
       const id = put.source ?? "";

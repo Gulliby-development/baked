@@ -2,9 +2,11 @@ import type { SessionDiffStats } from "../core/chat/diff-stats.js";
 import type { SandboxMode } from "../core/security/sandbox.js";
 import type {
   BakeMode,
+  ChatContextSize,
   ChatEffort,
   InputContextItem,
   InteractiveCallbacks,
+  PermissionMode,
 } from "../types/index.js";
 
 export interface HeadlessRunOptions {
@@ -13,6 +15,8 @@ export interface HeadlessRunOptions {
   mode?: BakeMode;
   /** Reasoning effort of this run; `default` keeps the configured one. */
   effort?: ChatEffort;
+  /** Context window of this run when the model offers several; `default` keeps the model's. */
+  contextSize?: ChatContextSize;
   json?: boolean;
   events?: boolean;
   quiet?: boolean;
@@ -32,6 +36,8 @@ export interface HeadlessRunOptions {
   render?: boolean;
   /** `--approval-review`: the approval reviewer decides low-risk approvals; the rest are denied. */
   approvalReview?: boolean;
+  /** `--permissions`: manual denies every edit and command (nobody can allow them), full asks nothing. */
+  permissions?: PermissionMode;
 }
 
 export interface TokenUsage {
@@ -124,6 +130,8 @@ export interface HeadlessChatOptions {
   mode?: BakeMode;
   /** Reasoning effort of every turn; `default` keeps the configured one. */
   effort?: ChatEffort;
+  /** Context window of every turn when the model offers several; `default` keeps the model's. */
+  contextSize?: ChatContextSize;
   json?: boolean;
   events?: boolean;
   quiet?: boolean;
@@ -141,6 +149,8 @@ export interface HeadlessChatOptions {
   watchPoll?: boolean;
   /** `--approval-review`: the approval reviewer decides low-risk approvals; the rest are denied. */
   approvalReview?: boolean;
+  /** `--permissions`: manual denies every edit and command (nobody can allow them), full asks nothing. */
+  permissions?: PermissionMode;
 
   /** Prompt source. Default: line-buffered stdin reader. */
   readPrompt?: () => Promise<string | null>;

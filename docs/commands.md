@@ -28,7 +28,7 @@ Type `/` in the input or press `Ctrl+K` for the command palette. `/help` opens t
 
 ## Slash commands
 
-The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow definitions`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
+The tables below list the commands the palette shows, generated from `src/core/commands/registry.ts`. Some commands take arguments that are not listed: `/plan <task>`, `/mode <name>`, `/effort <level>`, `/context-size <size>`, `/permissions <manual|auto|full>`, `/checkpoint undo [N]` or `/undo [N]` (see the [user guide](guide.md#checkpoints)), `/workflow new TEXT`, `/workflow quick TEXT`, `/workflow edit ID`, `/workflow definitions`, `/workflow routing` and `/workflow usage`, `/workflow report RUN_ID`, `/workflow usage RUN_ID --format md` (see the [runtime guide](workflows/runtime.md#tui)).
 
 ### Session
 
@@ -76,6 +76,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/git co-author` | Toggle co-author trailer |
 | `/git commit` | Git commit with message |
 | `/git diff` | View changes |
+| `/git graph` | Show the commit graph of all branches |
 | `/git init` | Initialize git repo |
 | `/git log` | Show recent commits |
 | `/git pull` | Pull from remote |
@@ -101,6 +102,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/model-scope` | Set model scope (project/global) |
 | `/models` | Switch LLM model (Ctrl+L) |
 | `/effort` | Reasoning effort of this chat (low … max, or default) |
+| `/context-size` | Context window of this chat when the model offers several (e.g. 200k or 1M) |
 | `/provider-settings` | Provider options — thinking, effort, speed, context |
 | `/router` | Route models per task (code, explore, plan, verify) |
 | `/web-search` | Web search keys & settings |
@@ -132,6 +134,10 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 
 | Command | Does |
 | --- | --- |
+| `/agent-context` | Agent context: the rules (instruction files, Enter edits one) and files (working set) every agent gets, with their size and a preview |
+| `/agent-context add` | Add a path or glob to the working set |
+| `/agent-context preview` | Preview the rules and files an agent's prompt carries |
+| `/agent-context remove` | Remove an entry from the working set |
 | `/agent-features` | Toggle agent features (de-sloppify, tier routing) |
 | `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, property-based tests, mutation gate) and the library docs source of implementers |
 | `/chat-style` | Toggle chat layout style |
@@ -142,6 +148,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/instructions show` | Show an instruction file's content |
 | `/mode` | Switch Baked mode |
 | `/motion` | Full or reduced animation |
+| `/permissions` | Permissions of this chat: manual, auto or full access ([guide](guide.md#permission-modes)) |
 | `/notifications` | System notifications and the webhook for runs that wait for you; `/notifications system on\|off`, `/notifications webhook URL\|off`, `/notifications blocking-only on\|off` ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 | `/reasoning` | Show or hide reasoning content |
 | `/sandbox` | OS sandbox of shell, project and check commands; `/sandbox off\|auto\|required` saves it globally, `/sandbox status` shows mode and backend ([OS sandbox](sandbox.md)) |
@@ -172,7 +179,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/errors` | Browse error log |
 | `/help` | Command palette (Ctrl+K) |
 | `/commands` | List custom commands from .baked/commands |
-| `/hooks` | View active hooks (PreToolUse, PostToolUse, etc.) |
+| `/hooks` | Add, edit or pause hooks on agent events |
 | `/quit` (`/q`) | Exit baked |
 | `/exit` (`/q`) | Exit baked |
 | `/restart` | Full restart |

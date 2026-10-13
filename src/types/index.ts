@@ -176,6 +176,8 @@ export interface LaunchNote {
   status: string;
   why: string;
   task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** A session's own worktree and branch, when it has one. */
+  worktree?: { path: string; branch: string };
   /** For a session whose turn ended: its last answer, cut to `LAUNCH_RESULT_MAX` characters. */
   result?: string;
   /** For `auto-answered`: what the coordinator approved by one of the user's rules. */
@@ -234,6 +236,12 @@ export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** A chat's reasoning effort: `default` follows the global `performance` settings. */
 export type ChatEffort = EffortLevel | "default";
+
+/**
+ * A chat's context window when its model offers more than one: a size in tokens, `max` for the
+ * largest, or `default` (the largest for the coordinator, the model's own size elsewhere).
+ */
+export type ChatContextSize = "default" | "max" | number;
 
 type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "auto" | "flex" | "priority" | "default";
@@ -414,6 +422,8 @@ export interface AppConfig {
   coAuthorCommits?: boolean;
   /** Default Baked mode for new sessions. Default: "default" */
   defaultBakeMode?: BakeMode;
+  /** Default permission mode for new chats: manual, auto or full. Default: "auto" */
+  defaultPermissionMode?: PermissionMode;
   /** Enable/disable Baked map (AST index). Disabling saves ~4-8k prompt tokens. Default: true. Toggle via /repo-map → 'e'. */
   repoMap?: boolean;
   /** Keep the Baked map index current in the background: at startup, after file changes, chat turns, runs and git checkouts or pulls. Default: true. */
@@ -584,5 +594,8 @@ export interface MCPServerConfig {
 }
 
 export type BakeMode = "default" | "architect" | "plan" | "auto";
+
+/** How much a chat may do without asking; see `src/core/security/permission-mode.ts`. */
+export type PermissionMode = "manual" | "auto" | "full";
 
 export type ChatStyle = "accent" | "bubble";
