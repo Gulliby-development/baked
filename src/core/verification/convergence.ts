@@ -248,6 +248,14 @@ function reproStep(repro: Review["findings"][number]["repro"]): string {
   return `\nReproduce first: run ${command} with run_probe before editing. The review saw it print ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}. After the fix, run it again and confirm it prints the expected output.`;
 }
 
+/**
+ * The last step of a correction for a reviewer's finding (#943): the reviewer shows one case, and
+ * the same defect often sits in sibling code paths (todo-cli: `add --help` was repaired, then the
+ * re-review found `tag` and `untag`, and the run stopped). One repair should cover them all.
+ */
+const SIBLING_STEP =
+  "\nThe review shows one case. Look for the same defect in sibling code paths (other commands, options, branches or callers that share the faulty pattern) and fix every case you find, checking each one as you checked the reported one.";
+
 /** A finding of a failed check run: it names the check and cites that run's evidence. */
 const checkRunFinding = (finding: Pick<Review["findings"][number], "claim" | "evidenceIds">) =>
   /^Required check \S+ failed$/.test(finding.claim) && finding.evidenceIds.length > 0;
@@ -274,9 +282,12 @@ function correctionDepth(state: RuntimeState, taskId: string): number {
 /**
  * Adds corrective tasks for findings. `scope: "task"` is a correction a task's own failed checks
  * start during the implement stage: it is bounded by `maxTaskRepairs` per chain of corrections
- * and does not spend a repair round, which counts checks-stage and review passes (cfgtrace
- * 276e4858: two task-level corrections used both rounds and the checks stage could not repair
- * eight failing tests).
+ * and does not spend a repair round, which counts checks-stage passes (cfgtrace 276e4858: two
+ * task-level corrections used both rounds and the checks stage could not repair eight failing
+ * tests). `scope: "review"` is a correction a review pass starts: it counts review rounds, which
+ * have their own `maxRepairRounds` budget, so a checks stage that needed both rounds still leaves
+ * the review its corrections (mdrefs 8531a4f0: a reproduced medium finding was refused as round 3
+ * with every required check green).
  */
 export function appendCorrections(
   store: WorkflowStore,
@@ -285,7 +296,7 @@ export function appendCorrections(
   policy: RunPolicy,
   findings: Review["findings"],
   kind: "repair" | "convergence",
-  scope: "round" | "task" = "round",
+  scope: "round" | "task" | "review" = "round",
 ): void {
   if (!state.graph || !state.rootGraph || !state.spec || !state.approvalRoot)
     throw new WorkflowFault("STALE_DECISION", "Repair requires an approved root graph");
@@ -300,9 +311,16 @@ export function appendCorrections(
         }),
       )
     : 0;
+  const reviewPass = kind === "repair" && scope === "review";
+  // The counter this correction spends and the name its artifact and correction record carry.
+  const roundKind = reviewPass ? "review" : kind;
   const round = taskLevel
     ? chain + 1
-    : (kind === "repair" ? run.repair_rounds : run.convergence_rounds) + 1;
+    : (reviewPass
+        ? (run.review_rounds ?? 0)
+        : kind === "repair"
+          ? run.repair_rounds
+          : run.convergence_rounds) + 1;
   // A person's "one more round" at a convergence decision raises both limits for that stage.
   const limit = taskLevel
     ? (policy.maxTaskRepairs ?? DEFAULT_MAX_TASK_REPAIRS)
@@ -462,7 +480,7 @@ export function appendCorrections(
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding.repro)}${kind === "convergence" && !checkRunFinding(finding) ? SIBLING_STEP : ""}`,
         )
         .join("\n\n"),
       dependsOn: [],
@@ -482,7 +500,7 @@ export function appendCorrections(
     newGraphHash: hashJson(graph),
     findingIds: findings.map((f) => f.id),
     taskIds: additions.map((t) => t.id),
-    roundKind: kind,
+    roundKind,
     round,
   });
   const artifact = store.artifact(
@@ -490,7 +508,7 @@ export function appendCorrections(
     "correction",
     taskLevel
       ? `corrections/task-${additions[0]?.id ?? "T000"}.json`
-      : `corrections/${kind}-${round}.json`,
+      : `corrections/${roundKind}-${round}.json`,
     canonical(correction),
   );
   state.correctionHashes.push(artifact.content_hash);
@@ -511,7 +529,7 @@ export function appendCorrections(
   for (const task of additions)
     for (const id of task.findingIds) store.findingStatus(runId, id, "confirmed", task.id);
   if (fresh) {
-    const account = freshAccount(store, runId, state, round, repeats, findings);
+    const account = freshAccount(store, runId, state, roundKind, round, repeats, findings);
     for (const task of additions) {
       const artifact = store.artifact(
         runId,
@@ -523,7 +541,7 @@ export function appendCorrections(
     }
   }
   if (taskLevel) store.addCorrectiveTasks(runId, additions.length);
-  else store.addRound(runId, kind, additions.length);
+  else store.addRound(runId, roundKind, additions.length);
 }
 
 /**
@@ -535,13 +553,14 @@ function freshAccount(
   store: WorkflowStore,
   runId: string,
   state: RuntimeState,
+  roundKind: "repair" | "review" | "convergence",
   round: number,
   repeats: number,
   findings: Review["findings"],
 ): { summary: string; attempts: { taskId: string; title: string; changed: string[] }[] } {
   const attempts: { taskId: string; title: string; changed: string[] }[] = [];
   for (let earlier = round - repeats; earlier < round; earlier++) {
-    const record = store.latestArtifact(runId, `corrections/repair-${String(earlier)}.json`);
+    const record = store.latestArtifact(runId, `corrections/${roundKind}-${String(earlier)}.json`);
     if (!record) continue;
     const { taskIds } = JSON.parse(store.readArtifact(runId, record.id)) as { taskIds: string[] };
     for (const taskId of taskIds) {

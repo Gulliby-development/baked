@@ -155,10 +155,14 @@ export interface BudgetView {
   activeMs: number;
   maxActiveMs: number;
   repairRounds: number;
+  /** Repair rounds review passes started; they have their own `maxRepairRounds` budget. */
+  reviewRounds: number;
   maxRepairRounds: number;
   /** Soft checkpoint interval and the token count of the next pause, when the run uses them. */
   checkpointTokens?: number | null;
   nextCheckpoint?: number | null;
+  /** The dollar cap (`maxCostUsd`) with the cost spent and reserved against it, when set. */
+  cost?: { spentUsd: number; reservedUsd: number; maxCostUsd: number };
 }
 export interface CriterionView {
   id: string;
@@ -298,9 +302,13 @@ function budgetOf(store: WorkflowStore, row: RunRow): BudgetView {
     activeMs: usage.activeMs,
     maxActiveMs: policy.maxActiveMs,
     repairRounds: row.repair_rounds,
+    reviewRounds: row.review_rounds ?? 0,
     maxRepairRounds: policy.maxRepairRounds,
     checkpointTokens: policy.checkpointTokens ?? null,
     nextCheckpoint: store.checkpointBoundary(row.id, policy),
+    ...(typeof policy.maxCostUsd === "number"
+      ? { cost: { ...store.costUsage(row.id), maxCostUsd: policy.maxCostUsd } }
+      : {}),
   };
 }
 function lastErrorOf(store: WorkflowStore, runId: string): string | null {

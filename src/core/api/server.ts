@@ -429,6 +429,7 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
         ...(body.tokens !== undefined ? { tokens: String(body.tokens) } : {}),
         ...(body.calls !== undefined ? { calls: String(body.calls) } : {}),
         ...(body.timeMs !== undefined ? { "time-ms": String(body.timeMs) } : {}),
+        ...(body.costUsd !== undefined ? { "cost-usd": String(body.costUsd) } : {}),
       });
     }
   }
@@ -538,6 +539,25 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
             ...(worktree ? { worktree: true } : {}),
           }),
         ),
+      // As the desktop app's approve: the decision, then a resume that drives in the background.
+      approveRun: async ({ runId, requestId, digest, expectedRevision }) => {
+        await settle(runId);
+        const decided = (await execute(
+          mutationArgs("approve", runId, {
+            commandId: crypto.randomUUID(),
+            expectedRevision,
+            requestId,
+            digest,
+          }),
+        )) as RunSnapshot;
+        if (!service.canResumeAfterDecision(runId)) return;
+        await launch(
+          mutationArgs("resume", runId, {
+            commandId: crypto.randomUUID(),
+            expectedRevision: decided.revision,
+          }),
+        );
+      },
       startInitiative: async ({ initiativeId, prompt, plan, approveSplit, featureIssues }) => {
         let view = await initiatives.start(
           initiativeStartRequest(

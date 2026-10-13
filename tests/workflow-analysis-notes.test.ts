@@ -6,6 +6,7 @@ import {
   isCountNit,
   isHostEdgeNit,
   knownRisks,
+  persistentDefect,
   restrictsRequest,
   supersedeResearch,
 } from "../src/core/workflows/analysis-notes.js";
@@ -180,6 +181,25 @@ describe("a scope finding that adds a restriction the request lacks", () => {
   test("is recognised by its wording", () => {
     expect(restrictsRequest({ ...base, description: "The spec restricts ISO 8601 input to three forms; the request names no such limit" })).toBe(true);
     expect(restrictsRequest({ ...base, description: "FR-002 excludes root-relative links, which the request does not exclude" })).toBe(true);
+  });
+  test("is recognised for a requirement the request never asked for", () => {
+    for (const description of [
+      "AC-009 makes three-platform passing an acceptance condition the request does not ask for",
+      "FR-009 configures CI on Windows, macOS and Linux; the request does not mention CI",
+      "T006 adds a cross-platform CI matrix that is absent from the request",
+      "The spec invents a release workflow",
+    ])
+      expect(restrictsRequest({ ...base, description })).toBe(true);
+    expect(restrictsRequest({ ...base, description: "The spec omits the --json flag; the request does not mention a default" })).toBe(false);
+  });
+  test("is recognised for an inconsistency whose one side is the request", () => {
+    const finding = { ...base, kind: "inconsistency" };
+    expect(restrictsRequest({ ...finding, description: "A spec assumption excludes tests/**, while the request allows changes under tests/" })).toBe(true);
+    expect(restrictsRequest({ ...finding, description: "AC-004 conflicts with the brief's explicit ban on property-based tests" })).toBe(true);
+    expect(persistentDefect({ ...finding, description: "A spec assumption excludes tests/**, the request allows it" })).toBe(false);
+    // Two generated files mapping to one path is a defect between artifacts, not the request's call.
+    expect(restrictsRequest({ ...finding, description: "T002 and T003 both write dist/index.html" })).toBe(false);
+    expect(persistentDefect({ ...finding, description: "T002 and T003 both write dist/index.html" })).toBe(true);
   });
   test("is not recognised for a dropped clause, the host coverage finding or another kind", () => {
     expect(restrictsRequest({ ...base, description: "The spec omits the --json flag the request asks for" })).toBe(false);

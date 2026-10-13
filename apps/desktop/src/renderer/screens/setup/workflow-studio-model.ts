@@ -6,7 +6,13 @@ import {
   type Walkthrough,
 } from "../../../../../../src/core/workflows/v2/walkthrough.js";
 import type { DefinitionSummary, LineStage, WorkflowLine } from "../../client/start.js";
-import type { BindingView, EditorView, Outcome, StageView } from "../../client/workflow-editor.js";
+import type {
+  BindingView,
+  EditorView,
+  InsertableStage,
+  Outcome,
+  StageView,
+} from "../../client/workflow-editor.js";
 import { FINISH, lineOf, type Station } from "../runs/line-model.js";
 import { stageLabel } from "../runs/model.js";
 
@@ -334,34 +340,60 @@ export function edgeNear(edges: readonly GraphEdge[], p: Point, reach = 40): Gra
   return best;
 }
 
+/** "passes", "fails", "asks for changes": how a sentence about a transition reads. */
+export const OUTCOME_WHEN: Record<Outcome, string> = {
+  passed: "passes",
+  failed: "fails",
+  changes_requested: "asks for changes",
+};
+
+/** A choice of outcome in the new-arrow dialog, with why it is taken when it is. */
+export interface ArrowOutcome {
+  on: Outcome;
+  taken: string | null;
+}
+export interface ArrowDraft {
+  /** The arrow goes back along the line (or to the same station), so it is a loop with rounds. */
+  back: boolean;
+  outcomes: ArrowOutcome[];
+  /** The outcome picked first: the free one that fits the direction, else any free one. */
+  on: Outcome | null;
+  /** The rounds a new loop starts with. */
+  rounds: number;
+}
+
 /**
- * The transition a drag from one station to another adds: forward on `passed`, backward on the
- * stage's other outcome with the smallest loop bound offered. Null with the reason when the
- * editor would refuse it.
+ * What the new-arrow dialog offers for an arrow from `stage` to `to`, or why there can be none.
+ * Forward arrows usually carry `passed` and arrows back a failure, but any free outcome is allowed.
  */
-export function linkFor(
+export function arrowDraft(
   stage: StageView,
   to: string,
   view: EditorView,
-): { ok: true; on: Outcome; loop: number | null } | { ok: false; reason: string } {
+): { ok: true; draft: ArrowDraft } | { ok: false; reason: string } {
+  if (to === stage.id) return { ok: false, reason: "An arrow goes to another station." };
   if (!stage.transitionChoices.to.includes(to))
     return { ok: false, reason: `${stage.id} cannot lead to ${to}.` };
   const order = new Map(view.stages.map((s, i) => [s.id, i]));
   const back = to !== FINISH && (order.get(to) ?? 0) <= (order.get(stage.id) ?? 0);
-  const taken = new Set(stage.targets.flatMap((t) => (t.transition ? [t.transition.on] : [])));
-  const outcomes = stage.transitionChoices.on.filter((o) =>
-    back ? o !== "passed" : o === "passed",
+  const used = new Map(
+    stage.targets.flatMap((t) =>
+      t.transition ? [[t.transition.on, t.transition.to] as const] : [],
+    ),
   );
-  const on = outcomes.find((o) => !taken.has(o));
-  if (!on)
+  const outcomes = stage.transitionChoices.on.map((on) => {
+    const target = used.get(on);
     return {
-      ok: false,
-      reason: outcomes.length
-        ? `${stage.id} already has a transition on ${outcomes.map((o) => o.replaceAll("_", " ")).join(" and ")}. Remove it first.`
-        : `${stage.id} only passes, so it cannot send work back. Loops start at checks, reviews and convergence.`,
+      on,
+      taken: target === undefined ? null : `already goes to ${target === FINISH ? "done" : target}`,
     };
-  const loops = stage.transitionChoices.loop.filter((n): n is number => n !== null);
-  return { ok: true, on, loop: back ? (loops[0] ?? null) : null };
+  });
+  const free = outcomes.filter((o) => o.taken === null).map((o) => o.on);
+  const fits = free.find((on) => (back ? on !== "passed" : on === "passed"));
+  return {
+    ok: true,
+    draft: { back, outcomes, on: fits ?? free[0] ?? null, rounds: 3 },
+  };
 }
 
 /** The gates the library offers: every gate some target of the view can bind, with its summary. */
@@ -419,4 +451,36 @@ export function lineFromView(view: EditorView, known?: WorkflowLine): WorkflowLi
     }),
   );
   return { stages, loops };
+}
+
+/** The stations a custom workflow can add, in words, in the order the palette shows them. */
+export const NEW_STATIONS: { type: InsertableStage; name: string; what: string }[] = [
+  { type: "check", name: "Check", what: "runs gates on the work, no model calls" },
+  { type: "review", name: "Review", what: "a model reviews the work and may ask for changes" },
+  { type: "approval", name: "Approval", what: "waits for you to approve before it goes on" },
+  { type: "wait", name: "Wait", what: "polls command gates until they pass or time out" },
+];
+const NEW_ID: Record<InsertableStage, string> = {
+  check: "check",
+  review: "review",
+  approval: "approve",
+  wait: "wait",
+};
+
+/** The id the editor gives a new station of `type`, as core `insertStage` picks it. */
+export function newStationId(view: EditorView, type: InsertableStage): string {
+  const taken = new Set(view.stages.map((s) => s.id));
+  for (const s of view.stages)
+    for (const t of s.targets) if (t.target.kind === "transition") taken.add(t.target.id);
+  const base = NEW_ID[type];
+  let id = base;
+  for (let n = 2; taken.has(id) || taken.has(`${id}-passed`); n++) id = `${base}-${n}`;
+  return id;
+}
+
+/** Why a new station cannot go on this arrow, or null when it can. */
+export function stationSpot(edge: Pick<GraphEdge, "loop" | "back">): string | null {
+  return edge.loop !== null || edge.back
+    ? "A station goes on a forward arrow, not on a loop."
+    : null;
 }

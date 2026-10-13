@@ -9,6 +9,7 @@ import {
   statusGlyph,
   statusTone,
 } from "./format.js";
+import { usd } from "./UsageView.js";
 
 /** Runs that need the user come first, then active runs, then history; newest first inside each. */
 export function orderRuns(runs: RunSummary[]): RunSummary[] {
@@ -93,7 +94,7 @@ export function RunList({
         const bg = selected ? t.bgPopupHighlight : t.bgPopup;
         const detail = progressText(run);
         const tokens = run.snapshot.tokenUsage
-          ? ` · ${formatTokens(run.snapshot.tokenUsage)}/${formatTokens(run.budget.maxTokens)}`
+          ? ` · ${formatTokens(run.snapshot.tokenUsage)}/${formatTokens(run.budget.maxTokens)}${run.snapshot.estimatedCostUsd !== null ? ` · ${usd(run.snapshot.estimatedCostUsd)}` : ""}`
           : "";
         if (narrow)
           return (

@@ -67,7 +67,7 @@ export function launchedTone(view: { status: string; active: boolean }): LaunchT
 
 /** The tone of a notice: a merged task and a finished item are good news, the rest by status. */
 export function noteTone(note: LaunchNote): LaunchTone {
-  if (note.event === "task-closed") return "ok";
+  if (note.event === "task-closed" || note.event === "auto-answered") return "ok";
   return launchedTone({ status: note.status, active: !/^(completed|done)/.test(note.status) });
 }
 

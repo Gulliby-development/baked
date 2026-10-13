@@ -901,7 +901,7 @@ export const CorrectionSchema = z
     newGraphHash: Hash,
     findingIds: z.array(SafeId).min(1),
     taskIds: z.array(TaskId).min(1),
-    roundKind: z.enum(["repair", "convergence"]),
+    roundKind: z.enum(["repair", "review", "convergence"]),
     round: z.number().int().positive(),
   })
   .strict();
@@ -1397,6 +1397,8 @@ export interface RunSnapshot {
   tokenUsage: number;
   activeMs: number;
   estimatedCostUsd: number | null;
+  /** The run's dollar cap (`policy.maxCostUsd`); present only when the run has one. */
+  maxCostUsd?: number;
   verificationState: "not_verified" | "current" | "stale" | "invalid";
   /**
    * Findings the run is accepted with (known limitations): a completed run with any is not
@@ -1584,7 +1586,7 @@ export interface WorkflowService {
   extendBudget(
     runId: string,
     command: CommandIdentity,
-    limits?: Partial<import("./budget.js").BudgetLimits>,
+    limits?: Partial<import("./budget.js").BudgetLimits> & { maxCostUsd?: number },
   ): Promise<RunSnapshot>;
   /** Moves a stopped run to other models from where it stopped; the run keeps its status. */
   reroute(

@@ -2,10 +2,11 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { findPricing } from "../llm/pricing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { growBudgetOnProgress } from "./budget.js";
+import { costRate, growBudgetOnProgress } from "./budget.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { migration001 } from "./migrations/001.js";
@@ -20,6 +21,7 @@ import { migration009 } from "./migrations/009.js";
 import { migration010 } from "./migrations/010.js";
 import { migration011 } from "./migrations/011.js";
 import { migration012 } from "./migrations/012.js";
+import { migration013 } from "./migrations/013.js";
 import {
   type AgentProfile,
   type CommandIdentity,
@@ -36,7 +38,9 @@ import {
   type WorkflowEvent,
 } from "./schemas.js";
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
+import type { AttemptUsageRecord } from "./step-budget.js";
 import { type RuntimeState, RuntimeStateSchema, type Snapshot } from "./types.js";
+import { attemptCost } from "./usage.js";
 import type { WorkflowV2 } from "./v2/definition.js";
 
 export const newId = (): string => randomUUID();
@@ -56,6 +60,8 @@ export interface RunRow {
   policy_json: string;
   input_manifest_json: string;
   repair_rounds: number;
+  /** Repair rounds started by review passes; they have their own `maxRepairRounds` budget (#928). */
+  review_rounds: number;
   convergence_rounds: number;
   corrective_tasks: number;
   agent_calls: number;
@@ -231,6 +237,7 @@ const MIGRATIONS = [
   { version: 10, sql: migration010 },
   { version: 11, sql: migration011 },
   { version: 12, sql: migration012 },
+  { version: 13, sql: migration013 },
 ] as const;
 
 /** What the runs of one workflow database spent, per stage and per task, newest 200 first. */
@@ -310,6 +317,11 @@ export function readStoreHistory(path: string): PastRun[] {
   }
 }
 
+/** The snapshot field of a run's dollar cap, left out when the policy has none. */
+function costCapOf(policyJson: string): { maxCostUsd?: number } {
+  const cap = (JSON.parse(policyJson) as { maxCostUsd?: unknown }).maxCostUsd;
+  return typeof cap === "number" ? { maxCostUsd: cap } : {};
+}
 export class WorkflowStore {
   private readonly db: Database;
   readonly path: string;
@@ -483,8 +495,8 @@ export class WorkflowStore {
       workspaceHash: state.workspaceHash,
       tokenUsage: row.token_usage,
       activeMs: row.active_ms,
-      estimatedCostUsd:
-        row.estimated_cost_microusd === null ? null : row.estimated_cost_microusd / 1e6,
+      estimatedCostUsd: this.costOf(id, row.estimated_cost_microusd),
+      ...costCapOf(row.policy_json),
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
       reviewNotes: { count: noteIds.length, ids: noteIds },
@@ -1238,6 +1250,7 @@ export class WorkflowStore {
         (projected > policy.maxTotalTokens && !growBudgetOnProgress(this, runId, policy, projected))
       )
         throw new WorkflowFault("BUDGET_EXHAUSTED", "Run agent/token/time budget exhausted");
+      if (modelId) this.assertCostFits(runId, policy, modelId, tokens);
       this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
       const id = newId();
       const ordinal = this.attempts(runId).filter((a) => a.step_id === stepId).length + 1;
@@ -1283,6 +1296,7 @@ export class WorkflowStore {
     if (update.changes !== 1)
       throw new WorkflowFault("REVISION_CONFLICT", "Attempt no longer running");
     this.db.run("UPDATE runs SET token_usage=token_usage+? WHERE id=?", [usedTokens ?? 0, runId]);
+    this.addAttemptCost(runId, id);
     this.emit(runId, {
       type: "attempt.finished",
       payload: { attemptId: id, status, usageComplete: usedTokens !== null, usedTokens },
@@ -1298,6 +1312,110 @@ export class WorkflowStore {
       runId,
       attemptId,
     ]);
+  }
+  /**
+   * The estimated USD cost of one model attempt from its recorded usage and the price table;
+   * null for host attempts, attempts without per-step usage and unpriced models.
+   */
+  private attemptCostUsd(runId: string, attemptId: string): number | null {
+    const model = this.attempts(runId).find((a) => a.id === attemptId)?.model_id ?? null;
+    if (model === null) return null;
+    const row = this.latestArtifact(runId, `attempts/${attemptId}/usage.json`);
+    if (!row) return null;
+    const usage = JSON.parse(this.readArtifact(runId, row.id)) as AttemptUsageRecord;
+    return attemptCost(model, usage);
+  }
+  /**
+   * Adds a finished attempt's cost to the run row. The first priced attempt of a run recorded
+   * before the row carried costs starts from the sum of the run's earlier attempts.
+   */
+  private addAttemptCost(runId: string, attemptId: string): void {
+    const cost = this.attemptCostUsd(runId, attemptId);
+    if (cost === null) return;
+    const stored = this.run(runId).estimated_cost_microusd;
+    if (stored === null) {
+      this.pastCosts.delete(runId);
+      const total = this.costOf(runId, null);
+      if (total !== null)
+        this.db.run("UPDATE runs SET estimated_cost_microusd=? WHERE id=?", [
+          Math.round(total * 1e6),
+          runId,
+        ]);
+      return;
+    }
+    this.db.run("UPDATE runs SET estimated_cost_microusd=? WHERE id=?", [
+      stored + Math.round(cost * 1e6),
+      runId,
+    ]);
+  }
+  /** Run costs summed from attempt usage for runs recorded before the run row carried them. */
+  private readonly pastCosts = new Map<string, { attempts: number; cost: number | null }>();
+  /**
+   * The run's estimated cost in USD. Runs that finished attempts before the cost was kept on the
+   * run row get it summed from their attempts' usage once per attempt count.
+   */
+  private costOf(runId: string, microUsd: number | null): number | null {
+    if (microUsd !== null) return microUsd / 1e6;
+    const finished = this.attempts(runId).filter(
+      (a) => a.model_id !== null && a.status !== "running",
+    );
+    if (finished.length === 0) return null;
+    const cached = this.pastCosts.get(runId);
+    if (cached?.attempts === finished.length) return cached.cost;
+    let cost: number | null = null;
+    for (const attempt of finished) {
+      const one = this.attemptCostUsd(runId, attempt.id);
+      if (one !== null) cost = (cost ?? 0) + one;
+    }
+    this.pastCosts.set(runId, { attempts: finished.length, cost });
+    return cost;
+  }
+  /**
+   * The run's cost against its dollar cap: what finished attempts cost, and the tokens every
+   * other open attempt still reserves priced at the run's rate so far (`costRate`), so parallel
+   * attempts reserve against what is left instead of all starting on the same remainder.
+   */
+  costUsage(runId: string, attemptId?: string): { spentUsd: number; reservedUsd: number } {
+    const row = this.run(runId);
+    const spent = this.costOf(runId, row.estimated_cost_microusd);
+    const reservedUsd = this.attempts(runId)
+      .filter((a) => !a.usage_complete && a.id !== attemptId && a.model_id !== null)
+      .reduce(
+        (sum, a) => sum + a.reserved_tokens * costRate(spent, row.token_usage, a.model_id),
+        0,
+      );
+    return { spentUsd: spent ?? 0, reservedUsd };
+  }
+  /**
+   * Refuses a model call the dollar cap (`maxCostUsd`) no longer covers: the cost spent, the cost
+   * other open attempts reserve and this call's tokens at the run's rate. A model without a price
+   * is refused too, so it can never spend outside the cap.
+   */
+  private assertCostFits(
+    runId: string,
+    policy: RunPolicy,
+    model: string,
+    tokens: number,
+    attemptId?: string,
+  ): void {
+    const cap = policy.maxCostUsd;
+    if (cap === null) return;
+    if (findPricing(model) === null)
+      throw new WorkflowFault(
+        "BUDGET_EXHAUSTED",
+        `No price is known for ${model}, so the run's cost cap cannot hold`,
+        { reason: "cost", model, maxCostUsd: cap },
+      );
+    const { spentUsd, reservedUsd } = this.costUsage(runId, attemptId);
+    const row = this.run(runId);
+    const requestedUsd =
+      tokens * costRate(this.costOf(runId, row.estimated_cost_microusd), row.token_usage, model);
+    if (spentUsd + reservedUsd + requestedUsd > cap)
+      throw new WorkflowFault(
+        "BUDGET_EXHAUSTED",
+        "The next model call would pass the run's cost cap",
+        { reason: "cost", spentUsd, reservedUsd, requestedUsd, maxCostUsd: cap },
+      );
   }
   /** Tokens an executor recorded for the attempt so far, or null when none reported any. */
   recordedUsage(runId: string, attemptId: string): number | null {
@@ -1337,6 +1455,8 @@ export class WorkflowStore {
             maxTotalTokens: policy.maxTotalTokens,
           },
         );
+      const model = this.attempts(runId).find((a) => a.id === attemptId)?.model_id ?? null;
+      if (model) this.assertCostFits(runId, policy, model, tokens, attemptId);
       this.assertBelowCheckpoint(runId, policy, run.token_usage + reserved + tokens);
       this.db.run(
         "UPDATE attempts SET reserved_tokens=MAX(reserved_tokens,?) WHERE run_id=? AND id=? AND status='running'",
@@ -1348,7 +1468,7 @@ export class WorkflowStore {
           usedTokens: run.token_usage,
           reservedTokens: reserved + tokens,
           activeMs: run.active_ms,
-          estimatedCostUsd: null,
+          estimatedCostUsd: this.costOf(runId, run.estimated_cost_microusd),
         },
       });
     });
@@ -1363,8 +1483,13 @@ export class WorkflowStore {
   addCorrectiveTasks(runId: string, count: number): void {
     this.db.run("UPDATE runs SET corrective_tasks=corrective_tasks+? WHERE id=?", [count, runId]);
   }
-  addRound(runId: string, kind: "repair" | "convergence", count: number): void {
-    const column = kind === "repair" ? "repair_rounds" : "convergence_rounds";
+  addRound(runId: string, kind: "repair" | "review" | "convergence", count: number): void {
+    const column =
+      kind === "repair"
+        ? "repair_rounds"
+        : kind === "review"
+          ? "review_rounds"
+          : "convergence_rounds";
     this.db.run(
       `UPDATE runs SET ${column}=${column}+1,corrective_tasks=corrective_tasks+? WHERE id=?`,
       [count, runId],

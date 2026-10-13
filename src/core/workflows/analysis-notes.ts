@@ -152,6 +152,9 @@ const RESTRICTS =
   /\b(restrict\w*|narrow\w*|exclud\w*|limit(?:s|ed|ing|ation)?|reject\w*|out[- ]of[- ]scope|outOfScope|unrequested|not requested|stricter|only (?:supports?|accepts?|allows?))\b/i;
 const DROPS =
   /\b(omits?|omitted|drops?|dropped|missing|uncovered|not covered|no (?:task|criterion|requirement|test) (?:covers?|implements?|exercises?)|does not (?:cover|implement|mention))\b/i;
+/** Wording of a finding that says the spec adds something the request never asked for. */
+const ADDS =
+  /\b(?:(?:request|brief|prompt|user)\s+(?:does not|doesn't|did not|never)\s+(?:ask|request|require|mention|state|contain|include|name)\w*|not (?:asked|requested|required|mentioned|stated) (?:for )?(?:by|in) the (?:request|brief)|absent from the (?:request|brief)|beyond (?:the|what the) (?:request|brief)|invent\w*|added scope|scope (?:creep|expansion))\b/i;
 
 /**
  * A scope finding that says the spec adds a restriction (a domain, a rejected form, an exclusion)
@@ -159,9 +162,27 @@ const DROPS =
  * restriction, and one that survives is recorded as an assumption rather than asked about
  * (bench round 06: input domains from the spec author's profile raised such findings in 5 of 10
  * runs and 3 waited for a person whose answer was always the request's own wording). The host's
- * own coverage finding and findings that name a dropped request clause still ask.
+ * own coverage finding and findings that name a dropped request clause still ask. A finding that
+ * says the spec adds a requirement the request never asked for (bench round 14: a CI matrix on
+ * Windows, macOS and Linux in 3 of 3 controls, two clarification requests under assume) is the
+ * same case: the request wins and the addition is removed.
  */
-export function restrictsRequest(finding: {
+/**
+ * Wording of a finding that sets the spec against what the request itself states ("the request
+ * allows it", "the brief's explicit ban"): the request settles it.
+ */
+const SETTLES =
+  /\b(?:request|brief)(?:'s)?\s+(?:explicitly\s+|clearly\s+)?(?:allows?|permits?|states?|says|specifies|requires?|asks?|names?|bans?|forbids?|excludes?|includes?|defines?|accepts?|treats?)\b|\b(?:request|brief)'s\s+(?:explicit|stated)\b/i;
+
+/**
+ * An `inconsistency` finding whose one side is the request (cfgtrace 832775c7, bench round 15: a
+ * spec assumption excludes `tests/**`, the request allows it). It is not a defect between two
+ * artifacts to fix both ways: the request wins, like a restriction it lacks.
+ */
+/** Whether a conflict report names what the request itself states as one of its sides. */
+export const namesRequestSide = (text: string): boolean => SETTLES.test(text);
+
+export function requestSettles(finding: {
   id?: string;
   kind: string;
   blocking: boolean;
@@ -169,16 +190,32 @@ export function restrictsRequest(finding: {
 }): boolean {
   return (
     finding.blocking &&
+    finding.kind === "inconsistency" &&
+    !(finding.id ?? "").startsWith("COVERAGE") &&
+    SETTLES.test(finding.description)
+  );
+}
+
+export function restrictsRequest(finding: {
+  id?: string;
+  kind: string;
+  blocking: boolean;
+  description: string;
+}): boolean {
+  if (requestSettles(finding)) return true;
+  return (
+    finding.blocking &&
     finding.kind === "scope" &&
     !(finding.id ?? "").startsWith("COVERAGE") &&
-    RESTRICTS.test(finding.description) &&
-    !DROPS.test(finding.description)
+    (RESTRICTS.test(finding.description) || ADDS.test(finding.description)) &&
+    // "The request does not mention CI" names the request, not a clause the spec drops.
+    !DROPS.test(finding.description.replace(new RegExp(ADDS.source, "gi"), " "))
   );
 }
 
 /** What the host tells the spec author when a scope finding names a restriction the request lacks. */
 export const REQUEST_NOTE =
-  'The request is authoritative. These findings name restrictions the request does not state (input limits, rejected forms, excluded cases). Delete every such restriction from the spec; a domain you want to keep may be recorded only as a non-narrowing assumption ("<domain> Assumed: <value>, because <reason>."), never as out of scope, a rejected form or an exclusion. Do not trade one restriction for another.';
+  'The request is authoritative. These findings name restrictions the request does not state (input limits, rejected forms, excluded cases) or requirements, criteria and tasks the request does not ask for (such as CI, a platform matrix or release automation), or contradict what the request states. Delete every such restriction or addition, and change whatever contradicts the request to what it states, from the spec and the plan, with the criteria and tasks that only serve it; a domain you want to keep may be recorded only as a non-narrowing assumption ("<domain> Assumed: <value>, because <reason>."), never as out of scope, a rejected form or an exclusion. Do not trade one restriction for another.';
 
 /** Whether a blocking finding may be settled by a recorded assumption instead of a person. */
 export function assumable(finding: { kind: string; blocking: boolean }): boolean {
@@ -190,8 +227,16 @@ export function assumable(finding: { kind: string; blocking: boolean }): boolean
 }
 
 /** Whether a blocking finding is a defect the analysis must see fixed rather than assumed. */
-export function persistentDefect(finding: { kind: string; blocking: boolean }): boolean {
-  return finding.blocking && finding.kind === "inconsistency";
+export function persistentDefect(finding: {
+  kind: string;
+  blocking: boolean;
+  description?: string;
+}): boolean {
+  return (
+    finding.blocking &&
+    finding.kind === "inconsistency" &&
+    !requestSettles({ ...finding, description: finding.description ?? "" })
+  );
 }
 
 /** What the host tells the spec author when a defect survived the assumption reroute. */

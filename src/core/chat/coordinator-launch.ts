@@ -26,6 +26,7 @@ import {
 import type { WorkflowProposal } from "../workflows/preset-router.js";
 import { terminalStates } from "../workflows/state-machine.js";
 import type { DefinitionSummary } from "../workflows/v2/definitions.js";
+import type { RunApprover } from "./approval-rules.js";
 import { BriefStore, type LaunchedEntry } from "./coordinator.js";
 import type { ProjectStateSource } from "./project-state.js";
 import type { ChatMode, ChatPrompt, ChatService, ChatSession } from "./sessions.js";
@@ -85,6 +86,8 @@ export interface ProjectLauncher {
   }): Promise<{ initiativeId: string }>;
   /** Issues for flows; without it every flow gets a local task. */
   tasks?: TaskTracker;
+  /** Approves a run's plan and continues it; the approval rules use it (`approval-rules.ts`). */
+  approveRun?: RunApprover["approveRun"];
   /**
    * Answers a pending request of a run or cancels it, as `baked workflow approve|reject|cancel`
    * does; an approved run goes on in the background. Without it the coordinator cannot control

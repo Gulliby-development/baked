@@ -99,7 +99,7 @@ export interface HookInput {
   tool_response?: unknown;
   /** Tool call ID from the model. */
   tool_use_id?: string;
-  /** `SessionStart`: why the session started (`startup`, `resume`, `clear` or `compact`). */
+  /** `SessionStart`: why the session started (`startup`, `resume`, `clear`, `compact` or `fork`). */
   source?: string;
   /** `SessionEnd`: why the session ended (`clear`, `logout`, `prompt_input_exit` or `other`). */
   reason?: string;
@@ -111,6 +111,16 @@ export interface HookInput {
   title?: string;
   /** `Notification`: its kind, which the matcher is tested against. */
   notification_type?: string;
+  /** `PreCompact`/`PostCompact`: `manual` (asked for) or `auto` (the context filled up). */
+  trigger?: string;
+  /** `SubagentStart`/`SubagentStop`: the subagent's id. */
+  agent_id?: string;
+  /** `SubagentStart`/`SubagentStop`: the subagent's role, which the matcher is tested against. */
+  agent_type?: string;
+  /** `Stop`/`SubagentStop`: whether a Stop hook already continued this turn; BAKED sends false. */
+  stop_hook_active?: boolean;
+  /** `StopFailure`: why the turn failed. */
+  error?: string;
   /** What a `RunAttention` hook is told about the run that waits. */
   run_attention?: {
     run_id: string;

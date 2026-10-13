@@ -462,6 +462,8 @@ export interface ComparedRun {
   activeMs: number;
   agentCalls: number;
   repairRounds: number;
+  /** Absent from a server older than the review round counter. */
+  reviewRounds?: number;
   correctiveTasks: number;
   stages: { stage: string; attempts: number; tokens: number }[];
   models: { model: string; tokens: number }[];

@@ -23,8 +23,10 @@ import {
   effectiveMode,
   type Gate,
   type GateBinding,
+  MAX_LOOP_ROUNDS,
   type Outcome,
   PRESETS,
+  RECOMMENDED_LOOP_ROUNDS,
   STAGE_OUTCOMES,
   type Stage,
   stageGates,
@@ -523,7 +525,7 @@ export function transitionChoices(
   return {
     to: [...definition.stages.map((s) => s.id).filter((id) => id !== from), "done"],
     on: stage ? [...STAGE_OUTCOMES[stage.type]] : ["passed"],
-    loop: [null, 1, 2, 3, 4, 5],
+    loop: [null, 1, 2, 3, 4, 5, 10, 20, MAX_LOOP_ROUNDS],
   };
 }
 export function defaultTransitionDraft(definition: WorkflowV2, from: string): TransitionDraft {
@@ -632,7 +634,7 @@ export function stageFields(state: EditorState, stageId: string): StageField[] {
       key: `loop:${t.id}`,
       label: `Loop ${t.id}`,
       value: String(t.loop?.maxIterations ?? 1),
-      hint: "1 to 5 rounds",
+      hint: `1 to ${MAX_LOOP_ROUNDS} rounds, ${RECOMMENDED_LOOP_ROUNDS} or fewer recommended`,
     });
   return fields;
 }
@@ -708,17 +710,121 @@ export function changeStageField(
     const id = key.slice("loop:".length);
     const transition = state.definition.transitions.find((t) => t.id === id && t.from === stageId);
     if (!transition?.loop) return { state, error: `${id} is not a loop` };
-    const maxIterations = cycle([1, 2, 3, 4, 5], transition.loop.maxIterations, delta);
-    return edit(state, (d) => ({
-      ...d,
-      transitions: d.transitions.map((t) => (t.id === id ? { ...t, loop: { maxIterations } } : t)),
-    }));
+    return setLoopRounds(state, id, transition.loop.maxIterations + delta);
   }
   return { state, error: `${stageId} has no option ${key}` };
 }
 
+/** Sets how many rounds a loop transition may run, 1 to MAX_LOOP_ROUNDS. */
+export function setLoopRounds(state: EditorState, id: string, rounds: number): EditResult {
+  const transition = state.definition.transitions.find((t) => t.id === id);
+  if (!transition?.loop) return { state, error: `${id} is not a loop` };
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_LOOP_ROUNDS)
+    return { state, error: `A loop runs 1 to ${MAX_LOOP_ROUNDS} rounds` };
+  return edit(state, (d) => ({
+    ...d,
+    transitions: d.transitions.map((t) =>
+      t.id === id ? { ...t, loop: { maxIterations: rounds } } : t,
+    ),
+  }));
+}
+
 const WAIT_INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
 const WAIT_TIMEOUTS = [1, 5, 10, 15, 30, 60, 120, 240, 480, 720, 1440];
+
+/** The stations the editors can insert into an arrow. */
+export const INSERTABLE_STAGES = ["check", "review", "approval", "wait"] as const;
+export type InsertableStage = (typeof INSERTABLE_STAGES)[number];
+/** What each new station does, in the words the editors show. */
+export const STATION_WORDS: Record<InsertableStage, { name: string; what: string }> = {
+  check: { name: "Check", what: "runs gates on the work, no model calls" },
+  review: { name: "Review", what: "a model reviews the work and may ask for changes" },
+  approval: { name: "Approval", what: "waits for you to approve before it goes on" },
+  wait: { name: "Wait", what: "polls command gates until they pass or time out" },
+};
+const INSERT_ID: Record<InsertableStage, string> = {
+  check: "check",
+  review: "review",
+  approval: "approve",
+  wait: "wait",
+};
+
+function newStage(d: WorkflowV2, type: InsertableStage, id: string, from: Stage): Stage | string {
+  switch (type) {
+    case "check":
+      return { id, type, consumes: [], produces: "gates", effects: "none", gates: [] };
+    case "review":
+      return { id, type, consumes: [], produces: "review", effects: "none", gates: [] };
+    case "wait":
+      return {
+        id,
+        type,
+        consumes: [],
+        produces: "gates",
+        effects: "none",
+        gates: [],
+        intervalSeconds: 30,
+        timeoutMinutes: 30,
+      };
+    case "approval": {
+      const covers = d.stages.filter((s) => s.effects === "workspace-write").map((s) => s.id);
+      if (!covers.length)
+        return "An approval authorizes a stage that writes files, and this workflow has none";
+      return {
+        id,
+        type,
+        consumes: [from.produces],
+        produces: "decision",
+        effects: "none",
+        decision: "human",
+        covers,
+      };
+    }
+  }
+}
+
+/**
+ * Inserts a new station into a forward transition: the transition now leads to the new station,
+ * which passes on to the old target. A check, review or wait station has no gate yet (a problem
+ * until one is bound) and no failure edge; an approval waits for a person and covers every stage
+ * that writes files.
+ */
+export function insertStage(
+  state: EditorState,
+  transitionId: string,
+  type: InsertableStage,
+): EditResult {
+  return edit(state, (d) => {
+    const edge = d.transitions.find((t) => t.id === transitionId);
+    if (!edge) return `Unknown transition ${transitionId}`;
+    if (edge.loop) return "A station goes on a forward arrow, not on a loop";
+    const from = d.stages.find((s) => s.id === edge.from);
+    if (!from) return `Unknown stage ${edge.from}`;
+    const taken = new Set([...d.stages.map((s) => s.id), ...d.transitions.map((t) => t.id)]);
+    const base = INSERT_ID[type];
+    let id = base;
+    for (let n = 2; taken.has(id) || taken.has(`${id}-passed`); n++) id = `${base}-${n}`;
+    const stage = newStage(d, type, id, from);
+    if (typeof stage === "string") return stage;
+    const at = d.stages.findIndex((s) => s.id === edge.from) + 1;
+    return {
+      ...d,
+      stages: [...d.stages.slice(0, at), stage, ...d.stages.slice(at)],
+      transitions: [
+        ...d.transitions.map((t) => (t.id === edge.id ? { ...t, to: id } : t)),
+        {
+          id: `${id}-passed`,
+          from: id,
+          to: edge.to,
+          on: "passed",
+          carries: stage.produces,
+          gates: [],
+        },
+      ],
+      limits: { maxStageVisits: Math.max(d.limits.maxStageVisits, d.stages.length + 1) },
+    };
+  });
+}
 
 /**
  * Inserts a wait stage on the `passed` edge out of `afterStageId`: that edge now leads to the wait
@@ -726,43 +832,27 @@ const WAIT_TIMEOUTS = [1, 5, 10, 15, 30, 60, 120, 240, 480, 720, 1440];
  * no `failed` edge, so a timeout blocks the run until one is added.
  */
 export function insertWaitStage(state: EditorState, afterStageId: string): EditResult {
-  return edit(state, (d) => {
-    const out = d.transitions.filter(
-      (t) => t.from === afterStageId && t.on === "passed" && !t.loop,
-    );
-    const edge = out[0];
-    if (!edge || out.length > 1 || edge.when)
-      return `${afterStageId} needs exactly one passed transition to insert a wait stage after it`;
-    const taken = new Set([...d.stages.map((s) => s.id), ...d.transitions.map((t) => t.id)]);
-    let id = "wait";
-    for (let n = 2; taken.has(id) || taken.has(`${id}-passed`); n++) id = `wait-${n}`;
-    const stage: Stage = {
-      id,
-      type: "wait",
-      consumes: [],
-      produces: "gates",
-      effects: "none",
-      gates: [],
-      intervalSeconds: 30,
-      timeoutMinutes: 30,
-    };
-    const at = d.stages.findIndex((s) => s.id === afterStageId) + 1;
+  const out = state.definition.transitions.filter(
+    (t) => t.from === afterStageId && t.on === "passed" && !t.loop,
+  );
+  const edge = out[0];
+  if (!edge || out.length > 1 || edge.when)
     return {
-      ...d,
-      stages: [...d.stages.slice(0, at), stage, ...d.stages.slice(at)],
-      transitions: [
-        ...d.transitions.map((t) => (t.id === edge.id ? { ...t, to: id } : t)),
-        { id: `${id}-passed`, from: id, to: edge.to, on: "passed", carries: "gates", gates: [] },
-      ],
-      limits: { maxStageVisits: Math.max(d.limits.maxStageVisits, d.stages.length + 1) },
+      state,
+      error: `${afterStageId} needs exactly one passed transition to insert a wait stage after it`,
     };
-  });
+  return insertStage(state, edge.id, "wait");
 }
-/** Removes a wait stage: the edges into it lead to where its `passed` edge led. */
-export function removeWaitStage(state: EditorState, stageId: string): EditResult {
+
+/**
+ * Removes a station: the arrows into it lead to where its `passed` arrow led, and the arrows out
+ * of it go. An arrow that would then point at its own station goes too.
+ */
+export function removeStage(state: EditorState, stageId: string): EditResult {
   return edit(state, (d) => {
     const stage = d.stages.find((s) => s.id === stageId);
-    if (stage?.type !== "wait") return "Only a wait stage can be removed here";
+    if (!stage) return `Unknown stage ${stageId}`;
+    if (d.stages.length === 1) return `${stageId} is the only stage`;
     const onward = d.transitions.find((t) => t.from === stageId && t.on === "passed" && !t.when);
     if (!onward) return `${stageId} has no passed transition to reconnect`;
     if (d.entry === stageId && onward.to === "done")
@@ -770,12 +860,25 @@ export function removeWaitStage(state: EditorState, stageId: string): EditResult
     return {
       ...d,
       entry: d.entry === stageId ? onward.to : d.entry,
-      stages: d.stages.filter((s) => s.id !== stageId),
+      stages: d.stages
+        .filter((s) => s.id !== stageId)
+        .map((s) =>
+          s.type === "approval" && s.covers.includes(stageId)
+            ? { ...s, covers: s.covers.filter((c) => c !== stageId) }
+            : s,
+        ),
       transitions: d.transitions
         .filter((t) => t.from !== stageId)
-        .map((t) => (t.to === stageId ? { ...t, to: onward.to } : t)),
+        .map((t) => (t.to === stageId ? { ...t, to: onward.to } : t))
+        .filter((t) => t.from !== t.to),
     };
   });
+}
+/** Removes a wait stage: the edges into it lead to where its `passed` edge led. */
+export function removeWaitStage(state: EditorState, stageId: string): EditResult {
+  const stage = state.definition.stages.find((s) => s.id === stageId);
+  if (stage?.type !== "wait") return { state, error: "Only a wait stage can be removed here" };
+  return removeStage(state, stageId);
 }
 
 // --- Copy, estimate and save -----------------------------------------------------------------

@@ -112,7 +112,24 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
 const RESULT_ROWS = 6;
 
 /** A coordinator's notice about launched work: a marked headline in its status tone, then why. */
+/** The heading over launched work; it says when approval rules answer some of its approvals. */
+export function launchedHeading(rulesOn: number): string {
+  return rulesOn
+    ? `Launched · ${rulesOn} approval ${rulesOn === 1 ? "rule" : "rules"} on (/coordinator rules)`
+    : "Launched";
+}
+
 function launchNoteLines(note: LaunchNote, width: number): ViewLine[] {
+  if (note.event === "auto-answered")
+    return [
+      ...labelled(
+        "  ✓ ",
+        `Approved ${note.answered ?? "an approval"} for ${launchLabel(note)}`,
+        width,
+        "accent",
+      ),
+      ...labelled("    ", `by your rule: ${note.why}`, width, "muted"),
+    ];
   const closed = note.event === "task-closed";
   const lines = labelled(
     closed ? "  ✓ " : "  ◆ ",
