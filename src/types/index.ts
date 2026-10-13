@@ -382,6 +382,17 @@ export interface AppConfig {
   /** LSP servers to disable (by Mason package name). Scoped: project overrides global. */
   disabledLspServers?: string[];
   agentFeatures?: AgentFeatures;
+  /**
+   * What an edit that introduces errors (in the edited file or a file importing it) does:
+   * `feedback` (default) keeps it and returns the errors, `reject` restores the file and returns
+   * the errors with the original text. Workflow runs take it from their policy.
+   */
+  editDiagnostics?: "feedback" | "reject";
+  /** Diagnostics around edits. Global only. */
+  diagnostics?: {
+    /** Wait for diagnostics before and after an edit, each, in ms. Default 2500. */
+    timeoutMs?: number;
+  };
   /** Tools disabled by the user. Persisted across sessions. */
   disabledTools?: string[];
   /** Instruction files to load into system prompt. Default: ["baked"] (baked.md only). */

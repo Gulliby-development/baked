@@ -201,8 +201,11 @@ export async function prepareStart(
     duplication: _duplication,
     qualityRules: requestRules,
     allowOverlappingWrites,
+    editDiagnostics: _editDiagnostics,
     ...rest
   } = policy;
+  // The project's chat setting is the default; `feedback` leaves the field out of the hash.
+  const editDiagnostics = policy.editDiagnostics ?? config.editDiagnostics ?? "feedback";
   // `ask` leaves the field out, so the policy hash of an asking run is what it was before.
   const clarification = request.clarification ?? clarificationOf(policy);
   // The run flag overrides the policy, which overrides the configured default; `warn` is the
@@ -219,6 +222,7 @@ export async function prepareStart(
     ...(mode === "worktree" ? { executionMode: mode } : {}),
     ...(allowOverlappingWrites ? { allowOverlappingWrites } : {}),
     ...(clarification === "assume" ? { clarification } : {}),
+    ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(qualityRules ? { qualityRules } : {}),
     ...(request.maxConcurrentWriters !== undefined

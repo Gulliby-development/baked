@@ -212,6 +212,13 @@ export const PolicySchema = z
       .strict(),
     skepticProfileId: SafeId,
     forceSecurityReview: z.boolean(),
+    /**
+     * What an edit that introduces errors in the edited file or a file importing it does during
+     * the run: `feedback` returns the errors, `reject` also restores the file. Absent means
+     * `feedback`, so stored policies keep their hash; a run takes `reject` from the project's
+     * `editDiagnostics` setting when the policy does not name it (start.ts).
+     */
+    editDiagnostics: z.enum(["feedback", "reject"]).optional(),
     allowedTools: UniqueStrings,
     network: z.enum(["deny", "ask", "allow"]),
     checks: z.array(CheckSchema),

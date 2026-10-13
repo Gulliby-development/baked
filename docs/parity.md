@@ -94,7 +94,7 @@ bun test tests/feature-parity.test.ts
 | Code graph | `/graph` | Not needed: a picture; scripts query the API | `/v1/graph`, `/v1/graph/file`, `/v1/graph/link` +1 | `project/graph` |
 | Progress of long waits: opening the project, indexing, starting a run | `/repo-map` | `--headless`, `baked workflow run` | `/v1/progress` | `project/graph` |
 | Enable or disable tools | `/tools` | Not needed: set disabledTools in config.json | `/v1/settings` | `settings/chat` |
-| Agent features: de-sloppify, verify edits, tier routing | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
+| Agent features: de-sloppify, verify edits, tier routing, edits that add errors | `/agent-features` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
 | Hooks: view and switch off | `/hooks` | Not needed: hooks are files scripts edit directly | `/v1/hooks`, `/v1/hooks/session` | `project/hooks` |
 | Skills: browse, install, remove | `/skills` | Not needed: `bunx skills add` installs from scripts | `/v1/skills`, `/v1/skills/catalog`, `/v1/skills/project/:id` +1 | `project/skills` |
 | Ask the agent about BAKED itself (bundled docs, baked_help tool) | `key Enter` | `--headless`, `--chat` | `/v1/sessions/:id/messages` | `project/chat` |
@@ -156,7 +156,7 @@ bun test tests/feature-parity.test.ts
 | Settings hub and raw config | `/settings` | Not needed: scripts edit config.json | `/v1/config` | `settings/app`, `settings/providers` |
 | Git menu: status, diff, commit, push, pull, branch, stash | `/git`, `/git status`, `/git diff` +9 | Not needed: scripts call git | `/v1/git`, `/v1/git/actions` | `project/git` |
 | Storage cleanup, model events and the error log | `/storage`, `/model-events`, `/errors` | Not needed: scripts read the log files | `/v1/diagnostics/storage`, `/v1/diagnostics/storage/cleanup`, `/v1/diagnostics/model-events` +1 | `project/diagnostics` |
-| Tool and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
+| Tool, edit diagnostics and watchdog timeouts, context-window overrides | `/timeouts` | `--timeout` | `/v1/settings` | `settings/chat` |
 | Telemetry switch | `/telemetry` | `baked telemetry` | `/v1/config` | `settings/telemetry` |
 | Notifications: system and webhook | `/notifications` | Not needed: scripts read the exit code and output | `/v1/config` | `settings/notifications` |
 

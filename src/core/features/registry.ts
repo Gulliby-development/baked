@@ -483,7 +483,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "agent-features",
     group: "Tools and code intelligence",
-    title: "Agent features: de-sloppify, verify edits, tier routing",
+    title: "Agent features: de-sloppify, verify edits, tier routing, edits that add errors",
     tui: ["/agent-features"],
     cli: notNeeded("set in config.json"),
     api: ["/v1/settings: agent-features page"],
@@ -1023,7 +1023,7 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "timeouts",
     group: "Projects and setup",
-    title: "Tool and watchdog timeouts, context-window overrides",
+    title: "Tool, edit diagnostics and watchdog timeouts, context-window overrides",
     tui: ["/timeouts"],
     cli: ["--timeout"],
     api: ["/v1/settings: limits page"],

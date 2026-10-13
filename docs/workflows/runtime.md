@@ -204,6 +204,10 @@ baked workflow memory restore s-0b7e55d1c4
 
 The listing marks a check the workspace policy already lists, and a proposed rule, as not sent; a rule shows its status, scope and how many runs had its finding, and `--json` returns `{enabled, entries, hidden, rendered}`, where `rendered` is the exact text the next run would receive (null when empty). In the TUI the **Runs** tab of `/memory` lists the same entries: Enter edits, Ctrl+N adds a note, Ctrl+A accepts a proposed rule, Ctrl+D forgets, Ctrl+R restores and typing filters. The desktop app has a **Run memory** section under the project's setup, and the local API serves `GET|POST /v1/workflow/memory`.
 
+### Diagnostics after edits
+
+Implementers get the same [diagnostics after each edit](../tools.md#diagnostics-after-edits) as the chat: new errors in the edited file and in up to 8 files that import it, in the run's worktree when it has one. The policy field `editDiagnostics` sets what an edit that adds errors does during the run: `feedback` returns the errors with the tool result, `reject` also restores the file and fails the edit with the errors and the original lines. A run that starts without the field takes the project's `editDiagnostics` chat setting; only `reject` is stored in the run's policy, so the approval digest covers it and a run under `feedback` keeps the policy hash it had before the field existed. Set it for one run with `workflows.policy.editDiagnostics` in `.baked/config.json` or `--policy FILE`.
+
 ### The run's own edits and undo
 
 A run keeps the edits it executed. A revision, a failed or interrupted task attempt and a fork leave the files as they are, and the runtime recognises content the run itself wrote by the effect journal:

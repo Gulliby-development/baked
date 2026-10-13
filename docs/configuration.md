@@ -61,6 +61,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `retry` | `maxTransientRetries: 3`, `maxStallRetries: 3`, `baseDelayMs` 1000 (chat) / 2000 (agents) | Retries on 429, 5xx, overload and stalled streams; the delay doubles each attempt |
 | `watchdog`, `watchdogTimeouts` | `false` | Retry stalled streams; `/watchdog` and `/timeouts` |
 | `toolTimeout` | `2` | Minutes before a shell, project or agent tool call times out; `0` disables |
+| `editDiagnostics` | `"feedback"` | What an edit that adds errors in its file or an importing file does: `feedback` returns them, `reject` also restores the file ([tools](tools.md#diagnostics-after-edits)) |
+| `diagnostics.timeoutMs` | `2500` | Global only. Wait for diagnostics before and after an edit, each; a check that does not finish in time is reported as not checked |
 | `cache.ttl` | `"5m"` | Anthropic prompt cache lifetime: `5m` or `1h` |
 | `memory.embeddingModel` | unset | Embedding model for memory recall; unset uses the offline embedder |
 | `mcpServers` | `[]` | MCP servers ([extensions](extensions.md#mcp-servers)) |
