@@ -52,6 +52,18 @@ describe("a task check failing on a file a pending task owns", () => {
     expect(pendingOwners(graph, rows, {}, main, `${output}\nsrc/main.tsx: bad`)).toEqual([]);
     expect(pendingOwners(graph, rows, {}, main, "1 test failed")).toEqual([]);
   });
+  test("waits for a pending task that writes a file it reads, though the error names its own file", () => {
+    // zoneslot-update c941a83a: App.tsx (T002) imports overlap.ts of T001; tsc names App.tsx.
+    const overlap = task("T001", "src/overlap.ts");
+    const reader = task("T002", "src/App.tsx", { readHints: ["src/overlap.ts"] });
+    const g: TaskGraph = { ...graph, tasks: [overlap, reader] };
+    const own = "src/App.tsx(4,10): error TS2305: Module './overlap' has no exported member 'localRanges'.";
+    expect(pendingOwners(g, [row(overlap, "pending"), row(reader, "implemented")], {}, reader, own)).toEqual(["T001"]);
+    expect(pendingOwners(g, [row(overlap, "pending"), row(reader, "implemented")], {}, reader, "1 test failed")).toEqual(["T001"]);
+    expect(pendingOwners(g, [row(overlap, "verified"), row(reader, "implemented")], {}, reader, own)).toEqual([]);
+    const later: TaskGraph = { ...g, tasks: [{ ...overlap, dependsOn: ["T002"] }, reader] };
+    expect(pendingOwners(later, [row(overlap, "pending"), row(reader, "implemented")], {}, reader, own)).toEqual([]);
+  });
   test("does not wait for an owner that depends on the task", () => {
     const later: TaskGraph = { ...graph, tasks: [main, { ...app, dependsOn: ["T003"] }] };
     expect(pendingOwners(later, [row(main, "implemented"), row(app, "pending")], {}, main, output)).toEqual([]);
