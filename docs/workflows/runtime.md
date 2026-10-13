@@ -515,13 +515,15 @@ The lease follows progress. While a run's owner shows progress (an event, a mode
 
 `workflow status` (headless JSON, TUI overview, desktop run header) shows `stalled` for a running run that has journaled no event for longer than `stepStallMs`.
 
+A provider outage gets the same treatment. When a model call keeps failing through its in-call retries and the route's fallback models (the provider is down or at capacity, or the connection keeps dropping) and the attempt changed no files, the run blocks with reason `provider_unavailable`. The service then resumes it by itself after a wait of `providerWaitMs` (1 minute by default), then three times as long each time (1, 3 and 9 minutes), at most `providerResumes` (3) times, counted in `providerResumes` of the run state. Each wait records `provider/resume-N.json` (`attempt`, `of`, `waitMs`, `retryAt`) before it starts, and while it runs the snapshot carries `autoRetry`: `{at, attempt, of}`; `workflow status` prints it, the TUI shows "Retrying by itself at ..." and the desktop run header "retrying by itself at ...". A person may resume, pause or cancel the run during the wait; the automatic resume then does nothing. An account problem (`provider_account`: a missing key, a sign-in, a spent quota) is not retried. After the last automatic resume the run stays blocked for a person, who can retry or move it to another model.
+
 Configuration (milliseconds, all optional):
 
 ```json
-{ "workflows": { "stall": { "toolTimeoutMs": 120000, "commandToolMs": 1800000, "stepStallMs": 1200000, "maxToolTimeouts": 3, "autoResumes": 3 } } }
+{ "workflows": { "stall": { "toolTimeoutMs": 120000, "commandToolMs": 1800000, "stepStallMs": 1200000, "maxToolTimeouts": 3, "autoResumes": 3, "providerResumes": 3, "providerWaitMs": 60000 } } }
 ```
 
-`autoResumes: 0` turns the automatic resume off. Set `stepStallMs` above the longest model call of the models you route to.
+`autoResumes: 0` turns the automatic resume after a stall off, `providerResumes: 0` the one after a provider outage. Set `stepStallMs` above the longest model call of the models you route to.
 
 ### Stopped convergence
 
