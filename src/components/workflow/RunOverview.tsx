@@ -182,6 +182,7 @@ export function RunOverview({
           ...(snapshot.limitations.count
             ? [`Limitations ${snapshot.limitations.count} accepted`]
             : []),
+          ...(snapshot.reviewNotes.count ? [`Review notes ${snapshot.reviewNotes.count}`] : []),
           ...(snapshot.stalled
             ? [`Stalled: no event for ${formatDuration(snapshot.stalled.silentMs)}`]
             : []),

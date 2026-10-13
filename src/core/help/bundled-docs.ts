@@ -33,6 +33,7 @@ import workflowsDoctorAndEstimateMd from "../../../docs/workflows/doctor-and-est
   type: "text",
 };
 import workflowsFixCiMd from "../../../docs/workflows/fix-ci.md" with { type: "text" };
+import workflowsHardenMd from "../../../docs/workflows/harden.md" with { type: "text" };
 import workflowsParallelWorktreesMd from "../../../docs/workflows/parallel-worktrees.md" with {
   type: "text",
 };
@@ -70,6 +71,7 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["workflows/code-quality.md", workflowsCodeQualityMd],
   ["workflows/doctor-and-estimate.md", workflowsDoctorAndEstimateMd],
   ["workflows/fix-ci.md", workflowsFixCiMd],
+  ["workflows/harden.md", workflowsHardenMd],
   ["workflows/parallel-worktrees.md", workflowsParallelWorktreesMd],
   ["workflows/quick.md", workflowsQuickMd],
   ["workflows/runtime.md", workflowsRuntimeMd],

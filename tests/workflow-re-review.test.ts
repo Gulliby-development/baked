@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { carriesOver, changedSince, inReviewScope } from "../src/core/workflows/re-review.js";
+import { loopSharesFrom } from "../src/core/workflows/sizing.js";
 import { type Review, ReviewSchema } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -111,5 +112,9 @@ describe("a review round after a correction", () => {
     expect(
       service.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("reviews/carried-security-")),
     ).toBe(true);
+    // The repair round is the run's loop: a share of its first pass that sizing calibrates from.
+    const shares = loopSharesFrom(join(fixture.root, ".baked", "workflows.sqlite"));
+    expect(shares).toHaveLength(1);
+    expect(shares[0]).toBeGreaterThan(0);
   }, 30000);
 });
