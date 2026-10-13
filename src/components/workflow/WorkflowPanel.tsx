@@ -46,6 +46,7 @@ import { TaskGraphView } from "./TaskGraphView.js";
 import { UndoReport } from "./UndoReport.js";
 import { UsagePopup } from "./UsageView.js";
 import { WorkflowEditorPopup } from "./WorkflowEditor.js";
+import { WorkflowsPopup } from "./WorkflowsView.js";
 
 const sections = [
   "overview",
@@ -262,7 +263,8 @@ export function WorkflowPanel({
       screen === "editor" ||
       screen === "initiatives" ||
       screen === "routing" ||
-      screen === "usage"
+      screen === "usage" ||
+      screen === "workflows"
     )
       return;
     if (!onRun) {
@@ -286,6 +288,11 @@ export function WorkflowPanel({
       if (key === "u") {
         event.preventDefault();
         useWorkflowStore.getState().showUsage();
+        return;
+      }
+      if (key === "w") {
+        event.preventDefault();
+        useWorkflowStore.getState().showWorkflows();
         return;
       }
       if (key === "r") {
@@ -431,6 +438,7 @@ export function WorkflowPanel({
     { key: "G", label: "gates" },
     { key: "R", label: "routing" },
     { key: "U", label: "usage" },
+    { key: "W", label: "workflows" },
     { key: "Esc", label: "close" },
   ];
   if (screen === "new")
@@ -494,6 +502,17 @@ export function WorkflowPanel({
           useWorkflowStore.getState().openInitiativeRun(id, activeTabId);
           setTab("overview");
         }}
+      />
+    );
+
+  if (screen === "workflows")
+    return (
+      <WorkflowsPopup
+        definitions={Object.entries(info?.definitions ?? {}).map(([id, d]) => ({ id, ...d }))}
+        width={popupW}
+        height={Math.min(40, height)}
+        onBack={() => useWorkflowStore.getState().showHome()}
+        onEdit={(id) => useWorkflowStore.getState().showEditor(id)}
       />
     );
 

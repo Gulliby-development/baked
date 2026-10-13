@@ -419,6 +419,8 @@ function definitionSummaries(
         d.id,
         {
           stages: d.stages,
+          line: d.line,
+          description: d.description,
           writes: d.writes,
           problems: d.problems,
           execution: d.execution,
