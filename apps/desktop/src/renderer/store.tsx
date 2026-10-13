@@ -25,8 +25,12 @@ interface DesktopState {
 
 const Context = createContext<DesktopState | null>(null);
 
+/** The error's own words, without the prefix Electron adds to a failed main-process call. */
 const message = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+  (error instanceof Error ? error.message : String(error)).replace(
+    /^Error invoking remote method '[^']*': (?:Error: )?/,
+    "",
+  );
 
 export function DesktopProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<DesktopProject[]>([]);

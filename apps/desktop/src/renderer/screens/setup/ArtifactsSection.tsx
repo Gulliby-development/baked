@@ -10,6 +10,7 @@ import { Button } from "../../components/ui/button.js";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
 import { cn } from "../../lib/cn.js";
+import { scrollbarTokens, withAppScrollbar } from "../../lib/frame-scrollbar.js";
 import { LEDE, PANEL } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
 import {
@@ -45,13 +46,15 @@ function Preview({ projectKey, artifact }: { projectKey: string; artifact: Artif
     ["artifact-page", projectKey, artifact.id, artifact.version],
   );
   if (page.state !== "ready") return <LoadState value={page} what="the page" />;
+  // Read at each render, so a theme switch restyles the frame the next time it draws.
+  const html = withAppScrollbar(page.data.html, scrollbarTokens());
   return (
     <iframe
       title={`Preview of ${artifact.title}`}
       // No same-origin: the page cannot reach this app. The app's policy keeps its scripts off;
       // Open in browser runs them.
       sandbox=""
-      srcDoc={page.data.html}
+      srcDoc={html}
       className="h-[420px] w-full rounded-base border-2 border-border bg-white"
     />
   );
