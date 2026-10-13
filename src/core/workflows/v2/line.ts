@@ -1,4 +1,10 @@
-import { effectiveMode, type Gate, type GateBinding, type WorkflowV2 } from "./definition.js";
+import {
+  effectiveMode,
+  type Gate,
+  type GateBinding,
+  stageGates,
+  type WorkflowV2,
+} from "./definition.js";
 
 /**
  * A workflow as a production line: its stages in order with the contracts each one takes and
@@ -88,9 +94,7 @@ export function workflowLine(
     produces: stage.produces,
     human: stage.type === "approval" && stage.decision === "human",
     gates: [
-      ...(stage.type === "check" || stage.type === "review"
-        ? stage.gates.map((b) => lineGate(b, library, null))
-        : []),
+      ...stageGates(stage).map((b) => lineGate(b, library, null)),
       ...definition.transitions
         .filter((t) => t.from === stage.id)
         .flatMap((t) => t.gates.map((b) => lineGate(b, library, { id: t.id, to: t.to, on: t.on }))),
