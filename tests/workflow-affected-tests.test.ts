@@ -13,8 +13,15 @@ import {
 } from "../src/core/workflows/affected-tests.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
-import { type AgentProfile, ProfileSchema, type RunPolicy } from "../src/core/workflows/schemas.js";
-import type { Check, ExecutionRequest, Task } from "../src/core/workflows/types.js";
+import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
+import {
+  type AgentProfile,
+  ProfileSchema,
+  type Review,
+  type RunPolicy,
+} from "../src/core/workflows/schemas.js";
+import type { WorkflowStore } from "../src/core/workflows/store.js";
+import type { Check, ExecutionRequest, RuntimeState, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const roots: string[] = [];
@@ -280,4 +287,117 @@ describe("request_check with the affected-tests check", () => {
     expect(results[0]).toContain('"status":"passed"');
     expect(results[1]).toContain("outside the task scope");
   }, 60000);
+});
+
+describe("the affected-test regression gate", () => {
+  type Checked = { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string };
+  const plannedTask = (id: string, path: string, extra: Partial<Task> = {}): Task => ({
+    id,
+    title: id,
+    description: id,
+    requirementIds: ["FR-001"],
+    criterionIds: ["AC-001"],
+    dependsOn: [],
+    profileId: "implementer",
+    writes: [{ path, action: "modify" }],
+    readHints: [],
+    checkIds: ["test"],
+    origin: "planned",
+    findingIds: [],
+    rationale: id,
+    ...extra,
+  });
+  const lib = plannedTask("T001", "src/store.ts");
+  const testsTask = plannedTask("T002", "tests/store.test.ts", { profileId: "tester" });
+  const policy = { checks: [check("test", "bun", ["test"])] } as unknown as RunPolicy;
+  const subject = (baseline: Checked) => {
+    const ran: Check[] = [];
+    const scheduler = Object.create(WorkflowScheduler.prototype) as {
+      store: WorkflowStore;
+      runTaskCheck: (...args: unknown[]) => Promise<Checked>;
+      affectedBaseline(...args: unknown[]): Promise<boolean>;
+      gatedChecks(state: RuntimeState, policy: RunPolicy, task: Task, root: string): Check[];
+      applyTaskCheck(...args: unknown[]): string | undefined;
+    };
+    scheduler.store = {
+      transaction: (fn: () => unknown) => fn(),
+      taskStatus: () => undefined,
+      tasks: () => [lib, testsTask].map((t) => ({ id: t.id, status: "verified", generation: 0 })),
+    } as unknown as WorkflowStore;
+    scheduler.runTaskCheck = async (_run, _child, ranCheck) => {
+      ran.push(ranCheck as Check);
+      return baseline;
+    };
+    const graph = { tasks: [lib, testsTask] };
+    const state = {
+      graph,
+      rootGraph: graph,
+      affectedTests: {},
+      repairPredecessors: {},
+      repairScope: {},
+      deferredChecks: {},
+      taskGates: {},
+    } as unknown as RuntimeState;
+    return { scheduler, state, ran };
+  };
+  const files = {
+    "src/store.ts": "export const store = 1;\n",
+    "tests/store.test.ts": 'import { store } from "../src/store.js";\n',
+  };
+  const signal = new AbortController().signal;
+
+  test("records the affected tests and their baseline before the task's first attempt", async () => {
+    const root = workspace(files);
+    const { scheduler, state, ran } = subject({ status: "passed", evidenceId: "E1" });
+    expect(await scheduler.affectedBaseline("run", "step", state, policy, lib, signal, root)).toBe(true);
+    expect(ran.map((c) => c.args)).toEqual([["test", "./tests/store.test.ts"]]);
+    expect(state.affectedTests.T001).toEqual({
+      paths: ["tests/store.test.ts"],
+      checkId: "test-affected",
+      baseline: "passed",
+      evidenceId: "E1",
+    });
+    // A later attempt keeps the first baseline.
+    expect(await scheduler.affectedBaseline("run", "step", state, policy, lib, signal, root)).toBe(false);
+    expect(ran).toHaveLength(1);
+
+    const gate = scheduler.gatedChecks(state, policy, lib, root).find((c) => c.id === "test-affected");
+    expect(gate).toMatchObject({ required: true, args: ["test", "./tests/store.test.ts"] });
+    // The task that repairs it inherits the gate.
+    state.repairPredecessors.F1 = "T001";
+    const repair = plannedTask("T009", "src/store.ts", { origin: "repair", findingIds: ["F1"] });
+    expect(scheduler.gatedChecks(state, policy, repair, root).map((c) => c.id)).toContain("test-affected");
+  });
+
+  test("adds no gate when the affected tests already failed before the task", async () => {
+    const root = workspace(files);
+    const { scheduler, state } = subject({ status: "failed", evidenceId: "E1" });
+    await scheduler.affectedBaseline("run", "step", state, policy, lib, signal, root);
+    expect(state.affectedTests.T001?.baseline).toBe("failed");
+    expect(scheduler.gatedChecks(state, policy, lib, root).map((c) => c.id)).not.toContain("test-affected");
+  });
+
+  test("a test outside the task's files that the task broke blocks it for a repair", async () => {
+    const root = workspace(files);
+    const { scheduler, state } = subject({ status: "passed", evidenceId: "E1" });
+    await scheduler.affectedBaseline("run", "step", state, policy, lib, signal, root);
+    const gate = scheduler.gatedChecks(state, policy, lib, root).find((c) => c.id === "test-affected") as Check;
+    const failures: Review["findings"] = [];
+    // tests/store.test.ts belongs to a task of another profile: an ordinary check failing only
+    // there would stop the run as out of scope.
+    scheduler.applyTaskCheck(
+      "run",
+      state,
+      lib,
+      gate,
+      { status: "failed", evidenceId: "E2", output: "tests/store.test.ts:\n(fail) store > reads" },
+      failures,
+      [],
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.claim).toBe(
+      "Task T001 broke existing tests: check test-affected passed before the task and fails after it",
+    );
+    expect(failures[0]?.evidenceIds).toEqual(["E2"]);
+  });
 });
