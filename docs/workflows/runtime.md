@@ -413,6 +413,10 @@ The first signal adds one steering message that names the pattern and asks the a
 
 The watcher only sees one attempt from inside its model loop. A provider call that hangs, or a host process that stops, is not detected here ([#604](https://github.com/Gulliby-development/baked/issues/604)).
 
+### Run cost
+
+A run's estimated cost in USD is `estimatedCostUsd` in its status (`baked workflow status RUN_ID`, `GET /v1/workflow/runs/RUN_ID`) and in `budget.updated` events. Each model attempt adds its cost when it finishes, priced from its `attempts/ATTEMPT/usage.json` with the model's price table: uncached input, cache reads, cache writes and output each at their own price, so a cache-heavy run (most of a claude-code run's input is cache traffic) costs far less than its token count at the input price. Host attempts, attempts without per-step usage and models without a price add nothing; the cost stays null until a priced attempt finishes. Runs recorded before the run kept its cost get it summed from their attempts' usage. The TUI shows it under the Tokens bar of a run and on the run list, the desktop app in the run header, run list and project home. The token limits still count every token alike ([#956](https://github.com/Gulliby-development/baked/issues/956) tracks a cost-unit budget).
+
 ### Raising a budget limit
 
 A run blocked with `budget_exhausted` shows B (raise limits) next to fork and cancel. The confirmation names the new values: every limit that is used up, or at least 80% used, doubles, and the tokens double when nothing else explains the stop; calls stop at 1000, active time at 24 hours and tokens at 50 million. Y applies it and the run continues from the stage that stopped.

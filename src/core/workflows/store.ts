@@ -37,7 +37,9 @@ import {
   type WorkflowEvent,
 } from "./schemas.js";
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
+import type { AttemptUsageRecord } from "./step-budget.js";
 import { type RuntimeState, RuntimeStateSchema, type Snapshot } from "./types.js";
+import { attemptCost } from "./usage.js";
 import type { WorkflowV2 } from "./v2/definition.js";
 
 export const newId = (): string => randomUUID();
@@ -487,8 +489,7 @@ export class WorkflowStore {
       workspaceHash: state.workspaceHash,
       tokenUsage: row.token_usage,
       activeMs: row.active_ms,
-      estimatedCostUsd:
-        row.estimated_cost_microusd === null ? null : row.estimated_cost_microusd / 1e6,
+      estimatedCostUsd: this.costOf(id, row.estimated_cost_microusd),
       verificationState: state.verificationState,
       limitations: { count: limitationIds.length, ids: limitationIds },
       reviewNotes: { count: noteIds.length, ids: noteIds },
@@ -1287,6 +1288,7 @@ export class WorkflowStore {
     if (update.changes !== 1)
       throw new WorkflowFault("REVISION_CONFLICT", "Attempt no longer running");
     this.db.run("UPDATE runs SET token_usage=token_usage+? WHERE id=?", [usedTokens ?? 0, runId]);
+    this.addAttemptCost(runId, id);
     this.emit(runId, {
       type: "attempt.finished",
       payload: { attemptId: id, status, usageComplete: usedTokens !== null, usedTokens },
@@ -1302,6 +1304,63 @@ export class WorkflowStore {
       runId,
       attemptId,
     ]);
+  }
+  /**
+   * The estimated USD cost of one model attempt from its recorded usage and the price table;
+   * null for host attempts, attempts without per-step usage and unpriced models.
+   */
+  private attemptCostUsd(runId: string, attemptId: string): number | null {
+    const model = this.attempts(runId).find((a) => a.id === attemptId)?.model_id ?? null;
+    if (model === null) return null;
+    const row = this.latestArtifact(runId, `attempts/${attemptId}/usage.json`);
+    if (!row) return null;
+    const usage = JSON.parse(this.readArtifact(runId, row.id)) as AttemptUsageRecord;
+    return attemptCost(model, usage);
+  }
+  /**
+   * Adds a finished attempt's cost to the run row. The first priced attempt of a run recorded
+   * before the row carried costs starts from the sum of the run's earlier attempts.
+   */
+  private addAttemptCost(runId: string, attemptId: string): void {
+    const cost = this.attemptCostUsd(runId, attemptId);
+    if (cost === null) return;
+    const stored = this.run(runId).estimated_cost_microusd;
+    if (stored === null) {
+      this.pastCosts.delete(runId);
+      const total = this.costOf(runId, null);
+      if (total !== null)
+        this.db.run("UPDATE runs SET estimated_cost_microusd=? WHERE id=?", [
+          Math.round(total * 1e6),
+          runId,
+        ]);
+      return;
+    }
+    this.db.run("UPDATE runs SET estimated_cost_microusd=? WHERE id=?", [
+      stored + Math.round(cost * 1e6),
+      runId,
+    ]);
+  }
+  /** Run costs summed from attempt usage for runs recorded before the run row carried them. */
+  private readonly pastCosts = new Map<string, { attempts: number; cost: number | null }>();
+  /**
+   * The run's estimated cost in USD. Runs that finished attempts before the cost was kept on the
+   * run row get it summed from their attempts' usage once per attempt count.
+   */
+  private costOf(runId: string, microUsd: number | null): number | null {
+    if (microUsd !== null) return microUsd / 1e6;
+    const finished = this.attempts(runId).filter(
+      (a) => a.model_id !== null && a.status !== "running",
+    );
+    if (finished.length === 0) return null;
+    const cached = this.pastCosts.get(runId);
+    if (cached?.attempts === finished.length) return cached.cost;
+    let cost: number | null = null;
+    for (const attempt of finished) {
+      const one = this.attemptCostUsd(runId, attempt.id);
+      if (one !== null) cost = (cost ?? 0) + one;
+    }
+    this.pastCosts.set(runId, { attempts: finished.length, cost });
+    return cost;
   }
   /** Tokens an executor recorded for the attempt so far, or null when none reported any. */
   recordedUsage(runId: string, attemptId: string): number | null {
@@ -1352,7 +1411,7 @@ export class WorkflowStore {
           usedTokens: run.token_usage,
           reservedTokens: reserved + tokens,
           activeMs: run.active_ms,
-          estimatedCostUsd: null,
+          estimatedCostUsd: this.costOf(runId, run.estimated_cost_microusd),
         },
       });
     });
