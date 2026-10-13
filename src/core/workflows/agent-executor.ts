@@ -30,8 +30,8 @@ import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
-import { fixerCommand } from "./check-policy.js";
-import { fileHash } from "./effects.js";
+import { fixerCommand, fixerTiers } from "./check-policy.js";
+import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
 import { InitiativePlanSchema } from "./initiatives/plan.js";
@@ -53,6 +53,7 @@ import {
   type RunPolicy,
   SpecSchema,
 } from "./schemas.js";
+import { indexTools, markStaleIndexResult, writtenInRoot } from "./stale-index.js";
 import { type StallSettings, stalledFault, stallSettings, touchProgress } from "./stall.js";
 import {
   AttemptStepController,
@@ -189,6 +190,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       );
     const policy = JSON.parse(this.store.run(request.runId).policy_json) as RunPolicy;
     const root = request.root ?? this.store.workspace;
+    const rootPath = rootField(this.store.workspace, root).root ?? "";
     const parent = await this.rootContext.get();
     const context = new ContextManager(root, parent.getSharedResources());
     try {
@@ -284,7 +286,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                       ? { ...f, path: workspacePath(root, guard.path(f.path)) }
                       : f,
                 );
-              const result = await guard.execute(name, args, async () => {
+              let result = await guard.execute(name, args, async () => {
                 if (name !== "read" || !Array.isArray(normalized.files))
                   return execute(normalized, options);
                 const { files, outlines } = await outlineLargeReads(
@@ -304,6 +306,12 @@ export class NativeAgentExecutor implements AgentExecutor {
                   .join("\n\n");
                 return { ...(read ?? {}), success: true, output };
               });
+              // A worktree's own edits are not in the project's index.
+              if (rootPath && indexTools.has(name))
+                result = markStaleIndexResult(
+                  result,
+                  writtenInRoot(this.store.effects(request.runId), rootPath),
+                );
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {
@@ -407,15 +415,37 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.task.origin !== "planned" &&
         probeable.length > 0
       ) {
+        let probes = 0;
         const probe = probeTool(probeable, async (input) => {
           const scope = new ProcessScope();
+          const started = Date.now();
           try {
-            return await runProbe(scope, input, {
+            const outcome = await runProbe(scope, input, {
               root,
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
             });
+            // Each probe is evidence of how the repair went, so it is journaled with the attempt (#454).
+            try {
+              this.store.transaction(() =>
+                this.store.artifact(
+                  request.runId,
+                  "probe",
+                  `attempts/${request.attemptId}/probe-${String(++probes)}.json`,
+                  canonical({
+                    taskId: request.task?.id ?? null,
+                    executable: input.executable,
+                    args: input.args,
+                    durationMs: Date.now() - started,
+                    ...outcome,
+                  }),
+                ),
+              );
+            } catch {
+              // The probe's answer matters more to the attempt than its journal entry.
+            }
+            return outcome;
           } finally {
             await scope.stop();
           }
@@ -423,7 +453,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         available.run_probe = tool({
           description: probe.description,
           inputSchema: probe.inputSchema,
-          execute: async (input: unknown) => probe.execute(input),
+          // Under the tool policy, so the call has a deadline and `tool.started`/`tool.finished`.
+          execute: async (input: unknown) => guard.host("run_probe", () => probe.execute(input)),
         });
       }
       const fixable = policy.checks.filter((c) => c.fix);
@@ -442,7 +473,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             const check = fixable.find((c) => c.id === checkId);
             if (!check?.fix || !task)
               throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
-            const fix = check.fix;
+            const tiers = fixerTiers(check);
             const paths = task.writes
               .filter((w) => w.action !== "delete" && fileHash(workspacePath(root, w.path)))
               .map((w) => w.path);
@@ -452,19 +483,20 @@ export class NativeAgentExecutor implements AgentExecutor {
             try {
               const outputs: string[] = [];
               // One run per file, each recorded like an edit, so undo and rollback see it.
-              for (const path of paths)
-                await guard.execute("edit_file", { path }, async () => {
-                  const command = fixerCommand(fix, path);
-                  const executable =
-                    command.executable === "bun" ? process.execPath : command.executable;
-                  const result = await executeCheckCommand(scope, executable, command.args, {
-                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                    env: buildCheckEnv(check),
-                    timeoutMs: check.timeoutMs,
-                    signal: request.signal,
+              for (const fix of tiers)
+                for (const path of paths)
+                  await guard.execute("edit_file", { path }, async () => {
+                    const command = fixerCommand(fix, path);
+                    const executable =
+                      command.executable === "bun" ? process.execPath : command.executable;
+                    const result = await executeCheckCommand(scope, executable, command.args, {
+                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                      env: buildCheckEnv(check),
+                      timeoutMs: check.timeoutMs,
+                      signal: request.signal,
+                    });
+                    outputs.push(`${path}: exit ${String(result.exitCode)}`);
                   });
-                  outputs.push(`${path}: exit ${String(result.exitCode)}`);
-                });
               const after = await sourceManifest(root, generated, request.signal);
               const outside = changedPaths(before, after).filter((p) => !paths.includes(p));
               if (outside.length)

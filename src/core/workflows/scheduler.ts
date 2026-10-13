@@ -37,6 +37,7 @@ import {
 } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
+  missingReproAdvice,
   type ReproOutcome,
   reproAllows,
   reproExecutables,
@@ -67,6 +68,7 @@ import {
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   fixerCommand,
+  fixerTiers,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -4186,51 +4188,50 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     let changed = false;
     try {
       for (const check of fixable) {
-        const fix = check.fix;
-        if (!fix) continue;
-        for (const path of paths) {
-          signal.throwIfAborted();
-          this.leases.assert(lease);
-          const target = workspacePath(root, path);
-          const preImage = capturePreImage(this.store, runId, target);
-          const effectId = this.store.transaction(() =>
-            this.store.prepareEffect(
-              runId,
-              attempt,
-              "file_patch",
-              {
-                path,
-                tool: "apply_fix",
-                checkId: check.id,
-                taskId: owners.get(path),
-                ...rootField(this.store.workspace, root),
-              },
-              preImage,
-              null,
-            ),
-          );
-          try {
-            // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-            const command = fixerCommand(fix, path);
-            await executeCheckCommand(
-              scope,
-              command.executable === "bun" ? process.execPath : command.executable,
-              command.args,
-              {
-                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                env: buildCheckEnv(check),
-                timeoutMs: check.timeoutMs,
-                signal,
-              },
+        for (const fix of fixerTiers(check))
+          for (const path of paths) {
+            signal.throwIfAborted();
+            this.leases.assert(lease);
+            const target = workspacePath(root, path);
+            const preImage = capturePreImage(this.store, runId, target);
+            const effectId = this.store.transaction(() =>
+              this.store.prepareEffect(
+                runId,
+                attempt,
+                "file_patch",
+                {
+                  path,
+                  tool: "apply_fix",
+                  checkId: check.id,
+                  taskId: owners.get(path),
+                  ...rootField(this.store.workspace, root),
+                },
+                preImage,
+                null,
+              ),
             );
-            const after = fileHash(target);
-            this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-            if (after !== preImage) changed = true;
-          } catch (error) {
-            this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
-            throw error;
+            try {
+              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+              const command = fixerCommand(fix, path);
+              await executeCheckCommand(
+                scope,
+                command.executable === "bun" ? process.execPath : command.executable,
+                command.args,
+                {
+                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                  env: buildCheckEnv(check),
+                  timeoutMs: check.timeoutMs,
+                  signal,
+                },
+              );
+              const after = fileHash(target);
+              this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+              if (after !== preImage) changed = true;
+            } catch (error) {
+              this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+              throw error;
+            }
           }
-        }
       }
       const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
         (path) => !owners.has(path),
@@ -4351,6 +4352,8 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         this.store.beginStep(runId, `dimension-${reviewer.key}`, stepId),
       );
       const profile = this.requireProfile(profiles.find((p) => p.id === reviewer.profileId));
+      const canRepro = executables.length > 0 && profile.allowedTools.includes("run_repro");
+      let reproAdvised = false;
       const ask = async (extra: Record<string, unknown>): Promise<Review> => {
         const answer = ReviewSchema.parse(
           await this.call(
@@ -4367,21 +4370,24 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             signal,
             undefined,
             0,
-            (output) =>
-              ReviewSchema.safeParse(output).success
-                ? reviewProblems(
-                    this.store,
-                    runId,
-                    reviewSnapshotId,
-                    reviewSnapshotHash,
-                    reviewSpec,
-                    output as Review,
-                  )
-                : [],
+            (output) => {
+              if (!ReviewSchema.safeParse(output).success) return [];
+              const problems = reviewProblems(
+                this.store,
+                runId,
+                reviewSnapshotId,
+                reviewSnapshotHash,
+                reviewSpec,
+                output as Review,
+              );
+              // Asked once: a reviewer that still has no repro after the advice is not blocked.
+              if (problems.length || reproAdvised || !canRepro) return problems;
+              const advice = missingReproAdvice(output as Review);
+              if (advice.length) reproAdvised = true;
+              return advice;
+            },
             undefined,
-            executables.length && profile.allowedTools.includes("run_repro")
-              ? () => ({ run_repro: reproTool(executables, repro) })
-              : undefined,
+            canRepro ? () => ({ run_repro: reproTool(executables, repro) }) : undefined,
           ),
         );
         // The host owns the snapshot hash and the evidence ids; omitted criteria are listed as

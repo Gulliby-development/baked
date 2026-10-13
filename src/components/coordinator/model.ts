@@ -58,7 +58,10 @@ export function launchedLines(launched: LaunchedView[], width: number): ViewLine
     const task = entry.task
       ? ` · ${entry.task.state === "local" ? "local task" : entry.task.ref}`
       : "";
-    const head = `${entry.active ? "●" : "○"} ${entry.kind} ${entry.id}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
+    const what = entry.feature
+      ? `feature ${entry.feature} of ${entry.id}`
+      : `${entry.kind} ${entry.id}`;
+    const head = `${entry.active ? "●" : "○"} ${what}: ${entry.status} · ${tokens(entry.tokens)}${task}`;
     return labelled("", `${head} · ${entry.why}`, width, entry.active ? "accent" : "muted");
   });
 }

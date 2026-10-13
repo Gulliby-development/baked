@@ -9,6 +9,7 @@ import { defaultWorkflowPolicy } from "../defaults.js";
 import { WorkflowFault } from "../errors.js";
 import { featureSlug } from "../feature-id.js";
 import { PolicySchema, SafeId } from "../schemas.js";
+import { IssueSourceSchema } from "../types.js";
 import { FeatureKey, InitiativeId, InitiativePlanSchema } from "./plan.js";
 import type { FeatureView, InitiativeStartRequest, InitiativeView } from "./service.js";
 import type { BudgetLimitsValue } from "./store.js";
@@ -28,6 +29,8 @@ export const InitiativeStartInputSchema = z.strictObject({
     .optional(),
   tieredApproval: z.strictObject({ maxTasks: PositiveInt, maxFiles: PositiveInt }).optional(),
   confirmAutoApproval: z.string().min(1).optional(),
+  /** The GitHub issue of each feature of `plan`, by feature ID; delivery of its runs closes it. */
+  featureIssues: z.record(FeatureKey, IssueSourceSchema).optional(),
 });
 export type InitiativeStartInput = z.infer<typeof InitiativeStartInputSchema>;
 
@@ -61,6 +64,7 @@ export function initiativeStartRequest(
     featureAutoApproval: form.tieredApproval ?? null,
     ...(form.confirmAutoApproval ? { autoApprovalConfirmation: form.confirmAutoApproval } : {}),
     ...(form.model ? { model: form.model } : {}),
+    ...(form.featureIssues ? { featureIssues: form.featureIssues } : {}),
     ownerLabel: identity.ownerLabel,
   };
 }
