@@ -9,7 +9,11 @@ import {
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
-import { assertAcceptance, assertAcceptanceV2 } from "../verification/acceptance.js";
+import {
+  assertAcceptance,
+  assertAcceptanceV2,
+  v1ReviewDimensions,
+} from "../verification/acceptance.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
@@ -37,6 +41,14 @@ import {
 } from "../verification/evidence.js";
 import { findingBlocks, fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
+  type BaselineCount,
+  baselineRegression,
+  CHECK_BASELINE_PATH,
+  commandKey,
+  outputCounts,
+  TEST_FILE,
+} from "../verification/output-counts.js";
+import {
   missingReproAdvice,
   type ReproOutcome,
   reproAllows,
@@ -51,7 +63,9 @@ import {
   assumable,
   DEFECT_NOTE,
   hostCounts,
+  hostSplitParts,
   isCountNit,
+  isHostSplitNit,
   knownRisks,
   persistentDefect,
   REQUEST_NOTE,
@@ -61,6 +75,7 @@ import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
 import {
   evaluateAutoApproval,
+  humanApprovalReason,
   plannerApprovalLimits,
   planScopeAdvice,
   policyDecisions,
@@ -68,6 +83,7 @@ import {
 import { budgetUsage, raiseToStartEstimate, reserveTokens } from "./budget.js";
 import {
   fixerCommand,
+  fixerTiers,
   taskCheckList,
   validateChecks,
   withCoveringChecks,
@@ -110,8 +126,19 @@ import {
   planConsistencyProblems,
   withDerivedRequirements,
   withModuleDependencies,
+  withReadDependencies,
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
+import {
+  compareWithBaseline,
+  duplicationOf,
+  measureBaseline,
+  QUALITY_BASELINE,
+  QUALITY_DUPLICATION,
+  type QualityBaseline,
+  qualityClaim,
+  readCodeFiles,
+} from "./quality/duplication.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import {
@@ -124,7 +151,7 @@ import {
   retryAfterMs,
   retryDelay,
 } from "./retry.js";
-import { buildReviewBundle, REVIEW_BUNDLE_PATH } from "./review-bundle.js";
+import { buildReviewBundle, REVIEW_BUNDLE_PATH, taskChangedFiles } from "./review-bundle.js";
 import {
   capturePreImage,
   createdByRunLineage,
@@ -236,12 +263,14 @@ function planGraph(
 ): TaskGraph {
   return withCoveringChecks(
     withTestDependencies(
-      withModuleDependencies(
-        withDerivedRequirements(spec, {
-          ...plan.taskGraph,
-          specHash: hashJson(spec),
-          planHash: hashBytes(plan.markdown),
-        }),
+      withReadDependencies(
+        withModuleDependencies(
+          withDerivedRequirements(spec, {
+            ...plan.taskGraph,
+            specHash: hashJson(spec),
+            planHash: hashBytes(plan.markdown),
+          }),
+        ),
       ),
     ),
     policy,
@@ -258,6 +287,19 @@ interface QueuedRequest {
 /** A provider asking to wait longer than this is not waited for once a route has fallback models. */
 const LONG_RETRY_AFTER_MS = 30_000;
 /** The implementer's own list of what it left unfinished, for the blocked task's message. */
+/**
+ * The planned files a failed check of a corrective task names, when the task may write none of
+ * them; empty when the output names no planned file or one the task writes.
+ */
+export function outOfScopeFailure(
+  task: Pick<Task, "origin" | "writes">,
+  checked: { status: string; output?: string },
+  tasks: Task[],
+): string[] {
+  if (task.origin === "planned" || checked.status !== "failed" || !checked.output) return [];
+  const named = pathsInOutput(checked.output, tasks);
+  return named.some((path) => task.writes.some((w) => w.path === path)) ? [] : named;
+}
 /** A SQLite failure is a host fault, never a model's invalid output. */
 function isStoreError(error: unknown): boolean {
   if (!(error instanceof Error) || error instanceof WorkflowFault) return false;
@@ -580,6 +622,7 @@ export class WorkflowScheduler {
                           sizing: plannerSizing(
                             policy,
                             sizingHistory(this.store.workspace, policy),
+                            this.sizingModel(runId, null),
                           ),
                         }
                       : {}),
@@ -684,6 +727,9 @@ export class WorkflowScheduler {
                     verifiedByRuntime: PLAN_CONSISTENCY_CHECKS,
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    ...(Object.keys(hostSplitParts(graph)).length
+                      ? { hostSplit: hostSplitParts(graph) }
+                      : {}),
                   },
                   signal,
                   undefined,
@@ -699,8 +745,9 @@ export class WorkflowScheduler {
                   },
                 ),
               );
-              if (analysis.inputHash !== hashJson(state.manifest))
-                throw new WorkflowFault("OUTPUT_INVALID", "Analysis refers to stale inputs");
+              // The host binds the analysis to the manifest it analyzed; the model's copy of the hash
+              // is not checked (#347: one transposed character blocked d0f55591).
+              analysis.inputHash = hashJson(state.manifest);
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -734,6 +781,22 @@ export class WorkflowScheduler {
                 if (finding.blocking && isCountNit(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
+                }
+              }
+              // The host split oversized test tasks after planning; plan.md names only the original.
+              const split = hostSplitParts(graph);
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  finding.kind !== "scope" &&
+                  isHostSplitNit(finding, split)
+                ) {
+                  finding.blocking = false;
+                  finding.description = `About tasks the host split by file after planning (${Object.entries(
+                    split,
+                  )
+                    .map(([original, ids]) => `${original}: ${ids.join(", ")}`)
+                    .join("; ")}); kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
@@ -877,11 +940,17 @@ export class WorkflowScheduler {
                   ),
                 );
                 state.manifest.baselineSnapshotId = snapshot.id;
+                await this.measureQualityBaseline(runId, state, policy, signal);
                 const digest = approvalDigest(state);
                 // A v2 approval stage marked human never approves on its own.
-                const human = v2?.stage.type === "approval" && v2.stage.decision === "human";
-                const auto = human
-                  ? { approval: null, reasons: [] }
+                const humanStage =
+                  v2?.stage.type === "approval" && v2.stage.decision === "human" ? v2 : null;
+                const human = humanStage !== null;
+                const auto = humanStage
+                  ? {
+                      approval: null,
+                      reasons: [humanApprovalReason(humanStage.definition.id, humanStage.stage.id)],
+                    }
                   : userChanges.length
                     ? {
                         approval: null,
@@ -933,7 +1002,7 @@ export class WorkflowScheduler {
                   ...(v2 && acceptanceGrants(v2.gates).length
                     ? { acceptanceCapabilities: acceptanceGrants(v2.gates) }
                     : {}),
-                  ...(policy.autoApproval
+                  ...(policy.autoApproval || human
                     ? { autoApproval: auto.approval ?? { declined: auto.reasons } }
                     : {}),
                 };
@@ -978,6 +1047,7 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
+              await this.recordCheckBaseline(runId, state, policy, signal);
               if (policy.maxConcurrentWriters > 1 && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
@@ -1408,7 +1478,12 @@ export class WorkflowScheduler {
           runId,
           "diagnostic",
           `errors/${newId()}.txt`,
-          fault instanceof Error ? fault.message : String(fault),
+          // A schema rejection keeps what the schema said, so a resume can tell the agent.
+          fault instanceof WorkflowFault && typeof fault.details.validation === "string"
+            ? `${fault.message}\n${fault.details.validation}`
+            : fault instanceof Error
+              ? fault.message
+              : String(fault),
         );
         this.store.transition(
           runId,
@@ -1441,7 +1516,8 @@ export class WorkflowScheduler {
   private continueAtCap(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
     if ((state.taskContinuations[task.id] ?? 0) > 0) return false;
     const record = this.lastAttemptUsage(runId, stepId);
-    if (!record || record.finalizedBy === null) return false;
+    // An attempt the progress watcher stopped was stuck, not short of room.
+    if (!record || record.finalizedBy === null || record.finalizedBy === "watcher") return false;
     state.taskContinuations[task.id] = 1;
     state.taskBudgets[task.id] = Math.ceil(record.maxTokens * 1.5);
     state.taskSteps[task.id] = Math.ceil(record.maxSteps * 1.5);
@@ -1602,6 +1678,7 @@ export class WorkflowScheduler {
       policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
+      model: this.sizingModel(runId, graph),
     });
     const split = splitTestTasks(graph, report);
     if (!split) return graph;
@@ -1615,6 +1692,66 @@ export class WorkflowScheduler {
       ),
     );
     return split;
+  }
+  /**
+   * Before the first task of an update run, runs each feature check once on the code the run starts
+   * from and stores the counts its output reports (a linter's diagnostics, a test runner's tests)
+   * as `facts/check-baseline.json`. The checks stage compares the same commands with it.
+   * Nothing is measured for a scaffold, after a task has started, or for output no parser reads.
+   */
+  private async recordCheckBaseline(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
+    const feature = policy.checks.filter((check) => check.scope === "feature");
+    if (!feature.length || this.baselineScaffold(runId, state)) return;
+    const fresh = this.store.tasks(runId).every((task) => task.status === "pending");
+    const counts: Record<string, BaselineCount[]> = {};
+    if (fresh)
+      for (const check of feature) {
+        const result = await this.checks.measure(
+          check,
+          signal,
+          runRoot(this.store.workspace, state),
+        );
+        if (result.truncated || result.status === "inconclusive") continue;
+        const found = outputCounts(result.output, result.status === "passed");
+        if (found.length) counts[commandKey(check)] = found;
+      }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "facts",
+        CHECK_BASELINE_PATH,
+        canonical({ schemaVersion: 1, measured: fresh, counts }),
+      ),
+    );
+  }
+  /** What a passing required check fell behind the baseline by, as a failure reason; else null. */
+  private checkRegression(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+  ): string | null {
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return null;
+    const baseline = (
+      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        counts?: Record<string, BaselineCount[]>;
+      }
+    ).counts?.[commandKey(check)];
+    if (!baseline?.length) return null;
+    const deletesTests = (state.graph?.tasks ?? []).some((task) =>
+      task.writes.some((w) => w.action === "delete" && TEST_FILE.test(w.path)),
+    );
+    const regressions = baseline.flatMap(
+      (count) => baselineRegression(count, output, deletesTests) ?? [],
+    );
+    return regressions.length ? regressions.join("; ") : null;
   }
   /** Whether the workspace the run started from held no source files (empty or a scaffold). */
   private baselineScaffold(runId: string, state: RuntimeState): boolean {
@@ -1700,6 +1837,13 @@ export class WorkflowScheduler {
     stepId: string,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    return this.stageRoute(runId, this.store.rootStage(runId, stepId), profile);
+  }
+  private stageRoute(
+    runId: string,
+    stage: string | null | undefined,
+    profile: AgentProfile,
+  ): { models: string[]; effort?: RouteEffort } {
     let routing = this.routing.get(runId);
     if (routing === undefined) {
       const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
@@ -1709,7 +1853,6 @@ export class WorkflowScheduler {
       this.routing.set(runId, routing);
     }
     if (!routing) return { models: [profile.model] };
-    const stage = this.store.rootStage(runId, stepId);
     const staged = stage ? routing.stages[stage] : undefined;
     const own = routing.profiles[profile.id];
     const entry = staged ?? own;
@@ -1723,6 +1866,29 @@ export class WorkflowScheduler {
   private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
     const model = this.route(runId, stepId, profile).models[index] ?? profile.model;
     return model === profile.model ? profile : { ...profile, model };
+  }
+  /**
+   * The model the plan's tasks will run on, as routing sends the profile most of them name to the
+   * task-graph stage; sizing prices them from that model's history. Null when it is not known.
+   */
+  private sizingModel(runId: string, graph: TaskGraph | null): string | null {
+    try {
+      const run = this.store.run(runId);
+      const profiles = ProfileSchema.array().parse(JSON.parse(run.profiles_json));
+      const counts = new Map<string, number>();
+      for (const task of graph?.tasks ?? [])
+        counts.set(task.profileId, (counts.get(task.profileId) ?? 0) + 1);
+      const named = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const profile =
+        profiles.find((p) => p.id === named) ?? profiles.find((p) => p.id === "implementer");
+      if (!profile) return null;
+      const stage = WorkflowSchema.parse(JSON.parse(run.definition_json)).stages.find(
+        (s) => s.kind === "task-graph",
+      )?.id;
+      return this.stageRoute(runId, stage, profile).models[0] ?? profile.model;
+    } catch {
+      return null;
+    }
   }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
@@ -1858,9 +2024,11 @@ export class WorkflowScheduler {
           runId,
           attempt,
           "completed",
-          result.inputTokens === null || result.outputTokens === null
-            ? this.store.recordedUsage(runId, attempt)
-            : result.inputTokens + result.outputTokens,
+          result.usageComplete === false
+            ? null
+            : result.inputTokens === null || result.outputTokens === null
+              ? this.store.recordedUsage(runId, attempt)
+              : result.inputTokens + result.outputTokens,
         );
         this.store.artifact(
           runId,
@@ -2127,11 +2295,13 @@ export class WorkflowScheduler {
     const graph = state.graph;
     if (!graph) return "continue";
     const samples = sizingHistory(this.store.workspace, policy);
+    const model = this.sizingModel(runId, graph);
     const report = sizePlan({
       graph,
       policy,
       samples,
       spent: this.store.run(runId).token_usage,
+      model,
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -2149,7 +2319,7 @@ export class WorkflowScheduler {
         this.raiseBudget(runId, state, policy, report);
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
+${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
@@ -2316,7 +2486,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       "tasks.md": renderTasks(state.graph),
     };
     for (const [name, content] of Object.entries(files)) {
-      const relative = `specs/${state.spec.featureId}/${name}`;
+      const relative = specPublicationPath(state.spec.featureId, name);
       const path = workspacePath(root, relative);
       const current = fileHash(path);
       const expected =
@@ -2387,6 +2557,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             bundle.changed.map((path) => [path, state.expectedFiles?.[path] ?? null]),
           ),
           criteriaToTasks: criteria,
+          taskFiles: taskChangedFiles(state.graph?.tasks ?? [], bundle.changed),
           patch: bundle.patch,
         }),
       );
@@ -2690,14 +2861,19 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           "INPUT_CHANGED",
           `Task changed ${outside.length} file(s) outside its write scope: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
+      const correction =
+        result.outcome === "implemented" && changed.length === 0 && task.writes.length > 0
+          ? await this.correctionSatisfied(runId, state, child, policy, task, result, signal, root)
+          : true;
+      if (correction instanceof WorkflowFault) {
+        this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        throw correction;
+      }
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" &&
-          changed.length === 0 &&
-          task.writes.length > 0 &&
-          !(await this.correctionSatisfied(runId, child, policy, task, result, signal, root)))
+        !correction
       ) {
         const restartReason = this.blockedRestartReason(
           runId,
@@ -3170,13 +3346,26 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       if (restartReason && changed.length === 0)
         return { kind: "interrupted", entry, leaseLost: false, reason: restartReason, account };
       const refused = takeHashRefusals(root);
+      const correction =
+        result.outcome === "implemented" && changed.length === 0
+          ? await this.correctionSatisfied(
+              runId,
+              state,
+              entry.child,
+              policy,
+              task,
+              result,
+              signal,
+              root,
+            )
+          : true;
+      if (correction instanceof WorkflowFault)
+        return { kind: "rejected", entry, error: correction };
       if (
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        (result.outcome === "implemented" &&
-          changed.length === 0 &&
-          !(await this.correctionSatisfied(runId, entry.child, policy, task, result, signal, root)))
+        !correction
       )
         return {
           kind: "rejected",
@@ -3736,13 +3925,14 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
    */
   private async correctionSatisfied(
     runId: string,
+    state: RuntimeState,
     child: string,
     policy: RunPolicy,
     task: Task,
     result: { taskId: string; outcome: string; unresolved: string[] },
     signal: AbortSignal,
     root: string,
-  ): Promise<boolean> {
+  ): Promise<boolean | WorkflowFault> {
     const rerun = (this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0) > 0;
     if (
       (task.origin === "planned" && !rerun) ||
@@ -3764,7 +3954,18 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     if (!checks.length) return false;
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
-      if (checked.status !== "passed") return false;
+      if (checked.status === "passed") continue;
+      const outside = outOfScopeFailure(task, checked, state.graph?.tasks ?? []);
+      // A correction that changed nothing while its check still fails only on files it may not
+      // write would change nothing on a second attempt or a resume either (commitbump cd842f0f:
+      // T008, three attempts and 689k with no edit).
+      if (outside.length)
+        return new WorkflowFault(
+          "RECOVERY_REQUIRED",
+          `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
+          { reason: "no_progress", paths: outside },
+        );
+      return false;
     }
     return true;
   }
@@ -4052,9 +4253,13 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         runRoot(this.store.workspace, state),
       );
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
-      if (result.status === "passed") passedIds.push(check.id);
+      const regression =
+        result.status === "passed" && check.required
+          ? this.checkRegression(runId, state, check, result.output)
+          : null;
+      if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
-      if (result.status === "failed" && check.required) {
+      if ((result.status === "failed" || regression) && check.required) {
         failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -4067,7 +4272,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
             result.output,
             (state.rootGraph ?? state.graph)?.tasks ?? [],
             task,
-            `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+            regression
+              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
             newId,
           ),
         );
@@ -4084,6 +4291,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
+    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
     if (failures.length)
       return this.recordFindings(runId, {
         schemaVersion: 1,
@@ -4170,51 +4378,50 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     let changed = false;
     try {
       for (const check of fixable) {
-        const fix = check.fix;
-        if (!fix) continue;
-        for (const path of paths) {
-          signal.throwIfAborted();
-          this.leases.assert(lease);
-          const target = workspacePath(root, path);
-          const preImage = capturePreImage(this.store, runId, target);
-          const effectId = this.store.transaction(() =>
-            this.store.prepareEffect(
-              runId,
-              attempt,
-              "file_patch",
-              {
-                path,
-                tool: "apply_fix",
-                checkId: check.id,
-                taskId: owners.get(path),
-                ...rootField(this.store.workspace, root),
-              },
-              preImage,
-              null,
-            ),
-          );
-          try {
-            // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-            const command = fixerCommand(fix, path);
-            await executeCheckCommand(
-              scope,
-              command.executable === "bun" ? process.execPath : command.executable,
-              command.args,
-              {
-                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                env: buildCheckEnv(check),
-                timeoutMs: check.timeoutMs,
-                signal,
-              },
+        for (const fix of fixerTiers(check))
+          for (const path of paths) {
+            signal.throwIfAborted();
+            this.leases.assert(lease);
+            const target = workspacePath(root, path);
+            const preImage = capturePreImage(this.store, runId, target);
+            const effectId = this.store.transaction(() =>
+              this.store.prepareEffect(
+                runId,
+                attempt,
+                "file_patch",
+                {
+                  path,
+                  tool: "apply_fix",
+                  checkId: check.id,
+                  taskId: owners.get(path),
+                  ...rootField(this.store.workspace, root),
+                },
+                preImage,
+                null,
+              ),
             );
-            const after = fileHash(target);
-            this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
-            if (after !== preImage) changed = true;
-          } catch (error) {
-            this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
-            throw error;
+            try {
+              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
+              const command = fixerCommand(fix, path);
+              await executeCheckCommand(
+                scope,
+                command.executable === "bun" ? process.execPath : command.executable,
+                command.args,
+                {
+                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                  env: buildCheckEnv(check),
+                  timeoutMs: check.timeoutMs,
+                  signal,
+                },
+              );
+              const after = fileHash(target);
+              this.store.transaction(() => this.store.finishFileEffect(runId, effectId, after));
+              if (after !== preImage) changed = true;
+            } catch (error) {
+              this.store.transaction(() => this.store.effectStatus(runId, effectId, "unknown"));
+              throw error;
+            }
           }
-        }
       }
       const outside = changedPaths(before, await sourceManifest(root, generated, signal)).filter(
         (path) => !owners.has(path),
@@ -4232,6 +4439,114 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
     } finally {
       await scope.stop();
     }
+  }
+  /**
+   * Measures the code at approval, before any task edits it, as the baseline of the duplication
+   * ratchet (#638). Kept once per run: a revised plan compares with the same code.
+   */
+  private async measureQualityBaseline(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (duplicationOf(policy) === "off" || this.store.latestArtifact(runId, QUALITY_BASELINE))
+      return;
+    const code = await readCodeFiles(
+      runRoot(this.store.workspace, state),
+      Object.keys(state.expectedFiles ?? {}),
+    );
+    signal.throwIfAborted();
+    const baseline = measureBaseline(code.files, code.skipped);
+    this.store.transaction(() =>
+      this.store.artifact(runId, "quality", QUALITY_BASELINE, canonical(baseline)),
+    );
+  }
+  /**
+   * The duplication ratchet after the command checks pass: the run's code against the baseline
+   * measured at approval, recorded for the run report. Under `ratchet` every copy and unused
+   * declaration the run added is a blocking finding that names what to reuse; under `warn` they
+   * stay notes in the recorded result. Earlier ratchet findings close once nothing blocks.
+   */
+  private async duplicationFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Promise<Review["findings"]> {
+    const mode = duplicationOf(policy);
+    const row = this.store.latestArtifact(runId, QUALITY_BASELINE);
+    if (mode === "off" || !row || !state.snapshotId) return [];
+    const baseline = JSON.parse(this.store.readArtifact(runId, row.id)) as QualityBaseline;
+    const files = state.expectedFiles ?? {};
+    const baselineId = state.manifest.baselineSnapshotId;
+    const before = (baselineId && this.store.snapshotFiles(runId, baselineId)) || {};
+    const code = await readCodeFiles(runRoot(this.store.workspace, state), Object.keys(files));
+    const result = compareWithBaseline(
+      mode,
+      baseline,
+      code.files,
+      new Set(changedPaths(before, files)),
+      code.skipped,
+    );
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "quality",
+        QUALITY_DUPLICATION,
+        canonical(result),
+      );
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    if (!result.blocking) {
+      this.store.transaction(() => {
+        for (const finding of this.store.findings(runId))
+          if (
+            ["open", "confirmed"].includes(finding.status) &&
+            qualityClaim(JSON.parse(finding.body_json).claim)
+          )
+            this.store.findingStatus(runId, finding.id, "resolved");
+      });
+      return [];
+    }
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    const owner = (file: string) => {
+      const task = [...tasks].reverse().find((t) => t.writes.some((w) => w.path === file));
+      return {
+        requirementIds:
+          task?.requirementIds ?? state.spec?.requirements.map((r) => r.id).slice(0, 1) ?? [],
+        criterionIds: task?.criterionIds ?? [],
+      };
+    };
+    const where = (span: { file: string; startLine: number; endLine: number }) =>
+      `${span.file}:${span.startLine}-${span.endLine}`;
+    return [
+      ...result.clones.map((clone) => ({
+        id: newId(),
+        kind: "correctness" as const,
+        severity: "high" as const,
+        ...owner(clone.file),
+        file: clone.file,
+        symbol: null,
+        evidenceIds: [evidenceId],
+        claim: `Duplicated code: ${where(clone)} copies ${where(clone.original)}`,
+        impact:
+          "The run adds a copy of existing code, which the duplication ratchet of this run does not allow.",
+        suggestedFix: `Reuse the code at ${where(clone.original)} (import it, or extract a shared helper within approved scope) instead of copying it.`,
+      })),
+      ...result.unused.map((item) => ({
+        id: newId(),
+        kind: "correctness" as const,
+        severity: "high" as const,
+        ...owner(item.file),
+        file: item.file,
+        symbol: item.name,
+        evidenceIds: [evidenceId],
+        claim: `Unused code: ${item.name} at ${item.file}:${item.line} is used nowhere`,
+        impact:
+          "The run adds code nothing calls, which the duplication ratchet of this run does not allow.",
+        suggestedFix: `Call ${item.name} where the task needs it, or remove it.`,
+      })),
+    ].slice(0, 100);
   }
   /** Stores a review and registers the findings that block; the others stay in the artifact. */
   private recordFindings(
@@ -4254,16 +4569,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
   }
   /** The v1 review stage: correctness, security when triggered and language, each blocking. */
   private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
-    const dimensions = [
-      "correctness",
-      ...(requiresSecurityReview(
-        state.graph?.tasks.flatMap((t) => t.writes.map((w) => w.path)) ?? [],
-        policy.forceSecurityReview,
-      )
-        ? ["security"]
-        : []),
-      ...(policy.reviewProfiles.language ? ["language"] : []),
-    ] as (keyof RunPolicy["reviewProfiles"])[];
+    const dimensions = v1ReviewDimensions(state, policy);
     return dimensions.map((dimension) => ({
       key: dimension,
       dimension,
@@ -4680,8 +4986,12 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
         attempts: result.attempts,
         flaky: result.flaky,
       });
-      if (result.status === "passed") passedIds.push(check.id);
-      if (!check.required || result.status === "passed") continue;
+      const regression =
+        result.status === "passed" && check.required
+          ? this.checkRegression(runId, state, check, result.output ?? "")
+          : null;
+      if (result.status === "passed" && !regression) passedIds.push(check.id);
+      if (!check.required || (result.status === "passed" && !regression)) continue;
       if (result.status === "inconclusive") {
         inconclusive ??= check.id;
         continue;
@@ -4703,7 +5013,9 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
           fallback,
           result.reason
             ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
-            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+            : regression
+              ? `The check passed but ${regression} (evidence ${result.evidenceId}).`
+              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
           newId,
         ),
       );
@@ -4719,6 +5031,7 @@ ${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
       throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
         reason: "verification_failed",
       });
+    if (!failures.length) failures.push(...(await this.duplicationFindings(runId, state, policy)));
     if (!failures.length) {
       // Without a review stage nothing else closes the findings of an earlier failed run of
       // these gates; the passing gates close them.
@@ -5336,6 +5649,10 @@ function taskSize(
 /** The checks run after a task, in policy order: its task-scope checks and the static ones covering its code. */
 const taskChecks = (policy: RunPolicy, task: Task): Check[] => taskCheckList(policy, task);
 
+/** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
+export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
+export const specPublicationPath = (featureId: string, name: string): string =>
+  `specs/${featureId}/${name}`;
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
 

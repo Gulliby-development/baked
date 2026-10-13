@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { estimateFit, estimateLines } from "../src/components/workflow/format.js";
 import {
   compareWithActual,
   DEFAULT_TASK_RANGE,
+  estimateHistory,
+  estimatePreRun,
   estimateStart,
+  historyStorePaths,
   type PastRun,
   pricesFrom,
   project,
@@ -140,6 +146,32 @@ describe("estimates in a real run", () => {
     const actualFirst = firstView.snapshot.tokenUsage;
     expect(saved.tokens.low).toBeLessThan(actualFirst * 2);
     expect(compareWithActual(saved, actualFirst).text).toContain(rangeText(saved.tokens));
+  });
+
+  test("start estimates also learn from the stores a policy names in sizing.historyStores", async () => {
+    const other = workflowFixture({ policy: fixturePolicy, tokensPerCall: 3000 });
+    cleanups.push(other.dispose);
+    const run = await other.start();
+    for (let i = 0; i < 8; i++) {
+      const state = await other.service.get(run.runId);
+      if (state.status === "completed") break;
+      if (state.pendingRequestIds.length) await other.approve(run.runId);
+      else if (state.status === "paused" || state.status === "created") await other.resume(run.runId);
+      await other.service.drive(run.runId, new AbortController().signal);
+    }
+    const here = mkdtempSync(join(tmpdir(), "baked-estimate-"));
+    cleanups.push(() => rmSync(here, { recursive: true, force: true }));
+    expect(estimateHistory(null, here, { sizing: undefined })).toEqual([]);
+    const policy = { sizing: { historyStores: [other.service.workspace, join(here, "missing")] } };
+    const history = estimateHistory(null, here, policy, 0);
+    expect(history.map((r) => [r.runId, r.source])).toEqual([[run.runId, "shared"]]);
+    // A store named twice, or this project's own store, is read once.
+    expect(historyStorePaths(here, { sizing: { historyStores: [here, other.service.workspace, `${other.service.workspace}/`] } })).toEqual([
+      join(other.service.workspace, ".baked", "workflows.sqlite"),
+    ]);
+    const estimate = estimatePreRun({ history, workflowId: "sdd", stages: [{ id: "plan", type: "agent", models: [] }], maxTotalTokens: 800000, price: () => null });
+    expect(estimate.basis).toBe("workflow-history");
+    expect(estimate.label).toContain("from 1 earlier run of sdd, 1 of them from other projects");
   });
 
   test("a run in progress shows a re-estimate and a forecast the panel can render", async () => {

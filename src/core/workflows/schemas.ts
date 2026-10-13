@@ -120,6 +120,14 @@ export const CheckSchema = z
       .strict()
       .optional(),
     /**
+     * A second fixer tier run after `fix` on the same files, for fixes the tool marks unsafe
+     * (`biome check --write --unsafe`), limited to what the project allows. Used only with `fix`.
+     */
+    fixUnsafe: z
+      .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
+      .strict()
+      .optional(),
+    /**
      * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
      * line and that report decides the result; without one the check is inconclusive. Absent means
      * the exit code decides.
@@ -200,6 +208,12 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
+     * and unused declarations the run adds are reported, never blocking, so stored policies keep
+     * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
+     */
+    duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
@@ -660,6 +674,7 @@ export const EventType = z.enum([
   "stage.finished",
   "attempt.started",
   "attempt.finished",
+  "attempt.advisory",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -761,6 +776,21 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // The progress watcher noticed a stuck loop: it steered the attempt once, then stopped it.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.advisory"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          signal: z.enum(["repeated-reads", "no-edits", "same-failure"]),
+          action: z.enum(["steered", "stopped"]),
+          detail: z.string().max(500),
         })
         .strict(),
     })
@@ -1073,6 +1103,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
+  duplication?: "off" | "warn" | "ratchet";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.

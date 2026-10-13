@@ -30,7 +30,7 @@ import { deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import { probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
-import { fixerCommand } from "./check-policy.js";
+import { fixerCommand, fixerTiers } from "./check-policy.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { withHostConstants } from "./host-constants.js";
@@ -90,6 +90,18 @@ const EDIT_NUDGE_AFTER_READS = 4;
 /** Sent after a step that ended without a tool call, before the one forced submission. */
 const SUBMIT_NOW_NOTICE =
   "You ended your turn without calling submit_result. Call submit_result now with the complete result for the work already done. If the task is not finished or something failed, submit outcome blocked (or the matching unfinished state) and list what is unresolved. Do not call any other tool.";
+
+/**
+ * Model steps ran but every one reported zero input and output tokens. Codex reports a response's
+ * usage only once its tool call is answered, so an attempt that ends at its only tool call (a
+ * submit) never hears its spend; that is unknown, not free (#364, #592).
+ */
+export function reportedNoTokens(steps: readonly StepLike[]): boolean {
+  return (
+    steps.length > 0 &&
+    steps.every((step) => step.usage.inputTokens === 0 && step.usage.outputTokens === 0)
+  );
+}
 
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   const add = (a: number | undefined, b: number | undefined) =>
@@ -415,15 +427,37 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.task.origin !== "planned" &&
         probeable.length > 0
       ) {
+        let probes = 0;
         const probe = probeTool(probeable, async (input) => {
           const scope = new ProcessScope();
+          const started = Date.now();
           try {
-            return await runProbe(scope, input, {
+            const outcome = await runProbe(scope, input, {
               root,
               executables: probeable,
               generated: generatedPaths(policy),
               signal: request.signal,
             });
+            // Each probe is evidence of how the repair went, so it is journaled with the attempt (#454).
+            try {
+              this.store.transaction(() =>
+                this.store.artifact(
+                  request.runId,
+                  "probe",
+                  `attempts/${request.attemptId}/probe-${String(++probes)}.json`,
+                  canonical({
+                    taskId: request.task?.id ?? null,
+                    executable: input.executable,
+                    args: input.args,
+                    durationMs: Date.now() - started,
+                    ...outcome,
+                  }),
+                ),
+              );
+            } catch {
+              // The probe's answer matters more to the attempt than its journal entry.
+            }
+            return outcome;
           } finally {
             await scope.stop();
           }
@@ -431,7 +465,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         available.run_probe = tool({
           description: probe.description,
           inputSchema: probe.inputSchema,
-          execute: async (input: unknown) => probe.execute(input),
+          // Under the tool policy, so the call has a deadline and `tool.started`/`tool.finished`.
+          execute: async (input: unknown) => guard.host("run_probe", () => probe.execute(input)),
         });
       }
       const fixable = policy.checks.filter((c) => c.fix);
@@ -450,7 +485,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             const check = fixable.find((c) => c.id === checkId);
             if (!check?.fix || !task)
               throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
-            const fix = check.fix;
+            const tiers = fixerTiers(check);
             const paths = task.writes
               .filter((w) => w.action !== "delete" && fileHash(workspacePath(root, w.path)))
               .map((w) => w.path);
@@ -460,19 +495,20 @@ export class NativeAgentExecutor implements AgentExecutor {
             try {
               const outputs: string[] = [];
               // One run per file, each recorded like an edit, so undo and rollback see it.
-              for (const path of paths)
-                await guard.execute("edit_file", { path }, async () => {
-                  const command = fixerCommand(fix, path);
-                  const executable =
-                    command.executable === "bun" ? process.execPath : command.executable;
-                  const result = await executeCheckCommand(scope, executable, command.args, {
-                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                    env: buildCheckEnv(check),
-                    timeoutMs: check.timeoutMs,
-                    signal: request.signal,
+              for (const fix of tiers)
+                for (const path of paths)
+                  await guard.execute("edit_file", { path }, async () => {
+                    const command = fixerCommand(fix, path);
+                    const executable =
+                      command.executable === "bun" ? process.execPath : command.executable;
+                    const result = await executeCheckCommand(scope, executable, command.args, {
+                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                      env: buildCheckEnv(check),
+                      timeoutMs: check.timeoutMs,
+                      signal: request.signal,
+                    });
+                    outputs.push(`${path}: exit ${String(result.exitCode)}`);
                   });
-                  outputs.push(`${path}: exit ${String(result.exitCode)}`);
-                });
               const after = await sourceManifest(root, generated, request.signal);
               const outside = changedPaths(before, after).filter((p) => !paths.includes(p));
               if (outside.length)
@@ -557,6 +593,21 @@ export class NativeAgentExecutor implements AgentExecutor {
         ...(request.profile.role === "implementer" && request.task?.writes.length
           ? { editNudgeAfterReads: EDIT_NUDGE_AFTER_READS }
           : {}),
+        watch: {
+          mustEdit: request.profile.role === "implementer" && !!request.task?.writes.length,
+          onSignal: (finding, action) =>
+            this.store.transaction(() =>
+              this.store.emit(request.runId, {
+                type: "attempt.advisory",
+                payload: {
+                  attemptId: request.attemptId,
+                  signal: finding.signal,
+                  action,
+                  detail: finding.detail.slice(0, 500),
+                },
+              }),
+            ),
+        },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const writeUsage = (usage: AttemptUsageRecord) =>
@@ -883,6 +934,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         output: submitted,
         inputTokens: result.usage.inputTokens ?? null,
         outputTokens: result.usage.outputTokens ?? null,
+        ...(reportedNoTokens(result.steps) ? { usageComplete: false } : {}),
       };
     } finally {
       context.dispose({ preserveSharedIO: true });

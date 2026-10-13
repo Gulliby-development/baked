@@ -42,3 +42,16 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
 export function languageReviewProfile(workspace: string): string | null {
   return detectLanguages(workspace).length > 0 ? LANGUAGE_REVIEW_PROFILE : null;
 }
+
+/** Source and build files of the languages above, by extension or file name. */
+const LANGUAGE_FILE =
+  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle)$)/i;
+
+/**
+ * Whether a change touches a file of a Go, .NET, Rust or Java project. The language review only
+ * adds value there: in R08 it ran on changes to READMEs and scripts of such projects and found
+ * nothing in four reviews at about 45k tokens each (#592).
+ */
+export function touchesLanguageFiles(paths: readonly string[]): boolean {
+  return paths.some((path) => LANGUAGE_FILE.test(path.replaceAll("\\", "/")));
+}
