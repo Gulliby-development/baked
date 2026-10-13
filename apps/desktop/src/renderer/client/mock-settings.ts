@@ -66,9 +66,16 @@ function view(key: string): SettingsView {
 
 function refuse(setting: SettingDefinition, value: unknown): string | null {
   if (value === null)
-    return setting.type === "model" || (setting.type === "number" && setting.nullable)
+    return setting.type === "model" ||
+      setting.type === "library-docs" ||
+      (setting.type === "number" && setting.nullable)
       ? null
       : "must be set";
+  if (
+    setting.type === "library-docs" &&
+    (typeof value !== "object" || !("dir" in value || "mcp" in value))
+  )
+    return "must name a directory or an MCP tool";
   if (setting.type === "enum" && !setting.options.some((o) => o.value === value))
     return "not an allowed value";
   if (

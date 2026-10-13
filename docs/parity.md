@@ -133,7 +133,7 @@ bun test tests/feature-parity.test.ts
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
-| Docs for the locked library versions a task uses | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | `baked workflow doctor` | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) | **Gap** [#763](https://github.com/Gulliby-development/baked/issues/763) |
+| Docs for the locked library versions a task uses | `/code-quality` | `baked workflow doctor` | `/v1/settings` | `settings/chat` |
 | Per-profile effort and compaction threshold (set in agent profile files) | `/workflow` | `baked workflow profiles`, `baked workflow route` | `/v1/workflow/profiles`, `/v1/workflow/route` | `settings/routing` |
 | Mutation gate on the lines a run added, with installed mutation tools | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Property-based tests from marked acceptance criteria | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
@@ -186,6 +186,5 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#763](https://github.com/Gulliby-development/baked/issues/763): Docs for the locked library versions a task uses
 
 <!-- parity:end -->

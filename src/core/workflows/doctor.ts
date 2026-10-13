@@ -10,7 +10,7 @@ import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type PreRunEstimate } from "./estimate.js";
 import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases.js";
-import { docsDirectory, type LibraryDocsSource } from "./library-docs.js";
+import { libraryDocsCheck } from "./library-docs.js";
 import { unmatchedMcpGrants } from "./mcp-grants.js";
 import { estimatePrepared, type ModelUse, plannedStages } from "./pre-run.js";
 import { reachableModels } from "./routing.js";
@@ -27,6 +27,8 @@ import { loadGateLibrary } from "./v2/library.js";
  */
 
 export type DoctorStatus = "ok" | "warn" | "fail" | "skip";
+export { libraryDocsCheck };
+
 export interface DoctorCheck {
   /** Stable identifier, for example `models.key`. */
   id: string;
@@ -383,50 +385,6 @@ function commandChecks(
           subject: command.id,
         };
   });
-}
-
-/**
- * Whether the configured library docs source can be reached: its directory exists, or its MCP
- * server is configured and enabled. A run without it continues without docs, so this only warns.
- */
-export function libraryDocsCheck(
-  workspace: string,
-  source: LibraryDocsSource,
-  servers: readonly { name: string; disabled?: boolean }[],
-): DoctorCheck {
-  if ("dir" in source) {
-    const dir = docsDirectory(workspace, source.dir);
-    return existsSync(dir)
-      ? {
-          id: "libraryDocs.source",
-          status: "ok",
-          title: "Library docs directory found",
-          detail: dir,
-        }
-      : {
-          id: "libraryDocs.source",
-          status: "warn",
-          title: "Library docs directory does not exist",
-          detail: `${dir}; implementers get no library docs`,
-          fix: "Create the directory or change libraryDocs.dir",
-          subject: source.dir,
-        };
-  }
-  const server = servers.find((s) => s.name === source.mcp.server);
-  return server && !server.disabled
-    ? {
-        id: "libraryDocs.source",
-        status: "ok",
-        title: `Library docs come from ${source.mcp.server}/${source.mcp.tool}`,
-      }
-    : {
-        id: "libraryDocs.source",
-        status: "warn",
-        title: `Library docs server ${source.mcp.server} is ${server ? "disabled" : "not configured"}`,
-        detail: "Implementers get no library docs",
-        fix: "Add or enable the server in mcpServers, or change libraryDocs.mcp.server",
-        subject: source.mcp.server,
-      };
 }
 
 async function gitChecks(

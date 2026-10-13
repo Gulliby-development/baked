@@ -5,9 +5,12 @@ import {
   dependencyNote,
   displayNumber,
   isActive,
+  libraryDocsDraft,
+  libraryDocsSummary,
   lockedReason,
   numberDraft,
   pageSections,
+  parseLibraryDocs,
   parseNumber,
   scopeValue,
   setInScope,
@@ -72,5 +75,27 @@ describe("chat settings pages", () => {
     expect(setInScope(value, "project")).toBe(false);
     expect(scopeValue(value, "project", {})).toEqual({ a: ["b"] });
     expect(scopeValue<Record<string, number>>({ ...value, project: {} }, "project", { x: 1 })).toEqual({});
+  });
+});
+
+describe("library docs source", () => {
+  test("a draft round-trips a directory and an MCP tool with its arguments", () => {
+    const dir = { dir: "docs/libs", maxChars: 4000 };
+    expect(parseLibraryDocs(libraryDocsDraft(dir))).toEqual({ value: dir });
+    const mcp = { mcp: { server: "context7", tool: "get-docs", args: { library: "{name}@{version}" } } };
+    const draft = libraryDocsDraft(mcp);
+    expect(draft).toMatchObject({ kind: "mcp", args: "library={name}@{version}" });
+    expect(parseLibraryDocs(draft)).toEqual({ value: mcp });
+    expect(libraryDocsSummary(mcp)).toBe("MCP context7 / get-docs");
+    expect(libraryDocsSummary(null)).toBe("not set");
+  });
+
+  test("none saves null; missing fields, bad arguments and an out-of-range cap are refused", () => {
+    const empty = libraryDocsDraft(null);
+    expect(parseLibraryDocs(empty)).toEqual({ value: null });
+    expect(parseLibraryDocs({ ...empty, kind: "dir" })).toEqual({ error: "Name the directory." });
+    expect(parseLibraryDocs({ ...empty, kind: "mcp", server: "context7" })).toHaveProperty("error");
+    expect(parseLibraryDocs({ ...empty, kind: "mcp", server: "s", tool: "t", args: "novalue" })).toHaveProperty("error");
+    expect(parseLibraryDocs({ ...empty, kind: "dir", dir: "d", maxChars: "100" })).toHaveProperty("error");
   });
 });
