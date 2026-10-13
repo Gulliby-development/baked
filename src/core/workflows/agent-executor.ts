@@ -805,13 +805,18 @@ export class NativeAgentExecutor implements AgentExecutor {
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const model = this.attemptModel(request, policy);
+      const effort = sentEffort(provider.providerOptions);
       const writeUsage = (usage: AttemptUsageRecord) =>
         this.store.transaction(() =>
           this.store.artifact(
             request.runId,
             "usage",
             `attempts/${request.attemptId}/usage.json`,
-            canonical(backends.size ? { ...usage, toolBackends: [...backends.values()] } : usage),
+            canonical({
+              ...usage,
+              ...(backends.size ? { toolBackends: [...backends.values()] } : {}),
+              ...(effort ? { effort } : {}),
+            }),
           ),
         );
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
@@ -1190,4 +1195,18 @@ export class NativeAgentExecutor implements AgentExecutor {
   dispose(): Promise<void> {
     return this.ownsRootContext ? this.rootContext.dispose().catch(() => {}) : Promise.resolve();
   }
+}
+
+/**
+ * The reasoning effort a call sends, whichever provider reads it: `effort` (Anthropic, Claude
+ * Code) or `reasoningEffort` (OpenAI, Codex) in its provider options (#936).
+ */
+export function sentEffort(
+  options: Record<string, Record<string, unknown> | undefined> | undefined,
+): string | undefined {
+  for (const entry of Object.values(options ?? {})) {
+    const effort = entry?.effort ?? entry?.reasoningEffort;
+    if (typeof effort === "string") return effort;
+  }
+  return undefined;
 }

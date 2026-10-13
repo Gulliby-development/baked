@@ -1121,6 +1121,17 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+          spend: z
+            .object({
+              inputTokens: z.number().int().nonnegative(),
+              outputTokens: z.number().int().nonnegative(),
+              cacheReadTokens: z.number().int().nonnegative(),
+              cacheWriteTokens: z.number().int().nonnegative(),
+              costUsd: z.number().nonnegative().nullable(),
+              effort: z.string().max(40).optional(),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     })

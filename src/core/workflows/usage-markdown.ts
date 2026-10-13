@@ -159,7 +159,11 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     add(total, attempt);
     for (const [map, key] of [
       [byStage, attempt.stage],
-      [byModel, attempt.model ?? "(host)"],
+      // The effort is part of the series a model runs in (#936).
+      [
+        byModel,
+        `${attempt.model ?? "(host)"}${attempt.effort ? ` (effort ${attempt.effort})` : ""}`,
+      ],
     ] as const) {
       const row = map.get(key) ?? empty();
       add(row, attempt);

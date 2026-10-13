@@ -22,6 +22,8 @@ export interface AttemptUsageRow {
    * output. 0 for host attempts; null without per-step usage or a known price.
    */
   costUsd: number | null;
+  /** The reasoning effort sent to the provider; null when none was or before it was recorded. */
+  effort: string | null;
   compactedBytes: number | null;
   stopReason: AttemptUsageRecord["stopReason"] | null;
   finalizedBy: AttemptUsageRecord["finalizedBy"];
@@ -108,6 +110,7 @@ export function runUsage(
         cacheReadTokens: sum((step) => step.cacheReadTokens),
         cacheWriteTokens: sum((step) => step.cacheWriteTokens ?? null),
         costUsd: attemptCost(attempt.model_id, usage),
+        effort: usage?.effort ?? null,
         compactedBytes: sum((step) => step.compactedBytes),
         stopReason: usage?.stopReason ?? null,
         finalizedBy: usage?.finalizedBy ?? null,
@@ -360,6 +363,39 @@ export function usageSummary(
     ...totals,
     totalTokens: totals.tokens,
     groups: list,
+  };
+}
+
+/** What one finished attempt spent, split as the provider reported it (#936). */
+export interface AttemptSpend {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Null when the model has no known price. */
+  costUsd: number | null;
+  effort?: string;
+}
+
+/** The spend of an attempt from its `usage.json`; null for an attempt that recorded none. */
+export function attemptSpend(
+  store: WorkflowStore,
+  runId: string,
+  attemptId: string,
+  model: string | null,
+): AttemptSpend | null {
+  const row = store.latestArtifact(runId, `attempts/${attemptId}/usage.json`);
+  if (!row) return null;
+  const usage = JSON.parse(store.readArtifact(runId, row.id)) as AttemptUsageRecord;
+  const sum = (pick: (step: AttemptUsageRecord["steps"][number]) => number | null | undefined) =>
+    usage.steps.reduce((total, step) => total + (pick(step) ?? 0), 0);
+  return {
+    inputTokens: sum((step) => step.inputTokens),
+    outputTokens: sum((step) => step.outputTokens),
+    cacheReadTokens: sum((step) => step.cacheReadTokens),
+    cacheWriteTokens: sum((step) => step.cacheWriteTokens),
+    costUsd: attemptCost(model, usage),
+    ...(usage.effort ? { effort: usage.effort } : {}),
   };
 }
 
