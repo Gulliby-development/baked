@@ -43,7 +43,8 @@ test("a gate is removed from an arrow of the copy", async ({ app }) => {
   const arrow = page.getByRole("region", { name: "Transition implement-checks" });
   await expect(arrow.getByText("task-tests", { exact: true })).toBeVisible();
   await arrow.getByRole("button", { name: "Remove task-tests" }).click();
-  await expect(arrow.getByText("task-tests", { exact: true })).toHaveCount(0);
+  await expect(arrow.getByRole("button", { name: "Remove task-tests" })).toHaveCount(0);
+  await expect(arrow.getByRole("option", { name: "task-tests" })).toHaveCount(1);
 });
 
 test("an arrow is drawn by clicking two stations and a loop takes any number of rounds", async ({
