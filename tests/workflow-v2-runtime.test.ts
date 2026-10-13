@@ -1275,7 +1275,10 @@ describe("wait stage", () => {
   }, 30000);
 
   test("time asleep between polls does not count against the active time limit", async () => {
-    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: 1000 });
+    // The limit leaves room for the gate's process starts on a slow runner (a 1000 ms limit
+    // failed on Windows CI, #729); the sleep alone is still above it.
+    const limit = 3000;
+    const { start, drive, service, define, gate, root } = setup({}, { ...policy, maxActiveMs: limit });
     const ready = passesOn(root, 2);
     gate(ready.gate);
     define(waitDefinition());
@@ -1284,13 +1287,13 @@ describe("wait stage", () => {
       now: () => now,
       sleep: async (ms, signal) => {
         now += ms;
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, limit + 500));
         signal.throwIfAborted();
       },
     };
     const run = await start("wait-only");
     expect((await drive(run.runId)).status).toBe("completed");
-    expect(service.store.run(run.runId).active_ms).toBeLessThan(1000);
+    expect(service.store.run(run.runId).active_ms).toBeLessThan(limit);
   }, 30000);
 
   test("a resumed wait keeps its deadline, and a cancel stops it at once", async () => {
