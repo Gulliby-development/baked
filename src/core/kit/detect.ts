@@ -98,6 +98,9 @@ function styleDependency(cwd: string): string | null {
   return STYLE_PACKAGES.find((name) => names.has(name)) ?? null;
 }
 
+/** Paths in the guidance read the same on every OS. */
+const toPosix = (path: string) => path.replace(/\\/g, "/");
+
 function hasInlineStyles(path: string): boolean {
   try {
     return INLINE_STYLES.test(readFileSync(path, "utf8").slice(0, 200_000));
@@ -145,11 +148,11 @@ function scan(cwd: string): Scan {
       result.code++;
       if (depth === 0 && !result.config && CONFIG_FILES.test(entry.name))
         result.config = entry.name;
-      if (STYLESHEET.test(entry.name)) result.stylesheets.push(relative(cwd, path));
+      if (STYLESHEET.test(entry.name)) result.stylesheets.push(toPosix(relative(cwd, path)));
       else if (WEB_FILE.test(entry.name)) {
         result.web = true;
         if (!result.inline && MARKUP_FILE.test(entry.name) && hasInlineStyles(path))
-          result.inline = relative(cwd, path);
+          result.inline = toPosix(relative(cwd, path));
       }
     }
   };
