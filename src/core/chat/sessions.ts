@@ -36,6 +36,7 @@ import type {
   ImageAttachment,
   InputContextItem,
   InteractiveCallbacks,
+  LaunchNote,
   MessageSegment,
   Plan,
   PlanReviewAction,
@@ -962,13 +963,14 @@ export class ChatSession {
   }
 
   /** Adds a note to the transcript that the model does not see, such as a launched run's news. */
-  async addNotice(content: string): Promise<ChatMessage> {
+  async addNotice(content: string, launch?: LaunchNote): Promise<ChatMessage> {
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       role: "system",
       content,
       timestamp: Date.now(),
       showInChat: true,
+      ...(launch ? { launch } : {}),
     };
     this.messages = [...this.messages, message];
     this.emit({ type: "notice", message });

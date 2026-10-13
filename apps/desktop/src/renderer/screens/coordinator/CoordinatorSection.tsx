@@ -14,6 +14,7 @@ import {
   type ProjectBrief,
 } from "../../client/coordinator.js";
 import { Alert } from "../../components/ui/alert.js";
+import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
 import { Dot } from "../../components/ui/dot.js";
 import { Skeleton } from "../../components/ui/skeleton.js";
@@ -24,7 +25,16 @@ import { LABEL, LEDE, PAGE } from "../../lib/styles.js";
 import { SessionView } from "../chat/ChatSection.js";
 import type { SectionProps } from "../sections.js";
 import { NeedsNewer } from "../setup/shared.js";
-import { BRIEF_TITLES, launchedHref, launchedTone, taskLabel, withList } from "./model.js";
+import {
+  BRIEF_TITLES,
+  launchedHref,
+  launchedTone,
+  launchKind,
+  launchName,
+  launchWhy,
+  taskLabel,
+  withList,
+} from "./model.js";
 import { SchedulesPanel } from "./SchedulesPanel.js";
 
 /** How often the panel reads launched work and the brief again. */
@@ -33,34 +43,44 @@ const REFRESH_MS = 5000;
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const CARD = "flex flex-col gap-1 rounded-base border-2 border-border bg-background px-3 py-2";
+const CARD =
+  "flex flex-col gap-1 rounded-base border-2 border-border bg-background px-3 py-2.5 shadow-sm-hard animate-rise motion-reduce:animate-none";
+
+const BADGE = { ok: "ok", warn: "warn", err: "err", busy: "info", "": "neutral" } as const;
 
 function LaunchedCard({ project, item }: { project: DesktopProject; item: LaunchedView }) {
+  const tone = launchedTone(item);
+  const why = launchWhy(item);
   return (
     <li className={CARD}>
-      <a
-        className="flex items-center gap-2 text-[13px] font-semibold text-foreground no-underline hover:underline"
-        href={launchedHref(project.key, item)}
-      >
-        <Dot tone={launchedTone(item)} />
-        <span className="capitalize">{item.feature ? "Feature" : item.kind}</span>
-        <span className="min-w-0 truncate font-mono text-[12px] text-dim-foreground">
-          {item.feature ? `${item.feature} of ${item.id}` : item.id}
+      <div className="flex min-w-0 items-center gap-2">
+        <Dot tone={tone} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-dim-foreground">
+          {launchKind(item)}
         </span>
+        <Badge tone={BADGE[tone]}>{item.status}</Badge>
+      </div>
+      <a
+        className="truncate text-[14px] font-semibold text-foreground no-underline hover:underline"
+        href={launchedHref(project.key, item)}
+        title={item.id}
+      >
+        {launchName(item)}
       </a>
-      <p className="m-0 text-[13px] text-soft-foreground">{item.why}</p>
-      <p className="m-0 flex flex-wrap gap-x-3 font-mono text-[12px] text-dim-foreground">
-        <span>{item.status}</span>
-        {item.tokens > 0 && <span>{tokens(item.tokens)} tokens</span>}
-        {item.task &&
-          (item.task.url ? (
-            <a href={item.task.url} target="_blank" rel="noreferrer">
-              {taskLabel(item.task)}
-            </a>
-          ) : (
-            <span>{taskLabel(item.task)}</span>
-          ))}
-      </p>
+      {why && <p className="m-0 line-clamp-3 text-[13px] text-soft-foreground">{why}</p>}
+      {(item.tokens > 0 || item.task) && (
+        <p className="m-0 flex flex-wrap gap-x-3 font-mono text-[12px] text-dim-foreground">
+          {item.tokens > 0 && <span>{tokens(item.tokens)} tokens</span>}
+          {item.task &&
+            (item.task.url ? (
+              <a href={item.task.url} target="_blank" rel="noreferrer">
+                {taskLabel(item.task)}
+              </a>
+            ) : (
+              <span>{taskLabel(item.task)}</span>
+            ))}
+        </p>
+      )}
     </li>
   );
 }
