@@ -6,6 +6,11 @@
 
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
+import {
+  type DuplicationResult,
+  metricDeltas,
+  QUALITY_DUPLICATION,
+} from "./quality/duplication.js";
 import { ReportSchema, type ReviewSchema, type RunPolicy, TaskSchema } from "./schemas.js";
 import type { ArtifactRow, WorkflowStore } from "./store.js";
 import { type RunUsageReport, runUsage } from "./usage.js";
@@ -209,9 +214,22 @@ function collect(store: WorkflowStore, runId: string) {
         ms: (known?.ms ?? 0) + row.duration_ms,
       });
     }
+    const quality = latestArtifacts.get(QUALITY_DUPLICATION);
     return {
       run,
       state,
+      duplication: quality
+        ? parse<DuplicationResult | null>(
+            (() => {
+              try {
+                return store.readArtifact(runId, quality.id);
+              } catch {
+                return null;
+              }
+            })(),
+            null,
+          )
+        : null,
       workflowId: definition,
       policy: parse<Partial<RunPolicy>>(run.policy_json, {}),
       report,
@@ -269,6 +287,37 @@ function reviewModels(routing: Facts["routing"]): string | null {
   const implementation = models(["implementer"]);
   if (!review.length) return null;
   return `Reviewed on ${named(review)}${implementation.length ? `; implemented on ${named(implementation)}` : ""}.`;
+}
+
+/** The duplication ratchet's deltas and what it found (#638). */
+function duplicationSection(result: DuplicationResult, cap: number): string[] {
+  const out = ["## Code quality", ""];
+  if (result.skipped) return [...out, `Duplication ratchet skipped: ${result.skipped}.`, ""];
+  const verdict = result.blocking
+    ? "blocking"
+    : result.clones.length || result.unused.length
+      ? "noted"
+      : "clean";
+  out.push(`Duplication ratchet (\`${result.mode}\`): ${verdict}.`, "");
+  out.push(...metricDeltas(result).map((line) => `- ${line}`), "");
+  const span = (s: { file: string; startLine: number; endLine: number }) =>
+    code(`${s.file}:${s.startLine}-${s.endLine}`);
+  out.push(
+    ...table(
+      ["Added", "Where", "Detail"],
+      [
+        ...result.clones.map((c) => ["copy", span(c), `copies ${span(c.original)}`]),
+        ...result.unused.map((u) => [
+          "unused code",
+          code(`${u.file}:${u.line}`),
+          `${code(u.name)} is used nowhere`,
+        ]),
+      ],
+      cap,
+    ),
+  );
+  if (result.clones.length || result.unused.length) out.push("");
+  return out;
 }
 
 function render(facts: Facts, cap: number): string {
@@ -353,6 +402,8 @@ function render(facts: Facts, cap: number): string {
       "",
     );
   else out.push("No checks ran.", "");
+
+  if (facts.duplication) out.push(...duplicationSection(facts.duplication, cap));
 
   if (spec?.criteria.length) {
     out.push("## Acceptance criteria", "");
