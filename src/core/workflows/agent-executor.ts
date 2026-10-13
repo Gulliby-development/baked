@@ -54,6 +54,7 @@ import { isTransient } from "./retry.js";
 import {
   AnalysisSchema,
   ApprovalReviewSchema,
+  CritiqueSchema,
   generatedPaths,
   ImplementationSchema,
   PlanSchema,
@@ -94,6 +95,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   "acceptance-draft": AcceptanceDraftSchema,
   initiativePlan: InitiativePlanSchema,
   "approval-review": ApprovalReviewSchema,
+  critique: CritiqueSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Read-only steps in a row before an implementer is told to edit. */

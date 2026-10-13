@@ -259,9 +259,16 @@ export async function prepareStart(
   routing = independence.record;
   const notes = [...independence.moved, ...independence.warnings];
   if (notes.length) routing.warnings = [...(routing.warnings ?? []), ...notes];
-  const minConfidence = parseModelRouting(config.modelRouting)?.reviewMinConfidence;
-  if (minConfidence !== undefined && policy.reviewMinConfidence === undefined)
-    policy = PolicySchema.parse({ ...policy, reviewMinConfidence: minConfidence });
+  // Review settings of modelRouting join the policy, so the approval digest covers them; a
+  // policy that sets one itself keeps it.
+  const reviewSettings = parseModelRouting(config.modelRouting);
+  if (reviewSettings?.reviewMinConfidence !== undefined && policy.reviewMinConfidence === undefined)
+    policy = PolicySchema.parse({
+      ...policy,
+      reviewMinConfidence: reviewSettings.reviewMinConfidence,
+    });
+  if (reviewSettings?.critic && policy.critic === undefined)
+    policy = PolicySchema.parse({ ...policy, critic: reviewSettings.critic });
   const instructions = frozenInstructions(workspace, config.instructionFiles);
   const skillHashes: Record<string, string> = {};
   for (const profile of profiles)

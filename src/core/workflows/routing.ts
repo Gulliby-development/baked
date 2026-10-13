@@ -349,11 +349,18 @@ function sideModels(
   policy: RunPolicy,
   gates: ReadonlyMap<string, Gate>,
   profiles: readonly AgentProfile[],
+  withCritic = false,
 ): { implementation: Map<string, string>; review: Map<string, string> } {
   const chain = (entry: RoutingEntry | undefined): string[] =>
     entry ? [entry.model, ...(entry.fallback ?? [])] : [];
   const models = { implementation: new Map<string, string>(), review: new Map<string, string>() };
-  for (const { stageId, side, profileIds } of boundSides(definition, policy, gates, profiles)) {
+  for (const { stageId, side, profileIds } of sidesOf(
+    definition,
+    policy,
+    gates,
+    profiles,
+    withCritic,
+  )) {
     if (side === "other") continue;
     const route = stageId ? record.stages[stageId] : undefined;
     if (route) {
@@ -364,6 +371,25 @@ function sideModels(
       for (const model of chain(record.profiles[id])) models[side].set(model, `profile ${id}`);
   }
   return models;
+}
+
+/**
+ * `boundSides`, with the critic (#646) on the review side when `withCritic` is set: a
+ * cross-provider route moves it with the reviewers, while the model-level warnings leave it out,
+ * since a critic on the implementation's vendor does not run unless the policy asks for it.
+ */
+function sidesOf(
+  definition: Definition,
+  policy: RunPolicy,
+  gates: ReadonlyMap<string, Gate>,
+  profiles: readonly AgentProfile[],
+  withCritic: boolean,
+): ReturnType<typeof boundSides> {
+  const sides = boundSides(definition, policy, gates, profiles);
+  const critics = profiles.filter((p) => p.output === "critique").map((p) => p.id);
+  return withCritic && critics.length
+    ? [...sides, { stageId: null, side: "review", profileIds: critics }]
+    : sides;
 }
 
 /**
@@ -414,7 +440,7 @@ export function routeReviewToOtherVendor(
   profiles: readonly AgentProfile[],
   candidates: readonly string[],
 ): { record: RoutingRecord; moved: string[]; warnings: string[] } {
-  const models = sideModels(record, definition, policy, gates, profiles);
+  const models = sideModels(record, definition, policy, gates, profiles, true);
   const used = new Set([...models.implementation.keys()].map(modelVendor));
   if (![...models.review.keys()].some((model) => used.has(modelVendor(model))))
     return { record, moved: [], warnings: [] };
@@ -440,7 +466,7 @@ export function routeReviewToOtherVendor(
     source: CROSS_PROVIDER_SOURCE,
     ...(entry.effort ? { effort: entry.effort } : {}),
   });
-  for (const { stageId, side, profileIds } of boundSides(definition, policy, gates, profiles)) {
+  for (const { stageId, side, profileIds } of sidesOf(definition, policy, gates, profiles, true)) {
     if (side !== "review") continue;
     const route = stageId ? next.stages[stageId] : undefined;
     if (stageId && route) {

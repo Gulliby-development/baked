@@ -31,7 +31,12 @@ import {
   startCliLogin,
   switchCliAccount,
 } from "../llm/cli-login.js";
-import { INDEPENDENT_REVIEW_MODES, ROUTED_ROLES, RouteEffort } from "../llm/model-routing.js";
+import {
+  CRITIC_MODES,
+  INDEPENDENT_REVIEW_MODES,
+  ROUTED_ROLES,
+  RouteEffort,
+} from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
 import { cachedVendorModels } from "../llm/vendor-models.js";
@@ -156,6 +161,12 @@ const RoutingBody = z.union([
     workflow: z.string().min(1).max(200).optional(),
     model: z.string().min(1).max(200).optional(),
     reviewMinConfidence: z.number().min(0).max(1).nullable(),
+  }),
+  z.strictObject({
+    scope: z.enum(["global", "project"]),
+    workflow: z.string().min(1).max(200).optional(),
+    model: z.string().min(1).max(200).optional(),
+    critic: z.enum(CRITIC_MODES).nullable(),
   }),
 ]);
 const SkillQuery = z.strictObject({ q: z.string().max(200).optional() });
@@ -477,15 +488,17 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
         ? { independentReview: body.independentReview }
         : "reviewMinConfidence" in body
           ? { reviewMinConfidence: body.reviewMinConfidence }
-          : {
-              target: body.target,
-              route: body.route && {
-                model: body.route.model,
-                effort: body.route.effort ?? null,
-                fallback: body.route.fallback ?? [],
-              },
-              ...(body.create ? { create: true } : {}),
-            };
+          : "critic" in body
+            ? { critic: body.critic }
+            : {
+                target: body.target,
+                route: body.route && {
+                  model: body.route.model,
+                  effort: body.route.effort ?? null,
+                  fallback: body.route.fallback ?? [],
+                },
+                ...(body.create ? { create: true } : {}),
+              };
     let problems: string[];
     try {
       ({ problems } = saveRoutingChange(
