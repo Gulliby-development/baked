@@ -1,149 +1,72 @@
 import { useState } from "react";
-import { bridge } from "../../client/bridge.js";
-import {
-  FILE_STATUS,
-  type InstalledPackage,
-  type InstallResult,
-  installAction,
-  type PackageKind,
-  type PackagePlan,
-  type PackResult,
-  packages,
-  packSummary,
-} from "../../client/packages.js";
+import { type InstalledPackage, packages } from "../../client/packages.js";
+import { Icon, type IconName } from "../../components/Icon.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog.js";
 import { Empty } from "../../components/ui/empty.js";
-import { Input } from "../../components/ui/input.js";
+import { Hint } from "../../components/ui/tooltip.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL, LEDE, PANEL } from "../../lib/styles.js";
 import type { SectionProps } from "../sections.js";
+import { CreatePackageDialog, InstallPackageDialog } from "./PackageDialogs.js";
 import {
-  ACTIONS,
-  ADD,
   errorText,
-  FIELD_HALF,
-  FL,
-  FORM,
   GROW,
   LINE,
   LIST,
   LoadState,
   NOTE,
-  PAIR,
   SETUP,
   STACK,
   Tag,
   useLoad,
-  WARN,
   WRAP,
 } from "./shared.js";
 
-const KIND_LABEL: Record<PackageKind, string> = {
-  agents: "Agent profiles",
-  skills: "Skills",
-  workflows: "Workflows",
-  gates: "Gates",
-};
+export { installSummary } from "./PackageDialogs.js";
 
-/** What an install did, in one sentence. */
-export function installSummary(result: InstallResult): string {
-  const parts = [
-    `Installed ${result.name} ${result.version}: ${result.written.length} files written`,
-    result.unchanged.length ? `${result.unchanged.length} already identical` : "",
-    result.removed.length ? `${result.removed.length} files of the old version removed` : "",
-    result.kept.length ? `${result.kept.length} edited files of the old version kept` : "",
-  ].filter(Boolean);
-  return `${parts.join(", ")}.`;
-}
+const ACTION =
+  "group flex w-full cursor-pointer items-center gap-3.5 rounded-base border-2 border-border bg-background px-4 py-3.5 text-left [font:inherit] text-foreground shadow-shadow transition-transform duration-150 hover:translate-x-boxShadowX hover:translate-y-boxShadowY hover:shadow-none focus-visible:outline-2 focus-visible:outline-ring motion-reduce:transition-none";
+const ACTION_ICON =
+  "flex size-11 shrink-0 items-center justify-center rounded-base border-2 border-border shadow-sm-hard transition-transform duration-200 group-hover:-rotate-6 motion-reduce:transition-none";
 
-function Plan({
-  plan,
-  busy,
+/** The two things the screen does, as large buttons that open their dialogs. */
+export function PackageActions({
   onInstall,
+  onCreate,
 }: {
-  plan: PackagePlan;
-  busy: boolean;
-  onInstall: (overwrite: boolean) => void;
+  onInstall: () => void;
+  onCreate: () => void;
 }) {
-  const action = installAction(plan);
-  const kinds = (Object.keys(KIND_LABEL) as PackageKind[]).filter((k) => plan.contents[k].length);
+  const card = (icon: IconName, tone: string, title: string, what: string, onClick: () => void) => (
+    <button type="button" className={ACTION} onClick={onClick}>
+      <span className={cn(ACTION_ICON, tone)}>
+        <Icon name={icon} size={22} />
+      </span>
+      <span className={cn(STACK, "gap-0.5")}>
+        <span className="text-[15px] font-bold">{title}</span>
+        <span className="text-[12px] text-muted-foreground">{what}</span>
+      </span>
+    </button>
+  );
   return (
-    <section aria-label={`Plan for ${plan.name}`} className={cn(PANEL, STACK)}>
-      <div className={STACK}>
-        <h2 className="m-0 text-[15px] font-semibold">
-          {plan.name} {plan.version}
-          {plan.installed && (
-            <span className={cn("ml-2 font-normal text-dim-foreground", NOTE)}>
-              installed: {plan.installed}
-            </span>
-          )}
-        </h2>
-        {plan.description && <p className={LEDE}>{plan.description}</p>}
-        <span className={cn("font-mono text-dim-foreground", NOTE, WRAP)}>{plan.source}</span>
-      </div>
-      {kinds.length > 0 && (
-        <ul className={cn(LIST, "flex flex-wrap gap-x-4 gap-y-1")}>
-          {kinds.map((k) => (
-            <li key={k} className={NOTE}>
-              <span className="text-dim-foreground">{KIND_LABEL[k]}:</span>{" "}
-              <span className="font-mono">{plan.contents[k].join(", ")}</span>
-            </li>
-          ))}
-        </ul>
+    <div className="grid grid-cols-2 gap-3 [@media(max-width:720px)]:grid-cols-1">
+      {card(
+        "packages",
+        "bg-main text-main-foreground",
+        "Install package",
+        "Bring agent profiles, skills, workflows and gates from a package folder.",
+        onInstall,
       )}
-      <ul className={cn(LIST, "rounded-base border-2 border-border")} aria-label="Files">
-        {plan.files.map((f) => (
-          <li key={f.target} className={LINE}>
-            <span className={cn(GROW, "font-mono", WRAP)}>{f.target}</span>
-            <Tag tone={f.status === "overwrite" ? "warn" : undefined}>{FILE_STATUS[f.status]}</Tag>
-          </li>
-        ))}
-      </ul>
-      {plan.stale.some((s) => s.action !== "missing") && (
-        <ul className={cn(LIST, NOTE)} aria-label="Files of the installed version">
-          {plan.stale
-            .filter((s) => s.action !== "missing")
-            .map((s) => (
-              <li key={s.target}>
-                <span className="font-mono">{s.target}</span>:{" "}
-                {s.action === "remove"
-                  ? "removed, this version no longer ships it"
-                  : "kept, edited since the install"}
-              </li>
-            ))}
-        </ul>
+      {card(
+        "new",
+        "bg-fill-info text-main-foreground",
+        "Create package",
+        "Pack a folder you made: BAKED checks it and writes its baked-package.json.",
+        onCreate,
       )}
-      {plan.gatesToConfirm.length > 0 && (
-        <p className={cn(NOTE, WARN)}>
-          Gates {plan.gatesToConfirm.join(", ")} need confirming in Gates and checks before a run
-          uses them; installing does not confirm them.
-        </p>
-      )}
-      {plan.problems.length > 0 && (
-        <Alert tone="error">
-          <span className="block">This package cannot be installed:</span>
-          <ul className="m-0 pl-4">
-            {plan.problems.map((p) => (
-              <li key={p} className={WRAP}>
-                {p}
-              </li>
-            ))}
-          </ul>
-        </Alert>
-      )}
-      <div className={ACTIONS}>
-        <Button
-          variant="primary"
-          size="md"
-          disabled={busy || !action.allowed}
-          onClick={() => onInstall(plan.overwrites > 0)}
-        >
-          {action.label}
-        </Button>
-      </div>
-    </section>
+    </div>
   );
 }
 
@@ -157,9 +80,12 @@ function Installed({
   onRemove: () => void;
 }) {
   return (
-    <li className={LINE}>
+    <li className={cn(LINE, "py-3")}>
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-base border-2 border-border bg-main text-main-foreground">
+        <Icon name="packages" size={16} />
+      </span>
       <span className={cn(GROW, STACK, "gap-1")}>
-        <span className="font-semibold">
+        <span className="font-semibold text-foreground">
           {item.name} <span className="font-mono font-normal">{item.version}</span>
         </span>
         <span className={cn("text-dim-foreground", NOTE, WRAP)}>
@@ -182,256 +108,43 @@ function Installed({
 }
 
 /**
- * For package authors: writes the `baked-package.json` of a package folder with every file's
- * hash, after the checks an install runs (`baked packages pack`). Check reports without writing;
- * empty name, version and description keep the existing manifest's.
- */
-export function ManifestWriter({ projectKey }: { projectKey: string }) {
-  const [form, setForm] = useState({ path: "", name: "", version: "", description: "" });
-  const [result, setResult] = useState<{ value: PackResult; check: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const set =
-    (field: keyof typeof form) =>
-    (e: { target: { value: string } }): void =>
-      setForm((f) => ({ ...f, [field]: e.target.value }));
-  const run = async (check: boolean): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    setResult(null);
-    try {
-      const value = await packages.pack(
-        projectKey,
-        {
-          path: form.path.trim(),
-          name: form.name.trim(),
-          version: form.version.trim(),
-          description: form.description.trim(),
-        },
-        check,
-      );
-      setResult({ value, check });
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const browse = async (): Promise<void> => {
-    const picked = await bridge.pickFolder();
-    if (picked) setForm((f) => ({ ...f, path: picked }));
-  };
-  const ready = !busy && form.path.trim() !== "";
-  return (
-    <section aria-label="Write manifest" className={STACK}>
-      <h2 className={LABEL}>Write manifest</h2>
-      <p className={NOTE}>
-        For package authors: lists every file of a package folder with its SHA-256 in its{" "}
-        <span className="font-mono">baked-package.json</span>, after the same layout and definition
-        checks an install runs. Empty fields keep the existing manifest's values. Nothing is
-        installed.
-      </p>
-      <form
-        className={FORM}
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (ready) void run(false);
-        }}
-      >
-        <div className={ADD}>
-          <Input
-            aria-label="Package folder to write"
-            placeholder="Package folder"
-            value={form.path}
-            onChange={set("path")}
-            disabled={busy}
-          />
-          <Button
-            type="button"
-            variant="secondary"
-            size="md"
-            disabled={busy}
-            onClick={() => void browse()}
-          >
-            Choose folder…
-          </Button>
-        </div>
-        <div className={PAIR}>
-          <div className={FIELD_HALF}>
-            <label htmlFor="pack-name">Name</label>
-            <Input
-              id="pack-name"
-              className="font-mono"
-              placeholder="acme-review"
-              value={form.name}
-              onChange={set("name")}
-              disabled={busy}
-            />
-          </div>
-          <div className={FIELD_HALF}>
-            <label htmlFor="pack-version">Version</label>
-            <Input
-              id="pack-version"
-              className="font-mono"
-              placeholder="1.0.0"
-              value={form.version}
-              onChange={set("version")}
-              disabled={busy}
-            />
-          </div>
-        </div>
-        <div className={FL}>
-          <label htmlFor="pack-description">Description (optional)</label>
-          <Input
-            id="pack-description"
-            value={form.description}
-            onChange={set("description")}
-            disabled={busy}
-          />
-        </div>
-        <div className={ACTIONS}>
-          <Button
-            type="button"
-            variant="secondary"
-            size="md"
-            disabled={!ready}
-            onClick={() => void run(true)}
-          >
-            Check
-          </Button>
-          <Button type="submit" variant="primary" size="md" disabled={!ready}>
-            Write
-          </Button>
-        </div>
-      </form>
-      {error && <Alert tone="error">{error}</Alert>}
-      {result && (
-        <div className={STACK}>
-          <p role="status" className={NOTE}>
-            {packSummary(result.value, result.check)}
-          </p>
-          {result.value.problems.length > 0 && (
-            <Alert tone="error">
-              <span className="block">Fix these, then write again:</span>
-              <ul className="m-0 pl-4">
-                {result.value.problems.map((p) => (
-                  <li key={p} className={WRAP}>
-                    {p}
-                  </li>
-                ))}
-              </ul>
-            </Alert>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-
-/**
- * BAKED packages: pick a local package folder, read what it would write into the project's
- * `baked/` folders, install it with an explicit button, and remove installed packages. The same
- * as `baked add` and `/packages` (docs/packages.md). Authors write a package's manifest below.
+ * BAKED packages: the installed ones, Install package (pick a folder, read the plan, install) and
+ * Create package (write a folder's `baked-package.json`), each a dialog. The same as `baked add`,
+ * `baked packages` and `/packages` (docs/packages.md).
  */
 export function PackagesSection({ project }: SectionProps) {
   const [list, refresh] = useLoad(() => packages.list(project.key), ["packages", project.key]);
-  const [path, setPath] = useState("");
-  const [plan, setPlan] = useState<PackagePlan | null>(null);
+  const [dialog, setDialog] = useState<"install" | "create" | null>(null);
   const [removing, setRemoving] = useState<InstalledPackage | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-
-  const act = async (work: () => Promise<void>): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    setNote(null);
-    try {
-      await work();
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const inspect = (folder: string) =>
-    act(async () => {
-      setPlan(null);
-      setPlan(await packages.inspect(project.key, folder.trim()));
-    });
-  const browse = async (): Promise<void> => {
-    const picked = await bridge.pickFolder();
-    if (!picked) return;
-    setPath(picked);
-    await inspect(picked);
-  };
 
   if (list.state !== "ready") return <LoadState value={list} what="packages" />;
   const items = list.data.packages;
   return (
     <div className={SETUP}>
       <p className={LEDE}>
-        A package is a local folder with a <span className="font-mono">baked-package.json</span>{" "}
-        that lists agent profiles, skills, workflows and gates with their SHA-256 hashes. Installing
-        checks every hash and definition, then copies the files into this project's{" "}
-        <span className="font-mono">baked/</span> folders, where they are ordinary project files.
-        Nothing is loaded from the package folder afterwards.
+        Packages bring agent profiles, skills, workflows and gates into this project.
+        <Hint label="packages">
+          A package is a local folder with a <span className="font-mono">baked-package.json</span>{" "}
+          that lists its files with their SHA-256 hashes. Installing checks every hash and
+          definition, then copies the files into this project's{" "}
+          <span className="font-mono">baked/</span> folders, where they are ordinary project files.
+          Nothing is loaded from the package folder afterwards.
+        </Hint>
       </p>
-      <section aria-label="Install a package" className={STACK}>
-        <h2 className={LABEL}>Install a package</h2>
-        <form
-          className={ADD}
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (path.trim()) void inspect(path);
-          }}
-        >
-          <Input
-            aria-label="Package folder"
-            placeholder="Package folder"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-          />
-          <Button
-            type="button"
-            variant="secondary"
-            size="md"
-            disabled={busy}
-            onClick={() => void browse()}
-          >
-            Choose folder…
-          </Button>
-          <Button type="submit" variant="primary" size="md" disabled={busy || !path.trim()}>
-            Show plan
-          </Button>
-        </form>
-      </section>
-      {error && <Alert tone="error">{error}</Alert>}
+      <PackageActions onInstall={() => setDialog("install")} onCreate={() => setDialog("create")} />
       {note && (
         <p role="status" className={NOTE}>
           {note}
         </p>
       )}
-      {plan && (
-        <Plan
-          plan={plan}
-          busy={busy}
-          onInstall={(overwrite) =>
-            void act(async () => {
-              const result = await packages.install(project.key, plan, overwrite);
-              setPlan(null);
-              setNote(
-                `${installSummary(result)}${result.gatesToConfirm.length ? ` Confirm gates ${result.gatesToConfirm.join(", ")} in Gates and checks before a run uses them.` : ""}`,
-              );
-              refresh();
-            })
-          }
-        />
-      )}
+      {error && removing === null && <Alert tone="error">{error}</Alert>}
       <section aria-label="Installed packages" className={STACK}>
-        <h2 className={LABEL}>Installed</h2>
+        <h2 className={LABEL}>Installed{items.length ? ` · ${items.length}` : ""}</h2>
         {items.length === 0 ? (
-          <Empty>No packages installed in this project.</Empty>
+          <Empty>No packages installed in this project yet.</Empty>
         ) : (
           <ul className={cn(PANEL, LIST, "p-0")}>
             {items.map((item) => (
@@ -439,13 +152,29 @@ export function PackagesSection({ project }: SectionProps) {
                 key={item.name}
                 item={item}
                 busy={busy}
-                onRemove={() => setRemoving(item)}
+                onRemove={() => {
+                  setError(null);
+                  setRemoving(item);
+                }}
               />
             ))}
           </ul>
         )}
       </section>
-      <ManifestWriter projectKey={project.key} />
+      <InstallPackageDialog
+        projectKey={project.key}
+        open={dialog === "install"}
+        onOpenChange={(open) => setDialog(open ? "install" : null)}
+        onInstalled={() => {
+          setNote(null);
+          refresh();
+        }}
+      />
+      <CreatePackageDialog
+        projectKey={project.key}
+        open={dialog === "create"}
+        onOpenChange={(open) => setDialog(open ? "create" : null)}
+      />
       <ConfirmDialog
         open={removing !== null}
         title={`Remove ${removing?.name ?? ""}?`}
@@ -454,17 +183,22 @@ export function PackagesSection({ project }: SectionProps) {
         busy={busy}
         error={error}
         onClose={() => setRemoving(null)}
-        onConfirm={() =>
-          void act(async () => {
-            if (!removing) return;
-            const result = await packages.remove(project.key, removing.name);
-            setRemoving(null);
-            setNote(
-              `Removed ${result.name} ${result.version}: ${result.removed.length} files deleted${result.kept.length ? `; kept ${result.kept.length} edited: ${result.kept.join(", ")}` : ""}.`,
-            );
-            refresh();
-          })
-        }
+        onConfirm={() => {
+          if (!removing) return;
+          setBusy(true);
+          setError(null);
+          packages
+            .remove(project.key, removing.name)
+            .then((result) => {
+              setRemoving(null);
+              setNote(
+                `Removed ${result.name} ${result.version}: ${result.removed.length} files deleted${result.kept.length ? `; kept ${result.kept.length} edited: ${result.kept.join(", ")}` : ""}.`,
+              );
+              refresh();
+            })
+            .catch((e: unknown) => setError(errorText(e)))
+            .finally(() => setBusy(false));
+        }}
       >
         Files unchanged since the install are deleted from <span className="font-mono">baked/</span>
         . Files edited since stay in the project.
