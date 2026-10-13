@@ -312,6 +312,42 @@ export const runMaintenance = {
   ) => call<ImportResult>(key, "POST", "/v1/workflow/import", request),
 };
 
+/** One run's directory under `.baked/worktrees` (`GET /v1/workflow/worktrees`). */
+export interface WorktreeEntry {
+  runId: string;
+  /** Null for a directory whose run `gc` removed. */
+  featureId: string | null;
+  status: RunState | null;
+  branch: string;
+  directories: { path: string; task: string | null; bytes: number }[];
+  bytes: number;
+  cleanable: boolean;
+  kept: string | null;
+}
+
+export interface WorktreeUsage {
+  worktrees: WorktreeEntry[];
+  bytes: number;
+  trashBytes: number;
+  cleanableBytes: number;
+}
+
+/** `POST /v1/workflow/worktrees/clean`: what was removed, then the listing after it. */
+export interface WorktreeCleanup extends WorktreeUsage {
+  removed: string[];
+  removedBytes: number;
+  failed: { runId: string; error: string }[];
+}
+
+/** Disk use and cleanup of run worktrees (`worktrees` capability). */
+export const WORKTREES_CAPABILITY = "worktrees";
+
+export const runWorktrees = {
+  list: (key: string) => call<WorktreeUsage>(key, "GET", "/v1/workflow/worktrees"),
+  /** Removes the worktrees of ended runs and of runs gc removed; branches stay. */
+  clean: (key: string) => call<WorktreeCleanup>(key, "POST", "/v1/workflow/worktrees/clean", {}),
+};
+
 /** The group of `docs/desktop/api.md` that adds evidence, continue and recover. */
 export const GROUP_B_CAPABILITY = "setup";
 

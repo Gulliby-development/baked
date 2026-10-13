@@ -1229,6 +1229,47 @@ function gc(body: GcBody) {
   });
 }
 
+/** Worktrees the mock's cleanup removed; every sample run starts with one. */
+const cleanedWorktrees = new Set<string>();
+
+/** One worktree per sample run, sized by its position; ended runs are cleanable. */
+function worktrees() {
+  const entries = all()
+    .filter((r) => !cleanedWorktrees.has(r.runId))
+    .map((r, i) => {
+      const bytes = (i + 1) * 48 * 1024 * 1024;
+      const ended = ENDED.includes(r.status);
+      return {
+        runId: r.runId,
+        featureId: r.featureId,
+        status: r.status,
+        branch: `baked/wf/${r.runId}`,
+        directories: [{ path: `.baked/worktrees/${r.runId}/main`, task: null, bytes }],
+        bytes,
+        cleanable: ended,
+        kept: ended ? null : `run is ${r.status}`,
+      };
+    })
+    .sort((a, b) => b.bytes - a.bytes);
+  return {
+    worktrees: entries,
+    bytes: entries.reduce((sum, w) => sum + w.bytes, 0),
+    trashBytes: 0,
+    cleanableBytes: entries.filter((w) => w.cleanable).reduce((sum, w) => sum + w.bytes, 0),
+  };
+}
+
+function cleanWorktrees() {
+  const ended = worktrees().worktrees.filter((w) => w.cleanable);
+  for (const w of ended) cleanedWorktrees.add(w.runId);
+  return {
+    removed: ended.map((w) => w.runId),
+    removedBytes: ended.reduce((sum, w) => sum + w.bytes, 0),
+    failed: [],
+    ...worktrees(),
+  };
+}
+
 function importCandidate(body: ImportBody) {
   if (!body.path.trim()) return invalid("Import source must be a local directory without symlinks");
   return response(200, {
@@ -1352,6 +1393,9 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
     return response(200, mockCompare(a, b));
   }
   if (method === "POST" && path === "/v1/workflow/gc") return gc(body as GcBody);
+  if (method === "GET" && path === "/v1/workflow/worktrees") return response(200, worktrees());
+  if (method === "POST" && path === "/v1/workflow/worktrees/clean")
+    return response(200, cleanWorktrees());
   if (method === "POST" && path === "/v1/workflow/import")
     return importCandidate(body as ImportBody);
   const match = /^\/v1\/workflow\/runs\/([^/]+)(?:\/([a-z-]+))?$/.exec(path);

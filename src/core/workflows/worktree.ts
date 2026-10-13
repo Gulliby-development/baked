@@ -498,7 +498,7 @@ export async function commitRunBranch(
 export async function removeRunWorktree(
   store: WorkflowStore,
   runId: string,
-  worktree: WorktreeState,
+  worktree: Pick<WorktreeState, "path" | "branch">,
   options: { deleteBranch: boolean },
 ): Promise<void> {
   const workspace = store.workspace;

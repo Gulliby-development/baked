@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
@@ -19,6 +19,7 @@ import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/type
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
 import { worktreeView } from "../src/core/workflows/worktree.js";
+import { formatWorktreeUsage } from "../src/core/workflows/worktree-usage.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy } from "./helpers/workflow-fixture.js";
 
@@ -435,12 +436,61 @@ describe("workflow worktree execution", () => {
     expect(worktreeView(fx.root, store.state(inline.runId))).toBeNull();
   });
 
+  test("worktrees lists run worktrees by size and cleans those of ended runs, keeping branches", async () => {
+    const fx = setup();
+    const run = await fx.start("worktree");
+    await fx.drive(run.runId);
+    const store = fx.service.store;
+    const worktree = store.state(run.runId).worktree;
+    const tree = join(fx.root, worktree?.path ?? "missing");
+    // A task worktree of the run and an orphan whose run gc removed (#335).
+    mkdirSync(join(fx.root, ".baked", "worktrees", run.runId, "T2"), { recursive: true });
+    writeFileSync(join(fx.root, ".baked", "worktrees", run.runId, "T2", "big.txt"), "x".repeat(4096));
+    git(fx.root, "worktree", "add", "-q", "-b", "baked/wf/gone", ".baked/worktrees/gone/main");
+    // node_modules is linked from the project, not the worktree's own disk use.
+    mkdirSync(join(fx.root, "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(fx.root, "node_modules", "dep", "index.js"), "y".repeat(100_000));
+    symlinkSync(join(fx.root, "node_modules"), join(tree, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+
+    const listed = fx.service.worktrees();
+    const own = listed.worktrees.find((w) => w.runId === run.runId);
+    expect(own?.featureId).toBe(store.run(run.runId).feature_id);
+    expect(own?.directories.map((d) => d.task)).toEqual([null, "T2"]);
+    expect(own?.bytes).toBeGreaterThanOrEqual(4096);
+    expect(own?.bytes).toBeLessThan(100_000);
+    expect(own?.cleanable).toBe(false);
+    expect(own?.kept).toContain("run is");
+    const orphan = listed.worktrees.find((w) => w.runId === "gone");
+    expect(orphan).toMatchObject({ featureId: null, status: null, cleanable: true, branch: "baked/wf/gone" });
+    expect(listed.bytes).toBe(listed.worktrees.reduce((sum, w) => sum + w.bytes, 0));
+    expect(formatWorktreeUsage(listed)).toContain("no run (removed by gc)");
+
+    // An unfinished run keeps its worktree; the orphan goes.
+    const first = await fx.service.cleanWorktrees();
+    expect(first.removed).toEqual(["gone"]);
+    expect(existsSync(tree)).toBe(true);
+    expect(existsSync(join(fx.root, ".baked", "worktrees", "gone"))).toBe(false);
+    expect(git(fx.root, "branch", "--list", "baked/wf/gone")).toContain("baked/wf/gone");
+
+    await fx.service.cancel(run.runId, { commandId: newId(), expectedRevision: store.run(run.runId).revision });
+    const second = await fx.service.cleanWorktrees();
+    expect(second.removed).toEqual([run.runId]);
+    expect(second.worktrees).toEqual([]);
+    expect(existsSync(join(fx.root, ".baked", "worktrees", run.runId))).toBe(false);
+    expect(existsSync(join(fx.root, "node_modules", "dep", "index.js"))).toBe(true);
+    expect(git(fx.root, "branch", "--list", `baked/wf/${run.runId}`)).toContain(run.runId);
+    expect(store.artifacts(run.runId).some((a) => a.logical_path === "worktree/cleaned.json")).toBe(true);
+    expect(formatWorktreeUsage(second)).toContain("Removed 1 worktree directory");
+  });
+
   test("the CLI requests worktree execution, the exclusion choice and discard", () => {
     expect(parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--worktree"]).flags.worktree).toBe(true);
     expect(
       parseWorkflowArgs(["approve", "r", "--request", "q", "--digest", "d", "--expected-revision", "1", "--exclude-user-changes"]).flags["exclude-user-changes"],
     ).toBe(true);
     expect(parseWorkflowArgs(["discard-worktree", "r", "--expected-revision", "2"]).command).toBe("discard-worktree");
+    expect(parseWorkflowArgs(["worktrees", "--clean"]).flags.clean).toBe(true);
+    expect(() => parseWorkflowArgs(["worktrees", "r"])).toThrow(/positional/);
     expect(() => parseWorkflowArgs(["status", "r", "--worktree"])).toThrow(/not valid/);
   });
 });

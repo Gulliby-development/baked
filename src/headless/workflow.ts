@@ -46,6 +46,11 @@ import { QUICK_WORKFLOW_ID } from "../core/workflows/v2/definitions.js";
 import { proposeForWorkspace } from "../core/workflows/v2/propose.js";
 import { readCheckPreflight, readRoutingSummary } from "../core/workflows/view.js";
 import { worktreeView } from "../core/workflows/worktree.js";
+import {
+  formatWorktreeUsage,
+  type WorktreeCleanup,
+  type WorktreeUsage,
+} from "../core/workflows/worktree-usage.js";
 import type { AppConfig } from "../types/index.js";
 import { followProgress } from "./progress.js";
 import { DEFINITION_COMMANDS, executeDefinitionCommand } from "./workflow-definitions.js";
@@ -635,6 +640,8 @@ export async function executeWorkflowCommand(
     }
     case "discard-worktree":
       return service.discardWorktree(runId, identity());
+    case "worktrees":
+      return args.flags.clean ? await service.cleanWorktrees() : service.worktrees();
     case "redact":
       await artifacts.redact(runId, stringFlag(args, "file"), stringFlag(args, "reason"));
       return { redacted: true };
@@ -843,6 +850,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     if (args.command === "outcomes" && !args.flags.json) {
       process.stdout.write(formatCriticOutcomes(result as CriticOutcomes));
+      return 0;
+    }
+    if (args.command === "worktrees" && !args.flags.json) {
+      process.stdout.write(formatWorktreeUsage(result as WorktreeUsage & Partial<WorktreeCleanup>));
       return 0;
     }
     if (args.command === "memory" && !args.flags.json) {

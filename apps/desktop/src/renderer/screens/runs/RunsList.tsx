@@ -18,6 +18,7 @@ import { useBriefs } from "./load.js";
 import { RunsMaintenance } from "./Maintenance.js";
 import { STATUS_TEXT, stageLabel } from "./model.js";
 import { StatusPill } from "./parts.js";
+import { RunsWorktrees } from "./Worktrees.js";
 
 const FILTERS: { label: string; status: RunState | null }[] = [
   { label: "All", status: null },
@@ -100,6 +101,7 @@ export function RunsList({ project }: Pick<SectionProps, "project">) {
           ))}
         </SegmentGroup>
         <RunsMaintenance projectKey={project.key} onChanged={() => setReloads((n) => n + 1)} />
+        <RunsWorktrees projectKey={project.key} onChanged={() => setReloads((n) => n + 1)} />
         {canCompare && (
           <Button
             variant="secondary"

@@ -4,8 +4,9 @@ import { describe, expect, test } from "bun:test";
 const scope = globalThis as { window?: unknown };
 scope.window = {};
 const { ApiError } = await import("../src/renderer/client/api.ts");
-const { runMaintenance, runs } = await import("../src/renderer/client/runs.ts");
+const { runMaintenance, runs, runWorktrees } = await import("../src/renderer/client/runs.ts");
 const { defaultCutoff, redactable } = await import("../src/renderer/screens/runs/Maintenance.tsx");
+const { worktreeLine } = await import("../src/renderer/screens/runs/Worktrees.tsx");
 delete scope.window;
 
 const RUN = "run-settings-dark-mode";
@@ -45,6 +46,41 @@ describe("run maintenance client", () => {
     });
     expect(result.candidateHash).toMatch(/^[a-f0-9]{64}$/);
     expect(result.warnings[0]).toContain("draft");
+  });
+});
+
+describe("run worktrees client", () => {
+  test("lists worktrees by size and cleans only those of ended runs", async () => {
+    const before = await runWorktrees.list("baked");
+    expect(before.worktrees.length).toBeGreaterThan(0);
+    const sizes = before.worktrees.map((w) => w.bytes);
+    expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+    const ended = before.worktrees.filter((w) => w.cleanable).map((w) => w.runId);
+    const cleaned = await runWorktrees.clean("baked");
+    expect(cleaned.removed.sort()).toEqual(ended.sort());
+    expect(cleaned.removedBytes).toBe(before.cleanableBytes);
+    expect(cleaned.worktrees.every((w) => !w.cleanable)).toBe(true);
+    expect(cleaned.cleanableBytes).toBe(0);
+  });
+
+  test("a row names the owning run, its task worktrees and why it is kept", () => {
+    const row = {
+      runId: "r1",
+      featureId: "dark-mode",
+      status: "running" as const,
+      branch: "baked/wf/r1",
+      directories: [
+        { path: ".baked/worktrees/r1/main", task: null, bytes: 10 },
+        { path: ".baked/worktrees/r1/T2", task: "T2", bytes: 5 },
+      ],
+      bytes: 15,
+      cleanable: false,
+      kept: "run is running",
+    };
+    expect(worktreeLine(row)).toBe("dark-mode · running · 1 task worktree · kept: run is running");
+    expect(worktreeLine({ ...row, featureId: null, status: null, kept: null })).toBe(
+      "run removed by cleanup · 1 task worktree",
+    );
   });
 });
 

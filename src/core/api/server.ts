@@ -183,6 +183,7 @@ export const CAPABILITIES = [
   "run-compare",
   "preset-proposal",
   "packages",
+  "worktrees",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -1143,6 +1144,18 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       return json(
         200,
         await execute(validateWorkflowArgs({ command: "list", positional: [], flags })),
+        origin,
+      );
+    }
+    if (path === "/v1/workflow/worktrees") {
+      only("GET");
+      return json(200, await execute({ command: "worktrees", positional: [], flags: {} }), origin);
+    }
+    if (path === "/v1/workflow/worktrees/clean") {
+      only("POST");
+      return json(
+        200,
+        await execute({ command: "worktrees", positional: [], flags: { clean: true } }),
         origin,
       );
     }

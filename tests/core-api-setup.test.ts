@@ -101,6 +101,8 @@ describe("local API setup and workflow additions", () => {
     const preview = await post("/v1/workflow/gc", { before: new Date().toISOString(), dryRun: true });
     expect(await preview.json()).toEqual({ runIds: [], bytes: 0 });
     expect((await post("/v1/workflow/gc", { before: "soon" })).status).toBe(400);
+    expect(await get("/v1/workflow/worktrees")).toEqual({ worktrees: [], bytes: 0, trashBytes: 0, cleanableBytes: 0 });
+    expect(await (await post("/v1/workflow/worktrees/clean")).json()).toMatchObject({ removed: [], removedBytes: 0, failed: [], worktrees: [] });
 
     mkdirSync(join(fixture.root, "specs", "feature"), { recursive: true });
     writeFileSync(join(fixture.root, "specs", "feature", "spec.md"), "# Feature\n\nUsers can export runs.\n");
@@ -111,7 +113,7 @@ describe("local API setup and workflow additions", () => {
     expect(candidate.warnings.join(" ")).toContain("draft");
     expect((await post("/v1/workflow/import", { source: "spec-kit", path: "missing", featureId: "imported" })).status).toBe(400);
     const health = await get<{ capabilities: string[] }>("/v1/health");
-    expect(health.capabilities).toContain("run-maintenance");
+    expect(health.capabilities).toEqual(expect.arrayContaining(["run-maintenance", "worktrees"]));
   });
 
   test("health lists the setup and initiative capabilities", async () => {

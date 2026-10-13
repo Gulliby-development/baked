@@ -7,6 +7,11 @@ import { useWorkflowStore } from "../../stores/workflow.js";
 import { type CriticOutcomes, formatCriticOutcomes } from "../workflows/critic-outcomes.js";
 import type { RunSnapshot } from "../workflows/schemas.js";
 import { QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
+import {
+  formatWorktreeUsage,
+  type WorktreeCleanup,
+  type WorktreeUsage,
+} from "../workflows/worktree-usage.js";
 import type { CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -46,6 +51,8 @@ export function formatWorkflowResult(result: unknown): string {
   if (isReport(result)) return result.markdown;
   if (result && typeof result === "object" && "criticOutcomes" in result)
     return formatCriticOutcomes(result as CriticOutcomes);
+  if (result && typeof result === "object" && "worktrees" in result && "trashBytes" in result)
+    return formatWorktreeUsage(result as WorktreeUsage & Partial<WorktreeCleanup>);
   if (isWrittenReport(result))
     return `${result.usage ? "Run usage" : "Run report"} written to ${result.path}.`;
   return JSON.stringify(result, null, 2);
@@ -60,6 +67,7 @@ const SHORT_HELP = `
 /workflow usage      Tokens and cost of every run over 7, 30 or 90 days, by model, stage or day
 /workflow report ID  The run's report in Markdown (--output FILE writes it)
 /workflow usage ID --format md  The run's tokens and cost in Markdown (--output FILE)
+/workflow worktrees  Disk use of run worktrees; --clean removes those of ended runs
 /workflow outcomes   Critic scores with how each attempt turned out (--refresh reads Git)
 /workflow compare A B  Two runs side by side: routes, tokens, cost, time, review (A/B)
 /workflow help       All commands (run, status, approve, recover, export…)`.trim();

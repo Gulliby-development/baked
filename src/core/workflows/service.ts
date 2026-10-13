@@ -128,6 +128,7 @@ import {
   stageKind,
 } from "./v2/runtime.js";
 import { removeRunWorktree, runRoot } from "./worktree.js";
+import { cleanWorktrees, worktreeUsage } from "./worktree-usage.js";
 
 /** A checked reroute that is not written yet (`planReroute`). */
 export interface PlannedReroute {
@@ -1767,6 +1768,15 @@ export class NativeWorkflowService implements WorkflowService {
         canonical({ ...worktree, discardedAt: new Date().toISOString() }),
       );
     });
+  }
+  /** Run worktrees under `.baked/worktrees` with their size, owning run and status. */
+  worktrees() {
+    return worktreeUsage(this.store, new Set(this.active.keys()));
+  }
+  /** Removes the worktrees of ended runs and orphaned run directories; branches stay. */
+  async cleanWorktrees() {
+    const result = await cleanWorktrees(this.store, new Set(this.active.keys()));
+    return { ...result, ...this.worktrees() };
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);
