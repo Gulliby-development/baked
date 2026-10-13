@@ -871,6 +871,41 @@ export const SETTINGS: readonly SettingDefinition[] = [
       { value: "off", label: "off", help: "Do not run Semgrep." },
     ],
   },
+  {
+    id: "quality.mutation",
+    page: "code-quality",
+    section: "Tests",
+    label: "Mutation gate",
+    help: "Plants small faults (a flipped condition, a shifted boundary, a changed constant) in the lines a run added and runs the required test checks against each. A fault the tests do not notice means they assert too little. advisory lists those in the run report; required makes them findings the run fixes with a test; preset follows the workflow (advisory for full runs, off for quick and standard).",
+    scopes: BOTH,
+    type: "enum",
+    default: "preset",
+    options: [
+      { value: "preset", label: "preset", help: "As the workflow preset says." },
+      { value: "off", label: "off", help: "Do not run the gate." },
+      { value: "advisory", label: "advisory", help: "Report surviving mutants." },
+      { value: "required", label: "required", help: "Block until a test kills them." },
+    ],
+  },
+  {
+    id: "quality.propertyTests",
+    page: "code-quality",
+    section: "Tests",
+    label: "Property-based tests",
+    help: "The spec author marks criteria that must hold for a whole input domain (numbers, strings, parsing, round trips, invariants); each gets a property-based test (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck) and the run is blocked until it has one. A failing property's shrunk counterexample goes into the finding. preset follows the workflow (auto for standard and full runs, off for quick).",
+    scopes: BOTH,
+    type: "enum",
+    default: "preset",
+    options: [
+      { value: "preset", label: "preset", help: "As the workflow preset says." },
+      {
+        value: "auto",
+        label: "auto",
+        help: "Ask for property tests where criteria call for them.",
+      },
+      { value: "off", label: "off", help: "No property tests." },
+    ],
+  },
 ];
 
 const BY_ID = new Map(SETTINGS.map((setting) => [setting.id, setting]));

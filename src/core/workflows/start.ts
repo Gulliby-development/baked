@@ -11,6 +11,8 @@ import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
 import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
+import { presetMutation, presetOf } from "./quality/mutation.js";
+import { presetPropertyTests } from "./quality/properties.js";
 import { configuredRules } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG } from "./quality/sast.js";
 import {
@@ -105,6 +107,8 @@ export async function prepareStart(
     | "clarification"
     | "duplication"
     | "sast"
+    | "mutation"
+    | "propertyTests"
     | "modelStrict"
   >,
   deps: StartDeps = {},
@@ -205,6 +209,10 @@ export async function prepareStart(
     sast: policySast,
     sastConfig: policySastConfig,
     registryLookups: policyLookups,
+    mutation: policyMutation,
+    mutationThresholds: policyThresholds,
+    mutationBudgetMs: policyMutationBudget,
+    propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
     ...rest
@@ -224,6 +232,20 @@ export async function prepareStart(
   const sast = request.sast ?? policySast ?? config.quality?.sast ?? "auto";
   const sastConfig = policySastConfig ?? config.quality?.sastConfig ?? DEFAULT_SAST_CONFIG;
   const registryLookups = policyLookups ?? config.quality?.registryLookups ?? true;
+  // The preset's mutation default leaves the field out; a project or run choice is frozen.
+  const preset = presetOf(loaded);
+  const mutation =
+    request.mutation ??
+    policyMutation ??
+    (config.quality?.mutation === "preset" ? undefined : config.quality?.mutation) ??
+    presetMutation(preset);
+  const mutationThresholds = policyThresholds ?? config.quality?.mutationThresholds;
+  const mutationBudgetMs = policyMutationBudget ?? config.quality?.mutationBudgetMs;
+  const propertyTests =
+    request.propertyTests ??
+    policyPropertyTests ??
+    (config.quality?.propertyTests === "preset" ? undefined : config.quality?.propertyTests) ??
+    presetPropertyTests(preset);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -237,6 +259,10 @@ export async function prepareStart(
     ...(sast === "off" ? { sast } : {}),
     ...(sastConfig !== DEFAULT_SAST_CONFIG ? { sastConfig } : {}),
     ...(registryLookups === false ? { registryLookups } : {}),
+    ...(mutation !== presetMutation(preset) ? { mutation } : {}),
+    ...(mutationThresholds && Object.keys(mutationThresholds).length ? { mutationThresholds } : {}),
+    ...(mutationBudgetMs !== undefined ? { mutationBudgetMs } : {}),
+    ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),

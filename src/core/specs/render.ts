@@ -27,7 +27,7 @@ export function renderSpec(spec: Spec): string {
     "## Acceptance criteria",
     ...spec.criteria.map(
       (c) =>
-        `- ${c.id} (${c.requirementIds.join(", ")}; ${c.method}): Given ${c.given}; when ${c.when}; then ${c.then}`,
+        `- ${c.id} (${c.requirementIds.join(", ")}; ${c.method}${c.property ? `; property over ${c.property}` : ""}): Given ${c.given}; when ${c.when}; then ${c.then}`,
     ),
     "",
     "## Open questions",
