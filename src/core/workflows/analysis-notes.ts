@@ -4,7 +4,7 @@ import {
   withModuleDependencies,
   withReadDependencies,
 } from "./plan-consistency.js";
-import type { ResearchSchema, TaskGraph } from "./schemas.js";
+import type { ResearchSchema, Spec, TaskGraph } from "./schemas.js";
 import { withTestDependencies } from "./sizing.js";
 
 type Research = z.infer<typeof ResearchSchema>;
@@ -66,10 +66,13 @@ export function isHostSplitNit(
  * the code sharing its criterion, a docs task that runs the program after its entry points. The planner cannot remove them, so the analyzer must not ask
  * for that (bench round 10, dirdrift: one dependency finding came back in 4 of 7 analysis passes).
  */
-export function hostDependencyEdges(graph: TaskGraph): Array<{ task: string; dependsOn: string }> {
+export function hostDependencyEdges(
+  graph: TaskGraph,
+  spec?: Pick<Spec, "requirements" | "criteria">,
+): Array<{ task: string; dependsOn: string }> {
   const bare = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, dependsOn: [] })) };
   const derived = withTestDependencies(
-    withCommandDependencies(withReadDependencies(withModuleDependencies(bare))),
+    withCommandDependencies(withReadDependencies(withModuleDependencies(bare)), spec),
   );
   return derived.tasks.flatMap((task) => {
     const stored = graph.tasks.find((t) => t.id === task.id)?.dependsOn ?? [];

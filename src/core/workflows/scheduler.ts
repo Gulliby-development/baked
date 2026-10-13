@@ -466,6 +466,7 @@ function planGraph(
         }),
       ),
     ),
+    spec,
   );
   // Tests first runs the test tasks before the code; otherwise a test task waits for its code.
   return withCoveringChecks(
@@ -475,8 +476,8 @@ function planGraph(
 }
 
 /** What the analyzer is told the host verified, including the dependency edges the host owns. */
-function hostEdgesNote(graph: TaskGraph): string[] {
-  const edges = hostDependencyEdges(graph);
+function hostEdgesNote(graph: TaskGraph, spec?: Spec): string[] {
+  const edges = hostDependencyEdges(graph, spec);
   return edges.length
     ? [
         ...PLAN_CONSISTENCY_CHECKS,
@@ -1024,7 +1025,7 @@ export class WorkflowScheduler {
                   policy,
                   this.requireProfile(profile),
                   {
-                    verifiedByRuntime: hostEdgesNote(graph),
+                    verifiedByRuntime: hostEdgesNote(graph, spec),
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
                     ...(Object.keys(hostSplitParts(graph)).length
@@ -1085,7 +1086,7 @@ export class WorkflowScheduler {
               }
               // The host adds some dependsOn edges after planning; plan.md cannot mention them and the
               // planner cannot remove them, so a finding about them is a note.
-              const hostEdges = hostDependencyEdges(graph);
+              const hostEdges = hostDependencyEdges(graph, spec);
               const taskIds = graph.tasks.map((t) => t.id);
               for (const finding of analysis.findings) {
                 if (
