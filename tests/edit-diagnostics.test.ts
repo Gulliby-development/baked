@@ -145,7 +145,7 @@ describe("edit diagnostics through a language server", () => {
     );
     expect(rejected).toBe(false);
     expect(output).toContain("CROSS-FILE ERRORS");
-    expect(output).toContain(`${app}:2 [2305]: Module has no exported member 'foo'.`);
+    expect(output).toContain("app.ts:2 [2305]: Module has no exported member 'foo'.");
     expect(readFileSync(lib, "utf-8")).toBe(broken);
   });
 

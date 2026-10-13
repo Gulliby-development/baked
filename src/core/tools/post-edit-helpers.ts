@@ -198,7 +198,8 @@ export async function appendPostEditDiagnostics(
     const cwd = getCwd();
     const show = (file: string) => {
       const rel = relative(cwd, file);
-      return rel && !rel.startsWith("..") ? rel.split(sep).join("/") : file;
+      // A file on another drive has no relative path: `relative` returns it absolute.
+      return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel.split(sep).join("/") : file;
     };
     const diffOutput = formatPostEditResult(result, show);
     if (revert && totalNewErrors(result) > 0 && editDiagnosticsMode() === "reject") {
