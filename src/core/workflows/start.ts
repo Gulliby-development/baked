@@ -9,6 +9,7 @@ import { frozenInstructions } from "./context.js";
 import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
 import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
+import { configuredRules } from "./quality/rules.js";
 import {
   independenceWarnings,
   independentReviewMode,
@@ -184,6 +185,7 @@ export async function prepareStart(
     executionMode: _previous,
     clarification: _clarification,
     duplication: _duplication,
+    qualityRules: requestRules,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
     ...rest
@@ -196,6 +198,9 @@ export async function prepareStart(
   // default and leaves the field out, so the policy hash stays what it was before the ratchet.
   const duplication =
     request.duplication ?? policy.duplication ?? config.quality?.duplication ?? DEFAULT_DUPLICATION;
+  // The policy's own rule choices win over the configured ones; the built-in pack as shipped
+  // leaves the field out.
+  const qualityRules = requestRules ?? configuredRules(config.quality);
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -205,6 +210,7 @@ export async function prepareStart(
     ...(clarification === "assume" ? { clarification } : {}),
     ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
+    ...(qualityRules ? { qualityRules } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),

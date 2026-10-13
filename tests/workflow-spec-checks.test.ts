@@ -8,6 +8,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
   type RunPolicy,
   type Spec,
+  hostBoundCriteria,
   manualRepositoryCriteria,
   specCoverageProblems,
   validateSpecCoverage,
@@ -45,6 +46,31 @@ describe("spec-side checks", () => {
     const visual = { ...readme, id: "AC-004", given: "the app in a browser", when: "a person opens it", then: "the layout looks balanced" };
     expect(specCoverageProblems({ ...fixed, criteria: [...fixed.criteria, visual] })).toEqual([]);
     expect(specCoverageProblems({ ...fixed, criteria: [...fixed.criteria, { ...readme, method: "automated" as const }] })).toEqual([]);
+  });
+  test("a manual criterion about a property of the code is sent back to the spec author", () => {
+    // logslice 242ff843 AC-021: three reviews passed it, converge still asked a person.
+    const streaming = { ...criterion("AC-021", ["FR-001"]), given: "a large input", when: "a reviewer inspects it", then: "input is iterated line by line and not read fully", method: "manual" as const };
+    const spec: Spec = { ...fixed, criteria: [...fixed.criteria, streaming] };
+    expect(manualRepositoryCriteria(spec)).toEqual(["AC-021"]);
+    expect(specCoverageProblems(spec).join(" ")).toContain("criterion AC-021 is about a file in the repository or a property of its code");
+  });
+  test("an automated criterion only other platforms can prove is sent back to the spec author", () => {
+    // propdrift eea2e0e9 AC-008: blocked at converge, two identical convergence calls.
+    const crossOs = { ...criterion("AC-005", ["FR-001"]), given: "the CLI", when: "it runs", then: "MIT license terms are present and behavior is confirmed on Windows, macOS, and Linux" };
+    const crossBrowser = { ...criterion("AC-006", ["FR-001"]), given: "the page", when: "opened in Chrome and Firefox", then: "the layout renders" };
+    const device = { ...criterion("AC-007", ["FR-001"]), given: "the app", when: "installed on a real device", then: "it starts" };
+    const generic = { ...criterion("AC-008", ["FR-001"]), given: "the tool", when: "it runs", then: "it is cross-platform" };
+    const spec: Spec = { ...fixed, criteria: [...fixed.criteria, crossOs, crossBrowser, device, generic] };
+    expect(hostBoundCriteria(spec)).toEqual(["AC-005", "AC-006", "AC-007", "AC-008"]);
+    expect(specCoverageProblems(spec).join(" ")).toContain("criterion AC-005 is automated but claims behavior on other operating systems");
+    // Checkable here: a CI matrix file, a simulated platform, one named OS, or a manual criterion.
+    const matrix = { ...crossOs, then: "the CI workflow runs the tests on a matrix of ubuntu-latest, macos-latest and windows-latest" };
+    const simulated = { ...crossOs, then: "paths built with path.win32 and path.posix both resolve on Windows and Linux" };
+    const oneOs = { ...crossOs, then: "the script runs on Linux" };
+    const manual = { ...crossOs, method: "manual" as const };
+    for (const c of [matrix, simulated, oneOs, manual]) expect(hostBoundCriteria({ ...fixed, criteria: [...fixed.criteria, c] })).toEqual([]);
+    // "edge case" is not the Edge browser.
+    expect(hostBoundCriteria({ ...fixed, criteria: [...fixed.criteria, { ...crossOs, then: "Chrome handles the edge case" }] })).toEqual([]);
   });
   test("the task graph check still reports the spec defects", () => {
     const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "", planHash: "", tasks: [] };

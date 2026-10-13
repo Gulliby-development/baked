@@ -75,6 +75,7 @@ export const analyzeTool = {
               success: true,
               output: "No diagnostics — file is clean",
               backend: tracked.backend,
+              server: tracked.server,
             };
           }
 
@@ -97,6 +98,7 @@ export const analyzeTool = {
             success: true,
             output: `${header}\n${lines.join("\n")}${overflow}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -138,7 +140,12 @@ export const analyzeTool = {
           if (info.documentation) {
             parts.push("", info.documentation);
           }
-          return { success: true, output: parts.join("\n"), backend: tracked.backend };
+          return {
+            success: true,
+            output: parts.join("\n"),
+            backend: tracked.backend,
+            server: tracked.server,
+          };
         }
 
         case "outline": {
@@ -187,7 +194,12 @@ export const analyzeTool = {
             }
           }
 
-          return { success: true, output: parts.join("\n"), backend: tracked.backend };
+          return {
+            success: true,
+            output: parts.join("\n"),
+            backend: tracked.backend,
+            server: tracked.server,
+          };
         }
 
         case "code_actions": {
@@ -223,6 +235,7 @@ export const analyzeTool = {
             success: true,
             output: `Code actions (${String(tracked.value.length)}):\n${actionLines.join("\n")}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 
@@ -246,6 +259,7 @@ export const analyzeTool = {
               success: true,
               output: "No unused imports or exports detected",
               backend: tracked?.backend,
+              server: tracked?.server,
             };
           }
 
@@ -257,6 +271,7 @@ export const analyzeTool = {
             success: true,
             output: `Unused items (${String(tracked.value.length)}):\n${unusedLines.join("\n")}`,
             backend: tracked.backend,
+            server: tracked.server,
           };
         }
 

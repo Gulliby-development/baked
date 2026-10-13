@@ -182,6 +182,13 @@ describe("auto approval", () => {
     const deferred = { ...spec, criteria: spec.criteria.map((c) => ({ ...c, method: "post-release" as const })) };
     expect(evaluateAutoApproval(limited, manifest, deferred, graph([modify("src/a.ts")]), []).approval).toBeNull();
   });
+  test("under clarification assume post-release criteria are deferred without a person", () => {
+    const deferred = { ...spec, criteria: spec.criteria.map((c) => ({ ...c, method: "post-release" as const })) };
+    const assume = { ...limited, clarification: "assume" as const };
+    expect(evaluateAutoApproval(assume, manifest, deferred, graph([modify("src/a.ts")]), []).approval?.mode).toBe("limits");
+    // Paths that always need a person still do.
+    expect(evaluateAutoApproval(assume, manifest, deferred, graph([modify(".github/ci.yml")]), []).approval).toBeNull();
+  });
   test("renews within the last human approval", () => {
     const previous = approved(renewing, [modify("src/a.ts"), modify("src/b.ts")]);
     const result = evaluateAutoApproval(renewing, manifest, spec, graph([modify("src/a.ts")]), [previous]);

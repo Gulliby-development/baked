@@ -18,6 +18,7 @@ import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
 import { diagnosticsTimeoutMs } from "../tools/edit-diagnostics.js";
 import { getMotion, type MotionMode, setMotion } from "../utils/motion.js";
+import { qualityRuleCatalog } from "../workflows/quality/builtin-rules.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
 
@@ -588,8 +589,9 @@ function handleAgentFeatures(_input: string, ctx: CommandContext): void {
 }
 
 /**
- * The Code quality page of the shared settings schema, as on the desktop: each choice setting
- * moves to its next value on Enter. New workflow runs freeze these defaults in their policy.
+ * The Code quality page of the shared settings schema, as on the desktop: a choice setting moves
+ * to its next value on Enter, and each rule of the anti-slop pack is a row that turns it on or
+ * off. New workflow runs freeze these defaults in their policy.
  */
 function handleCodeQuality(_input: string, ctx: CommandContext): void {
   const settings = SETTINGS.filter((setting) => setting.page === "code-quality");
@@ -597,23 +599,48 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
     loadConfig(),
     loadEffectiveProjectConfig(process.cwd()),
   ) as unknown as Record<string, unknown>;
-  const currentValue = (id: string): string => {
+  const currentValue = (id: string): unknown => {
     const setting = settings.find((s) => s.id === id);
-    const value = readSettingPath(effective, id);
-    return String(value ?? setting?.default ?? "");
+    return readSettingPath(effective, id) ?? setting?.default;
   };
+  const offList = (id: string): string[] => {
+    const value = currentValue(id);
+    return Array.isArray(value) ? value.map(String) : [];
+  };
+  // A rule row is `SETTING_ID|RULE_ID`; other rows are the setting ID.
   const buildOptions = () =>
-    settings.map((setting) => ({
-      value: setting.id,
-      label: `${setting.label}: ${currentValue(setting.id)}`,
-      description: setting.help,
-    }));
-  const next = (id: string): string | boolean | null => {
+    settings.flatMap((setting) =>
+      setting.type === "string-list" && setting.catalog === "quality-rules"
+        ? qualityRuleCatalog().map((rule) => ({
+            value: `${setting.id}|${rule.name}`,
+            label: `Rule ${rule.name}: ${offList(setting.id).includes(rule.name) ? "off" : "on"}`,
+            description: rule.description,
+          }))
+        : [
+            {
+              value: setting.id,
+              label: `${setting.label}: ${String(currentValue(setting.id) ?? "")}`,
+              description: setting.help,
+            },
+          ],
+    );
+  const next = (row: string): { id: string; value: unknown } | null => {
+    const [id = "", rule] = row.split("|");
     const setting = settings.find((s) => s.id === id);
-    if (setting?.type === "boolean") return currentValue(id) !== "true";
+    if (rule) {
+      const off = offList(id);
+      return {
+        id,
+        value: off.includes(rule) ? off.filter((name) => name !== rule) : [...off, rule],
+      };
+    }
+    if (setting?.type === "boolean") return { id, value: currentValue(id) !== true };
     if (setting?.type !== "enum") return null;
     const values = setting.options.map((o) => o.value);
-    return values[(values.indexOf(currentValue(id)) + 1) % values.length] ?? null;
+    return {
+      id,
+      value: values[(values.indexOf(String(currentValue(id))) + 1) % values.length],
+    };
   };
   const patch = (id: string, value: unknown) =>
     writeSettingPath({}, id, value) as Partial<AppConfig>;
@@ -625,15 +652,19 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
     options: buildOptions(),
     scopeEnabled: true,
     initialScope: ctx.detectScope("quality"),
-    onSelect: (id, scope) => {
-      const value = next(id);
-      if (value === null) return;
-      ctx.saveToScope(patch(id, value), scope ?? "project");
-      effective = writeSettingPath(effective, id, value);
-      sysMsg(ctx, `${id}: ${String(value)} (${scope ?? "project"}); new workflow runs use it`);
+    onSelect: (row, scope) => {
+      const change = next(row);
+      if (!change) return;
+      ctx.saveToScope(patch(change.id, change.value), scope ?? "project");
+      effective = writeSettingPath(effective, change.id, change.value);
+      const shown = Array.isArray(change.value)
+        ? `off: ${change.value.join(", ") || "none"}`
+        : String(change.value);
+      sysMsg(ctx, `${change.id} ${shown} (${scope ?? "project"}); new workflow runs use it`);
       useUIStore.getState().updatePickerOptions(buildOptions());
     },
-    onScopeMove: (id, from, to) => {
+    onScopeMove: (row, from, to) => {
+      const [id = ""] = row.split("|");
       ctx.saveToScope(patch(id, readSettingPath(effective, id)), to, from);
     },
   });

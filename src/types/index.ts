@@ -23,6 +23,8 @@ export interface ToolResult {
   error?: string;
   /** Which intelligence backend handled this (ts-morph, lsp, tree-sitter, regex) */
   backend?: string;
+  /** The language server that answered, when `backend` is lsp (rust-analyzer, jdtls). */
+  server?: string;
   /** True when read returned only an outline (large file) — tracker should not cache this as a full read */
   outlineOnly?: boolean;
   /** Files edited by dispatch tool — used by /changes panel to track per-tab edits */
@@ -291,6 +293,12 @@ export type TaskTier = "spark" | "ember";
 export interface QualityConfig {
   /** Duplication and dead-code ratchet: `warn` (default) reports, `ratchet` blocks, `off` skips. */
   duplication?: "off" | "warn" | "ratchet";
+  /** Rules of the anti-slop pack that do not run (built-in or ast-grep rule IDs). */
+  disabledRules?: string[];
+  /** Severity per rule ID: `error` blocks the run, `warning` is a note. */
+  ruleSeverity?: Record<string, "error" | "warning">;
+  /** The project's ast-grep rule files, relative to the workspace; they run when ast-grep is installed. */
+  ruleFiles?: string[];
 }
 
 export interface AppConfig {
