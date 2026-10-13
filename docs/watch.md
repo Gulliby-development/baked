@@ -64,7 +64,7 @@ def total(items):  # baked? why is tax added here and in checkout()
 ```sh
 baked --headless --watch            # turns from baked! and baked? comments until Ctrl+C
 baked --headless --watch-poll       # the same, polling file times
-baked --headless --watch --mode auto --events
+baked --headless --watch --permissions full --events
 ```
 
 - `--watch` runs the [headless chat](headless.md) loop, but its prompts come from the watch instead of stdin.

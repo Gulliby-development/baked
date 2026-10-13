@@ -237,7 +237,6 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
         ...(watch ? { watch, watchPoll } : {}),
         ...(approvalReview ? { approvalReview } : {}),
         ...(permissions ? { permissions } : {}),
-        ...(permissions ? { permissions } : {}),
       },
     };
   }
@@ -277,6 +276,7 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       diff,
       render,
       ...(approvalReview ? { approvalReview } : {}),
+      ...(permissions ? { permissions } : {}),
     },
   };
 }

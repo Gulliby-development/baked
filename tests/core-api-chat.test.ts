@@ -437,12 +437,18 @@ describe("local API chat sessions", () => {
       model: "anthropic/claude-test",
       mode: "auto",
     });
-    expect(await patched.json()).toMatchObject({ title: "Renamed", model: "anthropic/claude-test", mode: "auto" });
+    // The legacy auto mode is stored as the default mode with full access.
+    expect(await patched.json()).toMatchObject({
+      title: "Renamed",
+      model: "anthropic/claude-test",
+      mode: "default",
+      permissions: "full",
+    });
     expect((await send("PATCH", `/v1/sessions/${session.id}`, { mode: "review" })).status).toBe(400);
     expect((await send("PATCH", `/v1/sessions/${session.id}`, {})).status).toBe(400);
     await post(`/v1/sessions/${session.id}/messages`, { text: "Again" });
     await until(() => detail(session.id), (d) => d.state === "idle" && d.messages.length === 4);
-    expect(host.seen.at(-1)).toMatchObject({ modelId: "anthropic/claude-test", mode: "auto" });
+    expect(host.seen.at(-1)).toMatchObject({ modelId: "anthropic/claude-test", mode: "default" });
 
     const forked = await post(`/v1/sessions/${session.id}/fork`, { atMessageId: first.messages[1]?.id });
     expect(forked.status).toBe(201);
@@ -458,7 +464,12 @@ describe("local API chat sessions", () => {
       (meta) => meta?.customTitle === "Renamed" && meta.tabs.some((tab) => tab.messageRange.endLine === 4),
     );
     const reloaded = new ChatService({ workspace: fixture.root, config: fixture.service.config, host });
-    expect(reloaded.get(session.id).summary()).toMatchObject({ title: "Renamed", model: "anthropic/claude-test", mode: "auto" });
+    expect(reloaded.get(session.id).summary()).toMatchObject({
+      title: "Renamed",
+      model: "anthropic/claude-test",
+      mode: "default",
+      permissions: "full",
+    });
 
     expect((await call(`/v1/sessions/${fork.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await call(`/v1/sessions/${fork.id}`)).status).toBe(404);

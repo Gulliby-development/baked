@@ -283,6 +283,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat: effort picker"],
   },
   {
+    id: "permission-modes",
+    group: "Chat and sessions",
+    title: "Permission mode per chat: manual, auto or full access",
+    tui: ["/permissions: per tab, shown in the header"],
+    cli: ["--permissions"],
+    api: ["/v1/sessions/:id: permissions"],
+    desktop: ["project/chat: permissions chip", "project/coordinator: permissions chip"],
+  },
+  {
     id: "context-dashboard",
     group: "Chat and sessions",
     title: "Context and cost dashboard for a chat",

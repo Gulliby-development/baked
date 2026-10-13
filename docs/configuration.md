@@ -76,6 +76,7 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 | `motion` | `"full"` | Brand animations; `"reduced"` shows still frames (`/motion`, or `BAKED_REDUCED_MOTION=1`) ([guide](guide.md#motion)) |
 | `coAuthorCommits` | `true` | Co-author trailer on commits made through BAKED |
 | `defaultBakeMode` | `"default"` | Mode of new sessions |
+| `defaultPermissionMode` | `"auto"` | [Permission mode](guide.md#permission-modes) of new chats: `manual`, `auto` or `full` |
 | `telemetry`, `telemetryUrl` | `true`, unset | Local usage events and an optional receiver; `/telemetry` or `baked telemetry on\|off` switches `telemetry` ([privacy](privacy.md)) |
 | `notifications` | `system: true`, no webhook | Announce a workflow run that waits for a person: a native notification and an optional webhook; `/notifications` edits them ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) |
 

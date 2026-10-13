@@ -130,6 +130,20 @@ describe("coordinator launches", () => {
     expect(live.launched[0]?.tokens).toBeGreaterThan(0);
   }, 60000);
 
+  test("with full access the coordinator starts a writing session at once, and passes it on", async () => {
+    const { chat, coordinator, tool } = await setup();
+    coordinator.update({ permissions: "full" });
+    const launched = await tool("launch_session").execute({
+      title: "Fix it",
+      brief: "Fix the bug",
+      mode: "default",
+      why: "Fix",
+    });
+    expect(launched.success).toBe(true);
+    expect(coordinator.pendingPrompts).toEqual([]);
+    expect(chat.list().map((s) => [s.mode, s.permissions])).toEqual([["default", "full"]]);
+  }, 60000);
+
   test("a writing session needs the user's yes, and the active limit holds", async () => {
     const { chat, coordinator, tool } = await setup(1);
     const declined = tool("launch_session").execute({
