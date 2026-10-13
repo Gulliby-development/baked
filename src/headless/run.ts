@@ -18,7 +18,6 @@ import { toolResultOf } from "../core/chat/tool-result.js";
 import { expandCustomCommandInput } from "../core/commands/custom.js";
 import { ContextManager } from "../core/context/manager.js";
 import { getCwd } from "../core/cwd.js";
-import { withContextSize } from "../core/llm/context-sizes.js";
 import {
   endSessionHooks,
   startSessionHooks,
@@ -27,6 +26,7 @@ import {
   userPromptHooks,
   withHookContext,
 } from "../core/hooks/lifecycle.js";
+import { withContextSize } from "../core/llm/context-sizes.js";
 import { resolveModel } from "../core/llm/provider.js";
 import { buildProviderOptions, withChatEffort } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";

@@ -66,7 +66,6 @@ import { type CompactResult, compactionBlocker, messageChars } from "../compacti
 import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
-import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
 import { runHooks } from "../hooks/index.js";
 import {
   endSessionHooks,
@@ -79,6 +78,7 @@ import {
   userPromptHooks,
   withHookContext,
 } from "../hooks/lifecycle.js";
+import { chatContextTokens, getModelContextSizes, withContextSize } from "../llm/context-sizes.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
