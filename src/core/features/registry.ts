@@ -600,6 +600,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs"],
   },
   {
+    id: "progress-watcher",
+    group: "Workflow runs",
+    title: "Progress watcher: steer, then stop, a stuck agent attempt",
+    tui: ["/workflow: activity feed of the run view"],
+    cli: ["baked workflow run: --events stream", "baked workflow resume: --events stream"],
+    api: ["/v1/workflow/runs/:id/events"],
+    desktop: ["project/runs: activity feed"],
+  },
+  {
     id: "run-decisions",
     group: "Workflow runs",
     title: "Approve, reject, answer, give evidence, continue, accept a stopped convergence",
@@ -718,6 +727,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/gates"],
   },
   {
+    id: "duplication-ratchet",
+    group: "Workflow runs",
+    title: "Duplication and dead-code ratchet",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --duplication off|warn|ratchet", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "custom-gates",
     group: "Workflow runs",
     title:
@@ -731,7 +749,7 @@ export const FEATURES: readonly Feature[] = [
     id: "gate-drafts",
     group: "Workflow runs",
     title: "Gates from a plain-language sentence",
-    tui: gap(372, "create a gate from text in the workflow editor"),
+    tui: ["/workflow: editor, G new gate from a sentence"],
     cli: ["baked workflow gate"],
     api: [
       "/v1/workflow/gates/draft",

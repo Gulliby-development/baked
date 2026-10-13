@@ -7,7 +7,9 @@ import { act } from "react";
 import { type WorkflowEditorApi, WorkflowEditorPopup } from "../src/components/workflow/WorkflowEditor.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
-import { readEditorSource, writeDefinitionFile } from "../src/core/workflows/v2/editor.js";
+import { libraryViews, readEditorSource, writeDefinitionFile } from "../src/core/workflows/v2/editor.js";
+import { draftGate, saveGateDraft } from "../src/core/workflows/v2/gate-draft.js";
+import { loadGateLibrary } from "../src/core/workflows/v2/library.js";
 
 type View = Awaited<ReturnType<typeof testRender>>;
 const SIZES = [
@@ -196,3 +198,47 @@ test("an unknown workflow ID is explained and Esc goes back", async () => {
     expect(state.backs).toBe(1);
   } finally { await act(async () => view.renderer.destroy()); }
 });
+
+test("G drafts a gate from a sentence, saves it to baked/gates and binds it where the cursor is", async () => {
+  const { workspace, api: base, state } = harness();
+  const directories = { user: join(workspace, "..", "user-gates"), project: join(workspace, "baked", "gates") };
+  const prompts: string[] = [];
+  const api: WorkflowEditorApi = {
+    ...base,
+    // A person gate needs no model; a model call here would be a bug.
+    draftGate: (request) => { prompts.push(request.text); return draftGate(workspace, request, async () => { throw new Error("no model in this test"); }, loadGateLibrary(workspace, policy, directories)); },
+    saveGate: (draft) => {
+      saveGateDraft(workspace, draft, () => loadGateLibrary(workspace, policy, directories));
+      return libraryViews(workspace, policy, directories);
+    },
+  };
+  const view = await mount(api, "standard", workspace, { width: 120, height: 40 }, () => { state.backs++; });
+  try {
+    await press(view, "g");
+    let text = await frame(view, 120, 40, "read-only");
+    expect(text).not.toContain("New gate for");
+    await press(view, "c");
+    await press(view, "tab");
+    await press(view, "g");
+    text = await frame(view, 120, 40, "describe");
+    expect(text).toContain("New gate for");
+    expect(text).toContain("[Run a command]");
+    await press(view, "tab");
+    await press(view, "tab");
+    text = await frame(view, 120, 40, "kind");
+    expect(text).toContain("[Ask a person]");
+    await act(async () => { await view.mockInput.typeText("Someone from design signs off the screens"); });
+    await press(view, "return");
+    await act(async () => { await Bun.sleep(50); });
+    text = await frame(view, 120, 40, "draft");
+    expect(prompts).toEqual(["Someone from design signs off the screens"]);
+    expect(text).toContain("Save baked/gates/someone-from-design-signs-off.json");
+    expect(text).toContain("Draft gate someone-from-design-signs-off (human, required)");
+    await press(view, "return");
+    text = await frame(view, 120, 40, "bound");
+    const file = join(workspace, "baked", "gates", "someone-from-design-signs-off.json");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ type: "human" });
+    expect(text).toContain("unsaved");
+    expect(text).toContain("someone-from-design");
+  } finally { await act(async () => view.renderer.destroy()); }
+}, 20000);

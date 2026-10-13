@@ -117,6 +117,11 @@ export const RuntimeStateSchema = z
      * the correction of that finding may also write them, through the tasks that own them.
      */
     repairScope: z.record(z.string(), z.array(z.string())).default({}),
+    /**
+     * Corrective tasks that start from a clean context after repeated identical failures, by task
+     * ID: the artifact with the host's account of the earlier attempts.
+     */
+    freshTasks: z.record(z.string(), z.string()).default({}),
     /** Attempt token cap per planned task, set by plan-time sizing; corrections use their base's. */
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
@@ -348,6 +353,11 @@ export interface ExecutionResponse {
   output: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * False when the provider reported no tokens for model steps that ran, so the spend is
+   * unknown: the attempt keeps its reservation instead of being counted as free.
+   */
+  usageComplete?: boolean;
 }
 export interface AgentExecutor {
   execute(request: ExecutionRequest): Promise<ExecutionResponse>;

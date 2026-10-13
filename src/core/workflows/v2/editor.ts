@@ -119,6 +119,21 @@ export const definitionText = (definition: WorkflowV2): string =>
  * `sdd`, the shipped presets and schema 1 files open read only, ready to be duplicated. Throws for
  * an unknown ID or a file that does not parse.
  */
+/** The gate library as the editor lists it, with whether each project gate is confirmed here. */
+export function libraryViews(
+  workspace: string,
+  policy: RunPolicy,
+  directories = gateDirectories(workspace),
+): LibraryGateView[] {
+  const library = loadGateLibrary(workspace, policy, directories);
+  const confirmations = readConfirmations(workspace);
+  return [...library.entries.values()].map((entry) => ({
+    gate: entry.gate,
+    source: entry.source,
+    confirmed: entry.source !== "project" || confirmations[entry.gate.id] === entry.hash,
+  }));
+}
+
 export function readEditorSource(
   workspace: string,
   id: string,
@@ -129,12 +144,6 @@ export function readEditorSource(
   } = {},
 ): EditorSource {
   const loaded = loadDefinition(workspace, SafeId.parse(id), policy);
-  const library = loadGateLibrary(
-    workspace,
-    policy,
-    options.gateDirectories ?? gateDirectories(workspace),
-  );
-  const confirmations = readConfirmations(workspace);
   const readOnly =
     loaded.path === null
       ? "Built-in workflows are read only. Press C to duplicate this one as a custom workflow."
@@ -161,11 +170,7 @@ export function readEditorSource(
     definition: asV2(loaded, policy),
     savedText: loaded.path && loaded.schemaVersion === 2 ? readFileSync(loaded.path, "utf8") : null,
     readOnly,
-    library: [...library.entries.values()].map((entry) => ({
-      gate: entry.gate,
-      source: entry.source,
-      confirmed: entry.source !== "project" || confirmations[entry.gate.id] === entry.hash,
-    })),
+    library: libraryViews(workspace, policy, options.gateDirectories),
     profiles,
     takenIds: [...new Set(["sdd", ...PRESETS, ...files])],
   };
@@ -188,6 +193,12 @@ export function openEditor(source: EditorSource): EditorState {
     history: null,
   };
 }
+
+/** The editor after the gate library changed on disk, for example after a new gate was saved. */
+export const withLibrary = (state: EditorState, library: LibraryGateView[]): EditorState => ({
+  ...state,
+  library: new Map(library.map((g) => [g.gate.id, g])),
+});
 
 export const withHistory = (state: EditorState, history: PastRun[] | null): EditorState => ({
   ...state,

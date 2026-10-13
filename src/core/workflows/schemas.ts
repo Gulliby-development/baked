@@ -162,6 +162,8 @@ export const AutoApprovalSchema = z
 /** Upper bound of `maxConcurrentWriters`. */
 export const MAX_CONCURRENT_WRITERS = 4;
 
+/** Repair rounds that repeat the same failures before a fresh-context correction (see the policy). */
+export const DEFAULT_FRESH_RESTART_AFTER = 2;
 export const PolicySchema = z
   .object({
     maxConcurrentReadAgents: z.number().int().min(1).max(8),
@@ -208,6 +210,19 @@ export const PolicySchema = z
      * Absent means on, so stored policies keep their hash.
      */
     projectMemory: z.boolean().optional(),
+    /**
+     * How many repair rounds in a row may leave the same failures before the next correction
+     * starts from a clean context: the spec, the task, the current files and a host-written account
+     * of what was tried, without the earlier attempts' evidence. If that attempt fails the same way
+     * the run stops. Absent means `DEFAULT_FRESH_RESTART_AFTER`, so stored policies keep their hash.
+     */
+    freshRestartAfter: z.number().int().min(1).max(5).optional(),
+    /**
+     * The duplication and dead-code ratchet (quality/duplication.ts). Absent means `warn`: copies
+     * and unused declarations the run adds are reported, never blocking, so stored policies keep
+     * their hash. `ratchet` makes them blocking findings; `off` skips the measurement.
+     */
+    duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
@@ -666,6 +681,7 @@ export const EventType = z.enum([
   "stage.finished",
   "attempt.started",
   "attempt.finished",
+  "attempt.advisory",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -767,6 +783,21 @@ export const EventSchema = z.discriminatedUnion("type", [
           status: z.enum(["completed", "failed", "interrupted", "cancelled"]),
           usageComplete: z.boolean(),
           usedTokens: z.number().int().nonnegative().nullable(),
+        })
+        .strict(),
+    })
+    .strict(),
+  // The progress watcher noticed a stuck loop: it steered the attempt once, then stopped it.
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.advisory"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          signal: z.enum(["repeated-reads", "no-edits", "same-failure"]),
+          action: z.enum(["steered", "stopped"]),
+          detail: z.string().max(500),
         })
         .strict(),
     })
@@ -1074,6 +1105,8 @@ export interface StartRequest {
   modelStrict?: boolean;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
+  /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
+  duplication?: "off" | "warn" | "ratchet";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.
@@ -1265,21 +1298,56 @@ export function validateSpecCoverage(spec: Spec): string[] {
 const REPOSITORY_FILE =
   /\b(?:readme|changelog|license|contributing|dockerfile|makefile)(?:\.\w+)?\b|(?:^|[\s\x60'"(])[\w./-]*\.(?:md|mdx|txt|rst|json|jsonc|ya?ml|toml|ini|cfg|env|lock|[cm]?[jt]sx?|py|go|rs|rb|java|kt|cs|php|sh|css|html)\b/im;
 
+// A property of the code ("input is iterated line by line", when "a reviewer inspects it").
+const CODE_PROPERTY =
+  /\b(?:reviewers?|code review|source code|the code|implementation|(?:inspects?|reads?) the (?:source|module|function|class))\b/i;
+
 /**
  * Criteria about a file of the repository (README text, docs, configuration, source) whose method
  * is manual. A reviewer reads the file and the checks can grep it; only a person can answer a
  * manual request, so the run would wait for someone who just reads the same file (run 2fbac09c,
- * AC-003: 12 hours).
+ * AC-003: 12 hours). A property of the code is the same case: a reviewer passed logslice 242ff843
+ * AC-021 three times and converge still asked a person.
  */
 export function manualRepositoryCriteria(spec: Spec): string[] {
   return spec.criteria
-    .filter(
-      (c) =>
-        c.method === "manual" &&
-        REPOSITORY_FILE.test(`${c.given}
-${c.when}
-${c.then}`),
-    )
+    .filter((c) => {
+      if (c.method !== "manual") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      return REPOSITORY_FILE.test(text) || CODE_PROPERTY.test(text);
+    })
+    .map((c) => c.id);
+}
+
+const OPERATING_SYSTEMS = [/\bwindows\b/i, /\bmac\s?os\b|\bos x\b|\bdarwin\b/i, /\blinux\b/i];
+const BROWSERS = [
+  /\bchrom(?:e|ium)\b/i,
+  /\bfirefox\b/i,
+  /\bsafari\b/i,
+  /\bedge browser\b|\bmicrosoft edge\b/i,
+];
+const EVERY_HOST =
+  /\bcross[- ](?:platform|browser|os)\b|\b(?:all|every|each) (?:supported )?(?:operating systems?|platforms?|os(?:es)?|browsers?)\b|\b(?:real|physical) (?:device|phone|hardware)s?\b|\bon (?:an? )?(?:iphone|ipad|android (?:phone|device|tablet))s?\b/i;
+// A CI matrix file or a simulated platform is evidence one host can read or run.
+const HOST_EVIDENCE =
+  /\bmatrix\b|\bruns-on\b|\.github\/workflows|\bci workflow\b|\bworkflow file\b|\bpath\.(?:win32|posix)\b|\bsimulat|\bemulat|\bmock/i;
+
+/**
+ * Automated criteria that claim behavior on several operating systems, browsers or real devices.
+ * A run checks on one host, so no declared check can prove them and convergence can only answer
+ * inconclusive (propdrift eea2e0e9 AC-008: "behavior is confirmed on Windows, macOS, and Linux",
+ * two convergence calls and a block). A criterion about a CI matrix file or a simulated platform
+ * is checkable here and stays.
+ */
+export function hostBoundCriteria(spec: Spec): string[] {
+  return spec.criteria
+    .filter((c) => {
+      if (c.method !== "automated") return false;
+      const text = `${c.given}\n${c.when}\n${c.then}`;
+      if (HOST_EVIDENCE.test(text)) return false;
+      const count = (patterns: RegExp[]) => patterns.filter((p) => p.test(text)).length;
+      return count(OPERATING_SYSTEMS) >= 2 || count(BROWSERS) >= 2 || EVERY_HOST.test(text);
+    })
     .map((c) => c.id);
 }
 
@@ -1293,7 +1361,11 @@ export function specCoverageProblems(spec: Spec): string[] {
     ),
     ...manualRepositoryCriteria(spec).map(
       (id) =>
-        `criterion ${id} is about a file in the repository but has method manual: use method automated (a command check or the reviewer reading the file), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+        `criterion ${id} is about a file in the repository or a property of its code but has method manual: use method automated (a test, a command check, or the reviewer reading the file or code), because a person can add nothing a reviewer cannot read there. Keep manual for behavior only a person can observe.`,
+    ),
+    ...hostBoundCriteria(spec).map(
+      (id) =>
+        `criterion ${id} is automated but claims behavior on other operating systems, browsers or devices, and the run checks on one host, so nothing can prove it. Rewrite it as what this host can check (platform-neutral path, line-ending and process APIs; the tests pass here). When the request asks for proof on other platforms, add a criterion that a CI workflow file runs the checks on a matrix of those platforms (for example ubuntu-latest, macos-latest, windows-latest), which the reviewer verifies by reading the file. Use post-release only for a claim that needs a release or a real device.`,
     ),
   ];
 }
