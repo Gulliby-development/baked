@@ -157,6 +157,8 @@ export const FEATURES: readonly Feature[] = [
     ],
     cli: [
       "baked session coordinator: prints the brief",
+      "baked session coordinator send: a turn that answers its cards and follows launched work",
+      "baked session coordinator launched",
       "baked session coordinator stop",
       "baked session coordinator close",
     ],

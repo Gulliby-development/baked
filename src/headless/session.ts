@@ -32,6 +32,7 @@ import { WorkflowFault } from "../core/workflows/errors.js";
 import { InitiativeService } from "../core/workflows/initiatives/service.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { newId } from "../core/workflows/store.js";
+import { coordinatorLaunched, coordinatorSend } from "./coordinator-chat.js";
 
 const help = `Usage: baked session list [--limit N] [--json]
        baked session delete SESSION [--json]
@@ -41,6 +42,8 @@ const help = `Usage: baked session list [--limit N] [--json]
        baked session undo SESSION [--to N] [--force] [--json]
        baked session redo SESSION [--force] [--json]
        baked session coordinator [--json]
+       baked session coordinator send TEXT [--yes] [--no-follow] [--model MODEL] [--json]
+       baked session coordinator launched [--json]
        baked session coordinator schedules [--json]
        baked session coordinator schedule add --name NAME --when WHEN --prompt TEXT [--json]
        baked session coordinator schedule pause|resume|remove ID [--json]
@@ -51,6 +54,11 @@ const help = `Usage: baked session list [--limit N] [--json]
 list prints the saved sessions of this project, most recently updated first (default limit 50);
 the project coordinator is not listed.
 coordinator prints the project coordinator's session id and its project brief.
+coordinator send runs one coordinator turn in this process (creating the coordinator the first
+time), prints the reply and answers its approvals and split cards: --yes approves them, a terminal
+asks, otherwise they are denied. The sessions and runs it launches run in this process, so send
+then follows them until none is active; --no-follow returns after the reply (runs resume later,
+launched sessions stop). coordinator launched lists what the coordinator launched with its status.
 coordinator schedules lists the coordinator's schedules; schedule adds, pauses, resumes or removes
 one. WHEN is "every 30m", "every 6h", "every 1d", a five-field cron expression in local time such
 as "0 9 * * 1-5", or @hourly, @daily, @weekly, @monthly. Schedules fire while "baked serve" or the
@@ -301,8 +309,10 @@ function list(rest: string[]): number {
   return 0;
 }
 
-function coordinator(rest: string[]): number {
+function coordinator(rest: string[]): number | Promise<number> {
   if (rest[0] === "rules") return coordinatorRules(rest.slice(1));
+  if (rest[0] === "send") return coordinatorSend(rest.slice(1));
+  if (rest[0] === "launched") return coordinatorLaunched(rest.slice(1));
   const [sub] = rest;
   if (sub !== "schedules" && sub !== "schedule") {
     const unknown = rest.find((a) => a !== "--json");
