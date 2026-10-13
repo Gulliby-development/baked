@@ -294,6 +294,13 @@ export const PolicySchema = z
      */
     testIntegrity: z.enum(["block", "warn"]).optional(),
     /**
+     * Tests first (tests-first.ts): `criteria` writes a failing test task for every automated
+     * criterion before any code, `all` for every criterion; a person approves the tests and the
+     * code is implemented until they pass. Absent means `off`, so stored policies keep their hash;
+     * a definition's `testsFirst` (the `tdd` and `full` presets) overrides it at start.
+     */
+    testsFirst: z.enum(["off", "criteria", "all"]).optional(),
+    /**
      * Review findings whose confidence is below this are notes and start no correction. Absent
      * means 0.8 (`DEFAULT_REVIEW_MIN_CONFIDENCE`), so stored policies keep their hash; a run start
      * copies `modelRouting.reviewMinConfidence` here when it is set.

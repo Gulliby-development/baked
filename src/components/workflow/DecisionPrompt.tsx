@@ -108,6 +108,18 @@ interface AcceptanceBody {
     stableRuns: number;
   };
 }
+interface TestsFirstBody {
+  testsFirst?: {
+    mode: string;
+    criteria: { id: string; text: string }[];
+    tests: {
+      taskId: string;
+      title: string;
+      criterionIds: string[];
+      files: { path: string; content: string }[];
+    }[];
+  };
+}
 interface RecoveryBody {
   effectId?: string;
   intent?: Record<string, unknown>;
@@ -426,6 +438,61 @@ export function DecisionPrompt({
           </text>
         )}
         <Hint>{`Test ${acceptance.testHash.slice(0, 12)}… — the promoted gate fails if the file changes.`}</Hint>
+      </box>
+    );
+  }
+  const testsFirst =
+    request.kind === "approval" ? parse<TestsFirstBody>(request.body_json).testsFirst : undefined;
+  if (testsFirst) {
+    const files = testsFirst.tests.flatMap((test) => test.files);
+    return (
+      <box flexDirection="column">
+        <Section
+          title="Approve the tests written first"
+          description="These tests fail on the current code. Approving makes them read-only and lets the agents write the code until they pass."
+        >
+          <text fg={t.textSecondary} attributes={1}>
+            {`Criteria (${testsFirst.criteria.length})`}
+          </text>
+          {testsFirst.criteria.map((c) => (
+            <text key={c.id} fg={t.textMuted}>{`  ${c.id} ${flatten(c.text)}`}</text>
+          ))}
+          {testsFirst.tests.map((test) => (
+            <text key={test.taskId} fg={t.textPrimary}>
+              {`${test.taskId} ${flatten(test.title)} · ${test.criterionIds.join(", ")}`}
+            </text>
+          ))}
+          {files.map((file) => {
+            const lines = file.content.split("\n");
+            return (
+              <box key={file.path} flexDirection="column">
+                <text fg={t.textSecondary} attributes={1}>
+                  {`${file.path} (${lines.length} lines)`}
+                </text>
+                {lines.slice(0, 60).map((line, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: lines of a fixed text
+                  <text key={i} fg={t.textFaint}>{`  ${line}`}</text>
+                ))}
+              </box>
+            );
+          })}
+        </Section>
+        {rejecting ? (
+          input(
+            "What should the tests check instead? Enter to write them again (Esc keeps the request)",
+          )
+        ) : (
+          <text>
+            <span fg={t.success} attributes={1}>
+              {" A "}
+            </span>
+            <span fg={t.textMuted}>approve the tests </span>
+            <span fg={t.error} attributes={1}>
+              {" X "}
+            </span>
+            <span fg={t.textMuted}>write them again with a note </span>
+          </text>
+        )}
       </box>
     );
   }

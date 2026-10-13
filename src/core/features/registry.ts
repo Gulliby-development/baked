@@ -605,6 +605,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/overview: New run, Test integrity", "attention"],
   },
   {
+    id: "tests-first",
+    group: "Workflow runs",
+    title: "Tests first: failing tests approved before the code, tdd preset",
+    tui: ["/workflow: new run, tdd workflow; tests approval in the decision view"],
+    cli: ["baked workflow run", "baked workflow approve", "baked workflow reject"],
+    api: ["/v1/workflow/runs", "/v1/workflow/runs/:id/approve", "/v1/workflow/runs/:id/reject"],
+    desktop: ["project/overview: New run", "attention"],
+  },
+  {
     id: "preset-proposal",
     group: "Workflow runs",
     title: "Propose the workflow and budget from the request",
