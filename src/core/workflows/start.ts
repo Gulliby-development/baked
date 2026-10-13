@@ -224,6 +224,7 @@ export async function prepareStart(
     mutation: policyMutation,
     mutationThresholds: policyThresholds,
     mutationBudgetMs: policyMutationBudget,
+    mutationEngine: policyMutationEngine,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
@@ -263,6 +264,7 @@ export async function prepareStart(
     presetMutation(preset);
   const mutationThresholds = policyThresholds ?? config.quality?.mutationThresholds;
   const mutationBudgetMs = policyMutationBudget ?? config.quality?.mutationBudgetMs;
+  const mutationEngine = policyMutationEngine ?? config.quality?.mutationEngine ?? "auto";
   const propertyTests =
     request.propertyTests ??
     policyPropertyTests ??
@@ -297,6 +299,7 @@ export async function prepareStart(
     ...(mutation !== presetMutation(preset) ? { mutation } : {}),
     ...(mutationThresholds && Object.keys(mutationThresholds).length ? { mutationThresholds } : {}),
     ...(mutationBudgetMs !== undefined ? { mutationBudgetMs } : {}),
+    ...(mutationEngine === "built-in" ? { mutationEngine } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }

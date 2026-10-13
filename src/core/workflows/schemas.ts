@@ -366,6 +366,12 @@ export const PolicySchema = z
       .optional(),
     mutationBudgetMs: z.number().int().min(10_000).max(3_600_000).optional(),
     /**
+     * `built-in` keeps the mutation gate on its own operators even when the project has an
+     * ecosystem tool (quality/mutation-tools.ts); `auto` runs the installed tool. Absent means
+     * `auto`, so stored policies keep their hash.
+     */
+    mutationEngine: z.enum(["auto", "built-in"]).optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
@@ -512,6 +518,7 @@ export const ProfileSchema = z
       "initiativePlan",
       "approval-review",
       "critique",
+      "mutants",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -733,6 +740,30 @@ export const CritiqueSchema = z
   })
   .strict();
 export type Critique = z.infer<typeof CritiqueSchema>;
+/**
+ * Mutants an agent proposes for the mutation gate (#702): each changes one line the run added
+ * so that the criterion it targets would break. The host checks each one against the file.
+ */
+export const MutantProposalSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    mutants: z
+      .array(
+        z
+          .object({
+            criterionId: CriterionId,
+            file: z.string().min(1).max(512),
+            line: z.number().int().min(1),
+            original: z.string().min(1).max(2000),
+            mutated: z.string().max(2000),
+            rationale: Text,
+          })
+          .strict(),
+      )
+      .max(24),
+  })
+  .strict();
+export type MutantProposal = z.infer<typeof MutantProposalSchema>;
 
 export const ImplementationSchema = z
   .object({

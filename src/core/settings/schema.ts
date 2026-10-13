@@ -936,6 +936,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.mutationEngine",
+    page: "code-quality",
+    section: "Tests",
+    label: "Mutation engine",
+    help: "Which engine makes the mutation gate's mutants. auto runs the project's own mutation tool when it is already installed (Stryker, mutmut, cargo-mutants, PIT, go-mutesting) and the built-in operators otherwise; built-in always uses the operators. BAKED never installs a tool.",
+    scopes: BOTH,
+    type: "enum",
+    default: "auto",
+    options: [
+      { value: "auto", label: "auto", help: "Use an installed tool, else the built-in operators." },
+      { value: "built-in", label: "built-in", help: "Always use the built-in operators." },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",
