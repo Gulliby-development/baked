@@ -56,10 +56,12 @@ Agents often leave code that passes the tests but hides failures. The rule pack 
 | `ts-ignore` | error | `@ts-ignore`, `@ts-nocheck` | JS/TS |
 | `explicit-any` | warning | `: any`, `as any`, `<any>` | TS |
 | `lint-suppression` | warning | `eslint-disable`, `biome-ignore`, `# noqa`, `# type: ignore`, `# pylint: disable`, `//nolint`, `#[allow(...)]`, `@SuppressWarnings`, `#pragma warning disable`, `NOSONAR` | all |
-| `placeholder-body` | error | `throw new Error("not implemented")`, `todo!()`, `unimplemented!()`, `panic("not implemented")`, an empty `NotImplementedException`/`UnsupportedOperationException` | all |
+| `placeholder-body` | error | `throw new Error("not implemented")`, `throw new Error("TODO")` or `"todo: ..."` (a message that only starts with the word, such as `Todo with id 3 does not exist`, is not one), `todo!()`, `unimplemented!()`, `panic("not implemented")`, an empty `NotImplementedException`/`UnsupportedOperationException` | all |
 | `todo-comment` | warning | `TODO`, `FIXME`, `XXX`, `HACK` comments | all |
 
 Test files skip the error-handling, `unwrap`, `any`, placeholder and TODO rules; suppressions and `@ts-ignore` count there too.
+
+A rules check that finds the same rule on the same text in the same file after the correction for it (the line may have moved) does not ask for another correction: the rules cannot tell the code apart, so the match is shown as `error, kept after its correction` and the earlier finding is listed under "Known limitations" in the run report, accepted by the rule pack.
 
 Only the lines the run added count. Lines are compared with the file as it was at approval: the host keeps the planned code files when the plan is approved (`quality/baseline-files.json`) and falls back to the pre-image the run saved before its first edit. A line that only moved is not new. A changed file whose baseline is not known is still checked, but its matches are notes, never blocking.
 
