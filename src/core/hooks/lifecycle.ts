@@ -1,14 +1,16 @@
 /**
  * Session lifecycle hooks with the inputs Claude Code sends them: SessionStart, SessionEnd,
- * UserPromptSubmit, Stop and Notification. The terminal UI, the headless CLI and `baked serve` call
+ * UserPromptSubmit, Stop, Notification, PreCompact/PostCompact and SubagentStart/SubagentStop. The terminal UI, the headless CLI and `baked serve` call
  * these, so a hook brought from Claude Code runs the same on every surface.
  */
 
+import { onMultiAgentEvent } from "../agents/subagent-events.js";
 import { hasHooksForEvent } from "./loader.js";
 import { runHooks } from "./runner.js";
 import type { HookResult } from "./types.js";
 
-export type SessionStartSource = "startup" | "resume" | "clear" | "compact";
+export type SessionStartSource = "startup" | "resume" | "clear" | "compact" | "fork";
+export type CompactTrigger = "manual" | "auto";
 export type SessionEndReason = "clear" | "logout" | "prompt_input_exit" | "other";
 /**
  * `permission_prompt`: a chat asks before it acts; `question`: a chat waits for an answer (a
@@ -107,9 +109,70 @@ export async function stopHooks(
   cwd: string,
   outcome: { failed: false } | { failed: true; error: string },
 ): Promise<void> {
+  // `tool_input` is what BAKED sent before; the top-level fields are Claude Code's.
   if (outcome.failed)
-    await runHooks({ event: "StopFailure", sessionId, cwd, toolInput: { error: outcome.error } });
-  else await runHooks({ event: "Stop", sessionId, cwd, toolInput: { stop_hook_active: false } });
+    await runHooks({
+      event: "StopFailure",
+      sessionId,
+      cwd,
+      toolInput: { error: outcome.error },
+      fields: { error: outcome.error },
+    });
+  else
+    await runHooks({
+      event: "Stop",
+      sessionId,
+      cwd,
+      toolInput: { stop_hook_active: false },
+      fields: { stop_hook_active: false },
+    });
+}
+
+/** Fires PreCompact or PostCompact (the matcher is tested against `trigger`). */
+export async function compactHooks(
+  sessionId: string,
+  cwd: string,
+  phase: "pre" | "post",
+  trigger: CompactTrigger,
+): Promise<void> {
+  const event = phase === "pre" ? "PreCompact" : "PostCompact";
+  if (!hasHooksForEvent(event, cwd)) return;
+  await runHooks({ event, sessionId, cwd, matchTarget: trigger, fields: { trigger } });
+}
+
+/**
+ * Fires SubagentStart and SubagentStop (the matcher is tested against the subagent's role) for the
+ * subagents a turn dispatches, until the returned function is called. `ours` tells this turn's
+ * dispatches by the id of the tool call that started them.
+ */
+export function watchSubagentHooks(
+  at: { cwd: string; sessionId: () => string },
+  ours: (parentToolCallId: string) => boolean,
+): () => void {
+  return onMultiAgentEvent((event) => {
+    if (!event.agentId || !ours(event.parentToolCallId)) return;
+    const kind =
+      event.type === "agent-start"
+        ? "SubagentStart"
+        : event.type === "agent-done"
+          ? "SubagentStop"
+          : null;
+    if (!kind || !hasHooksForEvent(kind, at.cwd)) return;
+    const role = event.role ?? "";
+    runHooks({
+      event: kind,
+      cwd: at.cwd,
+      sessionId: at.sessionId(),
+      matchTarget: role,
+      // `tool_input` is what BAKED sent before; the top-level fields are Claude Code's.
+      toolInput: { agent_id: event.agentId, agent_type: role },
+      fields: {
+        agent_id: event.agentId,
+        agent_type: role,
+        ...(kind === "SubagentStop" ? { stop_hook_active: false } : {}),
+      },
+    }).catch(() => {});
+  });
 }
 
 /** Fires Notification (the matcher is tested against `type`). */

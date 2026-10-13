@@ -65,16 +65,19 @@ import { type CompactResult, compactionBlocker, messageChars } from "../compacti
 import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
-import { runHooks } from "../hooks/index.js";
 import {
+  type CompactTrigger,
+  compactHooks,
   endSessionHooks,
   notificationHooks,
   type SessionEndReason,
+  type SessionStartSource,
   sessionHooksStarted,
   startSessionHooks,
   stopHooks,
   takeHookContext,
   userPromptHooks,
+  watchSubagentHooks,
   withHookContext,
 } from "../hooks/lifecycle.js";
 import { SessionManager } from "../sessions/manager.js";
@@ -527,6 +530,8 @@ export class ChatSession {
   private events: ChatEvent[] = [];
   private seq = 0;
   private readonly listeners = new Set<(event: ChatEvent) => void>();
+  /** The `source` of the session's first SessionStart when it is not `startup` or `resume`. */
+  startSource: SessionStartSource | null = null;
 
   constructor(
     private readonly owner: ChatService,
@@ -859,7 +864,7 @@ export class ChatSession {
    * Starts compacting the conversation. Refused while a turn runs, when the host cannot compact,
    * and when the conversation is too short for a summary to save anything.
    */
-  compact(): { compactionId: string } {
+  compact(trigger: CompactTrigger = "manual"): { compactionId: string } {
     if (this.busy) throw new ChatError("SESSION_BUSY", "Wait for the running turn to finish");
     const { host } = this.owner;
     if (!host.compact) throw new ChatError("NOT_SUPPORTED", "This server cannot compact sessions");
@@ -875,7 +880,9 @@ export class ChatSession {
     this.compaction = compaction;
     this.emit({ type: "compaction-start", compactionId: compaction.id });
     this.emitSession();
-    this.turnDone = this.runCompaction(compaction, model, host.compact.bind(host)).catch(() => {});
+    this.turnDone = this.runCompaction(compaction, model, host.compact.bind(host), trigger).catch(
+      () => {},
+    );
     return { compactionId: compaction.id };
   }
 
@@ -883,13 +890,14 @@ export class ChatSession {
     compaction: TurnState,
     modelId: string,
     compact: NonNullable<ChatAgentHost["compact"]>,
+    trigger: CompactTrigger,
   ): Promise<void> {
     let status: CompactionStatus;
     let note: string | null = null;
     let compacted = 0;
     let error: string | undefined;
     const cwd = this.owner.workspace;
-    await runHooks({ event: "PreCompact", sessionId: this.meta.id, cwd }).catch(() => {});
+    await compactHooks(this.meta.id, cwd, "pre", trigger).catch(() => {});
     try {
       const response = await compact({
         sessionId: this.meta.id,
@@ -937,7 +945,7 @@ export class ChatSession {
       : null;
     if (message) this.messages = [...this.messages, message];
     if (status === "compacted") {
-      await runHooks({ event: "PostCompact", sessionId: this.meta.id, cwd }).catch(() => {});
+      await compactHooks(this.meta.id, cwd, "post", trigger).catch(() => {});
       // As in Claude Code, a compacted session starts again with the source `compact`.
       await startSessionHooks(this.meta.id, cwd, "compact").catch(() => {});
     }
@@ -1205,7 +1213,11 @@ export class ChatSession {
     if (send && !turn.abort.signal.aborted) {
       const cwd = this.owner.workspace;
       if (!sessionHooksStarted(this.meta.id))
-        await startSessionHooks(this.meta.id, cwd, this.messages.length ? "resume" : "startup");
+        await startSessionHooks(
+          this.meta.id,
+          cwd,
+          this.startSource ?? (this.messages.length ? "resume" : "startup"),
+        );
       const prompted =
         executing || input.verbatim
           ? undefined
@@ -1243,6 +1255,10 @@ export class ChatSession {
     const segments: MessageSegment[] = [];
     const calls: ToolCall[] = [];
     const inputs = new Map<string, Record<string, unknown>>();
+    const unwatchSubagents = watchSubagentHooks(
+      { cwd: this.owner.workspace, sessionId: () => this.meta.id },
+      (toolCallId) => inputs.has(toolCallId),
+    );
     const usage = emptyUsage();
     let steps = 0;
     /** When the current model step started; 0 until the model is called. */
@@ -1428,6 +1444,7 @@ export class ChatSession {
       }
     }
 
+    unwatchSubagents();
     this.denyPrompts();
     if (status !== "interrupted" && !blockedBy)
       void stopHooks(
@@ -1527,7 +1544,7 @@ export class ChatSession {
     if (compactionBlocker(this.core, this.owner.keepRecent)) return;
     // Cleared again when the compaction compacts; kept when it skips or fails.
     this.autoCompactHeld = true;
-    this.compact();
+    this.compact("auto");
   }
 
   /**
@@ -1888,6 +1905,7 @@ export class ChatService {
       effort: summary.effort,
       messages: point.messages.map((m) => ({ ...m })),
     });
+    session.startSource = "fork";
     if (!options.rollbackFiles) return { session, rollback: null };
     try {
       const rollback = await rollbackToCheckpoint({
