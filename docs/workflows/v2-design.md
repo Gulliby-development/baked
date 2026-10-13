@@ -52,13 +52,14 @@ The complete files are in `src/core/workflows/v2/presets/`.
 
 ### 3.1 Stage types
 
-The v1 stage kinds become seven stage types. No type adds a new executor: each is an existing v1 mechanism with a name.
+The v1 stage kinds become seven stage types, each an existing v1 mechanism with a name. An eighth, `wait`, has its own host mechanism: it polls command gates and calls no model.
 
 | Type | What it does | Produces | Effects | Outcomes | v1 kinds |
 | --- | --- | --- | --- | --- | --- |
 | `agent` | A read-only agent submits one typed result | the contract it names | none | passed | research, specify, plan, analyze |
 | `tasks` | Runs the approved task graph; the only stage that edits files | `implementation` | `workspace-write` | passed | task-graph |
 | `check` | Runs its command gates on a frozen snapshot, no model | `gates` | none | passed, failed | checks |
+| `wait` | Runs its command gates every `intervalSeconds` until they pass or `timeoutMinutes` pass, no model | `gates` | none | passed, failed | (new) |
 | `approval` | A decision bound to the digest of the contracts it covers | `decision` | none | passed | approve |
 | `review` | Runs its AI review gates, each reviewer in a fresh context | `review` | none | passed, changes_requested | review |
 | `reflection` | Covers every criterion; may append bounded corrective tasks | `convergence` | none | passed, changes_requested | converge |

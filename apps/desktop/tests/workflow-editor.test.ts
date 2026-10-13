@@ -79,6 +79,30 @@ describe("workflow editor client", () => {
     expect(refused.error).toContain("command gates only");
     expect(refused.view.definition).toEqual(copy.definition);
   });
+
+  test("adds a wait stage after a stage, changes its interval and removes it", async () => {
+    const { view: preset } = await workflowEditor.open("baked", "quick");
+    const { view: copy } = await workflowEditor.edit("baked", preset, { op: "duplicate" });
+    const { view: added } = await workflowEditor.edit("baked", copy, {
+      op: "addWaitStage",
+      after: "review",
+    });
+    const wait = added.stages.find((s) => s.type === "wait");
+    expect(wait?.fields.map((f) => `${f.key}=${f.value}`)).toEqual(["interval=30s", "timeout=30 min"]);
+    expect(added.problems.flatMap((g) => g.messages)).toContain("needs at least one gate");
+    const { view: faster } = await workflowEditor.edit("baked", added, {
+      op: "changeField",
+      stageId: "wait",
+      key: "interval",
+      delta: 1,
+    });
+    expect(faster.stages.find((s) => s.id === "wait")?.fields[0]?.value).toBe("60s");
+    const { view: removed } = await workflowEditor.edit("baked", faster, {
+      op: "removeWaitStage",
+      stageId: "wait",
+    });
+    expect(removed.definition).toEqual(copy.definition);
+  });
 });
 
 describe("workflow editor screen logic", () => {

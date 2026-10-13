@@ -121,6 +121,7 @@ bun test tests/feature-parity.test.ts
 | Gates from a plain-language sentence | `/workflow` | `baked workflow gate` | `/v1/workflow/gates/draft`, `/v1/workflow/gates/:id`, `/v1/workflow/gates/:id/places` +1 | `project/gates` |
 | Gates on the run's line: what each does, blocks or advises, last result | **Gap** [#533](https://github.com/Gulliby-development/baked/issues/533): gate results only in the activity lines | `baked workflow definitions`, `baked workflow status` | `/v1/workflow/definitions`, `/v1/workflow/runs/:id/events` | `project/runs` |
 | Workflow definition editor | `/workflow` | `baked workflow define`, `baked workflow validate` | `/v1/workflow/definitions`, `/v1/workflow/editor`, `/v1/workflow/editor/review` +1 | `project/workflows` |
+| Wait stage: poll command gates until they pass or time out, with no model calls | `/workflow` | `baked workflow validate`, `baked workflow run` | `/v1/workflow/editor`, `/v1/workflow/runs/:id/events` | `project/workflows`, `project/runs` |
 | Doctor and estimate before a run | `/workflow` | `baked doctor`, `baked workflow estimate` | `/v1/workflow/doctor`, `/v1/workflow/estimate` | `project/overview` |
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
