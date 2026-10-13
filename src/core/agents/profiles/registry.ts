@@ -115,8 +115,9 @@ export function assertProfileCapabilities(profile: AgentProfile): void {
   ];
   if (profile.role === "acceptance-walker") for (const name of walkTools) available.add(name);
   if (profile.role === "acceptance-writer") available.add("write_test");
-  // Reviewers try a finding's repro with the runtime's own runner (#155).
-  if (profile.role === "reviewer") available.add("run_repro");
+  // Reviewers and the convergence walker try a finding's repro with the runtime's own runner
+  // (#155, #930).
+  if (profile.role === "reviewer" || profile.role === "spec-auditor") available.add("run_repro");
   // Repair tasks isolate a failing check with a probe; documentation tasks capture real output.
   if (profile.role === "implementer") available.add("run_probe");
   // MCP grants (#133) are open to agent roles; the acceptance roles run on host tools only.

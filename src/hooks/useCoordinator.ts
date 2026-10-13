@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../config/index.js";
+import { ApprovalRulesStore } from "../core/chat/approval-rules.js";
 import { LocalCoordinator } from "../core/chat/coordinator-host.js";
 import type { LaunchedView } from "../core/chat/coordinator-launch.js";
 import { type Schedule, ScheduleStore } from "../core/chat/coordinator-schedules.js";
@@ -57,6 +58,8 @@ export interface CoordinatorSnapshot {
   prompts: ChatPrompt[];
   launched: LaunchedView[];
   schedules: Schedule[];
+  /** How many approval rules answer approvals; 0 while the rules are off. */
+  rulesOn?: number;
 }
 
 function snapshot(
@@ -71,7 +74,13 @@ function snapshot(
     prompts: session.pendingPrompts,
     launched: local.chat.launched(session.id),
     schedules: new ScheduleStore(local.chat.workspace, session.id).list(),
+    rulesOn: activeRules(local.chat.workspace, session.id),
   };
+}
+
+function activeRules(workspace: string, coordinatorId: string): number {
+  const { enabled, rules } = new ApprovalRulesStore(workspace, coordinatorId).read();
+  return enabled ? rules.length : 0;
 }
 
 /** Follows the coordinator session: its messages, streamed text, prompts and launched work. */

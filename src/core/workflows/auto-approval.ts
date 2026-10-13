@@ -48,6 +48,11 @@ type Write = TaskGraph["tasks"][number]["writes"][number];
 const alwaysHuman =
   /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
 
+/** Whether writing `path` always needs a person: secrets, CI and deployment config, manifests. */
+export function alwaysNeedsPerson(path: string): boolean {
+  return alwaysHuman.test(path);
+}
+
 /**
  * Project manifests and tool configs. Creating one that does not exist yet is how a scaffold
  * starts and changes nothing a person has reviewed; modifying one stays with a person.

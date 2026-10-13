@@ -1,4 +1,9 @@
 import { relative, resolve } from "node:path";
+import {
+  coordinatorId,
+  RULES_USAGE,
+  runRulesCommand,
+} from "../core/chat/approval-rules-command.js";
 import { BriefStore, renderBrief } from "../core/chat/coordinator.js";
 import { ScheduleError, ScheduleStore, scheduleLine } from "../core/chat/coordinator-schedules.js";
 import type { RollbackReport } from "../core/checkpoints/fork.js";
@@ -22,6 +27,7 @@ const help = `Usage: baked session list [--limit N] [--json]
        baked session coordinator schedules [--json]
        baked session coordinator schedule add --name NAME --when WHEN --prompt TEXT [--json]
        baked session coordinator schedule pause|resume|remove ID [--json]
+       baked session coordinator rules [on|off|add ...|remove ID]
 
 list prints the saved sessions of this project, most recently updated first (default limit 50);
 the project coordinator is not listed.
@@ -30,6 +36,10 @@ coordinator schedules lists the coordinator's schedules; schedule adds, pauses, 
 one. WHEN is "every 30m", "every 6h", "every 1d", a five-field cron expression in local time such
 as "0 9 * * 1-5", or @hourly, @daily, @weekly, @monthly. Schedules fire while "baked serve" or the
 terminal UI's coordinator runs; one missed meanwhile fires once when it starts.
+
+coordinator rules shows or changes the rules the coordinator answers routine approvals of its
+launched work by (off by default):
+${RULES_USAGE.replace(/^/gm, "  ")}
 delete removes a saved session and the checkpoint tags it made; the files stay as they are.
 export writes the conversation of the session's active tab as Markdown (default) or JSON, to FILE
 or to .baked/exports/, as /session export does in the terminal UI.
@@ -263,6 +273,7 @@ function list(rest: string[]): number {
 }
 
 function coordinator(rest: string[]): number {
+  if (rest[0] === "rules") return coordinatorRules(rest.slice(1));
   const [sub] = rest;
   if (sub !== "schedules" && sub !== "schedule") {
     const unknown = rest.find((a) => a !== "--json");
@@ -329,6 +340,24 @@ function schedules(store: ScheduleStore, args: string[], listing: boolean): numb
   } catch (err) {
     if (!(err instanceof ScheduleError)) throw err;
     process.stderr.write(`${err.message}\n${err.code === "INVALID_REQUEST" ? `\n${help}` : ""}`);
+    return 1;
+  }
+}
+
+function coordinatorRules(args: string[]): number {
+  const cwd = getCwd();
+  const id = coordinatorId(cwd);
+  if (!id) {
+    process.stderr.write(
+      "This project has no coordinator yet; the desktop app or POST /v1/coordinator creates it.\n",
+    );
+    return 1;
+  }
+  try {
+    process.stdout.write(`${runRulesCommand(cwd, id, args)}\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 }

@@ -25,6 +25,7 @@ import { LABEL, LEDE, PAGE } from "../../lib/styles.js";
 import { SessionView } from "../chat/ChatSection.js";
 import type { SectionProps } from "../sections.js";
 import { NeedsNewer } from "../setup/shared.js";
+import { ApprovalRulesSection } from "./ApprovalRules.js";
 import {
   BRIEF_TITLES,
   launchedHref,
@@ -211,6 +212,7 @@ function CoordinatorPanel({ project, schedules }: { project: DesktopProject; sch
           </ul>
         )}
       </section>
+      <ApprovalRulesSection projectKey={key} />
       <section className="flex flex-col gap-3" aria-label="Project brief">
         <h2 className={LABEL}>Project brief</h2>
         {error && <Alert tone="error">{error}</Alert>}

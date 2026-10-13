@@ -32,6 +32,7 @@ import {
   removeWaitStage,
   type SaveReview,
   type StageField,
+  setLoopRounds,
   stageFields,
   targetName,
   targetsOf,
@@ -52,6 +53,7 @@ export type EditorOp =
   | { op: "addWaitStage"; after: string }
   | { op: "removeWaitStage"; stageId: string }
   | { op: "changeField"; stageId: string; key: string; delta: -1 | 1 }
+  | { op: "setLoop"; id: string; rounds: number }
   | { op: "duplicate" };
 
 export interface EditorRequest {
@@ -198,6 +200,8 @@ export function applyEditorOp(state: EditorState, op: EditorOp): EditResult {
       return removeWaitStage(state, op.stageId);
     case "changeField":
       return changeStageField(state, op.stageId, op.key, op.delta);
+    case "setLoop":
+      return setLoopRounds(state, op.id, op.rounds);
     case "duplicate":
       return { state: duplicateAsCustom(state) };
   }
