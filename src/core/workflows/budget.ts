@@ -1,3 +1,5 @@
+import type { RoutingRecord } from "../llm/model-routing.js";
+import { findPricing } from "../llm/pricing.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
@@ -127,6 +129,63 @@ export function proposeExtension(current: BudgetLimits, usage: BudgetUsage): Bud
     next.maxActiveMs > current.maxActiveMs
     ? next
     : null;
+}
+
+/** Every model a routing record can call: the run model, each route and its fallback models. */
+export function routedModels(routing: RoutingRecord): string[] {
+  const entries = [...Object.values(routing.profiles), ...Object.values(routing.stages)];
+  return [
+    ...new Set([routing.runModel, ...entries.flatMap((e) => [e.model, ...(e.fallback ?? [])])]),
+  ];
+}
+
+/**
+ * A dollar cap (`maxCostUsd`) holds only when every model the run can call has a price in the
+ * shared price table; a model without one would spend outside the cap, so the run is refused.
+ */
+export function assertCostCapPriced(policy: RunPolicy, routing: RoutingRecord): void {
+  if (policy.maxCostUsd === null) return;
+  const unpriced = routedModels(routing).filter((model) => findPricing(model) === null);
+  if (unpriced.length)
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      `maxCostUsd needs a price for every model the run can call; no price is known for ${unpriced.join(", ")}. Route them to priced models or use the token limits with maxCostUsd=null`,
+      { unpricedModels: unpriced },
+    );
+}
+
+/**
+ * USD per token the run has paid so far, used to price the tokens its open attempts reserve.
+ * Before anything is priced, the attempt model's input price stands in.
+ */
+export function costRate(
+  spentUsd: number | null,
+  spentTokens: number,
+  model: string | null,
+): number {
+  if (spentUsd !== null && spentTokens > 0) return spentUsd / spentTokens;
+  const pricing = model ? findPricing(model)?.pricing : undefined;
+  return pricing ? pricing.input / 1e6 : 0;
+}
+
+/**
+ * The cost cap a budget extension proposes: doubled when the spent and reserved cost reaches 80%
+ * of it, or when no token, call or time limit is 80% used, so the cap is what stopped the run.
+ * Unchanged otherwise; null when the run has no cost cap.
+ */
+export function proposeCostCap(
+  maxCostUsd: number | null,
+  committedUsd: number,
+  current: BudgetLimits,
+  usage: BudgetUsage,
+): number | null {
+  if (maxCostUsd === null) return null;
+  const taken = usage.tokens + usage.heldTokens + usage.inFlightTokens;
+  const otherLimit =
+    taken >= 0.8 * current.maxTotalTokens ||
+    usage.calls >= 0.8 * current.maxAgentCalls ||
+    usage.activeMs >= 0.8 * current.maxActiveMs;
+  return committedUsd >= 0.8 * maxCostUsd || !otherLimit ? maxCostUsd * 2 : maxCostUsd;
 }
 
 /** Share of the current token budget one automatic growth adds, at least. */
