@@ -574,7 +574,11 @@ function rulesSection(result: RulesResult, cap: number): string[] {
       ["Rule", "Severity", "Where", "Line"],
       result.findings.map((f) => [
         code(f.rule),
-        f.blocking ? `${f.severity}, blocking` : f.severity,
+        f.blocking
+          ? `${f.severity}, blocking`
+          : f.kept
+            ? `${f.severity}, kept after its correction`
+            : f.severity,
         code(`${f.file}:${f.line}`),
         code(f.text),
       ]),
@@ -811,7 +815,9 @@ function render(facts: Facts, cap: number): string {
               ? "notes rule (behavior verified)"
               : l.decidedBy === "critic"
                 ? "critic early stop (calibrated score, checks passed)"
-                : "user",
+                : l.decidedBy === "rule"
+                  ? "rule pack (same match after its correction)"
+                  : "user",
         ]),
         cap,
       ),

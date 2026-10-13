@@ -375,3 +375,19 @@ export function handoff(
 export function stageIconOf(id: string): IconName {
   return stageIcon({ id, ...guess(id) });
 }
+
+/**
+ * The strip's new horizontal scroll offset that shows a station (`itemLeft` and `itemWidth` in
+ * the strip's content coordinates), moving as little as possible; unchanged when it is in view.
+ */
+export function revealLeft(
+  scrollLeft: number,
+  viewWidth: number,
+  itemLeft: number,
+  itemWidth: number,
+): number {
+  if (itemLeft < scrollLeft) return Math.max(0, itemLeft);
+  const itemRight = itemLeft + itemWidth;
+  if (itemRight > scrollLeft + viewWidth) return Math.min(itemLeft, itemRight - viewWidth);
+  return scrollLeft;
+}

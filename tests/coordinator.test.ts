@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
@@ -123,6 +123,33 @@ describe("project brief", () => {
     expect(content.launched).toEqual([]);
     expect(() => applyBriefEdit(content, { section: "decisions", action: "remove", index: 3 })).toThrow("No entry 3");
     expect(() => applyBriefEdit(content, { section: "launched", action: "add" })).toThrow("launched entry");
+  });
+
+  test("recording an item already launched updates its entry instead of listing it twice", () => {
+    const launched = { kind: "session" as const, id: "s-1", why: "Deploy the page", status: "working" };
+    let content: ProjectBrief = { ...emptyBrief(), launched: [launched] };
+    content = {
+      ...content,
+      ...applyBriefEdit(content, {
+        section: "launched",
+        action: "add",
+        launched: { ...launched, title: "Deploy to Vercel", why: "Publish via an artifact", status: "started" },
+      }),
+    };
+    expect(content.launched).toEqual([{ ...launched, title: "Deploy to Vercel" }]);
+  });
+
+  test("a brief saved with duplicate launched entries reads back with one per item", () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-brief-dup-"));
+    try {
+      const store = new BriefStore(dir, "c-1");
+      const entry = { kind: "session" as const, id: "s-1", why: "Deploy", status: "waiting for you" };
+      mkdirSync(join(store.path, ".."), { recursive: true });
+      writeFileSync(store.path, JSON.stringify({ ...emptyBrief(), revision: 2, launched: [entry, { ...entry, why: "Again" }] }));
+      expect(store.read().launched).toEqual([entry]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the coordinator prompt carries the brief", () => {
