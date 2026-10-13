@@ -80,6 +80,17 @@ export const RuntimeStateSchema = z
     expectedFiles: z.record(z.string(), z.string()).nullable(),
     reviews: z.record(z.string(), ReviewSchema),
     /**
+     * The reviews of the round before the last correction, by reviewer key, with the source
+     * manifest they reviewed: a later round skips a dimension that passed and whose files did not
+     * change, and tells a rerun reviewer what it found and what changed since.
+     */
+    priorReviews: z
+      .record(
+        z.string(),
+        z.object({ review: ReviewSchema, files: z.record(z.string(), z.string()) }),
+      )
+      .default({}),
+    /**
      * Criteria a required reviewer could not establish after its one re-prompt, by reviewer key:
      * the converge stage gets them as evidence gaps and settles them with a test or a check.
      */
