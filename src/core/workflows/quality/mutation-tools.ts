@@ -5,8 +5,6 @@
  * report maps to the gate's own mutants, kept only on the lines the run added, so the findings,
  * thresholds and run report stay the same whichever engine made them.
  */
-import { join } from "node:path";
-import { workspacePath } from "../../specs/validate.js";
 import { isTestCodePath } from "./duplication.js";
 import type { MutantOutcome, MutationEngine } from "./mutation.js";
 import { addedLines, type ChangedFile } from "./rules.js";
@@ -32,17 +30,6 @@ export interface ToolShell {
   remove(path: string): void;
   which(command: string): string | null;
   now(): number;
-}
-
-/**
- * Where a tool's path under the root is. A worktree's `node_modules` links to the working copy's
- * (a junction on Windows), so a tool installed there resolves outside the worktree; it is read in
- * place. Every other path must stay inside the root.
- */
-export function toolPath(root: string, path: string): string {
-  const parts = path.split(/[\\/]/);
-  if (parts[0] === "node_modules" && !parts.includes("..")) return join(root, path);
-  return workspacePath(root, path);
 }
 
 /** A tool's mutant before the gate numbers it. */

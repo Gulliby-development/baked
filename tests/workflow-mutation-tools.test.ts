@@ -12,8 +12,8 @@ import {
   runMutationTool,
   strykerMutants,
   type ToolShell,
-  toolPath,
 } from "../src/core/workflows/quality/mutation-tools.js";
+import { readablePath } from "../src/core/specs/validate.js";
 import { proposedMutants } from "../src/core/workflows/quality/mutation.js";
 
 // Trimmed from reports the tools wrote for these files (Stryker 10, cargo-mutants 27,
@@ -278,10 +278,10 @@ describe("tool paths in a worktree", () => {
       symlinkSync(join(workspace, "node_modules"), join(worktree, "node_modules"), process.platform === "win32" ? "junction" : "dir");
       writeFileSync(join(workspace, "secret.txt"), "");
       symlinkSync(join(workspace, "secret.txt"), join(worktree, "report.json"));
-      expect(existsSync(toolPath(worktree, bin))).toBe(true);
-      expect(() => toolPath(worktree, "node_modules/../../../secret.txt")).toThrow();
-      expect(() => toolPath(worktree, "report.json")).toThrow();
-      expect(toolPath(worktree, "reports/mutation/mutation.json")).toBe(join(worktree, "reports/mutation/mutation.json"));
+      expect(existsSync(readablePath(worktree, bin))).toBe(true);
+      expect(() => readablePath(worktree, "node_modules/../../../secret.txt")).toThrow();
+      expect(() => readablePath(worktree, "report.json")).toThrow();
+      expect(readablePath(worktree, "reports/mutation/mutation.json")).toBe(join(worktree, "reports/mutation/mutation.json"));
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

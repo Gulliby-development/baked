@@ -21,7 +21,7 @@ import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { renderSpec, renderTasks } from "../specs/render.js";
-import { validatePackage, workspacePath } from "../specs/validate.js";
+import { readablePath, validatePackage, workspacePath } from "../specs/validate.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -226,12 +226,7 @@ import {
   runMutants,
   scoreMutants,
 } from "./quality/mutation.js";
-import {
-  detectMutationTool,
-  runMutationTool,
-  type ToolShell,
-  toolPath,
-} from "./quality/mutation-tools.js";
+import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
   propertyClaim,
@@ -6472,15 +6467,21 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const libraries = propertyLibraries({
       read: (path) => {
         try {
-          return readFileSync(workspacePath(root, path), "utf8");
+          return readFileSync(readablePath(root, path), "utf8");
         } catch {
           return null;
         }
       },
-      exists: (path) => existsSync(workspacePath(root, path)),
+      exists: (path) => {
+        try {
+          return existsSync(readablePath(root, path));
+        } catch {
+          return false;
+        }
+      },
       list: (directory) => {
         try {
-          return readdirSync(directory ? workspacePath(root, directory) : root).map((name) =>
+          return readdirSync(directory ? readablePath(root, directory) : root).map((name) =>
             directory ? `${directory}/${name}` : name,
           );
         } catch {
@@ -6812,7 +6813,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const scratch = join(tmpdir(), "baked-mutation", runId);
     mkdirSync(scratch, { recursive: true });
     const sandbox = runSandbox(policy, root);
-    const absolute = (path: string) => (isAbsolute(path) ? path : toolPath(root, path));
+    const absolute = (path: string) => (isAbsolute(path) ? path : readablePath(root, path));
     return {
       root,
       scratch: scratch.replaceAll("\\", "/"),
