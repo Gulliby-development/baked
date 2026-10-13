@@ -825,6 +825,20 @@ Token use and estimated cost can be shared as one Markdown document. The project
 
 In the TUI, E on the [usage screen](#usage-screen) writes the shown period as `baked-usage-30d-YYYY-MM-DD.md` in the project, grouped as on the screen; `/workflow usage RUN_ID --format md` shows a run's document in the chat (`--output FILE` writes it). The desktop Usage screen has Copy as Markdown and Export as .md for the chosen range, run and filters; the local API answers `GET /v1/usage?format=md` and `GET /v1/workflow/runs/RUN_ID/usage?format=md` with `{markdown}` ([API](../desktop/api.md)).
 
+## Record and replay of model calls
+
+A run can record its model calls so a fix to BAKED can be checked against the same situation without spending model tokens. Both options are off by default and only apply to the native executor.
+
+```sh
+baked workflow run --record-model-calls "Add a health endpoint"
+baked workflow recording RUN_ID --output recordings/health.json
+baked workflow run --replay recordings/health.json "Add a health endpoint"
+```
+
+`--record-model-calls` stores each model call of the run as the artifact `recordings/PROFILE/TASK/ATTEMPT_ID/N.json` (`TASK` is `run` outside a task). A call holds a fingerprint of the request (a hash of each prompt message, the offered tool names and the tool choice) and the provider's response. UUIDs, ISO times and `durationMs` values are replaced by placeholders before hashing, so they do not change a fingerprint. `baked workflow recording RUN_ID` prints the run's calls as one recording (`schemaVersion: 1`), or writes it to `--output FILE`.
+
+`--replay FILE` starts a run that answers each model call from the recording instead of the provider. Calls are matched by profile and task, by the attempt's order for that key, and by the call's number within the attempt. The run starts only when the file exists and is a valid recording. When a request's fingerprint differs from the recorded one, or the recording has no call at that point, the run blocks with reason `replay_diverged`, and the message names the key, attempt and call and the first prompt message that differs. A replayed run records the calls it served, so `workflow recording` of the replay can be compared with the original. Streaming calls are not replayed.
+
 ## Import, export and retention
 
 ```sh

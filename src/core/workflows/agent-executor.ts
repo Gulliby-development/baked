@@ -3,6 +3,7 @@ import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
   generateText,
   isStepCount,
+  type LanguageModel,
   type LanguageModelUsage,
   type Tool,
   ToolChoiceViolationError,
@@ -52,6 +53,14 @@ import {
 import { InitiativePlanSchema } from "./initiatives/plan.js";
 import type { WorkspaceLeases } from "./leases.js";
 import { grantedMcpServers, isMcpToolName, toolListAllows } from "./mcp-grants.js";
+import {
+  attemptModel,
+  type RecordedCall,
+  readRecording,
+  recordedAttempts,
+  recordingKey,
+  recordingPath,
+} from "./model-recording.js";
 import { ProcessScope } from "./process-scope.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
@@ -164,6 +173,8 @@ interface AttemptWatch {
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
   private readonly ownsRootContext: boolean;
+  /** Recordings a replay run reads, by path, loaded once per executor. */
+  private readonly replays = new Map<string, RecordedCall[]>();
   /** Without `rootContext`, the executor creates and disposes a root of its own. */
   constructor(
     private store: WorkflowStore,
@@ -762,6 +773,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         },
       });
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
+      const model = this.attemptModel(request, policy);
       const writeUsage = (usage: AttemptUsageRecord) =>
         this.store.transaction(() =>
           this.store.artifact(
@@ -813,7 +825,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         // automatic one after the newest message, so each step re-reads the earlier ones.
         const cacheTtl = this.config.cache?.ttl ?? "5m";
         const generated = await generateText({
-          model: resolveModel(request.profile.model),
+          model,
           instructions: {
             role: "system",
             content: request.profile.instructions,
@@ -911,7 +923,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         proseEnd = result.text;
         try {
           const continued = await generateText({
-            model: resolveModel(request.profile.model),
+            model,
             instructions: {
               role: "system",
               content: request.profile.instructions,
@@ -1036,7 +1048,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             let correctedText = "";
             try {
               const corrected = await generateText({
-                model: resolveModel(request.profile.model),
+                model,
                 prompt: correctionPrompt,
                 tools: { submit_result: submitResult },
                 toolChoice: { type: "tool", toolName: "submit_result" },
@@ -1098,6 +1110,35 @@ export class NativeAgentExecutor implements AgentExecutor {
    * MCP tools that both the profile and the run policy grant. Only the servers those grants name
    * are connected; a server that fails to connect contributes no tools.
    */
+  /**
+   * The attempt's model: the provider's, or with `modelCalls` in the policy one that records
+   * each call in the run, or answers from a recording (#856).
+   */
+  private attemptModel(request: ExecutionRequest, policy: RunPolicy): LanguageModel {
+    const calls = policy.modelCalls;
+    const model = () => resolveModel(request.profile.model);
+    if (!calls?.record && !calls?.replay) return model();
+    const key = recordingKey(request.profile.id, request.task?.id);
+    const paths = this.store.artifacts(request.runId).map((a) => a.logical_path);
+    if (calls.replay && !this.replays.has(calls.replay))
+      this.replays.set(calls.replay, readRecording(calls.replay).calls);
+    return attemptModel({
+      model,
+      modelId: request.profile.model,
+      key,
+      attempt: recordedAttempts(paths, key).length,
+      ...(calls.replay ? { replay: this.replays.get(calls.replay) ?? [] } : {}),
+      record: (call) =>
+        this.store.transaction(() =>
+          this.store.artifact(
+            request.runId,
+            "recording",
+            recordingPath(key, request.attemptId, call.call),
+            canonical(call),
+          ),
+        ),
+    });
+  }
   private async mcpTools(profileTools: readonly string[], policy: RunPolicy): Promise<ToolSet> {
     const servers = grantedMcpServers(
       this.config.mcpServers ?? [],
