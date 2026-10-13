@@ -311,6 +311,8 @@ export interface QualityConfig {
   mutationThresholds?: Record<string, number>;
   /** Time the mutation gate may spend per checks stage, in milliseconds (default 300000). */
   mutationBudgetMs?: number;
+  /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
+  propertyTests?: "preset" | "auto" | "off";
 }
 
 export interface AppConfig {

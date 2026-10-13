@@ -165,6 +165,13 @@ import {
   QUALITY_MUTATION_PENDING,
   runMutants,
 } from "./quality/mutation.js";
+import {
+  checkPropertyTests,
+  propertyClaim,
+  propertyTestsNote,
+  propertyTestsOf,
+  QUALITY_PROPERTIES,
+} from "./quality/properties.js";
 import type { RegistryFetch } from "./quality/registry.js";
 import {
   type ChangedFile,
@@ -2415,6 +2422,17 @@ export class WorkflowScheduler {
             profile.context === "implementation" && task ? task.writes.map((w) => w.path) : null,
           )
         : null;
+    // Property-based tests (#637): the spec author marks criteria, the planner and implementer
+    // only hear of it once a criterion is marked.
+    const marked = state.spec?.criteria.some((c) => c.property) ?? false;
+    const propertyNote =
+      (profile.output === "spec" || marked) &&
+      propertyTestsOf(
+        policy,
+        presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
+      ) === "auto"
+        ? propertyTestsNote(profile.output)
+        : null;
     const { [DIFF_REVIEW]: diffOnly, ...input } = (
       extra && typeof extra === "object" ? extra : { input: extra }
     ) as Record<string, unknown>;
@@ -2423,6 +2441,7 @@ export class WorkflowScheduler {
       profile,
       {
         ...input,
+        ...(propertyNote ? { propertyTests: propertyNote } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
         ...(memory ? { projectMemory: memory } : {}),
@@ -4899,10 +4918,66 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       ...(await this.ruleFindings(runId, state, policy)),
       ...(await this.sastFindings(runId, state, policy)),
     ];
+    blocking.push(...this.propertyFindings(runId, state, policy));
     // Mutants run the tests many times; code that is about to change again is not worth it.
     if (!blocking.length)
       blocking.push(...(await this.mutationFindings(runId, state, policy, signal)));
     return blocking.slice(0, 100);
+  }
+  /**
+   * Property-based tests (#637): every criterion the spec marks with `property` needs a property
+   * test in a test file of a task that covers it. A missing one is a blocking finding on that
+   * file, so the correction writes it; the result is kept for the run report.
+   */
+  private propertyFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): Review["findings"] {
+    const mode = propertyTestsOf(
+      policy,
+      presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
+    );
+    const criteria = state.spec?.criteria ?? [];
+    if (mode === "off" || !state.snapshotId || !criteria.some((c) => c.property)) return [];
+    const root = runRoot(this.store.workspace, state);
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    const result = checkPropertyTests(mode, criteria, tasks, (path) => {
+      try {
+        return readFileSync(workspacePath(root, path), "utf8");
+      } catch {
+        return null;
+      }
+    });
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, "quality", QUALITY_PROPERTIES, canonical(result));
+      return this.store.addEvidence(runId, "review", state.snapshotId ?? "", artifact.id);
+    });
+    const missing = result.criteria.filter((c) => c.status === "missing");
+    if (!missing.length) {
+      this.resolveClaims(runId, propertyClaim);
+      return [];
+    }
+    return missing.map((c) => {
+      const owner = tasks.find((t) => t.criterionIds.includes(c.id));
+      const file =
+        c.tests[0]?.file ?? owner?.writes.find((w) => w.action !== "delete")?.path ?? null;
+      const finding = this.qualityFinding(state, {
+        kind: "missing",
+        file: file ?? "",
+        evidenceId,
+        claim: `Property test missing for ${c.id}: the criterion holds over ${c.domain} inputs, and no test file of its tasks has a property-based test`,
+        impact: "Example tests miss edge inputs of the domain the criterion covers.",
+        suggestedFix: `Add a property-based test for ${c.id}${file ? ` in ${file}` : ""} with the ecosystem library (fast-check, Hypothesis, proptest, jqwik, rapid, FsCheck) that generates inputs over the whole ${c.domain} domain and asserts the criterion; declare the library as a development dependency if the project lacks it.`,
+      });
+      return {
+        ...finding,
+        file,
+        criterionIds: [c.id],
+        requirementIds:
+          state.spec?.criteria.find((x) => x.id === c.id)?.requirementIds ?? finding.requirementIds,
+      };
+    });
   }
   /**
    * The mutation gate (#636): plants small faults in the lines the run added, one at a time,
@@ -5106,7 +5181,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
   private qualityFinding(
     state: RuntimeState,
     item: {
-      kind: "correctness" | "security";
+      kind: "correctness" | "security" | "missing";
       file: string;
       symbol?: string | null;
       evidenceId: string;

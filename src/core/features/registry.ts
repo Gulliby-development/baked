@@ -809,6 +809,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "property-tests",
+    group: "Workflow runs",
+    title: "Property-based tests from marked acceptance criteria",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --property-tests auto|off", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "custom-gates",
     group: "Workflow runs",
     title:

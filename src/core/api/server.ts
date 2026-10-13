@@ -427,6 +427,7 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.duplication) flags.duplication = body.duplication;
   if (body.sast) flags.sast = body.sast;
   if (body.mutation) flags.mutation = body.mutation;
+  if (body.propertyTests) flags["property-tests"] = body.propertyTests;
   if (body.modelStrict) flags["model-strict"] = true;
   if (body.sandbox) flags.sandbox = body.sandbox;
   if (body.policy !== undefined) flags.policy = true;
