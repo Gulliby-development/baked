@@ -689,6 +689,7 @@ Several runs of one workspace execute at the same time when each runs in its own
 
 - One process drives each run in its own lane (its own leases and scheduler), so `baked serve`, the TUI and separate `baked workflow run` processes can all drive runs side by side.
 - Each run has its own worktree, branch `baked/wf/RUN_ID` and delivery. Runs started from the same HEAD do not see each other's edits; deliver one and start the next from the new HEAD when they build on each other.
+- A process creates and removes worktrees (`git worktree add`, `remove`, `prune`) one at a time per repository: Git does not guard `.git/worktrees` against concurrent commands, and an `add` that reads an entry another `add` is still creating fails with `failed to read .git/worktrees/main/commondir`.
 - An initiative whose feature workflow runs in worktrees runs its independent features side by side, and starts a dependent feature from its upstream features' results (see [initiatives](#initiatives)).
 - `baked workflow doctor` reports worktree runs that execute as `ok` (the working copy is free) and only the inline run's lease as busy.
 
