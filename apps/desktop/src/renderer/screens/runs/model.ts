@@ -270,6 +270,11 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
           line(`${event.payload.taskId} ${event.payload.to}`, "ok");
         else if (event.payload.to === "failed" || event.payload.to === "blocked")
           line(`${event.payload.taskId} ${event.payload.to}`, "err");
+        else if (event.payload.to === "interrupted" && event.payload.cause)
+          line(
+            `${event.payload.taskId} interrupted: ${event.payload.cause.replaceAll("_", " ")}${event.payload.detail ? ` (${event.payload.detail})` : ""}`,
+            "warn",
+          );
         break;
       case "check.finished": {
         const { checkId, status } = event.payload;

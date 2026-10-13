@@ -606,6 +606,21 @@ export const StepStatus = z.enum([
   "skipped",
   "invalidated",
 ]);
+/**
+ * Why a task step ended `interrupted` (#843): a restart in a fresh session, a continuation at its
+ * step cap, a correction widened to its whole scope, a wait for a file a later task writes, a
+ * spec conflict, or a worker or worktree lease that was lost.
+ */
+export const InterruptCause = z.enum([
+  "restart",
+  "continue_at_cap",
+  "widened_correction",
+  "waits_for_artifact",
+  "spec_conflict",
+  "worker_lost",
+  "lease_lost",
+]);
+export type InterruptCause = z.infer<typeof InterruptCause>;
 export const TaskStatus = z.enum([
   "pending",
   "running",
@@ -1114,6 +1129,8 @@ export const EventSchema = z.discriminatedUnion("type", [
           from: TaskStatus,
           to: TaskStatus,
           generation: z.number().int().nonnegative(),
+          cause: InterruptCause.optional(),
+          detail: z.string().max(500).optional(),
         })
         .strict(),
     })

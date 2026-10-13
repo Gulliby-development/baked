@@ -293,6 +293,7 @@ import {
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
+  type InterruptCause,
   type MutantProposal,
   MutantProposalSchema,
   PlanSchema,
@@ -3557,7 +3558,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           // all of them, and keeps this attempt's edits.
           this.store.transaction(() => {
             state.widenedCorrections.push(task.id);
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: "widened_correction",
+            });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
           });
@@ -3579,7 +3582,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           this.store.transaction(() => {
             if (!this.deferOnMissingArtifact(runId, state, child, task, result, changed))
               return false;
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: "waits_for_artifact",
+            });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
             return true;
@@ -3593,21 +3598,33 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         ) {
           // A fresh session gets the task again; a session without its edit tool stays without it.
           this.store.transaction(() => {
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: "restart",
+              detail: restartReason,
+            });
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
           });
           return;
         }
+        const atCap = changed.length > 0 && this.continueAtCap(runId, state, child, task);
         if (
-          changed.length > 0 &&
-          (this.continueAtCap(runId, state, child, task) ||
-            (restartReason !== null &&
-              this.restartOnce(runId, state, child, task.id, restartReason, changed, account)))
+          atCap ||
+          (changed.length > 0 &&
+            restartReason !== null &&
+            this.restartOnce(runId, state, child, task.id, restartReason, changed, account))
         ) {
           // The task is ready again and the next pass of the task loop continues it.
           this.store.transaction(() => {
-            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.taskStatus(
+              runId,
+              task.id,
+              "interrupted",
+              null,
+              atCap
+                ? { cause: "continue_at_cap" }
+                : { cause: "restart", detail: restartReason ?? undefined },
+            );
             this.store.finishStep(runId, child, "failed");
             this.store.saveState(runId, state);
           });
@@ -4272,36 +4289,41 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       if (restart && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!restart) lost.set(entry.task.id, outcome.reason);
       this.store.transaction(() => {
-        this.store.taskStatus(runId, entry.task.id, "interrupted");
+        this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
+          cause: outcome.cause,
+          detail: outcome.reason,
+        });
         this.store.finishStep(runId, entry.child, "interrupted");
       });
     } else if (outcome.kind === "rejected") {
-      const again =
-        (outcome.blocked !== undefined &&
-          this.deferOnMissingArtifact(
-            runId,
-            state,
-            entry.child,
-            entry.task,
-            outcome.blocked,
-            [],
-          )) ||
-        (outcome.edits !== undefined &&
-          this.continueAtCap(runId, state, entry.child, entry.task)) ||
-        (outcome.restart !== undefined &&
-          this.restartOnce(
-            runId,
-            state,
-            entry.child,
-            entry.task.id,
-            outcome.restart.reason,
-            outcome.edits?.changed ?? [],
-            outcome.restart.account,
-          ));
+      const cause: InterruptCause | null =
+        outcome.blocked !== undefined &&
+        this.deferOnMissingArtifact(runId, state, entry.child, entry.task, outcome.blocked, [])
+          ? "waits_for_artifact"
+          : outcome.edits !== undefined && this.continueAtCap(runId, state, entry.child, entry.task)
+            ? "continue_at_cap"
+            : outcome.restart !== undefined &&
+                this.restartOnce(
+                  runId,
+                  state,
+                  entry.child,
+                  entry.task.id,
+                  outcome.restart.reason,
+                  outcome.edits?.changed ?? [],
+                  outcome.restart.account,
+                )
+              ? "restart"
+              : null;
+      const again = cause !== null;
       if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!again) failure ??= outcome.error;
       this.store.transaction(() => {
-        this.store.taskStatus(runId, entry.task.id, again ? "interrupted" : "blocked");
+        if (cause)
+          this.store.taskStatus(runId, entry.task.id, "interrupted", null, {
+            cause,
+            ...(cause === "restart" && outcome.restart ? { detail: outcome.restart.reason } : {}),
+          });
+        else this.store.taskStatus(runId, entry.task.id, "blocked");
         this.store.finishStep(runId, entry.child, "failed");
         if (again) this.store.saveState(runId, state);
       });
@@ -4349,13 +4371,27 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     account?: { summary: string; unresolved: string[] },
   ): boolean {
     if ((state.taskRestarts[taskId] ?? 0) > 0) return false;
+    // What the restart reuses of the attempt it replaces (#843): the files it carries and the
+    // tokens that attempt spent, which count as reused only when files are carried.
+    const interruptedTokens = this.store
+      .attempts(runId)
+      .filter((attempt) => attempt.step_id === stepId)
+      .reduce((sum, attempt) => sum + (attempt.used_tokens ?? 0), 0);
     this.store.transaction(() => {
       state.taskRestarts[taskId] = 1;
       this.store.artifact(
         runId,
         "recovery",
         `tasks/restarts/${taskId}.json`,
-        canonical({ taskId, stepId, reason, carriedPaths, ...account }),
+        canonical({
+          taskId,
+          stepId,
+          reason,
+          carriedPaths,
+          interruptedTokens,
+          carriedTokens: carriedPaths.length ? interruptedTokens : 0,
+          ...account,
+        }),
       );
       this.store.saveState(runId, state);
     });
@@ -4542,7 +4578,14 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ? this.missingArtifactOwnersOf(runId, state, task, result)
           : [];
       if (restartReason && changed.length === 0 && !waits.length)
-        return { kind: "interrupted", entry, leaseLost: false, reason: restartReason, account };
+        return {
+          kind: "interrupted",
+          entry,
+          leaseLost: false,
+          cause: "restart",
+          reason: restartReason,
+          account,
+        };
       const refused = takeHashRefusals(root);
       const correction =
         result.outcome === "implemented" && changed.length === 0
@@ -4609,6 +4652,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           kind: "interrupted",
           entry,
           leaseLost,
+          cause: leaseLost ? "lease_lost" : "worker_lost",
           ...(!leaseLost && before
             ? await this.lostWorkerEdits(runId, policy, entry, known, before)
             : {}),
@@ -5717,7 +5761,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         `tasks/conflicts/${task.id}.json`,
         canonical(account),
       );
-      this.store.taskStatus(runId, task.id, "interrupted");
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
     this.wait("clarification", state, {
@@ -8938,6 +8982,8 @@ type WorkerOutcome =
   | {
       kind: "interrupted";
       entry: BatchEntry;
+      /** Why the worker stopped: a restart it asked for, or a lost worker or worktree lease. */
+      cause: InterruptCause;
       reason: string;
       /** Another owner took the task worktree's lease, so the worktree is not this run's to reuse. */
       leaseLost: boolean;

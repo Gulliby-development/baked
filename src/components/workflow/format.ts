@@ -356,7 +356,7 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
     case "attempt.advisory":
       return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":
-      return `Task ${event.payload.taskId}: ${event.payload.from} → ${event.payload.to}`;
+      return `Task ${event.payload.taskId}: ${event.payload.from} → ${event.payload.to}${event.payload.cause ? ` (${event.payload.cause.replaceAll("_", " ")}${event.payload.detail ? `: ${event.payload.detail}` : ""})` : ""}`;
     case "check.finished":
       return `Check ${event.payload.checkId} ${event.payload.status}`;
     case "finding.recorded":
