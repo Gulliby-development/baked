@@ -35,6 +35,22 @@ export interface CommitCheck {
   detail: string;
   url: string | null;
 }
+/** A review thread on a pull request: its comments, oldest first, and whether it is resolved. */
+export interface ReviewThread {
+  /** The host's ID of the thread, used to answer and resolve it. */
+  id: string;
+  resolved: boolean;
+  /** The commented code changed after the comment was made. */
+  outdated: boolean;
+  path: string;
+  line: number | null;
+  comments: { author: string; body: string; url: string }[];
+}
+/** What reviewers said on a pull request: its review threads and the latest review of each reviewer. */
+export interface PullRequestReviews {
+  threads: ReviewThread[];
+  reviews: { author: string; state: string; body: string; url: string }[];
+}
 export interface PullRequestProvider {
   readonly name: string;
   /** The `owner/name` repository a remote URL points at, or null when this host does not serve it. */
@@ -46,6 +62,10 @@ export interface PullRequestProvider {
   create(repository: string, draft: PullRequestDraft): Promise<PullRequest>;
   /** The checks reported on a commit. Absent for a provider that cannot read them. */
   checks?(repository: string, commit: string): Promise<CommitCheck[]>;
+  /** The review threads and reviews of a pull request. Absent for a provider that cannot read them. */
+  reviews?(repository: string, pullRequest: number): Promise<PullRequestReviews>;
+  /** Adds a reply to a review thread unless `body` is null, then resolves it when `resolve` is set. */
+  answerThread?(threadId: string, body: string | null, resolve: boolean): Promise<void>;
 }
 
 const PASSED_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
@@ -85,12 +105,16 @@ export function githubPullRequests(options: {
   const apiHost = new URL(api).hostname;
   const host = apiHost === "api.github.com" ? "github.com" : apiHost;
   const call = options.fetch ?? fetch;
-  async function request(path: string, init: { method: string; body?: unknown }): Promise<unknown> {
+  async function request(
+    path: string,
+    init: { method: string; body?: unknown },
+    url = `${api}${path}`,
+  ): Promise<unknown> {
     if (!options.token)
       throw new PullRequestError("auth", `Missing auth: set ${options.tokenEnv} to a GitHub token`);
     let response: Response;
     try {
-      response = await call(`${api}${path}`, {
+      response = await call(url, {
         method: init.method,
         headers: {
           accept: "application/vnd.github+json",
@@ -131,6 +155,24 @@ export function githubPullRequests(options: {
           ? "rejected"
           : "unknown";
     throw new PullRequestError(failure, `GitHub answered ${response.status}: ${message}`);
+  }
+  // GitHub serves GraphQL at /graphql of api.github.com, and at /api/graphql on an Enterprise host.
+  const graphqlUrl = api.endsWith("/api/v3") ? `${api.slice(0, -2)}graphql` : `${api}/graphql`;
+  async function graphql(query: string, variables: Record<string, unknown>): Promise<unknown> {
+    const answer = (await request(
+      "",
+      { method: "POST", body: { query, variables } },
+      graphqlUrl,
+    )) as {
+      data?: unknown;
+      errors?: { message?: string; type?: string }[];
+    };
+    if (answer.errors?.length) {
+      const message = answer.errors.map((e) => e.message).join("; ");
+      const failure = answer.errors.some((e) => e.type === "FORBIDDEN") ? "auth" : "rejected";
+      throw new PullRequestError(failure, `GitHub answered: ${message}`);
+    }
+    return answer.data;
   }
   const toPullRequest = (value: unknown): PullRequest => {
     const pr = value as { number?: unknown; html_url?: unknown };
@@ -221,5 +263,74 @@ export function githubPullRequests(options: {
         })),
       ];
     },
+    async reviews(repository, pullRequest) {
+      const [owner, name] = repository.split("/");
+      const data = (await graphql(REVIEWS_QUERY, { owner, name, number: pullRequest })) as {
+        repository?: {
+          pullRequest?: {
+            reviewThreads?: { nodes?: GraphThread[] };
+            latestReviews?: { nodes?: GraphReview[] };
+          } | null;
+        };
+      } | null;
+      const pull = data?.repository?.pullRequest;
+      if (!pull?.reviewThreads?.nodes || !pull.latestReviews?.nodes)
+        throw new PullRequestError("unknown", "GitHub returned unexpected reviews");
+      return {
+        threads: pull.reviewThreads.nodes.map((thread) => ({
+          id: thread.id,
+          resolved: thread.isResolved === true,
+          outdated: thread.isOutdated === true,
+          path: thread.path ?? "",
+          line: thread.line ?? null,
+          comments: (thread.comments?.nodes ?? []).map((c) => ({
+            author: c.author?.login ?? "ghost",
+            body: (c.body ?? "").slice(0, 4000),
+            url: c.url ?? "",
+          })),
+        })),
+        reviews: pull.latestReviews.nodes.map((review) => ({
+          author: review.author?.login ?? "ghost",
+          state: review.state ?? "",
+          body: (review.body ?? "").slice(0, 4000),
+          url: review.url ?? "",
+        })),
+      };
+    },
+    async answerThread(threadId, body, resolve) {
+      if (body !== null) await graphql(REPLY_MUTATION, { thread: threadId, body });
+      if (resolve) await graphql(RESOLVE_MUTATION, { thread: threadId });
+    },
   };
 }
+
+interface GraphThread {
+  id: string;
+  isResolved?: boolean;
+  isOutdated?: boolean;
+  path?: string | null;
+  line?: number | null;
+  comments?: { nodes?: { author?: { login?: string } | null; body?: string; url?: string }[] };
+}
+interface GraphReview {
+  author?: { login?: string } | null;
+  state?: string;
+  body?: string;
+  url?: string;
+}
+const REVIEWS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes { id isResolved isOutdated path line comments(first: 30) { nodes { author { login } body url } } }
+      }
+      latestReviews(first: 50) { nodes { author { login } state body url } }
+    }
+  }
+}`;
+const REPLY_MUTATION = `mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { id } }
+}`;
+const RESOLVE_MUTATION = `mutation($thread: ID!) {
+  resolveReviewThread(input: { threadId: $thread }) { thread { id } }
+}`;

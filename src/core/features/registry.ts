@@ -803,8 +803,9 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "pr-follow",
     group: "Workflow runs",
-    title: "Follow a delivered pull request's checks and start a fix-ci run for failures",
-    tui: ["/workflow: run view, K (PR checks)"],
+    title:
+      "Follow a delivered pull request's checks and review comments and start a run that fixes them",
+    tui: ["/workflow: run view, K (PR checks), V (PR reviews)"],
     cli: ["baked workflow follow"],
     api: ["/v1/workflow/runs/:id/checks"],
     desktop: ["project/runs: Pull request panel"],
