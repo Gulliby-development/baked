@@ -8,7 +8,7 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
-import type { AppConfig, LaunchNote } from "../../types/index.js";
+import type { AppConfig, ChatMessage, LaunchNote } from "../../types/index.js";
 import { hashJson } from "../specs/hash.js";
 import {
   InitiativeFeatureSchema,
@@ -33,6 +33,7 @@ export const LAUNCH_TOOLS = [
   "start_run",
   "start_initiative",
   "propose_split",
+  "message_session",
 ] as const;
 export const DEFAULT_MAX_ACTIVE = 3;
 export const DEFAULT_MAX_TOKENS = 20_000_000;
@@ -204,6 +205,35 @@ function titleOf(chat: ChatService, entry: LaunchedEntry): string | undefined {
   }
 }
 
+/** How a launched session sees a message the coordinator sent it. */
+export const COORDINATOR_MESSAGE_PREFIX = "Message from the project coordinator:\n\n";
+
+/** The longest result a launch note carries from a session's last answer. */
+export const LAUNCH_RESULT_MAX = 2000;
+
+/** How many answers a launched session has given; 0 when it is gone. */
+function sessionAnswers(chat: ChatService, id: string): number {
+  try {
+    return chat.get(id).messages.filter((m) => m.role === "assistant").length;
+  } catch {
+    return 0;
+  }
+}
+
+/** What a launched session answered last, for its launch note; null while it has said nothing. */
+export function sessionResult(chat: ChatService, id: string): string | null {
+  let messages: ChatMessage[];
+  try {
+    messages = chat.get(id).messages;
+  } catch {
+    return null;
+  }
+  const last = [...messages].reverse().find((m) => m.role === "assistant" && m.content.trim());
+  if (!last) return null;
+  const text = last.content.trim();
+  return text.length > LAUNCH_RESULT_MAX ? `${text.slice(0, LAUNCH_RESULT_MAX - 1)}…` : text;
+}
+
 /** A session's id is a UUID nobody reads; its first block is enough to tell two apart. */
 const shortId = (id: string): string =>
   /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id) ? id.slice(0, 8) : id;
@@ -264,9 +294,15 @@ export async function syncLaunched(
       event,
     });
     let next = entry;
-    if (status !== entry.status) {
-      next = { ...next, status };
-      if (NOTEWORTHY.test(status)) notices.push(note(next, "status"));
+    // A session that answered again between two checks (a quick follow-up) reports again too.
+    const answers = entry.kind === "session" ? sessionAnswers(chat, entry.id) : 0;
+    const answered = answers > (entry.answers ?? 0) && !/^working/.test(status);
+    if (status !== entry.status || answered) {
+      next = { ...next, status, ...(answered ? { answers } : {}) };
+      if (NOTEWORTHY.test(status)) {
+        const result = answered ? sessionResult(chat, entry.id) : null;
+        notices.push({ ...note(next, "status"), ...(result ? { result } : {}) });
+      }
     }
     // A completed run's pull request closes its issue when it merges.
     if (tasks && next.task?.state === "open" && status === "completed") {
@@ -502,6 +538,35 @@ export function launchTools(
           session.send(brief);
           return { kind: "session", id: session.id, title, status: "working" };
         }, why),
+    }),
+    message_session: tool({
+      description:
+        "Send a follow-up, correction or answer to a session you launched. It reaches the session as a message from the coordinator: steered into its running turn, or starting its next turn. You get a note here with its answer when that turn ends.",
+      inputSchema: z.strictObject({
+        id: z.string().trim().min(1).max(200).describe("The launched session's id"),
+        text: z.string().trim().min(1).max(20_000),
+      }),
+      execute: async ({ id, text }) => {
+        if (!store.read().launched.some((l) => l.kind === "session" && l.id === id))
+          return failed(`Session ${id} is not one you launched; launch_session starts one`);
+        let session: ChatSession;
+        try {
+          session = chat.get(id);
+        } catch {
+          return failed(`Session ${id} no longer exists`);
+        }
+        try {
+          const { queued } = session.send(`${COORDINATOR_MESSAGE_PREFIX}${text}`);
+          return {
+            success: true,
+            output: queued
+              ? `Sent to session ${id}; it joins the turn that is running.`
+              : `Sent to session ${id}; it started a new turn.`,
+          };
+        } catch (err) {
+          return failed(err instanceof Error ? err.message : String(err));
+        }
+      },
     }),
     start_run: tool({
       description:
