@@ -626,6 +626,14 @@ export function InitiativeDetail({
                     width - 4,
                   )}
                 </text>
+                {f.issue ? (
+                  <text fg={t.textMuted}>
+                    {clip(
+                      `Issue ${f.issue.repository}#${f.issue.number}: delivery closes it`,
+                      width - 4,
+                    )}
+                  </text>
+                ) : null}
                 {f.pendingRequests.length ? (
                   <text fg={t.warning}>
                     {clip(
