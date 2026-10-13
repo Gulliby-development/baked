@@ -25,7 +25,7 @@ import {
   TaskSchema,
 } from "./schemas.js";
 import type { ArtifactRow, CriticOutcomeRow, WorkflowStore } from "./store.js";
-import { type RunUsageReport, runUsage, toolBackendLine } from "./usage.js";
+import { type RunUsageReport, runUsage, toolBackendLine, toolTokensLine } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
 import { changesOf, type FileChange, readRoutingSummary } from "./view.js";
 
@@ -913,6 +913,8 @@ function render(facts: Facts, cap: number): string {
     );
   const backends = toolBackendLine(usage.toolBackends ?? []);
   if (backends) out.push(`Code intelligence: ${backends}.`, "");
+  const tools = toolTokensLine(usage.tools ?? []);
+  if (tools) out.push(`Tool calls (tokens of the steps that made them): ${tools}.`, "");
 
   out.push("## Artifacts", "");
   const hidden = facts.internalArtifacts

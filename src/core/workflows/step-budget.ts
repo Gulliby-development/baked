@@ -207,6 +207,8 @@ export interface AttemptStepUsage {
   /** Absent in records written before cache writes were recorded. */
   cacheWriteTokens?: number | null;
   toolCalls: number;
+  /** Names of the step's tool calls, in call order; absent in records written before they were. */
+  tools?: string[];
   compactedBytes: number;
   /** Model requests behind the step, when the provider reports them (Codex app-server). */
   modelRequests?: number;
@@ -242,6 +244,12 @@ export interface StepLike {
   finishReason?: string;
   toolCalls: readonly unknown[];
   providerMetadata?: unknown;
+}
+
+/** The tool name of a step's tool call, as the AI SDK reports it; `unknown` when it has none. */
+function toolCallName(call: unknown): string {
+  const name = (call as { toolName?: unknown } | null)?.toolName;
+  return typeof name === "string" ? name : "unknown";
 }
 
 /** Model requests a step cost, when the provider reports them (Codex app-server `responses`). */
@@ -472,6 +480,7 @@ export class AttemptStepController {
         cacheReadTokens: step.usage.inputTokenDetails?.cacheReadTokens ?? null,
         cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
         toolCalls: step.toolCalls.length,
+        ...(step.toolCalls.length ? { tools: step.toolCalls.map(toolCallName) } : {}),
         compactedBytes: this.compactedBytes[index] ?? 0,
         ...(requests[index] !== undefined ? { modelRequests: requests[index] } : {}),
       })),

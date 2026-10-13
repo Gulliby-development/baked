@@ -244,6 +244,24 @@ describe("AttemptStepController", () => {
     expect(record.modelRequests).toBeUndefined();
   });
 
+  test("records the names of each step's tool calls (#750)", () => {
+    const controller = new AttemptStepController({
+      maxSteps: 4,
+      maxTokens: 100_000,
+      submitTools: ["submit_result"],
+      fallbackStepTokens: 100,
+    });
+    const record = controller.record(
+      [
+        { ...usage(100, 10), toolCalls: [{ toolName: "run_repro" }, { toolName: "read" }] },
+        { ...usage(100, 10), toolCalls: [{}] },
+      ],
+      true,
+      { profileId: "reviewer", taskId: null },
+    );
+    expect(record.steps.map((step) => step.tools)).toEqual([["run_repro", "read"], ["unknown"]]);
+  });
+
   test("records the model requests a provider reports per step and their sum", () => {
     const controller = new AttemptStepController({
       maxSteps: 4,
