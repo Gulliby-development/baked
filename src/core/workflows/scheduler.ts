@@ -7529,6 +7529,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               ...(reviewer.dimension === "correctness" && Object.keys(references).length
                 ? { references }
                 : {}),
+              // Named in the prompt as well as the tool list: round 11 reviewers said no tool was
+              // available while run_repro was offered (#528).
+              ...(canRepro ? { reproTool: { name: "run_repro", programs: executables } } : {}),
               ...extra,
             },
             signal,
@@ -7547,7 +7550,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
               );
               // Asked once: a reviewer that still has no repro after the advice is not blocked.
               if (problems.length || reproAdvised || !canRepro) return problems;
-              const advice = missingReproAdvice(output as Review);
+              const advice = missingReproAdvice(output as Review, executables);
               if (advice.length) reproAdvised = true;
               return advice;
             },

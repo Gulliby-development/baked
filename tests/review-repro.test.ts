@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  claimsNoReproTool,
   missingReproAdvice,
   outputShows,
   REPRO_TRIES,
@@ -130,18 +131,36 @@ describe("review finding repro", () => {
 });
 
 describe("a correctness finding without a repro", () => {
+  const review = (findings: Review["findings"]): Review => ({
+    schemaVersion: 1,
+    snapshotHash: "0".repeat(64),
+    verdict: "changes_requested",
+    coverage: [],
+    findings,
+  });
   test("is advised once to attach one or say why none can show it", () => {
-    const review = (findings: Review["findings"]): Review => ({
-      schemaVersion: 1,
-      snapshotHash: "0".repeat(64),
-      verdict: "changes_requested",
-      coverage: [],
-      findings,
-    });
     expect(missingReproAdvice(review([finding({})]))[0]).toContain("F1 have no repro");
     expect(missingReproAdvice(review([finding({ repro: regexRepro })]))).toEqual([]);
     expect(missingReproAdvice(review([finding({ noRepro: "Only a race shows it" })]))).toEqual([]);
     expect(missingReproAdvice(review([finding({ kind: "missing" })]))).toEqual([]);
+  });
+
+  test("turns back a noRepro that says no tool was available while run_repro is offered (#528)", () => {
+    const noTool = finding({ noRepro: "No execution/reproduction tool is available in this session" });
+    expect(missingReproAdvice(review([noTool]), ["python"])[0]).toContain("offers run_repro, which starts python");
+    expect(missingReproAdvice(review([noTool]))).toEqual([]);
+    expect(missingReproAdvice(review([noTool]), [])).toEqual([]);
+    expect(
+      missingReproAdvice(review([finding({ noRepro: "Needs a set-up the runner cannot make" })]), ["java"]),
+    ).toEqual([]);
+    for (const reason of [
+      "no execution tool was available",
+      "No workspace reproduction tool is available in this review",
+      "The run_repro tool was not offered",
+    ])
+      expect(claimsNoReproTool(reason)).toBe(true);
+    for (const reason of ["Only a race shows it", "The runner cannot select a culture", "Needs an unreadable directory"])
+      expect(claimsNoReproTool(reason)).toBe(false);
   });
 
   test("reviewers with run_repro get the advice once, then the review is accepted", async () => {
