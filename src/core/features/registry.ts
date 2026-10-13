@@ -508,6 +508,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/skills"],
   },
   {
+    id: "packages",
+    group: "Tools and code intelligence",
+    title:
+      "Packages: install agent profiles, skills, workflows and gates from a local folder with per-file hashes",
+    tui: ["/packages", "/packages add: asks before it installs", "/packages remove"],
+    cli: ["baked add: --yes or a prompt", "baked packages"],
+    api: ["/v1/packages", "/v1/packages/inspect", "/v1/packages/install", "/v1/packages/:id"],
+    desktop: ["project/packages"],
+  },
+  {
     id: "baked-help",
     group: "Tools and code intelligence",
     title: "Ask the agent about BAKED itself (bundled docs, baked_help tool)",
@@ -598,6 +608,23 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/usage",
     ],
     desktop: ["project/runs"],
+  },
+  {
+    id: "critic-outcomes",
+    group: "Workflow runs",
+    title: "Critic outcome log: scores with checks, acceptance, delivery and line survival",
+    tui: ["/workflow: outcomes, and the Critic section of report"],
+    cli: ["baked workflow outcomes"],
+    api: partial(
+      ["/v1/workflow/runs/:id/report: Critic section"],
+      646,
+      "the log across runs comes with calibration",
+    ),
+    desktop: partial(
+      ["project/runs: Report tab, Critic section"],
+      646,
+      "the log across runs comes with calibration",
+    ),
   },
   {
     id: "progress-watcher",
@@ -763,6 +790,15 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow doctor: libraryDocs in config.json"],
     api: gap(763),
     desktop: gap(763),
+  },
+  {
+    id: "mutation-gate",
+    group: "Workflow runs",
+    title: "Mutation gate on the lines a run added",
+    tui: ["/code-quality", "/workflow: run report"],
+    cli: ["baked workflow run: --mutation off|advisory|required", "baked workflow report"],
+    api: ["/v1/settings: code-quality page", "/v1/workflow/runs", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
   },
   {
     id: "custom-gates",
