@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RouteEffort } from "../llm/model-routing.js";
+import { PresetChoiceSchema } from "./preset-router.js";
 import {
   type AgentProfile,
   Hash,
@@ -322,6 +323,8 @@ export const RuntimeStateSchema = z
       )
       .default({}),
     issue: IssueSourceSchema.nullable().default(null),
+    /** Set on a run started with `--auto-preset`: what was proposed, why, and what ran. */
+    presetChoice: PresetChoiceSchema.nullable().default(null),
   })
   .strict();
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
