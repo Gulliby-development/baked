@@ -442,6 +442,43 @@ describe("workflow parallel writers", () => {
     });
   }
 
+  // Bench round 12, cfgtrace 4018a791: the README task ran before the CLI task, reported the
+  // missing `cfgtrace.__main__` as blocked and stopped the run (#807).
+  for (const writers of [1, 2]) {
+    test(`a task blocked on a file a task still to run writes waits for it, ${String(writers)} writer(s)`, async () => {
+      const fx = setup(
+        [{ id: "T001", files: { "USAGE.md": "R" } }, { id: "T002", files: { "tool/out.txt": "C" } }],
+        { "USAGE.md": "R", "tool/out.txt": "C" },
+        { policy: { clarification: "ask" } },
+      );
+      fx.executor.blockedOnce.T001 = { summary: "Cannot capture the output: tool/out.txt is missing in this worktree" };
+      const run = await fx.start(writers);
+      const done = await fx.complete(run.runId);
+      expect(fx.lastError(run.runId)).toBe("");
+      expect(done.status).toBe("completed");
+      expect(fx.store.state(run.runId).taskRestarts).toEqual({});
+      const wait = fx.store.artifacts(run.runId).find((a) => a.logical_path === "tasks/waits/T001.json");
+      expect(wait && JSON.parse(fx.store.readArtifact(run.runId, wait.id)).waitsFor).toEqual(["T002"]);
+      const t001 = fx.executor.started.filter((s) => s.taskId === "T001");
+      const t002 = fx.executor.started.find((s) => s.taskId === "T002");
+      expect(t001).toHaveLength(2);
+      expect(t002 && t001[1] && t001[1].start >= t002.end).toBe(true);
+    });
+  }
+
+  test("a task blocked on a file no unfinished task writes still blocks the run", async () => {
+    const fx = setup(
+      [{ id: "T001", files: { "tool/out.txt": "C" } }, { id: "T002", files: { "USAGE.md": "R" } }],
+      { "USAGE.md": "R", "tool/out.txt": "C" },
+      { policy: { clarification: "ask" } },
+    );
+    fx.executor.blockedOnce.T002 = { summary: "Cannot capture the output: tool/out.txt is missing in this worktree" };
+    const run = await fx.start(1);
+    const stopped = await fx.complete(run.runId);
+    expect(stopped.status).toBe("blocked");
+    expect(fx.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("tasks/waits/"))).toBe(false);
+  });
+
   test("a session that made no tool call and submitted nothing restarts without assume, whatever its wording", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" }, { policy: { clarification: "ask" } });
     fx.executor.blockedOnce.T002 = { summary: "Could not proceed", noTools: true };

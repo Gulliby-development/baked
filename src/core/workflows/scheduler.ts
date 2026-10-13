@@ -314,7 +314,13 @@ import {
 import { forgetProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
-import { hasTaskGate, pendingCodePaths, pendingOwners, readyTasks } from "./task-graph.js";
+import {
+  hasTaskGate,
+  missingArtifactOwners,
+  pendingCodePaths,
+  pendingOwners,
+  readyTasks,
+} from "./task-graph.js";
 import {
   integrityFix,
   isTestPath,
@@ -3164,7 +3170,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           state,
           policy,
           signal,
-          readyTasks(state.graph, rows, state.taskGates),
+          readyTasks(state.graph, rows, state.taskGates, state.waitingFor),
         ))
       )
         continue;
@@ -3174,7 +3180,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
             runId,
             state,
             policy,
-            readyTasks(state.graph, rows, state.taskGates),
+            readyTasks(state.graph, rows, state.taskGates, state.waitingFor),
           );
       // The tests are put to a person; the code tasks wait for the approval.
       if (ready === null) return;
@@ -3227,11 +3233,54 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       );
     });
   }
-  /** Ends every wait of a deferred check; true when one was waiting. */
+  /** Ends every wait of a deferred check or a deferred task; true when one was waiting. */
   private releaseDeferred(state: RuntimeState): boolean {
     const waiting = Object.keys(state.deferredChecks);
     for (const id of waiting) delete state.deferredChecks[id];
-    return waiting.length > 0;
+    const tasks = Object.keys(state.waitingFor ?? {});
+    for (const id of tasks) delete state.waitingFor[id];
+    return waiting.length + tasks.length > 0;
+  }
+  /** The unfinished tasks that write a file a blocked task's account names (`missingArtifactOwners`). */
+  private missingArtifactOwnersOf(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    account: { summary: string; unresolved: string[] },
+  ): string[] {
+    if (!state.graph) return [];
+    return missingArtifactOwners(
+      state.graph,
+      this.store.tasks(runId),
+      task,
+      account,
+      state.waitingFor,
+    );
+  }
+  /**
+   * Defers a task that reported `blocked` without changing a file because a file it names is
+   * written by a task still to run: it waits for that task instead of blocking the run. True
+   * when it was deferred; the caller leaves the task ready again.
+   */
+  private deferOnMissingArtifact(
+    runId: string,
+    state: RuntimeState,
+    stepId: string,
+    task: Task,
+    result: { outcome: string; summary: string; unresolved: string[] },
+    changed: readonly string[],
+  ): boolean {
+    if (result.outcome !== "blocked" || changed.length > 0) return false;
+    const owners = this.missingArtifactOwnersOf(runId, state, task, result);
+    if (!owners.length) return false;
+    state.waitingFor[task.id] = [...(state.waitingFor[task.id] ?? []), ...owners];
+    this.store.artifact(
+      runId,
+      "recovery",
+      `tasks/waits/${task.id}.json`,
+      canonical({ taskId: task.id, stepId, waitsFor: owners, summary: result.summary }),
+    );
+    return true;
   }
   /**
    * Implements one task in the run's own root, or only checks it when `checking` (implemented
@@ -3420,6 +3469,18 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           proseEnd,
         );
         const account = { summary: result.summary, unresolved: result.unresolved };
+        // A task blocked on a file a task still to run writes waits for it; a restart now would block again.
+        if (
+          this.store.transaction(() => {
+            if (!this.deferOnMissingArtifact(runId, state, child, task, result, changed))
+              return false;
+            this.store.taskStatus(runId, task.id, "interrupted");
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+            return true;
+          })
+        )
+          return;
         if (
           restartReason &&
           changed.length === 0 &&
@@ -3553,7 +3614,9 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       const rows = this.store.tasks(runId);
       const current = state.graph ?? graph;
       const checking = this.checkableTask(current, rows, state);
-      const all = readyTasks(current, rows, state.taskGates).filter((t) => !lost.has(t.id));
+      const all = readyTasks(current, rows, state.taskGates, state.waitingFor).filter(
+        (t) => !lost.has(t.id),
+      );
       const runnable = checking ? all : this.testsFirstReady(runId, state, policy, all);
       if (runnable === null) return;
       const ready = runnable;
@@ -4109,6 +4172,15 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       });
     } else if (outcome.kind === "rejected") {
       const again =
+        (outcome.blocked !== undefined &&
+          this.deferOnMissingArtifact(
+            runId,
+            state,
+            entry.child,
+            entry.task,
+            outcome.blocked,
+            [],
+          )) ||
         (outcome.edits !== undefined &&
           this.continueAtCap(runId, state, entry.child, entry.task)) ||
         (outcome.restart !== undefined &&
@@ -4360,7 +4432,11 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         proseEnd,
       );
       const account = { summary: result.summary, unresolved: result.unresolved };
-      if (restartReason && changed.length === 0)
+      const waits =
+        changed.length === 0 && result.outcome === "blocked"
+          ? this.missingArtifactOwnersOf(runId, state, task, result)
+          : [];
+      if (restartReason && changed.length === 0 && !waits.length)
         return { kind: "interrupted", entry, leaseLost: false, reason: restartReason, account };
       const refused = takeHashRefusals(root);
       const correction =
@@ -4388,7 +4464,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           kind: "rejected",
           entry,
           ...(restartReason ? { restart: { reason: restartReason, account } } : {}),
-          ...(changed.length ? { edits: { before, changed } } : {}),
+          ...(changed.length ? { edits: { before, changed } } : { blocked: result }),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${refusedReason(refused)}`,
@@ -8592,6 +8668,8 @@ type WorkerOutcome =
       restart?: { reason: string; account: { summary: string; unresolved: string[] } };
       /** The files the attempt changed in its worktree, with the manifest before it. */
       edits?: { before: Record<string, string>; changed: string[] };
+      /** The worker's result when it changed nothing, for a deferral on a missing artifact. */
+      blocked?: { outcome: string; summary: string; unresolved: string[] };
     }
   /** The task's worker reported that the spec and the tests cannot both hold. */
   | { kind: "conflict"; entry: BatchEntry; result: Implementation }

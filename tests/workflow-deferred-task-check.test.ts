@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { hashJson } from "../src/core/specs/hash.js";
-import { pendingOwners } from "../src/core/workflows/task-graph.js";
+import { missingArtifactOwners, pendingOwners, readyTasks } from "../src/core/workflows/task-graph.js";
 import type { TaskGraph } from "../src/core/workflows/schemas.js";
 import type { TaskRow } from "../src/core/workflows/store.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -67,5 +67,33 @@ describe("a task check failing on a file a pending task owns", () => {
   test("does not wait for an owner that depends on the task", () => {
     const later: TaskGraph = { ...graph, tasks: [main, { ...app, dependsOn: ["T003"] }] };
     expect(pendingOwners(later, [row(main, "implemented"), row(app, "pending")], {}, main, output)).toEqual([]);
+  });
+});
+
+// cfgtrace 4018a791 (bench round 12): the README task ran before the CLI task and reported the
+// missing `cfgtrace.__main__` as blocked (#807).
+describe("a blocked task waits for the unfinished task that writes the file it names", () => {
+  const readme = task("T011", "README.md");
+  const cli = task("T005", "cfgtrace/__main__.py");
+  const other = task("T006", "cfgtrace/model.py");
+  const tasks: TaskGraph = { ...graph, tasks: [readme, cli, other] };
+  const account = (summary: string) => ({ summary, unresolved: [] });
+  test("a dotted module name or a path names the file", () => {
+    const rows = [row(readme, "running"), row(cli, "pending"), row(other, "running")];
+    expect(missingArtifactOwners(tasks, rows, readme, account("No module named cfgtrace.__main__"))).toEqual(["T005"]);
+    expect(missingArtifactOwners(tasks, rows, readme, account("cfgtrace/model.py is missing"))).toEqual(["T006"]);
+    expect(missingArtifactOwners(tasks, rows, readme, account("The spec is ambiguous"))).toEqual([]);
+  });
+  test("finished, blocked and dependent tasks are not waited for", () => {
+    const text = account("cfgtrace.__main__ and cfgtrace.model are missing");
+    expect(missingArtifactOwners(tasks, [row(readme, "running"), row(cli, "verified"), row(other, "blocked")], readme, text)).toEqual([]);
+    const dependent: TaskGraph = { ...graph, tasks: [readme, { ...cli, dependsOn: ["T011"] }, other] };
+    expect(missingArtifactOwners(dependent, [row(readme, "running"), row(cli, "pending"), row(other, "pending")], readme, text, { T006: ["T011"] })).toEqual([]);
+  });
+  test("a waiting task is ready once the tasks it waits for are done", () => {
+    const waits = { T011: ["T005"] };
+    const ready = (status: string) => readyTasks(tasks, [row(readme, "interrupted"), row(cli, status), row(other, "verified")], {}, waits).map((t) => t.id);
+    expect(ready("running")).toEqual([]);
+    expect(ready("verified")).toEqual(["T011"]);
   });
 });
