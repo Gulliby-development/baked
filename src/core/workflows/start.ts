@@ -12,6 +12,7 @@ import { WorkflowFault } from "./errors.js";
 import { languageReviewProfile } from "./language.js";
 import { DEFAULT_DUPLICATION } from "./quality/duplication.js";
 import { configuredRules } from "./quality/rules.js";
+import { DEFAULT_SAST_CONFIG } from "./quality/sast.js";
 import {
   independentReviewMode,
   reviewIndependence,
@@ -103,6 +104,7 @@ export async function prepareStart(
     | "maxConcurrentWriters"
     | "clarification"
     | "duplication"
+    | "sast"
     | "modelStrict"
   >,
   deps: StartDeps = {},
@@ -200,6 +202,9 @@ export async function prepareStart(
     clarification: _clarification,
     duplication: _duplication,
     qualityRules: requestRules,
+    sast: policySast,
+    sastConfig: policySastConfig,
+    registryLookups: policyLookups,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
     ...rest
@@ -215,6 +220,10 @@ export async function prepareStart(
   // The policy's own rule choices win over the configured ones; the built-in pack as shipped
   // leaves the field out.
   const qualityRules = requestRules ?? configuredRules(config.quality);
+  // Defaults (`auto`, `p/default`, lookups on) leave the fields out, so the hash stays.
+  const sast = request.sast ?? policySast ?? config.quality?.sast ?? "auto";
+  const sastConfig = policySastConfig ?? config.quality?.sastConfig ?? DEFAULT_SAST_CONFIG;
+  const registryLookups = policyLookups ?? config.quality?.registryLookups ?? true;
   // Overlapping writes are kept only when permitted, so a policy that leaves them off keeps the
   // hash it had before the field existed; the requested writer count overrides the policy.
   policy = PolicySchema.parse({
@@ -225,6 +234,9 @@ export async function prepareStart(
     ...(editDiagnostics === "reject" ? { editDiagnostics } : {}),
     ...(duplication !== DEFAULT_DUPLICATION ? { duplication } : {}),
     ...(qualityRules ? { qualityRules } : {}),
+    ...(sast === "off" ? { sast } : {}),
+    ...(sastConfig !== DEFAULT_SAST_CONFIG ? { sastConfig } : {}),
+    ...(registryLookups === false ? { registryLookups } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }
       : {}),

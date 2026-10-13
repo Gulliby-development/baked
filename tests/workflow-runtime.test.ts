@@ -20,7 +20,7 @@ import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { CheckRunner } from "../src/core/verification/check-runner.js";
 import { gitBaseline, sourceManifest } from "../src/core/verification/snapshot.js";
 import { fingerprint } from "../src/core/verification/findings.js";
-import { ReviewSchema, PlanSchema, ImplementationSchema } from "../src/core/workflows/schemas.js";
+import { ReviewSchema, PlanSchema, ImplementationSchema, generatedPaths } from "../src/core/workflows/schemas.js";
 import { workspacePath } from "../src/core/specs/validate.js";
 import { planConsistencyProblems } from "../src/core/workflows/plan-consistency.js";
 import { validateEvidence } from "../src/core/verification/evidence.js";
@@ -297,6 +297,34 @@ describe("durable SDD runtime", () => {
     expect(done.status).toBe("completed");
     expect(service.store.run(run.runId).convergence_rounds).toBe(1);
     expect(service.store.state(run.runId).spec).toEqual(spec);
+  });
+  test("already_satisfied may cite reads of the task's worktree after its earlier edits", async () => {
+    // junitdigest 3e5be74b T014: the fix of attempt 1 was in place, so the read evidence of the
+    // retry named the worktree snapshot, not the run snapshot, and was rejected as stale.
+    const { service, executor, root } = setup();
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request) => {
+      if (request.profile.output !== "implementation") return original(request);
+      writeFileSync(join(root, "value.txt"), "ready");
+      const files = await sourceManifest(root, generatedPaths(policy));
+      const evidenceId = service.store.transaction(() => {
+        const snapshot = service.store.putSnapshot(request.runId, files);
+        const artifact = service.store.artifact(request.runId, "read", `reads/${newId()}.json`, "{}");
+        return service.store.addEvidence(request.runId, "read", snapshot.id, artifact.id);
+      });
+      return { output: ImplementationSchema.parse({ schemaVersion: 1, taskId: request.task?.id, outcome: "already_satisfied", summary: "The value is in place", evidenceIds: [evidenceId], unresolved: [] }), inputTokens: 20, outputTokens: 30 };
+    };
+    const { run } = await start(service); await service.drive(run.runId, new AbortController().signal); await approve(service, run.runId);
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+  });
+  test("evidence counts for any of the snapshots given and no other", async () => {
+    const { service } = setup(); const { run } = await start(service);
+    const [a, b, c] = ["a", "b", "c"].map((value) => service.store.putSnapshot(run.runId, { "value.txt": value }));
+    const artifact = service.store.artifact(run.runId, "read", "reads/x.json", "{}");
+    const read = service.store.addEvidence(run.runId, "read", b!.id, artifact.id);
+    expect(() => validateEvidence(service.store, run.runId, [a!.id, b!.id], [read])).not.toThrow();
+    expect(() => validateEvidence(service.store, run.runId, [a!.id, c!.id], [read])).toThrow("stale");
   });
   test("a failed task check repairs its predecessor before running descendants", async () => {
     const { service, executor, root } = setup(true); const original = executor.execute.bind(executor);
