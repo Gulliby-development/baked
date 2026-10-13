@@ -27,6 +27,8 @@ export interface ApprovalBody {
   deferredCriteria?: string[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
+  /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
+  budgetWarning?: string;
   /** Each deliverable of the request and the requirements, or the request's exclusion, covering it. */
   requestCoverage?: {
     deliverable: string;

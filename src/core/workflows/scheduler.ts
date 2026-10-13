@@ -339,6 +339,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 import {
   codeTaskCheckProblems,
   loopHistory,
+  overCeilingOf,
   plannerSizing,
   type SizingReport,
   sizePlan,
@@ -1345,6 +1346,8 @@ export class WorkflowScheduler {
                     .map((c) => c.id),
                   // Defaults the agents chose instead of asking; approving accepts them.
                   assumptions: state.spec.assumptions,
+                  // A plan priced above the ceiling is approved knowing where it should stop (#974).
+                  ...overCeilingOf(this.store, runId),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),

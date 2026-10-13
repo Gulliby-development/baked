@@ -1890,3 +1890,19 @@ export const generatedPaths = (policy: RunPolicy): string[] => [
   ...policy.checks.flatMap((c) => c.writes),
   ...(policy.acceptanceWrites ?? []),
 ];
+
+/** How far past `sizing.maxRunTokens` a run grows past the ceiling on progress, if at all. */
+export const DEFAULT_EXTEND_FACTOR = 1.5;
+
+/**
+ * `sizing.extendToTokens`, or under `clarification: "assume"` with a ceiling and no explicit
+ * value, 1.5 times the ceiling: a run nobody watches finishes a plan priced just above it
+ * instead of stopping with a corrective half done (#974). The extension still needs progress.
+ */
+export function extendToOf(policy: RunPolicy): number | null {
+  const explicit = policy.sizing?.extendToTokens;
+  if (explicit !== undefined) return explicit;
+  const ceiling = policy.sizing?.maxRunTokens;
+  if (ceiling === undefined || ceiling === null || policy.clarification !== "assume") return null;
+  return Math.round(ceiling * DEFAULT_EXTEND_FACTOR);
+}

@@ -6,6 +6,8 @@ export interface ApprovalBody {
   checks?: { id: string }[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
+  /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
+  budgetWarning?: string;
   /** Each deliverable of the request and what covers it (`request-coverage.ts` in the core). */
   requestCoverage?: {
     deliverable: string;

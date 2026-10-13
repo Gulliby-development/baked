@@ -16,6 +16,8 @@ interface ApprovalBody {
   checks?: Check[];
   deferredCriteria?: string[];
   assumptions?: string[];
+  /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
+  budgetWarning?: string;
   requestCoverage?: RequestCoverageRow[];
   executionMode?: "inline" | "worktree";
   sandbox?: "auto" | "required";
@@ -551,6 +553,9 @@ export function DecisionPrompt({
                 </text>
               ))}
             </>
+          ) : null}
+          {body.budgetWarning ? (
+            <text fg={t.warning} attributes={1}>{`! ${flatten(body.budgetWarning)}`}</text>
           ) : null}
           {body.assumptions?.length ? (
             <>
