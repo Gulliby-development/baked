@@ -226,7 +226,12 @@ import {
   runMutants,
   scoreMutants,
 } from "./quality/mutation.js";
-import { detectMutationTool, runMutationTool, type ToolShell } from "./quality/mutation-tools.js";
+import {
+  detectMutationTool,
+  runMutationTool,
+  type ToolShell,
+  toolPath,
+} from "./quality/mutation-tools.js";
 import {
   checkPropertyTests,
   propertyClaim,
@@ -6807,7 +6812,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const scratch = join(tmpdir(), "baked-mutation", runId);
     mkdirSync(scratch, { recursive: true });
     const sandbox = runSandbox(policy, root);
-    const absolute = (path: string) => (isAbsolute(path) ? path : workspacePath(root, path));
+    const absolute = (path: string) => (isAbsolute(path) ? path : toolPath(root, path));
     return {
       root,
       scratch: scratch.replaceAll("\\", "/"),
