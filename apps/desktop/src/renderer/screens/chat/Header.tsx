@@ -606,12 +606,15 @@ export function ChatHeader({
   watch,
   manage,
   coordinator = false,
+  thread = false,
 }: {
   project: DesktopProject;
   title: string;
   sessionId: string | null;
   /** The project coordinator: one conversation, so no chat switcher and no New chat. */
   coordinator?: boolean;
+  /** A session the coordinator launched: the breadcrumb leads back to the coordinator. */
+  thread?: boolean;
   context?: ContextFill | null;
   usage?: Usage;
   model?: string | null;
@@ -635,6 +638,20 @@ export function ChatHeader({
       <span className="text-[var(--line-strong)]" aria-hidden="true">
         /
       </span>
+      {thread && (
+        <>
+          <a
+            className="flex items-center gap-1.5 text-[13px] text-dim-foreground no-underline hover:text-soft-foreground"
+            href={projectHref(project.key, "coordinator")}
+          >
+            <Icon name="coordinator" size={13} />
+            Coordinator
+          </a>
+          <span className="text-[var(--line-strong)]" aria-hidden="true">
+            /
+          </span>
+        </>
+      )}
       {coordinator ? (
         <h1 className="m-0 px-2 text-[15px] font-bold truncate">{title}</h1>
       ) : (

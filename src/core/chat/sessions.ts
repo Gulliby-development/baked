@@ -170,6 +170,8 @@ export interface SessionSummary {
   compacting: boolean;
   /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
   kind?: "coordinator";
+  /** The session that launched this one: the coordinator for the sessions it starts. */
+  parentId?: string;
 }
 
 /** Watch mode of the project as one session sees it (`/v1/sessions/:id/watch`). */
@@ -576,6 +578,7 @@ export class ChatSession {
       effort: this.effort,
       compacting: this.compaction !== null,
       ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
+      ...(this.meta.parentId ? { parentId: this.meta.parentId } : {}),
     };
   }
 
@@ -613,7 +616,17 @@ export class ChatSession {
     return () => this.listeners.delete(listener);
   }
 
+  /** The tool the running turn is in, for a coordinator's view of what this session does. */
+  private currentTool: string | null = null;
+
+  /** What the running turn does now: its current tool, or null between tools and turns. */
+  get activity(): string | null {
+    return this.turn ? this.currentTool : null;
+  }
+
   private emit(body: ChatEventBody): void {
+    if (body.type === "tool-call") this.currentTool = body.tool;
+    else if (body.type === "tool-result" || body.type === "turn-done") this.currentTool = null;
     const event = { ...body, seq: ++this.seq, at: Date.now() } as ChatEvent;
     this.events.push(event);
     if (this.events.length > this.owner.bufferSize)
@@ -1635,6 +1648,7 @@ export class ChatService {
         startedAt: entry.startedAt,
         updatedAt: entry.updatedAt,
         ...(entry.projectId ? { projectId: entry.projectId } : {}),
+        ...(entry.parentId ? { parentId: entry.parentId } : {}),
         state: "idle",
         model: null,
         mode: "default",
@@ -1675,6 +1689,7 @@ export class ChatService {
     messages?: ChatMessage[];
     core?: ModelMessage[];
     kind?: "coordinator";
+    parentId?: string;
   }): Promise<ChatSession> {
     if (this.closed) throw new ChatError("SESSION_BUSY", "The server is shutting down");
     const id = crypto.randomUUID();
@@ -1685,6 +1700,7 @@ export class ChatService {
       title: messages.length > 0 ? SessionManager.deriveTitle(messages) : "New session",
       ...(input.title ? { customTitle: input.title } : {}),
       ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.parentId ? { parentId: input.parentId } : {}),
       cwd: this.options.workspace,
       startedAt: now,
       updatedAt: now,
