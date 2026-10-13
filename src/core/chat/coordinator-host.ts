@@ -13,6 +13,7 @@ import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
 import { InitiativeService, type InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction } from "../workflows/initiatives/view-model.js";
 import { NativeWorkflowService } from "../workflows/service.js";
+import { usageSummary } from "../workflows/usage.js";
 import { githubTasks, type ProjectLauncher } from "./coordinator-launch.js";
 import { BakeChatHost } from "./host.js";
 import { type ProjectStateSource, serviceStateSource } from "./project-state.js";
@@ -23,6 +24,8 @@ export interface CoordinatorWorkflowClient {
   command(argv: string[], signal: AbortSignal, onDrive?: (runId: string) => void): Promise<unknown>;
   startInitiative(input: InitiativeStartInput): Promise<InitiativeView>;
   initiativeAction(initiativeId: string, action: InitiativeAction): Promise<InitiativeView>;
+  /** Cancels a run at its current revision; without it the coordinator cannot cancel runs. */
+  action?(runId: string, action: "cancel"): Promise<unknown>;
 }
 
 /**
@@ -77,6 +80,9 @@ export class ReadonlyProjectState implements ProjectStateSource {
   attention() {
     return this.open()?.attention() ?? [];
   }
+  usage(days: number) {
+    return this.open()?.usage?.(days) ?? usageSummary(null, { days, groupBy: ["model", "stage"] });
+  }
 
   close(): void {
     this.service?.close();
@@ -97,8 +103,11 @@ export function clientLauncher(
     /** The model a run starts with when the coordinator names none. */
     model: () => string;
     featureTaken: (id: string) => boolean;
+    /** The current revision of an initiative, for pausing it. */
+    initiativeRevision?: (id: string) => number;
   },
 ): ProjectLauncher {
+  const revision = options.initiativeRevision;
   return {
     startRun: ({ prompt, workflow, feature, worktree, issue }) =>
       new Promise((resolve, reject) => {
@@ -167,6 +176,23 @@ export function clientLauncher(
           .then(() => resolve(), reject);
       }),
     tasks: githubTasks(options.workspace, options.config),
+    ...(client.action
+      ? {
+          cancelRun: async (runId: string) => {
+            await client.action?.(runId, "cancel");
+          },
+        }
+      : {}),
+    ...(revision
+      ? {
+          pauseInitiative: async (initiativeId: string) => {
+            await client.initiativeAction(initiativeId, {
+              kind: "pause",
+              expectedRevision: revision(initiativeId),
+            });
+          },
+        }
+      : {}),
   };
 }
 
@@ -204,6 +230,7 @@ export class LocalCoordinator {
           config,
           model: options.model,
           featureTaken: (id) => state.featureTaken(id),
+          initiativeRevision: (id) => state.initiative(id).revision,
         })
       : null;
     chat.setProjectState(state, launcher, options.watchMs ?? 2000);

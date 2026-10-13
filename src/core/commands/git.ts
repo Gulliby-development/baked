@@ -1,4 +1,5 @@
 import type { InfoPopupLine } from "../../components/modals/InfoPopup.js";
+import { type BranchKind, graphText, readGitGraph } from "../git/graph.js";
 import { type GitMenuAction, runGitMenuAction } from "../git/menu.js";
 import { getGitDiff, getGitLog, getGitStatus, gitInit } from "../git/status.js";
 import { icon } from "../icons.js";
@@ -222,6 +223,55 @@ function handleLog(_input: string, ctx: CommandContext): void {
   });
 }
 
+const GRAPH_COMMITS = 60;
+
+function kindColor(kind: BranchKind): string {
+  const t = getThemeTokens();
+  const colors: Record<BranchKind, string> = {
+    main: t.brand,
+    feature: t.success,
+    bugfix: t.error,
+    run: t.brandSecondary,
+    other: t.warning,
+  };
+  return colors[kind];
+}
+
+/** The commit graph: lanes, branch and tag names and subjects, coloured by branch kind. */
+export async function handleGraph(_input: string, ctx: CommandContext): Promise<void> {
+  const graph = await readGitGraph(ctx.cwd, GRAPH_COMMITS);
+  if (!graph.isRepo) {
+    sysMsg(ctx, "Not a git repository. Use /git init to initialize.");
+    return;
+  }
+  if (graph.commits.length === 0) {
+    sysMsg(ctx, "No commits found.");
+    return;
+  }
+  const lanes = Math.min(graph.lanes, 12);
+  const lines: InfoPopupLine[] = graph.commits.map((commit) => {
+    const refs = commit.refs
+      .filter((ref) => ref.kind !== "head")
+      .map((ref) => (ref.kind === "tag" ? `<${ref.name}>` : `[${ref.name}]`));
+    return {
+      type: "entry" as const,
+      label: `${graphText(commit, graph.lanes).slice(0, lanes * 2)} ${commit.short}`,
+      color: kindColor(commit.kind),
+      desc: [...refs, commit.subject].join(" "),
+      descColor: commit.refs.length > 0 ? kindColor(commit.kind) : getThemeTokens().textPrimary,
+    };
+  });
+  if (graph.truncated)
+    lines.push({ type: "spacer" }, { type: "text", label: `Latest ${GRAPH_COMMITS} commits.` });
+  ctx.openInfoPopup({
+    title: "Git Graph",
+    icon: icon("git"),
+    lines,
+    width: 110,
+    labelWidth: lanes * 2 + 9,
+  });
+}
+
 export function register(map: Map<string, CommandHandler>): void {
   map.set("/git", handleGitMenu);
   map.set("/git init", handleGitInit);
@@ -234,6 +284,7 @@ export function register(map: Map<string, CommandHandler>): void {
   map.set("/git stash", handleStash);
   map.set("/git stash pop", handleStashPop);
   map.set("/git log", handleLog);
+  map.set("/git graph", handleGraph);
 }
 
 export function matchGitPrefix(cmd: string): CommandHandler | null {

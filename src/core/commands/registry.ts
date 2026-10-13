@@ -1,5 +1,6 @@
 import { getCwd } from "../cwd.js";
 import { hasProjectAgents } from "../workflows/agent-import.js";
+import { register as registerAgentContext } from "./agent-context.js";
 import { register as registerAgents } from "./agents.js";
 import { register as registerArtifacts } from "./artifacts.js";
 import { matchCheckpointPrefix, register as registerCheckpoint } from "./checkpoint.js";
@@ -43,6 +44,7 @@ registerProjects(commandMap);
 registerWatch(commandMap);
 registerArtifacts(commandMap);
 registerPackages(commandMap);
+registerAgentContext(commandMap);
 registerAgents(commandMap);
 commandMap.set("/commands", handleListCustomCommands);
 
@@ -176,6 +178,37 @@ export const CATEGORIES = [
 
 const COMMAND_DEFS: CommandDef[] = [
   {
+    cmd: "/coordinator",
+    ic: "dispatch",
+    desc: "The project coordinator: reads the whole project, splits work into runs, keeps the brief",
+    category: "Session",
+    tags: [
+      "project",
+      "brief",
+      "split",
+      "launch",
+      "runs",
+      "orchestrate",
+      "usage",
+      "git",
+      "artifacts",
+    ],
+  },
+  {
+    cmd: "/coordinator summary",
+    ic: "dispatch",
+    desc: "Ask the coordinator what is running, what waits for you, what finished and what is open",
+    category: "Session",
+    tags: ["project", "status", "digest", "overview", "happening", "runs"],
+  },
+  {
+    cmd: "/coordinator rules",
+    ic: "dispatch",
+    desc: "Rules the coordinator answers routine approvals by: on, off, add, remove",
+    category: "Session",
+    tags: ["approvals", "auto", "rules", "allow", "coordinator"],
+  },
+  {
     cmd: "/project",
     ic: "folder",
     desc: "This project: sessions, workflow runs, what waits for you",
@@ -195,27 +228,6 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Rename this project in every app; no name restores the default",
     category: "Session",
     tags: ["folder", "workspace", "name", "title"],
-  },
-  {
-    cmd: "/coordinator",
-    ic: "dispatch",
-    desc: "The project coordinator: one chat that splits work into runs and keeps the brief",
-    category: "Session",
-    tags: ["project", "brief", "split", "launch", "runs", "orchestrate"],
-  },
-  {
-    cmd: "/coordinator rules",
-    ic: "dispatch",
-    desc: "Rules the coordinator answers routine approvals by: on, off, add, remove",
-    category: "Session",
-    tags: ["approvals", "auto", "rules", "allow", "coordinator"],
-  },
-  {
-    cmd: "/coordinator summary",
-    ic: "dispatch",
-    desc: "Ask the coordinator what is running, what waits for you, what finished and what is open",
-    category: "Session",
-    tags: ["project", "status", "digest", "overview", "happening", "runs"],
   },
   {
     cmd: "/projects",
@@ -394,6 +406,13 @@ const COMMAND_DEFS: CommandDef[] = [
     tags: ["create"],
   },
   { cmd: "/git log", ic: "git", desc: "Show recent commits", category: "Git", tags: ["history"] },
+  {
+    cmd: "/git graph",
+    ic: "git",
+    desc: "Show the commit graph of all branches",
+    category: "Git",
+    tags: ["history", "branches", "tree"],
+  },
   {
     cmd: "/git pull",
     ic: "git",
@@ -763,6 +782,34 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Change diff display style",
     category: "Settings",
     tags: ["sidebyside", "compact"],
+  },
+  {
+    cmd: "/agent-context",
+    ic: "context",
+    desc: "Agent context: rules (instruction files) and files (working set) every agent gets",
+    category: "Settings",
+    tags: ["instructions", "working set", "prompt", "budget"],
+  },
+  {
+    cmd: "/agent-context preview",
+    ic: "context",
+    desc: "Preview the rules and files an agent's prompt carries",
+    category: "Settings",
+    tags: ["prompt", "view"],
+  },
+  {
+    cmd: "/agent-context add",
+    ic: "context",
+    desc: "Add a path or glob to the working set",
+    category: "Settings",
+    tags: ["working set"],
+  },
+  {
+    cmd: "/agent-context remove",
+    ic: "context",
+    desc: "Remove an entry from the working set",
+    category: "Settings",
+    tags: ["working set"],
   },
   {
     cmd: "/instructions",

@@ -57,6 +57,10 @@ export interface SessionMeta {
   projectId?: string;
   /** `coordinator` for the project's coordinator chat; absent for an ordinary session. */
   kind?: "coordinator";
+  /** The session's own Git worktree (absolute path), branch and base commit (#897). */
+  worktree?: { path: string; branch: string; baseHead: string };
+  /** Set when the coordinator's launch of this session is closed; ordinary lists leave it out. */
+  archived?: true;
   /** The session that launched this one, such as the project coordinator. */
   parentId?: string;
 }

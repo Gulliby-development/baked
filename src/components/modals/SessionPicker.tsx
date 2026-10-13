@@ -55,6 +55,9 @@ function formatSize(bytes: number): string {
   return `${(mb / 1024).toFixed(1)}G`;
 }
 
+/** Sessions the picker offers: not the coordinator and not an archived launch. */
+const listed = (s: SessionListEntry): boolean => s.kind !== "coordinator" && !s.archived;
+
 function toRow(e: SessionListEntry): SessionRow {
   return {
     id: e.id,
@@ -102,8 +105,9 @@ export function SessionPicker({ visible, cwd, onClose, onRestore, onSystemMessag
     mgr
       .listSessionsAsync()
       // The project coordinator is a desktop/API session; resuming it here would drop its kind.
-      .then((all) => setSessions(all.filter((s) => s.kind !== "coordinator")))
-      .catch(() => setSessions(mgr.listSessions().filter((s) => s.kind !== "coordinator")))
+      // Sessions whose launch the coordinator closed are archived and open from the coordinator.
+      .then((all) => setSessions(all.filter(listed)))
+      .catch(() => setSessions(mgr.listSessions().filter(listed)))
       .finally(() => setLoading(false));
   }, [cwd]);
 

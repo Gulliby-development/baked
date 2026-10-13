@@ -361,6 +361,19 @@ describe("local API setup and workflow additions", () => {
     expect(unknown.status).toBe(404);
   });
 
+  test("the agent context preview renders the instructions agents read", async () => {
+    const { get, send, fixture } = await setup();
+    writeFileSync(join(fixture.root, "baked.md"), "# Rules\nUse Bun.\n");
+    type Preview = { instructions: { text: string; bytes: number }; workingSet: { text: string; bytes: number } | null; bytes: number };
+    const preview = await get<Preview>("/v1/projects/current/context");
+    expect(preview.instructions.text).toContain("Use Bun.");
+    expect(preview.instructions.bytes).toBe(Buffer.byteLength(preview.instructions.text));
+    expect(preview.bytes).toBe(preview.instructions.bytes + (preview.workingSet?.bytes ?? 0));
+    const list = await get<{ promptBytes: number }>("/v1/projects/current/instructions");
+    expect(preview.instructions.bytes).toBe(list.promptBytes);
+    expect((await send("PUT", "/v1/projects/current/context", {})).status).toBe(405);
+  });
+
   test("config changes are written to the chosen file and reach the running server", async () => {
     const { get, send, configDir, fixture } = await setup();
     type Config = { global: Record<string, unknown>; project: Record<string, unknown>; effective: Record<string, unknown>; paths: { global: string; project: string } };

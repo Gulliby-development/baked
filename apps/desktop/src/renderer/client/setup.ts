@@ -187,6 +187,20 @@ export interface InstructionList {
   sourcesScope?: "project" | "global";
 }
 
+/** One part of the project context an agent's prompt carries, rendered as the prompt has it. */
+export interface AgentContextPart {
+  text: string;
+  bytes: number;
+}
+
+/** `GET /v1/projects/current/context`: the rules and files every agent of the project gets. */
+export interface AgentContextPreview {
+  instructions: AgentContextPart;
+  /** Null without a project or with an empty working set. */
+  workingSet: AgentContextPart | null;
+  bytes: number;
+}
+
 /** `PUT /v1/projects/current/instructions`: the saved file. */
 export interface SavedInstruction extends InstructionFile {
   /** Runs that have not ended and froze this file; absent on older backends. */
@@ -716,6 +730,9 @@ export const setup = {
 
   instructions: (key: string) =>
     call<InstructionList>(key, "GET", "/v1/projects/current/instructions"),
+  /** What every agent's prompt gets from the project now; 404 on older backends. */
+  agentContext: (key: string) =>
+    call<AgentContextPreview>(key, "GET", "/v1/projects/current/context"),
   /** `expectedHash: null` creates a project file at a path a source reads, such as `AGENTS.md`. */
   saveInstruction: (key: string, path: string, content: string, expectedHash: string | null) =>
     call<SavedInstruction>(key, "PUT", "/v1/projects/current/instructions", {

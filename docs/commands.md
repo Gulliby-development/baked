@@ -76,6 +76,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | `/git co-author` | Toggle co-author trailer |
 | `/git commit` | Git commit with message |
 | `/git diff` | View changes |
+| `/git graph` | Show the commit graph of all branches |
 | `/git init` | Initialize git repo |
 | `/git log` | Show recent commits |
 | `/git pull` | Pull from remote |
@@ -133,6 +134,10 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 
 | Command | Does |
 | --- | --- |
+| `/agent-context` | Agent context: the rules (instruction files, Enter edits one) and files (working set) every agent gets, with their size and a preview |
+| `/agent-context add` | Add a path or glob to the working set |
+| `/agent-context preview` | Preview the rules and files an agent's prompt carries |
+| `/agent-context remove` | Remove an entry from the working set |
 | `/agent-features` | Toggle agent features (de-sloppify, tier routing) |
 | `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, property-based tests, mutation gate) and the library docs source of implementers |
 | `/chat-style` | Toggle chat layout style |

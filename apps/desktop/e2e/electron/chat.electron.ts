@@ -31,6 +31,9 @@ test("a chat turn against a real baked serve streams, calls tools and waits for 
   workspace.project("gamma");
   const { page } = await launch({ script });
   await page.getByRole("article", { name: "gamma" }).getByRole("button", { name: "Open" }).click();
+  // A project opens on its coordinator; Overview is the next item.
+  await expect(page.getByRole("heading", { name: "Coordinator", level: 1 })).toBeVisible();
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Overview" }).click();
   await expect(page.getByRole("heading", { name: "gamma", level: 1 })).toBeVisible();
 
   await page

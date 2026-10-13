@@ -610,7 +610,7 @@ function WorkingSetChip({ project }: { project: DesktopProject }) {
   }, [project.key]);
   if (count === null) return null;
   return (
-    <a className={CHIP} href={projectHref(project.key, "working-set")}>
+    <a className={CHIP} href={projectHref(project.key, "context", "files")}>
       working set · {count}
     </a>
   );

@@ -115,11 +115,17 @@ describe("coordinator project state", () => {
     expect(missing).toMatchObject({ success: false, error: "Give the id of the run to show" });
     const unknown = await tool.execute({ view: "initiative", id: "nope" });
     expect(unknown.success).toBe(false);
+
+    const usage = await tool.execute({ view: "usage", days: 30 });
+    expect(usage.success).toBe(true);
+    expect(usage.output).toContain("last 30 days");
+    expect(usage.output).toContain("## Totals");
   }, 60000);
 
   test("without a workflow service the views say so", () => {
     const sessions: SessionSource = { list: () => [], messages: () => ({ title: "", messages: [] }) };
     expect(renderState("runs", undefined, null, sessions)).toContain("not available");
     expect(renderState("overview", undefined, null, sessions)).toContain("Nothing.");
+    expect(renderState("usage", undefined, null, sessions)).toContain("not available");
   });
 });

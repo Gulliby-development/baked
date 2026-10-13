@@ -1,6 +1,6 @@
 /**
- * The coordinator's read-only view of the project: workflow runs, initiatives, chat sessions and
- * what waits for a person, as compact text so a status question costs few tokens. The data comes
+ * The coordinator's read-only view of the project: workflow runs, initiatives, chat sessions,
+ * token usage and what waits for a person, as compact text so a status question costs few tokens. The data comes
  * from the same services `baked serve` answers from; the coordinator reads it with the
  * `project_state` tool.
  */
@@ -11,6 +11,8 @@ import type { AttentionItem } from "../workflows/attention.js";
 import type { InitiativeView } from "../workflows/initiatives/service.js";
 import type { NativeWorkflowService } from "../workflows/service.js";
 import { terminalStates } from "../workflows/state-machine.js";
+import { type UsageSummary, usageSummary } from "../workflows/usage.js";
+import { usageMarkdown } from "../workflows/usage-markdown.js";
 import {
   type RunSummary,
   readWorkflowSummaries,
@@ -28,6 +30,8 @@ export interface ProjectStateSource {
   initiatives(): InitiativeView[];
   initiative(id: string): InitiativeView;
   attention(): AttentionItem[];
+  /** Token usage and cost of workflow runs over the last `days` days, by model and stage. */
+  usage?(days: number): UsageSummary;
 }
 
 /** What the coordinator reads about one run. */
@@ -50,6 +54,7 @@ const RUN_LIMIT = 15;
 const SESSION_LIMIT = 15;
 const LAST_MESSAGES = 6;
 const MESSAGE_CHARS = 400;
+const USAGE_DAYS = 7;
 
 const isActive = (summary: RunSummary): boolean =>
   !terminalStates.includes(summary.snapshot.status);
@@ -103,7 +108,8 @@ export type StateView =
   | "initiative"
   | "sessions"
   | "session"
-  | "attention";
+  | "attention"
+  | "usage";
 
 /** Renders one view of the project state; throws for an unknown id. */
 export function renderState(
@@ -112,6 +118,7 @@ export function renderState(
   state: ProjectStateSource | null,
   sessions: SessionSource,
   now = Date.now(),
+  days = USAGE_DAYS,
 ): string {
   const need = (): string => {
     if (!id) throw new Error(`Give the id of the ${view} to show`);
@@ -213,6 +220,9 @@ export function renderState(
         (state?.attention() ?? []).map(attentionLine),
         "Nothing.",
       );
+    case "usage":
+      if (!state?.usage) return noWorkflows;
+      return usageMarkdown(state.usage(Math.min(Math.max(Math.round(days), 1), 366)), now);
   }
 }
 
@@ -220,7 +230,7 @@ export function renderState(
 export function stateTool(state: ProjectStateSource | null, sessions: SessionSource) {
   return tool({
     description:
-      "Read the project's state: overview (what runs and what waits for a person), runs, run (id), initiatives, initiative (id), sessions, session (id: its last messages) or attention. Read-only; answers are compact summaries.",
+      "Read the project's state: overview (what runs and what waits for a person), runs, run (id), initiatives, initiative (id), sessions, session (id: its last messages), attention or usage (tokens and estimated cost of workflow runs by model and stage over the last `days` days, default 7). Read-only; answers are compact summaries.",
     inputSchema: z.strictObject({
       view: z.enum([
         "overview",
@@ -231,12 +241,17 @@ export function stateTool(state: ProjectStateSource | null, sessions: SessionSou
         "sessions",
         "session",
         "attention",
+        "usage",
       ]),
       id: z.string().optional().describe("Run, initiative or session id for the single views"),
+      days: z.number().int().min(1).max(366).optional().describe("For usage: the window in days"),
     }),
-    execute: async ({ view, id }) => {
+    execute: async ({ view, id, days }) => {
       try {
-        return { success: true, output: renderState(view, id, state, sessions) };
+        return {
+          success: true,
+          output: renderState(view, id, state, sessions, Date.now(), days),
+        };
       } catch (err) {
         return {
           success: false,
@@ -274,6 +289,7 @@ export function serviceStateSource(
     initiatives: () => initiatives.list(),
     initiative: (id) => initiatives.view(id),
     attention,
+    usage: (days) => usageSummary(service.store, { days, groupBy: ["model", "stage"] }),
   };
 }
 

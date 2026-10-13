@@ -23,6 +23,8 @@ export const CHAT_UNDO_CAPABILITY = "chat-undo";
 export const CHECKPOINTS_CAPABILITY = "checkpoints";
 /** `/v1/coordinator*` (the Coordinator section). */
 export const COORDINATOR_CAPABILITY = "coordinator";
+/** `/v1/coordinator/schedules*` (Schedules in the Coordinator section). */
+export const COORDINATOR_SCHEDULES_CAPABILITY = "coordinator-schedules";
 /** `POST /v1/coordinator/summary` (What's happening in the coordinator header). */
 export const COORDINATOR_SUMMARY_CAPABILITY = "coordinator-summary";
 /** `GET|POST /v1/workflow/memory` (the Runs part of the Memory section). */
@@ -60,6 +62,9 @@ export const CODE_GRAPH_CAPABILITY = "code-graph";
 
 /** `GET /v1/git` and `POST /v1/git/actions` (the Git section). */
 export const GIT_CAPABILITY = "git";
+
+/** `GET /v1/git/graph` (the commit graph and branch distances of the Git section). */
+export const GIT_GRAPH_CAPABILITY = "git-graph";
 /** `/v1/diagnostics/*` (the Diagnostics section: storage, model events, error log). */
 export const DIAGNOSTICS_CAPABILITY = "diagnostics";
 

@@ -265,7 +265,7 @@ function WorkingSetCard({ projectKey, summary }: { projectKey: string; summary: 
       <SectionHead id="home-ws" title="Working set">
         <a
           className={cn(buttonVariants({ variant: "neutral", size: "sm" }), "no-underline")}
-          href={projectHref(projectKey, "working-set")}
+          href={projectHref(projectKey, "context", "files")}
         >
           Edit
         </a>

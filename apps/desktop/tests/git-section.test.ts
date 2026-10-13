@@ -6,7 +6,9 @@ scope.window = {};
 const { ApiError } = await import("../src/renderer/client/api.ts");
 const { git } = await import("../src/renderer/client/git.ts");
 const { parseRoute, projectHref } = await import("../src/renderer/router.ts");
-const { CONFIRMS, changeGroups, isBranchChange } = await import("../src/renderer/screens/git/logic.ts");
+const { CONFIRMS, changeGroups, isBranchChange, visibleBranches, branchParts, ago, BRANCH_PAGE } = await import(
+  "../src/renderer/screens/git/logic.ts"
+);
 delete scope.window;
 
 describe("git client", () => {
@@ -68,5 +70,51 @@ describe("git section logic", () => {
   test("only branch actions refresh the project list", () => {
     expect(isBranchChange({ action: "switch-branch", name: "x" })).toBe(true);
     expect(isBranchChange({ action: "pull" })).toBe(false);
+  });
+});
+
+describe("git graph", () => {
+  test("the preview graph keeps main in lane 0 and colours branches by kind", async () => {
+    const graph = await git.graph("baked", 150);
+    expect(graph.base).toBe("main");
+    const head = graph.commits.find((c) => c.refs.some((r) => r.kind === "head"));
+    expect(head).toMatchObject({ lane: 0, kind: "main", branch: "main" });
+    const kinds = new Set(graph.branches.map((b) => b.kind));
+    expect([...kinds].sort()).toEqual(["bugfix", "feature", "main", "other", "run"]);
+    expect(graph.branches.length).toBeGreaterThan(BRANCH_PAGE);
+  });
+
+  test("the list shows ten branches, the current first, and filters the rest", () => {
+    const branches = Array.from({ length: 14 }, (_, i) => ({
+      name: i === 5 ? "main" : `feature/b${i}`,
+      kind: "feature" as const,
+      current: i === 5,
+      head: "",
+      time: 0,
+      subject: "",
+      upstream: null,
+      ahead: null,
+      behind: null,
+    }));
+    const first = visibleBranches(branches, "", BRANCH_PAGE);
+    expect(first.items).toHaveLength(10);
+    expect(first.items[0]?.name).toBe("main");
+    expect(first.matching).toBe(14);
+    expect(visibleBranches(branches, "B1", BRANCH_PAGE).items.map((b) => b.name)).toEqual([
+      "feature/b1",
+      "feature/b10",
+      "feature/b11",
+      "feature/b12",
+      "feature/b13",
+    ]);
+    expect(branchParts("baked/wf/123")).toEqual({ prefix: "baked/wf/", rest: "123" });
+  });
+
+  test("ages read short", () => {
+    const now = 1_000_000_000_000;
+    expect(ago(now / 1000 - 30, now)).toBe("now");
+    expect(ago(now / 1000 - 300, now)).toBe("5 min");
+    expect(ago(now / 1000 - 3 * 3600, now)).toBe("3 h");
+    expect(ago(now / 1000 - 2 * 86_400, now)).toBe("2 d");
   });
 });

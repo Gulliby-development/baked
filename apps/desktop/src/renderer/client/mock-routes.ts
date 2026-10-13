@@ -7,12 +7,14 @@ import { MOCK_CHAT_ROUTES, MOCK_CHAT_STREAMS } from "./mock-chat.js";
 import { diagnosticsRoutes } from "./mock-diagnostics.js";
 import { editorRoutes } from "./mock-editor.js";
 import { gitRoutes } from "./mock-git.js";
+import { gitGraphRoutes } from "./mock-git-graph.js";
 import { graphRoutes, progressRoutes } from "./mock-graph.js";
 import { INSIGHTS_ROUTES } from "./mock-insights.js";
 import { lspRoutes } from "./mock-lsp.js";
 import { mcpRoutes } from "./mock-mcp.js";
 import { packageRoutes } from "./mock-packages.js";
 import { activeRunIds, freezeInputChanged, RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
+import { scheduleRoutes } from "./mock-schedules.js";
 import { settingsRoutes } from "./mock-settings.js";
 import { setupRoutes } from "./mock-setup.js";
 import { startRoutes } from "./mock-start.js";
@@ -112,6 +114,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   startRoutes,
   setupRoutes,
   settingsRoutes,
+  scheduleRoutes,
   ...MOCK_CHAT_ROUTES,
   ...INSIGHTS_ROUTES,
   graphRoutes,
@@ -120,6 +123,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   lspRoutes,
   editorRoutes,
   gitRoutes,
+  gitGraphRoutes,
   diagnosticsRoutes,
   artifactRoutes,
   packageRoutes,

@@ -9,6 +9,12 @@ test("the sidebar moves between All projects, a project, Needs you and Settings"
   await expect(page.getByRole("article")).toHaveCount(4);
 
   await nav.getByRole("link", { name: /^B BAKED/ }).click();
+  await expect(page).toHaveURL(/#\/p\/baked\/coordinator$/);
+  await expect(page.getByRole("complementary", { name: "Coordinator brief" })).toBeVisible();
+  const items = nav.getByRole("link", { name: /^(Coordinator|Overview|Initiatives)$/ });
+  await expect(items).toHaveText(["Coordinator", "Overview", "Initiatives"]);
+
+  await nav.getByRole("link", { name: "Overview" }).click();
   await expect(page).toHaveURL(/#\/p\/baked\/overview$/);
   await expect(page.getByRole("heading", { name: "BAKED", level: 1 })).toBeVisible();
   await expect(page.getByRole("region", { name: "Runs in this project" })).toBeVisible();
@@ -30,14 +36,14 @@ test("the sidebar moves between All projects, a project, Needs you and Settings"
   await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
 });
 
-test("opening a closed project from its card starts it and shows its home", async ({ app }) => {
+test("opening a closed project from its card starts it and shows its coordinator", async ({ app }) => {
   const page = await app("#/projects");
   const card = page.getByRole("article", { name: "client-api" });
   await expect(card).toContainText("closed");
   await card.getByRole("button", { name: "Open" }).click();
-  await expect(page).toHaveURL(/#\/p\/client\/overview$/);
-  await expect(page.getByRole("heading", { name: "client-api", level: 1 })).toBeVisible();
-  await expect(page.getByText("running · 0.1.1")).toBeVisible();
+  await expect(page).toHaveURL(/#\/p\/client\/coordinator$/);
+  // The coordinator only draws its conversation and brief once the backend runs.
+  await expect(page.getByRole("complementary", { name: "Coordinator brief" })).toBeVisible();
 });
 
 test("the first start shows an empty project list", async ({ app }) => {

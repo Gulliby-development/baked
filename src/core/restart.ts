@@ -19,7 +19,8 @@ const SESSION_FLAGS = new Set(["--session", "--resume", "-s"]);
 /**
  * The arguments for running BAKED again in another folder: `--cwd` points at `folder`, any
  * session to resume is dropped (sessions belong to a folder) and `--wizard` is not repeated.
- * `sessionId`, when given, resumes that session of the new folder.
+ * `sessionId`, when given, resumes that session of the new folder; without one the new folder
+ * opens on its coordinator (`--coordinator`), as a project does in the desktop app.
  */
 export function projectSwitchArgs(
   userArgs: readonly string[],
@@ -35,11 +36,11 @@ export function projectSwitchArgs(
     }
     if (arg.startsWith("--cwd=") || arg.startsWith("--session=") || arg.startsWith("--resume="))
       continue;
-    if (arg === "--wizard") continue;
+    if (arg === "--wizard" || arg === "--coordinator") continue;
     args.push(arg);
   }
   args.push("--cwd", folder);
-  if (sessionId) args.push("--resume", sessionId);
+  args.push(...(sessionId ? ["--resume", sessionId] : ["--coordinator"]));
   return args;
 }
 

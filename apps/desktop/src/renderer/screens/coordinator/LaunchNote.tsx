@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { LaunchNote } from "../../client/chat.js";
+import { type ReactNode, useState } from "react";
+import type { LaunchNote, SessionWorktree } from "../../client/chat.js";
 import { Icon, type IconName } from "../../components/Icon.js";
 import { Badge } from "../../components/ui/badge.js";
 import { buttonVariants } from "../../components/ui/button.js";
@@ -35,6 +35,19 @@ const FILL: Record<LaunchTone, string> = {
   "": "bg-background",
 };
 
+/** A session's own branch, with its worktree path on hover. */
+export function WorktreeLabel({ worktree }: { worktree: SessionWorktree }) {
+  return (
+    <span
+      className="inline-flex min-w-0 items-center gap-1"
+      title={`Own worktree: ${worktree.path}`}
+    >
+      <Icon name="git" size={12} />
+      <span className="truncate">{worktree.branch}</span>
+    </span>
+  );
+}
+
 /** What a launched session answered last: a few lines, expandable to the whole text. */
 function LaunchResult({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
@@ -67,7 +80,16 @@ function LaunchResult({ text }: { text: string }) {
  * A coordinator's news about work it launched, as a card in its conversation: what the item is,
  * its new status, why it was started, and a way to open it. Replaces the plain notice line.
  */
-export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string }) {
+export function LaunchNoteCard({
+  note,
+  href,
+  actions,
+}: {
+  note: LaunchNote;
+  href?: string;
+  /** Stop or Close for the item, on the newest card about it. */
+  actions?: ReactNode;
+}) {
   const tone = noteTone(note);
   const closed = note.event === "task-closed";
   const ruled = note.event === "auto-answered";
@@ -99,6 +121,11 @@ export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string
         <p className="m-0 truncate text-[14px] font-semibold text-foreground" title={note.id}>
           {name}
         </p>
+        {note.worktree && !closed && (
+          <p className="m-0 font-mono text-[12px] text-dim-foreground">
+            <WorktreeLabel worktree={note.worktree} />
+          </p>
+        )}
         {ruled ? (
           <>
             <p className="m-0 text-[13px] text-foreground">
@@ -141,6 +168,7 @@ export function LaunchNoteCard({ note, href }: { note: LaunchNote; href?: string
         )}
         {note.result && <LaunchResult text={note.result} />}
       </div>
+      {actions}
       {href && (
         <a
           href={href}

@@ -333,6 +333,8 @@ interface StartOptions {
   projectConfig: Partial<AppConfig> | null;
   resumeSessionId?: string;
   forceWizard?: boolean;
+  /** Opens the project's coordinator once the app is up, as a project switch does. */
+  startOnCoordinator?: boolean;
   bootProviders: ProviderStatus[];
   bootPrereqs: PrerequisiteStatus[];
   contextManager?: ContextManager;
@@ -404,6 +406,7 @@ function AppRoot({ opts }: { opts: StartOptions }) {
       projectConfig={freshProjectConfig}
       resumeSessionId={appKey === 0 ? opts.resumeSessionId : undefined}
       forceWizard={appKey === 0 && opts.forceWizard}
+      startOnCoordinator={appKey === 0 && opts.startOnCoordinator}
       bootProviders={freshProviders}
       bootPrereqs={freshPrereqs}
       preloadedContextManager={contextManager}

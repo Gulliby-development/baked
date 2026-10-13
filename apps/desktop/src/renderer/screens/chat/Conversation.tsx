@@ -13,7 +13,7 @@ import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { LaunchNoteCard } from "../coordinator/LaunchNote.js";
-import { messageSender } from "../coordinator/model.js";
+import { messageSender, newestLaunchNotes } from "../coordinator/model.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
@@ -793,6 +793,7 @@ export function Conversation({
   onFork,
   onRewind,
   launchHref,
+  launchActions,
 }: {
   transcript: Transcript;
   deciding: ReadonlySet<string>;
@@ -809,6 +810,8 @@ export function Conversation({
   onRewind?: (checkpoint: number) => void;
   /** Where a coordinator's launch notice opens the item; without it the card has no Open. */
   launchHref?: (note: LaunchNote) => string;
+  /** Stop or Close for a launched item, shown on the newest notice about it. */
+  launchActions?: (note: LaunchNote) => ReactNode;
 }) {
   const { messages, live, prompts, pending, notice, thoughtMs } = transcript;
   const running = transcript.turnId !== null;
@@ -818,6 +821,7 @@ export function Conversation({
   const reviewing = prompts.some((p) => p.prompt.kind === "plan-review");
   const plan = transcript.plan && !reviewing ? transcript.plan : null;
   const ends = onRewind ? turnEnds(messages) : null;
+  const newestNotes = launchActions ? newestLaunchNotes(messages) : null;
   return (
     <>
       {messages.map((message) =>
@@ -853,6 +857,9 @@ export function Conversation({
             key={message.id}
             note={message.launch}
             {...(launchHref ? { href: launchHref(message.launch) } : {})}
+            {...(launchActions && newestNotes?.has(message.id)
+              ? { actions: launchActions(message.launch) }
+              : {})}
           />
         ) : (
           <p

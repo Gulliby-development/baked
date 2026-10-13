@@ -8,6 +8,7 @@ const { chat } = await import("../src/renderer/client/chat.ts");
 const { coordinator } = await import("../src/renderer/client/coordinator.ts");
 const { parseRoute, projectHref } = await import("../src/renderer/router.ts");
 const model = await import("../src/renderer/screens/coordinator/model.ts");
+const scheduleModel = await import("../src/renderer/screens/coordinator/schedules.ts");
 delete scope.window;
 
 async function until<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
@@ -169,5 +170,78 @@ describe("coordinator screen model", () => {
       ]),
     ).toBe('Take over this request from the chat "Retries":\n\nNow split the router work');
     expect(model.handOffText("Empty", [])).toBe('Take over the work of the chat "Empty".');
+  });
+
+  test("offers Stop while an item runs and Close once it is finished or paused", () => {
+    expect(model.launchControl({ status: "working", active: true })).toBe("stop");
+    expect(model.launchControl({ status: "waiting: approval", active: true })).toBe("stop");
+    expect(model.launchControl({ status: "paused: user_pause", active: true })).toBe("close");
+    expect(model.launchControl({ status: "done", active: false })).toBe("close");
+    expect(model.launchControl({ status: "done", active: false, closed: true })).toBeNull();
+    expect(model.stopEffect({ kind: "run" })).toContain("cannot be resumed");
+  });
+
+  test("puts Stop and Close only on the newest notice about each item", () => {
+    const note = (id: string, item: string, status: string) => ({
+      id,
+      role: "system" as const,
+      content: status,
+      timestamp: 0,
+      launch: { kind: "run" as const, id: item, why: "w", status, event: "status" as const },
+    });
+    const newest = model.newestLaunchNotes([
+      note("m1", "r1", "waiting: approval"),
+      note("m2", "r2", "working"),
+      note("m3", "r1", "completed"),
+    ]);
+    expect([...newest].sort()).toEqual(["m2", "m3"]);
+  });
+
+  test("stops a launched run, closes it out of the open list and reopens it", async () => {
+    await coordinator.open("site");
+    const [run] = (await coordinator.launched("site")).launched;
+    if (!run) throw new Error("no launched run");
+    await expect(coordinator.close("site", run)).rejects.toMatchObject({ status: 400 });
+    const stopped = await coordinator.stop("site", run);
+    expect(stopped.message).toBe(`Cancelled run ${run.id}`);
+    expect(stopped.launched[0]).toMatchObject({ status: "cancelled", active: false });
+    const closed = await coordinator.close("site", run);
+    expect(closed.launched[0]?.closed).toBe(true);
+    await expect(coordinator.stop("site", run)).rejects.toMatchObject({ status: 400 });
+    const reopened = await coordinator.close("site", run, true);
+    expect(reopened.launched[0]?.closed).toBeUndefined();
+  });
+});
+
+describe("coordinator schedules", () => {
+  test("adds, pauses, resumes and removes a schedule", async () => {
+    const before = (await coordinator.schedules("docs")).schedules.length;
+    const added = await coordinator.addSchedule("docs", {
+      name: "Nightly CI",
+      prompt: "Check failing CI",
+      when: "0 2 * * *",
+    });
+    expect(added).toMatchObject({ id: "nightly-ci", enabled: true });
+    expect((await coordinator.schedules("docs")).schedules).toHaveLength(before + 1);
+    expect((await coordinator.setScheduleEnabled("docs", added.id, false)).enabled).toBe(false);
+    expect((await coordinator.setScheduleEnabled("docs", added.id, true)).enabled).toBe(true);
+    const tooOften = coordinator.addSchedule("docs", { name: "x", prompt: "y", when: "every 1m" });
+    await expect(tooOften).rejects.toMatchObject({ status: 400 });
+    await coordinator.removeSchedule("docs", added.id);
+    expect((await coordinator.schedules("docs")).schedules).toHaveLength(before);
+    await expect(coordinator.removeSchedule("docs", added.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  test("describes when a schedule fires", () => {
+    expect(scheduleModel.describeWhen("every 30m")).toBe("every 30 minutes");
+    expect(scheduleModel.describeWhen("every 1d")).toBe("every day");
+    expect(scheduleModel.describeWhen("0 9 * * 1-5")).toBe("weekdays 09:00");
+    expect(scheduleModel.describeWhen("@hourly")).toBe("every hour");
+    expect(scheduleModel.describeWhen("15 3 * * 2")).toBe("15 3 * * 2");
+    const now = new Date(2026, 9, 13, 8, 0).getTime();
+    const at = (d: number, h: number) => new Date(2026, 9, d, h, 0).getTime();
+    expect(scheduleModel.nextLabel({ enabled: true, nextRunAt: at(13, 9) }, now)).toBe("today 09:00");
+    expect(scheduleModel.nextLabel({ enabled: true, nextRunAt: at(14, 2) }, now)).toBe("tomorrow 02:00");
+    expect(scheduleModel.nextLabel({ enabled: false, nextRunAt: at(14, 2) }, now)).toBe("paused");
   });
 });

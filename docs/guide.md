@@ -127,7 +127,7 @@ Tabs coordinate through file claims. The first edit of a file claims it for that
 
 ## Git
 
-`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git branch`, `/git stash`. `/git co-author` toggles the co-author trailer. The menu also offers Force push (`git push --force-with-lease`) and Reset hard, each after a confirmation. The desktop app's Git section runs the same actions through `baked serve` (see [the desktop API](desktop/api.md#git)).
+`Ctrl+G` opens the Git menu: `c` commit (with a generated message), `p` push, `u` pull, `s` stash, `o` stash pop, `l` log, `g` graph. The same actions are slash commands: `/git commit`, `/git push`, `/git pull`, `/git status`, `/git diff`, `/git log`, `/git graph`, `/git branch`, `/git stash`. `/git graph` draws the latest 60 commits of every local branch in lanes (`●` a commit, `│` a branch passing, `╮`/`╯` a merge or fork), with branch and tag names, coloured by kind: the base branch, `feature/`, `bugfix/`, BAKED run branches (`baked/`) and the rest. `/git co-author` toggles the co-author trailer. The menu also offers Force push (`git push --force-with-lease`) and Reset hard, each after a confirmation. The desktop app's Git section runs the same actions through `baked serve` (see [the desktop API](desktop/api.md#git)).
 
 ## Changed files
 
@@ -151,7 +151,7 @@ The agent stores preferences, decisions and pitfalls in SQLite: `<project>/.bake
 
 Skills are folders with a `SKILL.md`. `Ctrl+S` or `/skills` searches the [skills.sh](https://skills.sh) catalog, lists installed skills and toggles them for the session. See [extensions](extensions.md#skills).
 
-Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instructions.md`). `/instructions` can also load the files of other tools: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.clinerules`, `.windsurfrules` and others (see [configuration](configuration.md#instruction-files)).
+Project instructions come from `baked.md` (also `.baked/baked.md`, `.baked/instructions.md`). `/instructions` can also load the files of other tools: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.clinerules`, `.windsurfrules` and others (see [configuration](configuration.md#instruction-files)). `/agent-context` shows the instruction files and the working set together, with how much of every agent's prompt they take, and `/agent-context preview` shows the text itself.
 
 ## Custom commands
 

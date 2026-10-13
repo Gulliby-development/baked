@@ -12,6 +12,7 @@ import { workflow } from "../../client/workflow.js";
 import { type TestsFirstBody, TestsFirstReview } from "../../components/TestsFirst.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
+import { activeTimeText } from "../../lib/active-time.js";
 import { CHECK } from "../../lib/styles.js";
 import { href } from "../../router.js";
 import type { RunData } from "./load.js";
@@ -244,6 +245,11 @@ function Approval({
             ))}
           </ul>
         </div>
+      ) : null}
+      {body.activeTime ? (
+        <p className="m-0 text-soft-foreground" data-testid="approval-active-time">
+          {activeTimeText(body.activeTime)}.
+        </p>
       ) : null}
       {scope.length > 0 && (
         <label className={CHECK}>

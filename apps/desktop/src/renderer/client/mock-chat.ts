@@ -521,9 +521,50 @@ function mockBrief(): ProjectBrief {
 function launchedNow(brief: ProjectBrief): LaunchedView[] {
   return brief.launched.map((entry, i) => ({
     ...entry,
-    active: !/^(completed|done|failed|cancelled)/.test(entry.status),
+    active: !entry.closed && !/^(completed|done|failed|cancelled|paused)/.test(entry.status),
     tokens: 120_000 * (i + 1),
   }));
+}
+
+/** Stop and Close on a launched item, as `/v1/coordinator/launched/stop` and `/close` do. */
+function controlLaunched(
+  entry: { brief: ProjectBrief },
+  action: "stop" | "close",
+  body: { kind?: string; id?: string; feature?: string; reopen?: boolean },
+) {
+  // Closing an initiative closes its features too; anything else acts on the one entry.
+  const same = (e: ProjectBrief["launched"][number]) =>
+    e.kind === body.kind &&
+    e.id === body.id &&
+    (e.feature === body.feature || (action === "close" && body.feature === undefined));
+  const item = launchedNow(entry.brief).find((e) => same(e) && e.feature === body.feature);
+  if (!item)
+    return response(404, { error: { code: "NOT_FOUND", message: `No launched ${body.id}` } });
+  const refuse = (message: string) =>
+    response(400, { error: { code: "INVALID_REQUEST", message } });
+  let message = "";
+  if (action === "stop") {
+    if (item.closed || !item.active) return refuse(`${item.kind} ${item.id} is not running`);
+    message =
+      item.kind === "session"
+        ? `Stopped the turn of session ${item.id}`
+        : item.kind === "run"
+          ? `Cancelled run ${item.id}`
+          : `Paused initiative ${item.id}`;
+  } else if (!body.reopen && item.active)
+    return refuse(`${item.kind} ${item.id} is still ${item.status}; stop it before closing it`);
+  const status = item.kind === "session" ? "idle" : item.kind === "run" ? "cancelled" : "paused";
+  entry.brief = {
+    ...entry.brief,
+    revision: entry.brief.revision + 1,
+    launched: entry.brief.launched.map((e) => {
+      if (!same(e)) return e;
+      if (action === "stop") return { ...e, status };
+      const { closed: _, ...open } = e;
+      return body.reopen ? open : { ...open, closed: true as const };
+    }),
+  };
+  return response(200, { ...(message ? { message } : {}), launched: launchedNow(entry.brief) });
 }
 
 /** The coordinator's turn: proposes splitting the request and launches it when approved. */
@@ -1199,6 +1240,15 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
     }
     if (path === "/v1/coordinator/launched" && method === "GET")
       return response(200, { launched: launchedNow(entry.brief) });
+    if (
+      (path === "/v1/coordinator/launched/stop" || path === "/v1/coordinator/launched/close") &&
+      method === "POST"
+    )
+      return controlLaunched(
+        entry,
+        path.endsWith("/stop") ? "stop" : "close",
+        (body ?? {}) as Parameters<typeof controlLaunched>[2],
+      );
     if (path === "/v1/coordinator/approval-rules") {
       entry.rules ??= mockRules();
       if (method === "GET") return response(200, entry.rules);

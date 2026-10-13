@@ -176,6 +176,8 @@ export interface LaunchNote {
   status: string;
   why: string;
   task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** A session's own worktree and branch, when it has one. */
+  worktree?: { path: string; branch: string };
   /** For a session whose turn ended: its last answer, cut to `LAUNCH_RESULT_MAX` characters. */
   result?: string;
   /** For `auto-answered`: what the coordinator approved by one of the user's rules. */

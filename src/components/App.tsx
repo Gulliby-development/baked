@@ -237,6 +237,8 @@ interface Props {
   projectConfig?: Partial<AppConfig> | null;
   resumeSessionId?: string;
   forceWizard?: boolean;
+  /** Open the coordinator on start: a project opens on its coordinator. */
+  startOnCoordinator?: boolean;
   bootProviders: ProviderStatus[];
   bootPrereqs: PrerequisiteStatus[];
   preloadedContextManager?: ContextManager;
@@ -278,6 +280,7 @@ export function App({
   projectConfig,
   resumeSessionId,
   forceWizard,
+  startOnCoordinator,
   bootProviders,
   bootPrereqs,
   preloadedContextManager,
@@ -474,8 +477,10 @@ export function App({
       useUIStore.getState().openModal("setup");
     } else if (forceWizard || (!config.onboardingComplete && !resumeSessionId)) {
       useUIStore.getState().openModal("firstRunWizard");
+    } else if (startOnCoordinator) {
+      useUIStore.getState().openModal("coordinator");
     }
-  }, [config.onboardingComplete, forceWizard, resumeSessionId]);
+  }, [config.onboardingComplete, forceWizard, resumeSessionId, startOnCoordinator]);
 
   const cwd = getCwd();
 

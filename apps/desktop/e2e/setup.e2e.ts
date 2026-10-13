@@ -10,9 +10,10 @@ test("a folder without baked/project.json explains how to set it up", async ({ a
 
   await page
     .getByRole("navigation", { name: "Main" })
-    .getByRole("link", { name: "Working set" })
+    .getByRole("link", { name: "Agent context" })
     .click();
-  await expect(page.getByRole("heading", { name: "Working set", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent context", level: 1 })).toBeVisible();
+  await page.getByRole("tab", { name: "Files" }).click();
   await expect(page.getByText(/This folder has no baked\/project\.json yet/)).toBeVisible();
 });
 
@@ -25,4 +26,18 @@ test("Check code intelligence lists every backend with its probes", async ({ app
   await expect(check).toContainText("Working");
   await expect(check).toContainText("getDiagnostics —");
   await expect(page.getByRole("button", { name: "Restart all" })).toBeVisible();
+});
+
+test("the old Instructions and Working set links open the Agent context tabs", async ({ app }) => {
+  const page = await app("#/p/baked/working-set");
+  await expect(page.getByRole("heading", { name: "Agent context", level: 1 })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "Prompt budget" })).toBeVisible();
+
+  await page.getByRole("tab", { name: "Preview" }).click();
+  await expect(page.getByRole("region", { name: "Rules" })).toContainText("Prefer small");
+
+  await page.goto(page.url().replace(/#.*/, "#/p/baked/instructions"));
+  await expect(page.getByRole("tab", { name: "Rules" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "Sources agents read" })).toBeVisible();
 });

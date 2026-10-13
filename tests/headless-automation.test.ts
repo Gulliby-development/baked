@@ -127,6 +127,45 @@ describe("baked usage and baked attention", () => {
   });
 });
 
+describe("baked session coordinator schedules", () => {
+  test("add, list, pause and remove the coordinator's schedules", async () => {
+    const dir = tempDir();
+    const store = new SessionManager(dir);
+    await store.saveSession(
+      { ...meta("coord-1", "Coordinator", dir), kind: "coordinator" },
+      new Map<string, ChatMessage[]>([["tab-1", []]]),
+    );
+    const added = await cli(dir, () =>
+      runSessionCli([
+        "coordinator",
+        "schedule",
+        "add",
+        "--name",
+        "Nightly CI",
+        "--when",
+        "0 2 * * *",
+        "--prompt",
+        "Check failing CI",
+        "--json",
+      ]),
+    );
+    expect(added.code).toBe(0);
+    expect(JSON.parse(added.stdout)).toMatchObject({ id: "nightly-ci", enabled: true });
+    expect((await cli(dir, () => runSessionCli(["coordinator", "schedules"]))).stdout).toContain("Nightly CI");
+    const paused = await cli(dir, () => runSessionCli(["coordinator", "schedule", "pause", "nightly-ci"]));
+    expect(paused.stdout).toContain("paused");
+    const bad = await cli(dir, () =>
+      runSessionCli(["coordinator", "schedule", "add", "--name", "x", "--when", "every 1m", "--prompt", "y"]),
+    );
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain("5 minutes");
+    expect((await cli(dir, () => runSessionCli(["coordinator", "schedule", "remove", "nightly-ci"]))).code).toBe(0);
+    const list = await cli(dir, () => runSessionCli(["coordinator", "schedules", "--json"]));
+    expect(JSON.parse(list.stdout)).toEqual({ schedules: [] });
+    expect((await cli(dir, () => runSessionCli(["coordinator", "schedule", "remove", "nightly-ci"]))).code).toBe(1);
+  });
+});
+
 describe("baked session list and delete", () => {
   test("list the saved sessions and delete one by a unique prefix", async () => {
     const dir = tempDir();

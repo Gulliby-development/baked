@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTheme } from "../../core/theme/index.js";
 import { approvalReviewText } from "../../core/workflows/auto-approval.js";
 import type { ApprovalReview, Decision } from "../../core/workflows/schemas.js";
+import { activeTimeText, type SizingReport } from "../../core/workflows/sizing.js";
 import type { RequestRow } from "../../core/workflows/store.js";
 import type { Check } from "../../core/workflows/types.js";
 import type { RunDetails } from "../../core/workflows/view.js";
@@ -16,6 +17,8 @@ interface ApprovalBody {
   checks?: Check[];
   deferredCriteria?: string[];
   assumptions?: string[];
+  /** Plan-time sizing's active-time estimate against the active-time cap. */
+  activeTime?: SizingReport["activeTime"];
   /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
   budgetWarning?: string;
   requestCoverage?: RequestCoverageRow[];
@@ -608,6 +611,11 @@ export function DecisionPrompt({
             <text
               fg={t.warning}
             >{`  Deferred to post-release: ${body.deferredCriteria.join(", ")}`}</text>
+          ) : null}
+          {body.activeTime ? (
+            <text
+              fg={body.activeTime.estimatedMs > body.activeTime.after ? t.warning : t.textMuted}
+            >{`  ${activeTimeText(body.activeTime)}.`}</text>
           ) : null}
           <text fg={t.textMuted}>
             {body.sandbox
