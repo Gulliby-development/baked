@@ -13,6 +13,7 @@ import { SplitFlows } from "../../components/SplitFlows.js";
 import { Button } from "../../components/ui/button.js";
 import { cn } from "../../lib/cn.js";
 import { LaunchNoteCard } from "../coordinator/LaunchNote.js";
+import { fromCoordinator } from "../coordinator/model.js";
 import { storedImageUrl } from "./images.js";
 import { INLINE_CODE, Markdown } from "./Markdown.js";
 import { CHIP_SMALL } from "./Popover.js";
@@ -815,8 +816,12 @@ export function Conversation({
         message.role === "user" ? (
           <UserBubble
             key={message.id}
-            text={message.content}
-            {...(message.isSteering ? { note: "Sent while working" } : {})}
+            text={fromCoordinator(message.content) ?? message.content}
+            {...(fromCoordinator(message.content) !== null
+              ? { note: "From the coordinator" }
+              : message.isSteering
+                ? { note: "Sent while working" }
+                : {})}
             {...(message.inputContext ? { context: message.inputContext } : {})}
             {...(message.images ? { images: message.images } : {})}
           />

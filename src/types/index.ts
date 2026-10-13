@@ -176,6 +176,8 @@ export interface LaunchNote {
   status: string;
   why: string;
   task?: { ref: string; url?: string; state: "open" | "closed" | "local" };
+  /** For a session whose turn ended: its last answer, cut to `LAUNCH_RESULT_MAX` characters. */
+  result?: string;
   /** `status`: the item's status changed; `task-closed`: its task's pull request merged. */
   event: "status" | "task-closed";
 }

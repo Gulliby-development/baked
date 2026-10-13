@@ -2,7 +2,8 @@ import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 import type { ReactElement, ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
 
-const POPUP =
+/** The look of every tooltip, shared with TitleTooltips. */
+export const TOOLTIP_POPUP =
   "z-50 max-w-[320px] rounded-base border-2 border-border bg-background px-3 py-2 text-left text-[12px] leading-[1.45] font-normal normal-case tracking-normal text-foreground shadow-sm-hard transition-opacity duration-100 data-ending-style:opacity-0 data-starting-style:opacity-0 motion-reduce:transition-none";
 
 /** Shows `content` next to `children` on hover and keyboard focus. */
@@ -21,7 +22,7 @@ function Tooltip({
       <TooltipPrimitive.Trigger delay={150} render={children} />
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner sideOffset={6} className="z-50">
-          <TooltipPrimitive.Popup className={cn(POPUP, className)}>
+          <TooltipPrimitive.Popup className={cn(TOOLTIP_POPUP, className)}>
             {content}
           </TooltipPrimitive.Popup>
         </TooltipPrimitive.Positioner>

@@ -547,7 +547,7 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/packages pack"],
     cli: ["baked packages pack: --check exits 1 when out of date"],
     api: ["/v1/packages/pack"],
-    desktop: ["project/packages: Write manifest"],
+    desktop: ["project/packages: Create package"],
   },
   {
     id: "baked-help",
