@@ -301,11 +301,13 @@ type EditorOp =
   | {op: "moveGate"; target: GateTarget; index: number; delta: -1 | 1}
   | {op: "addTransition"; from: string; to: string; on: Outcome; loop: number | null}
   | {op: "removeTransition"; id: string}
+  | {op: "addWaitStage"; after: string}      // a wait stage on the one passed edge out of `after`
+  | {op: "removeWaitStage"; stageId: string}
   | {op: "changeField"; stageId: string; key: string; delta: -1 | 1}  // key from stage fields
   | {op: "duplicate"};
 ```
 
-The view is `{id, from, copy, definition, readOnly (the reason, or null), dirty, stages, problems: [{owner, messages}], estimate}`. Each stage has `id`, `type`, `produces`, `fields` (`{key, label, value, hint}`), `targets` (its own gate list for a check or review stage, then each outgoing transition: `{target, name, transition: {to, on, loop} | null, bindings: [{gateId, mode, override, summary}], options: [{gateId, summary, disabled}]}`, where `disabled` is why a gate cannot be bound there) and `transitionChoices` (`{to, on, loop}` for the new-transition form).
+The view is `{id, from, copy, definition, readOnly (the reason, or null), dirty, stages, problems: [{owner, messages}], estimate}`. Each stage has `id`, `type`, `produces`, `fields` (`{key, label, value, hint}`), `targets` (its own gate list for a check, review or wait stage, then each outgoing transition: `{target, name, transition: {to, on, loop} | null, bindings: [{gateId, mode, override, summary}], options: [{gateId, summary, disabled}]}`, where `disabled` is why a gate cannot be bound there) and `transitionChoices` (`{to, on, loop}` for the new-transition form).
 
 `/review` returns `{review}`: `{kind: "read-only", message}`, `{kind: "problems", groups}`, `{kind: "unchanged"}` or `{kind: "review", path, text, diff, gates, autoApproval: {hash, prefix, limits} | null}`. `/save` writes the file when the review allows it and returns `{saved: true, path, view}`; otherwise `{saved: false, review, confirmationNeeded, view}`, where `confirmationNeeded` means new auto approval limits wait for `confirm`, at least the first 12 characters of their hash.
 
