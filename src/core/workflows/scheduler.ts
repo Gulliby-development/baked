@@ -2064,6 +2064,7 @@ export class WorkflowScheduler {
    * definition stage this step belongs to, else the profile's own route. Child steps (tasks,
    * review dimensions, skeptics) follow their parent stage; transition gates have no stage and
    * keep the profile's route. The first model is the primary; the rest are its fallback chain.
+   * A route without effort uses the profile's own `effort`, if it sets one.
    */
   private route(
     runId: string,
@@ -2078,7 +2079,8 @@ export class WorkflowScheduler {
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
     const routing = this.routingRecord(runId);
-    if (!routing) return { models: [profile.model] };
+    if (!routing)
+      return { models: [profile.model], ...(profile.effort ? { effort: profile.effort } : {}) };
     // The critic judges the task stage's work, so the stage's route does not apply to it.
     const staged = stage && profile.output !== "critique" ? routing.stages[stage] : undefined;
     const own = routing.profiles[profile.id];
@@ -2086,7 +2088,7 @@ export class WorkflowScheduler {
     // The frozen profile keeps its start model; a reroute changes only the record.
     return {
       models: [staged?.model ?? own?.model ?? profile.model, ...(entry?.fallback ?? [])],
-      ...(entry?.effort ? { effort: entry.effort } : {}),
+      ...(entry?.effort || profile.effort ? { effort: entry?.effort ?? profile.effort } : {}),
     };
   }
   /** The run's frozen routing record, cached; null for runs started before routing. */
