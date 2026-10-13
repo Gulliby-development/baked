@@ -273,7 +273,7 @@ function HookFormFields({
           <Input
             id="hook-timeout"
             inputMode="numeric"
-            placeholder="10"
+            placeholder="10 (default)"
             value={form.timeout}
             onChange={(e) => set("timeout", e.target.value)}
           />
@@ -318,7 +318,7 @@ function HookFormFields({
           <pre
             className={cn(
               RISE,
-              "m-0 overflow-auto rounded-base border-2 border-border bg-secondary-background p-3 font-mono text-[12px] text-soft-foreground",
+              "m-0 max-h-[200px] overflow-auto rounded-base border-2 border-border bg-secondary-background p-3 font-mono text-[12px] text-soft-foreground",
             )}
           >
             {jsonPreview(form)}

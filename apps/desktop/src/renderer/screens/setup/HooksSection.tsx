@@ -171,7 +171,9 @@ function EventNode({
   const paused = view?.disabled === true;
   const lit = hooks.some((h) => fresh.has(signature(info.event, h)));
   return (
-    <li className={cn("group/event relative flex flex-col gap-2", active ? "py-2" : "py-1")}>
+    <li
+      className={cn("group/event relative flex flex-col", active ? "gap-2 py-2" : "gap-0.5 py-1")}
+    >
       <span
         aria-hidden="true"
         className={cn(
@@ -197,6 +199,17 @@ function EventNode({
             <button type="button" className={TIP}>
               <Badge tone="info" className="normal-case tracking-normal">
                 can block
+              </Badge>
+            </button>
+          </Tooltip>
+        )}
+        {!info.fires && (
+          <Tooltip
+            content={`BAKED does not fire ${info.event}, so these hooks run only in Claude Code.`}
+          >
+            <button type="button" className={TIP}>
+              <Badge tone="warn" className="normal-case tracking-normal">
+                Claude Code only
               </Badge>
             </button>
           </Tooltip>
@@ -248,11 +261,6 @@ function EventNode({
       >
         {info.summary}
       </p>
-      {active && !info.fires && (
-        <p className={cn(NOTE, "m-0 text-[var(--warn)]")}>
-          BAKED does not fire {info.event}, so these hooks run only in Claude Code.
-        </p>
-      )}
       {active && (
         <ul className={cn("m-0 flex list-none flex-col gap-2.5 p-0", paused && "opacity-60")}>
           {keyed(hooks).map(([key, hook], index) => (
