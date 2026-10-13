@@ -281,6 +281,16 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
         );
         break;
       }
+      case "wait.progress": {
+        const { stageId, pending, deadline, intervalSeconds } = event.payload;
+        line(
+          pending.length
+            ? `${stageLabel(stageId)} waits for ${pending.join(", ")} until ${new Date(deadline).toLocaleTimeString()}, every ${intervalSeconds}s`
+            : `${stageLabel(stageId)}: its gates pass`,
+          pending.length ? "info" : "ok",
+        );
+        break;
+      }
       case "acceptance.phase":
         trace.acceptance.set(event.payload.gateId, {
           phase: event.payload.phase,
@@ -316,6 +326,12 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
           );
         break;
       }
+      case "tool.finished":
+        if (event.payload.status === "deadline")
+          line(`Tool ${event.payload.tool} did not return in time`, "warn");
+        else if (event.payload.tool === "run_probe")
+          line(`Probe ran (${(event.payload.durationMs / 1000).toFixed(1)} s)`);
+        break;
       default:
         break;
     }

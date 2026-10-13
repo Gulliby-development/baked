@@ -43,7 +43,7 @@ import {
   defaultDoctorDeps,
 } from "./doctor.js";
 import { WorkflowFault } from "./errors.js";
-import { readHistory, type SavedEstimate } from "./estimate.js";
+import { estimateHistory, type SavedEstimate } from "./estimate.js";
 import { replayEvents } from "./events.js";
 import {
   commandProcessMayRun,
@@ -382,7 +382,11 @@ export class NativeWorkflowService implements WorkflowService {
   }
   private saveEstimate(runId: string, prepared: PreparedStart, workflowId: string): void {
     try {
-      const estimate = estimatePrepared(prepared, workflowId, readHistory(this.store));
+      const estimate = estimatePrepared(
+        prepared,
+        workflowId,
+        estimateHistory(this.store, this.workspace, prepared.policy),
+      );
       const saved: SavedEstimate = {
         schemaVersion: 1,
         at: Date.now(),
@@ -531,6 +535,7 @@ export class NativeWorkflowService implements WorkflowService {
         new NativeAgentExecutor(this.store, leases, this.config, this.rootContext),
     );
     lane.browserDriver = this.scheduler.browserDriver;
+    lane.waitClock = this.scheduler.waitClock;
     return lane;
   }
   async pause(runId: string, command: CommandIdentity): Promise<RunSnapshot> {

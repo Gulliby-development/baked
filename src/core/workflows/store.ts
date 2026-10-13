@@ -214,6 +214,83 @@ const MIGRATIONS = [
   { version: 11, sql: migration011 },
 ] as const;
 
+/** What the runs of one workflow database spent, per stage and per task, newest 200 first. */
+function historyOf(db: Database, only?: string): PastRun[] {
+  const runs = db
+    .query<
+      {
+        id: string;
+        workflow_id: string | null;
+        status: string;
+        token_usage: number;
+        agent_calls: number;
+        active_ms: number;
+      },
+      []
+    >(
+      "SELECT id,json_extract(definition_json,'$.id') AS workflow_id,status,token_usage,agent_calls,active_ms FROM runs WHERE status<>'created' ORDER BY created_at DESC LIMIT 200",
+    )
+    .all()
+    .filter((r) => only === undefined || r.id === only);
+  const byRun = new Map<string, PastRun>(
+    runs.map((r) => [
+      r.id,
+      {
+        runId: r.id,
+        workflowId: r.workflow_id,
+        status: r.status,
+        tokens: r.token_usage,
+        calls: r.agent_calls,
+        activeMs: r.active_ms,
+        taskCount: 0,
+        stageTokens: {},
+        taskTokens: 0,
+      },
+    ]),
+  );
+  // Child steps (tasks, review dimensions, skeptics) belong to the stage of their parent step.
+  for (const row of db
+    .query<{ run_id: string; stage: string; leaf: string; tokens: number }, []>(
+      `SELECT a.run_id AS run_id, COALESCE(p.stage_id, s.stage_id) AS stage, s.stage_id AS leaf,
+         SUM(CASE WHEN a.usage_complete=1 THEN COALESCE(a.used_tokens,0) ELSE 0 END) AS tokens
+       FROM attempts a JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id
+       LEFT JOIN steps p ON p.run_id=s.run_id AND p.id=s.parent_step_id
+       WHERE a.model_id IS NOT NULL GROUP BY a.run_id, stage, leaf`,
+    )
+    .all()) {
+    const past = byRun.get(row.run_id);
+    if (!past) continue;
+    past.stageTokens[row.stage] = (past.stageTokens[row.stage] ?? 0) + row.tokens;
+    if (row.leaf.startsWith("task-")) past.taskTokens += row.tokens;
+  }
+  for (const row of db
+    .query<{ run_id: string; n: number }, []>(
+      "SELECT run_id, COUNT(*) AS n FROM tasks WHERE status<>'invalidated' GROUP BY run_id",
+    )
+    .all()) {
+    const past = byRun.get(row.run_id);
+    if (past) past.taskCount = row.n;
+  }
+  return [...byRun.values()];
+}
+
+/**
+ * The spend history of another project's workflow store (a policy's `sizing.historyStores`), read
+ * only. A store that is missing, unreadable or of another schema gives no runs.
+ */
+export function readStoreHistory(path: string): PastRun[] {
+  if (!existsSync(path)) return [];
+  let db: Database | null = null;
+  try {
+    db = new Database(path, { readonly: true });
+    return historyOf(db).map((run) => ({ ...run, source: "shared" as const }));
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
 export class WorkflowStore {
   private readonly db: Database;
   readonly path: string;
@@ -274,62 +351,7 @@ export class WorkflowStore {
    * that run (the one being shown reads its own spend fresh).
    */
   history(only?: string): PastRun[] {
-    const runs = this.db
-      .query<
-        {
-          id: string;
-          workflow_id: string | null;
-          status: string;
-          token_usage: number;
-          agent_calls: number;
-          active_ms: number;
-        },
-        []
-      >(
-        "SELECT id,json_extract(definition_json,'$.id') AS workflow_id,status,token_usage,agent_calls,active_ms FROM runs WHERE status<>'created' ORDER BY created_at DESC LIMIT 200",
-      )
-      .all()
-      .filter((r) => only === undefined || r.id === only);
-    const byRun = new Map<string, PastRun>(
-      runs.map((r) => [
-        r.id,
-        {
-          runId: r.id,
-          workflowId: r.workflow_id,
-          status: r.status,
-          tokens: r.token_usage,
-          calls: r.agent_calls,
-          activeMs: r.active_ms,
-          taskCount: 0,
-          stageTokens: {},
-          taskTokens: 0,
-        },
-      ]),
-    );
-    // Child steps (tasks, review dimensions, skeptics) belong to the stage of their parent step.
-    for (const row of this.db
-      .query<{ run_id: string; stage: string; leaf: string; tokens: number }, []>(
-        `SELECT a.run_id AS run_id, COALESCE(p.stage_id, s.stage_id) AS stage, s.stage_id AS leaf,
-           SUM(CASE WHEN a.usage_complete=1 THEN COALESCE(a.used_tokens,0) ELSE 0 END) AS tokens
-         FROM attempts a JOIN steps s ON s.run_id=a.run_id AND s.id=a.step_id
-         LEFT JOIN steps p ON p.run_id=s.run_id AND p.id=s.parent_step_id
-         WHERE a.model_id IS NOT NULL GROUP BY a.run_id, stage, leaf`,
-      )
-      .all()) {
-      const past = byRun.get(row.run_id);
-      if (!past) continue;
-      past.stageTokens[row.stage] = (past.stageTokens[row.stage] ?? 0) + row.tokens;
-      if (row.leaf.startsWith("task-")) past.taskTokens += row.tokens;
-    }
-    for (const row of this.db
-      .query<{ run_id: string; n: number }, []>(
-        "SELECT run_id, COUNT(*) AS n FROM tasks WHERE status<>'invalidated' GROUP BY run_id",
-      )
-      .all()) {
-      const past = byRun.get(row.run_id);
-      if (past) past.taskCount = row.n;
-    }
-    return [...byRun.values()];
+    return historyOf(this.db, only);
   }
   /** Runs past creation, newest first, with their policy; the input of project memory. */
   pastRuns(limit = 30): { id: string; status: string; policy_json: string }[] {

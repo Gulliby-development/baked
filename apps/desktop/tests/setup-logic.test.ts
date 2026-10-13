@@ -94,6 +94,9 @@ describe("commands", () => {
 describe("check drafts", () => {
   test("round-trip a check through the form", () => {
     expect(draftToCheck(checkDraft(lint))).toEqual({ check: lint });
+    const custom = { ...lint, report: "json" as const };
+    expect(checkDraft(custom).jsonReport).toBe(true);
+    expect(draftToCheck(checkDraft(custom))).toEqual({ check: custom });
   });
 
   test("refuse unsafe or incomplete input", () => {

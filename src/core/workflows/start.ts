@@ -35,7 +35,7 @@ import {
   worktreeRefusal,
 } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
-import { describeGate, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
+import { describeGate, gateToCheck, loadGateLibrary, unconfirmedGates } from "./v2/library.js";
 import {
   autoApprovalHash,
   autoApprovalOf,
@@ -65,6 +65,10 @@ export interface PreparedStart {
   skillHashes: Record<string, string>;
   instructionHashes: ReturnType<typeof frozenInstructions>["hashes"];
 }
+
+/** Why a shipped preset with a check stage cannot start in a project without feature checks. */
+export const missingFeatureChecks = (workflowId: string): string =>
+  `Workflow ${workflowId} needs at least one feature check in the workflow policy (workflows.policy.checks); /workflow gates adds them`;
 
 /**
  * The validation half of a run start. It reads the workspace but writes nothing, so `workflow
@@ -151,6 +155,12 @@ export async function prepareStart(
           `Profile output does not match stage ${stage.id}`,
         );
   } else {
+    // A shipped preset bound to a project without feature checks has a check stage with no gates;
+    // refuse here so every front end reports it instead of a run that blocks at once.
+    if (!loaded.path && loaded.definition.stages.some((s) => s.type === "check" && !s.gates.length))
+      throw new WorkflowFault("INVALID_DEFINITION", missingFeatureChecks(request.workflowId), {
+        missingFeatureChecks: true,
+      });
     const bound = bindDefinition(
       workspace,
       loaded.definition,
@@ -309,6 +319,22 @@ export function bindDefinition(
     ...(acceptanceWrites.length ? { acceptanceWrites } : {}),
   });
   validateChecks(workspace, policy);
+  // The gates a wait stage polls are not run checks, but their processes pass the same rules.
+  const polled = definition.stages.flatMap((stage) =>
+    stage.type === "wait"
+      ? stage.gates.flatMap((binding) => {
+          const gate = gates.find((g) => g.id === binding.gateId);
+          return gate?.type === "command" && !policy.checks.some((c) => c.id === gate.id)
+            ? [gateToCheck(gate, binding)]
+            : [];
+        })
+      : [],
+  );
+  if (polled.length)
+    validateChecks(workspace, {
+      ...policy,
+      checks: [...new Map(polled.map((c) => [c.id, c])).values()],
+    });
   for (const stage of definition.stages) {
     const kind = stageKind(stage);
     if (!kind)
