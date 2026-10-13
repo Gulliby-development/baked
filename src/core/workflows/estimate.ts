@@ -554,7 +554,8 @@ export function estimatePreRun(input: {
     tokens: { low: Math.round(m.tokens.low), high: Math.round(m.tokens.high) },
   }));
   const notes: string[] = [];
-  if (keyed && basis !== "defaults") notes.push(`History of ${model} only (${ofModel.length} runs).`);
+  if (keyed && basis !== "defaults")
+    notes.push(`History of ${model} only (${ofModel.length} runs).`);
   else if (model && input.history.length && basis !== "defaults")
     notes.push(
       `Fewer than ${MODEL_HISTORY_MIN} earlier runs of ${model}; the history mixes models, which can spend very differently.`,
