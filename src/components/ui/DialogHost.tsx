@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTheme } from "../../core/theme/index.js";
-import { useKeyboard } from "../../hooks/useTerminalEvents.js";
+import { DialogKeyScope, useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { selectTopDialog, useDialogStore } from "../../stores/dialog.js";
 import { Overlay } from "../layout/shared.js";
 import { AlertDialog } from "./dialogs/AlertDialog.js";
@@ -23,12 +23,15 @@ export function DialogHost() {
   const pop = useDialogStore((s) => s.pop);
   useTheme();
 
-  useKeyboard((evt) => {
-    if (!top) return;
-    if (evt.name === "escape") {
-      pop();
-    }
-  });
+  useKeyboard(
+    (evt) => {
+      if (!top) return;
+      if (evt.name === "escape") {
+        pop();
+      }
+    },
+    { underDialog: true },
+  );
 
   useEffect(() => {
     if (!top) return;
@@ -50,7 +53,9 @@ export function DialogHost() {
 
   return (
     <Overlay>
-      <DialogBody width={w} />
+      <DialogKeyScope.Provider value>
+        <DialogBody width={w} />
+      </DialogKeyScope.Provider>
     </Overlay>
   );
 }
