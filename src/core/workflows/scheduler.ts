@@ -4971,6 +4971,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
                       env: buildCheckEnv(check),
                       timeoutMs: Math.max(1000, Math.min(check.timeoutMs, timeLeftMs)),
                       signal,
+                      sandbox: runSandbox(policy, root),
                     },
                   );
                   if (outcome.timedOut) return { status: "timeout" };
