@@ -205,6 +205,18 @@ export const PolicySchema = z
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
      */
+    /**
+     * Semgrep on the run's diff (quality/sast.ts). Absent means `auto`: it runs when Semgrep is
+     * installed, so stored policies keep their hash. `sastConfig` is the Semgrep `--config`
+     * (absent: `p/default`).
+     */
+    sast: z.enum(["auto", "off"]).optional(),
+    sastConfig: z.string().min(1).max(512).optional(),
+    /**
+     * `false` keeps the dependency check (quality/dependencies.ts) from looking packages up in
+     * their registries; every new dependency is then inconclusive. Absent means lookups.
+     */
+    registryLookups: z.literal(false).optional(),
     qualityRules: z
       .object({
         disabled: z.array(z.string().min(1).max(128)).max(200).optional(),
@@ -1057,6 +1069,8 @@ export interface StartRequest {
   clarification?: ClarificationMode;
   /** The duplication ratchet of this run (CLI `--duplication MODE`); it overrides the policy. */
   duplication?: "off" | "warn" | "ratchet";
+  /** Semgrep on the run's diff (CLI `--sast MODE`); it overrides the policy. */
+  sast?: "auto" | "off";
   /**
    * Stage-level model routes for this run (CLI `--route STAGE=MODEL`); they win over
    * `modelRouting.workflows.<id>.stages`. A value starting with `$` names a model class.

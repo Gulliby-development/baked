@@ -37,6 +37,8 @@ export const StartBody = z
     clarification: z.enum(["ask", "assume"]).optional(),
     /** The duplication ratchet of the run, as `--duplication`; omitted, the policy decides. */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
+    /** Semgrep on the run's diff, as `--sast`; omitted, the policy decides. */
+    sast: z.enum(["auto", "off"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
   })

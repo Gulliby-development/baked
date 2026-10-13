@@ -789,6 +789,30 @@ export const SETTINGS: readonly SettingDefinition[] = [
     default: [],
     catalog: "quality-rules",
   },
+  {
+    id: "quality.registryLookups",
+    page: "code-quality",
+    section: "Dependencies",
+    label: "Look up new dependencies",
+    help: "Before a run's checks install anything, every package it adds is looked up in its registry (npm, PyPI, crates.io, Go proxy, NuGet, Maven Central). A package that does not exist, looks like a typosquat or was published days ago blocks the run; the others are listed in the run report. Off, new dependencies are only listed.",
+    scopes: BOTH,
+    type: "boolean",
+    default: true,
+  },
+  {
+    id: "quality.sast",
+    page: "code-quality",
+    section: "Dependencies",
+    label: "Semgrep",
+    help: "Runs Semgrep on the code files a run changed when it is installed. An ERROR match on a line the run added blocks the run; other matches are noted. BAKED does not install Semgrep.",
+    scopes: BOTH,
+    type: "enum",
+    default: "auto",
+    options: [
+      { value: "auto", label: "auto", help: "Run Semgrep when it is installed." },
+      { value: "off", label: "off", help: "Do not run Semgrep." },
+    ],
+  },
 ];
 
 const BY_ID = new Map(SETTINGS.map((setting) => [setting.id, setting]));

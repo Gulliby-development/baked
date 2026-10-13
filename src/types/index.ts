@@ -297,6 +297,12 @@ export interface QualityConfig {
   ruleSeverity?: Record<string, "error" | "warning">;
   /** The project's ast-grep rule files, relative to the workspace; they run when ast-grep is installed. */
   ruleFiles?: string[];
+  /** Semgrep on the run's diff: `auto` (default) runs it when installed, `off` never. */
+  sast?: "auto" | "off";
+  /** Semgrep `--config` for `sast`; default `p/default`. */
+  sastConfig?: string;
+  /** Look new dependencies up in their public registries (default true). */
+  registryLookups?: boolean;
 }
 
 export interface AppConfig {
