@@ -290,7 +290,10 @@ export function seatbeltProfile(profile: SandboxProfile): {
   if (!profile.network)
     lines.push(
       "(deny network*)",
-      '(allow network* (local ip "localhost:*") (remote ip "localhost:*") (remote unix-socket))',
+      // Outbound is matched on the remote end only: with a `local ip` filter on the outbound
+      // rule, connections to other hosts got through on the macOS CI runner.
+      '(allow network-bind network-inbound (local ip "localhost:*"))',
+      '(allow network-outbound (remote ip "localhost:*") (remote unix-socket))',
     );
   return { profile: `${lines.join("\n")}\n`, params };
 }

@@ -84,10 +84,12 @@ describe.skipIf(!detection.available || process.platform === "win32")("OS sandbo
     const escaped = await run("sh", ["-c", `echo no > '${target}'`]);
     expect(escaped.exitCode).not.toBe(0);
     expect(existsSync(target)).toBe(false);
-    // A home under /tmp is private to the command on Linux, so the write may succeed there; it
-    // must not reach the host.
-    await run("sh", ["-c", `echo no > '${join(home, "x")}'`]);
-    expect(existsSync(join(home, "x"))).toBe(false);
+    // The test home lies in the temp directory. On Linux /tmp is private to the command, so a write
+    // there must not reach the host; on macOS the temp directories are writable by design.
+    if (process.platform === "linux") {
+      await run("sh", ["-c", `echo no > '${join(home, "x")}'`]);
+      expect(existsSync(join(home, "x"))).toBe(false);
+    }
   });
 
   test("keeps Git config and hooks read-only inside the workspace", async () => {

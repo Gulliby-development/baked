@@ -251,7 +251,8 @@ describe("seatbelt profile", () => {
         '(deny file-write* (subpath (param "P0")) (subpath (param "P1")))',
         '(deny file-read* file-write* (subpath (param "H0")) (literal (param "F0")))',
         "(deny network*)",
-        '(allow network* (local ip "localhost:*") (remote ip "localhost:*") (remote unix-socket))',
+        '(allow network-bind network-inbound (local ip "localhost:*"))',
+        '(allow network-outbound (remote ip "localhost:*") (remote unix-socket))',
         "",
       ].join("\n"),
     );
