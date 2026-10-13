@@ -168,6 +168,20 @@ export const RuntimeStateSchema = z
     taskBudgets: z.record(z.string(), z.number().int().positive()).default({}),
     /** Step cap per planned task from plan-time sizing (test tasks); corrections use their base's. */
     taskSteps: z.record(z.string(), z.number().int().positive()).default({}),
+    /**
+     * Plan-time sizing's active-time estimate at the observed token rate, shown with the approval
+     * against the active-time cap (#933).
+     */
+    activeTime: z
+      .object({
+        tokensPerMinute: z.number().nonnegative(),
+        basis: z.enum(["history", "default"]),
+        runs: z.number().int().nonnegative(),
+        estimatedMs: z.number().int().nonnegative(),
+        before: z.number().int().positive(),
+        after: z.number().int().positive(),
+      })
+      .optional(),
     /** The request as the user wrote it; `prompt` grows with host notes and clarifications. */
     requestText: z.string().default(""),
     /** Whether the request-coverage finding was raised; it is raised once per run. */

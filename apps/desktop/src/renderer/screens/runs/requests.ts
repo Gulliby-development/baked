@@ -1,4 +1,5 @@
 import type { RunRequest } from "../../client/runs.js";
+import type { ActiveTime } from "../../lib/active-time.js";
 
 /** Request bodies as the core writes them (`body_json`), the fields the run screens read. */
 export interface ApprovalBody {
@@ -6,6 +7,8 @@ export interface ApprovalBody {
   checks?: { id: string }[];
   /** Defaults the agents chose instead of asking (`clarification: "assume"`). */
   assumptions?: string[];
+  /** Plan-time sizing's active-time estimate against the active-time cap. */
+  activeTime?: ActiveTime;
   /** Each deliverable of the request and what covers it (`request-coverage.ts` in the core). */
   requestCoverage?: {
     deliverable: string;
