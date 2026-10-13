@@ -51,7 +51,9 @@ import {
   assumable,
   DEFECT_NOTE,
   hostCounts,
+  hostSplitParts,
   isCountNit,
+  isHostSplitNit,
   knownRisks,
   persistentDefect,
   REQUEST_NOTE,
@@ -684,6 +686,9 @@ export class WorkflowScheduler {
                     verifiedByRuntime: PLAN_CONSISTENCY_CHECKS,
                     workspaceFacts: this.recordFacts(runId, runRoot(this.store.workspace, state)),
                     hostCounts: hostCounts(graph),
+                    ...(Object.keys(hostSplitParts(graph)).length
+                      ? { hostSplit: hostSplitParts(graph) }
+                      : {}),
                   },
                   signal,
                   undefined,
@@ -734,6 +739,22 @@ export class WorkflowScheduler {
                 if (finding.blocking && isCountNit(finding.description)) {
                   finding.blocking = false;
                   finding.description = `Counts are computed by the host (${String(counts.tasks)} tasks, ${String(counts.files)} distinct files); kept as a note: ${finding.description}`;
+                }
+              }
+              // The host split oversized test tasks after planning; plan.md names only the original.
+              const split = hostSplitParts(graph);
+              for (const finding of analysis.findings) {
+                if (
+                  finding.blocking &&
+                  finding.kind !== "scope" &&
+                  isHostSplitNit(finding, split)
+                ) {
+                  finding.blocking = false;
+                  finding.description = `About tasks the host split by file after planning (${Object.entries(
+                    split,
+                  )
+                    .map(([original, ids]) => `${original}: ${ids.join(", ")}`)
+                    .join("; ")}); kept as a note: ${finding.description}`;
                 }
               }
               // Findings about check outcomes stay in the record as notes; checks run later.
