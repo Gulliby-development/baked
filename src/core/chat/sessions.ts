@@ -65,6 +65,18 @@ import { type CompactResult, compactionBlocker, messageChars } from "../compacti
 import { DEFAULT_COMPACTION_CONFIG } from "../compaction/types.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
+import { runHooks } from "../hooks/index.js";
+import {
+  endSessionHooks,
+  notificationHooks,
+  type SessionEndReason,
+  sessionHooksStarted,
+  startSessionHooks,
+  stopHooks,
+  takeHookContext,
+  userPromptHooks,
+  withHookContext,
+} from "../hooks/lifecycle.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
@@ -178,6 +190,8 @@ export interface SessionSummary {
   compacting: boolean;
   /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
   kind?: "coordinator";
+  /** The session that launched this one: the coordinator for the sessions it starts. */
+  parentId?: string;
 }
 
 /** Watch mode of the project as one session sees it (`/v1/sessions/:id/watch`). */
@@ -416,6 +430,47 @@ interface PlanFollowUp {
 }
 
 /** The value of a prompt nobody answered: interrupted or denied. */
+/** What a Notification hook is told about a prompt that waits for the user. */
+function promptNotice(prompt: ChatPrompt): {
+  type: "permission_prompt" | "question";
+  message: string;
+} {
+  switch (prompt.kind) {
+    case "outside-cwd":
+      return {
+        type: "permission_prompt",
+        message: `BAKED needs your permission to use ${prompt.tool} on ${prompt.path}`,
+      };
+    case "destructive":
+      return {
+        type: "permission_prompt",
+        message: `BAKED needs your permission: ${prompt.description}`,
+      };
+    case "web-search":
+      return {
+        type: "permission_prompt",
+        message: `BAKED needs your permission to search the web for ${prompt.query}`,
+      };
+    case "fetch-page":
+      return {
+        type: "permission_prompt",
+        message: `BAKED needs your permission to fetch ${prompt.url}`,
+      };
+    case "question":
+      return { type: "question", message: prompt.question };
+    case "plan-review":
+      return {
+        type: "question",
+        message: `BAKED waits for you to review the plan: ${prompt.title}`,
+      };
+    case "split":
+      return {
+        type: "question",
+        message: `BAKED waits for you to review the split: ${prompt.title}`,
+      };
+  }
+}
+
 function unanswered(kind: ChatPrompt["kind"]): PromptValue {
   return kind === "question" || kind === "plan-review" ? "__skipped__" : false;
 }
@@ -584,6 +639,7 @@ export class ChatSession {
       effort: this.effort,
       compacting: this.compaction !== null,
       ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
+      ...(this.meta.parentId ? { parentId: this.meta.parentId } : {}),
     };
   }
 
@@ -621,7 +677,17 @@ export class ChatSession {
     return () => this.listeners.delete(listener);
   }
 
+  /** The tool the running turn is in, for a coordinator's view of what this session does. */
+  private currentTool: string | null = null;
+
+  /** What the running turn does now: its current tool, or null between tools and turns. */
+  get activity(): string | null {
+    return this.turn ? this.currentTool : null;
+  }
+
   private emit(body: ChatEventBody): void {
+    if (body.type === "tool-call") this.currentTool = body.tool;
+    else if (body.type === "tool-result" || body.type === "turn-done") this.currentTool = null;
     const event = { ...body, seq: ++this.seq, at: Date.now() } as ChatEvent;
     this.events.push(event);
     if (this.events.length > this.owner.bufferSize)
@@ -830,6 +896,8 @@ export class ChatSession {
     let note: string | null = null;
     let compacted = 0;
     let error: string | undefined;
+    const cwd = this.owner.workspace;
+    await runHooks({ event: "PreCompact", sessionId: this.meta.id, cwd }).catch(() => {});
     try {
       const response = await compact({
         sessionId: this.meta.id,
@@ -876,6 +944,11 @@ export class ChatSession {
       ? { id: crypto.randomUUID(), role: "system", content: note, timestamp: Date.now() }
       : null;
     if (message) this.messages = [...this.messages, message];
+    if (status === "compacted") {
+      await runHooks({ event: "PostCompact", sessionId: this.meta.id, cwd }).catch(() => {});
+      // As in Claude Code, a compacted session starts again with the source `compact`.
+      await startSessionHooks(this.meta.id, cwd, "compact").catch(() => {});
+    }
     this.compaction = null;
     await this.owner.persist(this);
     this.emit({
@@ -1005,6 +1078,11 @@ export class ChatSession {
       this.prompts.set(prompt.id, { prompt, resolve });
       this.emit({ type: "prompt", prompt });
       this.emitSession();
+      void notificationHooks({
+        sessionId: this.meta.id,
+        cwd: this.owner.workspace,
+        ...promptNotice(prompt),
+      }).catch(() => {});
     });
   }
 
@@ -1129,6 +1207,27 @@ export class ChatSession {
         logBackgroundError("chat:input-expansion", errorText(err));
       }
     }
+    // A plan's text and a watch turn are not typed prompts; the session's first turn in this
+    // process starts its hooks.
+    let blockedBy: string | undefined;
+    if (send && !turn.abort.signal.aborted) {
+      const cwd = this.owner.workspace;
+      if (!sessionHooksStarted(this.meta.id))
+        await startSessionHooks(this.meta.id, cwd, this.messages.length ? "resume" : "startup");
+      const prompted =
+        executing || input.verbatim
+          ? undefined
+          : await userPromptHooks(this.meta.id, cwd, text, turn.abort.signal);
+      if (prompted?.blocked) {
+        send = false;
+        blockedBy = prompted.reason ?? "no reason given";
+      } else
+        modelText = withHookContext(
+          modelText,
+          takeHookContext(this.meta.id),
+          prompted?.additionalContext,
+        );
+    }
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -1190,6 +1289,7 @@ export class ChatSession {
       if (base) this.addCheckpointTag(base);
       const model = this.model;
       if (!model) throw new Error("No model configured");
+      if (blockedBy) throw new Error(`A UserPromptSubmit hook blocked the prompt: ${blockedBy}`);
       // A `!` command that did not run leaves nothing to answer.
       if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
@@ -1337,6 +1437,12 @@ export class ChatSession {
     }
 
     this.denyPrompts();
+    if (status !== "interrupted" && !blockedBy)
+      void stopHooks(
+        this.meta.id,
+        this.owner.workspace,
+        status === "failed" ? { failed: true, error: error ?? "" } : { failed: false },
+      ).catch(() => {});
     const followUp = this.planFollowUp;
     this.planFollowUp = null;
     // An accepted plan stops its turn on purpose; the turn is complete, not interrupted.
@@ -1687,6 +1793,7 @@ export class ChatService {
         startedAt: entry.startedAt,
         updatedAt: entry.updatedAt,
         ...(entry.projectId ? { projectId: entry.projectId } : {}),
+        ...(entry.parentId ? { parentId: entry.parentId } : {}),
         state: "idle",
         model: null,
         mode: "default",
@@ -1727,6 +1834,7 @@ export class ChatService {
     messages?: ChatMessage[];
     core?: ModelMessage[];
     kind?: "coordinator";
+    parentId?: string;
   }): Promise<ChatSession> {
     if (this.closed) throw new ChatError("SESSION_BUSY", "The server is shutting down");
     const id = crypto.randomUUID();
@@ -1737,6 +1845,7 @@ export class ChatService {
       title: messages.length > 0 ? SessionManager.deriveTitle(messages) : "New session",
       ...(input.title ? { customTitle: input.title } : {}),
       ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.parentId ? { parentId: input.parentId } : {}),
       cwd: this.options.workspace,
       startedAt: now,
       updatedAt: now,
@@ -1933,6 +2042,14 @@ export class ChatService {
     this.live.delete(session.id);
     this.host.release(session.id);
     this.store.deleteSession(session.id);
+    void this.endHooks([session.id], "other");
+  }
+
+  /** Fires SessionEnd for the sessions whose SessionStart fired in this server. */
+  private endHooks(ids: Iterable<string>, reason: SessionEndReason): Promise<void> {
+    return Promise.all([...ids].map((id) => endSessionHooks(id, reason).catch(() => {}))).then(
+      () => {},
+    );
   }
 
   /**
@@ -1943,6 +2060,7 @@ export class ChatService {
     this.assertIdleWorkspace("clearing sessions");
     this.stopWatch();
     for (const id of this.live.keys()) this.host.release(id);
+    void this.endHooks([...this.live.keys()], "clear");
     this.live.clear();
     return this.store.clearAllSessions();
   }
@@ -1970,6 +2088,10 @@ export class ChatService {
     const sessions = [...this.live.values()];
     for (const session of sessions) session.interrupt();
     await Promise.allSettled(sessions.map((s) => s.settled()));
+    await this.endHooks(
+      sessions.map((s) => s.id),
+      "prompt_input_exit",
+    );
     await this.host.dispose();
   }
 }

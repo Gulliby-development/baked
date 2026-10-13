@@ -1,4 +1,6 @@
 import { confirm } from "../../components/ui/dialogs/index.js";
+import { getAppSessionId } from "../../stores/session.js";
+import { endSessionHooks, startSessionHooks } from "../hooks/lifecycle.js";
 import { IS_LINUX } from "../platform/index.js";
 import { emitCacheReset } from "../tools/file-events.js";
 import { clearTasks } from "../tools/task-list.js";
@@ -192,6 +194,11 @@ async function handleClear(_input: string, ctx: CommandContext): Promise<void> {
   // New conversation → rotate the upstream routing id so gateways re-score
   // provider selection instead of staying pinned to the cleared chat's.
   ctx.chat.rotateRoutingSession();
+  // As in Claude Code, /clear ends the session's hooks and starts them again with `clear`.
+  const sessionId = getAppSessionId();
+  void endSessionHooks(sessionId, "clear")
+    .then(() => startSessionHooks(sessionId, ctx.cwd, "clear"))
+    .catch(() => {});
   clearTasks(ctx.tabMgr.activeTabId);
   emitCacheReset();
   ctx.tabMgr.resetTabLabel(ctx.tabMgr.activeTabId);

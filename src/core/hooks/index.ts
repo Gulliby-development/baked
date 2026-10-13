@@ -1,4 +1,19 @@
 export {
+  endAllSessionHooks,
+  endSessionHooks,
+  type NotificationType,
+  notificationHooks,
+  resetSessionHooks,
+  type SessionEndReason,
+  type SessionStartSource,
+  sessionHooksStarted,
+  startSessionHooks,
+  stopHooks,
+  takeHookContext,
+  userPromptHooks,
+  withHookContext,
+} from "./lifecycle.js";
+export {
   getHooks,
   hasHooksForEvent,
   invalidateHooksCache,
