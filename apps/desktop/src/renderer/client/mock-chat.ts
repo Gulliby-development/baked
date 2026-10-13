@@ -17,7 +17,7 @@ import type {
   ToolCall,
   WatchStatus,
 } from "./chat.js";
-import type { LaunchedView, ProjectBrief } from "./coordinator.js";
+import type { ApprovalRules, LaunchedView, ProjectBrief } from "./coordinator.js";
 import { type MockRoute, type MockStream, response } from "./mock-routes.js";
 
 /**
@@ -445,7 +445,31 @@ async function say(
 }
 
 /** Each project's coordinator: its session and brief. */
-const coordinators = new Map<string, { session: MockSession; brief: ProjectBrief }>();
+const coordinators = new Map<
+  string,
+  { session: MockSession; brief: ProjectBrief; rules?: ApprovalRules }
+>();
+
+/** The demo's rules: off, with one rule ready and one answer in the log. */
+function mockRules(): ApprovalRules {
+  return {
+    revision: 1,
+    updatedAt: Date.now() - 3_600_000,
+    enabled: false,
+    rules: [{ id: "docs", kind: "fetch-page", hosts: ["docs.github.com", "bun.sh"] }],
+    log: [
+      {
+        at: Date.now() - 1_200_000,
+        ruleId: "docs",
+        rule: "Approve fetching pages from docs.github.com, bun.sh",
+        kind: "session",
+        id: "mock-thread",
+        title: "Survey the auth code",
+        what: "fetching https://bun.sh/docs/api/sqlite",
+      },
+    ],
+  };
+}
 
 function mockBrief(): ProjectBrief {
   return {
@@ -1109,6 +1133,26 @@ const chatRoutes: MockRoute = async ({ key, method, path, query, body }) => {
       return response(404, { error: { code: "NOT_FOUND", message: "No coordinator yet" } });
     if (path === "/v1/coordinator/launched" && method === "GET")
       return response(200, { launched: launchedNow(entry.brief) });
+    if (path === "/v1/coordinator/approval-rules") {
+      entry.rules ??= mockRules();
+      if (method === "GET") return response(200, entry.rules);
+      const { expectedRevision, enabled, rules } = (body ?? {}) as Pick<
+        ApprovalRules,
+        "enabled" | "rules"
+      > & { expectedRevision: number };
+      if (expectedRevision !== entry.rules.revision)
+        return response(409, {
+          error: { code: "STALE_REVISION", message: "The rules changed since they were read" },
+        });
+      entry.rules = {
+        ...entry.rules,
+        enabled,
+        rules,
+        revision: entry.rules.revision + 1,
+        updatedAt: Date.now(),
+      };
+      return response(200, entry.rules);
+    }
     if (path === "/v1/coordinator/brief" && method === "GET") return response(200, entry.brief);
     if (path === "/v1/coordinator/brief" && method === "PUT") {
       const { expectedRevision, ...content } = (body ?? {}) as Omit<
