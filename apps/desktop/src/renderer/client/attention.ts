@@ -30,6 +30,8 @@ export interface ApprovalBody {
   assumptions?: string[];
   /** Plan-time sizing's active-time estimate against the active-time cap. */
   activeTime?: ActiveTime;
+  /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
+  budgetWarning?: string;
   /** Each deliverable of the request and the requirements, or the request's exclusion, covering it. */
   requestCoverage?: {
     deliverable: string;

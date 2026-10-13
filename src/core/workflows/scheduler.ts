@@ -145,6 +145,7 @@ import {
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
+import { crossPlatformNote } from "./cross-platform.js";
 import { git } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -338,6 +339,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 import {
   codeTaskCheckProblems,
   loopHistory,
+  overCeilingOf,
   plannerSizing,
   rateHistory,
   type SizingReport,
@@ -356,6 +358,7 @@ import {
   namesPath,
   pendingCodePaths,
   pendingOwners,
+  pendingWriters,
   readyTasks,
   testUpdateOwners,
 } from "./task-graph.js";
@@ -528,6 +531,9 @@ function isStoreError(error: unknown): boolean {
 }
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
+/** Why a result that changed nothing was not accepted (#972: the message had no detail). */
+const correctionReason = (correction: true | string | WorkflowFault): string =>
+  typeof correction === "string" && correction ? `: ${correction}` : "";
 /**
  * Files whose edits the host's hash check refused during an attempt that then reported blocked:
  * an infrastructure fault (the worktree differs from the run's record), which the model cannot
@@ -1352,6 +1358,8 @@ export class WorkflowScheduler {
                   // Defaults the agents chose instead of asking; approving accepts them.
                   assumptions: state.spec.assumptions,
                   ...(state.activeTime ? { activeTime: state.activeTime } : {}),
+                  // A plan priced above the ceiling is approved knowing where it should stop (#974).
+                  ...overCeilingOf(this.store, runId),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
@@ -2962,6 +2970,10 @@ export class WorkflowScheduler {
       ) === "auto"
         ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
+    const crossPlatform =
+      profile.output === "spec"
+        ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
+        : null;
     const hardening =
       presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET
         ? hardenNote(profile.output)
@@ -2975,6 +2987,7 @@ export class WorkflowScheduler {
       {
         ...input,
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
+        ...(crossPlatform ? { crossPlatform } : {}),
         ...(hardening ? { hardening } : {}),
         ...(rules ? { learnedRules: rules } : {}),
         ...(workingSet ? { projectWorkingSet: workingSet } : {}),
@@ -3851,7 +3864,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        !correction
+        correction !== true
       ) {
         if (narrow) {
           // The fix may need another file of the correction's scope: the next attempt may write
@@ -3934,7 +3947,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         const refused = takeHashRefusals(root);
         throw new WorkflowFault(
           "OUTPUT_INVALID",
-          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${refusedReason(refused)}`,
+          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
           refused.length ? { reason: "input_changed", paths: refused } : {},
         );
       }
@@ -4910,7 +4923,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         result.unresolved.length > 0 ||
-        !correction
+        correction !== true
       )
         return {
           kind: "rejected",
@@ -4919,7 +4932,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           ...(changed.length ? { edits: { before, changed } } : { blocked: result }),
           error: new WorkflowFault(
             "OUTPUT_INVALID",
-            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${refusedReason(refused)}`,
+            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
             refused.length ? { reason: "input_changed", paths: refused } : {},
           ),
         };
@@ -5538,7 +5551,7 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
    * run). The checks are the task's own and the ones its findings name. A planned task counts
    * only on a rerun (generation above 0): a repair invalidated it though it was already correct
    * (md-site 2707d602 T004 generation 3 blocked the run), while a first run that changed nothing
-   * did not do its work.
+   * did not do its work. Otherwise it returns why the result is not accepted, for the message.
    */
   private async correctionSatisfied(
     runId: string,
@@ -5549,15 +5562,17 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     result: { taskId: string; outcome: string; unresolved: string[] },
     signal: AbortSignal,
     root: string,
-  ): Promise<boolean | WorkflowFault> {
+  ): Promise<true | string | WorkflowFault> {
     const rerun = (this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0) > 0;
+    // An empty reason: the caller's message already says what the result left unfinished.
     if (
-      (task.origin === "planned" && !rerun) ||
       result.taskId !== task.id ||
       result.outcome !== "implemented" ||
       result.unresolved.length > 0
     )
-      return false;
+      return "";
+    if (task.origin === "planned" && !rerun)
+      return "it reported implemented but changed none of its files";
     const named = new Set(
       this.store
         .findings(runId)
@@ -5573,7 +5588,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
       ),
       ...this.gatedChecks(state, policy, task, root).filter((c) => c.id === regression),
     ];
-    if (!checks.length) return false;
+    if (!checks.length)
+      return "it changed none of its files and no required check of it confirms the work is already done";
     for (const check of checks) {
       const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
       if (checked.status === "passed") continue;
@@ -5587,7 +5603,8 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
           `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
           { reason: "no_progress", paths: outside },
         );
-      return false;
+      const named = checked.output ? pathsInOutput(checked.output, state.graph?.tasks ?? []) : [];
+      return `it changed none of its files and check ${check.id} still fails${named.length ? ` on ${named.slice(0, 5).join(", ")}` : ""} (evidence ${checked.evidenceId})`;
     }
     return true;
   }
@@ -6274,10 +6291,23 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
     const rootTasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
     const named = checked.output ? pathsInOutput(checked.output, rootTasks) : [];
     const outside = named.filter((path) => !task.writes.some((w) => w.path === path));
-    const owned = outside.filter((path) =>
-      rootTasks.some(
-        (t) => t.profileId === task.profileId && t.writes.some((w) => w.path === path),
-      ),
+    // A regression's repair fixes the task's change, so it leaves alone the tests that planned
+    // tasks still to run update (#972).
+    const owned = outside.filter(
+      (path) =>
+        rootTasks.some(
+          (t) => t.profileId === task.profileId && t.writes.some((w) => w.path === path),
+        ) &&
+        !(
+          regression &&
+          pendingWriters(
+            state.rootGraph ?? state.graph,
+            this.store.tasks(runId),
+            state.taskGates,
+            task,
+            path,
+          ).length
+        ),
     );
     // Every file the output names is one this task cannot get write access to: a repair would
     // end "outside this task's approved write scope" after attempts that change nothing.

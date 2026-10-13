@@ -171,8 +171,10 @@ describe("a correction that changes nothing on a failure outside its files", () 
   });
 
   test("a failure on its own file, or on no planned file, stays an ordinary unfinished task", async () => {
-    expect(await satisfied("Diff in tests/docs.rs\nDiff in src/lib.rs")).toBe(false);
-    expect(await satisfied("error: could not compile")).toBe(false);
+    expect(await satisfied("Diff in tests/docs.rs\nDiff in src/lib.rs")).toBe(
+      "it changed none of its files and check fmt still fails on src/lib.rs, tests/docs.rs (evidence E9)",
+    );
+    expect(await satisfied("error: could not compile")).toBe("it changed none of its files and check fmt still fails (evidence E9)");
     expect(await satisfied("", "passed")).toBe(true);
   });
 });

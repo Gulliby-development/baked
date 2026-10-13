@@ -3,7 +3,7 @@ import { findPricing } from "../llm/pricing.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
-import { type AgentProfile, PolicySchema, type RunPolicy } from "./schemas.js";
+import { type AgentProfile, extendToOf, PolicySchema, type RunPolicy } from "./schemas.js";
 import type { RunRow, WorkflowStore } from "./store.js";
 export function reserveTokens(prompt: string, profile: AgentProfile, policy: RunPolicy): number {
   // Each tool-loop step can replay the growing context and generate another completion.
@@ -282,8 +282,9 @@ function progressOf(store: WorkflowStore, runId: string) {
 
 /**
  * A run at its sizing ceiling under `clarification: "assume"` grows past it, up to
- * `sizing.extendToTokens`, without a person, while it still makes progress: since the last
- * extension (or the start of the run) a task finished or a finding was resolved. Each extension
+ * `sizing.extendToTokens` (1.5 times the ceiling when unset, `extendToOf`), without a person,
+ * while it still makes progress: since the last extension (or the start of the run) a task
+ * finished or a finding was resolved. Each extension
  * covers the call and adds at least a quarter of the ceiling, about one review round, and is
  * recorded as `kind: "auto-extend"`. junitdigest 3e5be74b stopped twice at the ceiling and was
  * cleared both times by an operator `extend` with no other choice to make (#747).
@@ -294,7 +295,7 @@ function extendUnderAssume(
   policy: RunPolicy,
   projected: number,
 ): boolean {
-  const hard = policy.sizing?.extendToTokens ?? null;
+  const hard = extendToOf(policy);
   const ceiling = policy.sizing?.maxRunTokens ?? null;
   if (hard === null || ceiling === null || policy.clarification !== "assume") return false;
   if (policy.maxTotalTokens >= hard || projected > hard) return false;

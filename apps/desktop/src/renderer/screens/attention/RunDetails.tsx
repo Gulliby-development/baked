@@ -177,6 +177,11 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 ))}
               </section>
             ) : null}
+            {body.budgetWarning ? (
+              <p className="m-0 font-semibold text-[var(--warn)]" role="note">
+                {body.budgetWarning}
+              </p>
+            ) : null}
             {body.assumptions?.length ? (
               <section className={LIST} aria-label="Assumptions">
                 <span className={LABEL}>Assumptions the agents made instead of asking</span>
