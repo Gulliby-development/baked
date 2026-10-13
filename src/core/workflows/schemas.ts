@@ -469,6 +469,12 @@ export const ReviewSchema = z
              */
             repro: ReproSchema.optional(),
             /**
+             * Why no command can show a correctness finding (for example it is about concurrency,
+             * a platform the workspace cannot run, or wording). A correctness finding without a
+             * repro and without this reason is unverified.
+             */
+            noRepro: Text.optional(),
+            /**
              * The id of an earlier finding of the run that this one repeats (the same defect, even
              * when the file, symbol or wording changed), or null for a new defect. Absent means the
              * reviewer did not say, and the host compares locations instead.

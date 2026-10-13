@@ -5,6 +5,7 @@
  */
 
 import architectureMd from "../../../docs/architecture.md" with { type: "text" };
+import artifactsMd from "../../../docs/artifacts.md" with { type: "text" };
 import benchLoopMd from "../../../docs/bench-loop.md" with { type: "text" };
 import brandMd from "../../../docs/brand.md" with { type: "text" };
 import commandsMd from "../../../docs/commands.md" with { type: "text" };
@@ -41,6 +42,7 @@ import workflowsV2DesignMd from "../../../docs/workflows/v2-design.md" with { ty
 export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> = [
   ["README.md", readmeMd],
   ["architecture.md", architectureMd],
+  ["artifacts.md", artifactsMd],
   ["bench-loop.md", benchLoopMd],
   ["brand.md", brandMd],
   ["commands.md", commandsMd],
