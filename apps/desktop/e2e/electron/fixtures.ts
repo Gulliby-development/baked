@@ -53,7 +53,8 @@ export const test = base.extend<Fixtures>({
         return path;
       },
     });
-    rmSync(dir, { recursive: true, force: true });
+    // A backend child can still be flushing its cache when the app closes (ENOTEMPTY on CI).
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   },
   launch: async ({ workspace }, use) => {
     const apps: ElectronApplication[] = [];
