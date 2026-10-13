@@ -654,9 +654,9 @@ const COMMAND_DEFS: CommandDef[] = [
   {
     cmd: "/code-quality",
     ic: "cog",
-    desc: "Quality gates of workflow runs (duplication ratchet)",
+    desc: "Quality gates of workflow runs (duplication ratchet, anti-slop rules)",
     category: "Settings",
-    tags: ["config", "quality", "duplication", "ratchet", "workflow"],
+    tags: ["config", "quality", "duplication", "ratchet", "rules", "slop", "workflow"],
   },
   {
     cmd: "/chat-style",

@@ -454,7 +454,7 @@ interface SettingsView {
   pages: { id; title; description; command }[];         // command: the terminal command for the same settings
   settings: SettingDefinition[];                           // in display order
   values: { [id]: { id; value; source: "project" | "global" | "default" | "env" | "keychain" | "file"; global?; project? } };
-  catalogs: { tools: { name; description }[] };            // choices of string-list settings
+  catalogs: { tools: { name; description }[]; "quality-rules": { name; description }[] }; // choices of string-list settings: the tool catalog, the anti-slop rules
 }
 interface SettingDefinition {
   id: string;            // dotted config path, e.g. "performance.effort"; a secret's store key, e.g. "brave-api-key"
@@ -466,7 +466,7 @@ interface SettingDefinition {
   options?: { value; label; help? }[];                     // enum
   min?; max?; step?; integer?; nullable?;                  // number; model-number-map has min and max
   display?: { unit; factor };                              // number shown as value / factor, e.g. ms as s
-  catalog?: "tools";                                       // string-list
+  catalog?: "tools" | "quality-rules";                     // string-list: the names in it are the ones turned off
   envVar?: string;                                         // secret: the environment variable that also supplies it
 }
 ```

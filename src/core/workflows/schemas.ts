@@ -201,6 +201,19 @@ export const PolicySchema = z
      */
     duplication: z.enum(["off", "warn", "ratchet"]).optional(),
     /**
+     * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
+     * rules turned off, severities changed and ast-grep rule files added. Absent means the
+     * built-in pack as shipped, so stored policies keep their hash.
+     */
+    qualityRules: z
+      .object({
+        disabled: z.array(z.string().min(1).max(128)).max(200).optional(),
+        severity: z.record(z.string().min(1).max(128), z.enum(["error", "warning"])).optional(),
+        files: z.array(RelativePath).max(32).optional(),
+      })
+      .strict()
+      .optional(),
+    /**
      * Directories the applications of the run's AI acceptance gates may write. Like the outputs
      * of checks they are left out of source snapshots. Absent when no such gate grants writes.
      */

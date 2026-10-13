@@ -4,10 +4,12 @@
  */
 import { z } from "zod";
 import { getToolCatalog } from "../tools/constants.js";
+import { qualityRuleCatalog } from "../workflows/quality/builtin-rules.js";
 import {
   readSettingPath,
   SETTING_PAGES,
   SETTINGS,
+  type SettingCatalog,
   type SettingDefinition,
   type SettingPage,
   type SettingScope,
@@ -65,7 +67,7 @@ export interface SettingsView {
   settings: readonly SettingDefinition[];
   values: Record<string, SettingValue>;
   /** Names and descriptions of the `string-list` catalogs. */
-  catalogs: { tools: Array<{ name: string; description: string }> };
+  catalogs: Record<SettingCatalog, Array<{ name: string; description: string }>>;
 }
 
 export interface SettingsLayers {
@@ -118,7 +120,12 @@ export function settingsView(layers: SettingsLayers): SettingsView {
     name,
     description,
   }));
-  return { pages: SETTING_PAGES, settings: SETTINGS, values, catalogs: { tools } };
+  return {
+    pages: SETTING_PAGES,
+    settings: SETTINGS,
+    values,
+    catalogs: { tools, "quality-rules": qualityRuleCatalog() },
+  };
 }
 
 export interface SettingsChange {
