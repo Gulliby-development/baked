@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BriefContentSchema } from "../chat/coordinator.js";
+import { LaunchedRefSchema } from "../chat/coordinator-control.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
 import { CHAT_EFFORTS } from "../llm/provider-options.js";
@@ -157,6 +158,8 @@ export const CreateSessionBody = z.strictObject({
   images: Images.optional(),
 });
 export const CoordinatorBody = z.strictObject({ model: ModelId.optional() });
+export const LaunchedStopBody = LaunchedRefSchema;
+export const LaunchedCloseBody = LaunchedRefSchema.extend({ reopen: z.boolean().optional() });
 export const BriefBody = BriefContentSchema.extend({
   expectedRevision: z.number().int().min(0),
 });

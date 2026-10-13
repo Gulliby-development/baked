@@ -21,6 +21,8 @@ import {
   CoordinatorBody,
   CreateSessionBody,
   ForkSessionBody,
+  LaunchedCloseBody,
+  LaunchedStopBody,
   MentionsQuery,
   MessageBody,
   ModelsQuery,
@@ -88,6 +90,19 @@ export async function chatRoute(ctx: ChatRouteContext): Promise<Response | null>
     only("GET");
     const session = await chat.coordinator(false);
     if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    return ctx.json(200, { launched: chat.launched(session.id) });
+  }
+  if (path === "/v1/coordinator/launched/stop" || path === "/v1/coordinator/launched/close") {
+    only("POST");
+    const session = await chat.coordinator(false);
+    if (!session) ctx.fail(404, "NOT_FOUND", "This project has no coordinator yet");
+    if (path.endsWith("/stop")) {
+      const ref = LaunchedStopBody.parse(await ctx.readJson());
+      const message = await chat.stopLaunched(session.id, ref);
+      return ctx.json(200, { message, launched: chat.launched(session.id) });
+    }
+    const { reopen, ...ref } = LaunchedCloseBody.parse(await ctx.readJson());
+    await chat.closeLaunched(session.id, ref, reopen === true);
     return ctx.json(200, { launched: chat.launched(session.id) });
   }
   if (path === "/v1/coordinator/brief") {

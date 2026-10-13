@@ -72,6 +72,12 @@ import { watchOptions } from "../watch/config.js";
 import { WatchController, type WatchTurn, watchTurnDisplay } from "../watch/controller.js";
 import { COORDINATOR_MODE } from "./coordinator.js";
 import {
+  closeLaunched,
+  controlTools,
+  type LaunchedRef,
+  stopLaunched,
+} from "./coordinator-control.js";
+import {
   coordinatorLimits,
   type LaunchedView,
   launchedView,
@@ -170,6 +176,8 @@ export interface SessionSummary {
   compacting: boolean;
   /** `coordinator` for the project's coordinator chat (see `src/core/chat/coordinator.ts`). */
   kind?: "coordinator";
+  /** The coordinator closed its launch of this session: left out of the list, still openable. */
+  archived?: true;
 }
 
 /** Watch mode of the project as one session sees it (`/v1/sessions/:id/watch`). */
@@ -576,7 +584,17 @@ export class ChatSession {
       effort: this.effort,
       compacting: this.compaction !== null,
       ...(this.isCoordinator ? { kind: "coordinator" as const } : {}),
+      ...(this.meta.archived ? { archived: true as const } : {}),
     };
+  }
+
+  /** Archives the session or brings it back to the session list. */
+  async setArchived(archived: boolean): Promise<void> {
+    if (archived === (this.meta.archived === true)) return;
+    const { archived: _, ...meta } = this.meta;
+    this.meta = archived ? { ...meta, archived: true } : meta;
+    this.emitSession();
+    await this.owner.persist(this);
   }
 
   get isCoordinator(): boolean {
@@ -1602,7 +1620,20 @@ export class ChatService {
         this.launcher,
         coordinatorLimits(this.options.config),
       ),
+      ...controlTools(this, coordinator, this.projectState, this.launcher),
     };
+  }
+
+  /** Stops an item the coordinator launched; `POST /v1/coordinator/launched/stop`. */
+  async stopLaunched(coordinatorId: string, ref: LaunchedRef): Promise<string> {
+    const message = await stopLaunched(this, coordinatorId, this.projectState, this.launcher, ref);
+    await this.syncLaunched();
+    return message;
+  }
+
+  /** Closes or reopens an item the coordinator launched; `POST /v1/coordinator/launched/close`. */
+  async closeLaunched(coordinatorId: string, ref: LaunchedRef, reopen = false): Promise<void> {
+    await closeLaunched(this, coordinatorId, this.projectState, ref, reopen);
   }
 
   /** Context fills (0-1) at which a coordinator compacts itself, and below which it may again. */
@@ -1627,7 +1658,7 @@ export class ChatService {
   list(limit = 50): SessionSummary[] {
     const summaries = new Map<string, SessionSummary>();
     for (const entry of this.store.listSessions()) {
-      if (entry.kind === "coordinator") continue;
+      if (entry.kind === "coordinator" || entry.archived) continue;
       summaries.set(entry.id, {
         id: entry.id,
         title: entry.title,
@@ -1642,8 +1673,11 @@ export class ChatService {
         compacting: false,
       });
     }
-    for (const session of this.live.values())
-      if (!session.isCoordinator) summaries.set(session.id, session.summary());
+    for (const session of this.live.values()) {
+      const summary = session.summary();
+      if (session.isCoordinator || summary.archived) summaries.delete(session.id);
+      else summaries.set(session.id, summary);
+    }
     return [...summaries.values()]
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, Math.max(1, limit));

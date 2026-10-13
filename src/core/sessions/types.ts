@@ -47,4 +47,6 @@ export interface SessionMeta {
   projectId?: string;
   /** `coordinator` for the project's coordinator chat; absent for an ordinary session. */
   kind?: "coordinator";
+  /** Set when the coordinator's launch of this session is closed; ordinary lists leave it out. */
+  archived?: true;
 }

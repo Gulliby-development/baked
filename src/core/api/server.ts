@@ -552,6 +552,20 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         return view;
       },
       tasks: options.tasks ?? githubTasks(service.workspace, service.config),
+      cancelRun: async (runId) => {
+        await execute(
+          mutationArgs("cancel", runId, {
+            commandId: crypto.randomUUID(),
+            expectedRevision: service.store.run(runId).revision,
+          }),
+        );
+      },
+      pauseInitiative: async (initiativeId) => {
+        await initiatives.pause(initiativeId, {
+          commandId: crypto.randomUUID(),
+          expectedRevision: initiatives.view(initiativeId).revision,
+        });
+      },
     },
   );
   const graphCache = new CodeGraphCache(service.workspace);

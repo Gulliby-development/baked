@@ -41,6 +41,8 @@ export const LaunchedEntrySchema = z.strictObject({
       state: z.enum(["open", "closed", "local"]),
     })
     .optional(),
+  /** Closed by a person or the coordinator: no longer followed, counted or shown as active. */
+  closed: z.literal(true).optional(),
 });
 export type LaunchedEntry = z.infer<typeof LaunchedEntrySchema>;
 
@@ -64,6 +66,7 @@ export function dedupeLaunched(entries: readonly LaunchedEntry[]): LaunchedEntry
             ...first,
             ...(!first.title && entry.title ? { title: entry.title } : {}),
             ...(!first.task && entry.task ? { task: entry.task } : {}),
+            ...(!first.closed && entry.closed ? { closed: entry.closed } : {}),
           }
         : entry,
     );
@@ -117,7 +120,7 @@ export function renderBrief(brief: BriefContent): string {
           "### Launched work",
           ...brief.launched.map(
             (l, i) =>
-              `${i}. ${l.kind} ${l.id}${l.title ? ` "${l.title}"` : ""}${l.task ? ` (task ${l.task.ref}, ${l.task.state})` : ""} [${l.status}]: ${l.why.replace(/\s+/g, " ")}`,
+              `${i}. ${l.kind} ${l.id}${l.title ? ` "${l.title}"` : ""}${l.task ? ` (task ${l.task.ref}, ${l.task.state})` : ""} [${l.closed ? "closed" : l.status}]: ${l.why.replace(/\s+/g, " ")}`,
           ),
           "",
         ]
