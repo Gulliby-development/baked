@@ -557,6 +557,7 @@ export class WorkflowScheduler {
                           sizing: plannerSizing(
                             policy,
                             sizingHistory(this.store.workspace, policy),
+                            this.sizingModel(runId, null),
                           ),
                         }
                       : {}),
@@ -1566,6 +1567,7 @@ export class WorkflowScheduler {
       policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
+      model: this.sizingModel(runId, graph),
     });
     const split = splitTestTasks(graph, report);
     if (!split) return graph;
@@ -1664,6 +1666,13 @@ export class WorkflowScheduler {
     stepId: string,
     profile: AgentProfile,
   ): { models: string[]; effort?: RouteEffort } {
+    return this.stageRoute(runId, this.store.rootStage(runId, stepId), profile);
+  }
+  private stageRoute(
+    runId: string,
+    stage: string | null | undefined,
+    profile: AgentProfile,
+  ): { models: string[]; effort?: RouteEffort } {
     let routing = this.routing.get(runId);
     if (routing === undefined) {
       const row = this.store.latestArtifact(runId, ROUTING_ARTIFACT);
@@ -1673,7 +1682,6 @@ export class WorkflowScheduler {
       this.routing.set(runId, routing);
     }
     if (!routing) return { models: [profile.model] };
-    const stage = this.store.rootStage(runId, stepId);
     const staged = stage ? routing.stages[stage] : undefined;
     const own = routing.profiles[profile.id];
     const entry = staged ?? own;
@@ -1687,6 +1695,29 @@ export class WorkflowScheduler {
   private routed(runId: string, stepId: string, profile: AgentProfile, index = 0): AgentProfile {
     const model = this.route(runId, stepId, profile).models[index] ?? profile.model;
     return model === profile.model ? profile : { ...profile, model };
+  }
+  /**
+   * The model the plan's tasks will run on, as routing sends the profile most of them name to the
+   * task-graph stage; sizing prices them from that model's history. Null when it is not known.
+   */
+  private sizingModel(runId: string, graph: TaskGraph | null): string | null {
+    try {
+      const run = this.store.run(runId);
+      const profiles = ProfileSchema.array().parse(JSON.parse(run.profiles_json));
+      const counts = new Map<string, number>();
+      for (const task of graph?.tasks ?? [])
+        counts.set(task.profileId, (counts.get(task.profileId) ?? 0) + 1);
+      const named = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const profile =
+        profiles.find((p) => p.id === named) ?? profiles.find((p) => p.id === "implementer");
+      if (!profile) return null;
+      const stage = WorkflowSchema.parse(JSON.parse(run.definition_json)).stages.find(
+        (s) => s.kind === "task-graph",
+      )?.id;
+      return this.stageRoute(runId, stage, profile).models[0] ?? profile.model;
+    } catch {
+      return null;
+    }
   }
   private requireProfile(profile: AgentProfile | undefined): AgentProfile {
     if (!profile) throw new WorkflowFault("INVALID_REFERENCE", "Stage profile is missing");
@@ -2091,11 +2122,13 @@ export class WorkflowScheduler {
     const graph = state.graph;
     if (!graph) return "continue";
     const samples = sizingHistory(this.store.workspace, policy);
+    const model = this.sizingModel(runId, graph);
     const report = sizePlan({
       graph,
       policy,
       samples,
       spent: this.store.run(runId).token_usage,
+      model,
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -2113,7 +2146,7 @@ export class WorkflowScheduler {
         this.raiseBudget(runId, state, policy, report);
         state.sizingReplans = 1;
         state.prompt += `
-${splitNote(report, plannerSizing(policy, samples).maxCodeFilesPerTask)}`;
+${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`;
         state.analysisPassed = false;
         state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
