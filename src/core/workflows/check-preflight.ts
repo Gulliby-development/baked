@@ -1,6 +1,10 @@
-import { isAbsolute, resolve } from "node:path";
-import { buildCheckEnv } from "../verification/check-runner.js";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { buildCheckEnv, executeCheckCommand } from "../verification/check-runner.js";
 import { WorkflowFault } from "./errors.js";
+import { ProcessScope } from "./process-scope.js";
 import type { Check } from "./types.js";
 
 /**
@@ -50,4 +54,80 @@ export function unresolvedChecks(
       missing.push({ checkId: check.id, executable, required: check.required });
   }
   return missing;
+}
+
+/** What the start-time smoke found for one declared check. */
+export interface CheckSmoke {
+  checkId: string;
+  executable: string;
+  required: boolean;
+  /**
+   * `started`: the command spawned; `not_found`: a bare name not on its PATH; `cannot_start`: the
+   * spawn itself failed (EINVAL, EACCES, ENOEXEC, a refused cmd.exe line); `not_probed`: the
+   * running `bun`, or a path a task may still generate.
+   */
+  status: "started" | "not_found" | "cannot_start" | "not_probed";
+  detail?: string;
+}
+
+export const CHECK_PREFLIGHT_ARTIFACT = "preflight/checks.json";
+
+/**
+ * Starts each declared check once, the way the run will (same executable, arguments, environment
+ * and Windows batch handling), in an empty scratch directory, and stops it as soon as it spawned.
+ * Only whether the command starts is judged, so a check that would fail on the scaffold still
+ * passes, and nothing it does reaches the workspace. R8 propdrift b9a571b0: `mvn.cmd` resolved on
+ * the PATH but every spawn failed with EINVAL, found 420k tokens into the run.
+ */
+export async function smokeChecks(
+  checks: readonly Check[],
+  root: string,
+  processes: ProcessScope = new ProcessScope(),
+  which?: Parameters<typeof unresolvedChecks>[2],
+): Promise<CheckSmoke[]> {
+  const unresolved = new Set(unresolvedChecks(checks, root, which).map((probe) => probe.checkId));
+  const scratch = await mkdtemp(join(tmpdir(), "baked-check-smoke-"));
+  try {
+    const results: CheckSmoke[] = [];
+    for (const check of checks) {
+      const base = { checkId: check.id, executable: check.executable, required: check.required };
+      if (unresolved.has(check.id)) {
+        results.push({ ...base, status: "not_found", detail: "not found on the PATH" });
+        continue;
+      }
+      const cwd = check.cwd === "." ? root : resolve(root, check.cwd);
+      const pathLike = /[\\/]/.test(check.executable) || isAbsolute(check.executable);
+      const executable = pathLike ? resolve(cwd, check.executable) : check.executable;
+      if (check.executable === "bun" || (pathLike && !existsSync(executable))) {
+        results.push({ ...base, status: "not_probed" });
+        continue;
+      }
+      const stop = new AbortController();
+      try {
+        await executeCheckCommand(processes, executable, check.args, {
+          cwd: scratch,
+          env: buildCheckEnv(check),
+          timeoutMs: 10_000,
+          signal: stop.signal,
+          onSpawn: () => stop.abort(),
+        });
+        results.push({ ...base, status: "started" });
+      } catch (error) {
+        const detail = (error instanceof Error ? error.message : String(error)).split("\n")[0];
+        results.push({ ...base, status: "cannot_start", detail });
+      }
+    }
+    return results;
+  } finally {
+    await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+      () => undefined,
+    );
+  }
+}
+
+/** The line a start refusal or warning shows for a check the smoke could not start. */
+export function smokeLine(smoke: CheckSmoke): string {
+  return smoke.status === "not_found"
+    ? `check ${smoke.checkId}: ${smoke.executable} was not found on the PATH`
+    : `check ${smoke.checkId}: ${smoke.executable} cannot be started (${smoke.detail ?? "spawn failed"})`;
 }

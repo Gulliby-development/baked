@@ -32,7 +32,12 @@ import {
   proposeExtension,
 } from "./budget.js";
 import { validateChecks } from "./check-policy.js";
-import { unresolvedChecks } from "./check-preflight.js";
+import {
+  CHECK_PREFLIGHT_ARTIFACT,
+  type CheckSmoke,
+  smokeChecks,
+  smokeLine,
+} from "./check-preflight.js";
 import { answerInvalidatesAnalysis, clarificationResumeIndex } from "./clarification.js";
 import { assertFrozenInputs } from "./context.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
@@ -205,7 +210,7 @@ export class NativeWorkflowService implements WorkflowService {
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
     const prepared = await prepareStart(this.workspace, this.config, request);
-    await this.preflight(prepared);
+    const smoke = await this.preflight(prepared);
     const {
       policy,
       registry,
@@ -346,6 +351,13 @@ export class NativeWorkflowService implements WorkflowService {
         project?.id ?? null,
       );
       this.store.artifact(id, "routing", ROUTING_ARTIFACT, canonical(routing));
+      if (smoke?.length)
+        this.store.artifact(
+          id,
+          "preflight",
+          CHECK_PREFLIGHT_ARTIFACT,
+          canonical({ checks: smoke }),
+        );
       if (gates.length) this.store.artifact(id, "gates", GATES_ARTIFACT, canonical(gates));
       if (workingSet) {
         const artifact = this.store.artifact(id, "context", WORKING_SET_ARTIFACT, workingSet.text);
@@ -379,8 +391,8 @@ export class NativeWorkflowService implements WorkflowService {
    * Its warnings (fallback models, unbound profiles, unknown providers, an unanswered probe) are
    * recorded with the routing.
    */
-  private async preflight(prepared: PreparedStart): Promise<void> {
-    if (!this.providerReady) return;
+  private async preflight(prepared: PreparedStart): Promise<CheckSmoke[] | null> {
+    if (!this.providerReady) return null;
     const checks = await checkStartModels(this.workspace, prepared, this.providerReady);
     const refusals = checks.filter((check) => check.status === "fail").map(checkLine);
     if (refusals.length)
@@ -389,22 +401,28 @@ export class NativeWorkflowService implements WorkflowService {
         `These models cannot be called:\n${refusals.join("\n")}`,
         { reason: "model_unavailable", problems: refusals },
       );
-    const unresolved = unresolvedChecks(prepared.policy.checks, this.workspace);
-    const notFound = (m: { checkId: string; executable: string }) =>
-      `check ${m.checkId}: ${m.executable} was not found on the PATH`;
-    const missing = unresolved.filter((probe) => probe.required);
+    const warnings = checks.filter((check) => check.status === "warn").map(checkLine);
+    if (warnings.length)
+      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
+    return this.smokeChecks(prepared);
+  }
+  /**
+   * Starts every declared check once before the run spends a token: a required check that is not
+   * on its PATH or cannot be spawned refuses the start, an advisory one becomes a routing warning.
+   */
+  private async smokeChecks(prepared: PreparedStart): Promise<CheckSmoke[]> {
+    const smoke = await smokeChecks(prepared.policy.checks, this.workspace);
+    const failed = smoke.filter((s) => s.status === "not_found" || s.status === "cannot_start");
+    const missing = failed.filter((s) => s.required);
     if (missing.length)
       throw new WorkflowFault(
         "CAPABILITY_DENIED",
-        `These required checks cannot start:\n${missing.map(notFound).join("\n")}`,
+        `These required checks cannot start:\n${missing.map(smokeLine).join("\n")}`,
         { reason: "check_unavailable", problems: missing },
       );
-    const warnings = [
-      ...checks.filter((check) => check.status === "warn").map(checkLine),
-      ...unresolved.map(notFound),
-    ];
-    if (warnings.length)
-      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
+    if (failed.length)
+      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...failed.map(smokeLine)];
+    return smoke;
   }
   /**
    * Publication refuses to overwrite `specs/<featureId>/` files that no finished run published
