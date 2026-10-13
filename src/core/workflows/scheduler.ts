@@ -2360,7 +2360,33 @@ ${splitNote(report, plannerSizing(policy, samples, model).maxCodeFilesPerTask)}`
         return "replan";
       }
     }
-    if (report.decision === "split-feature" && state.sizingReplans < 2) {
+    if (
+      report.decision === "split-feature" &&
+      state.sizingReplans < 2 &&
+      policy.clarification === "assume"
+    ) {
+      // Under assume a person is not asked: the run goes on within the ceiling, and the
+      // assumption is recorded where the approval shows it (cronsay 15eb3204 asked here).
+      const priced = `sizing/plan-${String(state.sizingReplans)}.json`;
+      state.sizingReplans = 2;
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "assumption",
+          "assumptions/sizing.json",
+          canonical({
+            assumed: [
+              {
+                id: "SIZING-1",
+                kind: "scope",
+                refs: ["tasks.json", priced],
+                description: `${report.reasons.join(". ")}. Assumed under clarification assume: the run continues within ${String(report.maxRunTokens)} tokens.`,
+              },
+            ],
+          }),
+        ),
+      );
+    } else if (report.decision === "split-feature" && state.sizingReplans < 2) {
       // Asked once; an answer lets the run go on within the ceiling.
       state.sizingReplans = 2;
       this.wait("clarification", state, {
