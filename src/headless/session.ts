@@ -118,6 +118,8 @@ export async function runSessionCli(argv: string[]): Promise<number> {
 
 function rollbackLines(r: RollbackReport, cwd: string): string[] {
   const rel = (p: string) => relative(cwd, p) || p;
+  if (r.restored.length + r.removed.length + r.skipped.length === 0)
+    return ["No file edits were recorded for these turns; files were left as they are"];
   const out = [
     `Restored ${String(r.restored.length)} file(s), removed ${String(r.removed.length)}`,
   ];

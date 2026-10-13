@@ -242,14 +242,15 @@ export const useCheckpointStore = create<CheckpointState>()((set, get) => ({
       }
     }
 
-    // Clear redo stack if new checkpoints appeared (user sent a new message after undo)
-    const hasNewCheckpoints = checkpoints.some(
-      (cp) =>
-        !cp.undone &&
-        !tab.checkpoints.find((p) => p.anchorMessageId === cp.anchorMessageId) &&
-        !tab.redoStack.some((e) => e.turn.anchorMessageId === cp.anchorMessageId),
+    // Clear the redo stack once the conversation moved on after the undo: a turn now holds the
+    // place of an undone turn. Comparing with the undone turns rather than the previous sync
+    // keeps a redo stack restored from a saved session through the first sync after a resume.
+    const undoneAt = new Map(tab.redoStack.map((e) => [e.turn.index, e.turn.anchorMessageId]));
+    const firstUndone = tab.redoStack[0]?.turn.index ?? Number.POSITIVE_INFINITY;
+    const movedOn = checkpoints.some(
+      (cp) => cp.index >= firstUndone && undoneAt.get(cp.index) !== cp.anchorMessageId,
     );
-    const redoStack = hasNewCheckpoints ? [] : tab.redoStack;
+    const redoStack = movedOn ? [] : tab.redoStack;
 
     // Clear pending tags once ALL of them have been matched to checkpoints
     const pendingTags = tab._pendingTags;

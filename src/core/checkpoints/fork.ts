@@ -279,3 +279,22 @@ export async function ensureBaseSnapshot(
     ? tag
     : null;
 }
+
+/**
+ * Snapshots the workspace at the end of the conversation's last turn when that turn edited files,
+ * as the state a later undo or redo restores. Null outside Git, when a Git step fails, or when the
+ * turn edited nothing.
+ */
+export async function snapshotTurnEnd(
+  cwd: string,
+  tabId: string,
+  messages: ChatMessage[],
+  label: string,
+): Promise<CheckpointTag | null> {
+  const turn = buildTurns(messages).at(-1);
+  if (!turn || turn.filesEdited.length === 0) return null;
+  const gitTag = checkpointTagName(tabId, turn.index, label);
+  return (await snapshotWorkspace(cwd, gitTag, `baked checkpoint ${String(turn.index)}`))
+    ? { index: turn.index, anchorMessageId: turn.anchorMessageId, gitTag }
+    : null;
+}

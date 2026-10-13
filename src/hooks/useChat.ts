@@ -274,8 +274,11 @@ export interface ChatInstance {
   setEffort: (effort: ChatEffort) => void;
   cycleMode: () => import("../types/index.js").BakeMode;
   rotateRoutingSession: () => void;
-  /** Saves this tab now, for changes made outside a turn such as an undo. */
-  persist: () => void;
+  /**
+   * Saves this tab now, for changes made outside a turn such as an undo. `rewrite` lets the save
+   * drop messages the session file still holds (an undo shortens the conversation on purpose).
+   */
+  persist: (options?: { rewrite?: boolean }) => Promise<void>;
 }
 
 export function useChat({
@@ -612,7 +615,11 @@ export function useChat({
   // reads + splices). Replaces the old buildSessionMeta+saveSession flow
   // that captured a global snapshot and could lose stale-render tab data.
   const persistThisTab = useCallback(
-    (msgs: ChatMessage[], cores: ModelMessage[] | undefined) => {
+    (
+      msgs: ChatMessage[],
+      cores: ModelMessage[] | undefined,
+      options: { rewrite?: boolean } = {},
+    ): Promise<void> => {
       try {
         const filtered = msgs.filter((m) => m.role !== "system" || m.showInChat);
         const { tabMeta } = buildTabMeta({
@@ -629,23 +636,32 @@ export function useChat({
           messages: filtered,
           coreMessages: cores,
         });
-        sessionManager
-          .saveTab(sessionIdRef.current, tabMeta, filtered, cores, {
-            title: customTitleRef.current ?? SessionManager.deriveTitle(filtered),
-            customTitle: customTitleRef.current,
-            cwd,
-            bakeMode: bakeModeRef.current,
-            activeTabId: tabId,
-          })
+        return sessionManager
+          .saveTab(
+            sessionIdRef.current,
+            tabMeta,
+            filtered,
+            cores,
+            {
+              title: customTitleRef.current ?? SessionManager.deriveTitle(filtered),
+              customTitle: customTitleRef.current,
+              cwd,
+              bakeMode: bakeModeRef.current,
+              activeTabId: tabId,
+            },
+            options,
+          )
           .catch(() => {});
       } catch {
         // Don't let checkpoint failures interrupt the request
+        return Promise.resolve();
       }
     },
     [tabId, tabLabel, cwd, sessionManager, coAuthorCommits],
   );
   const persist = useCallback(
-    () => persistThisTab(messagesRef.current, coreMessagesRef.current),
+    (options?: { rewrite?: boolean }) =>
+      persistThisTab(messagesRef.current, coreMessagesRef.current, options),
     [persistThisTab],
   );
   const customTitleRef = useRef<string | null>(null);
