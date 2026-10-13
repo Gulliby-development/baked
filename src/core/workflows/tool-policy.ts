@@ -43,6 +43,8 @@ export function takeHashRefusals(root: string): string[] {
 }
 
 export class WorkflowToolPolicy {
+  /** The last queued call per workspace path; see `serialized`. */
+  private pathQueues = new Map<string, Promise<unknown>>();
   constructor(
     private store: WorkflowStore,
     private leases: WorkspaceLeases,
@@ -222,7 +224,38 @@ export class WorkflowToolPolicy {
     args: Record<string, unknown>,
     action: () => Promise<unknown>,
   ): Promise<unknown> {
-    return this.journaled(name, (deadlineHit) => this.guarded(name, args, action, deadlineHit));
+    return this.serialized(this.queueKey(name, args), () =>
+      this.journaled(name, (deadlineHit) => this.guarded(name, args, action, deadlineHit)),
+    );
+  }
+  /** The path a mutating call writes, which orders it after the attempt's other calls on it. */
+  private queueKey(name: string, args: Record<string, unknown>): string | null {
+    if (!["edit_file", "multi_edit", "delete_file"].includes(name) || typeof args.path !== "string")
+      return null;
+    try {
+      return this.path(args.path);
+    } catch {
+      // The guard refuses the call with the reason; it writes nothing to wait for.
+      return null;
+    }
+  }
+  /**
+   * Runs the attempt's edits of one path one after another. A model may send several edits of a
+   * file in one step; run together, the second sees the first one's write on disk before its
+   * effect is journaled and is refused as a change made outside the attempt (#955, depwave
+   * db4612f3). A call starts after the previous one ended, whether it succeeded or failed (the
+   * queue holds a promise that never rejects).
+   */
+  private async serialized(key: string | null, run: () => Promise<unknown>): Promise<unknown> {
+    if (key === null) return run();
+    const current = (this.pathQueues.get(key) ?? Promise.resolve()).then(run);
+    const tail = current.catch(() => undefined);
+    this.pathQueues.set(key, tail);
+    try {
+      return await current;
+    } finally {
+      if (this.pathQueues.get(key) === tail) this.pathQueues.delete(key);
+    }
   }
   /**
    * Runs a host tool the executor already granted, such as `run_probe`, under its deadline and
