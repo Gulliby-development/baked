@@ -28,27 +28,44 @@ function relatedRootTasks(task: Pick<Task, "profileId" | "criterionIds">, root: 
 }
 
 /**
- * What a correction of `base` may write: its own files and those of the related planned tasks,
- * once each; a file the plan created is modified from then on.
+ * One write per path for a correction. The action follows the file, not the order of the merged
+ * writes: a path a planned task creates is modified once the integrated change has it and created
+ * while it does not. A correction that ran before the creating task got the later task's `modify`
+ * and the tool policy refused every attempt (bench round 11, mdrefs T011: 1.44M tokens).
  */
-export function correctionWrites(
-  base: Task,
-  root: TaskGraph,
+export function mergeCorrectionWrites(
+  writes: Task["writes"],
   expectedFiles: Record<string, string> | null | undefined,
 ): Task["writes"] {
-  return [
-    ...new Map(
-      [base, ...relatedRootTasks(base, root)]
-        .flatMap((task) => task.writes)
-        .map((write) => [write.path, write] as const),
-    ).values(),
-  ].map((write) => ({
+  const byPath = new Map<string, Task["writes"][number]>();
+  for (const write of writes) {
+    const created =
+      write.action === "create" ||
+      (write.action === "modify" && byPath.get(write.path)?.action === "create");
+    byPath.set(write.path, created ? { ...write, action: "create" } : write);
+  }
+  return [...byPath.values()].map((write) => ({
     ...write,
     action:
       write.action === "create" && expectedFiles?.[write.path] !== undefined
         ? ("modify" as const)
         : write.action,
   }));
+}
+
+/**
+ * What a correction of `base` may write: its own files and those of the related planned tasks,
+ * once each (see `mergeCorrectionWrites`).
+ */
+export function correctionWrites(
+  base: Task,
+  root: TaskGraph,
+  expectedFiles: Record<string, string> | null | undefined,
+): Task["writes"] {
+  return mergeCorrectionWrites(
+    [base, ...relatedRootTasks(base, root)].flatMap((task) => task.writes),
+    expectedFiles,
+  );
 }
 
 /**
@@ -333,13 +350,10 @@ export function appendCorrections(
     const ids = grouped.map((f) => f.id);
     return {
       ...base,
-      writes: [
-        ...new Map(
-          bases
-            .flatMap((b) => correctionWrites(b, root, state.expectedFiles))
-            .map((write) => [write.path, write] as const),
-        ).values(),
-      ],
+      writes: mergeCorrectionWrites(
+        bases.flatMap((b) => correctionWrites(b, root, state.expectedFiles)),
+        state.expectedFiles,
+      ),
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id: `T${String(next++).padStart(3, "0")}`,
       title: `Correct ${ids.join(", ")}`,
