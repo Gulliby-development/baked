@@ -66,6 +66,22 @@ export const SpecSchema = z
       )
       .min(1),
     dependencies: z.array(z.object({ featureId: SafeId, contractHash: Hash }).strict()),
+    /**
+     * The request's deliverables in its own words, each covered by requirements or left out by
+     * the request's own words (see request-coverage.ts). Optional, so specs stored before it keep
+     * their hashes.
+     */
+    deliverables: z
+      .array(
+        z
+          .object({
+            quote: Text,
+            requirementIds: z.array(RequirementId),
+            outOfScope: Text.optional(),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 

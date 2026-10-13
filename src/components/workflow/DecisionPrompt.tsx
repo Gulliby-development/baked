@@ -15,10 +15,19 @@ interface ApprovalBody {
   checks?: Check[];
   deferredCriteria?: string[];
   assumptions?: string[];
+  requestCoverage?: RequestCoverageRow[];
   executionMode?: "inline" | "worktree";
   worktree?: { path: string; branch: string; baseHead: string; userChangesInScope: string[] };
   /** Why auto approval left this plan to a person. */
   autoApproval?: { declined?: string[] };
+}
+/** A deliverable of the request and what in the spec covers it (`request-coverage.ts`). */
+interface RequestCoverageRow {
+  deliverable: string;
+  requirementIds: string[];
+  criterionIds: string[];
+  outOfScope: string | null;
+  mapped: boolean;
 }
 interface ClarificationBody {
   questions?: { id?: string; question: string; blocking?: boolean }[];
@@ -443,6 +452,25 @@ export function DecisionPrompt({
               {`  ${c.id} [${c.method}] ${c.text}`}
             </text>
           ))}
+          {body.requestCoverage?.length ? (
+            <>
+              <text
+                fg={body.requestCoverage.every((r) => r.mapped) ? t.textSecondary : t.warning}
+                attributes={1}
+              >{`Request coverage (${body.requestCoverage.length})`}</text>
+              {body.requestCoverage.map((r) => (
+                <text key={r.deliverable} fg={r.mapped ? t.textMuted : t.warning}>
+                  {`  ${r.mapped ? "\u2713" : "!"} ${flatten(r.deliverable)} \u2192 ${
+                    r.requirementIds.length
+                      ? [...r.requirementIds, ...r.criterionIds].join(", ")
+                      : r.outOfScope
+                        ? `out of scope: ${flatten(r.outOfScope)}`
+                        : "not covered"
+                  }`}
+                </text>
+              ))}
+            </>
+          ) : null}
           {body.assumptions?.length ? (
             <>
               <text
