@@ -1,11 +1,31 @@
-import type { DefinitionSummary } from "./definitions.js";
-import type { LineStage, WorkflowLine } from "./line.js";
-
 /**
  * A run played along a workflow's line, for front ends that explain a definition before it runs:
  * its family, the line as one row of text, and the steps of a run in which everything passes, a
- * check fails once or a review asks for changes. Pure; nothing here runs a workflow.
+ * check fails once or a review asks for changes. Pure and import-free, so the desktop app shares
+ * it: the shapes below are what it reads of `WorkflowLine` (./line.ts) and of the app's mirror.
  */
+
+/** What the walkthrough reads of a station on the line (`LineStage`). */
+export interface WalkStage {
+  id: string;
+  type: "agent" | "tasks" | "check" | "wait" | "approval" | "review" | "reflection" | "learn";
+  consumes: string[];
+  produces: string;
+  human: boolean;
+}
+
+/** A repair loop on the line (`LineLoop`). */
+export interface WalkLoop {
+  from: string;
+  to: string;
+  on: string;
+  carries: string;
+}
+
+export interface WalkLine<S extends WalkStage = WalkStage> {
+  stages: S[];
+  loops: WalkLoop[];
+}
 
 export type Family = "full" | "spec" | "quick" | "repair" | "read";
 
@@ -18,7 +38,7 @@ export const FAMILY_LABEL: Record<Family, string> = {
 };
 
 /** What kind of recipe a definition is, from what it writes and the stations on its line. */
-export function familyOf(definition: Pick<DefinitionSummary, "line" | "writes">): Family {
+export function familyOf(definition: { line: WalkLine; writes: boolean }): Family {
   const stages = definition.line.stages;
   const types = new Set(stages.map((s) => s.type));
   if (!definition.writes) return "read";
@@ -32,7 +52,7 @@ export function familyOf(definition: Pick<DefinitionSummary, "line" | "writes">)
  * The line as one row: stations joined by arrows, `⟲` after a station a repair loop leaves from.
  * A definition without line entries shows its stage IDs.
  */
-export function lineText(definition: Pick<DefinitionSummary, "line" | "stages">): string {
+export function lineText(definition: { line: WalkLine; stages: readonly string[] }): string {
   const { stages, loops } = definition.line;
   if (!stages.length) return definition.stages.join(" → ");
   const looping = new Set(loops.map((l) => l.from));
@@ -47,7 +67,7 @@ export const SCENARIO_LABEL: Record<Scenario, string> = {
 };
 
 /** The scenarios a line can play: a failure or a change request needs a loop that takes it. */
-export function scenariosFor(line: WorkflowLine): Scenario[] {
+export function scenariosFor(line: WalkLine): Scenario[] {
   const list: Scenario[] = ["happy"];
   if (line.loops.some((l) => l.on === "failed")) list.push("failed");
   if (line.loops.some((l) => l.on === "changes_requested")) list.push("changes");
@@ -64,12 +84,21 @@ export type WalkEvent =
   /** A loop sent the work back from `from` to `at`, carrying a contract. */
   | { kind: "back"; at: number; from: number; carries: string };
 
-export interface Walkthrough {
+/** The station after the last stage, where a finished run arrives. */
+export interface FinishStation {
+  id: typeof FINISH;
+  type: "agent";
+  consumes: string[];
+  produces: string;
+  human: false;
+  gates: [];
+  finish: true;
+}
+
+export interface Walkthrough<S extends WalkStage = WalkStage> {
   /** The definition's stations, then the finish station. */
-  stations: (Pick<LineStage, "id" | "type" | "produces" | "consumes" | "human" | "gates"> & {
-    finish?: true;
-  })[];
-  loops: WorkflowLine["loops"];
+  stations: ((S & { finish?: undefined }) | FinishStation)[];
+  loops: WalkLoop[];
   events: WalkEvent[];
 }
 
@@ -77,10 +106,13 @@ export interface Walkthrough {
  * The steps of a run along the line: each station works in turn, and in the failure or change
  * scenario the first loop that takes it sends the work back once.
  */
-export function walkthrough(line: WorkflowLine, scenario: Scenario): Walkthrough {
+export function walkthrough<S extends WalkStage>(
+  line: WalkLine<S>,
+  scenario: Scenario,
+): Walkthrough<S> {
   const last = line.stages.at(-1);
-  const stations: Walkthrough["stations"] = [
-    ...line.stages,
+  const stations: Walkthrough<S>["stations"] = [
+    ...(line.stages as (S & { finish?: undefined })[]),
     {
       id: FINISH,
       type: "agent",
